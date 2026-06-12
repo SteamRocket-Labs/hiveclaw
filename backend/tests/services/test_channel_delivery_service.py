@@ -414,3 +414,69 @@ class TestSendFile:
         assert result.detail["fallback_used"] is True
         assert "微信文件直传失败" in sent_texts[-1]
         assert "token=signed" in sent_texts[-1]
+
+    @pytest.mark.asyncio
+    async def test_send_file_wechat_uploads_and_sends_media(self, monkeypatch, tmp_path) -> None:
+        import app.services.wechat_ilink_client as ilink_mod
+
+        agent_id = uuid4()
+        file_path = tmp_path / "report.pdf"
+        file_path.write_bytes(b"pdf bytes")
+        calls: list[tuple[str, dict]] = []
+
+        class FakeILinkClient:
+            def __init__(self, base_url):
+                calls.append(("client", {"base_url": base_url}))
+
+            async def send_message(self, **kwargs):
+                calls.append(("text", kwargs))
+
+            async def upload_media(self, **kwargs):
+                calls.append(("upload", kwargs))
+                return ilink_mod.UploadResult(
+                    download_param="download-param",
+                    aes_key_hex="00" * 16,
+                    plaintext_size=len(kwargs["file_data"]),
+                    ciphertext_size=16,
+                )
+
+            async def send_media_message(self, **kwargs):
+                calls.append(("media", kwargs))
+
+        monkeypatch.setattr(ilink_mod, "ILinkClient", FakeILinkClient)
+        monkeypatch.setattr(
+            "app.services.wechat_personal_service.get_channel_credentials",
+            lambda _config: {"base_url": "https://ilink.example", "bot_token": "bot-token"},
+        )
+
+        config = SimpleNamespace(
+            channel_type="wechat_personal",
+            app_secret="secret",
+            app_id="wechat",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+
+        result = await ChannelDeliveryService.send_file(
+            db=_FakeDB(config),
+            agent_id=agent_id,
+            reply_target={"channel": "wechat_personal", "to_user_id": "wxid_abc", "context_token": "ctx"},
+            file_path=file_path,
+            message="请查收",
+            delivery_mode="live",
+        )
+
+        assert result.ok is True
+        assert result.message == "WeChat personal file delivered."
+        assert ("client", {"base_url": "https://ilink.example"}) in calls
+        assert calls[1][0] == "text"
+        assert calls[1][1]["text"] == "请查收"
+        assert calls[2][0] == "upload"
+        assert calls[2][1]["bot_token"] == "bot-token"
+        assert calls[2][1]["to_user_id"] == "wxid_abc"
+        assert calls[2][1]["file_data"] == b"pdf bytes"
+        assert calls[2][1]["media_type"] == ilink_mod.MEDIA_TYPE_FILE
+        assert calls[3][0] == "media"
+        assert calls[3][1]["context_token"] == "ctx"
+        assert calls[3][1]["file_name"] == "report.pdf"

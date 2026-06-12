@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 # ─── Auth ───────────────────────────────────────────────
@@ -279,6 +279,15 @@ class LLMModelCreate(BaseModel):
     text_verbosity: str | None = None
     provider_options: dict | None = None
 
+    @model_validator(mode="after")
+    def validate_model_identifier(self) -> "LLMModelCreate":
+        from app.services.llm_client import get_llm_model_identifier_error
+
+        error = get_llm_model_identifier_error(self.provider, self.model)
+        if error:
+            raise ValueError(error)
+        return self
+
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -299,6 +308,17 @@ class LLMModelUpdate(BaseModel):
     preserve_reasoning: bool | None = None
     text_verbosity: str | None = None
     provider_options: dict | None = None
+
+    @model_validator(mode="after")
+    def validate_model_identifier(self) -> "LLMModelUpdate":
+        if not self.provider or not self.model:
+            return self
+        from app.services.llm_client import get_llm_model_identifier_error
+
+        error = get_llm_model_identifier_error(self.provider, self.model)
+        if error:
+            raise ValueError(error)
+        return self
 
 
 class LLMModelOut(BaseModel):

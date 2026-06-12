@@ -1898,6 +1898,13 @@ PROVIDER_ALIASES: dict[str, str] = {
 
 
 _OPENAI_RESPONSES_ONLY_MODEL_PREFIXES = ("gpt-5.5",)
+_OPENAI_INVALID_MODEL_ID_HINTS = {
+    "5.5": "gpt-5.5",
+    "5.5pro": "gpt-5.5",
+    "5.5-pro": "gpt-5.5",
+    "gpt-5.5pro": "gpt-5.5",
+    "gpt-5.5-pro": "gpt-5.5",
+}
 
 
 def _requires_openai_responses_api(provider: str, model: str | None) -> bool:
@@ -1906,6 +1913,32 @@ def _requires_openai_responses_api(provider: str, model: str | None) -> bool:
         return False
     normalized_model = (model or "").strip().lower().replace("_", "-")
     return any(normalized_model.startswith(prefix) for prefix in _OPENAI_RESPONSES_ONLY_MODEL_PREFIXES)
+
+
+def uses_openai_responses_api(provider: str, model: str | None) -> bool:
+    """Return True when this provider/model pair should be probed via the Responses API."""
+    normalized_provider = normalize_provider(provider)
+    if normalized_provider == "openai-response":
+        return True
+    return _requires_openai_responses_api(normalized_provider, model)
+
+
+def get_llm_model_identifier_error(provider: str | None, model: str | None) -> str | None:
+    """Return a user-actionable model-id error for known invalid provider aliases.
+
+    This intentionally does not freeze the full OpenAI model catalog; it only
+    rejects common shorthand/marketing aliases that the API will not accept.
+    """
+    normalized_provider = normalize_provider(provider or "")
+    if normalized_provider not in {"openai", "openai-response"}:
+        return None
+
+    raw_model = (model or "").strip()
+    normalized_model = raw_model.lower().replace("_", "-").replace(" ", "")
+    suggested = _OPENAI_INVALID_MODEL_ID_HINTS.get(normalized_model)
+    if not suggested:
+        return None
+    return f"{raw_model or normalized_model} is not an OpenAI API model ID. Use {suggested}."
 
 MAX_OUTPUT_TOKENS_HARD_LIMIT = 65536
 

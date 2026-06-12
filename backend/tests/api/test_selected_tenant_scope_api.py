@@ -324,13 +324,49 @@ async def test_llm_test_applies_gpt55_responses_request_options(monkeypatch):
     )
 
     assert result["success"] is True
-    assert captured["max_tokens"] == 16
+    assert captured["max_tokens"] == 1024
     assert captured["kwargs"] == {
         "temperature": 0.7,
         "reasoning": {"effort": "high"},
         "text": {"verbosity": "low"},
         "_omit_temperature": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_llm_test_rejects_openai_gpt55_pro_alias_before_provider_call(monkeypatch):
+    import app.api.enterprise as enterprise_api
+
+    def fail_create_llm_client(*_args, **_kwargs):
+        raise AssertionError("invalid OpenAI model aliases must be rejected before provider calls")
+
+    monkeypatch.setattr("app.services.llm_client.create_llm_client", fail_create_llm_client)
+
+    result = await enterprise_api.test_llm_model(
+        data=enterprise_api.LLMTestRequest(
+            provider="openai",
+            model="gpt-5.5-pro",
+            api_key="sk-test",
+        ),
+        current_user=SimpleNamespace(id=uuid4(), role="admin", tenant_id=uuid4()),
+        db=_FakeDB([]),
+    )
+
+    assert result["success"] is False
+    assert "gpt-5.5-pro" in result["error"]
+    assert "gpt-5.5" in result["error"]
+
+
+def test_llm_model_create_rejects_openai_gpt55_pro_alias():
+    import app.api.enterprise as enterprise_api
+
+    with pytest.raises(ValidationError, match="gpt-5.5-pro"):
+        enterprise_api.LLMModelCreate(
+            provider="openai",
+            model="gpt-5.5-pro",
+            api_key="secret",
+            label="GPT-5.5 Pro",
+        )
 
 
 @pytest.mark.asyncio

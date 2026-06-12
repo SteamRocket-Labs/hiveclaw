@@ -14,6 +14,7 @@ Lifecycle:
 from __future__ import annotations
 
 import asyncio
+import base64
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +58,16 @@ def _persist_inbound_media(agent_id: uuid.UUID, filename: str | None, content: b
         destination = uploads_dir / f"{destination.stem}_{uuid.uuid4().hex[:8]}{destination.suffix}"
     destination.write_bytes(content)
     return f"workspace/uploads/{destination.name}"
+
+
+def _guess_image_mime(content: bytes) -> str:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return "image/gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
 
 
 class WeChatPersonalStreamManager:
@@ -233,6 +244,11 @@ class WeChatPersonalStreamManager:
                     f"[用户发送了一张图片，已保存到工作区 `{image_path}`，{len(image_data)} 字节。"
                     f"如果需要处理内容，请直接读取该路径。]"
                 )
+                image_marker = (
+                    f"[image_data:data:{_guess_image_mime(image_data)};base64,"
+                    f"{base64.b64encode(image_data).decode('ascii')}]"
+                )
+                image_desc = f"{image_desc}\n{image_marker}"
                 user_text = f"{user_text}\n{image_desc}" if user_text else image_desc
                 logger.info(f"[WeChatPersonal Stream] Image from {from_user[:12]}...: {len(image_data)}B")
             except Exception as e:

@@ -301,6 +301,7 @@ async def connect_channel(
     bot_token: str,
     base_url: str | None = None,
     user_id: str | None = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> ChannelConfig:
     """Persist WeChat credentials to ChannelConfig after successful QR login.
 
@@ -325,6 +326,7 @@ async def connect_channel(
     if config is None:
         config = ChannelConfig(
             agent_id=agent_id,
+            tenant_id=tenant_id,
             channel_type="wechat_personal",
             is_configured=True,
             is_connected=True,
@@ -332,6 +334,8 @@ async def connect_channel(
         )
         db.add(config)
     else:
+        if tenant_id is not None:
+            config.tenant_id = tenant_id
         config.extra_config = extra
         config.is_configured = True
         config.is_connected = True
@@ -339,6 +343,63 @@ async def connect_channel(
     await db.flush()
     logger.info(f"[WeChatPersonal] Channel connected for agent {agent_id}")
     return config
+
+
+async def disconnect_duplicate_account_bindings(
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    account_id: str,
+    user_id: str | None = None,
+    tenant_id: uuid.UUID | None = None,
+) -> list[uuid.UUID]:
+    """Disconnect stale personal-WeChat bindings for the same iLink account.
+
+    iLink long-polling is account-scoped. If the same WeChat account remains
+    connected to an older agent, that older poll loop can consume inbound
+    messages before the newly bound agent sees them.
+    """
+    if not account_id and not user_id:
+        return []
+
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.channel_type == "wechat_personal",
+            ChannelConfig.is_connected.is_(True),
+        )
+    )
+    configs = list(result.scalars().all())
+    stale_agent_ids: list[uuid.UUID] = []
+
+    for config in configs:
+        config_agent_id = getattr(config, "agent_id", None)
+        if config_agent_id == agent_id:
+            continue
+
+        config_tenant_id = getattr(config, "tenant_id", None)
+        if tenant_id is not None and config_tenant_id is not None and config_tenant_id != tenant_id:
+            continue
+
+        extra = getattr(config, "extra_config", None) or {}
+        same_account = bool(account_id and extra.get("ilink_bot_id") == account_id)
+        same_user = bool(user_id and extra.get("ilink_user_id") == user_id)
+        if not (same_account or same_user):
+            continue
+
+        config.is_connected = False
+        config.is_configured = False
+        config.extra_config = {}
+        if config_agent_id:
+            stale_agent_ids.append(config_agent_id)
+
+    if stale_agent_ids:
+        await db.flush()
+        logger.info(
+            "[WeChatPersonal] Disconnected {} stale binding(s) for iLink account {}",
+            len(stale_agent_ids),
+            account_id,
+        )
+
+    return stale_agent_ids
 
 
 async def disconnect_channel(

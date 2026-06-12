@@ -4,6 +4,41 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-12T09:52Z [sid:267d9f0b]; branch:main; 9 files (compact-snapshot.md, orphan-trail.md, enterprise.py, +6); last commit: aac4044a fix frontend auth 401 messaging
+- 2026-06-11T07:42Z [sid:145e9276]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: aac4044a fix frontend auth 401 messaging
+- 2026-06-11T07:23Z [sid:33d833cd]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, request.ts); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n
+- 2026-06-11T06:49Z [sid:09d3585c]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n
+- 2026-06-10T19:22Z [sid:ad4f955e]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 0603b5dc feat(rls): stage-2a accessors — plan-mode tenant sc
+- 2026-06-10T03:45Z [sid:7c1ac7cf]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 8c158167 docs(rls): RLS enforcement migration plan (Goal-2 n
+- 2026-06-09T09:38Z [sid:5858f97b]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
+- 2026-06-09T09:38Z [sid:c4237ae6]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
+- 2026-06-09T08:27Z [sid:5858f97b]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
+- 2026-06-09T08:19Z [sid:0660f658]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: a4c30ab7 fix(channels): make IM Plan Mode + A2A coordination
+- 2026-06-09T01:29Z [sid:815bdcdd]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 00ab30af fix session loop review findings
+- 2026-06-09T01:18Z [sid:0660f658]; branch:feat/session-loop-cc-alignment; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 00ab30af fix session loop review findings
+- 2026-06-08T16:56Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 3 files (compact-snapshot.md, orphan-trail.md, test_mcp_tool_discovery.py); last commit: d25d088e docs(session-loop): all 6 stations landed (3556 pas
+- 2026-06-08T16:19Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 2 files (compact-snapshot.md, orphan-trail.md); last commit: d25d088e docs(session-loop): all 6 stations landed (3556 pas
+- 2026-06-08T16:01Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 14 files (compact-snapshot.md, orphan-trail.md, contracts.py, +11); last commit: adba11e1 test: align I/J contract tests surfaced during F re
+- 2026-06-08T15:56Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 3 files (compact-snapshot.md, orphan-trail.md, session-loop-cc-alignment-plan.md); last commit: adba11e1 test: align I/J contract tests surfaced during F re
+- 2026-06-08T15:41Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 19 files (compact-snapshot.md, orphan-trail.md, orchestrator.py, +16); last commit: 7e46c1b7 docs(session-loop): track implementation progress (
+- 2026-06-08T15:27Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 13 files (compact-snapshot.md, orphan-trail.md, orchestrator.py, +10); last commit: 7e46c1b7 docs(session-loop): track implementation progress (
+- 2026-06-08T15:19Z [sid:b397f10e]; branch:feat/session-loop-cc-alignment; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 7e46c1b7 docs(session-loop): track implementation progress (
+- 2026-06-08T14:47Z [sid:815bdcdd]; branch:feat/session-loop-cc-alignment; 8 files (compact-snapshot.md, orphan-trail.md, prompt_eval.py, +5); last commit: cc985adb feat(tools): discover imported MCP server tools thr
+- 2026-06-08T13:51Z [sid:b397f10e]; branch:main; 35 files (compact-snapshot.md, orphan-trail.md, autonomy.py, +32); last commit: d1f14ac5 fix(memory): stop inlining dead access_count/last_a
+- 2026-06-08T13:47Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
+- 2026-06-08T13:45Z [sid:b397f10e]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
+- 2026-06-08T13:43Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
+- 2026-06-08T13:17Z [sid:b397f10e]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: b8f47e80 fix(memory): clear purity debt D1-D10 — telemetry/m
+- 2026-06-08T09:28Z [sid:815bdcdd]; branch:main; 46 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +43); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
+- 2026-06-08T09:19Z [sid:b397f10e]; branch:main; 44 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +41); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
+- 2026-06-08T09:06Z [sid:815bdcdd]; branch:main; 40 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +37); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
+- 2026-06-08T08:37Z [sid:78c277d5]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 4d11ff91 docs(memory): add purity debt register + one-pass d
+- 2026-06-08T08:17Z [sid:815bdcdd]; branch:main; 36 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +33); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
+- 2026-06-08T08:16Z [sid:78c277d5]; branch:main; 36 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +33); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
+- 2026-06-08T08:10Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
+- 2026-06-08T08:09Z [sid:78c277d5]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
+- 2026-06-08T08:03Z [sid:815bdcdd]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
+- 2026-06-08T07:55Z [sid:78c277d5]; branch:main; 34 files (orphan-trail.md, autonomy.py, reminder_scheduler.py, +31); last commit: 59292e9a fix(plan-mode): resume queued handoffs by completed
 - 2026-06-08T02:32Z [sid:7f0e5932]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, plan-mode-cc-alignment.md); last commit: 974d6bf9 feat(plan-mode): ask_user_question CC-shaped questi
 - 2026-06-07T09:55Z [sid:859f0a68]; branch:main; 1 files (orphan-trail.md); last commit: dc8c1afa fix(llm): limit-coherence audit — two cross-limit g
 - 2026-06-07T08:37Z [sid:0df596fd]; branch:main; 1 files (orphan-trail.md); last commit: 2627bb8d fix(kernel): split CC and Hive runtime guidance cat
@@ -69,38 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-02T21:49Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 48466d2 feat(mcp): backfill functional core + parity proofs 
 - 2026-06-02T21:21Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 04b7d8e docs(agent-extension): close tenant-isolation, parit
 - 2026-06-02T19:14Z [sid:98e36c4c]; branch:feature/plan-mode-paradigm; 2 files (orphan-trail.md, agent-extension-surface-skill-mcp.md); last commit: d2f3e86 docs(plan-mode): record Phase 4C accepted-skip decis
-- 2026-06-02T18:09Z [sid:934f7397]; branch:feature/plan-mode-paradigm; 2 files (orphan-trail.md, agent-extension-surface-skill-mcp.md); last commit: 1256bd0 feat(plan-mode): allow exact plan-file writes in Pla
-- 2026-06-02T17:48Z [sid:98e36c4c]; branch:main; 6 files (engine.py, session.py, web_chat_runtime.py, +3); last commit: c0ea7fe Remove finance module and packs
-- 2026-05-31T15:07Z [sid:a284f808]; branch:main; 9 files (orphan-trail.md, plan_mode_core.py, hr.py, +6); last commit: 00e55cc feat(plan-mode): add admin cutover endpoint for prod
-- 2026-05-29T17:42Z [sid:a8626599]; branch:main; 1 files (orphan-trail.md); last commit: 00e55cc feat(plan-mode): add admin cutover endpoint for prod
-- 2026-05-29T11:42Z [sid:15e7a853]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c940642 fix(deep-research): unblock report budget + thesis-d
-- 2026-05-29T10:06Z [sid:38099d9d]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c77b7e8 fix(deep-research): plan gate forbids agent self-con
-- 2026-05-29T10:06Z [sid:15e7a853]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c77b7e8 fix(deep-research): plan gate forbids agent self-con
-- 2026-05-29T10:04Z [sid:cbd48d55]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: c77b7e8 fix(deep-research): plan gate forbids agent self-con
-- 2026-05-28T15:50Z [sid:89ec882e]; branch:main; 1 files (orphan-trail.md); last commit: e56050c Harden Deep Research v2: plan gate, integration synt
-- 2026-05-28T15:50Z [sid:cbd48d55]; branch:main; 1 files (orphan-trail.md); last commit: e56050c Harden Deep Research v2: plan gate, integration synt
-- 2026-05-28T15:49Z [sid:29c1eed6]; branch:main; 1 files (orphan-trail.md); last commit: e56050c Harden Deep Research v2: plan gate, integration synt
-- 2026-05-26T11:03Z [sid:48e5faae]; branch:main; 7 files (agents.py, workspace.py, heartbeat.py, +4); last commit: a427ef3 Loosen runtime guards and align tool round defaults
-- 2026-05-25T15:50Z [sid:3f8a6834]; branch:main; 7 files (orphan-trail.md, SKILL.md, audit.py, +4); last commit: 86d6fb5 Gate skill flywheel bridge with runtime flag
-- 2026-05-24T00:37Z [sid:f00f9812]; branch:main; 3 files (orphan-trail.md, AGENTS.md, CLAUDE.md); last commit: 84c3254 Update local memory chroma state
-- 2026-05-24T00:37Z [sid:3f8a6834]; branch:main; 2 files (AGENTS.md, CLAUDE.md); last commit: 84c3254 Update local memory chroma state
-- 2026-05-19T02:29Z [sid:71f22406]; branch:main; 8 files (orphan-trail.md, en.json, zh.json, +5); last commit: 68ce952 Resolve Feishu OAuth redirect URI from runtime confi
-- 2026-05-19T02:28Z [sid:ef61901c]; branch:main; 8 files (orphan-trail.md, en.json, zh.json, +5); last commit: 68ce952 Resolve Feishu OAuth redirect URI from runtime confi
-- 2026-05-19T02:18Z [sid:ab2dafa4]; branch:main; 2 files (orphan-trail.md, RelationshipEditor.tsx); last commit: 68ce952 Resolve Feishu OAuth redirect URI from runtime confi
-- 2026-05-19T02:17Z [sid:ef61901c]; branch:main; 1 files (RelationshipEditor.tsx); last commit: 68ce952 Resolve Feishu OAuth redirect URI from runtime confi
-- 2026-05-15T17:38Z [sid:51704f95]; branch:main; 4 files (orphan-trail.md, feishu_ws.py, test_feishu_ws.py, +1); last commit: 2aa4ad4 Handle closed CardKit stream errors in Feishu
-- 2026-05-15T16:42Z [sid:cdc78bec]; branch:main; 3 files (orphan-trail.md, feishu_ws.py, test_feishu_ws.py); last commit: 2aa4ad4 Handle closed CardKit stream errors in Feishu
-- 2026-05-15T16:42Z [sid:d919a46e]; branch:main; 2 files (feishu_ws.py, test_feishu_ws.py); last commit: 2aa4ad4 Handle closed CardKit stream errors in Feishu
-- 2026-05-15T04:37Z [sid:dc5d1b5a]; branch:main; 5 files (orphan-trail.md, feishu.py, heartbeat.py, +2); last commit: 660203e T3-4 UI: DeepResearchStreamPanel mounted on running 
-- 2026-05-13T04:28Z [sid:5b1c64f2]; branch:main; 2 files (llm_client.py, test_llm_reasoning_adapter.py); last commit: 52cdd06 Refine Hiveclaw agent instructions
-- 2026-05-11T09:06Z [sid:3b5e07e5]; branch:main; 1 files (orphan-trail.md); last commit: dcbedb9 Scope skill registry uniqueness and visibility by te
-- 2026-05-11T08:59Z [sid:a8821b5f]; branch:main; 6 files (orphan-trail.md, agents.py, files.py, +3); last commit: b4e90e7 Update AGENTS instructions for coding workflow
-- 2026-05-11T08:58Z [sid:3b5e07e5]; branch:main; 5 files (agents.py, files.py, skills.py, +2); last commit: b4e90e7 Update AGENTS instructions for coding workflow
-- 2026-05-02T02:06Z [sid:a194ca49]; branch:main; 3 files (orphan-trail.md, logging_config.py, test_logging_config.py); last commit: 524d5ec Render office/deep_research as inline tool groups, d
-- 2026-05-01T23:43Z [sid:2830313c]; branch:main; 14 files (orphan-trail.md, packs.py, test_pack_api_surface.py, +11); last commit: a4d93e6 Update commit message generation instructions
-- 2026-05-01T23:43Z [sid:a194ca49]; branch:main; 13 files (packs.py, test_pack_api_surface.py, adapter-cleanup.test.ts, +10); last commit: a4d93e6 Update commit message generation instructions
-- 2026-05-01T18:23Z [sid:ad44b4e0]; branch:main; 3 files (orphan-trail.md, agents.py, test_hr_agent_endpoint.py); last commit: 785097f Implement self-evolution audit, loop guard, and evid
-- 2026-05-01T16:35Z [sid:227e5322]; branch:main; 1 files (CLAUDE.md); last commit: 3752987 Rewrite README and add Chinese translation
-- 2026-05-01T02:38Z [sid:ad44b4e0]; branch:main; 1 files (README.md); last commit: e889e0b Suppress noisy httpx logs in backend logging
-- 2026-05-01T02:36Z [sid:cbed186a]; branch:main; 1 files (README.md); last commit: e889e0b Suppress noisy httpx logs in backend logging
-- 2026-05-01T02:36Z [sid:ad44b4e0]; branch:main; 1 files (README.md); last commit: e889e0b Suppress noisy httpx logs in backend logging

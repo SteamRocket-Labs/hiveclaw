@@ -26,6 +26,7 @@ from app.models.user import User
 from app.services.wechat_personal_service import (
     connect_channel,
     disconnect_channel,
+    disconnect_duplicate_account_bindings,
     get_channel_credentials,
     retrieve_confirmed_credentials,
     start_qr_login,
@@ -134,6 +135,14 @@ async def connect(
     if not creds or not creds["bot_token"]:
         raise HTTPException(status_code=400, detail="No confirmed QR session found. Please scan again.")
 
+    stale_agent_ids = await disconnect_duplicate_account_bindings(
+        db=db,
+        agent_id=agent_id,
+        account_id=creds["account_id"],
+        user_id=creds["user_id"],
+        tenant_id=agent.tenant_id,
+    )
+
     config = await connect_channel(
         db=db,
         agent_id=agent_id,
@@ -141,12 +150,16 @@ async def connect(
         bot_token=creds["bot_token"],
         base_url=creds["base_url"],
         user_id=creds["user_id"],
+        tenant_id=agent.tenant_id,
     )
     await db.commit()
 
     # Start the streaming client
     try:
         from app.services.wechat_personal_stream import wechat_personal_stream_manager
+
+        for stale_agent_id in stale_agent_ids:
+            await wechat_personal_stream_manager.stop_client(stale_agent_id)
 
         decrypted = get_channel_credentials(config)
         if decrypted and decrypted["bot_token"]:

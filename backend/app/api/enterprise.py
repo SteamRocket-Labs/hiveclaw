@@ -67,6 +67,12 @@ class LLMTestRequest(BaseModel):
     provider_options: dict | None = None
 
 
+def _llm_test_probe_max_tokens(provider: str, model: str | None) -> int:
+    from app.services.llm_client import uses_openai_responses_api
+
+    return 1024 if uses_openai_responses_api(provider, model) else 16
+
+
 @router.post("/llm-test")
 async def test_llm_model(
     data: LLMTestRequest,
@@ -76,10 +82,13 @@ async def test_llm_model(
 ):
     """Test an LLM model configuration by making a simple API call."""
     import time
-    from app.services.llm_client import create_llm_client
+    from app.services.llm_client import create_llm_client, get_llm_model_identifier_error
     from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    identifier_error = get_llm_model_identifier_error(data.provider, data.model)
+    if identifier_error:
+        return {"success": False, "latency_ms": 0, "error": identifier_error}
 
     # Resolve API key: use provided key, or look up from stored model
     api_key = data.api_key if data.api_key and not data.api_key.startswith("****") else None
@@ -120,7 +129,7 @@ async def test_llm_model(
         response = await client.complete(
             messages=[LLMMessage(role="user", content="Say 'ok' and nothing else.")],
             temperature=resolve_temperature(model_config),
-            max_tokens=16,
+            max_tokens=_llm_test_probe_max_tokens(data.provider, data.model),
             **reasoning_kwargs,
         )
         latency_ms = int((time.time() - start) * 1000)
@@ -217,7 +226,12 @@ async def add_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Add a new LLM model to the tenant's pool (admin)."""
+    from app.services.llm_client import get_llm_model_identifier_error
+
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    identifier_error = get_llm_model_identifier_error(data.provider, data.model)
+    if identifier_error:
+        raise HTTPException(status_code=422, detail=identifier_error)
     model = LLMModel(
         provider=data.provider,
         model=data.model,
@@ -348,6 +362,14 @@ async def update_llm_model(
         raise HTTPException(status_code=404, detail="Model not found")
 
     try:
+        from app.services.llm_client import get_llm_model_identifier_error
+
+        effective_provider = data.provider if data.provider is not None else model.provider
+        effective_model = data.model if data.model is not None else model.model
+        identifier_error = get_llm_model_identifier_error(effective_provider, effective_model)
+        if identifier_error:
+            raise HTTPException(status_code=422, detail=identifier_error)
+
         if data.provider:
             model.provider = data.provider
         if data.model:

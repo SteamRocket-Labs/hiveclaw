@@ -32,6 +32,7 @@ from app.api.files import upload_router as files_upload_router
 from app.api.gateway import router as gateway_router
 from app.api.guard_policies import router as guard_policies_router
 from app.api.deep_research import router as deep_research_router
+from app.api.interoperability import router as interoperability_router
 from app.api.workflows import router as workflows_router
 from app.api.workflow_definitions import router as workflow_definitions_router
 from app.api.agent_knowledge import router as agent_knowledge_router
@@ -594,6 +595,7 @@ _api_routers = [
     agent_knowledge_router,
     agent_subagents_router,
     enterprise_subagents_router,
+    interoperability_router,
 ]
 
 for _r in _api_routers:

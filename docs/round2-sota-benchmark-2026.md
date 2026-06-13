@@ -504,7 +504,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
 | 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
 | 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🟡 trace/feedback 生产地基已接：invocation_spans 落库+reader+Prometheus、Session Useful/Misleading；仍缺外部行为 eval CI | 在 §12.13 基础上建外部行为 eval CI |
-| 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 MCP authz passthrough hard gate 已接；仍缺 A2A Agent Card/委托标准面 | 原生说开放标准=中立平面具体化 |
+| 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 MCP authz passthrough hard gate + A2A Agent Card/profile 已接；OAuth delegation 仍明确 not_exposed | 原生说开放标准=中立平面具体化，下一步只补真实 OAuth delegation，不伪装已支持 |
 
 ---
 
@@ -520,7 +520,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 **结构性落后（要打的硬仗）**：
 1. **验证门**（假门——研究铁律最忌的自评，**最高优先**，§2.3/§9）。
 2. **持久执行**（只 workflow 一条线，subagent/delegation 裸奔，§7.1）。
-3. **agent 身份控制面**（基础 per-agent sponsor/participant + soft-delete 生命周期已在 §12.11 关闭；剩 Entra 式目录级 CA/A2A 审计，§6）。
+3. **agent 身份控制面**（基础 per-agent sponsor/participant + soft-delete 生命周期已在 §12.11 关闭，A2A Agent Card/profile 已在 §12.17 关闭；剩 Entra 式目录级 CA/OAuth delegation/A2A 审计，§6）。
 4. **可观测**（trace/反馈地基已在 §12.5/§12.13 关闭；无外部行为 eval CI 仍是下一仗硬缺口，§9 + 审计 O1/O2）。
 5. **隔离部署**（bwrap 生产可行性未验证，§8）。
 
@@ -1150,8 +1150,44 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_mcp_authz.
 
 **非 MVP 收口**：不是只在 client 构造函数里移除 `apiKey`。URL 解析、credential extraction、direct execution、Smithery execution 前置 config 检查都走同一个 MCP authz 模块；违反策略时返回结构化 tool error，而不是继续调用外部 server。诚实边界：这还不是完整 MCP OAuth 2.1 resource-server implementation（RFC 9728 metadata discovery / RFC 8707 resource indicators / PKCE flow），但它先关闭了规范里最危险、且本仓当前真实存在的 confused-deputy/token-passthrough 入口。
 
+### 12.17 第五仗 A2A 已实装：Agent Card + 平台互操作 profile（2026-06-13）
+
+**完成范围**：新增 `backend/app/services/interoperability.py` 作为机器可读互操作描述生成器，并新增 `backend/app/api/interoperability.py` 挂载 `/api/v1/interoperability/profile`。每个 agent 现在通过 `GET /api/v1/agents/{agent_id}/a2a-card` 暴露 A2A-style Agent Card，且沿用 `check_agent_access()` 做 tenant/user 访问控制。Agent Card 只声明 Hive 已真实存在的能力：OpenClaw gateway poll/report/send-message、tenant-scoped messages inbox、agent identity/sponsor/participant/security-zone/lifecycle 元数据；A2A JSON-RPC task surface 与 OAuth delegation grant 明确标成 `not_exposed`，不把未实现标准伪装成可用能力。
+
+**平台 profile**：`/api/v1/interoperability/profile` 同时声明 MCP hardening 现状：deferred `tool_search`、禁止 token passthrough、禁止 URL userinfo、legacy `apiKey` query 迁移到 `Authorization` header。A2A 标准面标为 `partial`，OAuth delegation 标为 `not_exposed`，方便外部控制面、审计器或未来 connector 以机器读方式判断边界。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_interoperability.py tests/api/test_interoperability_api.py -q
+# 4 failed
+```
+
+失败点覆盖真实缺口：没有 `build_a2a_agent_card()` / `build_interoperability_profile()` 服务；没有 `/interoperability/profile` API；`agents` router 没有 per-agent A2A card route。
+
+**Green / 回归证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_interoperability.py tests/api/test_interoperability_api.py -q
+# 5 passed
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_interoperability.py tests/api/test_interoperability_api.py tests/api/test_agent_api_surface.py tests/api/test_agent_subagents_api.py tests/api/test_gateway_agent_transcript.py tests/api/test_messages_permissions.py tests/api/test_mcp_servers_api.py -q
+# 57 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/services/interoperability.py app/api/interoperability.py app/api/agents.py app/main.py tests/services/test_interoperability.py tests/api/test_interoperability_api.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && python -m compileall -q app/services/interoperability.py app/api/interoperability.py app/api/agents.py app/main.py tests/services/test_interoperability.py tests/api/test_interoperability_api.py
+# passed
+
+cd backend && source .venv/bin/activate && pytest tests -q
+# 4219 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只写静态文档或服务函数。平台 profile 已挂主应用 router；agent card 走真实 agent API、真实 access guard、真实 host/base URL；标准能力字段不越权承诺 OAuth delegation / JSON-RPC task。剩余第五仗项仍是：D1 半桩测试补真；文档 §3 "已整改" 按真实完成度降级。
+
 **第五仗 — cache + 互操作 + 诚实债收尾**
-- C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate 已关闭；继续原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
+- C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate、A2A Agent Card/profile 已关闭；继续 D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
 
 **贯穿所有仗的铁律**：① 验证器外部且硬、在 agent 可改写面之外；② 替换语义可解释可逆；③ 进化 lineage 一等审计；④ 多租户隔离（经验/语料/技能不跨租户）；⑤ 做完外部行为 eval 前不宣称"已超越"。
 

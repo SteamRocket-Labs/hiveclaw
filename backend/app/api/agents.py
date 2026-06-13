@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -454,6 +454,20 @@ async def get_agent_channel_capabilities(
     from app.services.channel_delivery_service import ChannelDeliveryService
 
     return await ChannelDeliveryService.resolve_agent_capabilities(db=db, agent_id=agent_id)
+
+
+@router.get("/{agent_id}/a2a-card")
+async def get_agent_a2a_card(
+    agent_id: uuid.UUID,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a machine-readable A2A-style Agent Card for an accessible agent."""
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    from app.services.interoperability import build_a2a_agent_card
+
+    return build_a2a_agent_card(agent, base_url=str(request.base_url).rstrip("/"))
 
 
 @router.get("/{agent_id}")

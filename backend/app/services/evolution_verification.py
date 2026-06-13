@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
+import tempfile
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from app.services.evolution_ledger import record_eval_run
+
+
+_LOCAL_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_SKILL_RESOURCE_DIRS = frozenset({"references", "scripts", "templates", "assets", "evals"})
 
 
 def _now_iso() -> str:
@@ -111,6 +120,177 @@ def _run_tool_call_check(grader: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _slugify_skill_name(name: str, *, fallback: str = "candidate-skill") -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", name.strip().lower()).strip("-._")
+    return slug or fallback
+
+
+def _extract_frontmatter(content: str) -> tuple[dict[str, Any], list[str]]:
+    from app.skills.parser import SkillParser
+
+    match = SkillParser.FRONTMATTER_PATTERN.match(content.strip())
+    if not match:
+        return {}, ["frontmatter"]
+
+    try:
+        loaded = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        return {}, ["frontmatter_yaml"]
+    if not isinstance(loaded, dict):
+        return {}, ["frontmatter_mapping"]
+    return loaded, []
+
+
+def _normalize_skill_file_path(relative_path: str, *, skill_name: str) -> Path:
+    raw_path = Path(relative_path.strip().lstrip("/") or "SKILL.md")
+    if raw_path.is_absolute() or any(part == ".." for part in raw_path.parts):
+        return Path("skills") / _slugify_skill_name(skill_name) / "SKILL.md"
+
+    parts = raw_path.parts
+    if parts and parts[0] == "skills":
+        if raw_path.name in {"SKILL.md", "skill.md"} and len(parts) >= 3:
+            return raw_path
+        if raw_path.suffix == ".md" and len(parts) == 2:
+            return raw_path
+
+    slug = _slugify_skill_name(skill_name)
+    return Path("skills") / slug / "SKILL.md"
+
+
+def _local_skill_resource_links(content: str) -> list[str]:
+    references: set[str] = set()
+    for match in _LOCAL_MARKDOWN_LINK_RE.finditer(content):
+        link = match.group(1).strip().strip("<>")
+        if not link or link.startswith("#") or link.startswith("/"):
+            continue
+        if "://" in link or link.lower().startswith(("mailto:", "data:")):
+            continue
+        normalized = link.split("#", 1)[0].strip()
+        if not normalized:
+            continue
+        top_level = normalized.split("/", 1)[0]
+        if top_level in _SKILL_RESOURCE_DIRS:
+            references.add(normalized)
+    return sorted(references)
+
+
+def _run_resource_check(workspace: Path, skill_file_path: Path, content: str) -> dict[str, list[str]]:
+    referenced = _local_skill_resource_links(content)
+    if not referenced:
+        return {"referenced": [], "missing": []}
+
+    skill_root = skill_file_path.parent if skill_file_path.name in {"SKILL.md", "skill.md"} else skill_file_path.parent
+    missing: list[str] = []
+    for resource_path in referenced:
+        candidate = (workspace / skill_root / resource_path).resolve()
+        root = (workspace / skill_root).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            missing.append(resource_path)
+            continue
+        if not candidate.is_file():
+            missing.append(resource_path)
+    return {"referenced": referenced, "missing": missing}
+
+
+@lru_cache(maxsize=1)
+def _available_tool_names() -> frozenset[str]:
+    from app.tools.collector import collect_tools
+
+    return frozenset(
+        tool["function"]["name"]
+        for tool in collect_tools().openai_tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict) and tool["function"].get("name")
+    )
+
+
+@lru_cache(maxsize=1)
+def _available_pack_names() -> frozenset[str]:
+    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
+
+    return frozenset(pack.name for pack in RUNTIME_TOOL_GROUPS)
+
+
+def _run_parse_smoke(content: str, *, skill_file_path: Path) -> tuple[Any | None, dict[str, Any]]:
+    from app.skills.parser import SkillParser
+
+    frontmatter, errors = _extract_frontmatter(content)
+    for required_key in ("name", "description"):
+        value = frontmatter.get(required_key)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(required_key)
+
+    parsed_skill = None
+    try:
+        parser = SkillParser()
+        parsed_skill = parser.parse_content(
+            content,
+            path=skill_file_path,
+            relative_path=skill_file_path.as_posix(),
+            default_name=skill_file_path.parent.name,
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard for malformed future parser changes.
+        errors.append(f"parse_exception:{exc.__class__.__name__}")
+
+    metadata = parsed_skill.metadata if parsed_skill is not None else None
+    evidence = {
+        "parsed": not errors and parsed_skill is not None,
+        "name": metadata.name if metadata is not None else "",
+        "description": metadata.description if metadata is not None else "",
+        "declared_tools": list(metadata.declared_tools) if metadata is not None else [],
+        "declared_packs": list(metadata.declared_packs) if metadata is not None else [],
+        "errors": sorted(set(errors)),
+    }
+    return parsed_skill, evidence
+
+
+def _run_tool_dry_run(parsed_skill: Any | None) -> dict[str, Any]:
+    if parsed_skill is None:
+        return {"declared_tools": [], "unknown_tools": [], "declared_packs": [], "unknown_packs": []}
+
+    declared_tools = sorted(set(parsed_skill.metadata.declared_tools))
+    declared_packs = sorted(set(parsed_skill.metadata.declared_packs))
+    available_tools = _available_tool_names()
+    available_packs = _available_pack_names()
+    return {
+        "declared_tools": declared_tools,
+        "unknown_tools": [tool for tool in declared_tools if tool not in available_tools],
+        "declared_packs": declared_packs,
+        "unknown_packs": [pack for pack in declared_packs if pack not in available_packs],
+    }
+
+
+def _run_load_smoke(content: str, *, skill_file_path: Path) -> dict[str, Any]:
+    from app.skills.loader import WorkspaceSkillLoader
+
+    with tempfile.TemporaryDirectory(prefix="hive-skill-guard-") as temp_dir:
+        temp_workspace = Path(temp_dir)
+        target = temp_workspace / skill_file_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+        try:
+            loaded_skills = WorkspaceSkillLoader().load_from_workspace(temp_workspace)
+        except Exception as exc:  # pragma: no cover - loader should not throw for invalid candidate text.
+            return {
+                "loaded": False,
+                "skill_count": 0,
+                "relative_path": skill_file_path.as_posix(),
+                "errors": [f"load_exception:{exc.__class__.__name__}"],
+            }
+
+    loaded_paths = {skill.relative_path for skill in loaded_skills}
+    loaded = skill_file_path.as_posix() in loaded_paths
+    return {
+        "loaded": loaded,
+        "skill_count": len(loaded_skills),
+        "relative_path": skill_file_path.as_posix(),
+        "loaded_paths": sorted(loaded_paths),
+        "errors": [] if loaded else ["skill_not_loaded"],
+    }
+
+
 def _run_skill_guard_check(workspace: Path, grader: dict[str, Any]) -> dict[str, Any]:
     content = grader.get("content")
     relative_path = str(grader.get("path") or "SKILL.md").strip() or "SKILL.md"
@@ -127,12 +307,37 @@ def _run_skill_guard_check(workspace: Path, grader: dict[str, Any]) -> dict[str,
 
     from app.services.skill_guard import scan_skill_files
 
-    guard = scan_skill_files([{"path": relative_path, "content": str(content)}], source="evolution_verification")
+    content = str(content)
+    frontmatter, _ = _extract_frontmatter(content)
+    skill_name = str(frontmatter.get("name") or Path(relative_path).stem or "candidate-skill")
+    skill_file_path = _normalize_skill_file_path(relative_path, skill_name=skill_name)
+    parsed_skill, parse_smoke = _run_parse_smoke(content, skill_file_path=skill_file_path)
+    load_smoke = _run_load_smoke(content, skill_file_path=skill_file_path)
+    tool_dry_run = _run_tool_dry_run(parsed_skill)
+    resource_check = _run_resource_check(workspace, skill_file_path, content)
+    guard = scan_skill_files(
+        [{"path": skill_file_path.as_posix(), "content": content}],
+        source="evolution_verification",
+    )
+    passed = (
+        guard.allowed
+        and parse_smoke["parsed"]
+        and load_smoke["loaded"]
+        and not tool_dry_run["unknown_tools"]
+        and not tool_dry_run["unknown_packs"]
+        and not resource_check["missing"]
+    )
     return _check_result(
         check_type="skill_guard",
-        passed=guard.allowed,
-        message="skill guard passed" if guard.allowed else "skill guard blocked candidate",
-        evidence={"guard": guard.to_dict()},
+        passed=passed,
+        message="skill guard passed" if passed else "skill guard blocked candidate",
+        evidence={
+            "guard": guard.to_dict(),
+            "parse_smoke": parse_smoke,
+            "load_smoke": load_smoke,
+            "tool_dry_run": tool_dry_run,
+            "resource_check": resource_check,
+        },
     )
 
 

@@ -540,6 +540,47 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 - **动作**：① **M1 硬验证门**——skill_guard 加能力级验证（加载烟测/工具 dry-run），去 LLM 自评前置；验证器架构隔离在 agent 可改写面之外。② **M2 学习脑升级**——从薄 classifier 到 fork 完整 agent 判断"学什么"。③ **patch-first**——distiller 第一优先 patch 已加载技能 + Devin 式成败对比自改。④ **记忆 curation 防 collapse**——验 Hive dream/merge 是否整体重写（ACE collapse 风险），改增量 delta + 计数器 + 去重。⑤ **O2 反馈环接通**——record_feedback 生产入口 + 会话级 Useful/Misleading 归因 → calibration（过 replay guard，不静默 mutate）。
 - **验收**：行为级 vs hermes/外部 live 跑分（非 fixture，§9）；reward-hacking 对抗测试（喂坏技能/坏记忆验证被拦）。
 
+### 12.1 第一仗 M1 已实装：skill_guard 硬验证门（2026-06-13）
+
+**完成范围**：`backend/app/services/evolution_verification.py` 的 `skill_guard` 不再只是安全字符串扫描，而是一个组合硬门：① 仍保留 `scan_skill_files` 安全扫描；② 显式 frontmatter 解析并要求 `name`/`description`；③ 用 `WorkspaceSkillLoader` 在隔离临时 workspace 做加载烟测；④ 对声明的 `tools`/`packs` 做平台目录 dry-run；⑤ 对 `references/`、`scripts/`、`templates/`、`assets/`、`evals/` 下的本地资源引用做存在性检查。任一项失败都会让 `verification_report.passed=false`，既用于新 skill 候选，也用于 `skill_distiller` 的 patch promotion 路径，因为两者都通过 `run_evolution_verification(... type=skill_guard)` 进入同一门。
+
+**TDD red 证据**：先补 `backend/tests/services/test_evolution_verification.py`，覆盖加载烟测证据、缺 `description`、未知工具、缺本地资源四类行为。实现前运行：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_supports_skill_guard_grader \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_skill_guard_requires_parseable_metadata \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_skill_guard_rejects_unknown_declared_tools \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_skill_guard_rejects_missing_referenced_resources -q
+```
+
+结果：`4 failed`，失败点分别是 `load_smoke` 证据缺失、缺 `description` 仍通过、未知工具仍通过、缺 `references/rubric.md` 仍通过。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_supports_skill_guard_grader \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_skill_guard_requires_parseable_metadata \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_skill_guard_rejects_unknown_declared_tools \
+  backend/tests/services/test_evolution_verification.py::test_evolution_verification_skill_guard_rejects_missing_referenced_resources -q
+# 4 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_evolution_verification.py backend/tests/services/test_skill_distiller.py -q
+# 29 passed, 4 warnings
+
+backend/.venv/bin/ruff check backend/app/services/evolution_verification.py backend/tests/services/test_evolution_verification.py backend/tests/services/test_skill_distiller.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/evolution_verification.py backend/tests/services/test_evolution_verification.py backend/tests/services/test_skill_distiller.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4155 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：没有新增默认关闭 flag，没有留下单独的"后续接线"。验证报告现在持久暴露 `guard`、`parse_smoke`、`load_smoke`、`tool_dry_run`、`resource_check` 五类证据，`record_verification_eval()` 仍把失败硬门计为 `critical_regressions`，`decide_verified_promotion()` 继续以该报告作为 promotion 的唯一自动判据。
+
 **第二仗 — 可靠性 + 持久执行（北极星①韧性 + 无人值守命门）**
 - **目标线**：Temporal（completion 去重边界）+ CC（withRetry 10 次指数 + 输出 cap escalate）+ Claude SDK（checkpoint between tool calls + continuation token）。
 - **动作**：① K1 内核 529 撤一击毙命（允许同模型重试 + 切 fallback）+ 客户端 10 次指数退避+jitter；② workflow journal 升 completion 去重边界；③ D2 workflow_completed 接真消费方；④ subagent 背景化落 RuntimeTask 持久化 + delegation step 级 journal（替整段重放）；⑤ K2 interleaved-thinking beta 头 + 签名 round-trip。
@@ -578,8 +619,6 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 ---
 
 *调研执行 2026-06-12，7 路并行深度调研 + 多路子任务补全，全部一手来源核实。所有 benchmark 数字标来源；vendor 自报且互相矛盾的（LOCOMO 等）标 vendor-contested。本文是第二轮的目标线基准，后续每仗对照验收。与第一轮 harness 审计（docs/harness-engineering-audit-2026-06-11.md）配套使用：第一轮回答"对齐 CC 没有"，本轮回答"对标各家最强、成为最强数字员工还差什么"。*
-
-
 
 
 

@@ -119,7 +119,15 @@ def test_evolution_verification_supports_skill_guard_grader(tmp_path) -> None:
     from app.services.evolution_ledger import record_evolution_candidate
     from app.services.evolution_verification import run_evolution_verification
 
-    safe_skill = "---\nname: Safe Skill\n---\n\nUse read-only research sources."
+    safe_skill = (
+        "---\n"
+        "name: Safe Skill\n"
+        "description: Use read-only research sources.\n"
+        "tools:\n"
+        "  - web_search\n"
+        "---\n\n"
+        "Use read-only research sources."
+    )
     candidate = record_evolution_candidate(
         tmp_path,
         target_type="skill",
@@ -138,6 +146,97 @@ def test_evolution_verification_supports_skill_guard_grader(tmp_path) -> None:
     assert report["passed"] is True
     assert report["checks"][0]["type"] == "skill_guard"
     assert report["checks"][0]["evidence"]["guard"]["allowed"] is True
+    assert report["checks"][0]["evidence"]["load_smoke"]["loaded"] is True
+    assert report["checks"][0]["evidence"]["tool_dry_run"]["unknown_tools"] == []
+
+
+def test_evolution_verification_skill_guard_requires_parseable_metadata(tmp_path) -> None:
+    from app.services.evolution_ledger import record_evolution_candidate
+    from app.services.evolution_verification import run_evolution_verification
+
+    missing_description = "---\nname: Thin Skill\n---\n\nUse read-only research sources."
+    candidate = record_evolution_candidate(
+        tmp_path,
+        target_type="skill",
+        target_id="thin-skill",
+        diff=missing_description,
+        source_attempt_ids=["session-1"],
+        baseline_version="candidate",
+    )
+
+    report = run_evolution_verification(
+        workspace=tmp_path,
+        candidate=candidate,
+        graders=[{"type": "skill_guard", "content": missing_description, "path": "skills/thin-skill/SKILL.md"}],
+    )
+
+    assert report["passed"] is False
+    evidence = report["checks"][0]["evidence"]
+    assert "description" in evidence["parse_smoke"]["errors"]
+
+
+def test_evolution_verification_skill_guard_rejects_unknown_declared_tools(tmp_path) -> None:
+    from app.services.evolution_ledger import record_evolution_candidate
+    from app.services.evolution_verification import run_evolution_verification
+
+    unknown_tool_skill = (
+        "---\n"
+        "name: Unknown Tool Skill\n"
+        "description: Attempts to use an unavailable tool.\n"
+        "tools:\n"
+        "  - tool_that_does_not_exist\n"
+        "---\n\n"
+        "Call the unavailable tool."
+    )
+    candidate = record_evolution_candidate(
+        tmp_path,
+        target_type="skill",
+        target_id="unknown-tool-skill",
+        diff=unknown_tool_skill,
+        source_attempt_ids=["session-1"],
+        baseline_version="candidate",
+    )
+
+    report = run_evolution_verification(
+        workspace=tmp_path,
+        candidate=candidate,
+        graders=[{"type": "skill_guard", "content": unknown_tool_skill, "path": "skills/unknown-tool/SKILL.md"}],
+    )
+
+    assert report["passed"] is False
+    assert report["checks"][0]["evidence"]["tool_dry_run"]["unknown_tools"] == ["tool_that_does_not_exist"]
+
+
+def test_evolution_verification_skill_guard_rejects_missing_referenced_resources(tmp_path) -> None:
+    from app.services.evolution_ledger import record_evolution_candidate
+    from app.services.evolution_verification import run_evolution_verification
+
+    resource_skill = (
+        "---\n"
+        "name: Resource Skill\n"
+        "description: Requires a local reference file.\n"
+        "tools:\n"
+        "  - web_search\n"
+        "---\n\n"
+        "Before acting, read [the rubric](references/rubric.md)."
+    )
+    candidate = record_evolution_candidate(
+        tmp_path,
+        target_type="skill",
+        target_id="resource-skill",
+        diff=resource_skill,
+        source_attempt_ids=["session-1"],
+        baseline_version="candidate",
+    )
+
+    report = run_evolution_verification(
+        workspace=tmp_path,
+        candidate=candidate,
+        graders=[{"type": "skill_guard", "content": resource_skill, "path": "skills/resource-skill/SKILL.md"}],
+    )
+
+    assert report["passed"] is False
+    assert report["checks"][0]["evidence"]["resource_check"]["missing"] == ["references/rubric.md"]
 
 
 def test_evolution_verification_skill_guard_rejects_unsafe_skill(tmp_path) -> None:

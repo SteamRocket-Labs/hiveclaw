@@ -52,7 +52,7 @@ Current closures that must not regress:
 - Web chat and long tasks are `RuntimeTask` backed and restart-resumable; browser disconnects are subscription changes, not cancellation.
 - `invocation_spans` is the canonical PostgreSQL trace surface; JSONL spans are compatibility artifacts.
 - Provider retry/overload fallback, CJK-aware token estimates, canonical assistant-turn prompt-cache anchors, output-cap telemetry, and Anthropic thinking-signature preservation are runtime contracts.
-- Agent-controlled subprocesses must use the shared sandbox/environment builder; production Linux images install `bubblewrap`.
+- Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.
 - MCP authz forbids URL userinfo/token passthrough; A2A Agent Cards and `/interoperability/profile` must mark unsupported OAuth/JSON-RPC surfaces as `not_exposed`.
 - Memory hygiene startup repair retires legacy shadow stores and quarantines dead stubs through a reversible shared path.
 - Latest full backend evidence before the current documentation-only update: `cd backend && source .venv/bin/activate && pytest tests -q` -> `4223 passed, 7 skipped, 4 warnings`.
@@ -343,8 +343,8 @@ All agent execution goes through `invoke_agent()` → `AgentKernel.handle()`. Ne
 ### Tool Governance Invariant
 All tool execution goes through `ToolRuntimeService.execute()` → `run_tool_governance()`. Never call a tool handler directly without governance checks.
 
-### Subprocess Sandbox Invariant
-Agent-controlled subprocesses must go through `services/subprocess_sandbox.py` and `services/subprocess_env.py`. Do not launch raw subprocesses from tool handlers or pass host secrets into agent-controlled environments.
+### Code Execution Provider Invariant
+Agent-controlled code execution must go through `services/code_execution/`. Local/trusted hosts may use `services/subprocess_sandbox.py`; Railway production must use `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox`. Do not launch raw subprocesses from tool handlers or pass host secrets into agent-controlled environments.
 
 ### MCP Authz Invariant
 MCP import/execution must go through `services/mcp_authz.py`. URL userinfo, `access_token`, and token passthrough credentials are forbidden; legacy `apiKey` query credentials are normalized to authorization headers.
@@ -373,7 +373,7 @@ Both `en.json` and `zh.json` must be updated for any UI text. Use `t('key')` fro
 Feishu/Lark, Discord, Slack, DingTalk, WeChat Work, WeChat Personal, Telegram, Email, Microsoft Teams — each has its own router in `api/` and streaming service or delivery path in `services/`. Channel configs are per-agent unless explicitly tenant-scoped. Feishu supports WebSocket long connections via `feishu_ws.py`.
 
 ### Environment Variables
-Key vars (see `.env.example`): `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `JWT_SECRET_KEY`, `SECRETS_MASTER_KEY`, `AGENT_DATA_DIR`, `EXA_API_KEY`, `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `XCRAWL_API_KEY`, `FEISHU_APP_ID`/`FEISHU_APP_SECRET`, `ONLYOFFICE_DOCS_URL`, `ONLYOFFICE_JWT_SECRET`, `WS_IDLE_TIMEOUT_SECONDS`.
+Key vars (see `.env.example`): `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, `JWT_SECRET_KEY`, `SECRETS_MASTER_KEY`, `AGENT_DATA_DIR`, `EXA_API_KEY`, `TAVILY_API_KEY`, `FIRECRAWL_API_KEY`, `XCRAWL_API_KEY`, `FEISHU_APP_ID`/`FEISHU_APP_SECRET`, `ONLYOFFICE_DOCS_URL`, `ONLYOFFICE_JWT_SECRET`, `WS_IDLE_TIMEOUT_SECONDS`, `HIVE_CODE_EXEC_PROVIDER`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`, `VERCEL_TOKEN`.
 
 ### Ports
 Frontend dev: 3008, Backend dev: 8008, PostgreSQL: 5432, Redis: 6379.

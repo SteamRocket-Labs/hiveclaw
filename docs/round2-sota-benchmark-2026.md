@@ -456,7 +456,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 
 ## 8. 执行隔离 & 安全（Goal-2 地基）
 
-**一句话**：多租户 agent 代码执行隔离 SOTA = **Codex（OS 级 fail-closed + 默认断网）** 与 **microVM（E2B Firecracker 独立内核）**。Hive 原始基线 = bwrap 方向对但**生产 userns 可行性未验证 + 无 seccomp + G1 残留透传**；2026-06-13 的 §12.10 已关闭 agent subprocess env/sandbox G1 残留，剩余项是生产 userns 探测、seccomp/microVM 升级和真正出口代理注入。
+**一句话**：多租户 agent 代码执行隔离 SOTA = **Codex（OS 级 fail-closed + 默认断网）** 与 **microVM（Vercel Sandbox / E2B Firecracker 独立内核）**。Hive 原始基线 = bwrap 方向对但**生产 userns 可行性未验证 + 无 seccomp + G1 残留透传**；2026-06-13 的 §12.10 已关闭 agent subprocess env/sandbox G1 残留，部署实测证明 Railway 标准容器无法运行 bwrap namespace；随后已新增 `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` 外部 microVM provider，Railway backend 继续做控制面，代码执行迁到 Vercel Sandbox。
 
 **隔离级别阶梯（弱→强）**：
 - **namespace（bwrap/bubblewrap）**：mount/net/pid namespace，**共享宿主内核**——任何内核 LPE 穿透；且非 root 容器 + Debian/slim base + 多 PaaS **默认禁 unprivileged userns**（Hive bwrap 生产可行性的真风险）。
@@ -466,7 +466,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 - **凭据处理 SOTA（Claude Agent SDK 标准解法，直对 Hive P0-G1）**：多租户隔离配方 = `settingSources:[]` + `CLAUDE_CONFIG_DIR` per-tenant + per-tenant cwd + **egress proxy 注入凭据**——"**keep tool credentials out of the agent environment, inject at proxy after request leaves container**"。即**凭据在出口代理注入，不进 agent 环境**。Hive 已在 §12.10 先关闭 agent-controlled subprocess 继承 registry URL userinfo 与裸跑安装器，完整出口代理仍是下一层隔离工程。
 
 **安全/防御**：MCP 工具注解 `readOnlyHint`/`destructiveHint` 是**显式不可信风险词汇**（"clients MUST consider tool annotations untrusted"），真保证靠 sandbox + audience-bound token（禁 passthrough）+ per-client consent + 最小权限；OWASP Agent Top 10 + 记忆投毒/prompt-injection 防御（CaMeL、spotlighting 等）。
-- **→ Hive 追平/超越**：① 验证 bwrap 生产 userns 可行（或换 gVisor/microVM）+ 加 seccomp + runtime 探测（非只 which()）；② **凭据出口代理注入**替 env 透传；③ agent subprocess G1 残留已按 §12.10 收口，后续新增 subprocess 必须复用 `subprocess_env.py` / `subprocess_sandbox.py`；④ execute_code "No network access" 描述要在 sandbox 真断网后才成立。
+- **→ Hive 追平/超越**：① Railway 生产不再依赖 bwrap，`execute_code` / `run_command` 通过 `services/code_execution/` provider selector 接入 Vercel Sandbox microVM；② **凭据出口代理注入**替 env 透传仍是后续能力边界，当前版本先保证 backend host secrets 不上传 sandbox；③ agent subprocess G1 残留已按 §12.10 收口，后续新增本地 subprocess 必须复用 `subprocess_env.py` / `subprocess_sandbox.py`；④ execute_code "No network access" 描述以 `HIVE_CODE_EXEC_NETWORK_POLICY=deny-all` 为生产默认，allowlist/credential brokering 另行显式配置。
 
 ---
 
@@ -502,7 +502,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🔴 仅 workflow 一条线；subagent/delegation 裸奔 | journal 升"completion 去重边界"+withRetry+输出cap续写 |
 | 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡 原语齐全，缺重规划；D2 信号死线 | 补 task/progress-ledger；修 workflow_completed 零消费 |
 | 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算；✅ canonical last-assistant cache anchor + Anthropic block 透传；✅ MCP authz passthrough hard gate | 后续只在工具数爆炸时再引入 Code-Exec-over-MCP 模块树 |
-| 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 G1 subprocess env/sandbox 已收口；仍缺生产 userns 探测+seccomp/microVM+出口代理 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
+| 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟢 Railway bwrap 不可行已实测；G1 env/sandbox 已收口；`vercel_sandbox` microVM provider 已接主路径；出口代理/allowlist 凭据 brokering 后续增强 | 生产启用 Vercel Sandbox；后续补凭据出口代理与更细 network allowlist |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
 | 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
 | 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🟡 trace/feedback 生产地基已接：invocation_spans 落库+reader+Prometheus、Session Useful/Misleading；仍缺外部行为 eval CI | 在 §12.13 基础上建外部行为 eval CI |
@@ -943,6 +943,18 @@ backend/.venv/bin/python -m pytest backend/tests -q
 ```
 
 **非 MVP 收口**：不是只过滤 `DATABASE_URL` / `OPENAI_API_KEY` 这类显性 secrets，也不是只让 code_exec 走 sandbox。所有 agent-controlled subprocess 的共用 env builder 会剥离 registry URL userinfo；外部 skills.sh install 与 code_exec/run_command 共用同一个 sandbox builder 和 fail-closed 策略。后续如果引入 capability-scoped package credentials，应走显式出口代理或一次性 token 注入，不再靠继承 backend env。
+
+**生产实测（2026-06-13 部署后）**：部署到 Railway 生产后实测——`bubblewrap` 已随镜像安装（`/usr/bin/bwrap` 0.11.0），但在 Railway 标准容器内**以 root 执行 `bwrap --unshare-all`（乃至 `--unshare-user`）均返回 `Creating new namespace failed: Permission denied`**：Railway 运行时禁止创建 namespace（无 CAP_SYS_ADMIN / seccomp 限制 `unshare`），非 Dockerfile 可改。结论：G1 的 OS 沙箱（`code_exec`、外部 skill 安装）在标准 Railway 容器上**不可用**，且按设计 fail-closed（报错，不裸跑，无安全降级）。§8"bwrap 生产可行性未验证"由此回答为**不可行（标准 Railway 容器）**。
+
+**Vercel Sandbox 接入（2026-06-13）**：新增 `backend/app/services/code_execution/` provider 抽象：默认 `local_os_sandbox` 保留 macOS `sandbox-exec` / trusted Linux `bubblewrap`；生产可设 `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox`，通过 `vercel.sandbox.AsyncSandbox.create(team_id, project_id, token, network_policy=...)` 在 Vercel Firecracker microVM 内运行 `execute_code` / `run_command`。provider 会 tar 当前 agent workspace 子目录上传到 `/vercel/sandbox/workspace`，执行完成后 tar 回写 workspace；`VERCEL_TEAM_ID` / `VERCEL_PROJECT_ID` / `VERCEL_TOKEN` 缺失时 fail-closed，且不会回退 Railway 本地裸跑。生产默认 `HIVE_CODE_EXEC_NETWORK_POLICY=deny-all`；backend secrets 仍由 `subprocess_env.py` allowlist 剥离，不上传到 sandbox。
+
+**验证证据**：
+
+```bash
+cd backend && source .venv/bin/activate
+pytest tests/services/test_vercel_code_execution.py tests/services/test_command_tooling.py -q
+# 8 passed
+```
 
 ### 12.11 第三仗 ID1 已实装：per-agent sponsor/participant 身份 + soft-delete 生命周期（2026-06-13）
 

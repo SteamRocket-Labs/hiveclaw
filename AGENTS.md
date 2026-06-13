@@ -55,7 +55,7 @@ Current implemented closures that future work must preserve:
 - `RuntimeTask` execution is restart-resumable and web chat disconnects do not cancel runs.
 - `invocation_spans` are the canonical DB trace surface; JSONL spans remain compatibility artifacts.
 - Provider retry/overload fallback, token budget gates, CJK-aware estimates, canonical prompt-cache anchors, and Anthropic thinking-signature preservation are runtime contracts.
-- Agent-controlled subprocesses use the shared sandbox/environment builder; Linux production requires `bubblewrap`.
+- Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.
 - MCP authz rejects token passthrough and URL userinfo; A2A Agent Cards and `/interoperability/profile` must state unsupported OAuth/JSON-RPC surfaces as `not_exposed`.
 - Memory hygiene startup repair retires legacy shadow stores and quarantines dead stubs through a reversible shared path.
 - Latest full backend evidence before the current documentation-only update: `cd backend && source .venv/bin/activate && pytest tests -q` -> `4223 passed, 7 skipped, 4 warnings`.
@@ -253,7 +253,7 @@ Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put
 - **Multi-tenancy:** All entities tenant-scoped. PostgreSQL RLS. `check_agent_access()` required.
 - **Kernel invariant:** All LLM calls via `invoke_agent()` → `AgentKernel.handle()`. Never direct.
 - **Tool governance:** All tool calls via `ToolRuntimeService.execute()`. Never bypass.
-- **Subprocess sandbox:** Agent-controlled subprocesses must go through `services/subprocess_sandbox.py` and `services/subprocess_env.py`; never inherit host secrets or launch raw `subprocess` from tool handlers.
+- **Code execution provider:** `execute_code` / `run_command` must go through `services/code_execution/`; local/trusted hosts may use `services/subprocess_sandbox.py`, but Railway production must use the external Vercel Sandbox provider. Never inherit host secrets or launch raw `subprocess` from tool handlers.
 - **MCP authz:** MCP imports/execution must go through `services/mcp_authz.py`; URL userinfo, `access_token`, and token passthrough credentials are forbidden.
 - **Memory write invariant:** Do not write T2/T3 durable memory directly from tools or extractors; use `prepare_memory_write()` or an existing wrapper that calls it.
 - **Memory read invariant:** Prompt memory retrieval must preserve `ActivationContext` and sensitivity stripping when current user/owner/company context is known.

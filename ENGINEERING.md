@@ -463,10 +463,12 @@ parameters are normalized into an authorization header before execution. This
 prevents agent-controlled tool configuration from smuggling bearer tokens into
 remote URLs or subprocess environments.
 
-Agent-controlled subprocesses must be launched through
-`services/subprocess_sandbox.py`. Linux production uses `bubblewrap`; macOS
-development uses `sandbox-exec`; unavailable sandboxes fail closed unless an
-explicit development bypass is configured.
+Agent-controlled code execution must be launched through `services/code_execution/`.
+Local or trusted Linux hosts may use `bubblewrap`; macOS development may use
+`sandbox-exec`. Railway standard containers cannot create the namespaces required
+by `bubblewrap`, so Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox`
+with Vercel Sandbox credentials. All providers use the shared environment builder
+and fail closed when the configured isolation plane is unavailable.
 
 ## Office Editing Runtime
 
@@ -665,7 +667,7 @@ pytest tests/services/test_invocation_trace_service.py tests/kernel/test_invocat
 - Agent creation must render first-person accountability plus frozen company/owner charter sections in `soul.md`.
 - WebSocket disconnects must not cancel durable web chat runs.
 - Office document saves must preserve path safety and revision history.
-- Agent-controlled subprocesses must use the shared sandbox/environment builder and must not inherit host secrets.
+- Agent-controlled code execution must use `services/code_execution/`; Railway production must use `vercel_sandbox`, and no provider may inherit host secrets or fall back to raw subprocesses.
 - MCP imports and execution must go through `mcp_authz`; URL userinfo and token passthrough are forbidden.
 - A2A/interoperability descriptors must be honest machine-readable contracts; unsupported OAuth delegation or JSON-RPC task surfaces must stay marked `not_exposed`.
 - Invocation trace spans are append-only runtime evidence and must carry tenant/runtime join keys.

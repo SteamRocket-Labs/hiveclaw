@@ -499,7 +499,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 5 | 记忆企业治理（独有轴） | 无人做全 | per-tenant 隔离+脱密+拒不可信源+溯源+审计 | 🟡 write-gate 有分级，缺用前校验/TTL/会话归因 | 缝 Devin(Useful/Misleading)+Copilot(引用校验/TTL)+decision_trace |
 | 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🔴 仅 workflow 一条线；subagent/delegation 裸奔 | journal 升"completion 去重边界"+withRetry+输出cap续写 |
 | 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡 原语齐全，缺重规划；D2 信号死线 | 补 task/progress-ledger；修 workflow_completed 零消费 |
-| 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算已接到 frozen-prefix / compaction / runtime summary | canonical last-assistant 锚；评估 Code-Execution-over-MCP |
+| 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算；✅ canonical last-assistant cache anchor + Anthropic block 透传 | 评估 Code-Execution-over-MCP |
 | 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 G1 subprocess env/sandbox 已收口；仍缺生产 userns 探测+seccomp/microVM+出口代理 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
 | 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
@@ -1096,8 +1096,35 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_token_trac
 
 **非 MVP 收口**：不是把全局 3.5 常量粗暴改掉。`context_budget` 仍保留 token-window → char-budget 的反向换算，避免把预算上限设计误变成内容估算；kernel dependency 仍保留 char-only 函数给只有长度的路径。所有拿得到真实文本的 runtime/cache/compaction 观测路径已接 CJK-aware 估算。剩余第五仗项仍是：canonical last-assistant 锚、Code-Execution-over-MCP 评估、A2A/OAuth 委托标准、D1 半桩测试补真。
 
+### 12.15 第五仗 cache anchor 已实装：canonical last-assistant cache-control + Anthropic block passthrough（2026-06-13）
+
+**完成范围**：`backend/app/services/prompt_cache.py` 不再给“最后 3 条非 system 消息”机械加 `cache_control`。turn-level cache anchor 现在只选择最新一条有文本内容的 `assistant` 消息；`user` 消息、`tool` result、无文本 tool-call assistant 都不作为 cache write point，避免把高 churn 输入写成缓存边界。system prompt 仍按 `PROMPT_CACHE_BOUNDARY` 拆成 frozen cached block + dynamic uncached block。
+
+**真实 provider 接线**：`backend/app/services/llm_client.py::LLMMessage.to_anthropic_format()` 现在会把 list content blocks 原样展开到 Anthropic payload；这修掉了此前测试层看似有 `cache_control`，但实际 Anthropic formatter 会把 block list 塞进 `{"type":"text","text":[...]}` 的格式风险。signed thinking block 仍排在文本/cache-control block 前，thinking signature 不被丢弃。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_prompt_cache.py::TestHintInjection::test_only_last_assistant_text_gets_turn_cache_anchor tests/services/test_prompt_cache.py::TestHintInjection::test_no_turn_cache_anchor_without_assistant_text tests/services/test_llm_client_streaming.py::test_anthropic_format_preserves_cache_control_content_blocks -q
+# 3 failed
+```
+
+失败点覆盖真实缺口：tool result 被旧“last 3 non-system”逻辑加了 `cache_control`；没有 assistant 文本时仍会错误锚定 tool result；Anthropic formatter 把 cache-control block list 包进了 text 字段。
+
+**Green / 回归证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_prompt_cache.py::TestHintInjection::test_only_last_assistant_text_gets_turn_cache_anchor tests/services/test_prompt_cache.py::TestHintInjection::test_no_turn_cache_anchor_without_assistant_text tests/services/test_llm_client_streaming.py::test_anthropic_format_preserves_cache_control_content_blocks -q
+# 3 passed
+
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_prompt_cache_hints.py tests/services/test_prompt_cache.py tests/services/test_llm_client_streaming.py tests/kernel/test_prompt_cache_integration.py -q
+# 53 passed, 4 warnings
+```
+
+**非 MVP 收口**：不是只改 hint policy，也不是只改测试断言。cache hint 选择、Anthropic payload formatter、thinking signature 共存路径一起闭环；system frozen/dynamic split 保留，conversation/heartbeat/trigger/task TTL 策略不变。剩余第五仗项仍是：Code-Execution-over-MCP 评估、A2A/OAuth 委托标准、D1 半桩测试补真、文档 §3 诚实降级。
+
 **第五仗 — cache + 互操作 + 诚实债收尾**
-- C2 CJK 校准已关闭；继续做 canonical last-assistant 锚；评估 Code-Execution-over-MCP（工具量大省 98.7%）；原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
+- C2 CJK 校准与 canonical last-assistant cache anchor 已关闭；继续评估 Code-Execution-over-MCP（工具量大省 98.7%）；原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
 
 **贯穿所有仗的铁律**：① 验证器外部且硬、在 agent 可改写面之外；② 替换语义可解释可逆；③ 进化 lineage 一等审计；④ 多租户隔离（经验/语料/技能不跨租户）；⑤ 做完外部行为 eval 前不宣称"已超越"。
 

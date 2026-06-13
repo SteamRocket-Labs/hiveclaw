@@ -18,10 +18,12 @@ def test_anthropic_provider_injects_cache_hints():
     assert sys_msg.content[0]["cache_control"] == {"type": "ephemeral"}
     assert sys_msg.content[0]["text"] == "You are a helpful agent."
 
-    # Last 3 non-system messages should have cache_control
-    for msg in result[1:]:
-        assert isinstance(msg.content, list)
-        assert msg.content[0]["cache_control"] == {"type": "ephemeral"}
+    # Turn-level cache anchor is the latest assistant text only.
+    assert isinstance(result[1].content, str)
+    assert isinstance(result[2].content, list)
+    assert result[2].content[0]["cache_control"] == {"type": "ephemeral"}
+    assert result[2].content[0]["text"] == "Hi there!"
+    assert isinstance(result[3].content, str)
 
 
 def test_model_name_does_not_enable_cache_hints_without_provider_capability():

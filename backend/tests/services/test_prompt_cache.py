@@ -71,21 +71,40 @@ class TestHintInjection:
         assert "cache_control" in blocks[0]
         assert "cache_control" not in blocks[1]
 
-    def test_last_3_messages_get_cache_control(self):
+    def test_only_last_assistant_text_gets_turn_cache_anchor(self):
         msgs = [
             self._system_msg(),
             LLMMessage(role="user", content="msg1"),
             LLMMessage(role="assistant", content="reply1"),
             LLMMessage(role="user", content="msg2"),
+            LLMMessage(role="tool", tool_call_id="call-1", content="tool result"),
             LLMMessage(role="assistant", content="reply2"),
             LLMMessage(role="user", content="msg3"),
         ]
         result = apply_cache_hints(msgs, "anthropic")
-        for i in [-1, -2, -3]:
-            assert isinstance(result[i].content, list)
-            assert "cache_control" in result[i].content[0]
-        # Earlier messages untouched
+        assert isinstance(result[5].content, list)
+        assert result[5].content[0]["text"] == "reply2"
+        assert "cache_control" in result[5].content[0]
+
+        # Only the canonical last assistant text is the turn-level anchor.
+        assert isinstance(result[2].content, str)
+        assert isinstance(result[3].content, str)
+        assert isinstance(result[4].content, str)
+        assert isinstance(result[6].content, str)
         assert isinstance(result[1].content, str)
+
+    def test_no_turn_cache_anchor_without_assistant_text(self):
+        msgs = [
+            self._system_msg(),
+            LLMMessage(role="user", content="msg1"),
+            LLMMessage(role="tool", tool_call_id="call-1", content="tool result"),
+            LLMMessage(role="assistant", content=None, tool_calls=[{"id": "call-2", "function": {"name": "x"}}]),
+            LLMMessage(role="user", content="msg2"),
+        ]
+        result = apply_cache_hints(msgs, "anthropic")
+
+        for msg in result[1:]:
+            assert not isinstance(msg.content, list)
 
     def test_unknown_provider_passthrough(self):
         msg = LLMMessage(role="system", content="hello")

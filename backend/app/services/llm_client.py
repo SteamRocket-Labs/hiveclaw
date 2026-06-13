@@ -92,7 +92,10 @@ class LLMMessage:
             })
 
         if self.content:
-            content_blocks.append({"type": "text", "text": self.content})
+            if isinstance(self.content, list):
+                content_blocks.extend(dict(block) if isinstance(block, dict) else block for block in self.content)
+            else:
+                content_blocks.append({"type": "text", "text": self.content})
             
         # Tool requests (from assistant to user)
         if self.tool_calls:

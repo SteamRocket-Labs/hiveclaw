@@ -215,6 +215,25 @@ def test_anthropic_format_preserves_signed_thinking_block():
     }
 
 
+def test_anthropic_format_preserves_cache_control_content_blocks():
+    message = LLMMessage(
+        role="assistant",
+        content=[{"type": "text", "text": "done", "cache_control": {"type": "ephemeral"}}],
+        reasoning_content="signed private chain",
+        reasoning_signature="sig-123",
+    )
+
+    payload = message.to_anthropic_format()
+
+    assert payload == {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "signed private chain", "signature": "sig-123"},
+            {"type": "text", "text": "done", "cache_control": {"type": "ephemeral"}},
+        ],
+    }
+
+
 @pytest.mark.asyncio
 async def test_openai_compatible_streaming_retries_http_status_errors(monkeypatch):
     retry_client = _RetryStatusClient()

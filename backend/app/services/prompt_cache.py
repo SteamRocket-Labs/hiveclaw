@@ -165,17 +165,27 @@ def _apply_cache_control_hints(
                 )
             break
 
-    # Mark last 3 non-system messages with cache_control (turn-level caching)
-    non_system_indices = [i for i, m in enumerate(result) if m.role != "system"]
-    for idx in non_system_indices[-3:]:
-        msg = result[idx]
-        if msg.content and isinstance(msg.content, str):
-            result[idx] = _clone_msg(
-                msg,
-                content=[{"type": "text", "text": msg.content, "cache_control": cache_control}],
-            )
+    # Canonical turn-level anchor: the latest assistant text, if any.
+    # User/tool messages are high-churn inputs; marking them creates unstable
+    # write points and can pollute cache economics. Assistant text is the stable
+    # transcript boundary providers recommend for continuing a conversation.
+    anchor_idx = _latest_assistant_text_index(result)
+    if anchor_idx is not None:
+        msg = result[anchor_idx]
+        result[anchor_idx] = _clone_msg(
+            msg,
+            content=[{"type": "text", "text": msg.content, "cache_control": cache_control}],
+        )
 
     return result
+
+
+def _latest_assistant_text_index(messages: list) -> int | None:
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if msg.role == "assistant" and isinstance(msg.content, str) and msg.content.strip():
+            return idx
+    return None
 
 
 def _clone_msg(msg, **overrides):

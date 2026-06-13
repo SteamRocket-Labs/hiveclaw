@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from app.memory.md_store import append_t3_entry, build_t3_entry_manifest
+from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
 from app.memory.t3_store import append_t3_memory_candidate, backfill_t3_prose
 
 
@@ -106,6 +107,14 @@ def test_backfill_strips_inline_metadata_and_preserves_sensitivity(tmp_path: Pat
     # SAFETY: sensitivity survived — no silent access-control downgrade.
     after = build_t3_entry_manifest(tmp_path, agent_id)
     assert next(e for e in after if e.entry_id == "k1").metadata.get("sensitivity") == "PL3_confidential"
+
+    # D1 safety: legacy inline telemetry must move to the sidecar's dedicated
+    # telemetry fields, not survive as inert metadata or reset to zero.
+    lifecycle = MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id))
+    lifecycle_entry = lifecycle.get("k1")
+    assert lifecycle_entry.access_count == 97
+    assert lifecycle_entry.last_accessed is not None
+    assert lifecycle_entry.last_accessed.isoformat().startswith("2026-06-04T17:00")
 
     # Original dirty line preserved in the archive (reversible evidence).
     archive = (mem / "archive.md").read_text(encoding="utf-8")

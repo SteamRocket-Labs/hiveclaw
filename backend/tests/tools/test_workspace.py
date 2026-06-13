@@ -111,6 +111,40 @@ def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path
     assert (workspace / ".legacy_migrated").exists()
 
 
+def test_migrate_all_workspaces_repairs_memory_hygiene(monkeypatch, tmp_path):
+    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
+    from app.tools.workspace import migrate_all_workspaces
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    mem = workspace / "memory"
+    mem.mkdir(parents=True)
+    (mem / "feedback.md").write_text(
+        "# Feedback\n\n"
+        "- [2026-06-04][entry_id=f1][sensitivity=PL2_pii][access_count=4]"
+        "[last_accessed=2026-06-04T17:00:00+00:00] keep vendor contacts private\n",
+        encoding="utf-8",
+    )
+    (workspace / "memory.sqlite3").write_text("retired sqlite store", encoding="utf-8")
+    (workspace / "reflections.md").write_text("# dead stub\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", tmp_path)
+
+    migrate_all_workspaces()
+
+    feedback = (mem / "feedback.md").read_text(encoding="utf-8")
+    assert feedback.strip().endswith("- [2026-06-04][entry_id=f1] keep vendor contacts private")
+    assert "[sensitivity=" not in feedback
+    assert not (workspace / "memory.sqlite3").exists()
+    assert not (workspace / "reflections.md").exists()
+    assert (workspace / "memory" / "retired_artifacts" / "memory.sqlite3").exists()
+    assert (workspace / "memory" / "retired_artifacts" / "reflections.md").exists()
+
+    lifecycle_entry = MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id)).get("f1")
+    assert lifecycle_entry.metadata["sensitivity"] == "PL2_pii"
+    assert lifecycle_entry.access_count == 4
+
+
 @pytest.mark.asyncio
 async def test_check_declared_packs_authorized_skips_without_identity():
     """Conservative default — missing tenant/agent id permits write (e.g. distiller backfill)."""

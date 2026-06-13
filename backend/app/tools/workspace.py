@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+from app.memory.hygiene import repair_agent_memory_hygiene
 from app.memory.legacy_migration import migrate_legacy_memory_tree
 from app.memory.md_store import ensure_t3_layout, rebuild_index
 from app.memory.t2_store import ensure_t2_layout
@@ -118,6 +119,15 @@ def migrate_all_workspaces() -> None:
             continue
 
         migrate_legacy_memory_tree(WORKSPACE_ROOT, agent_uuid)
+        hygiene_report = repair_agent_memory_hygiene(WORKSPACE_ROOT, agent_uuid, dry_run=False)
+        if hygiene_report.get("changed"):
+            logger.info(
+                "[migrate] Memory hygiene for %s: entries_migrated=%d retired_artifacts=%d dead_stubs=%d",
+                agent_dir.name,
+                hygiene_report.get("entries_migrated", 0),
+                len(hygiene_report.get("retired_artifacts", [])),
+                len(hygiene_report.get("dead_stubs", [])),
+            )
 
         try:
             from app.services.t0_logger import migrate_t0_layout

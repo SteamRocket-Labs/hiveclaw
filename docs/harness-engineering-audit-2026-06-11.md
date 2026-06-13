@@ -207,7 +207,7 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 
 ### 6.2 「记忆+自进化超越 CC 源码」——基础设施层成立,体感层不成立且无证据
 
-真超越的五个维度(CC 源码核实其一概没有):写入纯净(write_gate/PL 分级/lane/lifecycle sidecar)、可逆生命周期(heat/退役/cap/archive)、审计(ledger/rollback_ref)、蒸馏 SOP 质量(HEARTBEAT.md 与 dream prompt 的 few-shot+反模式+决策矩阵明显优于 CC extractMemories 朴素 prompt)、多租户。D1-D10 纯净化债:**6 已修、2 部分修(D5/D6 各留旁路)、2 代码就绪待生产执行(D2/D8)**——owner 的「债清掉结构就回来」在代码层基本兑现。
+真超越的五个维度(CC 源码核实其一概没有):写入纯净(write_gate/PL 分级/lane/lifecycle sidecar)、可逆生命周期(heat/退役/cap/archive)、审计(ledger/rollback_ref)、蒸馏 SOP 质量(HEARTBEAT.md 与 dream prompt 的 few-shot+反模式+决策矩阵明显优于 CC extractMemories 朴素 prompt)、多租户。D1-D10 纯净化债的旧快照已过期:截至 2026-06-13，D1/D2/D8/D10 不再是「代码就绪待生产执行」,已接 `app.memory.hygiene` + startup `migrate_all_workspaces()` 可逆 quarantine/backfill 路径；D5/D6 也已从旁路状态收口到 agent-tool lane gate 与 frozen-Mission gate。证据见 `docs/agent-memory-purity-spec.md` v0.4 与第二轮报告 §12.18。
 
 落后的两个体感维度已从「断线」收敛为「质量差距」:①**学习时延**——高权重 T2 已可次回合检索,但 CC 回合末 forked agent 直写 durable、下场即可见;Hive 仍需区分 T2 快反馈与 T3/soul/skill 慢沉淀。②**读侧智能**——PPR wiki/scene 多跳已接入主 `MemoryRetriever`,activation 权重已有真实 metadata 来源,但 CC 主路径仍是 Sonnet manifest 选择器(LLM 判断);Hive 主路径仍以确定性 scoring+窄条件 LLM rerank 为主。此前 DREAM.md 死模板、verification 同义反复、retrieval_eval 无调用、activation 死权重等断点已按 §12.18/§12.23/§12.31-§12.33 修掉;剩余差距必须靠持续 eval 与 live Hermes baseline 继续量化。
 
@@ -274,7 +274,7 @@ invocation_id 贯通(一表+一 ContextVar,撬动 O1/O2/审计链关联)→ O3 �
 - **治理链**:fail-closed 严谨、无绕过路径(grep 级验证)、CAPABILITY_MAP 全工具覆盖+STRICT fail-closed。
 - **多 provider 适配(L3 正资产)**:max_input_tokens hint 全链贯通、PTL 模式串多 provider、cache hints 能力驱动;Anthropic 客户端把尾部 system 降级为 user "[System Notice]" 是现成的 CC system-reminder 形态。
 - **蒸馏 SOP prompt 质量**(HEARTBEAT.md/dream JSON prompt):few-shot+反模式+决策矩阵,明显优于 CC extractMemories 与 hermes 的朴素 prompt。
-- **D1-D10 偿还**:6 项已修且写门、生命周期、sidecar 遥测的实现质量高。
+- **D1-D10 偿还**:旧「6 已修、2 部分、2 待生产执行」口径已撤回;当前代码口径为 D1/D2 sidecar+startup backfill、D3/D4 duplicate/retire/archive、D5 lane gate、D6 frozen-Mission gate、D7 slim index、D8 retired artifact quarantine、D9 PII 时间误杀修复、D10 dead stub quarantine 均有回归测试。
 - **owner 可见性面**(相对最好的观测环):activity+tool-failures 聚合、autonomy overview 带人话映射、evolution 视图。
 
 ---

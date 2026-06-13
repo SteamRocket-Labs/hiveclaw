@@ -199,10 +199,15 @@ class MemoryLifecycleStore:
         critically `sensitivity`, so access control never silently downgrades.
         Creates the record if missing; merges metadata into an existing one.
         """
+        clean_metadata, access_count, last_accessed = _split_inline_telemetry(metadata)
         entry = self._entries.get(entry_id)
         if entry is None:
             return self.create_active(content, entry_id=entry_id, metadata=metadata)
-        entry.metadata.update({str(key): str(value) for key, value in metadata.items() if value})
+        entry.metadata.update({str(key): str(value) for key, value in clean_metadata.items() if value})
+        if access_count is not None:
+            entry.access_count = access_count
+        if last_accessed is not None:
+            entry.last_accessed = last_accessed
         if content and not entry.content:
             entry.content = content
         entry.updated_at = datetime.now(UTC)
@@ -224,6 +229,7 @@ class MemoryLifecycleStore:
         expires_at: datetime | None = None,
         metadata: dict[str, str] | None = None,
     ) -> MemoryLifecycleEntry:
+        clean_metadata, access_count, last_accessed = _split_inline_telemetry(metadata or {})
         entry = MemoryLifecycleEntry(
             id=entry_id or str(uuid.uuid4()),
             content=content,
@@ -232,8 +238,12 @@ class MemoryLifecycleStore:
             parent_id=parent_id,
             supersedes=supersedes or [],
             expires_at=expires_at,
-            metadata=dict(metadata or {}),
+            metadata=clean_metadata,
         )
+        if access_count is not None:
+            entry.access_count = access_count
+        if last_accessed is not None:
+            entry.last_accessed = last_accessed
         self._entries[entry.id] = entry
         self._flush()
         return entry
@@ -375,3 +385,26 @@ def _parse_dt(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _split_inline_telemetry(metadata: dict[str, str]) -> tuple[dict[str, str], int | None, datetime | None]:
+    """Move D1 legacy telemetry metadata into dedicated sidecar fields."""
+    clean = {str(key): str(value) for key, value in metadata.items() if key not in {"access_count", "last_accessed"}}
+
+    access_count: int | None = None
+    raw_count = metadata.get("access_count")
+    if raw_count not in (None, ""):
+        try:
+            access_count = max(0, int(str(raw_count).strip()))
+        except (TypeError, ValueError):
+            access_count = None
+
+    last_accessed: datetime | None = None
+    raw_last = str(metadata.get("last_accessed") or "").strip()
+    if raw_last and raw_last.lower() != "never":
+        try:
+            last_accessed = _parse_dt(raw_last)
+        except (TypeError, ValueError):
+            last_accessed = None
+
+    return clean, access_count, last_accessed

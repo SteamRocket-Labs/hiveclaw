@@ -293,6 +293,8 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 
 **记忆架构对 Hive 的总启示**：Hive 的 4 层金字塔形态已接近 ACE/Letta 方向，但**三个 SOTA 机制要补**：① **矛盾对账**（Letta 都没自动做，全行业空白——Hive 可领先）；② **时间感知/multi-hop**（Zep 双时态 + HippoRAG PPR，Hive P9 已起步）；③ **用前有效性校验 + TTL**（Copilot 引用校验，全行业最干净的抗陈旧）。**企业改造**：所有论文都是单租户世界，没一篇处理"租户 A 经验不进租户 B 记忆"——Hive 必须自造 per-agent + tenant-scoped + RLS 的记忆隔离（正在打的 RLS 迁移是地基）。
 
+**Hive 当前落点（2026-06-13）**：D1/D2/D8/D10 记忆纯净化债已从“新写入干净、存量待执行”收口为 startup 级 `app.memory.hygiene` 可逆 backfill/quarantine；D3/D4/D5/D6/D7/D9 也有现有回归守住。这个结论只关闭**工程纯净度债**，不能把 §3 误写成“长期记忆架构已达 Letta/Zep SOTA”：矛盾对账、双时态 multi-hop、用前引用校验/TTL 仍是下一层质量差距，需继续以外部行为 eval 量化。
+
 ---
 
 ## 4. 模型层自改进（中立平台定位下的「可做 / 不该做」）
@@ -1094,7 +1096,7 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_token_trac
 # 70 passed, 4 warnings
 ```
 
-**非 MVP 收口**：不是把全局 3.5 常量粗暴改掉。`context_budget` 仍保留 token-window → char-budget 的反向换算，避免把预算上限设计误变成内容估算；kernel dependency 仍保留 char-only 函数给只有长度的路径。所有拿得到真实文本的 runtime/cache/compaction 观测路径已接 CJK-aware 估算。剩余第五仗项仍是：canonical last-assistant 锚、Code-Execution-over-MCP 评估、A2A/OAuth 委托标准、D1 半桩测试补真。
+**非 MVP 收口**：不是把全局 3.5 常量粗暴改掉。`context_budget` 仍保留 token-window → char-budget 的反向换算，避免把预算上限设计误变成内容估算；kernel dependency 仍保留 char-only 函数给只有长度的路径。所有拿得到真实文本的 runtime/cache/compaction 观测路径已接 CJK-aware 估算。本节完成时的剩余第五仗项已在 §12.15–§12.18 继续关闭。
 
 ### 12.15 第五仗 cache anchor 已实装：canonical last-assistant cache-control + Anthropic block passthrough（2026-06-13）
 
@@ -1121,7 +1123,7 @@ cd backend && source .venv/bin/activate && pytest tests/runtime/test_prompt_cach
 # 53 passed, 4 warnings
 ```
 
-**非 MVP 收口**：不是只改 hint policy，也不是只改测试断言。cache hint 选择、Anthropic payload formatter、thinking signature 共存路径一起闭环；system frozen/dynamic split 保留，conversation/heartbeat/trigger/task TTL 策略不变。剩余第五仗项仍是：Code-Execution-over-MCP 评估、A2A/OAuth 委托标准、D1 半桩测试补真、文档 §3 诚实降级。
+**非 MVP 收口**：不是只改 hint policy，也不是只改测试断言。cache hint 选择、Anthropic payload formatter、thinking signature 共存路径一起闭环；system frozen/dynamic split 保留，conversation/heartbeat/trigger/task TTL 策略不变。本节完成时的剩余 Code-Execution-over-MCP、A2A/OAuth、D1/§3 诚实债已在 §12.16–§12.18 继续关闭。
 
 ### 12.16 第五仗 MCP authz 已实装：禁 token passthrough + Code-Execution-over-MCP 评估收口（2026-06-13）
 
@@ -1184,10 +1186,50 @@ cd backend && source .venv/bin/activate && pytest tests -q
 # 4219 passed, 7 skipped, 4 warnings
 ```
 
-**非 MVP 收口**：不是只写静态文档或服务函数。平台 profile 已挂主应用 router；agent card 走真实 agent API、真实 access guard、真实 host/base URL；标准能力字段不越权承诺 OAuth delegation / JSON-RPC task。剩余第五仗项仍是：D1 半桩测试补真；文档 §3 "已整改" 按真实完成度降级。
+**非 MVP 收口**：不是只写静态文档或服务函数。平台 profile 已挂主应用 router；agent card 走真实 agent API、真实 access guard、真实 host/base URL；标准能力字段不越权承诺 OAuth delegation / JSON-RPC task。本节完成时剩余的 D1 半桩测试补真与 §3 完成度口径已在 §12.18 关闭。
+
+### 12.18 第五仗 D1/诚实债已收口：memory hygiene startup apply + §3 完成度降级（2026-06-13）
+
+**完成范围**：新增 `backend/app/memory/hygiene.py` 作为 D1/D2/D8/D10 的统一生产清理路径；`migrate_all_workspaces()` 启动迁移现在会对每个 UUID agent workspace 调用 `repair_agent_memory_hygiene(..., dry_run=False)`，不再只留下单 agent admin backfill。`backend/app/scripts/repair_memory_hygiene.py` 提供同一逻辑的 ops dry-run/apply 命令，默认 dry-run，`--apply` 必须带 `--confirm`。
+
+**关键 bug 修复**：`backfill_t3_prose()` 原本只证明 `sensitivity` 从 inline prose 迁入 sidecar，但没有证明 `access_count/last_accessed` 进入专用 telemetry 字段；旧实现会把 `access_count=97` 变成 sidecar `access_count=0`。`MemoryLifecycleStore` 现在在 `_create()` / `upsert_active()` 统一把 legacy inline telemetry 拆到 dedicated fields，并从 metadata 中清除，避免 D1 遥测继续污染或失效。
+
+**D8/D10 路径统一**：`memory.sqlite3` / `memory.json` / 死 `reflections.md` 不做静默物理删除，统一移动到 `memory/retired_artifacts/**`，并在 `memory/archive.md` 写 quarantine 记录。真实生产 reflection 路径是 `memory/reflections/*.jsonl`，不会被清理。
+
+**§3 诚实降级**：本节只关闭 memory purity 工程债，不宣称长期记忆架构达到 Letta sleep-time 或 Zep-Graphiti SOTA。§3 已明确保留三项质量差距：矛盾对账、双时态/multi-hop、用前引用校验/TTL。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/memory/test_d2_prose_backfill.py tests/memory/test_memory_hygiene.py -q
+# 4 failed, 4 passed
+```
+
+失败点覆盖真实缺口：legacy `access_count=97` 被迁移后仍是 sidecar `0`；`app.memory.hygiene` 模块不存在；全 workspace dry-run/apply 与 UUID-only 扫描不存在。
+
+**Green / 回归证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/memory/test_d2_prose_backfill.py tests/memory/test_memory_hygiene.py tests/tools/test_workspace.py -q
+# 17 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/memory tests/tools/test_memory_handler.py tests/tools/test_memory_control_plane_integration.py tests/tools/test_workspace.py tests/services/test_auto_dream.py::TestDreamFrozenMissionGate tests/memory/test_t3_lane_gate.py -q
+# 364 passed, 5 skipped, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/memory/lifecycle_store.py app/memory/hygiene.py app/tools/workspace.py app/scripts/repair_memory_hygiene.py tests/memory/test_d2_prose_backfill.py tests/memory/test_memory_hygiene.py tests/tools/test_workspace.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && python -m compileall -q app/memory/lifecycle_store.py app/memory/hygiene.py app/tools/workspace.py app/scripts/repair_memory_hygiene.py tests/memory/test_d2_prose_backfill.py tests/memory/test_memory_hygiene.py tests/tools/test_workspace.py
+# passed
+
+cd backend && source .venv/bin/activate && pytest tests -q
+# 4223 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只补一条更强单测。旧存量 prose、sidecar telemetry、startup migration、ops CLI、retired artifact quarantine、dead stub quarantine、文档诚实口径同时闭环。剩余不是 D1 断点，而是 §3 已标明的 SOTA 质量差距：矛盾对账、双时态 multi-hop、TTL/引用校验。
 
 **第五仗 — cache + 互操作 + 诚实债收尾**
-- C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate、A2A Agent Card/profile 已关闭；继续 D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
+- C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate、A2A Agent Card/profile、D1 memory hygiene startup apply 与 §3 诚实降级均已关闭。
 
 **贯穿所有仗的铁律**：① 验证器外部且硬、在 agent 可改写面之外；② 替换语义可解释可逆；③ 进化 lineage 一等审计；④ 多租户隔离（经验/语料/技能不跨租户）；⑤ 做完外部行为 eval 前不宣称"已超越"。
 

@@ -2,7 +2,7 @@
 
 > **单一核心**：让生产里的持久记忆回归「纯净」—— 身份级、可读、有界、无遥测污染、无 episodic 漂移。
 > **方法**：**不重设计架构**。我们已有的 `docs/agent-memory-md-first-spec.md`（P0-P10）就是正确架构。本文做的是**逐项核对生产与该 spec 的偏离，把偏离当技术债清掉**。
-> **状态**：v0.3。owner 已拍板（2026-06-08）：**D1-D10 单次完整交付，禁 MVP，不留债**（见 CLAUDE.md/AGENTS.md「交付纪律」）。进入实现。
+> **状态**：v0.4 closure record。owner 已拍板（2026-06-08）：**D1-D10 单次完整交付，禁 MVP，不留债**（见 CLAUDE.md/AGENTS.md「交付纪律」）。截至 2026-06-13，D1/D2/D8/D10 的存量清理已接入 startup workspace migration 和 `app.memory.hygiene` 可逆 quarantine 路径；D3/D4/D5/D6/D7/D9 的生产写入/归档/索引/隐私路径均已有回归测试守住。
 
 ---
 
@@ -51,9 +51,33 @@ Owner 判断（2026-06-08）：
 | **D5 save_memory 越 lane** | agent 自选 category，episodic 直灌 durable（`memory.py:118`，无 lane 门）| §5「should not bypass governed T3 append」；P2 governed append | save_memory 只治理 sensitivity/PL4，**不治理 lane/episodic** | 走与 extractor 同一 lane 校验；episodic 拒绝并回执「应存 workspace/T0」|
 | **D6 dream 矛盾门盲点** | soul 出现与 Mission 矛盾的 Learned Behavior | §5「does not bypass owner/charter gates」；§4.6 soul=identity | 矛盾门只查 T3-vs-T3，漏 promotion-vs-frozen-Mission | 扩展矛盾门：晋升候选必须与 soul frozen Mission/charter 比对 |
 | **D7 INDEX 镜像 + 双索引** | `INDEX.md` 38KB 全量镜像 + 孤儿 `MEMORY_INDEX.md` | §8「should not be orphan… runtime consumer」；轻量 nav 行；soul≠navigation | INDEX 退化成镜像；第二索引无消费者 | INDEX 改轻量 nav（id/path/summary/heat）；删冗余第二索引 |
-| **D8 SQLite 退役未清** | `memory.sqlite3`+`memory.json` 仍在 | §9 索引可重建非写路径；CLAUDE.md「SQLite shadow store 已退役」 | 退役没删文件 | 确认无写入后移除/忽略（低优先，无害但脏）|
+| **D8 SQLite 退役未清** | `memory.sqlite3`+`memory.json` 仍在 | §9 索引可重建非写路径；CLAUDE.md「SQLite shadow store 已退役」 | 退役没删文件 | 2026-06-13 改为可逆 quarantine：`memory/retired_artifacts/**` + `archive.md` 留证，不物理静默删除 |
 | **D9 PII 误杀腐蚀正文** | `17:00`→`<Phone_1>`；公开日志标 PL2_pii | §4.2 sensitivity hints 应辅助非破坏内容 | redactor/分类器正则过激 | 修脱敏正则（时间/编号不当电话）；分类器收紧；机械步只兜底不毁内容 |
-| **D10 死桩与结构不一** | `reflections.md` 616B 空模板；file vs dir 不统一 | §7 canonical T3 集不含 reflections | pre-spec 模板脚手架遗留 | 要么接通 writer，要么从模板移除；统一 file/dir |
+| **D10 死桩与结构不一** | `reflections.md` 616B 空模板；file vs dir 不统一 | §7 canonical T3 集不含 reflections | pre-spec 模板脚手架遗留 | 2026-06-13 只 quarantine 死文件 `reflections.md`，保留真实生产路径 `memory/reflections/*.jsonl` |
+
+### 2.1 当前收口状态（2026-06-13）
+
+- **D1/D2**：`access_log.bump_access()` 只写 `lifecycle.json`；`backfill_t3_prose()` 会把旧 inline `sensitivity/status/version/access_count/last_accessed` 迁入 sidecar，其中 `access_count/last_accessed` 进入专用 telemetry 字段，不再作为 inert metadata。新增红测先证明旧实现会把 `access_count=97` 重置为 0。
+- **D3/D4**：`append_t3_memory_candidate()` 的 near-duplicate path 不再追加 prose，而是强化 `reinforcement_count/helpful_count/harmful_count`；dream / retire path 会把 superseded/cap-evicted 行移出 active T3，写 `archive.md` + lifecycle terminal state。
+- **D5/D6**：agent-tool `save_memory` 的 episodic scan/no-change 流水账被拒并回执写 workspace/T0；soul promotion 与 repeated-feedback lane 共享 frozen-Mission gate。
+- **D7/D8/D10**：`INDEX.md` 是轻量 manifest（summary + heat），不写 `MEMORY_INDEX.md`；`memory.sqlite3` / `memory.json` / 死 `reflections.md` 在 startup migration 中进入 `memory/retired_artifacts/**`，并在 `archive.md` 留证。
+- **D9**：clock/date scan line 不再被误 redacted 成 `<Phone_1>`，真实电话号码仍会被 PL2 masking。
+
+**验收证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/memory/test_d2_prose_backfill.py tests/memory/test_memory_hygiene.py -q
+# Red before fix: 4 failed, 4 passed
+
+cd backend && source .venv/bin/activate && pytest tests/memory/test_d2_prose_backfill.py tests/memory/test_memory_hygiene.py tests/tools/test_workspace.py -q
+# 17 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/memory tests/tools/test_memory_handler.py tests/tools/test_memory_control_plane_integration.py tests/tools/test_workspace.py tests/services/test_auto_dream.py::TestDreamFrozenMissionGate tests/memory/test_t3_lane_gate.py -q
+# 364 passed, 5 skipped, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests -q
+# 4223 passed, 7 skipped, 4 warnings
+```
 
 ---
 
@@ -87,7 +111,7 @@ dream 仍是写入者（§5 IdentityPromoter），但现状矛盾门有盲点（
 | 2 堵入口 | D5 save_memory lane 门 · D6 dream 矛盾门 | 拦新脏须先于清存量，否则边清边脏 |
 | 3 接水泵 | D3 merge-on-write+caps · D4 reconsolidation/retirement | 兑现 §4.4/§4.8/§4.9，让存量有界 |
 
-全部 D1-D10 同一轮交付完成；每项**红测先行**（Testcontainers 真 PG）+ **生产实证验收**（对同一批 agent 文件前后复查，绿测试 ≠ 完成）。
+全部 D1-D10 的代码路径与启动迁移路径已在同一轮闭合；每项保留**红测先行**证据。生产数据卷上的执行不再依赖手工单 agent API：`migrate_all_workspaces()` 会对每个 UUID workspace 调用 `repair_agent_memory_hygiene(..., dry_run=False)`，另保留显式 ops 命令 `python -m app.scripts.repair_memory_hygiene` 做 dry-run / apply。
 
 ---
 
@@ -97,7 +121,7 @@ dream 仍是写入者（§5 IdentityPromoter），但现状矛盾门有盲点（
 - **存量脏文件**：一次性回填清洗 → `archive.md`（可逆，保留证据；D2/D4 配套）。
 - **D5 拒绝 episodic**：prompt 引导 + 写入点硬门**双保险**。
 - **架构**：**0 改动**，不碰 §7 文件合并（spec 明令需完整迁移）。
-- **唯一安全门**：D2 回填 / D8 删文件会触碰生产数据卷 → 先 **dry-run + 给 owner 看 diff + 确认**后执行（这是安全门，非 MVP；完整性不豁免安全）。
+- **安全门更新**：D2/D8 不做不可逆物理删除。D2 原 dirty line 进 `archive.md`；D8/D10 文件进入 `memory/retired_artifacts/**` 并写 `archive.md`。显式 ops 命令仍默认 dry-run，`--apply` 必须带 `--confirm`；startup migration 执行的是同一条可逆 quarantine 路径。
 
 ---
 

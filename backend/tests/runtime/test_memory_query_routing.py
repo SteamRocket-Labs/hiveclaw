@@ -89,6 +89,48 @@ async def test_resolve_retrieval_context_routes_last_user_query(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_retrieval_context_passes_agent_and_user_identity_to_knowledge(monkeypatch):
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    captured = {}
+
+    async def fake_fetch_relevant_knowledge(query, tenant_id_arg, *, agent_id=None, current_user_id=None, **kwargs):
+        captured.update(
+            {
+                "query": query,
+                "tenant_id": tenant_id_arg,
+                "agent_id": agent_id,
+                "current_user_id": current_user_id,
+                "kwargs": kwargs,
+            }
+        )
+        return ""
+
+    monkeypatch.setattr(invoker, "fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "latest question"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=agent_id,
+        user_id=user_id,
+        session_context=SessionContext(session_id="s-knowledge-principal"),
+    )
+
+    await invoker._resolve_retrieval_context(request, tenant_id)
+
+    assert captured["query"] == "latest question"
+    assert captured["tenant_id"] == tenant_id
+    assert captured["agent_id"] == agent_id
+    assert captured["current_user_id"] == user_id
+
+
+@pytest.mark.asyncio
 async def test_resolve_runtime_metadata_context_routes_runtime_hints(monkeypatch):
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest

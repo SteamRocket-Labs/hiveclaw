@@ -109,6 +109,7 @@ async def build_memory_context(
         retrieve_params = inspect.signature(retriever.retrieve).parameters
         if "retrieval_profile" in retrieve_params:
             retrieve_kwargs["retrieval_profile"] = retrieval_profile
+        activation_context = None
         if "activation_context" in retrieve_params and not legacy_compatibility:
             activation_context = await _resolve_activation_context(
                 agent_id=agent_id,
@@ -117,8 +118,23 @@ async def build_memory_context(
                 current_user_id=current_user_id,
                 current_user_name=current_user_name,
             )
-            if activation_context:
-                retrieve_kwargs["activation_context"] = activation_context
+        elif not legacy_compatibility:
+            activation_context = await _resolve_activation_context(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                query=query,
+                current_user_id=current_user_id,
+                current_user_name=current_user_name,
+            )
+        if not legacy_compatibility and activation_context is None:
+            logger.warning(
+                "Memory activation principal unresolved; suppressing prompt memory for agent %s",
+                agent_id,
+                extra={"metric": "memory_activation_fail_closed", "agent_id": str(agent_id), "tenant_id": str(tenant_id)},
+            )
+            return ""
+        if "activation_context" in retrieve_params and activation_context:
+            retrieve_kwargs["activation_context"] = activation_context
         items = await retriever.retrieve(
             agent_id,
             query,

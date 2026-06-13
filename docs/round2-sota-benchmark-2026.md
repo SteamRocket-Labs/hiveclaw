@@ -502,7 +502,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；🟡 C2 中文首轮低估 | C2 CJK 校准；评估 Code-Execution-over-MCP |
 | 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 G1 subprocess env/sandbox 已收口；仍缺生产 userns 探测+seccomp/microVM+出口代理 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
-| 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 治理在工具执行层，未到记忆检索 | choke point 保证扩到 retrieval/memory |
+| 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
 | 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🔴 trace 写了无人读、反馈环死、无行为 eval | trace 落库+reader+跨invocation树；建外部 eval |
 | 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 有 MCP，缺 A2A/委托标准 | 原生说开放标准=中立平面具体化 |
 
@@ -983,9 +983,44 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：不是只给新建 agent 加字段，也不是只在 API list 里过滤。存量数据有迁移回填 + NOT NULL/FK；所有创建路径有显式 service，任意直接 ORM 插入还有 `before_flush` 兜底；删除不再清空历史表，而是保留 Participant/Chat/Audit 并关闭所有执行入口；同步用户入口、后台 daemon、重启恢复、统一 invoker 都会识别失效 agent。剩余不在本节范围的是 Entra 级外部目录 identity、Conditional Access、access package、A2A 审计标准化。
 
+### 12.12 第三仗 P1 已实装：runtime memory/knowledge principal 预过滤 + 预算接线复核（2026-06-13）
+
+**完成范围**：`backend/app/services/memory_service.py` 的 runtime prompt memory 不再在 principal/activation context 解析失败时继续降级读取；除显式 `legacy_compatibility=True` 外，无法确定 principal stack 时直接返回空 memory context，并打 `memory_activation_fail_closed` 日志指标。已有 `ActivationScorer` 的 PL3/PL4 suppression 仍在 `MemoryRetriever.retrieve(..., activation_context=...)` 中执行，新增 fail-closed 关闭的是“activation_context 缺失 → 未过滤组装”的断点。`backend/app/runtime/invoker.py` 对 `_resolve_retrieval_context()` 增加 identity 透传，只有被调用函数声明支持时才传 `agent_id` / `current_user_id`，保持测试 double 与旧 provider 兼容。`backend/app/services/knowledge_inject.py` 与 `backend/app/services/viking_client.py` 把 OpenViking search 从 tenant-only 改成 tenant + user + agent identity headers；缺少 user/agent 任一 principal 时 fail-closed，不发检索请求。
+
+**预算 enforcement 复核**：`turn_token_budget` 已在 §12.36/当前代码中从 `Agent.max_tool_rounds` 派生并进入 `RuntimeConfig`；`backend/tests/runtime/test_invoker.py` 持续覆盖 `_resolve_runtime_config()` 产出正预算、quota 在 kernel 前拦截、context budget 对 memory/knowledge/工具定义分配生效。本节没有新增预算字段，而是复核并保留既有消费点，避免把 P1 写成“配置存在但无人用”。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_memory_service.py::test_build_memory_context_fails_closed_when_activation_context_unresolved backend/tests/runtime/test_memory_query_routing.py::test_resolve_retrieval_context_passes_agent_and_user_identity_to_knowledge backend/tests/services/test_knowledge_inject.py -q
+```
+
+结果：`3 failed, 1 passed`。失败点分别为 activation context 解析失败仍组装 `PL3_SECRET_MEMORY`、`_resolve_retrieval_context()` 未传 `agent_id`、`fetch_relevant_knowledge()` 不接受 `agent_id/current_user_id` 参数；无 principal 时 fail-closed 的新测试已先行通过。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_memory_service.py::test_build_memory_context_fails_closed_when_activation_context_unresolved backend/tests/runtime/test_memory_query_routing.py::test_resolve_retrieval_context_passes_agent_and_user_identity_to_knowledge backend/tests/services/test_knowledge_inject.py -q
+# 4 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_memory_service.py backend/tests/runtime/test_memory_query_routing.py backend/tests/services/test_knowledge_inject.py backend/tests/memory/test_retrieval_pipeline.py backend/tests/memory/test_activation_scoring.py backend/tests/runtime/test_invoker.py -q
+# 89 passed, 4 warnings
+
+backend/.venv/bin/ruff check backend/app/services/memory_service.py backend/app/runtime/invoker.py backend/app/services/knowledge_inject.py backend/app/services/viking_client.py backend/tests/services/test_memory_service.py backend/tests/runtime/test_memory_query_routing.py backend/tests/services/test_knowledge_inject.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/memory_service.py backend/app/runtime/invoker.py backend/app/services/knowledge_inject.py backend/app/services/viking_client.py backend/tests/services/test_memory_service.py backend/tests/runtime/test_memory_query_routing.py backend/tests/services/test_knowledge_inject.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4196 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只在 assembler 后过滤字符串，也不是只给 OpenViking 加 tenant。受治理 memory 必须先解析 principal，解析失败不进 prompt；PL3/PL4 suppression 仍在 item 级 activation 发生，模型看不到被拒候选；knowledge provider search 带 `X-OpenViking-User` + `X-OpenViking-Agent`，没有 principal 不请求。诚实边界：这还不是 Glean 全量 connector ACL 镜像；Feishu/Drive/Office 等 connector read model 的文档级 ACL 预过滤仍需复用这一 choke point 继续推进。
+
 **第三仗 — Goal-2 地基（执行隔离 + agent 身份）**
 - **目标线**：Codex（OS 级 fail-closed + 默认断网）/ microVM + Claude SDK（凭据出口代理注入）+ Entra Agent ID（一等 agent 身份 + sponsor 生命周期）+ Glean（模型见数据前预过滤）。
-- **动作**：① G1 已关闭 agent subprocess env/sandbox 基线；② ID1 已关闭 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）；⑤ 后续再接目录级 CA / A2A 审计 / access package。
+- **动作**：① G1 已关闭 agent subprocess env/sandbox 基线；② ID1 已关闭 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ P1 已关闭 runtime memory/knowledge principal 预过滤 + 预算接线复核；④ 后续再接目录级 CA / A2A 审计 / access package；⑤ connector ACL read model 继续推进到 Feishu/Drive/Office 等数据面。
 
 **第四仗 — 可观测地基（为前三仗提供验收仪表，可先动工）**
 - **目标线**：OpenAI Agents SDK（trace 默认开 + 全链 trace 树）+ Decagon（100% 会话 QA）。

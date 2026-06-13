@@ -571,6 +571,10 @@ async def _resolve_retrieval_context(
         _knowledge_kwargs["max_chars"] = budget_profile.knowledge_budget_chars
     if "limit" in _knowledge_sig:
         _knowledge_kwargs["limit"] = budget_profile.external_limit
+    if "agent_id" in _knowledge_sig:
+        _knowledge_kwargs["agent_id"] = request.agent_id
+    if "current_user_id" in _knowledge_sig:
+        _knowledge_kwargs["current_user_id"] = request.user_id
     knowledge = await _maybe_await(fetch_relevant_knowledge(query, tenant_id, **_knowledge_kwargs))
     if knowledge:
         parts.append(

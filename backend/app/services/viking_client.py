@@ -54,6 +54,7 @@ async def find(
     *,
     tenant_id: str,
     agent_id: str | None = None,
+    user_id: str | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     """Semantic search across knowledge base. Returns list of matching context items."""
@@ -64,7 +65,7 @@ async def find(
         resp = await client.post(
             "/api/v1/search/find",
             json={"query": query, "target_uri": target_uri, "limit": limit},
-            headers=_identity_headers(tenant_id, agent_id=agent_id),
+            headers=_identity_headers(tenant_id, user_id=user_id, agent_id=agent_id),
         )
         resp.raise_for_status()
         return resp.json().get("results", [])

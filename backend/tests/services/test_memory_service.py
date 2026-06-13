@@ -464,6 +464,11 @@ async def test_build_memory_context_passes_rerank_model_config(monkeypatch, tmp_
         raising=False,
     )
 
+    async def fake_resolve_activation_context(*_args, **_kwargs):
+        return object()
+
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolve_activation_context)
+
     context = await memory_service.build_memory_context(
         agent_id,
         tenant_id,
@@ -479,6 +484,41 @@ async def test_build_memory_context_passes_rerank_model_config(monkeypatch, tmp_
         "api_key": "test-key",
         "base_url": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_build_memory_context_fails_closed_when_activation_context_unresolved(monkeypatch):
+    from app.services import memory_service
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+
+    class _FakeRetriever:
+        async def retrieve(self, *_args, **_kwargs):
+            return ["PL3_SECRET_MEMORY"]
+
+    class _FakeAssembler:
+        def assemble(self, items, **_kwargs):
+            return "\n".join(str(item) for item in items)
+
+    async def fake_resolve_activation_context(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **_kwargs: _FakeRetriever())
+    monkeypatch.setattr(memory_service, "MemoryAssembler", lambda: _FakeAssembler())
+    monkeypatch.setattr(memory_service, "_get_rerank_model_config", lambda _tenant_id: None, raising=False)
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolve_activation_context)
+
+    context = await memory_service.build_memory_context(
+        agent_id,
+        tenant_id,
+        session_id="session-1",
+        query="salary planning",
+        current_user_id=uuid4(),
+        current_user_name="Viewer",
+    )
+
+    assert context == ""
 
 
 @pytest.mark.asyncio
@@ -642,6 +682,11 @@ async def test_build_memory_context_uses_adaptive_budget_profile(monkeypatch, tm
         },
         raising=False,
     )
+
+    async def fake_resolve_activation_context(*_args, **_kwargs):
+        return object()
+
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolve_activation_context)
 
     context = await memory_service.build_memory_context(
         agent_id,

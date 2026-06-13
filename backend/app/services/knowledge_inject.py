@@ -21,6 +21,8 @@ _DEFAULT_CHAR_BUDGET = 1500
 async def fetch_relevant_knowledge(
     query: str,
     tenant_id: uuid.UUID | None = None,
+    agent_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
     max_tokens: int = 500,
     max_chars: int | None = None,
     limit: int = 3,
@@ -42,11 +44,18 @@ async def fetch_relevant_knowledge(
     tid = str(tenant_id) if tenant_id else None
     if not tid:
         return ""
+    agent_identity = str(agent_id) if agent_id else None
+    user_identity = str(current_user_id) if current_user_id else None
+    if not agent_identity and not user_identity:
+        logger.debug("OpenViking knowledge search skipped: missing user/agent identity")
+        return ""
 
     try:
         results = await viking_client.find(
             query,
             tenant_id=tid,
+            agent_id=agent_identity,
+            user_id=user_identity,
             limit=limit,
         )
     except Exception as exc:

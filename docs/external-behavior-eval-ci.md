@@ -329,6 +329,21 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **仍待后续 E**：CI 真跑 `decide_behavior_gated_promotion` 喂真 behavior_report + regression_report = **E8**。
 
+### E4 — 连续 reward + rubric 非门控 ✅（2026-06-13，G5 + D3）
+
+**完成范围**（`backend/app/services/evolution_verification.py`）：
+- `_check_result` 加 `gating: bool=True` + `score: float|None` 参数（仅非默认值时写入字段，现有 check 结构不变）。
+- `_run_llm_rubric_check` 从"在场即 fail"（旧：`passed=False` 拖垮整个 verification）改为**观察信号**：`gating=False` + 归一化连续 score，**永不门控** pass/fail（§2.3：自评漂移/reward-hack）。
+- `run_evolution_verification` 的 passed 只看 **gating checks**：`gating_checks = [c for c in checks if c.get("gating", True)]`，无 gating check → fail-closed（纯 rubric 不能通过）；report 加 `quality_score`。
+- 新增 `verification_quality_score(report)`：连续质量分（0-1，rubric 贡献 score、硬判据 pass=1/fail=0）。
+- `record_verification_eval` reward 从 binary `1.0/0.0` → `verification_quality_score`（连续）；failed_checks 只数 gating（rubric 不计 critical_regression）。
+
+**TDD red→green**：`tests/services/test_eval_reward_gating.py` 6 用例，实现前 Pyright 缺 `verification_quality_score`；green。广回归 `eval_reward_gating + evolution_verification + promotion_hard_gate + skill_distiller + skill_flywheel + harness_canary + evals` = **101 passed**；ruff clean。
+
+**验收映射**：rubric 不门控（`test_llm_rubric_does_not_gate`）✓；纯 rubric fail-closed（`test_pure_rubric_cannot_pass`）✓；硬判据仍门控（`test_hard_check_still_gates`）✓；reward 连续（`test_quality_score_is_continuous` / `test_record_verification_eval_reward_is_continuous`）✓；rubric 进质量不进门（`test_rubric_score_feeds_quality_not_gate`）✓。
+
+**gap 状态**：G5（连续分）关闭；D3（硬判据 100% 门控、rubric 0% 门控）实装为 `gating` 字段。
+
 ---
 
 ## 附：关键文件锚点

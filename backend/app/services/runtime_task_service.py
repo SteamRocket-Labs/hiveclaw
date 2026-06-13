@@ -13,6 +13,9 @@ from app.models.runtime_task import RuntimeTask
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
+_RESTART_RESUMABLE_TASK_TYPES = ("workflow", "web_chat_turn")
+
+
 def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
     if isinstance(task_id, uuid.UUID):
         return task_id
@@ -40,6 +43,15 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
+
+
+def _is_restart_resumable_runtime_task(task: RuntimeTask) -> bool:
+    task_type = getattr(task, "task_type", None)
+    if task_type in _RESTART_RESUMABLE_TASK_TYPES:
+        return True
+
+    metadata = dict(getattr(task, "metadata_json", None) or {})
+    return bool(metadata.get("resume_after_restart") and metadata.get("resumable_delegation"))
 
 
 async def create_runtime_task_record(
@@ -202,11 +214,11 @@ async def list_active_runtime_task_records(
 
 
 async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None = None) -> int:
-    """Mark any persisted running tasks as failed after a worker restart.
+    """Mark non-resumable persisted running tasks as failed after a worker restart.
 
-    Async delegation currently executes in-process. After a backend restart,
-    any DB records still marked as `running` can no longer make progress and
-    should be surfaced honestly as failed instead of appearing alive forever.
+    Some task types have restart pumps and must remain active until those pumps
+    resume them. Plain in-process tasks have no such recovery path, so surfacing
+    them as failed is more honest than leaving them alive forever.
     """
     excluded = {
         runtime_task_id
@@ -221,7 +233,10 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
         try:
             stmt = select(RuntimeTask).where(
                 RuntimeTask.status == "running",
-                or_(RuntimeTask.task_type.is_(None), RuntimeTask.task_type != "workflow"),
+                or_(
+                    RuntimeTask.task_type.is_(None),
+                    RuntimeTask.task_type.notin_(_RESTART_RESUMABLE_TASK_TYPES),
+                ),
             )
             result = await db.execute(stmt)
             tasks = result.scalars().all()
@@ -233,7 +248,7 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
             for task in tasks:
                 if getattr(task, "id", None) in excluded:
                     continue
-                if getattr(task, "task_type", None) == "workflow":
+                if _is_restart_resumable_runtime_task(task):
                     continue
                 task.status = "failed"
                 task.completed_at = now

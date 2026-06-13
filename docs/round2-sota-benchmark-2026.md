@@ -832,6 +832,39 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：不是只让 in-memory Signal consume-once。去重边界落在 PG run metadata 上，覆盖 Signal 与 channel delivery 两类 completion side effect；journal replay、worker restart、手工把 run 状态误回 `running` 后再 resume，都不能重复发完成通知。step/leaf journal 仍负责执行重放，completion claim 只保护 run-level 外部副作用，职责边界清楚。
 
+### 12.8 第二仗 S1 已实装：subagent / web-chat RuntimeTask 重启恢复不再被 orphan sweep 误杀（2026-06-13）
+
+**完成范围**：`backend/app/services/runtime_task_service.py` 将 startup orphan reconcile 从“所有 running 非 workflow 任务标 failed”改为“只标记非可恢复 in-process task”。SQL 查询层排除 `workflow` / `web_chat_turn` 两类已有 restart pump 的 durable task；循环层再按 `metadata_json.resume_after_restart && metadata_json.resumable_delegation` 识别 async delegation 的可恢复 payload。这样 `main.py` 先 resume 后 reconcile 的主链仍保留，同时消掉 `limit=50` 扫描边界、短暂 target 解析失败、未来调用顺序变更导致可恢复 RuntimeTask 被统一打成 failed 的断点。普通无恢复 metadata 的 in-process delegation / trigger / heartbeat 仍会如实失败，不会假活。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_runtime_task_service.py::test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_records -q
+```
+
+结果：`1 failed`。失败点为 `assert updated == 1` 实际得到 `3`，证明旧 reconcile 会同时误杀 `resumable_delegation` 与 `web_chat_turn`，只有普通 in-process delegation 才应失败。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_runtime_task_service.py::test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_records backend/tests/services/test_runtime_task_service.py::test_reconcile_orphaned_runtime_tasks_preserves_workflow_runs backend/tests/services/test_runtime_task_service.py::test_reconcile_orphaned_runtime_tasks_marks_running_records_failed backend/tests/services/test_runtime_task_service.py::test_reconcile_orphaned_runtime_tasks_skips_excluded_ids -q
+# 4 passed
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_runtime_task_service.py backend/tests/agents/test_orchestrator.py::test_delegate_async_persists_resumable_payload_for_restart_recovery backend/tests/agents/test_orchestrator.py::test_resume_persisted_async_delegations_rehydrates_tasks backend/tests/services/test_web_chat_runtime.py::test_resume_persisted_web_chat_runs_schedules_running_turns_with_resume_context backend/tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_injects_restart_resume_context -q
+# 12 passed, 3 warnings
+
+backend/.venv/bin/ruff check backend/app/services/runtime_task_service.py backend/tests/services/test_runtime_task_service.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/runtime_task_service.py backend/tests/services/test_runtime_task_service.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4177 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只把当前 startup 的 returned ids 加进 exclude。恢复资格落到 RuntimeTask 自身的 task_type / metadata 语义上，覆盖 delegation 与 web-chat 两条后台执行线；仍不可恢复的进程内任务继续由 orphan sweep 暴露为 failed。delegation step 级 journal 仍是下一步细粒度副作用去重问题，本节先关闭“可恢复任务被启动清扫误杀”的硬断点。
+
 **第三仗 — Goal-2 地基（执行隔离 + agent 身份）**
 - **目标线**：Codex（OS 级 fail-closed + 默认断网）/ microVM + Claude SDK（凭据出口代理注入）+ Entra Agent ID（一等 agent 身份 + sponsor 生命周期）+ Glean（模型见数据前预过滤）。
 - **动作**：① 验证 bwrap 生产可行（或 gVisor/microVM）+ seccomp + 凭据出口注入替 env 透传；② RLS 之上加 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）。

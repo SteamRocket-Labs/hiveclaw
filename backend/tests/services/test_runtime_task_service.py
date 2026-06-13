@@ -202,7 +202,50 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_workflow_runs(monkeypa
             "metadata_json": {},
         },
     )()
-    web_chat_task = type(
+    trigger_task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "trigger",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    fake_session = _ReconcileSession([workflow_task, trigger_task])
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+
+    updated = await reconcile_orphaned_runtime_tasks()
+
+    assert updated == 1
+    assert workflow_task.status == "running"
+    assert workflow_task.completed_at is None
+    assert trigger_task.status == "failed"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_records(monkeypatch):
+    from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+
+    resumable_delegation = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "delegation",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {
+                "resume_after_restart": True,
+                "resumable_delegation": True,
+            },
+        },
+    )()
+    durable_web_chat = type(
         "RuntimeTaskStub",
         (),
         {
@@ -214,15 +257,27 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_workflow_runs(monkeypa
             "metadata_json": {},
         },
     )()
-    fake_session = _ReconcileSession([workflow_task, web_chat_task])
+    in_process_delegation = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "delegation",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    fake_session = _ReconcileSession([resumable_delegation, durable_web_chat, in_process_delegation])
     monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
 
     updated = await reconcile_orphaned_runtime_tasks()
 
     assert updated == 1
-    assert workflow_task.status == "running"
-    assert workflow_task.completed_at is None
-    assert web_chat_task.status == "failed"
+    assert resumable_delegation.status == "running"
+    assert durable_web_chat.status == "running"
+    assert in_process_delegation.status == "failed"
     assert fake_session.commit_calls == 1
 
 

@@ -27,11 +27,15 @@ def test_nightly_behavior_gate_generates_live_report_and_integrity_before_gate()
     assert "RAILWAY_EVAL_PROJECT_ID" in source
     assert "RAILWAY_EVAL_ENVIRONMENT" in source
     assert "RAILWAY_EVAL_SERVICE" in source
+    assert "HIVE_EVAL_LLM_API_KEY" not in source
+    assert "HIVE_EVAL_MODEL:" not in source
+    assert "--model ${HIVE_EVAL_MODEL" not in source
     assert live_runner in source
     assert "--production-runtime" in source
     assert "::hive-behavior-report::" in source
     assert "--output -" in source
     assert '"$HIVE_EVAL_REPORT"' in source
+    assert '--running-model "$RUNNING_MODEL"' in source
     assert integrity in source
     assert '--output "$HIVE_EVAL_INTEGRITY"' in source
     assert '--integrity-report "$HIVE_EVAL_INTEGRITY"' in source

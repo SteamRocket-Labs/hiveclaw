@@ -120,3 +120,49 @@ async def test_check_agent_access_blocks_org_admin_from_other_tenant_agent():
         await permissions_module.check_agent_access(db, user, agent_id)
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_check_agent_access_hides_soft_deleted_agent_before_role_grants():
+    import app.core.permissions as permissions_module
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        creator_id=uuid4(),
+        tenant_id=tenant_id,
+        deleted_at=object(),
+        deactivated_at=None,
+        sponsor=SimpleNamespace(is_active=True),
+    )
+    user = SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=tenant_id, department_id=None)
+    db = _PermissionsDB(agent=agent)
+
+    with pytest.raises(HTTPException) as exc:
+        await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_check_agent_access_rejects_inactive_sponsor_agent():
+    import app.core.permissions as permissions_module
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        creator_id=uuid4(),
+        tenant_id=tenant_id,
+        deleted_at=None,
+        deactivated_at=None,
+        sponsor=SimpleNamespace(is_active=False),
+    )
+    user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id, department_id=None)
+    db = _PermissionsDB(agent=agent)
+
+    with pytest.raises(HTTPException) as exc:
+        await permissions_module.check_agent_access(db, user, agent_id)
+
+    assert exc.value.status_code == 410

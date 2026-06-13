@@ -406,7 +406,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 - 玩家：**Astrix**（AI agent + MCP + NHI 实时清单 + 行为分析）、**Aembit**（workload IAM + 动态非 vault secrets）、**Entro**、**Akeyless**（secrets vaulting）；**WorkOS**（AuthKit for agents，OpenAI/Anthropic/Cursor/Perplexity 用，$100M Series C ~$2B 2026-03）；**Credo AI**（policy/registry，"AI 治理 OS"）；**GitHub**（agent control plane GA 2026-02）、IBM/Google/Snowflake 都在用"agent control plane"。
 - 共识：agent 需**动态、ephemeral、just-in-time 凭据**而非静态 vault；GitGuardian 2026 报告 AI 相关 secrets 同比 +81%。
 
-**当前 bar + Hive gap**：bar = Entra Agent ID 三层身份**端到端接进** Zero-Trust Conditional Access + ID Governance（sponsor 生命周期/access package/soft-delete 级联）+ 全审计，**且原生说 MCP/XAA/A2A**。**多数竞品只做一半（身份治理 或 委托标准），很少同时做 + 配 budget/观测/审计"单一窗格"**。Hive 现状 = **只有租户 RLS，无 agent 身份构造**——这是控制面最大单点 gap。
+**当前 bar + Hive gap**：bar = Entra Agent ID 三层身份**端到端接进** Zero-Trust Conditional Access + ID Governance（sponsor 生命周期/access package/soft-delete 级联）+ 全审计，**且原生说 MCP/XAA/A2A**。**多数竞品只做一半（身份治理 或 委托标准），很少同时做 + 配 budget/观测/审计"单一窗格"**。Hive 原始基线 = **只有租户 RLS，无 agent 身份构造**；2026-06-13 的 §12.11 已关闭基础 per-agent sponsor/participant 身份与 soft-delete 生命周期，剩余 gap 是外部目录级 Conditional Access / A2A agent-to-agent 审计 / access package 这类 Entra 高阶控制面能力。
 
 ---
 
@@ -454,17 +454,17 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 
 ## 8. 执行隔离 & 安全（Goal-2 地基）
 
-**一句话**：多租户 agent 代码执行隔离 SOTA = **Codex（OS 级 fail-closed + 默认断网）** 与 **microVM（E2B Firecracker 独立内核）**；Hive 现状 = bwrap 方向对但**生产 userns 可行性未验证 + 无 seccomp + G1 残留透传**（审计 P0-G1/G2）。
+**一句话**：多租户 agent 代码执行隔离 SOTA = **Codex（OS 级 fail-closed + 默认断网）** 与 **microVM（E2B Firecracker 独立内核）**。Hive 原始基线 = bwrap 方向对但**生产 userns 可行性未验证 + 无 seccomp + G1 残留透传**；2026-06-13 的 §12.10 已关闭 agent subprocess env/sandbox G1 残留，剩余项是生产 userns 探测、seccomp/microVM 升级和真正出口代理注入。
 
 **隔离级别阶梯（弱→强）**：
 - **namespace（bwrap/bubblewrap）**：mount/net/pid namespace，**共享宿主内核**——任何内核 LPE 穿透；且非 root 容器 + Debian/slim base + 多 PaaS **默认禁 unprivileged userns**（Hive bwrap 生产可行性的真风险）。
 - **Codex sandbox**：macOS Seatbelt + Linux Landlock + seccomp + **默认断网**，审批是"脱沙箱"例外通道（approval_policy 四档 + sandbox_mode 三档，模型可带 justification 申请脱沙箱）。
 - **gVisor（Modal）**：用户态内核拦截 syscall，比 namespace 强、比 microVM 轻。
 - **microVM（E2B Firecracker / Kata）**：独立 guest 内核，**多租户隔离基线上移到这里**。
-- **凭据处理 SOTA（Claude Agent SDK 标准解法，直对 Hive P0-G1）**：多租户隔离配方 = `settingSources:[]` + `CLAUDE_CONFIG_DIR` per-tenant + per-tenant cwd + **egress proxy 注入凭据**——"**keep tool credentials out of the agent environment, inject at proxy after request leaves container**"。即**凭据在出口代理注入，不进 agent 环境**（Hive 现在是 env 透传全平台密钥）。
+- **凭据处理 SOTA（Claude Agent SDK 标准解法，直对 Hive P0-G1）**：多租户隔离配方 = `settingSources:[]` + `CLAUDE_CONFIG_DIR` per-tenant + per-tenant cwd + **egress proxy 注入凭据**——"**keep tool credentials out of the agent environment, inject at proxy after request leaves container**"。即**凭据在出口代理注入，不进 agent 环境**。Hive 已在 §12.10 先关闭 agent-controlled subprocess 继承 registry URL userinfo 与裸跑安装器，完整出口代理仍是下一层隔离工程。
 
 **安全/防御**：MCP 工具注解 `readOnlyHint`/`destructiveHint` 是**显式不可信风险词汇**（"clients MUST consider tool annotations untrusted"），真保证靠 sandbox + audience-bound token（禁 passthrough）+ per-client consent + 最小权限；OWASP Agent Top 10 + 记忆投毒/prompt-injection 防御（CaMeL、spotlighting 等）。
-- **→ Hive 追平/超越**：① 验证 bwrap 生产 userns 可行（或换 gVisor/microVM）+ 加 seccomp + runtime 探测（非只 which()）；② **凭据出口代理注入**替 env 透传（G1 业界标准解法）；③ G1 残留（officecli 等 `os.environ.copy()`）收口；④ execute_code "No network access" 描述要在 sandbox 真断网后才成立。
+- **→ Hive 追平/超越**：① 验证 bwrap 生产 userns 可行（或换 gVisor/microVM）+ 加 seccomp + runtime 探测（非只 which()）；② **凭据出口代理注入**替 env 透传；③ agent subprocess G1 残留已按 §12.10 收口，后续新增 subprocess 必须复用 `subprocess_env.py` / `subprocess_sandbox.py`；④ execute_code "No network access" 描述要在 sandbox 真断网后才成立。
 
 ---
 
@@ -500,8 +500,8 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🔴 仅 workflow 一条线；subagent/delegation 裸奔 | journal 升"completion 去重边界"+withRetry+输出cap续写 |
 | 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡 原语齐全，缺重规划；D2 信号死线 | 补 task/progress-ledger；修 workflow_completed 零消费 |
 | 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；🟡 C2 中文首轮低估 | C2 CJK 校准；评估 Code-Execution-over-MCP |
-| 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 bwrap 生产可行性未验证+无 seccomp+G1 残留 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
-| 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🔴 只租户 RLS，无 agent 身份 | RLS 之上加 per-agent 身份+sponsor 生命周期 |
+| 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 G1 subprocess env/sandbox 已收口；仍缺生产 userns 探测+seccomp/microVM+出口代理 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
+| 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
 | 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 治理在工具执行层，未到记忆检索 | choke point 保证扩到 retrieval/memory |
 | 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🔴 trace 写了无人读、反馈环死、无行为 eval | trace 落库+reader+跨invocation树；建外部 eval |
 | 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 有 MCP，缺 A2A/委托标准 | 原生说开放标准=中立平面具体化 |
@@ -520,7 +520,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 **结构性落后（要打的硬仗）**：
 1. **验证门**（假门——研究铁律最忌的自评，**最高优先**，§2.3/§9）。
 2. **持久执行**（只 workflow 一条线，subagent/delegation 裸奔，§7.1）。
-3. **agent 身份控制面**（只租户 RLS，无 Entra 式 agent 身份，§6）。
+3. **agent 身份控制面**（基础 per-agent sponsor/participant + soft-delete 生命周期已在 §12.11 关闭；剩 Entra 式目录级 CA/A2A 审计，§6）。
 4. **可观测**（trace 死、反馈环死、无行为 eval，§9 + 审计 O1/O2）。
 5. **隔离部署**（bwrap 生产可行性未验证，§8）。
 
@@ -942,9 +942,50 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：不是只过滤 `DATABASE_URL` / `OPENAI_API_KEY` 这类显性 secrets，也不是只让 code_exec 走 sandbox。所有 agent-controlled subprocess 的共用 env builder 会剥离 registry URL userinfo；外部 skills.sh install 与 code_exec/run_command 共用同一个 sandbox builder 和 fail-closed 策略。后续如果引入 capability-scoped package credentials，应走显式出口代理或一次性 token 注入，不再靠继承 backend env。
 
+### 12.11 第三仗 ID1 已实装：per-agent sponsor/participant 身份 + soft-delete 生命周期（2026-06-13）
+
+**完成范围**：新增 `backend/app/services/agent_identity_lifecycle.py` 作为 agent 身份与生命周期唯一 service：`ensure_agent_identity()` 会在创建/回填时绑定 `sponsor_user_id` 与稳定 `participants.id`，`soft_delete_agent()` 只软删除 agent，不再物理删除审计、聊天、Participant 或历史关系。`backend/app/models/agent.py` 新增 `sponsor_user_id`、`participant_id`、`deleted_at`、`deactivated_at`、`deactivation_reason`，并通过 ORM `before_flush` 兜底，任何直接 `session.add(Agent(...))` 的旧路径都会在 flush 前自动生成 sponsor/Participant，避免新 NOT NULL 约束变成未来断点。`backend/alembic/versions/agent_identity_lifecycle_0613.py` 对存量 agents 插入/更新 participants、回填 sponsor/participant、加 FK + NOT NULL + active lifecycle index；Alembic 单 head 更新为 `agent_identity_lifecycle_0613`。
+
+**运行面接线**：`check_agent_access()` eager-load sponsor，soft-deleted agent 返回 404，deactivated / inactive-sponsor 返回 410；`is_agent_expired()` 复用同一 lifecycle reason。`list_agents()`、`auto_provision.ensure_main_agent()`、trigger daemon enabled-trigger sweep、heartbeat tick、workspace full sweep 都加 `agent_lifecycle_active_clause()`，不再枚举失效 agent。`task_executor`、durable web-chat resume、`runtime/invoker._resolve_runtime_config()` 在模型/工具调用前 fail-closed。创建路径（Web API、system HR、HR tool、desktop sub-agent、auto-provision、default seeder）统一调用 `ensure_agent_identity()`；删除路径改为 `soft_delete_agent()`，同时停容器、禁用 `agent_triggers` / `agent_schedules`、kill pending/running `runtime_tasks`，但保留审计与历史身份。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_agent_identity_lifecycle.py backend/tests/migrations/test_agent_identity_lifecycle_migration.py backend/tests/api/test_permissions_integration.py backend/tests/services/test_auto_provision.py -q
+```
+
+结果：`9 failed, 8 passed`。失败点分别为 `app.services.agent_identity_lifecycle` 模块缺失、`agent_identity_lifecycle_0613.py` 迁移缺失、`check_agent_access()` 未拦截 soft-deleted / inactive-sponsor agent、auto-provision 只创建 Agent 不创建完整 sponsor/Participant 身份。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_agent_identity_lifecycle.py backend/tests/migrations/test_agent_identity_lifecycle_migration.py backend/tests/api/test_permissions_integration.py backend/tests/services/test_auto_provision.py -q
+# 17 passed
+
+cd backend && .venv/bin/python -m alembic heads
+# agent_identity_lifecycle_0613 (head)
+
+backend/.venv/bin/python -m pytest backend/tests/api/test_agent_api_surface.py backend/tests/api/test_hr_agent_endpoint.py backend/tests/tools/test_hr_handler.py backend/tests/services/test_agent_seeder.py -q
+# 26 passed, 3 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/integration/test_stage2b_backfill.py backend/tests/integration/test_stage2b_runtime_task_insert.py backend/tests/services/test_trigger_daemon_workflow.py backend/tests/services/test_workflow_ledger_mirror.py backend/tests/services/test_plan_mode_e2e.py backend/tests/integration/test_runtime_bootstrap_rls.py backend/tests/integration/test_stage2b_shadow.py backend/tests/integration/test_stage2b_insert_tenant.py backend/tests/integration/test_tenant_resolver.py backend/tests/services/test_trigger_daemon_plan_context.py backend/tests/agents/test_coordination_signal_resume.py backend/tests/runtime/test_workflow_completion_signal.py backend/tests/runtime/test_workflow_wait_signal.py -q
+# 61 passed, 4 warnings
+
+backend/.venv/bin/ruff check backend/app/models/agent.py backend/app/services/agent_identity_lifecycle.py backend/app/core/permissions.py backend/app/api/agents.py backend/app/services/auto_provision.py backend/app/tools/handlers/hr.py backend/app/api/desktop_agents.py backend/app/services/agent_seeder.py backend/app/services/trigger_daemon.py backend/app/services/heartbeat.py backend/app/services/task_executor.py backend/app/services/web_chat_runtime.py backend/app/runtime/invoker.py backend/tests/services/test_agent_identity_lifecycle.py backend/tests/migrations/test_agent_identity_lifecycle_migration.py backend/tests/api/test_permissions_integration.py backend/tests/services/test_auto_provision.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/models/agent.py backend/app/services/agent_identity_lifecycle.py backend/app/core/permissions.py backend/app/api/agents.py backend/app/services/auto_provision.py backend/app/tools/handlers/hr.py backend/app/api/desktop_agents.py backend/app/services/agent_seeder.py backend/app/services/trigger_daemon.py backend/app/services/heartbeat.py backend/app/services/task_executor.py backend/app/services/web_chat_runtime.py backend/app/runtime/invoker.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4192 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只给新建 agent 加字段，也不是只在 API list 里过滤。存量数据有迁移回填 + NOT NULL/FK；所有创建路径有显式 service，任意直接 ORM 插入还有 `before_flush` 兜底；删除不再清空历史表，而是保留 Participant/Chat/Audit 并关闭所有执行入口；同步用户入口、后台 daemon、重启恢复、统一 invoker 都会识别失效 agent。剩余不在本节范围的是 Entra 级外部目录 identity、Conditional Access、access package、A2A 审计标准化。
+
 **第三仗 — Goal-2 地基（执行隔离 + agent 身份）**
 - **目标线**：Codex（OS 级 fail-closed + 默认断网）/ microVM + Claude SDK（凭据出口代理注入）+ Entra Agent ID（一等 agent 身份 + sponsor 生命周期）+ Glean（模型见数据前预过滤）。
-- **动作**：① 验证 bwrap 生产可行（或 gVisor/microVM）+ seccomp + 凭据出口注入替 env 透传；② RLS 之上加 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）。
+- **动作**：① G1 已关闭 agent subprocess env/sandbox 基线；② ID1 已关闭 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）；⑤ 后续再接目录级 CA / A2A 审计 / access package。
 
 **第四仗 — 可观测地基（为前三仗提供验收仪表，可先动工）**
 - **目标线**：OpenAI Agents SDK（trace 默认开 + 全链 trace 树）+ Decagon（100% 会话 QA）。

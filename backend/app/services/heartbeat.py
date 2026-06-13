@@ -1992,6 +1992,7 @@ async def _heartbeat_tick():
     """One heartbeat tick: find agents due for heartbeat."""
     from app.database import async_session
     from app.models.agent import Agent
+    from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
     from app.services.audit_logger import write_audit_log
 
     now = datetime.now(timezone.utc)
@@ -2004,6 +2005,7 @@ async def _heartbeat_tick():
             result = await db.execute(
                 select(Agent).where(
                     Agent.status.in_(["running", "idle"]),
+                    agent_lifecycle_active_clause(),
                 )
             )
             agents = result.scalars().all()
@@ -2106,6 +2108,7 @@ async def _workspace_full_sweep() -> None:
     """Safety net: sync every active tenant in case dirty events were lost."""
     from app.database import async_session
     from app.models.agent import Agent
+    from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 
     try:
         async with (
@@ -2117,6 +2120,7 @@ async def _workspace_full_sweep() -> None:
                 .where(
                     Agent.status.in_(["running", "idle"]),
                     Agent.tenant_id.is_not(None),
+                    agent_lifecycle_active_clause(),
                 )
                 .distinct()
             )

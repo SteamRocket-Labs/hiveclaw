@@ -18,6 +18,7 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.schemas import SmartModelRoutingConfig
+from app.services.agent_identity_lifecycle import ensure_agent_identity
 from app.services.auto_provision import ensure_main_agent
 from app.services.sync_service import bump_sync_version
 
@@ -103,6 +104,7 @@ async def create_sub_agent(
         owner_user_id=current_user.id,
         parent_agent_id=main_agent.id,
         creator_id=current_user.id,
+        sponsor_user_id=current_user.id,
         tenant_id=current_user.tenant_id,
         security_zone=body.security_zone,
         execution_mode=body.execution_mode,
@@ -110,7 +112,7 @@ async def create_sub_agent(
         config_version=1,
     )
     db.add(agent)
-    await db.flush()
+    await ensure_agent_identity(db, agent)
 
     if current_user.tenant_id:
         await bump_sync_version(db, current_user.tenant_id)

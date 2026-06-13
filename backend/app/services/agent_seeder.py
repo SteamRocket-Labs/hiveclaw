@@ -14,6 +14,7 @@ from app.models.skill import Skill
 from app.models.tool import Tool
 from app.models.user import User
 from app.config import get_settings
+from app.services.agent_identity_lifecycle import ensure_agent_identity
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
 
 settings = get_settings()
@@ -140,6 +141,7 @@ async def seed_default_agents():
             bio="Hey, I'm Morty! I love digging into questions and finding answers. Whether you need web research, data analysis, or just a good explanation — I've got you.",
             avatar_url="",
             creator_id=admin.id,
+            sponsor_user_id=admin.id,
             tenant_id=admin.tenant_id,
             status="idle",
         )
@@ -149,22 +151,15 @@ async def seed_default_agents():
             bio="I'm Mr. Meeseeks! Look at me! Give me a task and I'll plan it, execute it step by step, and get it DONE. Existence is pain until the task is complete!",
             avatar_url="",
             creator_id=admin.id,
+            sponsor_user_id=admin.id,
             tenant_id=admin.tenant_id,
             status="idle",
         )
 
         db.add(morty)
         db.add(meeseeks)
-        await db.flush()  # get IDs
-
-        # ── Participant identities ──
-        from app.models.participant import Participant
-
-        db.add(Participant(type="agent", ref_id=morty.id, display_name=morty.name, avatar_url=morty.avatar_url))
-        db.add(
-            Participant(type="agent", ref_id=meeseeks.id, display_name=meeseeks.name, avatar_url=meeseeks.avatar_url)
-        )
-        await db.flush()
+        await ensure_agent_identity(db, morty)
+        await ensure_agent_identity(db, meeseeks)
 
         # ── Permissions (company-wide, manage) ──
         db.add(AgentPermission(agent_id=morty.id, scope_type="company", access_level="manage"))

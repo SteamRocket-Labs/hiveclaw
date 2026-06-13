@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass
@@ -42,6 +43,7 @@ from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.runtime.session_key import build_session_key, ensure_session_key
 from app.services.agent_context import build_agent_context, build_agent_runtime_context
+from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 from app.services.agent_work_ledger import should_enable_work_ledger
 from app.services.agent_tools import (
     CORE_TOOL_NAMES,
@@ -216,7 +218,7 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
 
     try:
         async with async_session() as db, enter_rls_bypass(db, reason=f"runtime config bootstrap for agent {agent_id}"):
-            result = await db.execute(select(Agent).where(Agent.id == agent_id))
+            result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning("[Invoker] Agent %s not found in DB — fail-closed", agent_id)
@@ -224,6 +226,14 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                     tenant_id=None,
                     max_tool_rounds=200,
                     tenant_resolution_error=f"Agent {agent_id} not found",
+                )
+            lifecycle_reason = get_agent_lifecycle_block_reason(agent)
+            if lifecycle_reason:
+                logger.warning("[Invoker] Agent %s is not active (%s) — fail-closed", agent_id, lifecycle_reason)
+                return RuntimeConfig(
+                    tenant_id=agent.tenant_id,
+                    max_tool_rounds=agent.max_tool_rounds or 200,
+                    tenant_resolution_error=f"Agent {agent_id} is not active: {lifecycle_reason}",
                 )
 
             # Token quota enforcement is now at User level (quota_guard.check_user_llm_quota)

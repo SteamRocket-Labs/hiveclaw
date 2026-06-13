@@ -103,10 +103,12 @@ async def test_creates_main_agent_from_dept_template():
         result = await ensure_main_agent(db, _USER_WITH_DEPT)
 
     assert result is not None
-    assert len(db.added) == 1
+    assert len(db.added) == 2
     agent = db.added[0]
     assert agent.agent_kind == "main"
     assert agent.owner_user_id == _USER_ID
+    assert agent.sponsor_user_id == _USER_ID
+    assert agent.participant_id == db.added[1].id
     assert agent.name == "研发助理"
     assert agent.template_id == _TEMPLATE_ID
     assert agent.channel_perms is True

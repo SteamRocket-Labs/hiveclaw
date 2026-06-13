@@ -1164,9 +1164,9 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
     from app.database import tenant_scoped_session
     from app.models.agent import Agent, AgentPermission
-    from app.models.participant import Participant
     from app.models.skill import Skill
     from app.models.user import User
+    from app.services.agent_identity_lifecycle import ensure_agent_identity
     from app.services.agent_manager import agent_manager
     from app.services.tenant_resolver import resolve_tenant_for_agent
     from app.services.capability_install_service import (
@@ -1328,6 +1328,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 welcome_message=welcome_message or None,
                 creator_id=user.id,
                 owner_user_id=user.id,
+                sponsor_user_id=user.id,
                 tenant_id=effective_tenant_id,
                 agent_type="native",
                 agent_class="internal_tenant",
@@ -1343,18 +1344,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 last_heartbeat_at=_dt.now(_tz.utc),
             )
             db.add(agent)
-            await db.flush()
-
-            # Participant identity
-            db.add(
-                Participant(
-                    type="agent",
-                    ref_id=agent.id,
-                    display_name=agent.name,
-                    avatar_url=None,
-                )
-            )
-            await db.flush()
+            await ensure_agent_identity(db, agent, display_name=agent.name, avatar_url=None)
 
             # Permissions
             if permission_scope == "self":

@@ -16,6 +16,11 @@ from app.domain.agent_lifecycle import InvalidTransitionError, TransitionContext
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
+from app.services.agent_identity_lifecycle import (
+    agent_lifecycle_active_clause,
+    ensure_agent_identity,
+    soft_delete_agent,
+)
 from app.services.heartbeat_policy import apply_managed_heartbeat_fields, normalize_agent_heartbeat_output
 
 logger = logging.getLogger(__name__)
@@ -71,6 +76,7 @@ async def list_agents(
         stmt = select(Agent).where(
             Agent.tenant_id == target_tenant_id,
             Agent.agent_class != "internal_system",
+            agent_lifecycle_active_clause(),
         )
         result = await db.execute(stmt.order_by(Agent.created_at.desc()))
         agents = result.scalars().all()
@@ -92,6 +98,7 @@ async def list_agents(
         Agent.creator_id == current_user.id,
         Agent.tenant_id == user_tenant,
         Agent.agent_class != "internal_system",
+        agent_lifecycle_active_clause(),
     )
 
     # Get agents user has permission to (within their tenant)
@@ -110,6 +117,7 @@ async def list_agents(
         Agent.id.in_(permitted_ids),
         Agent.tenant_id == user_tenant,
         Agent.agent_class != "internal_system",
+        agent_lifecycle_active_clause(),
     )
 
     # Union
@@ -224,7 +232,6 @@ async def get_or_create_hr_agent(
 
     # Lazy-create the HR agent (race-safe: unique constraint on name+tenant+agent_class
     # will reject duplicates if two requests slip past the lock)
-    from app.models.participant import Participant
     from app.services.agent_manager import agent_manager
 
     default_model = await _get_default_model()
@@ -233,6 +240,7 @@ async def get_or_create_hr_agent(
         name=HR_AGENT_NAME,
         role_description="Digital Employee Onboarding Specialist — guides users through creating new digital employees via conversation",
         creator_id=current_user.id,
+        sponsor_user_id=current_user.id,
         tenant_id=tenant_id,
         agent_type="native",
         agent_class="internal_system",
@@ -241,14 +249,7 @@ async def get_or_create_hr_agent(
         status="creating",
     )
     db.add(hr_agent)
-    await db.flush()
-
-    # Participant identity
-    db.add(Participant(
-        type="agent", ref_id=hr_agent.id,
-        display_name="HR Onboarding Agent", avatar_url=None,
-    ))
-    await db.flush()
+    await ensure_agent_identity(db, hr_agent, display_name="HR Onboarding Agent", avatar_url=None)
 
     # No public permissions — HR agent is only accessible via this endpoint
     db.add(AgentPermission(
@@ -329,6 +330,7 @@ async def create_agent(
         bio=data.bio,
         avatar_url=data.avatar_url,
         creator_id=current_user.id,
+        sponsor_user_id=current_user.id,
         tenant_id=target_tenant_id,
         agent_type="native",
         primary_model_id=data.primary_model_id,
@@ -344,7 +346,7 @@ async def create_agent(
     )
     apply_managed_heartbeat_fields(agent)
     db.add(agent)
-    await db.flush()
+    await ensure_agent_identity(db, agent)
 
     # Lifecycle: draft → creating (validated by state machine)
     try:
@@ -352,14 +354,6 @@ async def create_agent(
         agent.status = transition("draft", "creating", ctx)
     except InvalidTransitionError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-    # Auto-create Participant identity for the new agent
-    from app.models.participant import Participant
-    db.add(Participant(
-        type="agent", ref_id=agent.id,
-        display_name=agent.name, avatar_url=agent.avatar_url,
-    ))
-    await db.flush()
 
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
@@ -709,65 +703,7 @@ async def delete_agent(
     except Exception as e:
         logger.warning("Failed to archive files for agent %s: %s", agent_id, e)
 
-    # Delete related records that reference this agent
-    # Use savepoints so a failure in one table doesn't poison the whole transaction
-    from sqlalchemy import text, table, column
-
-    # Whitelist of tables to clean — validated to prevent SQL injection
-    _CLEANUP_TABLES = frozenset({
-        "agent_activity_logs", "audit_logs", "approval_requests",
-        "chat_messages", "chat_sessions", "tasks",
-        "agent_schedules", "agent_triggers", "channel_configs",
-        "agent_permissions", "agent_tools", "agent_relationships",
-        "gateway_messages",
-    })
-
-    for table_name in _CLEANUP_TABLES:
-        try:
-            async with db.begin_nested():
-                t = table(table_name, column("agent_id"))
-                await db.execute(t.delete().where(t.c.agent_id == agent_id))
-        except Exception as e:
-            logger.debug("Cleanup skip %s for agent %s: %s", table_name, agent_id, e)
-
-    # Clean up secondary FK columns that also reference agents table
-    secondary_fk_cleanups = [
-        "DELETE FROM chat_sessions WHERE peer_agent_id = :aid",
-        "DELETE FROM gateway_messages WHERE sender_agent_id = :aid",
-    ]
-    for sql in secondary_fk_cleanups:
-        try:
-            async with db.begin_nested():
-                await db.execute(text(sql), {"aid": agent_id})
-        except Exception:
-            logger.debug("FK cleanup skipped for agent %s: %s", agent_id, sql[:60])
-
-    # Also clean agent_agent_relationships (has both agent_id and target_agent_id)
-    try:
-        async with db.begin_nested():
-            await db.execute(
-                text("DELETE FROM agent_agent_relationships WHERE agent_id = :aid OR target_agent_id = :aid"),
-                {"aid": agent_id},
-            )
-    except Exception as e:
-        logger.debug("Cleanup skip agent_agent_relationships for agent %s: %s", agent_id, e)
-
-    # Also clear plaza posts by this agent
-    try:
-        async with db.begin_nested():
-            await db.execute(text("DELETE FROM plaza_posts WHERE author_id = :aid"), {"aid": str(agent_id)})
-    except Exception as e:
-        logger.debug("Cleanup skip plaza_posts for agent %s: %s", agent_id, e)
-
-    # Clean up Participant identity
-    try:
-        async with db.begin_nested():
-            await db.execute(
-                text("DELETE FROM participants WHERE type = 'agent' AND ref_id = :aid"),
-                {"aid": agent_id},
-            )
-    except Exception as e:
-        logger.debug("Cleanup skip participants for agent %s: %s", agent_id, e)
+    await soft_delete_agent(db, agent, actor_id=current_user.id, reason="delete_agent")
 
     # Audit: agent deleted (before commit so we still have agent data)
     try:
@@ -779,7 +715,6 @@ async def delete_agent(
     except Exception:
         logger.warning("Audit write failed for agent.deleted", exc_info=True)
 
-    await db.delete(agent)
     await db.commit()
 
 

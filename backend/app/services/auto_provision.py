@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent, AgentTemplate
 from app.models.user import User
+from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause, ensure_agent_identity
 from app.services.sync_service import bump_sync_version
 
 
@@ -30,6 +31,7 @@ async def ensure_main_agent(db: AsyncSession, user: User) -> Agent | None:
             Agent.owner_user_id == user.id,
             Agent.tenant_id == user.tenant_id,
             Agent.parent_agent_id.is_(None),
+            agent_lifecycle_active_clause(),
         )
     )
     existing = existing_result.scalar_one_or_none()
@@ -62,6 +64,7 @@ async def ensure_main_agent(db: AsyncSession, user: User) -> Agent | None:
         name=template.name,
         role_description=template.description or "",
         creator_id=user.id,
+        sponsor_user_id=user.id,
         tenant_id=user.tenant_id,
         primary_model_id=template.model_id,
         template_id=template.id,
@@ -70,7 +73,7 @@ async def ensure_main_agent(db: AsyncSession, user: User) -> Agent | None:
         config_version=1,
     )
     db.add(agent)
-    await db.flush()
+    await ensure_agent_identity(db, agent)
 
     await bump_sync_version(db, user.tenant_id)
     return agent

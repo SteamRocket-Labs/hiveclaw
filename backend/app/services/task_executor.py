@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -18,6 +19,7 @@ from app.models.participant import Participant
 from app.models.task import Task, TaskLog
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 
 
 TASK_EXECUTION_ADDENDUM = """<role>
@@ -279,10 +281,18 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
 
     # Step 2: Load agent + model
     async with tenant_scoped_session(tenant_id) as db:
-        agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        agent_result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
         agent = agent_result.scalar_one_or_none()
         if not agent:
             await _log_error(task_id, "数字员工未找到", tenant_id=tenant_id)
+            return
+        lifecycle_reason = get_agent_lifecycle_block_reason(agent)
+        if lifecycle_reason:
+            await _log_error(
+                task_id,
+                f"数字员工当前不可执行：{lifecycle_reason}",
+                tenant_id=tenant_id,
+            )
             return
 
         model_id = agent.primary_model_id or agent.fallback_model_id

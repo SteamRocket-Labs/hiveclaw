@@ -6,10 +6,12 @@ from typing import Tuple
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.policy import check_permission
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
+from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 
 
 async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Tuple[Agent, str]:
@@ -23,10 +25,19 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     3. User is the agent creator → manage
     4. User has explicit permission (company/user scope) → from permission record
     """
-    result = await db.execute(select(Agent).where(Agent.id == agent_id))
+    result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    lifecycle_reason = get_agent_lifecycle_block_reason(agent)
+    if lifecycle_reason == "deleted":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if lifecycle_reason:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=f"Agent is not active: {lifecycle_reason}",
+        )
 
     # Platform admins can access everything with manage
     if user.role == "platform_admin":
@@ -88,5 +99,5 @@ def is_agent_creator(user: User, agent: Agent) -> bool:
 
 
 def is_agent_expired(agent: Agent) -> bool:
-    """Agent expiry has been removed — always returns False."""
-    return False
+    """Return True when lifecycle policy blocks execution."""
+    return get_agent_lifecycle_block_reason(agent) is not None

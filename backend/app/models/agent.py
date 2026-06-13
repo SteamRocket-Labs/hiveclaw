@@ -3,9 +3,9 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, event, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.database import Base
 
@@ -27,6 +27,8 @@ class Agent(Base):
 
     # Ownership
     creator_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    sponsor_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    participant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=False)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"))
 
     # Agent type: 'native' (platform-hosted LLM) or 'openclaw' (remote OpenClaw bot)
@@ -102,9 +104,14 @@ class Agent(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deactivation_reason: Mapped[str | None] = mapped_column(Text)
 
     # Relationships
     creator: Mapped["User"] = relationship("User", back_populates="created_agents", foreign_keys=[creator_id])
+    sponsor: Mapped["User"] = relationship("User", foreign_keys=[sponsor_user_id])
+    participant: Mapped["Participant"] = relationship("Participant", foreign_keys=[participant_id])
     permissions: Mapped[list["AgentPermission"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     tasks: Mapped[list["Task"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     channel_config: Mapped["ChannelConfig | None"] = relationship(back_populates="agent", uselist=False)
@@ -165,3 +172,26 @@ from app.models.task import Task  # noqa: E402, F401
 from app.models.channel_config import ChannelConfig  # noqa: E402, F401
 from app.models.user import User  # noqa: E402, F401
 from app.models.llm import LLMModel  # noqa: E402, F401
+from app.models.participant import Participant  # noqa: E402, F401
+
+
+@event.listens_for(Session, "before_flush")
+def _ensure_agent_identity_before_flush(session: Session, _flush_context, _instances) -> None:
+    """Last-resort guard so new Agent rows cannot bypass identity binding."""
+    for obj in list(session.new):
+        if not isinstance(obj, Agent):
+            continue
+        if obj.id is None:
+            obj.id = uuid.uuid4()
+        if obj.sponsor_user_id is None:
+            obj.sponsor_user_id = obj.owner_user_id or obj.creator_id
+        if obj.participant_id is None:
+            participant = Participant(
+                id=uuid.uuid4(),
+                type="agent",
+                ref_id=obj.id,
+                display_name=(obj.name or "Agent")[:100],
+                avatar_url=obj.avatar_url,
+            )
+            obj.participant_id = participant.id
+            session.add(participant)

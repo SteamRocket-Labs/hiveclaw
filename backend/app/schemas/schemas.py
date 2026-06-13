@@ -112,6 +112,8 @@ class AgentOut(BaseModel):
     welcome_message: str | None = None
     status: str
     creator_id: uuid.UUID
+    sponsor_user_id: uuid.UUID
+    participant_id: uuid.UUID
     owner_user_id: uuid.UUID | None = None
     tenant_id: uuid.UUID | None = None
     creator_username: str | None = None  # Populated by API layer; not in ORM model directly
@@ -137,6 +139,9 @@ class AgentOut(BaseModel):
     openclaw_last_seen: datetime | None = None
     created_at: datetime
     last_active_at: datetime | None = None
+    deleted_at: datetime | None = None
+    deactivated_at: datetime | None = None
+    deactivation_reason: str | None = None
 
     model_config = {"from_attributes": True}
 

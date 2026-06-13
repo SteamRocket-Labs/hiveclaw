@@ -29,7 +29,7 @@ from tests.integration.conftest import BACKEND_ROOT
 _WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_calls", "workflow_quotas")
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 _FEEDBACK_TABLES = ("session_feedback_events",)
-_CURRENT_CLOSURE_HEAD = "chat_message_thinking_signature_0613"
+_CURRENT_CLOSURE_HEAD = "agent_identity_lifecycle_0613"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:

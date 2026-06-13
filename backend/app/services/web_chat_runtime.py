@@ -13,6 +13,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.core.permissions import is_agent_expired
@@ -927,10 +928,14 @@ async def _load_runtime_context(
         if runtime_task is None:
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} not found")
 
-        agent_result = await db.execute(select(Agent).where(Agent.id == runtime_task.parent_agent_id))
+        agent_result = await db.execute(
+            select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == runtime_task.parent_agent_id)
+        )
         agent = agent_result.scalar_one_or_none()
         if agent is None:
             raise RuntimeError(f"Agent {runtime_task.parent_agent_id} not found")
+        if is_agent_expired(agent):
+            raise RuntimeError(f"Agent {runtime_task.parent_agent_id} is not active")
 
         metadata = dict(runtime_task.metadata_json or {})
         user_id = uuid.UUID(str(metadata.get("user_id")))

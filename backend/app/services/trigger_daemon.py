@@ -28,6 +28,7 @@ from app.core.events import get_redis
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
+from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
@@ -1549,7 +1550,11 @@ async def _tick():
         async_session() as db,
         enter_rls_bypass(db, reason="trigger daemon tick — enumerate all enabled triggers across tenants"),
     ):
-        result = await db.execute(select(AgentTrigger).where(AgentTrigger.is_enabled))
+        result = await db.execute(
+            select(AgentTrigger)
+            .join(Agent, Agent.id == AgentTrigger.agent_id)
+            .where(AgentTrigger.is_enabled, agent_lifecycle_active_clause())
+        )
         all_triggers = result.scalars().all()
 
     if not all_triggers:

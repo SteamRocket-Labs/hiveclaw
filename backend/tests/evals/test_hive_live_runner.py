@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
+from uuid import uuid4
+
+import pytest
 
 from app.evals.hive_live_runner import (
+    BEHAVIOR_REPORT_STDOUT_MARKER,
     TRUSTED_LIVE_TRANSPORTS,
     behavior_eval_passed,
     build_invoke_agent_runner,
+    main,
     record_behavior_eval_run,
     run_hive_behavior_eval,
+    write_behavior_report,
 )
 from app.services.evolution_verification import run_evolution_verification
 
@@ -145,6 +153,52 @@ async def test_build_invoke_agent_runner_constructs_request(tmp_path: Path) -> N
     await request.tool_executor("write_file", {"path": "artifact.txt", "content": "ok"})
     assert (tmp_path / "artifact.txt").read_text(encoding="utf-8") == "ok"
     assert payload["status"] == "success"
+
+
+async def test_build_invoke_agent_runner_normalizes_production_runtime_ids(tmp_path: Path) -> None:
+    captured: dict = {}
+    agent_id = uuid4()
+    user_id = uuid4()
+
+    async def fake_invoke(request):
+        captured["request"] = request
+        from app.runtime.invoker import AgentInvocationResult
+
+        return AgentInvocationResult(content='{"status":"success"}')
+
+    runner = build_invoke_agent_runner(
+        model="model-x",
+        agent_name="eval-agent",
+        role_description="evaluation agent",
+        agent_id=str(agent_id),
+        user_id=str(user_id),
+        invoke=fake_invoke,
+    )
+    await runner("complete TASK.md", tmp_path)
+
+    assert captured["request"].agent_id == agent_id
+    assert captured["request"].user_id == user_id
+
+
+def test_production_runtime_cli_requires_eval_agent_and_user(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HIVE_EVAL_LLM_API_KEY", "test-key")
+
+    with pytest.raises(SystemExit) as exc:
+        main(["--output", str(tmp_path / "report.json"), "--model", "claude-opus-4-8", "--production-runtime"])
+
+    assert exc.value.code == 2
+
+
+def test_write_behavior_report_stdout_marker(capsys) -> None:
+    report = _live_report("hive_live")
+
+    write_behavior_report(report, Path("-"))
+
+    output = capsys.readouterr().out.strip()
+    assert output.startswith(BEHAVIOR_REPORT_STDOUT_MARKER)
+    encoded = output.removeprefix(BEHAVIOR_REPORT_STDOUT_MARKER)
+    decoded = json.loads(base64.b64decode(encoded).decode("utf-8"))
+    assert decoded == report
 
 
 # ---- agent_behavior_check grader (into run_evolution_verification dispatch) ----

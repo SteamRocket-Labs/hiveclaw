@@ -23,9 +23,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import inspect
 import json
 import os
+import tempfile
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from time import monotonic
@@ -57,6 +60,8 @@ DETERMINISTIC_BEHAVIOR_SCENARIOS: tuple[str, ...] = (
 TRUSTED_LIVE_TRANSPORTS: frozenset[str] = frozenset({"hive_live", "live_cli"})
 
 AgentRunner = Callable[[str, Path], Awaitable[dict[str, Any]]]
+
+BEHAVIOR_REPORT_STDOUT_MARKER = "::hive-behavior-report::"
 
 _EVAL_WORKSPACE_TOOL_NAMES: frozenset[str] = frozenset(
     {
@@ -241,6 +246,17 @@ def build_workspace_tool_executor(
     return execute
 
 
+def _coerce_uuid(value: Any, *, field_name: str) -> uuid.UUID | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a UUID, got {value!r}") from exc
+
+
 def build_invoke_agent_runner(
     *,
     model: Any,
@@ -264,6 +280,8 @@ def build_invoke_agent_runner(
         from app.runtime.invoker import AgentInvocationRequest
 
         scenario_tool_executor = tool_executor or build_workspace_tool_executor(workspace_dir)
+        normalized_agent_id = _coerce_uuid(agent_id, field_name="agent_id")
+        normalized_user_id = _coerce_uuid(user_id, field_name="user_id")
         task_prompt = (
             f"{prompt}\n\nYour evaluation workspace is: {workspace_dir}\n"
             "Use only local workspace files; do not use the network."
@@ -273,8 +291,8 @@ def build_invoke_agent_runner(
             messages=[{"role": "user", "content": task_prompt}],
             agent_name=agent_name,
             role_description=role_description,
-            agent_id=agent_id,
-            user_id=user_id,
+            agent_id=normalized_agent_id,
+            user_id=normalized_user_id,
             tool_executor=scenario_tool_executor,
             initial_tools=_eval_initial_tools(),
             allowed_tool_names=tuple(sorted(_EVAL_WORKSPACE_TOOL_NAMES)),
@@ -302,6 +320,16 @@ def build_invoke_agent_runner(
     return agent_runner
 
 
+def write_behavior_report(report: dict[str, Any], output_path: Path) -> None:
+    payload = json.dumps(report, indent=2, ensure_ascii=False)
+    if str(output_path) == "-":
+        encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        print(f"{BEHAVIOR_REPORT_STDOUT_MARKER}{encoded}")
+        return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(payload, encoding="utf-8")
+
+
 async def _run_cli(args: argparse.Namespace) -> int:
     api_key = os.environ.get(args.api_key_env, "")
     model = SimpleNamespace(
@@ -320,12 +348,14 @@ async def _run_cli(args: argparse.Namespace) -> int:
     )
     report = await run_hive_behavior_eval(
         agent_runner=runner,
-        output_dir=args.output.parent,
+        output_dir=Path(tempfile.mkdtemp(prefix="hive-behavior-eval-"))
+        if str(args.output) == "-"
+        else args.output.parent,
         scenarios=tuple(args.scenario) if args.scenario else DETERMINISTIC_BEHAVIOR_SCENARIOS,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps({"transport": report["transport"], "benchmark_complete": report["benchmark_complete"]}))
+    write_behavior_report(report, args.output)
+    if str(args.output) != "-":
+        print(json.dumps({"transport": report["transport"], "benchmark_complete": report["benchmark_complete"]}))
     return 0
 
 
@@ -344,8 +374,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--agent-id", default=os.environ.get("HIVE_EVAL_AGENT_ID") or None)
     parser.add_argument("--user-id", default=os.environ.get("HIVE_EVAL_USER_ID") or None)
+    parser.add_argument(
+        "--production-runtime",
+        action="store_true",
+        help="require a real eval agent/user from the deployed runtime environment",
+    )
     parser.add_argument("--scenario", choices=DETERMINISTIC_BEHAVIOR_SCENARIOS, action="append")
     args = parser.parse_args(argv)
+    if args.production_runtime:
+        if not args.agent_id:
+            parser.error("--production-runtime requires --agent-id or HIVE_EVAL_AGENT_ID")
+        if not args.user_id:
+            parser.error("--production-runtime requires --user-id or HIVE_EVAL_USER_ID")
     return asyncio.run(_run_cli(args))
 
 

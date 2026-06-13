@@ -97,28 +97,49 @@ jobs:
       - name: Full eval suite regression
         run: pytest tests/evals -q
       - name: Behavior eval gate (live; runs when eval secrets configured)
-        # E8: the Hive agent-core live runner (invoke_agent) needs an LLM key +
-        # Postgres + an eval tenant — provisioned via repo secrets. When unconfigured
-        # the gate is skipped (never falsely red); when configured it produces a
-        # behavior report and gates on regression + evaluator integrity (E1/E2/E5).
+        # E8: run the Hive agent-core live runner inside the Railway eval backend
+        # service, not in the GitHub runner. This exercises the deployed backend
+        # image + eval Postgres/Redis + eval tenant/agent runtime. GitHub only
+        # retrieves the JSON report and applies the baseline/integrity gate.
         env:
-          HIVE_EVAL_LLM_API_KEY: ${{ secrets.HIVE_EVAL_LLM_API_KEY }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_EVAL_PROJECT_ID: ${{ secrets.RAILWAY_EVAL_PROJECT_ID }}
+          RAILWAY_EVAL_ENVIRONMENT: ${{ secrets.RAILWAY_EVAL_ENVIRONMENT }}
+          RAILWAY_EVAL_SERVICE: ${{ secrets.RAILWAY_EVAL_SERVICE }}
           HIVE_EVAL_REPORT: /tmp/hive-behavior-report.json
           HIVE_EVAL_INTEGRITY: /tmp/hive-evaluator-integrity.json
           HIVE_EVAL_MODEL: ${{ vars.HIVE_EVAL_MODEL }}
         run: |
-          if [ -z "$HIVE_EVAL_LLM_API_KEY" ]; then
-            echo "::warning::behavior eval gate skipped — HIVE_EVAL_LLM_API_KEY not configured"
+          if [ -z "$RAILWAY_TOKEN" ] || [ -z "$RAILWAY_EVAL_PROJECT_ID" ] || [ -z "$RAILWAY_EVAL_ENVIRONMENT" ] || [ -z "$RAILWAY_EVAL_SERVICE" ]; then
+            echo "::warning::behavior eval gate skipped — Railway eval service secrets not configured"
             exit 0
           fi
+          curl -fsSL https://railway.app/install.sh | sh
+          export PATH="$HOME/.railway/bin:$PATH"
           python -m app.evals.evaluator_integrity \
             --current-root . \
             --trusted-root ../protected-base/backend \
             --output "$HIVE_EVAL_INTEGRITY"
-          python -m app.evals.hive_live_runner \
-            --output "$HIVE_EVAL_REPORT" \
-            --model "${HIVE_EVAL_MODEL:-claude-opus-4-8}" \
-            --api-key-env HIVE_EVAL_LLM_API_KEY
+          REMOTE_OUTPUT="$(railway ssh \
+            --project "$RAILWAY_EVAL_PROJECT_ID" \
+            --environment "$RAILWAY_EVAL_ENVIRONMENT" \
+            --service "$RAILWAY_EVAL_SERVICE" \
+            "cd /app && python -m app.evals.hive_live_runner --production-runtime --output - --model ${HIVE_EVAL_MODEL:-claude-opus-4-8}")"
+          printf '%s\n' "$REMOTE_OUTPUT"
+          REPORT_B64="$(printf '%s\n' "$REMOTE_OUTPUT" | sed -n 's/^::hive-behavior-report:://p' | tail -n 1)"
+          if [ -z "$REPORT_B64" ]; then
+            echo "::error::Railway eval did not emit ::hive-behavior-report:: marker"
+            exit 1
+          fi
+          python - "$REPORT_B64" "$HIVE_EVAL_REPORT" <<'PY'
+          import base64
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+          Path(sys.argv[2]).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+          PY
           python -m app.evals.ci_gate \
             --behavior-report "$HIVE_EVAL_REPORT" \
             --baseline app/evals/baselines/core_behavior_v1.json \

@@ -300,11 +300,12 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 - 新增 `backend/app/evals/hive_live_runner.py`：
   - `run_hive_behavior_eval(agent_runner, output_dir, scenarios)`——驱动 Hive **自己的 agent**（注入 `agent_runner`）跑确定性行为场景（默认 6 个，与 E1 baseline suite 对齐），复用 `bakeoff_runtime` 的真实工作区 + **同一套外部硬判据评分**（`_score_runtime_scenario`，与外部 CLI 对比公平）。`agent_runner` 抛错 → `transport=hive_live_unavailable` + `benchmark_complete=False`（**fail-closed**）。
   - `behavior_eval_passed(report)`——门控核心：仅当**完整 + 可信 live transport（`hive_live`/`live_cli`）+ 无 fallback + 全场景 ready** 才 True；`repo_evidence`/partial/unavailable 一律 False。
-  - `build_invoke_agent_runner(...)`——**真接 `invoke_agent`**（G0），`invoke` 可注入测试。默认调生产 `invoke_agent`；`tool_executor`（绑 workspace）+ agent_id/user_id 由 eval harness / E8 CI 提供，让 agent 文件工具写进 grader 检查的工作区。
+  - `build_invoke_agent_runner(...)`——**真接 `invoke_agent`**（G0），`invoke` 可注入测试。默认调生产 `invoke_agent`；`tool_executor`（绑 workspace）+ agent_id/user_id 由 Railway eval runtime 提供，让 agent 文件工具写进 grader 检查的工作区。
+  - CLI 支持 `--production-runtime`：要求真实 `HIVE_EVAL_AGENT_ID` + `HIVE_EVAL_USER_ID`，并通过 `--output -` 输出 `::hive-behavior-report::<base64-json>` marker，供 GitHub Actions 从 Railway SSH 输出中拉回报告。
   - `record_behavior_eval_run(...)`——G1 桥：behavior report → `record_eval_run`，**fallback transport → passed=False**（§9 诚实规则），reward 连续（场景均分/100）。
 - `backend/app/services/evolution_verification.py`：新增 `agent_behavior_check` grader 分派 + `_run_agent_behavior_check`，把行为 eval 结果接进 `run_evolution_verification`（→ promotion 路径）。
 
-**关键诚实边界**：`invoke_agent` 需 DB+LLM+workspace-bound `tool_executor`，**不能进 microVM**（§1.3）。本 E 交付**真接线 + fail-closed 门控**（可测）；真 LLM 端到端 live 执行在 **E8 CI**（提供 eval tenant/agent + tool_executor）。**不是桩**——`build_invoke_agent_runner` 默认调生产 `invoke_agent`，请求构造 + 产物提取被 `test_build_invoke_agent_runner_constructs_request` 钉住。
+**关键诚实边界**：`invoke_agent` 需 DB+LLM+workspace-bound `tool_executor`，**不能进 microVM**（§1.3）。本 E 交付**真接线 + fail-closed 门控**（可测）；真 LLM 端到端 live 执行在 **Railway eval backend service** 内，由 E8 CI 通过 `railway ssh` 触发。**不是桩**——`build_invoke_agent_runner` 默认调生产 `invoke_agent`，请求构造 + 产物提取被 `test_build_invoke_agent_runner_constructs_request` 钉住；production mode 强制真实 eval agent/user。
 
 **TDD red→green**：`tests/evals/test_hive_live_runner.py` 13 用例，实现前 `ModuleNotFoundError`；green `13 passed`。共享模块回归 `test_evolution_verification + test_evolution_ledger + tests/evals/` = **62 passed**；ruff clean。
 
@@ -392,15 +393,20 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 **完成范围**：
 - 新增 `backend/app/evals/ci_gate.py`：`evaluate_ci_gate(behavior_report, baseline, running_model, integrity, require_live, tolerance)`——组合 **E5（evaluator 信任）→ E2（require complete live）→ E1（baseline 存在 + 模型匹配 + 无退化）**，首个失败门给 distinct 非零退出码（`EXIT_REGRESSION=1` / `REQUIRED_LIVE_FALLBACK=2` / `UNTRUSTED_EVALUATOR=3` / `BASELINE_UNAVAILABLE=4`）；+ `main()` CLI 供 CI 调用。
 - `backend/app/evals/run.py`：`main()` 加 `--fail-under` → pass_rate 低于阈值 exit 1（此前恒 `return 0`，G3）。
-- `.github/workflows/harness-ci.yml`：① per-PR `Internal harness eval --fail-under 90`（block merge on regression）；② self-evolution bakeoff **删注入假 hermes**（E7，改 Hive 绝对门）；③ 新增 `schedule` nightly 触发 + `behavior-eval-nightly` job（full eval suite 回归 + protected base checkout + `app.evals.evaluator_integrity --output "$HIVE_EVAL_INTEGRITY"` + `app.evals.hive_live_runner --output "$HIVE_EVAL_REPORT"` + `ci_gate --integrity-report "$HIVE_EVAL_INTEGRITY"`；live 行为 gate **secret-guarded**，未配置则 graceful skip 不假红）。
+- `.github/workflows/harness-ci.yml`：① per-PR `Internal harness eval --fail-under 90`（block merge on regression）；② self-evolution bakeoff **删注入假 hermes**（E7，改 Hive 绝对门）；③ 新增 `schedule` nightly 触发 + `behavior-eval-nightly` job（full eval suite 回归 + protected base checkout + `app.evals.evaluator_integrity --output "$HIVE_EVAL_INTEGRITY"` + `railway ssh ... "python -m app.evals.hive_live_runner --production-runtime --output -"` + marker 解码写入 `$HIVE_EVAL_REPORT` + `ci_gate --integrity-report "$HIVE_EVAL_INTEGRITY"`）。
 
-**关键诚实边界**：per-PR fail-gate（`internal --fail-under` + self-evolution 绝对门）**真跑 block merge** ✓；nightly workflow 已真实生成 integrity report 与 Hive live behavior report 后再 gate；行为 eval 的 live 执行（invoke_agent 需 LLM key + Postgres + eval tenant）仍要在 eval 环境配置后产出 passing report，fallback/unavailable 仍由 `ci_gate` exit 2 fail-closed。
+**Railway eval environment 要求**：
+- GitHub secrets：`RAILWAY_TOKEN`、`RAILWAY_EVAL_PROJECT_ID`、`RAILWAY_EVAL_ENVIRONMENT`、`RAILWAY_EVAL_SERVICE`。
+- GitHub vars：`HIVE_EVAL_MODEL`（可选；默认 `claude-opus-4-8`）。
+- Railway eval backend service env：`HIVE_EVAL_LLM_API_KEY`、`HIVE_EVAL_AGENT_ID`、`HIVE_EVAL_USER_ID`，以及该服务自己的 `DATABASE_URL`/`REDIS_URL`/`AGENT_DATA_DIR`/provider env。该 service 必须指向独立 eval Postgres/Redis/agent 数据卷，不复用 production tenant。
 
-**TDD red→green**：`tests/evals/test_ci_gate.py` 增加 `--integrity-report` CLI 钉；`tests/evals/test_harness_ci_workflow.py` 增加 live report / integrity report 先于 gate 的顺序钉；目标回归合跑 **48 passed**。
+**关键诚实边界**：per-PR fail-gate（`internal --fail-under` + self-evolution 绝对门）**真跑 block merge** ✓；nightly workflow 的 live 行为执行在 Railway eval backend 容器中完成，GitHub 只拉回 JSON report 后 gate；fallback/unavailable 仍由 `ci_gate` exit 2 fail-closed。未配置 Railway eval service 时 nightly graceful skip，不产生假红；一旦配置，缺 eval agent/user/LLM key 会在 `--production-runtime` fail-closed。
+
+**TDD red→green**：`tests/evals/test_ci_gate.py` 增加 `--integrity-report` CLI 钉；`tests/evals/test_harness_ci_workflow.py` 增加 Railway eval service / production-runtime / marker report 钉；目标回归合跑 **48 passed**。
 
 **验收映射**：regression → exit 1（`test_gate_fails_on_regression` + `test_fail_under_exits_nonzero_below_threshold`）✓；required-live fallback → 非零（`test_gate_fails_on_required_live_fallback` + CLI smoke exit 2）✓；untrusted evaluator → 非零（`test_gate_fails_on_untrusted_evaluator`）✓；baseline 缺 fail-closed（`test_gate_fails_on_baseline_unavailable`）✓；模型漂移（`test_gate_fails_on_model_drift`）✓。
 
-**gap 状态**：G1（live 行为 eval 入 CI）+ G3（regression fail-gate）机制已落；nightly 已有 report generation + gate wiring，是否通过取决于 eval secrets/tenant/DB 真实环境。
+**gap 状态**：G1（live 行为 eval 入 CI）+ G3（regression fail-gate）机制已落；nightly 已接 Railway eval backend service，是否通过取决于 eval Railway 环境是否配置并健康。
 
 ### E9 — reward-hack 对抗套件 ✅（2026-06-13，铁律2 可证）
 
@@ -440,17 +446,17 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 | E | 工件 | gap 关闭 | 机制状态 | live 真跑状态 |
 |---|---|---|---|---|
 | E1 | `baseline.py` + seed 工件 | G2/G7/G8 | ✅ 实装+测试 | seed 分数待 E2 真跑回填 |
-| E2 | `hive_live_runner.py` + grader | G0/G1 | ✅ 实装+测试 | nightly 已调用 live runner；passing 结果待 eval 环境 |
+| E2 | `hive_live_runner.py` + grader | G0/G1 | ✅ 实装+测试 | nightly 通过 Railway eval backend 调用 production-runtime live runner |
 | E3 | `decide_behavior_gated_promotion` + `skill_distiller` 接线 | promotion 硬门 | ✅ 实装+测试 | 缺 behavior report 时 fail-closed hold；喂真 report 待 eval 环境 |
 | E4 | 连续 reward + rubric 非门控 | G5/D3 | ✅ 实装+测试 | — |
 | E5 | `evaluator_integrity.py` | G4/G9 | ✅ 实装+测试 | nightly 已从 protected base 生成 integrity report |
 | E6 | `artifact_gate.py` | Voyager gate | ✅ 实装+测试 | 路径/env 已 harden；microVM 真跑待候选晋升 |
 | E7 | `hermes_baseline.py` + 删 grep-marker/注入 | §1.1 假对比 | ✅ 实装+测试 | hermes CLI 真跑待 nightly 横向接入 |
-| E8 | `ci_gate.py` + run `--fail-under` + CI yaml | G1/G3 | ✅ 实装+测试 | per-PR fail-gate 已活；nightly 已生成 report 后 gate，passing 待 eval secrets |
+| E8 | `ci_gate.py` + run `--fail-under` + CI yaml | G1/G3 | ✅ 实装+测试 | per-PR fail-gate 已活；nightly 已接 Railway eval service + report gate |
 | E9 | `adversarial_suite.py` | 铁律2 可证 | ✅ 实装+测试 | — |
 | E10 | `cost_budget.py` | G6 | ✅ 实装+测试 | nightly 时序 |
 
-**诚实定位**：E1–E10 的**机制 + 门控逻辑 + 反作弊**全部实装并 TDD 验证（per-PR fail-gate 已真跑 block merge）。**唯一未在真环境跑通的是 Hive agent-core 的 live `invoke_agent` 执行**——它需要 eval tenant + LLM key + Postgres（§1.3：不能进 microVM），由 E8 nightly 的 secret-guarded job 在 eval 环境配置后激活。**因此本仗按 §9 铁律仍不构成"已超越 hermes"的最终证据**：必须等 live 行为 eval 在真环境跑出 Hive vs Hermes 的行为级 delta，才可把 round2 §10/§11 的"仍缺外部行为 eval CI"改为已关闭。在此之前，"已超越" 仍是未验证 Speculation。
+**诚实定位**：E1–E10 的**机制 + 门控逻辑 + 反作弊**全部实装并 TDD 验证（per-PR fail-gate 已真跑 block merge）。Hive agent-core 的 live `invoke_agent` 执行已接到 Railway eval backend service：它需要独立 eval tenant/agent + LLM key + Postgres/Redis（§1.3：不能进 microVM），由 E8 nightly 通过 `railway ssh` 在该 service 内触发。**因此本仗按 §9 铁律仍不构成"已超越 hermes"的最终证据**：必须等 Railway eval 环境真实跑出 Hive vs Hermes 的行为级 delta，才可把 round2 §10/§11 的"仍缺外部行为 eval CI"改为已关闭。在此之前，"已超越" 仍是未验证 Speculation。
 
 ---
 

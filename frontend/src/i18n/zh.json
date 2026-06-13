@@ -1314,6 +1314,17 @@
       "reasoningNoToolsWarning": "该提供商在开启推理时不暴露工具调用能力。",
       "deepseekThinkingFact": "DeepSeek thinking mode 支持工具调用；发生工具调用时需要在后续请求中保留 reasoning_content，thinking 开启时 temperature 不生效。",
       "deepseekTemperatureDesc": "DeepSeek thinking mode 会忽略 temperature；如需调节采样，请先关闭 thinking mode。",
+      "evalRuntime": {
+        "title": "Live 行为评测运行时",
+        "summary": "Nightly eval 使用这个租户员工及其模型设置。",
+        "railwayTenantEnv": "Railway 租户环境变量",
+        "agent": "Eval 员工",
+        "user": "Eval 用户",
+        "model": "解析后的员工模型",
+        "noModel": "该 eval 员工未绑定已启用模型",
+        "noModelWarning": "启用 live eval 前，请先在该员工设置中选择主模型或备用模型。",
+        "disabledModelWarning": "绑定模型已停用，live eval 会 fail-closed。"
+      },
       "reasoningModes": {
         "provider_default": "提供商默认",
         "enabled": "开启",

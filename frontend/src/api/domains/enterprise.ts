@@ -191,9 +191,10 @@ export const enterpriseApi = {
   exportInvitationCodesCsv: () => getBlob('/enterprise/invitation-codes/export'),
 
   /** System settings */
-  getSetting: (key: string) => get<SystemSetting>(`/enterprise/system-settings/${key}`),
-  updateSetting: (key: string, value: Record<string, unknown>) =>
-    put<SystemSetting>(`/enterprise/system-settings/${key}`, { value }),
+  getSetting: (key: string, tenantId?: string) =>
+    get<SystemSetting>(`/enterprise/system-settings/${key}${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+  updateSetting: (key: string, value: Record<string, unknown>, tenantId?: string) =>
+    put<SystemSetting>(`/enterprise/system-settings/${key}${tenantId ? `?tenant_id=${tenantId}` : ''}`, { value }),
 
   /** Knowledge base */
   kbFiles: (tenantId?: string) => get<any[]>(`/enterprise/knowledge-base/files${tenantId ? `?tenant_id=${tenantId}` : ''}`),

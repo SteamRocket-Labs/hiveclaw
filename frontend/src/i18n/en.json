@@ -1287,6 +1287,17 @@
       "reasoningNoToolsWarning": "This provider does not expose tool calling while reasoning is enabled.",
       "deepseekThinkingFact": "DeepSeek thinking mode keeps tool calling available. Preserve reasoning_content for tool-call turns; temperature is ignored while thinking is enabled.",
       "deepseekTemperatureDesc": "DeepSeek thinking mode ignores temperature; disable thinking mode before tuning sampling.",
+      "evalRuntime": {
+        "title": "Live Behavior Eval Runtime",
+        "summary": "Nightly eval uses this tenant agent and its model settings.",
+        "railwayTenantEnv": "Railway tenant env",
+        "agent": "Eval Agent",
+        "user": "Eval User",
+        "model": "Resolved Agent Model",
+        "noModel": "No enabled model is bound to this eval agent",
+        "noModelWarning": "Select a primary or fallback model in this agent settings before enabling live eval.",
+        "disabledModelWarning": "The bound model is disabled. Live eval will fail closed."
+      },
       "reasoningModes": {
         "provider_default": "Provider Default",
         "enabled": "Enabled",

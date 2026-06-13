@@ -38,6 +38,7 @@ from app.services.secrets_provider import get_secrets_provider
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
+TENANT_SYSTEM_SETTING_KEYS = {"feishu_org_sync", "behavior_eval_runtime"}
 
 
 # ─── LLM Model Pool ────────────────────────────────────
@@ -935,8 +936,7 @@ async def get_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Get a system setting by key (admin only)."""
-    tenant_setting_keys = {"feishu_org_sync"}
-    if key in tenant_setting_keys:
+    if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 
         target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
@@ -975,8 +975,7 @@ async def update_system_setting(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update a system setting."""
-    tenant_setting_keys = {"feishu_org_sync"}
-    if key in tenant_setting_keys:
+    if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 
         target_tenant_id = resolve_tenant_scope(current_user, tenant_id)

@@ -63,6 +63,7 @@ TRUSTED_LIVE_TRANSPORTS: frozenset[str] = frozenset({"hive_live", "live_cli"})
 AgentRunner = Callable[[str, Path], Awaitable[dict[str, Any]]]
 
 BEHAVIOR_REPORT_STDOUT_MARKER = "::hive-behavior-report::"
+BEHAVIOR_EVAL_RUNTIME_SETTING_KEY = "behavior_eval_runtime"
 
 _EVAL_WORKSPACE_TOOL_NAMES: frozenset[str] = frozenset(
     {
@@ -306,6 +307,21 @@ async def _load_tenant_model(db: Any, *, tenant_id: uuid.UUID, model_id: Any, so
     return model
 
 
+async def _load_behavior_eval_runtime_setting(db: Any, *, tenant_id: uuid.UUID) -> dict[str, Any]:
+    from sqlalchemy import select
+
+    from app.models.tenant_setting import TenantSetting
+
+    result = await db.execute(
+        select(TenantSetting.value).where(
+            TenantSetting.tenant_id == tenant_id,
+            TenantSetting.key == BEHAVIOR_EVAL_RUNTIME_SETTING_KEY,
+        )
+    )
+    value = result.scalar_one_or_none()
+    return value if isinstance(value, dict) else {}
+
+
 async def resolve_production_eval_runtime(
     *,
     agent_id: Any,
@@ -329,14 +345,24 @@ async def resolve_production_eval_runtime(
     from app.models.user import User
     from app.services.model_resolution import choose_runtime_model_pair
 
-    normalized_agent_id = _require_uuid(agent_id, field_name="agent_id")
-    normalized_user_id = _require_uuid(user_id, field_name="user_id")
     normalized_expected_tenant_id = _require_uuid(expected_tenant_id, field_name="expected_tenant_id")
     factory = session_factory or async_session
     bypass_factory = rls_bypass_factory or enter_rls_bypass
 
     async with factory() as db:
         async with bypass_factory(db, reason="behavior eval production runtime bootstrap"):
+            runtime_setting = {}
+            if not agent_id or not user_id:
+                runtime_setting = await _load_behavior_eval_runtime_setting(db, tenant_id=normalized_expected_tenant_id)
+            normalized_agent_id = _require_uuid(
+                agent_id or runtime_setting.get("agent_id"),
+                field_name=f"{BEHAVIOR_EVAL_RUNTIME_SETTING_KEY}.agent_id",
+            )
+            normalized_user_id = _require_uuid(
+                user_id or runtime_setting.get("user_id"),
+                field_name=f"{BEHAVIOR_EVAL_RUNTIME_SETTING_KEY}.user_id",
+            )
+
             agent_result = await db.execute(select(Agent).where(Agent.id == normalized_agent_id))
             agent = agent_result.scalar_one_or_none()
             if agent is None:
@@ -561,17 +587,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--production-runtime",
         action="store_true",
-        help="require a real eval agent/user from the deployed runtime environment",
+        help="require a real eval tenant and resolve eval agent/user from tenant settings unless explicitly provided",
     )
     parser.add_argument("--scenario", choices=DETERMINISTIC_BEHAVIOR_SCENARIOS, action="append")
     args = parser.parse_args(argv)
     if args.production_runtime:
         if not args.tenant_id:
             parser.error("--production-runtime requires --tenant-id or HIVE_EVAL_TENANT_ID")
-        if not args.agent_id:
-            parser.error("--production-runtime requires --agent-id or HIVE_EVAL_AGENT_ID")
-        if not args.user_id:
-            parser.error("--production-runtime requires --user-id or HIVE_EVAL_USER_ID")
     elif not args.model:
         parser.error("--model is required unless --production-runtime")
     return asyncio.run(_run_cli(args))

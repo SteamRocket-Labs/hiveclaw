@@ -163,6 +163,37 @@ async def test_feishu_org_sync_setting_scopes_to_selected_tenant():
 
 
 @pytest.mark.asyncio
+async def test_behavior_eval_runtime_setting_scopes_to_selected_tenant():
+    import app.api.enterprise as enterprise_api
+
+    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    db = _FakeDB(
+        [
+            _ScalarResult(
+                SimpleNamespace(
+                    tenant_id=target_tenant_id,
+                    key="behavior_eval_runtime",
+                    value={"agent_id": str(agent_id), "user_id": str(user_id)},
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+        ]
+    )
+
+    result = await enterprise_api.get_system_setting(
+        key="behavior_eval_runtime",
+        tenant_id=str(target_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        db=db,
+    )
+
+    assert result["value"] == {"agent_id": str(agent_id), "user_id": str(user_id)}
+
+
+@pytest.mark.asyncio
 async def test_org_sync_route_uses_selected_tenant(monkeypatch):
     import app.api.enterprise as enterprise_api
 

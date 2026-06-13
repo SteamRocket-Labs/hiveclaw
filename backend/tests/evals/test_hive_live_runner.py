@@ -299,7 +299,46 @@ async def test_resolve_production_eval_runtime_rejects_cross_tenant_model() -> N
         )
 
 
-def test_production_runtime_cli_requires_eval_agent_and_user(tmp_path: Path, monkeypatch) -> None:
+async def test_resolve_production_eval_runtime_uses_tenant_setting_when_ids_are_not_env() -> None:
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    primary_model_id = uuid4()
+    setting = {"agent_id": str(agent_id), "user_id": str(user_id)}
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        name="Eval Agent",
+        role_description="Tenant setting eval agent",
+        primary_model_id=primary_model_id,
+        fallback_model_id=None,
+    )
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, is_active=True)
+    primary = SimpleNamespace(
+        id=primary_model_id,
+        tenant_id=tenant_id,
+        enabled=True,
+        provider="anthropic",
+        model="claude-opus-4-8",
+        api_key="decrypted-from-db",
+        base_url=None,
+    )
+    session = _FakeEvalSession([setting, agent, user, primary])
+
+    runtime = await resolve_production_eval_runtime(
+        agent_id=None,
+        user_id=None,
+        expected_tenant_id=tenant_id,
+        session_factory=lambda: session,
+        rls_bypass_factory=_noop_rls_bypass,
+    )
+
+    assert runtime.agent_id == agent_id
+    assert runtime.user_id == user_id
+    assert runtime.model is primary
+
+
+def test_production_runtime_cli_requires_eval_tenant(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(SystemExit) as exc:
         main(["--output", str(tmp_path / "report.json"), "--production-runtime"])
 
@@ -309,8 +348,6 @@ def test_production_runtime_cli_requires_eval_agent_and_user(tmp_path: Path, mon
 def test_production_runtime_cli_uses_db_model_not_env_model(tmp_path: Path, monkeypatch) -> None:
     captured = {}
     tenant_id = uuid4()
-    agent_id = uuid4()
-    user_id = uuid4()
 
     async def fake_run_cli(args):
         captured["args"] = args
@@ -326,16 +363,14 @@ def test_production_runtime_cli_uses_db_model_not_env_model(tmp_path: Path, monk
             "--production-runtime",
             "--tenant-id",
             str(tenant_id),
-            "--agent-id",
-            str(agent_id),
-            "--user-id",
-            str(user_id),
         ]
     )
 
     assert code == 0
     assert captured["args"].model is None
     assert captured["args"].tenant_id == str(tenant_id)
+    assert captured["args"].agent_id is None
+    assert captured["args"].user_id is None
 
 
 def test_write_behavior_report_stdout_marker(capsys) -> None:

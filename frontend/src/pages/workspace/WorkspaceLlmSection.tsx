@@ -59,6 +59,26 @@ export interface WorkspaceLlmModelForm {
   provider_options: string;
 }
 
+export interface WorkspaceEvalRuntimeConfig {
+  agent_id: string;
+  user_id: string;
+}
+
+export interface WorkspaceEvalRuntimeAgent {
+  id: string;
+  name: string;
+  primary_model_id?: string | null;
+  fallback_model_id?: string | null;
+  status?: string;
+}
+
+export interface WorkspaceEvalRuntimeUser {
+  id: string;
+  display_name?: string | null;
+  username?: string | null;
+  email?: string | null;
+}
+
 type ProviderDefaultPatch = Partial<WorkspaceLlmModelForm>;
 
 export function buildProviderDefaultPatch(
@@ -93,6 +113,11 @@ export function buildProviderDefaultPatch(
 interface WorkspaceLlmSectionProps {
   models: WorkspaceLlmModel[];
   providerOptions: WorkspaceLlmProviderSpec[];
+  selectedTenantId?: string;
+  evalRuntimeConfig?: WorkspaceEvalRuntimeConfig;
+  evalAgents?: WorkspaceEvalRuntimeAgent[];
+  evalUsers?: WorkspaceEvalRuntimeUser[];
+  evalRuntimeSaving?: boolean;
   showAddModel: boolean;
   editingModelId: string | null;
   modelForm: WorkspaceLlmModelForm;
@@ -106,12 +131,19 @@ interface WorkspaceLlmSectionProps {
   onToggleModel: (id: string, enabled: boolean) => void;
   onEditModel: (model: WorkspaceLlmModel) => void;
   onDeleteModel: (id: string) => void;
+  onEvalRuntimeConfigChange?: (patch: Partial<WorkspaceEvalRuntimeConfig>) => void;
+  onSaveEvalRuntimeConfig?: () => void;
   onSetDefaultModel?: (id: string) => void;
 }
 
 export default function WorkspaceLlmSection({
   models,
   providerOptions,
+  selectedTenantId = '',
+  evalRuntimeConfig,
+  evalAgents = [],
+  evalUsers = [],
+  evalRuntimeSaving = false,
   showAddModel,
   editingModelId,
   modelForm,
@@ -125,6 +157,8 @@ export default function WorkspaceLlmSection({
   onToggleModel,
   onEditModel,
   onDeleteModel,
+  onEvalRuntimeConfigChange,
+  onSaveEvalRuntimeConfig,
   onSetDefaultModel,
 }: WorkspaceLlmSectionProps) {
   const { t } = useTranslation();
@@ -139,6 +173,18 @@ export default function WorkspaceLlmSection({
   const showReasoningBudget = Boolean(selectedProvider?.supports_reasoning_budget) && modelForm.reasoning_mode !== 'provider_default';
   const showPreserveReasoning = Boolean(selectedProvider?.supports_reasoning_preservation);
   const showTextVerbosity = Boolean(selectedProvider?.supports_text_verbosity);
+  const selectedEvalAgent = evalAgents.find((agent) => agent.id === evalRuntimeConfig?.agent_id);
+  const selectedEvalModel = selectedEvalAgent
+    ? models.find((model) => model.id === selectedEvalAgent.primary_model_id)
+      || models.find((model) => model.id === selectedEvalAgent.fallback_model_id)
+    : undefined;
+  const selectedEvalUser = evalUsers.find((user) => user.id === evalRuntimeConfig?.user_id);
+  const canSaveEvalRuntime = Boolean(evalRuntimeConfig?.agent_id && evalRuntimeConfig.user_id && onSaveEvalRuntimeConfig);
+
+  const formatEvalUser = (user: WorkspaceEvalRuntimeUser) => {
+    const name = user.display_name || user.username || user.email || user.id;
+    return user.email && user.email !== name ? `${name} (${user.email})` : name;
+  };
 
   const applyProviderDefaults = (newProvider: string) => {
     onModelFormChange(buildProviderDefaultPatch(providerOptions, newProvider, modelForm));
@@ -242,6 +288,92 @@ export default function WorkspaceLlmSection({
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
         <button className="btn btn-primary" onClick={onStartCreateModel}>+ {t('enterprise.llm.addModel', 'Add Model')}</button>
       </div>
+
+      {onEvalRuntimeConfigChange ? (
+        <div className="card" style={{ marginBottom: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'flex-start', marginBottom: '14px' }}>
+            <div>
+              <h3 style={{ margin: 0, marginBottom: '4px' }}>{t('enterprise.llm.evalRuntime.title', 'Live Behavior Eval Runtime')}</h3>
+              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                {t('enterprise.llm.evalRuntime.summary', 'Nightly eval uses this tenant agent and its model settings.')}
+              </div>
+            </div>
+            <button
+              className="btn btn-primary"
+              disabled={!canSaveEvalRuntime || evalRuntimeSaving}
+              onClick={onSaveEvalRuntimeConfig}
+              style={{ fontSize: '12px', flexShrink: 0 }}
+            >
+              {evalRuntimeSaving ? t('common.saving', 'Saving...') : t('common.save', 'Save')}
+            </button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div className="form-group" style={{ gridColumn: 'span 2' }}>
+              <label className="form-label">{t('enterprise.llm.evalRuntime.railwayTenantEnv', 'Railway tenant env')}</label>
+              <input
+                className="form-input"
+                readOnly
+                value={selectedTenantId ? `HIVE_EVAL_TENANT_ID=${selectedTenantId}` : 'HIVE_EVAL_TENANT_ID='}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('enterprise.llm.evalRuntime.agent', 'Eval Agent')}</label>
+              <select
+                className="form-input"
+                value={evalRuntimeConfig?.agent_id || ''}
+                onChange={(event) => onEvalRuntimeConfigChange({ agent_id: event.target.value })}
+              >
+                <option value="">--</option>
+                {evalAgents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name}{agent.status ? ` (${agent.status})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t('enterprise.llm.evalRuntime.user', 'Eval User')}</label>
+              <select
+                className="form-input"
+                value={evalRuntimeConfig?.user_id || ''}
+                onChange={(event) => onEvalRuntimeConfigChange({ user_id: event.target.value })}
+              >
+                <option value="">--</option>
+                {evalUsers.map((user) => (
+                  <option key={user.id} value={user.id}>{formatEvalUser(user)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group" style={{ gridColumn: 'span 2' }}>
+              <label className="form-label">{t('enterprise.llm.evalRuntime.model', 'Resolved Agent Model')}</label>
+              <input
+                className="form-input"
+                readOnly
+                value={
+                  selectedEvalModel
+                    ? `${selectedEvalModel.label} (${selectedEvalModel.provider}/${selectedEvalModel.model})`
+                    : t('enterprise.llm.evalRuntime.noModel', 'No enabled model is bound to this eval agent')
+                }
+              />
+              {selectedEvalAgent && !selectedEvalModel ? (
+                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                  {t('enterprise.llm.evalRuntime.noModelWarning', 'Select a primary or fallback model in this agent settings before enabling live eval.')}
+                </div>
+              ) : null}
+              {selectedEvalModel && !selectedEvalModel.enabled ? (
+                <div style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                  {t('enterprise.llm.evalRuntime.disabledModelWarning', 'The bound model is disabled. Live eval will fail closed.')}
+                </div>
+              ) : null}
+            </div>
+          </div>
+          {selectedEvalUser ? (
+            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '8px' }}>
+              {formatEvalUser(selectedEvalUser)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {showAddModel && !editingModelId ? (
         <div className="card" style={{ marginBottom: '16px' }}>

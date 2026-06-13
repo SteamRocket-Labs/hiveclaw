@@ -171,4 +171,80 @@ describe('WorkspaceLlmSection', () => {
     expect(markup).toContain('Claude Sonnet');
     expect(markup).toContain('Vision');
   });
+
+  it('renders tenant-scoped live eval runtime settings for company admins', () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceLlmSection
+        models={[
+          {
+            id: 'model-1',
+            provider: 'anthropic',
+            model: 'claude-opus-4-8',
+            label: 'Claude Opus Eval',
+            enabled: true,
+          },
+        ]}
+        providerOptions={[
+          {
+            provider: 'anthropic',
+            display_name: 'Anthropic',
+            protocol: 'anthropic',
+            default_base_url: 'https://api.anthropic.com',
+            supports_tool_choice: false,
+            default_max_tokens: 8192,
+          },
+        ]}
+        showAddModel={false}
+        editingModelId={null}
+        modelForm={{
+          provider: 'anthropic',
+          model: '',
+          api_key: '',
+          base_url: '',
+          label: '',
+          supports_vision: false,
+          max_output_tokens: '',
+          max_input_tokens: '',
+          temperature: '',
+          reasoning_mode: 'provider_default',
+          reasoning_effort: '',
+          reasoning_budget_tokens: '',
+          reasoning_display: '',
+          preserve_reasoning: false,
+          text_verbosity: '',
+          provider_options: '',
+        }}
+        selectedTenantId="tenant-1"
+        evalRuntimeConfig={{ agent_id: 'agent-1', user_id: 'user-1' }}
+        evalAgents={[
+          {
+            id: 'agent-1',
+            name: 'Behavior Eval Agent',
+            primary_model_id: 'model-1',
+            fallback_model_id: null,
+          },
+        ]}
+        evalUsers={[{ id: 'user-1', display_name: 'Eval Operator', email: 'eval@example.com' }]}
+        evalRuntimeSaving={false}
+        onEvalRuntimeConfigChange={() => {}}
+        onSaveEvalRuntimeConfig={() => {}}
+        onStartCreateModel={() => {}}
+        onCancelModelForm={() => {}}
+        onModelFormChange={() => {}}
+        onTestDraftModel={() => {}}
+        onCreateModel={() => {}}
+        onTestExistingModel={() => {}}
+        onUpdateModel={() => {}}
+        onToggleModel={() => {}}
+        onEditModel={() => {}}
+        onDeleteModel={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('Live Behavior Eval Runtime');
+    expect(markup).toContain('HIVE_EVAL_TENANT_ID=tenant-1');
+    expect(markup).toContain('Behavior Eval Agent');
+    expect(markup).toContain('Claude Opus Eval');
+    expect(markup).toContain('Eval Operator');
+  });
 });

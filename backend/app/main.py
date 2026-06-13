@@ -179,43 +179,9 @@ async def lifespan(app: FastAPI):
     # ── Step 0c: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
     try:
         from app.database import Base, schema_engine
+        from app.models import import_all_models
 
-        # Import all models so Base.metadata is fully populated
-        import app.models.user  # noqa
-        import app.models.agent  # noqa
-        import app.models.task  # noqa
-        import app.models.llm  # noqa
-        import app.models.tool  # noqa
-        import app.models.audit  # noqa
-        import app.models.skill  # noqa
-        import app.models.channel_config  # noqa
-        import app.models.schedule  # noqa
-        import app.models.plaza  # noqa
-        import app.models.activity_log  # noqa
-        import app.models.org  # noqa
-        import app.models.system_settings  # noqa
-        import app.models.invitation_code  # noqa
-        import app.models.tenant  # noqa
-        import app.models.tenant_setting  # noqa
-        import app.models.participant  # noqa
-        import app.models.chat_session  # noqa
-        import app.models.trigger  # noqa
-        import app.models.notification  # noqa
-        import app.models.gateway_message  # noqa
-        import app.models.feature_flag  # noqa
-        import app.models.security_audit  # noqa
-        import app.models.capability_policy  # noqa
-        import app.models.capability_install  # noqa
-        import app.models.refresh_token  # noqa
-        import app.models.guard_policy  # noqa
-        import app.models.tenant_channel_config  # noqa
-        import app.models.plan_request  # noqa
-        import app.models.work_ledger  # noqa
-        import app.models.mcp_server  # noqa
-        import app.models.config_revision  # noqa  (§9 P0 gap C: was missing → fresh DBs lacked the table)
-        import app.models.workflow  # noqa  (§9 P1: workflow journal + definition tables)
-        import app.models.coordination  # noqa  (§9 P11: PG-backed Signal/Lease/Checkpoint persistence)
-        import app.models.token_usage_event  # noqa  (O3: append-only token event ledger)
+        import_all_models()
 
         # Schema bootstrap runs on the owner connection (schema_engine): after the
         # stage-3 role flip the app engine is the non-owner app_rls role, which

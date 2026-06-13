@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone as tz
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -24,6 +24,7 @@ from app.services.web_chat_runtime import (
     get_active_web_chat_run,
     start_web_chat_run,
 )
+from app.services.session_feedback import record_session_feedback
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 
@@ -79,6 +80,12 @@ class SessionRunOut(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     result_summary: Optional[str] = None
+
+
+class RecordSessionFeedbackIn(BaseModel):
+    label: Literal["useful", "misleading"]
+    reason: str = ""
+    message_id: Optional[uuid.UUID] = None
 
 
 async def _get_run_session_and_agent(
@@ -296,6 +303,34 @@ async def rename_session(
     session.title = body.title
     await db.commit()
     return {"id": str(session.id), "title": session.title}
+
+
+@router.post("/{agent_id}/sessions/{session_id}/feedback")
+async def record_feedback_for_session(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    body: RecordSessionFeedbackIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record owner/user Useful or Misleading feedback for one session."""
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    result = await record_session_feedback(
+        db=db,
+        agent=agent,
+        session=session,
+        current_user=current_user,
+        label=body.label,
+        reason=body.reason,
+        message_id=body.message_id,
+    )
+    await db.commit()
+    return result
 
 
 @router.post("/{agent_id}/sessions/{session_id}/runs", status_code=201)

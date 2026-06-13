@@ -104,6 +104,12 @@ def test_bootstrap_alembic_version_accepts_long_revision_ids() -> None:
     assert "VARCHAR(255)" in create_sql
 
 
+def test_session_feedback_events_is_forced_rls_on_fresh_bootstrap_path() -> None:
+    from app.db_bootstrap import RLS_FORCED_TENANT_TABLES
+
+    assert "session_feedback_events" in RLS_FORCED_TENANT_TABLES
+
+
 def test_normal_migration_path_prepares_wide_alembic_version_table() -> None:
     from app.db_bootstrap import run_migrations_with_bootstrap
 

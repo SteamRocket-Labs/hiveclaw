@@ -98,6 +98,7 @@ RLS_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "coordination_leases",
     "coordination_signals",
     "coordination_checkpoints",
+    "session_feedback_events",
 )
 
 

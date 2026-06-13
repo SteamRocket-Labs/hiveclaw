@@ -12,65 +12,12 @@ from app.database import Base
 from app.db_bootstrap import run_migrations_with_bootstrap
 from app.config import get_settings
 
-# Import all models so they are registered with Base.metadata
-from app.models.user import User, Department  # noqa: F401
-from app.models.agent import Agent, AgentPermission, AgentTemplate  # noqa: F401
-from app.models.task import Task, TaskLog  # noqa: F401
-from app.models.channel_config import ChannelConfig  # noqa: F401
-from app.models.llm import LLMModel  # noqa: F401
-from app.models.audit import AuditLog, ApprovalRequest, ChatMessage, EnterpriseInfo  # noqa: F401
-from app.models.skill import Skill, SkillFile  # noqa: F401
-from app.models.chat_session import ChatSession  # noqa: F401
-from app.models.participant import Participant  # noqa: F401
-from app.models.activity_log import AgentActivityLog  # noqa: F401
-from app.models.invitation_code import InvitationCode  # noqa: F401
-from app.models.org import OrgDepartment, OrgMember, AgentRelationship, AgentAgentRelationship  # noqa: F401
-from app.models.identity import IdentityProvider, ExternalIdentity, SSOScanSession  # noqa: F401
-from app.models.plaza import PlazaPost, PlazaComment, PlazaLike  # noqa: F401
-from app.models.schedule import AgentSchedule  # noqa: F401
-from app.models.system_settings import SystemSetting  # noqa: F401
-from app.models.tenant import Tenant  # noqa: F401
-from app.models.config_revision import ConfigRevision  # noqa: F401
-from app.models.coordination import (  # noqa: F401
-    CoordinationCheckpoint,
-    CoordinationLease,
-    CoordinationSignal,
-)
-from app.models.tool import Tool  # noqa: F401
-from app.models.workflow import (  # noqa: F401
-    WorkflowDefinitionRecord,
-    WorkflowLeafCall,
-    WorkflowQuota,
-    WorkflowStep,
-)
-from app.models.trigger import AgentTrigger  # noqa: F401
-from app.models.refresh_token import RefreshToken  # noqa: F401
-from app.models.guard_policy import GuardPolicy  # noqa: F401
-from app.models.tenant_channel_config import TenantChannelConfig  # noqa: F401
-from app.models.runtime_task import RuntimeTask  # noqa: F401
-from app.models.plan_request import AgentPlanRequest  # noqa: F401
-from app.models.plan_recommendation import AgentPlanRecommendation  # noqa: F401
-from app.models.token_usage_event import TokenUsageEvent  # noqa: F401
-from app.models.mcp_server import (  # noqa: F401
-    AgentMCPServerAssignment,
-    AgentMCPToolOverride,
-    MCPServer,
-    MCPServerTool,
-)
+from app.models import import_all_models
 
-# Belt-and-suspenders: auto-import every model module so Base.metadata is
-# complete for create_all/bootstrap. The manual list above historically missed
-# several models (work_ledger, capability_policy, tenant_settings,
-# tenant_tool_config, resource_permission, security_audit_event,
-# charter_proposal), leaving their tables unbuilt + unpolicied on fresh
-# deployments — the RLS stage-2a isolation gap. This guarantees completeness.
-import importlib as _importlib  # noqa: E402
-import pkgutil as _pkgutil  # noqa: E402
-
-import app.models as _models_pkg  # noqa: E402
-
-for _m in _pkgutil.iter_modules(_models_pkg.__path__):
-    _importlib.import_module(f"app.models.{_m.name}")
+# Import all model modules so Base.metadata is fully populated for both normal
+# migrations and create_all/bootstrap. This is the same registry used by
+# app.main startup, preventing drift between deployment paths.
+import_all_models()
 
 config = context.config
 settings = get_settings()

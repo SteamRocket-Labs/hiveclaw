@@ -28,6 +28,8 @@ from tests.integration.conftest import BACKEND_ROOT
 
 _WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_calls", "workflow_quotas")
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
+_FEEDBACK_TABLES = ("session_feedback_events",)
+_CURRENT_CLOSURE_HEAD = "session_feedback_events_0613"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -55,7 +57,7 @@ def test_alembic_single_head_is_current_closure_head():
     assert result.returncode == 0, result.stderr[-500:]
     heads = [line for line in result.stdout.strip().splitlines() if line.strip()]
     assert len(heads) == 1, f"expected single head, got: {heads}"
-    assert "web_chat_active_run_unique_0612" in heads[0]
+    assert _CURRENT_CLOSURE_HEAD in heads[0]
 
 
 async def _assert_workflow_tables_forced_rls(database_url: str) -> None:
@@ -120,6 +122,36 @@ async def _assert_coordination_tables_forced_rls(database_url: str) -> None:
     assert all(name == f"tenant_isolation_{table}" for table, name in policies)
 
 
+async def _assert_feedback_tables_forced_rls(database_url: str) -> None:
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = ANY(:names)"
+                    ),
+                    {"names": list(_FEEDBACK_TABLES)},
+                )
+            ).all()
+            policies = (
+                await conn.execute(
+                    text("SELECT tablename, policyname FROM pg_policies WHERE tablename = ANY(:names)"),
+                    {"names": list(_FEEDBACK_TABLES)},
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+
+    found = {row.relname: row for row in rows}
+    assert set(found) == set(_FEEDBACK_TABLES), f"missing feedback tables: {set(_FEEDBACK_TABLES) - set(found)}"
+    for table in _FEEDBACK_TABLES:
+        assert found[table].relrowsecurity is True, f"{table}: RLS not enabled"
+        assert found[table].relforcerowsecurity is True, f"{table}: RLS not FORCEd"
+    assert {t for t, _ in policies} == set(_FEEDBACK_TABLES)
+    assert all(name == f"tenant_isolation_{table}" for table, name in policies)
+
+
 async def test_upgrade_path_creates_workflow_tables_with_forced_rls(chain_migrated_pg_url):
     """The migration's own DDL (executed, not stamped) must produce the contract."""
     await _assert_workflow_tables_forced_rls(chain_migrated_pg_url)
@@ -137,6 +169,14 @@ async def test_upgrade_path_creates_coordination_tables_with_forced_rls(chain_mi
 
 async def test_bootstrap_path_creates_coordination_tables_with_forced_rls(migrated_pg_url):
     await _assert_coordination_tables_forced_rls(migrated_pg_url)
+
+
+async def test_upgrade_path_creates_session_feedback_events_with_forced_rls(chain_migrated_pg_url):
+    await _assert_feedback_tables_forced_rls(chain_migrated_pg_url)
+
+
+async def test_bootstrap_path_creates_session_feedback_events_with_forced_rls(migrated_pg_url):
+    await _assert_feedback_tables_forced_rls(migrated_pg_url)
 
 
 async def test_workflow_tables_cross_tenant_invisible(migrated_pg_url, owner_engine, app_user_engine):

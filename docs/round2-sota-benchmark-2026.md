@@ -702,6 +702,66 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：没有新建第二套 memory curation 文件，也没有只在某个 writer 上做特例。`append_t3_memory_candidate()` 是 T3 durable write 单入口，agent tool、heartbeat、dream/manual 共享；duplicate delta 写 lifecycle sidecar，`build_t3_entry_manifest()` 读侧天然 join metadata，`rebuild_index()` 立刻反映 counter-driven heat。active Markdown prose 仍保持一条事实，避免 ACE collapse 风险里的重复/整体重写。
 
+### 12.5 第一仗 O2 已实装：Session Useful/Misleading feedback 生产入口（2026-06-13）
+
+**完成范围**：新增 append-only `session_feedback_events` 表、`backend/app/models/session_feedback.py`、`backend/app/services/session_feedback.py` 和生产 API `POST /agents/{agent_id}/sessions/{session_id}/feedback`。入口复用 `chat_sessions.py` 的 `_get_run_session_and_agent()`，所以 session owner、agent creator/admin、manage access 走同一权限边界。service 会同时：① 写 `SessionFeedbackEvent`；② 写 `AuditLog(action="session_feedback.recorded")`；③ 将 Useful/Misleading 归因为 T3 feedback calibration，通过 `append_t3_memory_candidate()` 进入 M4 counter/dedup 主路。`useful` → `evidence=user_stated`；`misleading` → `evidence=misleading`，因此 duplicate feedback 会强化 helpful/harmful counters，不会静默改 soul/charter。后续 charter/soul 仍经 dream / proposal / owner approval gate。另新增 `app.models.import_all_models()`，让 Alembic env 和 `main.py` startup create_all 共享同一模型注册入口，避免新表只在 migration 路径存在、bootstrap 路径漏表。
+
+**Schema / 路径证据**：`backend/alembic/versions/session_feedback_events_0613.py` 接在 `web_chat_active_run_unique_0612` 后，包含 label check、tenant/agent/session/user/time indexes、RLS policy 和 `FORCE ROW LEVEL SECURITY`。`backend/app/db_bootstrap.py` 的 fresh create_all+stamp 路径也把 `session_feedback_events` 放入 `RLS_FORCED_TENANT_TABLES`。`alembic heads` 当前输出单 head：`session_feedback_events_0613 (head)`。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_session_feedback.py backend/tests/api/test_chat_session_feedback.py -q
+```
+
+结果：`3 failed`，失败点分别是 `app.models.session_feedback` 不存在、`app.services.session_feedback` 不存在、`chat_sessions` API 未暴露 `record_session_feedback` 接线。
+
+**全量验收 red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests -q -x
+```
+
+结果：`1 failed, 1389 passed, 5 skipped`，失败点是 `backend/tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head` 仍把旧闭包 head 写死为 `web_chat_active_run_unique_0612`，而新增 O2 migration 后真实单 head 已是 `session_feedback_events_0613`。修复方式：把该测试的当前闭包常量更新到 `session_feedback_events_0613`，继续保留“必须单 head”的硬门禁。
+
+**Bootstrap / RLS red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/models/test_model_registry.py backend/tests/test_alembic_bootstrap.py::test_session_feedback_events_is_forced_rls_on_fresh_bootstrap_path backend/tests/migrations/test_workflow_migration.py::test_upgrade_path_creates_session_feedback_events_with_forced_rls backend/tests/migrations/test_workflow_migration.py::test_bootstrap_path_creates_session_feedback_events_with_forced_rls -q
+```
+
+结果：`4 failed`，失败点分别是 `import_all_models` 不存在、`session_feedback_events` 不在 bootstrap forced RLS allowlist、upgrade 路径 RLS ENABLE 但未 FORCE、fresh bootstrap 路径 RLS 未启用。修复后 Alembic 与 startup 共用 `app.models.import_all_models()`，migration 与 bootstrap 均 FORCE RLS。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_session_feedback.py backend/tests/api/test_chat_session_feedback.py -q
+# 3 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_session_feedback.py backend/tests/api/test_chat_session_feedback.py backend/tests/memory/test_t3_store.py backend/tests/api/test_chat_session_runs.py backend/tests/api/test_chat_sessions_permissions.py -q
+# 24 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_session_feedback.py backend/tests/api/test_chat_session_feedback.py backend/tests/memory/test_t3_store.py backend/tests/api/test_chat_session_runs.py backend/tests/api/test_chat_sessions_permissions.py backend/tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head -q
+# 25 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_session_feedback.py backend/tests/api/test_chat_session_feedback.py backend/tests/memory/test_t3_store.py backend/tests/api/test_chat_session_runs.py backend/tests/api/test_chat_sessions_permissions.py backend/tests/migrations/test_workflow_migration.py backend/tests/models/test_model_registry.py backend/tests/test_alembic_bootstrap.py -q
+# 46 passed, 4 warnings
+
+backend/.venv/bin/ruff check backend/app/models/__init__.py backend/app/main.py backend/alembic/env.py backend/app/db_bootstrap.py backend/app/models/session_feedback.py backend/app/services/session_feedback.py backend/app/api/chat_sessions.py backend/tests/models/test_model_registry.py backend/tests/test_alembic_bootstrap.py backend/tests/services/test_session_feedback.py backend/tests/api/test_chat_session_feedback.py backend/tests/migrations/test_workflow_migration.py backend/alembic/versions/session_feedback_events_0613.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/models/__init__.py backend/app/main.py backend/alembic/env.py backend/app/db_bootstrap.py backend/app/models/session_feedback.py backend/app/services/session_feedback.py backend/app/api/chat_sessions.py backend/tests/models/test_model_registry.py backend/tests/test_alembic_bootstrap.py backend/tests/services/test_session_feedback.py backend/tests/api/test_chat_session_feedback.py backend/tests/migrations/test_workflow_migration.py backend/alembic/versions/session_feedback_events_0613.py
+# passed with no output
+
+cd backend && .venv/bin/alembic heads
+# session_feedback_events_0613 (head)
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4171 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是前端假按钮或本地文件。反馈事件落 Postgres append-only 表，带 FORCE RLS、审计、session/message attribution；calibration 进入现有 T3 write gate、M4 counter、dream/proposal 后续治理链路。Useful/Misleading 不会直接 mutate 记忆核心或 charter，避免 reward-hacking 式静默自改。新增模型注册入口同时消掉了“migration 有、startup create_all 漏”的路径分叉。
+
 **第二仗 — 可靠性 + 持久执行（北极星①韧性 + 无人值守命门）**
 - **目标线**：Temporal（completion 去重边界）+ CC（withRetry 10 次指数 + 输出 cap escalate）+ Claude SDK（checkpoint between tool calls + continuation token）。
 - **动作**：① K1 内核 529 撤一击毙命（允许同模型重试 + 切 fallback）+ 客户端 10 次指数退避+jitter；② workflow journal 升 completion 去重边界；③ D2 workflow_completed 接真消费方；④ subagent 背景化落 RuntimeTask 持久化 + delegation step 级 journal（替整段重放）；⑤ K2 interleaved-thinking beta 头 + 签名 round-trip。

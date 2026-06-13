@@ -387,6 +387,21 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **仍待后续 E**：CI nightly 真 shell-out hermes + 喂 `compare_hive_to_hermes` = **E8**；`harness-ci.yml` 的注入 `--hermes-scores-json`（CI 硬编码假分）移除 = **E8**。
 
+### E8 — 双层 CI + fail-gate ✅（2026-06-13，G1/G3）
+
+**完成范围**：
+- 新增 `backend/app/evals/ci_gate.py`：`evaluate_ci_gate(behavior_report, baseline, running_model, integrity, require_live, tolerance)`——组合 **E5（evaluator 信任）→ E2（require complete live）→ E1（baseline 存在 + 模型匹配 + 无退化）**，首个失败门给 distinct 非零退出码（`EXIT_REGRESSION=1` / `REQUIRED_LIVE_FALLBACK=2` / `UNTRUSTED_EVALUATOR=3` / `BASELINE_UNAVAILABLE=4`）；+ `main()` CLI 供 CI 调用。
+- `backend/app/evals/run.py`：`main()` 加 `--fail-under` → pass_rate 低于阈值 exit 1（此前恒 `return 0`，G3）。
+- `.github/workflows/harness-ci.yml`：① per-PR `Internal harness eval --fail-under 90`（block merge on regression）；② self-evolution bakeoff **删注入假 hermes**（E7，改 Hive 绝对门）；③ 新增 `schedule` nightly 触发 + `behavior-eval-nightly` job（full eval suite 回归 + 行为 gate；live 行为 gate **secret-guarded**，未配置则 graceful skip 不假红）。
+
+**关键诚实边界**：per-PR fail-gate（`internal --fail-under` + self-evolution 绝对门）**真跑 block merge** ✓；行为 eval 的 live 执行（invoke_agent 需 LLM key + Postgres + eval tenant）由 nightly secret-guarded job 在 eval 环境配置后激活——ci_gate 逻辑 + CLI 已就绪且测试，**CLI smoke 实证空报告 → exit 2**（required-live fail-closed）。
+
+**TDD red→green**：`tests/evals/test_ci_gate.py` 7 + `test_run_fail_gate.py` 3 用例；green `17 passed`（含 run）。CLI smoke：空报告 exit 2 ✓；yaml 解析 triggers=[pull_request,push,schedule] + 2 jobs ✓；ruff clean。
+
+**验收映射**：regression → exit 1（`test_gate_fails_on_regression` + `test_fail_under_exits_nonzero_below_threshold`）✓；required-live fallback → 非零（`test_gate_fails_on_required_live_fallback` + CLI smoke exit 2）✓；untrusted evaluator → 非零（`test_gate_fails_on_untrusted_evaluator`）✓；baseline 缺 fail-closed（`test_gate_fails_on_baseline_unavailable`）✓；模型漂移（`test_gate_fails_on_model_drift`）✓。
+
+**gap 状态**：G1（live 行为 eval 入 CI）+ G3（regression fail-gate）机制已落；live 执行随 eval secrets 配置激活。
+
 ---
 
 ## 附：关键文件锚点

@@ -314,6 +314,21 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **仍待后续 E**：promotion 决策接 `execution_passed ∧ no_regressions` = **E3**；连续 reward 与 rubric 门控分离 invariant = **E4**；CI 真跑 = **E8**。
 
+### E3 — promotion 硬门（execution_passed ∧ no_regressions）✅（2026-06-13）
+
+**完成范围**（`backend/app/services/evolution_verification.py`）：
+- `decide_verified_promotion` 加 `regression_report` 参数（向后兼容，默认 None）：verification 通过后，若 regression_report 表示退化（`passed=False`）→ **hold**（`behavior regression vs baseline`）；并加 `execution_passed` 显式断言（verification 含 `agent_behavior_check` 时必须通过，否则 reject）。
+- 新增 `execution_evidence(verification_report)`：把 verification 里 `agent_behavior_check` 的存在性 + 结果显式化。
+- 新增 `decide_behavior_gated_promotion(...)`——**canonical 硬门**：组合 E1（`compare_to_baseline` 的 regression_report）+ E2（`behavior_eval_passed`）+ static verification，三者全过才 promote。这是 E8 CI eval 路径调用的决策函数，自进化候选不过真实行为就晋升不了。
+
+**生产接线**：`decide_verified_promotion` 的两个生产调用方（`skill_distiller.py:1145/1295`）签名向后兼容（新参数默认 None，静态 skill_guard 路径行为不变）；`decide_behavior_gated_promotion` 是 E8 CI 行为门的消费点。
+
+**TDD red→green**：`tests/services/test_promotion_hard_gate.py` 13 用例，实现前 Pyright 缺符号/参数；green。回归 `test_promotion_hard_gate + test_evolution_verification + test_skill_distiller + test_skill_flywheel` = **45 passed**；现有 reject reason `"verification failed"`（skill_distiller exact-match）保持不变；ruff clean。
+
+**验收映射**：退化候选 hold（`test_decide_verified_promotion_holds_on_regression` / `test_behavior_gated_holds_on_regression`）✓；行为 fail hold（`test_behavior_gated_holds_on_behavior_fail`）✓；verification fail reject（`test_behavior_gated_rejects_on_verification_fail`）✓；全过才 promote（`test_behavior_gated_promotes_when_all_pass`）✓。
+
+**仍待后续 E**：CI 真跑 `decide_behavior_gated_promotion` 喂真 behavior_report + regression_report = **E8**。
+
 ---
 
 ## 附：关键文件锚点

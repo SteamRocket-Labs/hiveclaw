@@ -381,9 +381,7 @@ def _run_agent_behavior_check(grader: dict[str, Any]) -> dict[str, Any]:
         check_type="agent_behavior_check",
         passed=passed,
         message=(
-            "behavior eval passed"
-            if passed
-            else f"behavior eval failed (transport={transport}, not_ready={not_ready})"
+            "behavior eval passed" if passed else f"behavior eval failed (transport={transport}, not_ready={not_ready})"
         ),
         evidence={
             "transport": transport,
@@ -462,14 +460,70 @@ def record_verification_eval(
     )
 
 
+def execution_evidence(verification_report: dict[str, Any]) -> dict[str, bool]:
+    """E3: summarize agent-behavior (execution) evidence inside a verification report."""
+
+    checks = verification_report.get("checks") or []
+    behavior_checks = [check for check in checks if check.get("type") == "agent_behavior_check"]
+    return {
+        "has_behavior_check": bool(behavior_checks),
+        "execution_passed": bool(behavior_checks) and all(bool(check.get("passed")) for check in behavior_checks),
+    }
+
+
 def decide_verified_promotion(
     candidate: dict[str, Any],
     *,
     verification_report: dict[str, Any] | None,
+    regression_report: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     del candidate
     if verification_report is None:
         return {"decision": "hold", "reason": "verification evidence is required"}
     if not bool(verification_report.get("passed")):
         return {"decision": "reject", "reason": "verification failed"}
+    # E3 no_regressions: a behavior regression vs the version-pinned baseline blocks promotion.
+    if regression_report is not None and not bool(regression_report.get("passed")):
+        regressed = (
+            [r.get("scenario") for r in regression_report.get("regressions", []) if r.get("regressed")]
+            or regression_report.get("missing_scenarios")
+            or []
+        )
+        return {"decision": "hold", "reason": f"behavior regression vs baseline: {regressed}"}
+    # E3 execution_passed: if behavior evidence is present it must pass. verification.passed
+    # already requires this; we assert it explicitly so a caller that computes passed
+    # differently cannot bypass the behavior gate.
+    evidence = execution_evidence(verification_report)
+    if evidence["has_behavior_check"] and not evidence["execution_passed"]:
+        return {"decision": "reject", "reason": "agent behavior eval failed"}
     return {"decision": "promote", "reason": "verification passed"}
+
+
+def decide_behavior_gated_promotion(
+    candidate: dict[str, Any],
+    *,
+    verification_report: dict[str, Any] | None,
+    behavior_report: dict[str, Any] | None,
+    regression_report: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """E3: canonical hard promotion gate — verification passed AND behavior eval
+    passed (execution_passed) AND no baseline regression (no_regressions).
+
+    Composes E1 (regression_report from compare_to_baseline) + E2 (behavior_report
+    via behavior_eval_passed) + static verification. E8's CI eval path calls this
+    with reports produced by the Hive live runner, so a self-evolution candidate
+    cannot promote without proving real, non-regressed behavior.
+    """
+
+    base = decide_verified_promotion(
+        candidate,
+        verification_report=verification_report,
+        regression_report=regression_report,
+    )
+    if base["decision"] != "promote":
+        return base
+    from app.evals.hive_live_runner import behavior_eval_passed
+
+    if not isinstance(behavior_report, dict) or not behavior_eval_passed(behavior_report):
+        return {"decision": "hold", "reason": "behavior eval did not pass (execution_passed required)"}
+    return {"decision": "promote", "reason": "verification + behavior eval passed, no regression"}

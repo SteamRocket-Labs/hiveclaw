@@ -799,6 +799,39 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：不是只给 OpenAI 非流式加重试。所有 `llm_client.py` 内部直接 HTTP status retry 的 provider 路径共享同一 attempt/backoff helper；stream partial retry 仍发送 `STREAM_RETRY_TOMBSTONE` 清理已吐出的片段；账号、权限、模型不存在、配额耗尽、429 明确限流仍保持用户决策边界，不会为了“可用性”静默换模型隐藏运营问题。
 
+### 12.7 第二仗 W1 已实装：workflow completion side-effect 去重边界（2026-06-13）
+
+**完成范围**：`backend/app/services/workflow_runtime_service.py` 新增 `_claim_completion_side_effects()`，在 `RuntimeTask.metadata_json["completion_side_effects"]` 写入 `workflow_completed:{run_id}:{status}` idempotency key、status、claimed_at、signal_type。claim 使用 `SELECT ... FOR UPDATE` 锁住 run row；只有首次 claim 会发 `workflow_completed` Signal 和 `async_completion` channel delivery。后续 replay 即使所有 step 从 journal 返回 `completed`，也只更新 run 状态，不再重复外部 side effect。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/runtime/test_workflow_completion_signal.py::test_completed_run_replay_does_not_emit_completion_side_effects_twice -q
+```
+
+结果：`1 failed`，失败点是 replay 后 `ChannelDeliveryService.send_text` 调用数从 1 变成 2，证明当前 completion notification 没有 run-level durable dedup boundary。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/runtime/test_workflow_completion_signal.py backend/tests/services/test_workflow_completion_signal_gateway.py -q
+# 5 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/runtime/test_workflow_completion_signal.py backend/tests/services/test_workflow_completion_signal_gateway.py backend/tests/runtime/test_workflow_restart_resume.py backend/tests/runtime/test_workflow_gate_step.py backend/tests/services/test_workflow_daemon.py backend/tests/runtime/test_workflow_wait_signal.py backend/tests/runtime/test_workflow_graceful_drain.py -q
+# 20 passed, 4 warnings
+
+backend/.venv/bin/ruff check backend/app/services/workflow_runtime_service.py backend/tests/runtime/test_workflow_completion_signal.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/workflow_runtime_service.py backend/tests/runtime/test_workflow_completion_signal.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4176 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只让 in-memory Signal consume-once。去重边界落在 PG run metadata 上，覆盖 Signal 与 channel delivery 两类 completion side effect；journal replay、worker restart、手工把 run 状态误回 `running` 后再 resume，都不能重复发完成通知。step/leaf journal 仍负责执行重放，completion claim 只保护 run-level 外部副作用，职责边界清楚。
+
 **第三仗 — Goal-2 地基（执行隔离 + agent 身份）**
 - **目标线**：Codex（OS 级 fail-closed + 默认断网）/ microVM + Claude SDK（凭据出口代理注入）+ Entra Agent ID（一等 agent 身份 + sponsor 生命周期）+ Glean（模型见数据前预过滤）。
 - **动作**：① 验证 bwrap 生产可行（或 gVisor/microVM）+ seccomp + 凭据出口注入替 env 透传；② RLS 之上加 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）。

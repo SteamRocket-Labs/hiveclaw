@@ -1001,6 +1001,40 @@ class WorkflowRuntimeService:
         except Exception as exc:
             logger.warning("[Workflow] completion delivery failed (non-fatal): %s", exc)
 
+    async def _claim_completion_side_effects(
+        self,
+        *,
+        run_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        status: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Atomically claim run-level completion side effects.
+
+        Step replay is deterministic and may return ``completed`` more than once
+        for the same run. Completion notification is an external side effect, so
+        the durable run row is the idempotency boundary.
+        """
+        from datetime import UTC, datetime
+
+        idempotency_key = f"workflow_completed:{run_id}:{status}"
+        async with self._session(tenant_id) as session:
+            task = (
+                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
+            ).scalar_one()
+            metadata = dict(task.metadata_json or {})
+            existing = metadata.get("completion_side_effects")
+            if isinstance(existing, dict) and existing.get("idempotency_key") == idempotency_key:
+                return False, metadata
+            metadata["completion_side_effects"] = {
+                "idempotency_key": idempotency_key,
+                "status": status,
+                "claimed_at": datetime.now(UTC).isoformat(),
+                "signal_type": "workflow_completed",
+            }
+            task.metadata_json = metadata
+            await session.flush()
+            return True, metadata
+
     # ── internals ────────────────────────────────────────────────
 
     async def _execute(
@@ -1147,12 +1181,18 @@ class WorkflowRuntimeService:
 
         record_workflow_run_finished(outcome.status)
         if outcome.status == "completed":
-            await self._emit_completion_signal(run_id, agent_for_signal, outcome.status, tenant_id=tenant_id)
-            await self._deliver_completion_notification(
+            claimed, task_metadata = await self._claim_completion_side_effects(
                 run_id=run_id,
-                agent_id=agent_for_signal,
-                status=outcome.status,
                 tenant_id=tenant_id,
-                metadata=task_metadata,
+                status=outcome.status,
             )
+            if claimed:
+                await self._emit_completion_signal(run_id, agent_for_signal, outcome.status, tenant_id=tenant_id)
+                await self._deliver_completion_notification(
+                    run_id=run_id,
+                    agent_id=agent_for_signal,
+                    status=outcome.status,
+                    tenant_id=tenant_id,
+                    metadata=task_metadata,
+                )
         return outcome

@@ -86,6 +86,62 @@ async def test_completed_run_emits_consume_once_signal(tenant_id, agent_id, owne
     assert again == [], "the completion signal is read-once — never re-consumed"
 
 
+async def test_completed_run_replay_does_not_emit_completion_side_effects_twice(
+    tenant_id, agent_id, owner_sessionmaker, monkeypatch
+):
+    from sqlalchemy import select
+
+    from app.models.runtime_task import RuntimeTask
+    from app.services import workflow_runtime_service as module
+
+    coordination_runtime.reset()
+    service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    delivered: list[dict] = []
+
+    async def fake_send_text(**kwargs):
+        delivered.append(kwargs)
+        return None
+
+    monkeypatch.setattr(module.ChannelDeliveryService, "send_text", fake_send_text)
+
+    async def leaf(request: LeafRequest) -> LeafOutcome:
+        return LeafOutcome(ok=True, output={}, tokens_used=1)
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={},
+        agent_id=agent_id,
+        leaf_executor=leaf,
+        delivery_target={"channel": "web", "username": "owner"},
+    )
+    assert handle.outcome.status == "completed"
+    assert len(delivered) == 1
+    assert len(
+        coordination_runtime.consume_signals(
+            str(agent_id), thread_id=str(handle.run_id), signal_type="workflow_completed"
+        )
+    ) == 1
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        task.status = "running"
+
+    async def exploding_leaf(request: LeafRequest) -> LeafOutcome:
+        raise AssertionError("done workflow steps must replay from journal, not re-execute leaves")
+
+    replay = await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=exploding_leaf)
+
+    assert replay.status == "completed"
+    assert len(delivered) == 1
+    assert (
+        coordination_runtime.consume_signals(
+            str(agent_id), thread_id=str(handle.run_id), signal_type="workflow_completed"
+        )
+        == []
+    )
+
+
 async def test_failed_run_emits_no_completion_signal(tenant_id, agent_id, owner_sessionmaker):
     coordination_runtime.reset()
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)

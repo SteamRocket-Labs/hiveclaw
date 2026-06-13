@@ -10,7 +10,7 @@
 > - `docs/plan-mode-design.md` — 总设计、数据模型、状态机、安全不变量、API、UI
 > - `docs/plan-mode-agent-authored-planning.md` — agent-authored 原则修正（本文的前序）
 > - `docs/plan-mode-agent-work-ledger.md` — 执行期 Work Ledger（与本文的 plan artifact 分工，见 §10）
-> - `docs/DEEP_RESEARCH_SOTA_V2.md` — Deep Research 现状（范式外推目标，见 §9）
+> - `docs/archive/legacy-docs/DEEP_RESEARCH_SOTA_V2.md` — Deep Research 现状（范式外推目标，见 §9）
 
 ---
 

@@ -48,7 +48,6 @@ async def test_list_triggers_includes_no_model_diagnostic(monkeypatch):
         type="cron",
         config={"expr": "0 9 * * *", "trigger_class": "scheduled_job"},
         reason="Run scheduled job",
-        focus_ref="scheduled_job",
         is_enabled=True,
         fire_count=3,
     )

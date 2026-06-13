@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Hive</h1>
-  <h3>Open-source enterprise digital employees with governed self-evolution.</h3>
+  <h3>Open-source enterprise digital employee OS — self-evolving Agent Runtime + company control plane.</h3>
   <p><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 </div>
 
@@ -13,22 +13,56 @@
 
 <br>
 
-Hive is a self-hosted platform for building **digital employees** — AI agents that remember the conversations they have, learn from them autonomously, live inside your team's IM tools, and act on their own when something needs doing. The project has two first-class goals: a self-evolving agent runtime with enterprise-grade access control, and a company-scale control plane for operating those agents. Instead of stateless chatbots that forget everything when the tab closes, Hive agents have an identity contract, a private workspace, a 4-layer memory that consolidates while they "sleep," and a Memory Control Plane that keeps their judgment aligned with their owner and company.
+Hive is a self-hosted **enterprise digital employee operating system**. It is not trying to be another chatbot, and it is not just another library for writing agent workflows. Hive is about how a company can hire, authorize, run, audit, correct, and continuously improve a workforce of AI digital employees.
 
-**What makes Hive different:**
+There is a gap in today's agent market. Models are getting stronger, but model vendors do not provide a complete company governance layer. Enterprise SaaS products have permissions and audits, but most agents remain static configurations or offline human-reviewed optimizations. Open-source agent frameworks help developers compose workflows, but they do not give a company an operating surface for long-lived digital employees. Hive sits at that intersection: **runtime self-evolving digital employees + a company-scale control plane**.
 
-- **Persistent identity** — Each agent has a `soul.md` — its role, voice, boundaries, and quality bar. It survives across conversations, sessions, and even model swaps.
-- **4-layer memory pyramid + control plane** — Raw logs → learnings → semantic memory → identity, governed by owner/company context, privacy gates, dynamic activation, decision traces, session feedback, memory hygiene, and replay-guarded policy evolution. No manual RAG setup.
-- **Governed self-evolution** — Heartbeat, Dream, fast reflection, skill distillation, and patch-first skill candidates can improve the agent, but durable promotion must carry source evidence, verification, rollback metadata, and audit records.
-- **Durable web chat** — Web chat turns run as background `RuntimeTask` jobs. Refreshing or closing the browser disconnects the subscription, not the agent's work.
-- **Harness-grade runtime** — Restart-resumable tasks, invocation trace spans in PostgreSQL, provider retry/overload fallback, Anthropic thinking-signature preservation, prompt-cache anchoring, and token budget gates are part of the runtime contract.
-- **Office workbench** — Agent workspaces now support browser-based DOCX/XLSX/PPTX editing through ONLYOFFICE, with signed callbacks and revision history.
-- **Lives in your chat** — First-class connectors for Feishu/Lark, Slack, Discord, DingTalk, WeChat Work, and Microsoft Teams. Same agent, same memory, every channel.
-- **Created by conversation** — An HR Agent interviews you in 2–3 rounds and builds a new digital employee for you. No prompt engineering required.
-- **Acts on its own** — Cron, interval, webhook, polling, and message-event triggers. Agents wake up to do work, not just answer.
-- **Enterprise-ready governance** — Security zones, capability policies, human-in-the-loop approvals, multi-tenant PostgreSQL RLS, full audit trail.
-- **Honest interoperability** — MCP imports reject token-passthrough/userinfo credentials, and A2A-style Agent Cards expose only implemented capabilities while marking OAuth delegation and JSON-RPC task surfaces as not exposed.
-- **60+ tools out of the box** — File I/O, web search, the Feishu office suite, email, OfficeCLI/ONLYOFFICE document workflows, deep research, and MCP server import for anything else.
+## What Hive Is Building
+
+Hive has two first-class goals:
+
+1. **A self-evolving Agent Runtime**: every agent has identity, memory, skills, tools, a private workspace, and long-running task execution, and can improve from real work, user feedback, session outcomes, and failure cases.
+2. **A company control plane**: the organization can manage agent identity, owners, permissions, tools, budgets, channels, approvals, audit trails, org relationships, and data boundaries in one place.
+
+That means Hive does not treat an agent as a one-off prompt, and it does not treat governance as an afterthought UI. Intelligence growth, memory writes, skill promotion, external action, and enterprise authority all flow through the same runtime contract.
+
+## Four Product Pillars
+
+**1. Digital employee identity**
+
+Every agent has a `soul.md` identity contract, an isolated workspace, long-term memory, a skill directory, owner/company context, channel configuration, and trigger-backed wake policies. It carries its working identity across sessions, models, and IM channels instead of starting over every time a chat tab opens.
+
+**2. Governed self-evolution**
+
+Hive lets agents learn, but it does not let agents self-certify that they have improved. Response-complete extraction, the fast reflection learning brain, Heartbeat, Dream, session feedback, skill distillation, and patch-first skill candidates can propose improvements; durable promotion must carry source evidence, hard verification, rollback metadata, audit records, and replay/eval gates. Self-evolution is not "the model says it got better"; it is the system proving that the change did not pollute memory, mislead the owner, or bypass company boundaries.
+
+**3. Company-scale control plane**
+
+Hive is built for a company operating many digital employees. Company Admin, Platform Admin, Agent Circle, HR Agent, tool registration, capability policies, approval flows, multi-tenant RLS, audit logs, budgets, org structure, per-agent channel config, MCP authz, A2A-style Agent Cards, and the interoperability profile are all part of the same control surface.
+
+**4. Harness-grade runtime**
+
+Agents do not only work while a browser tab is open. Web chat, triggers, workflows, subagents, Heartbeat, Dream, deep research, and IM webhooks all flow through one stateless kernel and governed tool runtime. `RuntimeTask` execution is restart-resumable, `invocation_spans` provide a database trace spine, and provider retry/overload fallback, Anthropic thinking-signature preservation, prompt-cache anchoring, token budget gates, completion deduplication, and sandboxed code execution are runtime contracts.
+
+## Current Baseline After Two Major Passes
+
+**Round 1: from complex agent app to enterprise-grade Agent Harness.**
+
+The first audit found that the issue was not "missing a few features"; it was weak failure paths and incomplete cross-module closure. Provider overload could kill a run, long tasks could be interrupted by process restarts, browser disconnects could affect active work, tool boundaries were not hard enough, and verification gates risked letting model self-judgment masquerade as hard evidence. After remediation, Hive's runtime baseline is restart-resumable `RuntimeTask` execution, unified provider retry/fallback, DB-backed invocation trace, governed tool execution, sandboxed code execution, safe MCP import, Memory Control Plane write gates, and auditable promotion paths.
+
+**Round 2: from runnable substrate to SOTA digital employee capability.**
+
+The second pass stopped benchmarking only against Claude Code's harness baseline and widened the target to the strongest pieces across Devin, Letta, ACE, Voyager, Temporal, Glean, Microsoft Entra Agent ID, and related SOTA systems. Implemented closures include the `skill_guard` hard verification gate, fast reflection learning brain, patch-first skill repair, ACE-style T3 reinforcement counters, production Session Useful/Misleading feedback, 10-attempt LLM status/network retry, 529 fallback, workflow completion side-effect deduplication, subagent/web-chat restart recovery, Anthropic interleaved-thinking headers, and signed thinking round-trip.
+
+## What You Can Run Today
+
+- **Create digital employees**: the HR Agent creates `soul.md`, initial tasks, operating boundaries, and triggers through a 2-3 round conversation.
+- **Connect work channels**: the same agent can live in Web Chat, Feishu/Lark, Slack, Discord, DingTalk, WeChat Work, WeChat Personal, Telegram, Email, and Microsoft Teams.
+- **Learn over time**: T0/T2/T3/soul memory separates raw behavior, extracted learnings, semantic memory, and identity; fast reflection and session feedback enter candidate, ledger, and verification paths instead of directly mutating T3.
+- **Act autonomously with controls**: cron, interval, webhook, polling, message-event triggers, and workflows let agents initiate work; external-visible, sensitive, irreversible, or company-boundary actions require preflight, approval, or checkpoint gates.
+- **Operate at company scale**: Company Admin manages models, employees, org, tools, skills, quotas, approvals, audit, memory, and channels; Platform Admin manages global settings.
+- **Work on office documents**: agent workspaces support browser-based DOCX/XLSX/PPTX editing with ONLYOFFICE signed callbacks and revision history.
+- **Stay model-neutral and self-hosted**: Hive does not bind you to one model vendor or office suite; it supports Anthropic, OpenAI, Gemini, DeepSeek, Qwen, MiniMax, Azure, OpenRouter, Zhipu, Kimi, vLLM, Ollama, SGLang, and custom OpenAI-compatible endpoints.
 
 > [!NOTE]
 > Hive is fully self-hostable. FastAPI + React + PostgreSQL + Redis, ships with Docker Compose, supports 14+ LLM providers (Anthropic, OpenAI, Gemini, DeepSeek, Qwen, MiniMax, Azure, OpenRouter, Zhipu, Kimi, vLLM, Ollama, …).
@@ -64,7 +98,7 @@ docker compose up -d --build    # full stack on http://localhost:3008
                    +--------------+--------------+
                                   |  /api  /ws
                    +--------------v--------------+
-                   |   Backend (FastAPI 3.12)    |
+                   | Backend (FastAPI + Python)  |
                    +--------------+--------------+
                                   |
        +--------------+-----------+-----------+--------------+
@@ -73,9 +107,8 @@ docker compose up -d --build    # full stack on http://localhost:3008
    (RLS, async)   (cache, pubsub)    - Trigger (15s tick)    /data/agents/
                                      - Feishu / DingTalk /     {agent_id}/
                                        WeCom / WeChat WS       soul.md
-                                     - Heartbeat / Dream       focus.md
-                                     - Evolution daemon        workspace/
-                                                               memory/
+                                     - Heartbeat / Dream       workspace/
+                                     - Evolution daemon        memory/
                                                                logs/
                                                                skills/
 ```
@@ -98,25 +131,26 @@ Web chat is durable: the browser WebSocket subscribes to a background `RuntimeTa
 This is the part that makes Hive feel different from "a chatbot with a vector store."
 
 ```
-soul.md     ←  Dream         (4h + 3 sessions gate, T3→soul consolidation)
-   ↑
-T3 memory   ←  Heartbeat     (every 45 min, T2→T3 curation)
-   ↑                          feedback / knowledge / strategies / blocked / user
-T2 learnings ← Extract Agent (after every response, T0→T2 LLM extraction)
-   ↑
-T0 raw logs ← t0_logger      (cursor-based, written on session idle/close)
-              30-day retention
+soul.md      ← Dream          (full gate: 24h + 3 sessions OR 2 productive heartbeats)
+   ↑                            soft dream: 6h relief valve when T3 approaches 100 entries
+T3 memory    ← governed writes (Heartbeat, save_memory, session feedback, dream/manual paths)
+   ↑                            feedback / knowledge / strategies / blocked / user
+T2 learnings ← extract_agent   (RESPONSE_COMPLETE hot path, PRE_COMPACTION drain, T0 replay)
+   ↑                            fast reflection writes ledger/session candidates, not direct T3
+T0 raw logs  ← t0_logger       (behavior/system/artifacts, cursor-based lifecycle logs)
+               30-day behavior retention
 ```
 
 | Layer | Where | Written by | What it holds |
 |-------|-------|-----------|---------------|
 | **T0** | `logs/YYYY-MM-DD/behavior/` | session hooks | Full conversation MD — every message, tool call, tool result |
-| **T2** | `memory/learnings/*.md` | extraction LLM | Atomic learnings: facts, preferences, mistakes, patterns |
-| **T3** | `memory/{feedback,knowledge,strategies,blocked,user}.md` | Heartbeat daemon | Curated, deduplicated semantic memory |
-| **soul** | `soul.md` | Dream daemon | Permanent identity — role, voice, boundaries |
-| **focus** | `focus.md` | agent + heartbeat | Volatile operational priorities |
+| **T2** | `memory/learnings/*.md` | `extract_agent` hot path + backfill | Atomic learnings: facts, preferences, mistakes, patterns |
+| **T3** | `memory/{feedback,knowledge,strategies,blocked,user}.md` | governed T3 append path | Curated, deduplicated semantic memory with reinforcement counters in `lifecycle.json` |
+| **soul** | `soul.md` | Dream daemon, through promotion gates | Permanent identity — role, voice, boundaries |
 
-Files are the source of truth. They're plain Markdown — you can read them, edit them, version them, copy them between deployments. No embeddings to rebuild, no vector store to migrate.
+Heartbeat cadence is configuration-backed: `evolution_daemon` dispatches every `HEARTBEAT_TICK_SECONDS` (default 60s), and runnable agents are eligible on the managed `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` cadence (default 120 minutes). Subsequent heartbeat ticks skip when no new T2 entries exist. Full Dream is a slower identity operation: at least 24 hours plus either 3 sessions or 2 productive heartbeats. Soft Dream only does deterministic T3 maintenance and index refresh when T3 is under pressure.
+
+Files are the source of truth for human-readable memory. The active T3 prose is Markdown; `lifecycle.json` carries evidence, sensitivity, lifecycle state, access telemetry, and reinforcement counters; `memory/INDEX.md` is a lightweight navigation manifest, not a second memory store. Optional Hindsight sync is a derived read-side accelerator and can be rebuilt from Markdown.
 
 The pyramid is only the storage path. Runtime behavior is governed by the **Memory Control Plane**:
 
@@ -166,11 +200,11 @@ Channel configs are **per-agent**, so different employees can live in different 
 | API routers | 62 | Agents, auth, chat sessions, enterprise, channels, admin, Agent Circle/plaza, triggers, office, deep research, interoperability |
 | ORM models | 43 | Tenant-scoped SQLAlchemy models with RLS, runtime tasks, coordination, objectives, identity, invocation spans, session feedback |
 | Services | 163 | LLM client, trigger/evolution daemons, channel streamers, memory, office, governance, skills, trace, MCP authz, interoperability |
-| Tool handlers | 60+ | filesystem · search · communication · email · feishu · office · memory · deep research · plaza · skills · triggers · hr · mcp |
+| Tool handlers | 18 modules / 100+ registered definitions | filesystem · search · communication · email · feishu · office · memory · deep research · workflows · work ledger · plaza · skills · triggers · hr · mcp |
 | Kernel | 1 stateless engine | 200 default max tool rounds · 75% compaction threshold · 50KB tool result eviction · trace spans · thinking signatures |
 | Migrations | 79 | Alembic, single-head invariant |
-| Frontend pages | 16 + 25 sub-sections | AgentDetail, Agent Circle, Company Admin workbench/settings, Platform Admin |
-| Frontend API | 37 domain adapter files | TanStack Query for server state, Zustand for UI state |
+| Frontend pages | 16 page entries + 40 nested page/section helpers | AgentDetail, Agent Circle, Company Admin workbench/settings, Platform Admin |
+| Frontend API | 37 domain adapter/test/index files | TanStack Query for server state, Zustand for UI state |
 
 For deeper technical detail, see [`ENGINEERING.md`](ENGINEERING.md) (architecture, invariants, runtime contracts) and [`AGENTS.md`](AGENTS.md) (developer reference for AI coding assistants).
 
@@ -191,7 +225,9 @@ For deeper technical detail, see [`ENGINEERING.md`](ENGINEERING.md) (architectur
 
 ### Why should I use Hive instead of LangGraph / AutoGen / CrewAI?
 
-Those are **agent frameworks** — libraries you write code with. Hive is a **multi-agent platform** — a self-hostable product. If you want to give your colleagues a UI to spin up agents, plug them into Feishu, set up cron triggers, review their memory, and approve risky actions — that product layer is what Hive provides on top of an agent runtime.
+Those are **agent frameworks**. They answer "how does a developer write an agent workflow?" Hive is an **enterprise digital employee operating system**. It answers "how does a company hire, authorize, run, audit, correct, and upgrade a workforce of long-lived digital employees?"
+
+If you only need to compose a few LLM nodes in code, a framework is enough. If you need colleagues to create agents through a UI, connect them to Feishu or Slack, grant tool permissions, set triggers, inspect long-term memory, approve risky actions, audit external behavior, and let the agents improve inside verifiable boundaries, Hive provides the product layer and control plane above the agent runtime.
 
 ### What's the deal with `soul.md`?
 
@@ -207,7 +243,9 @@ Yes. Point the LLM provider at vLLM / Ollama / SGLang or any OpenAI-compatible e
 
 ### Is it production-ready?
 
-It runs in production for the maintainers' own teams. It's still pre-1.0 in terms of API stability — expect schema migrations between minor versions (Alembic handles them). Multi-tenant isolation, audit logging, secret encryption, and approval flows are all in place; treat it like a young but earnest enterprise app.
+It runs in production for the maintainers' own teams. The current baseline has gone through two harness/SOTA remediation passes and includes restart-resumable `RuntimeTask` execution, provider retry/fallback, DB tracing, sandboxed code execution, governed memory writes, hard-verification promotion paths, multi-tenant RLS, audit logs, secret encryption, and approval flows.
+
+It is still pre-1.0 in API and schema stability, so upgrades should follow Alembic migrations and release notes. Treat it as a young enterprise system that is built around production closure, not a disposable demo.
 
 ### How do I extend it?
 
@@ -229,7 +267,7 @@ Three layers, in increasing order of effort:
 
 ## Acknowledgements
 
-The kernel-with-DI architecture and the 4-layer memory pipeline are inspired by Claude Code's session lifecycle and the broader agent-harness movement. The Feishu integration drew on first-hand pain from running an agent on lark-cli for several months. The `soul.md` / `focus.md` split came from observing what happens when an agent's identity gets edited every time a new tool is installed (it gets confused).
+The kernel-with-DI architecture and the memory pipeline are inspired by Claude Code's session lifecycle and the broader agent-harness movement. The Feishu integration drew on first-hand pain from running an agent on lark-cli for several months. Hive keeps durable identity in `soul.md` and operational progress in governed memory, work ledgers, workspace artifacts, and trigger wake policies so the agent's identity does not get rewritten by transient work.
 
 ## License
 

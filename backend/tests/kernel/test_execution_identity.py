@@ -67,7 +67,7 @@ async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
                     content="",
                     tool_calls=[{
                         "id": "call_1",
-                        "function": {"name": "write_file", "arguments": '{"path":"focus.md","content":"x"}'},
+                        "function": {"name": "write_file", "arguments": '{"path":"workspace/notes.md","content":"x"}'},
                     }],
                     reasoning_content=None,
                     usage={"total_tokens": 2},

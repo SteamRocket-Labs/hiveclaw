@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = BACKEND_ROOT.parent
 APP_ROOT = BACKEND_ROOT / "app"
 
 
@@ -83,15 +84,26 @@ def test_agent_tools_exposes_only_public_approved_execution_boundary() -> None:
     assert "_execute_tool_direct" not in source
 
 
-def test_focus_state_is_only_a_slug_normalizer() -> None:
-    # The AgentObjective subsystem and the focus.md projection were retired;
-    # focus_state.py keeps only the slug helper that trigger code still uses.
-    focus_state = (APP_ROOT / "services/focus_state.py").read_text(encoding="utf-8")
+def test_focus_workspace_surface_is_fully_retired_from_live_code() -> None:
+    forbidden_tokens = ("focus.md", "focus_ref", "focus_state")
+    roots = [APP_ROOT, PROJECT_ROOT / "frontend/src"]
+    allowed_files = {
+        APP_ROOT / "memory/legacy_migration.py",
+    }
+    violations: list[str] = []
 
-    assert "def normalize_focus_task_id" in focus_state
-    assert "from app.models.objective import AgentObjective" not in focus_state
-    assert "def render_focus_tasks" not in focus_state
-    assert "def parse_focus_tasks" not in focus_state
+    for root in roots:
+        for path in sorted(item for item in root.rglob("*") if item.is_file()):
+            if path in allowed_files or "__pycache__" in path.parts:
+                continue
+            if path.suffix not in {".py", ".ts", ".tsx", ".md"}:
+                continue
+            source = path.read_text(encoding="utf-8")
+            for token in forbidden_tokens:
+                if token in source:
+                    violations.append(f"{path.relative_to(PROJECT_ROOT)} contains {token}")
+
+    assert violations == []
 
 
 def test_trigger_and_heartbeat_runs_are_attempt_ledger_entries() -> None:

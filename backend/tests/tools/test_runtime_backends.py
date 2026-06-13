@@ -60,7 +60,7 @@ async def test_tool_runtime_service_routes_execution_through_backend():
         backend=backend,
     )
 
-    result = await service.execute_with_context("read_file", {"path": "focus.md"}, context)
+    result = await service.execute_with_context("read_file", {"path": "workspace/notes.md"}, context)
 
     assert result == "capturing:registry:read_file"
     assert backend.calls[0].tool_name == "read_file"

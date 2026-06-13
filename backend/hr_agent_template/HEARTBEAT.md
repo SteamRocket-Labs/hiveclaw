@@ -29,8 +29,7 @@ will naturally accumulate in feedback.md, knowledge.md, and blocked.md.
 ## Phase 1: OBSERVE (2-3 tool calls)
 
 Read current state:
-1. If useful: `read_file` focus.md as personal scratch context only
-2. If first tick: `read_file` memory/feedback.md, memory/strategies.md, memory/blocked.md
+1. If first tick: `read_file` memory/feedback.md, memory/strategies.md, memory/blocked.md
    If subsequent tick: skip (already in conversation context from previous tick)
 
 ## Phase 2: CURATE (main job, 5-8 tool calls)

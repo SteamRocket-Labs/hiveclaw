@@ -30,7 +30,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
     context = await resolver.build_context(
         runtime_context=runtime_context,
         tool_name="write_file",
-        arguments={"path": "focus.md", "content": "x"},
+        arguments={"path": "workspace/notes.md", "content": "x"},
         delegation_token="token-1",
     )
 
@@ -38,7 +38,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
     assert context.user_id == user_id
     assert context.tenant_id == runtime_context.tenant_id
     assert context.tool_name == "write_file"
-    assert context.arguments == {"path": "focus.md", "content": "x"}
+    assert context.arguments == {"path": "workspace/notes.md", "content": "x"}
     assert context.delegation_token == "token-1"
 
 
@@ -111,7 +111,7 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
         agent_id=agent_id,
         user_id=uuid4(),
         tool_name="write_file",
-        arguments={"path": "focus.md"},
+        arguments={"path": "workspace/notes.md"},
         capability="workspace.write",
         reason="manual escalation",
         session_id="session-approval",
@@ -119,7 +119,7 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
     assert result == {"allowed": False, "approval_id": "approval-1"}
     assert approval_calls[0][2] == "workspace.write"
     assert approval_calls[0][3]["tool"] == "write_file"
-    assert approval_calls[0][3]["args"] == {"path": "focus.md"}
+    assert approval_calls[0][3]["args"] == {"path": "workspace/notes.md"}
     assert approval_calls[0][3]["reason"] == "manual escalation"
     assert approval_calls[0][3]["session_id"] == "session-approval"
 

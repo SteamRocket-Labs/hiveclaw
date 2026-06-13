@@ -178,7 +178,7 @@ prompt(`_planner_system_prompt`)、独立工具集(`PLANNER_ALLOWED_TOOLS`)、�
 | `plan-mode-design.md` | 治理框架/handoff 契约不动,引用 |
 | `plan-mode-agent-authored-planning.md` | "计划由 agent 撰写"原则,本文是它的彻底化(连无人值守也 agent 撰写) |
 | `agent-task-cognitive-scaffold.md` | task 那块押后;但无人值守 plan run 的"主循环复用"机制与之同源 |
-| `plan-mode-md-first-workspace-boundary.md` | 2026-06-08 生产复盘后的补充边界:Plan Mode 计划正文必须 MD-first,workspace read 是按需能力而非默认扫描,Deep Research JSON 只能作为 ledger |
+| `archive/legacy-docs/plan-mode-md-first-workspace-boundary.md` | 2026-06-08 生产复盘后的补充边界:Plan Mode 计划正文必须 MD-first,workspace read 是按需能力而非默认扫描,Deep Research JSON 只能作为 ledger |
 
 ---
 

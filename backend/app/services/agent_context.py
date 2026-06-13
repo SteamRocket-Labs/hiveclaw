@@ -173,7 +173,6 @@ async def _build_runtime_metadata_sections(
                         "type": t.type,
                         "config": t.config or {},
                         "reason": t.reason or "",
-                        "focus_ref": t.focus_ref,
                     }
                     for t in triggers
                 ]

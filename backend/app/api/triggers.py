@@ -41,7 +41,6 @@ class TriggerResponse(BaseModel):
     type: str
     config: dict
     reason: str
-    focus_ref: str | None = None
     is_enabled: bool
     fire_count: int
     max_fires: int | None = None
@@ -65,7 +64,6 @@ class TriggerCreate(BaseModel):
     type: str
     config: dict
     reason: str
-    focus_ref: str | None = None
     trigger_class: str | None = None
     max_fires: int | None = None
     cooldown_seconds: int | None = None
@@ -82,7 +80,6 @@ class TriggerUpdate(BaseModel):
     config: dict | None = None
     reason: str | None = None
     is_enabled: bool | None = None
-    focus_ref: str | None = None
     trigger_class: str | None = None
     max_fires: int | None = None
     cooldown_seconds: int | None = None
@@ -103,7 +100,6 @@ def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view:
         type=trigger.type,
         config=trigger.config or {},
         reason=trigger.reason or "",
-        focus_ref=trigger.focus_ref,
         is_enabled=bool(trigger.is_enabled),
         fire_count=int(trigger.fire_count or 0),
         max_fires=trigger.max_fires,
@@ -193,14 +189,12 @@ async def create_trigger(
     config = dict(body.config or {})
     if body.trigger_class is not None:
         config["trigger_class"] = body.trigger_class
-    focus_ref = body.focus_ref.strip() if body.focus_ref else None
 
     _raise_trigger_validation_error(_validate_trigger_config("create_trigger", trigger_type, config))
     _trigger_class, error = _resolve_trigger_class(
         "create_trigger",
         {"trigger_class": body.trigger_class},
         config,
-        focus_ref,
         trigger_type=trigger_type,
     )
     _raise_trigger_validation_error(error)
@@ -271,7 +265,6 @@ async def create_trigger(
         type=trigger_type,
         config=config,
         reason=reason,
-        focus_ref=focus_ref,
         is_enabled=True,
         max_fires=_coerce_int(body.max_fires),
         cooldown_seconds=_coerce_int(body.cooldown_seconds) or 60,
@@ -349,8 +342,6 @@ async def update_trigger(
         trigger.reason = body.reason
     if body.is_enabled is not None:
         trigger.is_enabled = body.is_enabled
-    if body.focus_ref is not None:
-        trigger.focus_ref = body.focus_ref.strip() or None
     if body.max_fires is not None:
         trigger.max_fires = body.max_fires
     if body.cooldown_seconds is not None:
@@ -366,7 +357,6 @@ async def update_trigger(
             "update_trigger",
             {"trigger_class": body.trigger_class},
             config,
-            trigger.focus_ref,
             trigger_type=trigger.type,
         )
         _raise_trigger_validation_error(error)

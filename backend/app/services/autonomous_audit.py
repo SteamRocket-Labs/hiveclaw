@@ -44,14 +44,6 @@ def _finding(
     }
 
 
-def _trigger_focus_ref(trigger: Any) -> str | None:
-    raw = getattr(trigger, "focus_ref", None)
-    if raw is None:
-        return None
-    value = str(raw).strip()
-    return value or None
-
-
 def _enabled_triggers(triggers: list[Any]) -> list[Any]:
     return [trigger for trigger in triggers if bool(getattr(trigger, "is_enabled", False))]
 
@@ -73,19 +65,8 @@ def audit_agent_autonomy_snapshot(
     findings: list[dict[str, Any]] = []
 
     for trigger in enabled:
-        raw_ref = _trigger_focus_ref(trigger)
         trigger_config = getattr(trigger, "config", None) or {}
         trigger_class = str(trigger_config.get("trigger_class") or "").strip()
-        if getattr(trigger, "type", None) in _SCHEDULED_TRIGGER_TYPES and not raw_ref and trigger_class != "scheduled_job":
-            findings.append(_finding(
-                severity="warning",
-                category="scheduled_trigger_without_focus_ref",
-                agent_id=agent_id,
-                trigger_id=getattr(trigger, "id", None),
-                message=f"Scheduled trigger '{getattr(trigger, 'name', '')}' has no focus_ref.",
-                evidence={"trigger_name": getattr(trigger, "name", None), "trigger_type": getattr(trigger, "type", None)},
-                recommendation="If this is a standalone scheduled job, mark trigger_class='scheduled_job'.",
-            ))
         if trigger_class == "event_wait" and not getattr(trigger, "max_fires", None) and not getattr(trigger, "expires_at", None):
             findings.append(_finding(
                 severity="warning",

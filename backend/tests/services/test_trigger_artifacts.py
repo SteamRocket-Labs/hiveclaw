@@ -15,7 +15,6 @@ def test_write_trigger_output_artifact_records_job_output(tmp_path):
         name="daily_report",
         type="cron",
         config={"trigger_class": "scheduled_job"},
-        focus_ref=None,
     )
 
     artifact = write_trigger_output_artifact(

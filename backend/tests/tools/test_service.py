@@ -62,7 +62,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
         user_id=context.user_id,
         tenant_id=context.tenant_id,
         tool_name="write_file",
-        arguments={"path": "focus.md", "content": "x"},
+        arguments={"path": "workspace/notes.md", "content": "x"},
     )
     runtime_resolver = _FakeRuntimeResolver(context)
     governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
@@ -89,7 +89,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
 
     result = await service.execute(
         "write_file",
-        {"path": "focus.md", "content": "x"},
+        {"path": "workspace/notes.md", "content": "x"},
         agent_id=context.agent_id,
         user_id=context.user_id,
         delegation_token="delegation-token-1",
@@ -121,7 +121,7 @@ async def test_tool_runtime_service_logs_readonly_tool_calls():
         user_id=context.user_id,
         tenant_id=context.tenant_id,
         tool_name="read_file",
-        arguments={"path": "focus.md"},
+        arguments={"path": "workspace/notes.md"},
     )
     logged = []
 
@@ -141,7 +141,7 @@ async def test_tool_runtime_service_logs_readonly_tool_calls():
 
     result = await service.execute(
         "read_file",
-        {"path": "focus.md"},
+        {"path": "workspace/notes.md"},
         agent_id=context.agent_id,
         user_id=context.user_id,
     )
@@ -279,7 +279,7 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
 
     result = await service.execute_approved(
         "write_file",
-        {"path": "focus.md", "content": "done"},
+        {"path": "workspace/notes.md", "content": "done"},
         agent_id=agent_id,
         approved_by_user_id=approved_by,
         approval_id=approval_id,
@@ -324,7 +324,7 @@ async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
 
     result = await service.execute_approved(
         "read_file",
-        {"path": "focus.md"},
+        {"path": "workspace/notes.md"},
         agent_id=agent_id,
         approved_by_user_id=approved_by,
     )

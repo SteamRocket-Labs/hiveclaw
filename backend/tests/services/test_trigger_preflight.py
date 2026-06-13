@@ -63,7 +63,6 @@ def _trigger(*, trigger_type="cron", config=None, name="daily_brief"):
         name=name,
         type=trigger_type,
         config=cfg,
-        focus_ref=None,
         max_fires=None,
         expires_at=None,
     )

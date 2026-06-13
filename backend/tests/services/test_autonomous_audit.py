@@ -12,7 +12,6 @@ def _trigger(**overrides):
         "type": "cron",
         "config": {"expr": "0 9 * * *"},
         "reason": "Follow up",
-        "focus_ref": None,
         "is_enabled": True,
         "fire_count": 0,
         "last_fired_at": None,
@@ -37,21 +36,15 @@ def _categories(report: dict) -> set[str]:
     return {finding["category"] for finding in report["findings"]}
 
 
-# The objective/focus.md audit categories (orphan_focus_task, trigger_focus_ref_missing,
-# completed_focus_trigger_active, noncanonical_focus_item) were retired with the
-# objective subsystem + focus.md projection. The audit is now trigger + runtime only.
-
-
-def test_scheduled_trigger_without_focus_ref_is_warning() -> None:
+def test_plain_scheduled_trigger_without_class_is_not_focus_warning() -> None:
     from app.services.autonomous_audit import audit_agent_autonomy_snapshot
 
     report = audit_agent_autonomy_snapshot(
         agent=_agent(),
-        triggers=[_trigger(type="interval", config={"minutes": 30}, focus_ref=None)],
+        triggers=[_trigger(type="interval", config={"minutes": 30})],
     )
 
-    finding = next(item for item in report["findings"] if item["category"] == "scheduled_trigger_without_focus_ref")
-    assert finding["severity"] == "warning"
+    assert report["findings"] == []
 
 
 def test_autonomous_agent_without_model_is_error() -> None:

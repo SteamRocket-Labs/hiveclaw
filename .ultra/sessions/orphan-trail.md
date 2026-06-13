@@ -4,7 +4,10 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-13T04:30Z [sid:4b8a1e2a]; branch:main; 1 files (round2-sota-benchmark-2026.md); last commit: 788583cc docs: align project guides with harness baseline
+- 2026-06-13T10:01Z [sid:5d6cd3f6]; branch:feat/external-behavior-eval-ci; 117 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +114); last commit: 07f92521 feat(eval-ci): E10 per-scenario cost/latency budget
+- 2026-06-13T08:52Z [sid:f4214f60]; branch:main; 50 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +47); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
+- 2026-06-13T08:11Z [sid:5d6cd3f6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
+- 2026-06-13T07:51Z [sid:4b8a1e2a]; branch:main; 10 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +7); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
 - 2026-06-12T18:03Z [sid:267d9f0b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_memory.py, +30); last commit: 4a02c6fd Refactor agent runtime and align memory controls
 - 2026-06-11T07:42Z [sid:145e9276]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: aac4044a fix frontend auth 401 messaging
 - 2026-06-11T07:23Z [sid:33d833cd]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, request.ts); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n
@@ -101,6 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-02T23:33Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
 - 2026-06-02T23:15Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
 - 2026-06-02T22:59Z [sid:98e36c4c]; branch:main; 9 files (orphan-trail.md, agents.ts, index.ts, +6); last commit: 829acf8 feat(runtime): MCP tool gating via assignment tables
-- 2026-06-02T22:19Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 4ee13da refactor(runtime): rename pack->runtime_tool_group a
-- 2026-06-02T21:49Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 48466d2 feat(mcp): backfill functional core + parity proofs 
-- 2026-06-02T21:21Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 04b7d8e docs(agent-extension): close tenant-isolation, parit

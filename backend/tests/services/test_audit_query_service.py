@@ -56,7 +56,7 @@ async def test_verify_chain_accepts_legacy_pre_details_hashes() -> None:
         action="read_file",
         resource_type="tool",
         resource_id=uuid4(),
-        details={"path": "focus.md"},
+        details={"path": "workspace/notes.md"},
         ip_address=None,
         request_id=None,
         prev_hash="genesis",
@@ -69,4 +69,3 @@ async def test_verify_chain_accepts_legacy_pre_details_hashes() -> None:
     assert result["valid"] is True
     assert result["hash_version"] == "legacy_v1"
     assert result["computed_hash"] == event.event_hash
-

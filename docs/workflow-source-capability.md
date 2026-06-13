@@ -2,7 +2,7 @@
 
 > **定位**：Workflow 是 Hive 的 **runtime 基础能力**，与 Plan Mode **并列**的底座——不是 subagent / deep research / office / Work Ledger 的附属方案。
 >
-> **状态**：**v0.6 草稿（v1 决策已按 review 收紧，完整实现路线已排，并补齐执行路线缺口）**。v0 的两处主干被推翻重写（见 §0.2）；前置调研 `docs/workflow-vs-skill-a2a-discussion.md`（v0.1）。
+> **状态**：**v0.6 草稿（v1 决策已按 review 收紧，完整实现路线已排，并补齐执行路线缺口）**。v0 的两处主干被推翻重写（见 §0.2）；前置调研 `docs/archive/legacy-docs/workflow-vs-skill-a2a-discussion.md`（v0.1）。
 >
 > **方法论**：Hive = CC superset——先对标 CC 基线，再叠 Hive delta，**绝不做减法、不自创范式**。
 >

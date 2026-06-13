@@ -1829,7 +1829,6 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
             t2_removed,
         )
 
-    _cleanup_focus(agent_id)
     _review_blocklist(agent_id)
 
     _mark_dreamed(
@@ -1984,91 +1983,6 @@ def _mark_dreamed(
         _persist_dream_state(uuid.UUID(hex=key))
     except Exception:
         logger.debug("[AutoDream] Failed to persist dream state for %s", key)
-
-
-# ── Focus cleanup: remove stale items from focus.md (断点 B8 fix) ──
-
-_FOCUS_MAX_AGE_DAYS = 7
-_FOCUS_MAX_CHARS = 3000
-
-_DATE_PATTERN = _re.compile(r"\[(\d{4}-\d{2}-\d{2})\]")
-_COMPLETED_CHECKBOX_PATTERN = _re.compile(r"^\s*[-*]\s*\[[xX]\]")
-
-
-def _cleanup_focus(agent_id: uuid.UUID) -> None:
-    """Trim stale items from the focus.md scratch file to keep it compact.
-
-    Removes:
-    - Items with dates older than _FOCUS_MAX_AGE_DAYS
-    - Completed checkbox items (- [x])
-    - Truncates to _FOCUS_MAX_CHARS if still too large
-    """
-    from app.services.heartbeat import _get_canonical_workspace
-
-    ws_root = _get_canonical_workspace(agent_id)
-    if not ws_root:
-        ws_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-
-    focus_path = ws_root / "focus.md"
-    if not focus_path.exists():
-        return
-
-    try:
-        content = focus_path.read_text(encoding="utf-8")
-    except Exception as read_err:
-        logger.debug("[AutoDream] Failed to read focus.md for cleanup: %s", read_err)
-        return
-
-    completed_task_lines = {
-        line.strip() for line in content.splitlines() if _COMPLETED_CHECKBOX_PATTERN.match(line.strip())
-    }
-
-    lines = content.splitlines()
-    if len(lines) < 5:
-        return  # Too small to need cleanup
-
-    now = datetime.now(timezone.utc).date()
-    kept: list[str] = []
-    removed_count = 0
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Remove completed checkboxes
-        if stripped in completed_task_lines:
-            removed_count += 1
-            continue
-
-        # Remove items with expired dates
-        date_match = _DATE_PATTERN.search(stripped)
-        if date_match:
-            try:
-                item_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").date()
-                age_days = (now - item_date).days
-                if age_days > _FOCUS_MAX_AGE_DAYS:
-                    removed_count += 1
-                    continue
-            except ValueError as date_err:
-                logger.debug("[AutoDream] Malformed date in focus.md, keeping line: %s", date_err)
-
-        kept.append(line)
-
-    if removed_count == 0:
-        # No stale items found; check size only
-        if len(content) <= _FOCUS_MAX_CHARS:
-            return
-        # Truncate from the middle, keep header + tail
-        kept = kept[:3] + ["", "(older items removed by auto-dream)", ""] + kept[-10:]
-
-    cleaned = "\n".join(kept)
-    if len(cleaned) > _FOCUS_MAX_CHARS:
-        cleaned = cleaned[:_FOCUS_MAX_CHARS] + "\n...(truncated by auto-dream)\n"
-
-    try:
-        focus_path.write_text(cleaned, encoding="utf-8")
-        logger.info("[AutoDream] Cleaned focus.md for %s: removed %d stale items", agent_id, removed_count)
-    except Exception as exc:
-        logger.debug("[AutoDream] Failed to clean focus.md: %s", exc)
 
 
 # ── Blocklist review: expire old entries (断点 B6 fix) ──

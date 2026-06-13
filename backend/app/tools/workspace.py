@@ -219,11 +219,6 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         if not lpath.exists():
             lpath.write_text(learnings_seed, encoding="utf-8")
 
-    # Pre-create focus.md (ordinary workspace scratch file; not projected into the prompt)
-    focus_path = ws / "focus.md"
-    if not focus_path.exists():
-        focus_path.write_text("# Focus\n\n## Tasks\n", encoding="utf-8")
-
     # Pre-create T3 semantic memory files so heartbeat/dream don't need to create them
     for t3_file, t3_seed in [
         ("memory/feedback.md", "# Feedback\n\nUser corrections, preferences, and constraints.\n"),

@@ -1,6 +1,6 @@
 # Agent Memory MD-first Spec
 
-> Merged specification from `docs/agent-memory-research.md` and `docs/agent-memory-md-first-research-codex.md`.
+> Merged specification from `docs/agent-memory-research.md` and `docs/archive/legacy-docs/agent-memory-md-first-research-codex.md`.
 > Date: 2026-06-04.
 > Scope: Hive agent memory architecture, MD-first source of truth, distillation boundaries, Memory Control Plane, and AgentDetail presentation.
 
@@ -1460,7 +1460,7 @@ Defer:
 Primary local research inputs:
 
 - `docs/agent-memory-research.md`
-- `docs/agent-memory-md-first-research-codex.md`
+- `docs/archive/legacy-docs/agent-memory-md-first-research-codex.md`
 - `docs/knowledge-container-boundaries.md`
 
 Important code surfaces:

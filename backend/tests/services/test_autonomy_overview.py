@@ -22,7 +22,6 @@ def test_trigger_view_default_hides_internal_fields_and_surfaces_backoff():
             "workdir": "reports",
         },
         reason="Send the daily report",
-        focus_ref=None,
         is_enabled=True,
         fire_count=4,
         max_fires=None,
@@ -58,7 +57,6 @@ def test_trigger_view_diagnostics_are_explicitly_separated():
         type="once",
         config={"trigger_class": "scheduled_job", "failure_count": 0},
         reason="Follow up on the requested report",
-        focus_ref="send_report",
         is_enabled=True,
         fire_count=0,
         max_fires=1,
@@ -79,9 +77,8 @@ def test_trigger_view_diagnostics_are_explicitly_separated():
     # Internal config is only exposed under the explicit diagnostics block.
     assert "config" not in view
     assert view["diagnostics"]["trigger_class"] == "scheduled_job"
-    assert view["diagnostics"]["focus_ref"] == "send_report"
     assert "objective_id" not in view["diagnostics"]
-    assert view["diagnostics"]["focus_ref"] == "send_report"
+    assert "focus_ref" not in view["diagnostics"]
 
 
 def test_runtime_task_view_maps_internal_skip_reason_to_user_reason():

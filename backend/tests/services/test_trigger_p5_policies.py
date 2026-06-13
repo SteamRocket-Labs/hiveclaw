@@ -33,7 +33,6 @@ def test_trigger_class_defaults_to_scheduled_job_or_event_wait():
         "set_trigger",
         {},
         cron_config,
-        None,
         trigger_type="cron",
     )
 
@@ -46,7 +45,6 @@ def test_trigger_class_defaults_to_scheduled_job_or_event_wait():
         "set_trigger",
         {},
         event_config,
-        None,
         trigger_type="on_message",
     )
 
@@ -80,7 +78,6 @@ async def test_preflight_blocks_backoff_until_future():
         name="daily_report",
         type="cron",
         config={"trigger_class": "scheduled_job", "backoff_until": future.isoformat()},
-        focus_ref=None,
         max_fires=None,
         expires_at=None,
         reply_context=None,

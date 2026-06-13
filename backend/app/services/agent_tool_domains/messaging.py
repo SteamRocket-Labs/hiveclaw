@@ -34,7 +34,7 @@ A2A_SYSTEM_PROMPT_SUFFIX = (
     "<privacy_boundary>\n"
     "- Treat the delegated brief and attached request as the authoritative context.\n"
     "- Do NOT share private workspace data (memory/*.md, tasks.json, soul.md,\n"
-    "  focus.md, logs/) unless the sender explicitly asks for that file.\n"
+    "  logs/) unless the sender explicitly asks for that file.\n"
     "- Do NOT leak information about other senders, other conversations, or\n"
     "  your user's identity unless relevant and authorized.\n"
     "</privacy_boundary>\n\n"

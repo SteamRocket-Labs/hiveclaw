@@ -113,7 +113,7 @@ class TestAntiPatterns:
         # Date-anchored content
         assert "date" in lowered
         # Tool-name leakage
-        assert "tool" in lowered and ("config" in lowered or "focus.md" in prompt_text)
+        assert "tool" in lowered and "config" in lowered
         # Empty fields
         assert "empty" in lowered
         # Markdown fences / trailing prose

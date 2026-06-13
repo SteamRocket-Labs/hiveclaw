@@ -76,7 +76,9 @@ def test_system_skill_templates_reference_supported_runtime_contracts():
     assert "feishu_task_create" in feishu_skill
     assert "from_user_name" not in workspace_skill
     assert "from_user_identity" in workspace_skill or "reply_to_current_sender" in workspace_skill
-    assert "- [ ] task_id :: description" in workspace_skill
+    assert "focus.md" not in workspace_skill
+    assert "work ledger" in workspace_skill
+    assert "workspace artifacts" in workspace_skill
     assert "from_user_identity" in trigger_skill
     assert "from_agent_id" in trigger_skill
     assert "reply_to_current_sender" in trigger_skill

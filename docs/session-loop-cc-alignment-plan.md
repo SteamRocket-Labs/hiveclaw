@@ -1,6 +1,6 @@
 # Session Loop 对标 CC — 完整方案（6 决策点一次解决）
 
-> 状态：**🏁🏁 全部实装完成（2026-06-08），6 决策点全部落地、12 提交全绿、3556 passed**。诊断底稿见 `docs/session-loop-cc-alignment.md`（病灶 A-J）。三条线详细设计：`plan-mode-axis-design.md`(A/E/G-H) / `multi-agent-mainline-F-design.md`(F) / `prompt-tools-design.md`(I/J)。
+> 状态：**🏁🏁 全部实装完成（2026-06-08），6 决策点全部落地、12 提交全绿、3556 passed**。诊断底稿见 `docs/archive/legacy-docs/session-loop-cc-alignment.md`（病灶 A-J）。三条线详细设计：`plan-mode-axis-design.md`(A/E/G-H) / `archive/legacy-docs/multi-agent-mainline-F-design.md`(F) / `archive/legacy-docs/prompt-tools-design.md`(I/J)。
 >
 > **▶ RESUME（compact 后从这里继续）**：进入实现，按落地顺序 **G/H.2+3 → E → I+J → A → F → G/H.1**，每组一个完整 PR、红测先行、真 PG（Testcontainers）、零 MVP 债。分支 `feat/session-loop-cc-alignment`（基线 = main 上飞书 Drive `8c5dbf77` + Plan-mode MD-first `491e6e8d` 两个遗留工作提交）。
 >
@@ -40,8 +40,8 @@ CC 没有"模式调度器"。四形态分两轴，本方案的所有改动都服
 | Track | 决策点 | 设计文档 |
 |-------|--------|----------|
 | **1 — Plan Mode 轴** | A entry + E plan→执行 + G/H 模式边界 | `docs/plan-mode-axis-design.md` |
-| **2 — Multi-agent** | F push 对齐 + 统一派发 + 单一看板 | `docs/multi-agent-mainline-F-design.md` |
-| **3 — Prompt & 工具暴露** | I 系统提示词 + J MCP→tool_search | `docs/prompt-tools-design.md` |
+| **2 — Multi-agent** | F push 对齐 + 统一派发 + 单一看板 | `docs/archive/legacy-docs/multi-agent-mainline-F-design.md` |
+| **3 — Prompt & 工具暴露** | I 系统提示词 + J MCP→tool_search | `docs/archive/legacy-docs/prompt-tools-design.md` |
 
 每个 doc 含：改动文件（函数级）/ 契约 schema / 测试计划（红测先行·真 PG）/ 迁移+回填 / 验收 / 硬骨头。
 

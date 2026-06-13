@@ -56,7 +56,7 @@ class TestReplyFormat:
 class TestPrivacyBoundary:
     def test_protects_workspace_files(self, prompt_text: str) -> None:
         # Must name specific private files.
-        for path in ["memory/*.md", "tasks.json", "soul.md", "focus.md"]:
+        for path in ["memory/*.md", "tasks.json", "soul.md", "logs/"]:
             assert path in prompt_text, f"missing protected path: {path}"
 
     def test_no_cross_sender_leakage(self, prompt_text: str) -> None:

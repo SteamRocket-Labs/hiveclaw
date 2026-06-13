@@ -219,7 +219,6 @@ def build_trigger_view(
     if include_diagnostics:
         view["diagnostics"] = {
             "trigger_class": display_kind,
-            "focus_ref": getattr(trigger, "focus_ref", None),
             "lifecycle_state": attention_state,
             "blocked_reason": attention_reason,
             "backoff_until": backoff_until.isoformat() if backoff_until else None,

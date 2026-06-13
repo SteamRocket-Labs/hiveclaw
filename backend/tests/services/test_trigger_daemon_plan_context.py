@@ -182,7 +182,7 @@ async def test_invoke_agent_for_triggers_injects_confirmed_plan_into_first_messa
 
     # The daemon uses the trigger objects it is handed (it does not re-query them);
     # an in-memory row with the plan_id is exactly what _tick would pass.
-    trig = AgentTrigger(agent_id=agent_id, name="weekly", type="interval", config={"plan_id": str(pid)}, focus_ref=None)
+    trig = AgentTrigger(agent_id=agent_id, name="weekly", type="interval", config={"plan_id": str(pid)})
 
     # Mock only the true external boundaries; the trigger-context assembly + the
     # message commit run for real against the test DB.

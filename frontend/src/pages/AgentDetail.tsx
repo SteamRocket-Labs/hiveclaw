@@ -111,13 +111,6 @@ function AgentDetailInner() {
         refetchInterval: activeTab === 'aware' ? 5000 : false,
     });
 
-    // ── Aware tab data: focus.md ──
-    const { data: focusFile } = useQuery({
-        queryKey: ['file', id, 'focus.md'],
-        queryFn: () => fileApi.read(id!, 'focus.md').catch(() => null),
-        enabled: canLoadAgentScopedData && activeTab === 'aware',
-    });
-
     // ── Aware tab data: reflection sessions (trigger monologues) ──
     const { data: reflectionSessions = [] } = useQuery({
         queryKey: ['reflection-sessions', id],
@@ -130,11 +123,8 @@ function AgentDetailInner() {
     });
 
     // ── Aware tab state ──
-    const [expandedFocus, setExpandedFocus] = useState<string | null>(null);
     const [expandedReflection, setExpandedReflection] = useState<string | null>(null);
     const [reflectionMessages, setReflectionMessages] = useState<Record<string, any[]>>({});
-    const [showAllFocus, setShowAllFocus] = useState(false);
-    const [showCompletedFocus, setShowCompletedFocus] = useState(false);
     const [showAllTriggers, setShowAllTriggers] = useState(false);
     const [reflectionPage, setReflectionPage] = useState(0);
 
@@ -1429,22 +1419,14 @@ function AgentDetailInner() {
                 {activeTab === 'aware' && (
                     <AgentAwareSection
                         agentId={id!}
-                        focusContent={focusFile?.content || ''}
                         awareTriggers={awareTriggers}
-                        activityLogs={activityLogs}
                         reflectionSessions={reflectionSessions}
                         reflectionMessages={reflectionMessages}
-                        expandedFocus={expandedFocus}
                         expandedReflection={expandedReflection}
-                        showAllFocus={showAllFocus}
-                        showCompletedFocus={showCompletedFocus}
                         showAllTriggers={showAllTriggers}
                         reflectionPage={reflectionPage}
-                        onSetExpandedFocus={setExpandedFocus}
                         onSetExpandedReflection={setExpandedReflection}
                         onSetReflectionMessages={setReflectionMessages}
-                        onSetShowAllFocus={setShowAllFocus}
-                        onSetShowCompletedFocus={setShowCompletedFocus}
                         onSetShowAllTriggers={setShowAllTriggers}
                         onSetReflectionPage={setReflectionPage}
                         onRefetchTriggers={refetchTriggers}

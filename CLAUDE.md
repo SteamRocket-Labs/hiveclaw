@@ -153,10 +153,10 @@ Tools follow a registry + executor + governance pattern:
 | `governance.py` | `run_tool_governance()` — 2-layer preflight: security zone → capability gate |
 | `governance_resolver.py` | Connects governance to real DB (security_zone, capability policies, approval) |
 | `packs.py` | `ToolPackSpec` — static capability bundles (web, feishu, email, etc.) |
-| `handlers/` | 16 handler files: filesystem, search, communication, email, feishu, plaza, skills, triggers, hr, mcp, office, memory, finance, objectives, tasks |
+| `handlers/` | 18 handler files: filesystem, search, communication, email, feishu, plaza, skills, triggers, hr, mcp, office, memory, plan_mode, subagent, tasks, work_ledger, workflow, deep_research |
 | `workspace.py` | `ensure_workspace()` — bootstraps agent filesystem (soul.md, memory/, skills/, workspace/) |
 
-**60+ built-in tools** across categories: file I/O, web search/fetch, Feishu office (docs/wiki/sheets/base/tasks/calendar), OfficeCLI/ONLYOFFICE document workflows, email, messaging, Agent Circle/plaza, triggers, skills, deep research, MCP.
+**100+ registered built-in tool definitions** across categories: file I/O, web search/fetch, Feishu office (docs/wiki/sheets/base/tasks/calendar), OfficeCLI/ONLYOFFICE document workflows, email, messaging, Agent Circle/plaza, triggers, skills, deep research, workflows, work ledger, MCP.
 
 ### Skill System (`app/skills/`)
 
@@ -167,17 +167,21 @@ Markdown files with YAML frontmatter defining agent capabilities. `SkillParser` 
 MD files are the source of truth; the legacy SQLite/JSON shadow stores are retired and repaired through `memory/hygiene.py`.
 
 ```
-T0 (raw logs, 30d)  →  T2 (learnings/*.md)  →  T3 (memory/*.md)  →  soul.md (identity)
-     ↑ write                 ↑ extract               ↑ curate              ↑ dream
-SESSION_IDLE/CLOSE      RESPONSE_COMPLETE      Heartbeat (45min)     Dream (4h+3 sessions)
-  behavior/ only       (in-memory primary;    T2→T3 curation        T3→soul consolidation
-  feeds T2 backfill     T0 backfill fallback)
+T0 (raw logs, 30d)  →  T2 (learnings/*.md)  →  T3 (canonical MD + lifecycle sidecar)  →  soul.md
+     ↑ write                 ↑ extract/candidate       ↑ governed append/curation          ↑ dream
+SESSION_IDLE/CLOSE      RESPONSE_COMPLETE         Heartbeat/save_memory/feedback      24h + activity gate
+  behavior/ only       PRE_COMPACTION drain       dream/manual, dedup counters        (or soft dream relief)
+  feeds T2 backfill    T0 backfill fallback
 ```
 
-**Cadence configuration (P1-W2-5)**: the `evolution_daemon` ticks every
-`HEARTBEAT_TICK_SECONDS` (default 60s) and per-agent heartbeat intervals
-default to `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` (45min). Both live on
-`Settings` and can be overridden via env vars for dev/staging.
+**Cadence configuration (P1-W2-5, current)**: the `evolution_daemon` dispatcher
+ticks every `HEARTBEAT_TICK_SECONDS` (default 60s). Runnable agents are eligible
+on the platform-managed `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` cadence (default
+120 minutes), not per-agent UI cadence. Subsequent heartbeat ticks skip when
+there are no new T2 entries. Full Dream is gated by `MIN_HOURS_BETWEEN_DREAMS`
+(24h) plus either `MIN_SESSIONS_SINCE_DREAM` (3 sessions) or
+`MIN_HEARTBEAT_TICKS_SINCE_DREAM` (2 productive heartbeat ticks). Soft Dream is
+a 6h deterministic relief path when T3 is near the 100-entry pressure threshold.
 
 **T0 layout (split by role, since PR-1):**
 
@@ -212,9 +216,8 @@ logs/YYYY-MM-DD/
 | **T0 system**   | `logs/YYYY-MM-DD/system/`   | heartbeat / auto_dream | Operators only |
 | **T0 artifacts**| `logs/YYYY-MM-DD/artifacts/` | `_spillover_large_tool_results` when tool_result > 8000 chars | `_resolve_artifact_content` during backfill |
 | **T2** | `memory/learnings/*.md` | `extract_agent` (LLM hot path + pattern fallback) | Heartbeat curation |
-| **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | Heartbeat (T2→T3) | Prompt injection via `retriever.py` |
-| **soul.md** | Root workspace | Dream consolidation | Prompt injection (frozen prefix) |
-| **focus.md** | Root workspace | Agent + heartbeat | Prompt injection (dynamic suffix) |
+| **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | governed T3 append path: heartbeat, `save_memory`, session feedback, dream/manual | Prompt injection via `retriever.py`; metadata in `lifecycle.json` |
+| **soul.md** | Root workspace | Dream consolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |
 
 The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Control Plane:
 
@@ -236,8 +239,8 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 |------|---------|
 | `services/t0_logger.py` | Write T0 MD logs (chat, trigger, delegation, heartbeat, dream) |
 | `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata; source bucket weights live in `memory/t2_store.py`. |
-| `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` — **already SOP-driven** |
-| `services/auto_dream.py` | T3→soul consolidation (24h + 3 sessions gate). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback is applied by the Memory Control Plane/internal dream service, not by direct `write_file` under `memory/`. |
+| `services/heartbeat.py` | Platform-managed T2→T3 curation and self-evolution tick (KAIROS persistent session, 120min default eligibility, no-new-T2 skip). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` — **already SOP-driven** |
+| `services/auto_dream.py` | T3→soul consolidation (24h plus 3 sessions or 2 productive heartbeat ticks; soft dream is 6h T3-pressure maintenance). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback is applied by the Memory Control Plane/internal dream service, not by direct `write_file` under `memory/`. |
 | `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace. |
 | `services/invocation_trace.py` | Per-invocation runtime trace: file-backed JSONL compatibility plus PostgreSQL `invocation_spans` canonical query surface. |
 | `services/session_feedback.py` | Persists useful/misleading feedback and writes calibrated memory through governed paths. |
@@ -307,8 +310,8 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 | `services/` | 163 files | Business logic — LLM client, trigger/evolution daemons, channel streaming, memory, office, quota, approval, trace, MCP authz, interoperability |
 | `services/agent_tool_domains/` | 21 files | Tool domain implementations — Feishu, messaging, tasks, workspace, email |
 | `kernel/` | 3 files | Core engine — invocation loop, contracts, context management |
-| `runtime/` | 13 files | Hooks, invoker, prompt builder, prompt sections, session context, recovery/coordinator helpers |
-| `tools/` | 16 files | Tool registry, governance, packs, catalog, result envelopes, workspace |
+| `runtime/` | 17 files | Hooks, invoker, prompt builder, prompt sections, context engines, workflow runtime, session context, recovery/coordinator helpers |
+| `tools/` | 18 handler modules + registry files | Tool registry, governance, runtime groups, catalog, result envelopes, workspace |
 | `skills/` | 5 files | Skill parser, loader, registry |
 | `memory/` | 25 files | MD-first: retriever, assembler, md_store (T3), t2_store, write gate, activation, lifecycle, retention, access log, replay corpus, hygiene, optional backends |
 | `memory/backends/` | `hindsight.py` | Optional read-side accelerator; opt-in per tenant via `tenants.memory_backend` column. Module docstring has the design invariants and operator runbook. |
@@ -319,7 +322,7 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 
 | Directory | Purpose |
 |-----------|---------|
-| `pages/` | 16 pages + 25 section files — AgentDetail, Agent Circle, Company Admin workbench/settings, Admin |
+| `pages/` | 16 page entries + 40 nested page/section helper files — AgentDetail, Agent Circle, Company Admin workbench/settings, Admin |
 | `components/` | 9 reusable components — ChannelConfig, FileBrowser, MarkdownRenderer, etc. |
 | `api/core/` | HTTP abstraction — `request<T>()` with JWT, error handling, upload progress |
 | `api/domains/` | 37 files including tests and index — agents, enterprise, tools, chat, office, deep research, memory, notifications, etc. |

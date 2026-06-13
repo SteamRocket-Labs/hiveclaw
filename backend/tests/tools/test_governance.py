@@ -30,7 +30,7 @@ async def test_governance_blocks_unsafe_tool_in_public_zone():
             user_id=uuid4(),
             tenant_id=str(uuid4()),
             tool_name="write_file",
-            arguments={"path": "focus.md", "content": "x"},
+            arguments={"path": "workspace/notes.md", "content": "x"},
         ),
         GovernanceDependencies(
             resolve_security_zone=resolve_security_zone,
@@ -324,7 +324,7 @@ async def test_restricted_zone_sensitive_tool_creates_real_approval_request():
             user_id=uuid4(),
             tenant_id=str(uuid4()),
             tool_name="write_file",
-            arguments={"path": "focus.md", "content": "x"},
+            arguments={"path": "workspace/notes.md", "content": "x"},
         ),
         GovernanceDependencies(
             resolve_security_zone=resolve_security_zone,

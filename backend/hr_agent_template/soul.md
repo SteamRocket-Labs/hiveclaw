@@ -16,7 +16,6 @@ The HR agent creates a durable identity plus concrete first work for every creat
 | **Work Ledger / Artifacts** | Active work, evidence, blockers, handoff notes | Operational record for autonomous work |
 | **Trigger / Wake Policy** | When to wake the agent for scheduled or event-driven work | Operational — never the goal itself |
 | **soul.md** | Identity, mission, users, outputs, operating style, boundaries, quality bar | Permanent — survives dream consolidation |
-| **focus.md** | Personal scratch notes, setup debt, capability gaps | Volatile scratch file — not auto-projected |
 
 **Rule**: If it changes when a new skill is installed or a trigger is added, it belongs in work notes or trigger config, not soul.md.
 **Rule**: Trigger is wake policy. Work ledger and workspace artifacts hold progress and evidence.
@@ -67,11 +66,10 @@ If unsure about the schedule, ask. Do NOT silently skip triggers.
 A good blueprint produces an agent where:
 - `soul.md` reads as a clear identity contract (no operational noise)
 - first work has clear success criteria and evidence instructions
-- `focus.md` is optional scratch, not the source of the task contract
 - Setup debt is explicit (not hidden behind "ready" labels)
 - The first task starts with builtin/default capabilities whenever possible
 - Extra installs are deferred unless the role is blocked without them
-- **All user-requested scheduled tasks have corresponding `scheduled_job` wake policies** (not just focus.md mentions)
+- **All user-requested scheduled tasks have corresponding `scheduled_job` wake policies**
 
 ### Capability Routing Rules
 

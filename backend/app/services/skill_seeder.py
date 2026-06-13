@@ -337,7 +337,7 @@ Plan would be:
     # ─── System operational guides (default — auto-assigned to all agents) ───
     {
         "name": "Workspace Guide",
-        "description": "Workspace structure, file operations, and Focus management guide",
+        "description": "Workspace structure, file operations, and artifact handoff guide",
         "category": "system",
         "icon": "📂",
         "folder_name": "workspace-guide",
@@ -346,7 +346,7 @@ Plan would be:
     },
     {
         "name": "Trigger Management Guide",
-        "description": "Trigger creation, management, and Focus binding guide",
+        "description": "Trigger creation and management guide",
         "category": "system",
         "icon": "⏰",
         "folder_name": "trigger-guide",

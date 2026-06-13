@@ -452,7 +452,6 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
         created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
         expires_at=None,
         cooldown_seconds=0,
-        focus_ref="daily_brief",
         reason="Run daily brief",
     )
     trigger_db = SimpleNamespace(**trigger.__dict__)
@@ -529,7 +528,6 @@ async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(mon
         created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
         expires_at=None,
         cooldown_seconds=0,
-        focus_ref=None,
         reason="Run once",
     )
     trigger_db = SimpleNamespace(**trigger.__dict__)
@@ -614,7 +612,7 @@ async def test_invoke_trigger_marks_runtime_task_skipped_when_agent_has_no_model
     import app.services.trigger_daemon as trigger_daemon
 
     agent_id = uuid4()
-    trigger = SimpleNamespace(id=uuid4(), name="daily_brief", type="cron", reason="Run", focus_ref="daily")
+    trigger = SimpleNamespace(id=uuid4(), name="daily_brief", type="cron", reason="Run")
     agent = SimpleNamespace(
         id=agent_id,
         name="No Model Agent",
@@ -655,7 +653,6 @@ async def test_preflight_group_blocks_autonomous_trigger_without_confirmed_plan(
         name="daily_brief",
         type="cron",
         config={"trigger_class": "scheduled_job", "expr": "0 9 * * *"},  # no plan_id
-        focus_ref=None,
         max_fires=None,
         expires_at=None,
     )
@@ -707,7 +704,6 @@ async def test_preflight_group_allows_autonomous_trigger_with_confirmed_plan(mon
             "plan_version": 1,
             "plan_hash": "sha256:abc",
         },
-        focus_ref=None,
         max_fires=None,
         expires_at=None,
     )
@@ -744,7 +740,6 @@ def _ctx_trigger(**overrides):
         "name": "t1",
         "type": "cron",
         "reason": "r",
-        "focus_ref": None,
         "config": {},
         "reply_context": None,
     }
@@ -784,10 +779,9 @@ def test_build_trigger_context_injects_on_message_and_webhook_payloads():
     assert '{"event":"push"}' in ctx
 
 
-def test_build_trigger_context_omits_retired_focus_ref():
-    # focus.md projection is retired — the trigger context must not surface focus_ref.
+def test_build_trigger_context_omits_unknown_legacy_fields():
     from app.services.trigger_daemon import _build_trigger_context
 
-    ctx, _ = _build_trigger_context([_ctx_trigger(type="cron", focus_ref="some_task")])
-    assert "Related Focus" not in ctx
+    ctx, _ = _build_trigger_context([_ctx_trigger(type="cron", legacy_binding="some_task")])
+    assert "legacy_binding" not in ctx
     assert "some_task" not in ctx

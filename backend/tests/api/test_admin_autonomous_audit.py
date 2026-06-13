@@ -64,10 +64,9 @@ def test_autonomous_audit_returns_service_report(monkeypatch) -> None:
             "findings": [
                 {
                     "severity": "error",
-                    "category": "orphan_focus_task",
+                    "category": "trigger_runtime_gap",
                     "agent_id": str(agent_id),
                     "trigger_id": None,
-                    "focus_ref": "send_invite",
                     "message": "Missing trigger",
                     "evidence": {},
                     "recommendation": "Create a trigger",
@@ -92,7 +91,7 @@ def test_autonomous_audit_returns_service_report(monkeypatch) -> None:
     data = resp.json()
     assert data["lookback_hours"] == 12
     assert data["totals"]["findings"] == 1
-    assert data["findings"][0]["category"] == "orphan_focus_task"
+    assert data["findings"][0]["category"] == "trigger_runtime_gap"
     assert captured["tenant_id"] == tenant_id
     assert captured["agent_id"] == agent_id
     assert captured["lookback_hours"] == 12

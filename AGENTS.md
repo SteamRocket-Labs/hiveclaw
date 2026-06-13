@@ -98,7 +98,7 @@ docker compose up -d --build       # Full stack → :3008
 | Services | 163 | — | Business logic |
 | Tool Domains | 21 | — | Feishu office, messaging, tasks, workspace, email |
 | Kernel | 3 | ~2.7K | Core LLM execution engine |
-| Tools | 16 handlers | — | Handler implementations |
+| Tools | 18 handlers | — | Handler implementations; 100+ registered tool definitions |
 | Skills | 5 | ~310 | Markdown skill system |
 | Memory | 25 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding, hygiene |
 | Migrations | 79 | — | Alembic schema versions |
@@ -194,28 +194,31 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 - Provider retry/overload fallback, output-cap telemetry, and Anthropic thinking-signature preservation
 - Turn-level token budget gates where runtime config provides a budget
 
-### Tool Handlers (60+ tools)
+### Tool Handlers (18 modules / 100+ registered tool definitions)
 
 | Handler | Tools |
 |---------|-------|
 | `filesystem` | list_files, read_file, write_file, edit_file, delete_file |
 | `search` | web_search, web_fetch, firecrawl_fetch, xcrawl_scrape |
-| `communication` | send_feishu_message, send_web_message |
+| `communication` | send_feishu_message, send_web_message, send_message_to_agent, delegate_to_agent, async task helpers, channel send/upload |
 | `email` | send_email, read_emails, reply_email |
 | `feishu` | feishu_wiki_list, feishu_doc_read/append/create/share |
 | `office` | office_document_create/view/query/apply/validate/dump |
-| `deep_research` | deep_research_start/check/cancel/export |
+| `deep_research` | deep_research_run/start/check/cancel/export |
 | `memory` | save_memory and memory-control helpers |
-| `finance` | finance provider status, statements, filings, workflows |
 | `plaza` | plaza_get_new_posts, plaza_create_post, plaza_add_comment |
 | `skills` | load_skill, tool_search |
 | `triggers` | set_trigger, update_trigger, list_triggers, cancel_trigger |
 | `hr` | create_digital_employee |
-| `mcp` | list_mcp_resources, read_mcp_resource, import_mcp_server |
+| `mcp` | list_mcp_resources, read_mcp_resource, import_mcp_server, call_mcp_tool |
+| `plan_mode` | ask_user_question, exit_plan_mode |
+| `subagent` | spawn_subagent |
+| `work_ledger` | track_todo, record_finding, read_ledger |
+| `workflow` | preview_workflow, start_workflow |
 
 ## Frontend Architecture (`frontend/src/`)
 
-### Pages (16 + 25 sections)
+### Pages (16 page entries + 40 nested page/section helpers)
 
 | Page | Route | Purpose |
 |------|-------|---------|
@@ -240,13 +243,13 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 | i18n | i18next (en + zh) |
 | Icons | Tabler Icons |
 | Charts | Recharts 3 |
-| Tests | Vitest 4 (14 suites) |
+| Tests | Vitest 4 (39 frontend test files) |
 
 ### API Layer
 
 Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put<T>()` with JWT auth and tenant header injection.
 
-37 files in `api/domains/` including tests and index, covering agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, deepResearch, memory, objectives, autonomy, and evolution.
+37 files in `api/domains/` including tests and index, covering agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, deepResearch, memory, knowledge, plans, workflows, subagents, extensions, autonomy, and evolution.
 
 ## Conventions
 

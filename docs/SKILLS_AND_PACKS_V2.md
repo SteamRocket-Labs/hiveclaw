@@ -704,7 +704,7 @@ Phase 5 — QA (5 min)
 |----|------------------|
 | **T0 behavior** | 完整对话 + 工具调用 = 研究 transcript（审计用）|
 | **T2 learnings** | 每次 run 的事实抽取，跨 run 累积领域知识 |
-| **T3 memory** | 45 分钟 heartbeat 整理后的稳定先验 → `knowledge.md` `strategies.md` |
+| **T3 memory** | 受平台 cadence 的 Heartbeat 与 governed T3 append 沉淀后的稳定先验 → `knowledge.md` `strategies.md` |
 | **soul.md** | 研究风格固化（"偏好原始资料、紧凑表格、必含风险段"）|
 
 **关键决策**：不发明独立的 "research notebook"，直接用 T2。

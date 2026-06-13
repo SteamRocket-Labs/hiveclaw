@@ -338,12 +338,6 @@ class AgentManager:
                 rel_lines.append("_暂无关系信息。_")
             rel_path.write_text("\n".join(rel_lines), encoding="utf-8")
 
-        focus_path = agent_dir / "focus.md"
-        if not focus_path.exists():
-            # focus.md is an ordinary workspace scratch file (no longer projected
-            # into the prompt). Seed an empty header so the file exists.
-            focus_path.write_text("# Focus\n", encoding="utf-8")
-
         # Customize state.json
         state_path = agent_dir / "state.json"
         if state_path.exists():

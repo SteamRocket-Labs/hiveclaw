@@ -317,8 +317,6 @@
       "weekly": "Weekly"
     },
     "aware": {
-      "focus": "Current Focus",
-      "focusDesc": "What this employee is currently working on",
       "sharedMemoryTitle": "Shared Team Memory",
       "sharedMemoryDesc": "Recent workspace knowledge reused across sessions and compaction restores.",
       "sharedMemoryCount": "{{count}} shared entries",
@@ -326,8 +324,6 @@
       "sharedMemorySearchPlaceholder": "Search shared memory",
       "sharedMemoryEmpty": "No shared memory entries yet.",
       "sharedMemoryDetailTitle": "Entry Details",
-      "focusEmpty": "No focus items yet. Your employee will track its priorities during conversations.",
-      "viewRawMarkdown": "View raw Markdown",
       "standaloneTriggers": "Automated Triggers",
       "noTriggers": "No triggers set up",
       "fired": "Ran {{count}} times",

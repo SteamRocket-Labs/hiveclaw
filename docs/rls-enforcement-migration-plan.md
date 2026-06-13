@@ -1,7 +1,7 @@
 # RLS 真正生效迁移方案（Goal-2 地基的下一仗）
 
 > 状态：**设计稿，待 owner 拍板**。不动代码——这是 high-risk 权限层迁移（不可逆、影响所有查询），按交付纪律先文档定稿再实现。
-> 前置：`docs/system-audit-2026-06-09.md` P0-2（RLS 是摆设）+ `app/scripts/audit_rls_coverage.py`（量化脚本，已上线）。
+> 前置：`docs/archive/legacy-docs/system-audit-2026-06-09.md` P0-2（RLS 是摆设）+ `app/scripts/audit_rls_coverage.py`（量化脚本，已上线）。
 > 现状证据来自 2026-06-09 全量调查（184 bare session 清单 + 表覆盖矩阵 + GUC 机制）。
 
 ## 1. 目标与非目标

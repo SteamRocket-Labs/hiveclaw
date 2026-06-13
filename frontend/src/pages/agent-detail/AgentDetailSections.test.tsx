@@ -490,25 +490,15 @@ describe('AgentDetail extracted sections', () => {
     const markup = renderToStaticMarkup(
       <AgentAwareSection
         agentId="agent-1"
-        focusContent={'- [ ] release: monitor deploy health\n- [x] archive: wrap up old incidents'}
         awareTriggers={[
           {
             id: 'trigger-1',
             name: 'release-check',
             type: 'cron',
             config: { expr: '0 9 * * *' },
-            focus_ref: 'release',
             fire_count: 3,
             is_enabled: true,
             reason: 'Daily release check',
-          },
-        ]}
-        activityLogs={[
-          {
-            id: 'log-1',
-            action_type: 'trigger_fired',
-            created_at: '2026-03-27T09:00:00Z',
-            summary: 'release-check trigger fired successfully',
           },
         ]}
         reflectionSessions={[
@@ -543,17 +533,11 @@ describe('AgentDetail extracted sections', () => {
             { role: 'assistant', content: 'All systems green.' },
           ],
         }}
-        expandedFocus="release"
         expandedReflection="session-1"
-        showAllFocus={false}
-        showCompletedFocus={true}
         showAllTriggers={false}
         reflectionPage={0}
-        onSetExpandedFocus={() => {}}
         onSetExpandedReflection={() => {}}
         onSetReflectionMessages={() => {}}
-        onSetShowAllFocus={() => {}}
-        onSetShowCompletedFocus={() => {}}
         onSetShowAllTriggers={() => {}}
         onSetReflectionPage={() => {}}
         onRefetchTriggers={async () => {}}
@@ -561,10 +545,9 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('monitor deploy health');
     expect(markup).toContain('Every day at 09:00');
+    expect(markup).toContain('Daily release check');
     expect(markup).toContain('All systems green.');
-    expect(markup).toContain('archive');
     expect(markup).toContain('Deferred Capabilities');
     expect(markup).toContain('github-research');
     expect(markup).toContain('Deploy Playbook');
@@ -577,9 +560,7 @@ describe('AgentDetail extracted sections', () => {
     const markup = renderToStaticMarkup(
       <AgentAwareSection
         agentId="agent-1"
-        focusContent={'- [ ] legacy: this raw projection should be secondary'}
         awareTriggers={[]}
-        activityLogs={[]}
         reflectionSessions={[]}
         reflectionMessages={{}}
         autonomyOverview={{
@@ -623,17 +604,11 @@ describe('AgentDetail extracted sections', () => {
             },
           ],
         }}
-        expandedFocus={null}
         expandedReflection={null}
-        showAllFocus={false}
-        showCompletedFocus={false}
         showAllTriggers={false}
         reflectionPage={0}
-        onSetExpandedFocus={() => {}}
         onSetExpandedReflection={() => {}}
         onSetReflectionMessages={() => {}}
-        onSetShowAllFocus={() => {}}
-        onSetShowCompletedFocus={() => {}}
         onSetShowAllTriggers={() => {}}
         onSetReflectionPage={() => {}}
         onRefetchTriggers={async () => {}}
@@ -647,7 +622,6 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('trigger-internal-id');
     expect(markup).not.toContain('runtime-internal-id');
     expect(markup).not.toContain('runtime_artifacts/triggers');
-    expect(markup).not.toContain('legacy: this raw projection should be secondary');
   });
 
   it('builds trigger workflow_ref pins from the selected registered workflow', () => {

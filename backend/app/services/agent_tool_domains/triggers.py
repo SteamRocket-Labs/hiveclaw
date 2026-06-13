@@ -222,7 +222,6 @@ def _resolve_trigger_class(
     tool_name: str,
     arguments: dict,
     config: dict,
-    focus_ref: str | None,
     *,
     trigger_type: str | None = None,
 ) -> tuple[str | None, str | None]:
@@ -295,7 +294,6 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     ttype = arguments.get("type", "").strip()
     config = arguments.get("config", {})
     reason = arguments.get("reason", "").strip()
-    focus_ref = arguments.get("focus_ref", "") or arguments.get("agenda_ref", "")  # backward compat
 
     if not name:
         return _trigger_error("set_trigger", "bad_arguments", "Missing required argument 'name'.")
@@ -316,7 +314,6 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         "set_trigger",
         arguments,
         config,
-        focus_ref,
         trigger_type=ttype,
     )
     if binding_error:
@@ -425,7 +422,6 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 existing.type = ttype
                 existing.config = config
                 existing.reason = reason
-                existing.focus_ref = focus_ref or None
                 existing.is_enabled = True
                 existing.max_fires = _coerce_int(arguments.get("max_fires") or config.get("max_fires"))
                 if arguments.get("expires_at") or config.get("expires_at"):
@@ -457,7 +453,6 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 type=ttype,
                 config=config,
                 reason=reason,
-                focus_ref=focus_ref or None,
                 max_fires=_coerce_int(arguments.get("max_fires") or config.get("max_fires")),
                 expires_at=(
                     _parse_expires_at(arguments.get("expires_at") or config.get("expires_at"))
@@ -511,17 +506,10 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
     new_config = arguments.get("config")
     new_reason = arguments.get("reason")
-    if "focus_ref" in arguments:
-        new_focus_ref = arguments.get("focus_ref")
-    elif "agenda_ref" in arguments:
-        new_focus_ref = arguments.get("agenda_ref")
-    else:
-        new_focus_ref = None
 
     if (
         new_config is None
         and new_reason is None
-        and new_focus_ref is None
         and arguments.get("trigger_class") is None
         and arguments.get("max_fires") is None
         and arguments.get("expires_at") is None
@@ -530,7 +518,7 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         return _trigger_error(
             "update_trigger",
             "bad_arguments",
-            "Provide at least one of 'config', 'reason', 'focus_ref', or 'trigger_class' to update.",
+            "Provide at least one of 'config', 'reason', 'trigger_class', 'max_fires', 'expires_at', or 'cooldown_seconds' to update.",
         )
 
     try:
@@ -551,7 +539,6 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
             changes = []
             final_config = dict(trigger.config or {})
-            final_focus_ref = getattr(trigger, "focus_ref", None)
             if new_config is not None:
                 validation_error = _validate_trigger_config("update_trigger", trigger.type, new_config)
                 if validation_error:
@@ -559,8 +546,6 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 final_config = dict(new_config)
             if arguments.get("trigger_class") is not None:
                 final_config["trigger_class"] = arguments.get("trigger_class")
-            if new_focus_ref is not None:
-                final_focus_ref = str(new_focus_ref).strip() or None
             final_config = stamp_confirmed_plan_provenance(
                 final_config,
                 plan_id=arguments.get("confirmed_plan_id"),
@@ -573,7 +558,6 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 "update_trigger",
                 arguments,
                 final_config,
-                final_focus_ref,
                 trigger_type=trigger.type,
             )
             if binding_error:
@@ -599,9 +583,6 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             if arguments.get("cooldown_seconds") is not None:
                 trigger.cooldown_seconds = _coerce_int(arguments.get("cooldown_seconds")) or trigger.cooldown_seconds
                 changes.append(f"cooldown_seconds: {trigger.cooldown_seconds}")
-            if new_focus_ref is not None:
-                trigger.focus_ref = final_focus_ref
-                changes.append(f"focus_ref: {final_focus_ref or '(cleared)'}")
             if new_reason is not None:
                 trigger.reason = new_reason
                 changes.append("reason updated")

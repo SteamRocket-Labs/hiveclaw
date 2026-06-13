@@ -1537,10 +1537,9 @@ def _build_restoration_context(
 
     Restores (in priority order):
     1. Soul (agent identity)
-    2. Focus (working memory)
-    3. Recently-read files (up to 5, per-file cap each)
-    4. Active skills summary
-    5. Active packs summary
+    2. Recently-read files (up to 5, per-file cap each)
+    3. Active skills summary
+    4. Active packs summary
     """
     from pathlib import Path as _Path
     from app.config import get_settings as _get_settings
@@ -2265,8 +2264,7 @@ class AgentKernel:
 
             async def _emit_compaction_event(data: dict[str, Any]) -> None:
                 await _emit_event({"type": "session_compact", **data})
-                # System-level WAL: save compaction summary WITHOUT overwriting focus.md.
-                # Write to a separate file so the agent's curated focus is preserved.
+                # System-level WAL: save compaction summary without touching user-authored workspace notes.
                 if request.agent_id and data.get("summary"):
                     try:
                         from app.config import get_settings as _gs

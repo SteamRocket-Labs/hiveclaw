@@ -185,12 +185,12 @@ These are current code facts verified against the repository when this document 
 
 ### 2.3 Heartbeat, dream, and skill loop
 
-- `backend/app/config.py:118` default heartbeat interval is 45 minutes.
-- `backend/app/services/auto_dream.py:65-66,737,1187-1197` gates dream by 4 hours plus 3 sessions or 2 heartbeat ticks.
-- `backend/app/services/heartbeat.py:1470-1500` runs heartbeat through `invoke_agent()`.
-- `backend/app/services/auto_dream.py:380-483` still uses direct LLM calls for dream consolidation, with audit but not full runtime governance.
-- `backend/app/services/skill_distiller.py:529-572` also uses direct LLM calls before later ledger recording.
-- `backend/app/kernel/contracts.py:76` defaults `skill_candidate_loop_enabled=False`; `backend/app/runtime/invoker.py:193` enables it via feature flag.
+- `backend/app/config.py` defaults the heartbeat dispatcher to 60s and managed agent eligibility to `HEARTBEAT_DEFAULT_INTERVAL_MINUTES=120`.
+- `backend/app/services/auto_dream.py` gates full dream by `MIN_HOURS_BETWEEN_DREAMS=24` plus either `MIN_SESSIONS_SINCE_DREAM=3` or `MIN_HEARTBEAT_TICKS_SINCE_DREAM=2`; soft dream is a 6h T3-pressure maintenance path.
+- `backend/app/services/heartbeat.py` runs heartbeat through `invoke_agent()` with KAIROS persistent session state and skips subsequent ticks when no new T2 entries exist.
+- `backend/app/services/auto_dream.py` still performs the consolidation LLM call outside the kernel loop, but durable memory/soul writeback goes through the Memory Control Plane, lifecycle sidecars, frozen-mission gate, and audit hooks.
+- `backend/app/services/skill_distiller.py` uses direct LLM calls for skill drafts before ledger/verification recording and promotion gates.
+- `backend/app/kernel/contracts.py` keeps `skill_candidate_loop_enabled=False` as the dataclass default; `backend/app/runtime/invoker.py` resolves the runtime feature flag per agent/tenant.
 
 ### 2.4 Governance and tool boundary
 

@@ -81,7 +81,7 @@ async def test_resolve_approval_commits_before_approved_external_action(monkeypa
         created_at=None,
         resolved_at=None,
         resolved_by=None,
-        details={"tool": "write_file", "args": {"path": "focus.md"}},
+        details={"tool": "write_file", "args": {"path": "workspace/notes.md"}},
     )
     agent = SimpleNamespace(id=approval.agent_id, tenant_id=tenant_id, creator_id=uuid4(), name="Ops Agent")
     user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
@@ -135,7 +135,7 @@ async def test_approval_result_is_published_to_origin_session_and_active_run() -
         status="approved",
         details={
             "tool": "write_file",
-            "args": {"path": "focus.md"},
+            "args": {"path": "workspace/notes.md"},
             "session_id": "session-approval",
         },
     )
@@ -145,7 +145,7 @@ async def test_approval_result_is_published_to_origin_session_and_active_run() -
         approval,
         agent=agent,
         approved_by_user_id=approver_id,
-        execution_result="wrote focus.md",
+        execution_result="wrote workspace/notes.md",
     )
 
     assert payload["type"] == "approval_tool_result"
@@ -155,11 +155,11 @@ async def test_approval_result_is_published_to_origin_session_and_active_run() -
     assert chat_rows[0].conversation_id == "session-approval"
     stored = json.loads(chat_rows[0].content)
     assert stored["approval_id"] == str(approval_id)
-    assert stored["result"] == "wrote focus.md"
+    assert stored["result"] == "wrote workspace/notes.md"
     pending = active_run.metadata_json["pending_user_messages"]
     assert len(pending) == 1
     assert pending[0]["approval_id"] == str(approval_id)
-    assert "wrote focus.md" in pending[0]["content"]
+    assert "wrote workspace/notes.md" in pending[0]["content"]
 
 
 def test_org_admin_can_resolve_same_tenant_agent_approval() -> None:

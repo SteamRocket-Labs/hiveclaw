@@ -144,7 +144,6 @@ Then immediately compute an ISO timestamp for 15 minutes later and set the follo
 ```
 set_trigger(type="once", config={"at": "2026-04-15T10:15:00+08:00"},
   trigger_class="scheduled_job",
-  focus_ref="ai_infra_funding_summary",
   reason="check_async_task(task_id=<returned>). If completed, read workspace/ai-infra-funding-2026-04-13-to-15.md,
           summarize top-3 for user and record the file path as evidence in your work ledger. If running, set another 15m check. If failed, notify user.")
 ```

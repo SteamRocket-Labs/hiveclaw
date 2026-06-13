@@ -13,22 +13,14 @@ import { normalizeToolCallResult } from './toolResultEnvelope';
 
 type AgentAwareSectionProps = {
   agentId: string;
-  focusContent: string;
   awareTriggers: any[];
-  activityLogs: any[];
   reflectionSessions: any[];
   reflectionMessages: Record<string, any[]>;
-  expandedFocus: string | null;
   expandedReflection: string | null;
-  showAllFocus: boolean;
-  showCompletedFocus: boolean;
   showAllTriggers: boolean;
   reflectionPage: number;
-  onSetExpandedFocus: React.Dispatch<React.SetStateAction<string | null>>;
   onSetExpandedReflection: React.Dispatch<React.SetStateAction<string | null>>;
   onSetReflectionMessages: React.Dispatch<React.SetStateAction<Record<string, any[]>>>;
-  onSetShowAllFocus: React.Dispatch<React.SetStateAction<boolean>>;
-  onSetShowCompletedFocus: React.Dispatch<React.SetStateAction<boolean>>;
   onSetShowAllTriggers: React.Dispatch<React.SetStateAction<boolean>>;
   onSetReflectionPage: React.Dispatch<React.SetStateAction<number>>;
   onRefetchTriggers: () => void | Promise<unknown>;
@@ -118,22 +110,14 @@ export function buildWakePolicyPayload(
 
 export default function AgentAwareSection({
   agentId,
-  focusContent,
   awareTriggers,
-  activityLogs,
   reflectionSessions,
   reflectionMessages,
-  expandedFocus,
   expandedReflection,
-  showAllFocus,
-  showCompletedFocus,
   showAllTriggers,
   reflectionPage,
-  onSetExpandedFocus,
   onSetExpandedReflection,
   onSetReflectionMessages,
-  onSetShowAllFocus,
-  onSetShowCompletedFocus,
   onSetShowAllTriggers,
   onSetReflectionPage,
   onRefetchTriggers,
@@ -166,32 +150,6 @@ export default function AgentAwareSection({
     queryFn: () => listWorkflowDefinitions(agentId),
     enabled: !!agentId,
   });
-
-  const lines = (focusContent || '').split('\n');
-  const focusItems: { id: string; name: string; description: string; done: boolean; inProgress: boolean }[] = [];
-  let currentItem: { id: string; name: string; description: string; done: boolean; inProgress: boolean } | null = null;
-
-  for (const line of lines) {
-    const match = line.match(/^\s*-\s*\[([ x/])\]\s*(.+)/i);
-    if (match) {
-      if (currentItem) focusItems.push(currentItem);
-      const marker = match[1];
-      const fullText = match[2].trim();
-      const colonIndex = fullText.indexOf(':');
-      const itemName = colonIndex > 0 ? fullText.substring(0, colonIndex).trim() : fullText;
-      const itemDescription = colonIndex > 0 ? fullText.substring(colonIndex + 1).trim() : '';
-      currentItem = {
-        id: itemName,
-        name: itemName,
-        description: itemDescription,
-        done: marker.toLowerCase() === 'x',
-        inProgress: marker === '/',
-      };
-    } else if (currentItem && line.trim() && /^\s{2,}/.test(line)) {
-      currentItem.description = currentItem.description ? `${currentItem.description} ${line.trim()}` : line.trim();
-    }
-  }
-  if (currentItem) focusItems.push(currentItem);
 
   const triggerToHuman = (trigger: any): string => {
     if (trigger.type === 'cron' && trigger.config?.expr) {
@@ -228,53 +186,8 @@ export default function AgentAwareSection({
     return trigger.type;
   };
 
-  const triggersByFocus: Record<string, any[]> = {};
-  const standaloneTriggers: any[] = [];
-  for (const trigger of awareTriggers) {
-    if (trigger.focus_ref && focusItems.some((item) => item.name === trigger.focus_ref)) {
-      if (!triggersByFocus[trigger.focus_ref]) triggersByFocus[trigger.focus_ref] = [];
-      triggersByFocus[trigger.focus_ref].push(trigger);
-    } else {
-      standaloneTriggers.push(trigger);
-    }
-  }
-
-  const triggerLogsByFocus: Record<string, any[]> = {};
-  const triggerNameToFocus: Record<string, string> = {};
-  for (const trigger of awareTriggers) {
-    if (trigger.focus_ref) triggerNameToFocus[trigger.name] = trigger.focus_ref;
-  }
-  const triggerRelatedLogs = activityLogs.filter(
-    (log: any) =>
-      log.action_type === 'trigger_fired' ||
-      log.action_type === 'trigger_created' ||
-      log.action_type === 'trigger_updated' ||
-      log.action_type === 'trigger_cancelled' ||
-      log.summary?.includes('trigger'),
-  );
-
-  for (const log of triggerRelatedLogs) {
-    let matched = false;
-    for (const [triggerName, focusName] of Object.entries(triggerNameToFocus)) {
-      if (log.summary?.includes(triggerName) || log.detail?.tool === triggerName) {
-        if (!triggerLogsByFocus[focusName]) triggerLogsByFocus[focusName] = [];
-        triggerLogsByFocus[focusName].push(log);
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) {
-      if (!triggerLogsByFocus.__unmatched__) triggerLogsByFocus.__unmatched__ = [];
-      triggerLogsByFocus.__unmatched__.push(log);
-    }
-  }
-
-  const hasFocusItems = focusItems.length > 0;
+  const standaloneTriggers = awareTriggers;
   const hasStandalone = standaloneTriggers.length > 0;
-  const activeFocusItems = focusItems.filter((item) => !item.done);
-  const completedFocusItems = focusItems.filter((item) => item.done);
-  const visibleActiveFocus = showAllFocus ? activeFocusItems : activeFocusItems.slice(0, SECTION_PAGE_SIZE);
-  const hiddenActiveCount = activeFocusItems.length - visibleActiveFocus.length;
 
   const loadReflectionMessages = async (sessionId: string) => {
     if (reflectionMessages[sessionId]) return;
@@ -544,193 +457,6 @@ export default function AgentAwareSection({
     );
   }
 
-  const renderFocusItem = (item: (typeof focusItems)[number]) => {
-    const isExpanded = expandedFocus === item.id;
-    const itemTriggers = triggersByFocus[item.name] || [];
-    const itemLogs = triggerLogsByFocus[item.name] || [];
-    const displayTitle = item.description || item.name;
-    const displaySubtitle = item.description ? item.name : null;
-
-    return (
-      <div
-        key={item.id}
-        style={{
-          borderRadius: '8px',
-          border: '1px solid var(--border-subtle)',
-          overflow: 'hidden',
-          marginBottom: '6px',
-          background: 'var(--bg-primary)',
-        }}
-      >
-        <div
-          onClick={() => onSetExpandedFocus(isExpanded ? null : item.id)}
-          style={{
-            padding: '12px 16px',
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: '12px',
-            cursor: 'pointer',
-            transition: 'background 0.15s',
-          }}
-          onMouseEnter={(event) => (event.currentTarget.style.background = 'var(--bg-secondary)')}
-          onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
-        >
-          <div
-            style={{
-              width: '8px',
-              height: '8px',
-              borderRadius: '50%',
-              marginTop: '5px',
-              flexShrink: 0,
-              background: item.done ? 'var(--success, #10b981)' : item.inProgress ? 'var(--accent-primary)' : 'var(--border-subtle)',
-            }}
-          />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                fontSize: '13px',
-                fontWeight: 500,
-                lineHeight: '20px',
-                textDecoration: item.done ? 'line-through' : 'none',
-                color: item.done ? 'var(--text-tertiary)' : 'var(--text-primary)',
-              }}
-            >
-              {displayTitle}
-            </div>
-            {displaySubtitle && (
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: '2px' }}>{displaySubtitle}</div>
-            )}
-          </div>
-          {itemTriggers.length > 0 && (
-            <span
-              style={{
-                fontSize: '11px',
-                color: 'var(--text-tertiary)',
-                padding: '2px 8px',
-                borderRadius: '10px',
-                background: 'var(--bg-secondary)',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {itemTriggers.length} trigger{itemTriggers.length > 1 ? 's' : ''}
-            </span>
-          )}
-          <span
-            style={{
-              fontSize: '11px',
-              color: 'var(--text-tertiary)',
-              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-              transition: 'transform 0.15s',
-              marginTop: '4px',
-            }}
-          >
-            &#9654;
-          </span>
-        </div>
-
-        {isExpanded && (
-          <div style={{ padding: '0 16px 12px 36px', borderTop: '1px solid var(--border-subtle)' }}>
-            {itemTriggers.length > 0 && (
-              <div style={{ marginTop: '12px' }}>
-                {itemTriggers.map((trigger: any) => (
-                  <div
-                    key={trigger.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '10px',
-                      padding: '8px 12px',
-                      marginBottom: '4px',
-                      borderRadius: '6px',
-                      background: 'var(--bg-secondary)',
-                      opacity: trigger.is_enabled ? 1 : 0.5,
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--text-primary)' }}>{triggerToHuman(trigger)}</div>
-                      {trigger.reason && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{trigger.reason}</div>}
-                      <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '2px', fontFamily: 'monospace' }}>
-                        {trigger.type === 'cron' ? trigger.config?.expr : ''}{' '}
-                      </div>
-                    </div>
-                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>{t('agent.aware.fired', { count: trigger.fire_count })}</span>
-                    {!trigger.is_enabled && <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{t('agent.aware.disabled')}</span>}
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      <button
-                        className="btn btn-ghost"
-                        style={{ padding: '2px 6px', fontSize: '11px' }}
-                        onClick={async (event) => {
-                          event.stopPropagation();
-                          await triggerApi.update(agentId, trigger.id, { is_enabled: !trigger.is_enabled });
-                          await onRefetchTriggers();
-                        }}
-                      >
-                        {trigger.is_enabled ? t('agent.aware.disable') : t('agent.aware.enable')}
-                      </button>
-                      <button
-                        className="btn btn-ghost"
-                        style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
-                        onClick={async (event) => {
-                          event.stopPropagation();
-                          if (confirm(t('agent.aware.deleteTriggerConfirm', { name: trigger.name }))) {
-                            await triggerApi.delete(agentId, trigger.id);
-                            await onRefetchTriggers();
-                          }
-                        }}
-                      >
-                        {t('common.delete', 'Delete')}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {itemLogs.length > 0 && (
-              <div style={{ marginTop: '12px' }}>
-                <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.aware.reflections')}</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  {itemLogs.slice(0, 10).map((log: any) => (
-                    <div
-                      key={log.id}
-                      style={{
-                        padding: '6px 12px',
-                        borderRadius: '6px',
-                        background: 'var(--bg-secondary)',
-                        borderLeft: '2px solid var(--border-subtle)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
-                        <span
-                          style={{
-                            fontSize: '10px',
-                            padding: '1px 5px',
-                            borderRadius: '3px',
-                            background: log.action_type === 'trigger_fired' ? 'rgba(var(--accent-primary-rgb, 99,102,241), 0.1)' : 'var(--bg-tertiary, #e5e7eb)',
-                            color: log.action_type === 'trigger_fired' ? 'var(--accent-primary)' : 'var(--text-tertiary)',
-                            fontWeight: 500,
-                          }}
-                        >
-                          {log.action_type?.replace('trigger_', '')}
-                        </span>
-                        <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
-                          {new Date(log.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{log.summary}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {itemTriggers.length === 0 && itemLogs.length === 0 && <div style={{ padding: '12px 0', fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.noTriggers')}</div>}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const totalPages = Math.ceil(reflectionSessions.length / REFLECTIONS_PAGE_SIZE);
   const pageStart = reflectionPage * REFLECTIONS_PAGE_SIZE;
   const visibleSessions = reflectionSessions.slice(pageStart, pageStart + REFLECTIONS_PAGE_SIZE);
@@ -739,75 +465,6 @@ export default function AgentAwareSection({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
       <TeamMemorySummaryCard agentId={agentId} section="aware" />
       <PlanQueueSection agentId={agentId} />
-
-      <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-          <div>
-            <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.focus')}</h4>
-            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.focusDesc')}</span>
-          </div>
-          {hasFocusItems && (
-            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-              {activeFocusItems.length} active{completedFocusItems.length > 0 ? ` · ${completedFocusItems.length} done` : ''}
-            </span>
-          )}
-        </div>
-
-        {visibleActiveFocus.map(renderFocusItem)}
-
-        {hiddenActiveCount > 0 && (
-          <button className="btn btn-ghost" style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }} onClick={() => onSetShowAllFocus(true)}>
-            {t('agent.aware.showMore', { count: hiddenActiveCount })}
-          </button>
-        )}
-        {showAllFocus && activeFocusItems.length > SECTION_PAGE_SIZE && (
-          <button
-            className="btn btn-ghost"
-            style={{ width: '100%', fontSize: '12px', color: 'var(--text-tertiary)', padding: '8px', marginTop: '4px' }}
-            onClick={(event) => {
-              onSetShowAllFocus(false);
-              event.currentTarget.closest('.card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }}
-          >
-            {t('agent.aware.showLess')}
-          </button>
-        )}
-
-        {completedFocusItems.length > 0 && (
-          <>
-            <button
-              className="btn btn-ghost"
-              style={{
-                width: '100%',
-                fontSize: '12px',
-                color: 'var(--text-tertiary)',
-                padding: '8px',
-                marginTop: '8px',
-                borderTop: '1px solid var(--border-subtle)',
-                borderRadius: 0,
-              }}
-              onClick={() => onSetShowCompletedFocus(!showCompletedFocus)}
-            >
-              {showCompletedFocus ? t('agent.aware.hideCompleted') : t('agent.aware.showCompleted', { count: completedFocusItems.length })}
-            </button>
-            {showCompletedFocus && completedFocusItems.map(renderFocusItem)}
-          </>
-        )}
-
-        {!hasFocusItems && (
-          <div
-            style={{
-              padding: '24px',
-              textAlign: 'center',
-              color: 'var(--text-tertiary)',
-              border: '1px dashed var(--border-subtle)',
-              borderRadius: '8px',
-            }}
-          >
-            {t('agent.aware.focusEmpty')}
-          </div>
-        )}
-      </div>
 
       {hasStandalone && (
         <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
@@ -894,13 +551,6 @@ export default function AgentAwareSection({
             </button>
           )}
         </div>
-      )}
-
-      {focusContent && (
-        <details style={{ marginTop: '4px', marginBottom: '16px' }}>
-          <summary style={{ fontSize: '11px', color: 'var(--text-tertiary)', cursor: 'pointer' }}>{t('agent.aware.viewRawMarkdown')}</summary>
-          <pre style={{ fontSize: '11px', marginTop: '8px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', whiteSpace: 'pre-wrap', maxHeight: '300px', overflow: 'auto' }}>{focusContent}</pre>
-        </details>
       )}
 
       {reflectionSessions.length > 0 && (

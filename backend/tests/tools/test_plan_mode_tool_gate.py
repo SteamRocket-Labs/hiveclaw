@@ -284,7 +284,7 @@ async def test_execute_does_not_gate_untagged_tool():
 
     result = await service.execute(
         "write_file",
-        {"path": "focus.md", "content": "x"},
+        {"path": "workspace/notes.md", "content": "x"},
         agent_id=context.agent_id,
         user_id=context.user_id,
     )

@@ -1233,19 +1233,13 @@ def _validate_bootstrap_completion(agent_id: uuid.UUID) -> None:
         if not ws_root.exists():
             continue
         missing = []
-        for required in ["focus.md", "evolution/lineage.md", "evolution/scorecard.md"]:
+        for required in ["evolution/lineage.md", "evolution/scorecard.md"]:
             fpath = ws_root / required
             if not fpath.exists() or fpath.stat().st_size < 10:
                 missing.append(required)
         if missing:
             logger.info(f"[Heartbeat] Bootstrap incomplete for {agent_id}: missing {', '.join(missing)} — auto-seeding")
             _auto_seed_evolution(agent_id)
-            # Seed focus.md if missing
-            focus = ws_root / "focus.md"
-            if not focus.exists() or focus.stat().st_size < 10:
-                focus.write_text(
-                    "# Focus\n\nBootstrap in progress — awaiting first heartbeat action.\n", encoding="utf-8"
-                )
         return
 
 

@@ -52,13 +52,13 @@ Counts are from the current tree, not historical docs.
 | API routers | 62 files | Mounted under both `/api` and `/api/v1`, except public webhooks and WebSocket. |
 | ORM models | 43 files | Tenant-scoped SQLAlchemy models, including runtime tasks, coordination, objectives, identity, pending replies, channel config, invocation spans, and session feedback. |
 | Services | 163 files | Runtime, channel delivery, memory, extraction, evolution, office, Feishu, triggers, skills, governance, trace, MCP authz, interoperability. |
-| Tool handlers | 16 files | filesystem, search, communication, email, Feishu, memory, office, finance, HR, MCP, deep research, objectives, plaza, tasks, triggers. |
+| Tool handlers | 18 files / 100+ registered definitions | filesystem, search, communication, email, Feishu, memory, office, HR, MCP, deep research, plan mode, subagent, plaza, tasks, triggers, work ledger, workflow. |
 | Tool domain services | 21 files | Feishu office domains, workspace, messaging, objectives, web MCP, code exec, image upload. |
 | Memory modules | 25 files | write gate, activation, retriever, T2 store, lifecycle, retention, access log, replay corpus, hygiene, optional backends. |
-| Runtime modules | 13 files | invoker, prompt builder, context budget, hooks, session, recovery manifest, coordinator, eval helpers. |
+| Runtime modules | 17 files | invoker, prompt builder, context engines, hooks, session, recovery manifest, coordinator, workflow compiler/engine, eval helpers. |
 | Alembic migrations | 79 files | `alembic heads` must stay single-head before new migrations. |
-| Frontend pages | 16 page files | App, workspace, admin, login/setup, agent detail, Agent Circle. |
-| Frontend section files | 25 section files | Agent detail, workspace admin, admin companies. |
+| Frontend pages | 16 page entry files | App, workspace, admin, login/setup, agent detail, Agent Circle. |
+| Frontend nested page/section helpers | 40 files | Agent detail, workspace admin, admin companies, layout helpers. |
 | Frontend API domains | 37 files | Typed adapters for agents, chat, office, deep research, memory, autonomy, enterprise, etc.; count includes tests and index files. |
 
 ## Product Surfaces
@@ -258,6 +258,14 @@ flowchart LR
     Feedback --> Evolve
 ```
 
+Current cadence is configuration-backed, not the old fixed-timer diagram:
+`evolution_daemon` wakes every `HEARTBEAT_TICK_SECONDS` (default 60s), then
+eligible runnable agents use the managed `HEARTBEAT_DEFAULT_INTERVAL_MINUTES`
+cadence (default 120 minutes). Full Dream requires `MIN_HOURS_BETWEEN_DREAMS`
+(24h) and either 3 sessions or 2 productive heartbeat ticks. Soft Dream is a
+6h deterministic maintenance path when T3 approaches the 100-entry pressure
+threshold.
+
 ### Storage Layers
 
 | Layer | Storage | Writer | Purpose |
@@ -309,15 +317,14 @@ only:
 T2 is weighted by source and category. Human corrections and constraints rank
 highest; autonomous observations are useful but less authoritative. Heartbeat
 then reads T2 plus current T3 as deduplication context and curates stable facts
-into T3. Heartbeat does not directly turn its own outcome into permanent memory;
-it writes evolution files, normalizes T3, optionally syncs Hindsight, and lets
-dream decide what deserves promotion.
+through the governed T3 append path. Heartbeat does not directly turn its own
+outcome into permanent memory; it writes evolution files, normalizes T3,
+optionally syncs Hindsight, and lets dream decide what deserves promotion.
 
-Dream consolidates T3 and proposes soul/memory promotions through
-`evolution_ledger.jsonl`. A promotion candidate must carry `source_refs`,
-evidence type, rollback strategy, and a promotion/hold decision. Inferred,
-ephemeral, or weakly evidenced identity changes are held instead of silently
-changing the agent.
+Dream consolidates T3 and proposes memory/soul promotions through the Memory
+Control Plane. A promotion candidate must carry `source_refs`, evidence type,
+rollback strategy, and a promotion/hold decision. Inferred, ephemeral, or weakly
+evidenced identity changes are held instead of silently changing the agent.
 
 ### Write Safety
 
@@ -329,8 +336,8 @@ wrapper that calls it.
 | Privacy classification | Classifies PL1/PL2/PL3/PL4 and masks sensitive text. |
 | PL4 zero retention | Credentials are rejected from durable memory. |
 | Form lint | Rejects entries that are too vague, relative, or malformed to be useful later. |
-| Metadata envelope | Adds `entry_id`, `sensitivity`, `status`, `version`, `evidence_refs`, `access_count`, `last_accessed`, supersession, and expiry fields. |
-| Near-dedup | `save_memory` rejects paraphrases of an existing T3 fact unless the new fact states a clear delta. |
+| Metadata envelope | Adds `entry_id`, `sensitivity`, `status`, `version`, `evidence_refs`, supersession, expiry, access telemetry, and reinforcement counters in the lifecycle sidecar. |
+| Near-dedup | Paraphrases of an existing T3 fact reinforce the existing entry's helpful/harmful counters instead of appending duplicate prose. |
 
 This gate is what keeps memory from becoming a transcript dump. Durable entries
 must be concise, evidence-backed, scoped, and safe to activate later.

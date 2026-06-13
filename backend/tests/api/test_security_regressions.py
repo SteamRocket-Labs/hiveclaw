@@ -292,7 +292,6 @@ async def test_list_agent_triggers_checks_agent_access(monkeypatch):
         type="once",
         config={},
         reason="check in",
-        focus_ref=None,
         is_enabled=True,
         fire_count=0,
         max_fires=None,

@@ -217,7 +217,6 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "from_user_identity",
     "on_message",
     "reply_to_current_sender",
-    "focus_ref",
     "interval_min",
     "fire_on",
     "blocked_pattern",

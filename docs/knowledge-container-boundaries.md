@@ -4,7 +4,7 @@
 > **讨论稿——只定边界与原则，不含实现切口；拍板后再谈改动。**
 >
 > **📌 状态（2026-06-04 session 末）：全部未拍板，下个 session 继续。** 用户最终评语：「整套记忆引擎还没有一个明确化的东西」——即本稿（边界判据 + 八环节判定卡 + 三件套）仍未达到要求的明确化水平。下个 session 的目标不是继续打补丁，而是把记忆引擎收敛成一份**完整的、环节全显式的规格**（每个环节：输入/判定主体/判据/证据/输出/失败处置），本稿 §1-§9 + codex §7/§8.5 作为素材。
-> 上位法：AI-Native Design Law（CLAUDE.md）；相关既有设计：workflow-source-capability.md、agent-lifecycle-cc-alignment.md §3.6。
+> 上位法：AI-Native Design Law（CLAUDE.md）；相关既有设计：workflow-source-capability.md、archive/legacy-docs/agent-lifecycle-cc-alignment.md §3.6。
 
 ## 1. 第一性原理：按「知识的性质」分容器，按「稳定性」定披露方式
 
@@ -12,8 +12,8 @@
 
 | 容器 | 知识性质 | 一句话判据 | 变化速度 | 执行者 |
 |---|---|---|---|---|
-| **soul.md** | 身份（identity） | 这条信息是否改变 agent **在任何任务中**的行为方式？ | 最慢（dream 4h+3sessions 才动；DREAM.md prompt 上限指引 ≤20 + 预算硬约束，runtime 无硬 cap——codex 核实） | —（是约束不是程序） |
-| **memory/*.md (T3)** | 陈述性记忆（facts） | 这是关于世界/用户/项目的**事实**（可能过期、有置信度），而非"怎么做事"？ | 中（heartbeat 45min 蒸馏） | — |
+| **soul.md** | 身份（identity） | 这条信息是否改变 agent **在任何任务中**的行为方式？ | 最慢（full dream 24h + activity gate；soft dream 只做 T3 缓压，不改身份） | —（是约束不是程序） |
+| **memory/*.md (T3)** | 陈述性记忆（facts） | 这是关于世界/用户/项目的**事实**（可能过期、有置信度），而非"怎么做事"？ | 中（heartbeat 默认 120min eligibility + 受治理 T3 append；session feedback/save_memory/dream/manual 也走同一写门） | — |
 | **skill (SKILL.md)** | 程序性方法论（procedural） | 这是教模型**怎么做某类事**的指令集，且执行中需要模型灵活判断/适配？ | 慢（distiller 凝练 + curator 防熵增） | **LLM 在循环里解释执行** |
 | **workflow** | 确定性流程（deterministic SOP) | 这个流程的**步骤顺序/分支/重试必须由系统保证**而不是靠模型自觉？失败需可重放、每步需可审计？ | 最慢（版本化+hash 绑定） | **引擎执行**（leaf 可以是 agent step） |
 

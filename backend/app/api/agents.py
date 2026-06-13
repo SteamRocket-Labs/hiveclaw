@@ -202,7 +202,7 @@ async def get_or_create_hr_agent(
                 await db.commit()
 
         # Always sync HR agent workspace with latest template
-        # (soul.md, HEARTBEAT.md, focus.md, and skills/ synced to ensure updates propagate)
+        # (soul.md, HEARTBEAT.md, and skills/ synced to ensure updates propagate)
         from app.services.agent_manager import agent_manager
         import shutil
         from pathlib import Path
@@ -212,8 +212,8 @@ async def get_or_create_hr_agent(
         hr_template_dir = Path(__file__).resolve().parent.parent.parent / "hr_agent_template"
         if hr_template_dir.exists():
             agent_dir.mkdir(parents=True, exist_ok=True)
-            # Sync soul.md, HEARTBEAT.md, focus.md from template (create if missing)
-            for fname in ("soul.md", "HEARTBEAT.md", "focus.md"):
+            # Sync soul.md and HEARTBEAT.md from template (create if missing)
+            for fname in ("soul.md", "HEARTBEAT.md"):
                 src = hr_template_dir / fname
                 dest = agent_dir / fname
                 if src.exists() and not dest.exists():

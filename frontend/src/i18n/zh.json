@@ -317,8 +317,6 @@
       "weekly": "每周"
     },
     "aware": {
-      "focus": "当前关注",
-      "focusDesc": "此员工当前关注的工作",
       "sharedMemoryTitle": "团队共享记忆",
       "sharedMemoryDesc": "跨会话与压缩恢复阶段都会复用的近期工作区知识。",
       "sharedMemoryCount": "{{count}} 条共享记录",
@@ -326,8 +324,6 @@
       "sharedMemorySearchPlaceholder": "搜索共享记忆",
       "sharedMemoryEmpty": "暂无共享记忆。",
       "sharedMemoryDetailTitle": "条目详情",
-      "focusEmpty": "暂无关注事项。员工在对话中会自动跟踪工作重点。",
-      "viewRawMarkdown": "查看原始 Markdown",
       "standaloneTriggers": "自动触发器",
       "noTriggers": "暂未设置触发器",
       "fired": "已运行 {{count}} 次",

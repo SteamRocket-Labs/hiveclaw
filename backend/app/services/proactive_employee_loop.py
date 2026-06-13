@@ -52,7 +52,7 @@ def build_proactive_employee_plan(
             continue
 
         action = str(detail.get("proactive_action") or _default_prepare_action(activity)).strip()
-        objective_id = str(detail.get("objective_id") or detail.get("focus_ref") or f"activity-{index}")
+        objective_id = str(detail.get("objective_id") or f"activity-{index}")
         posture = accountability.action_posture(action)
         preflight = service.evaluate(_build_preflight_input(action, posture))
         candidate = ProactiveCandidate(

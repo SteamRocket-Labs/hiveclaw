@@ -695,7 +695,7 @@ async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypat
         execute_tool=fake_execute_tool,
         request=request,
         tool_name="fs_read",
-        tool_args={"mode": "text", "path": "focus.md"},
+        tool_args={"mode": "text", "path": "workspace/notes.md"},
         emit_event=emit_event,
     )
     await _execute_tool_with_hooks(
@@ -706,7 +706,7 @@ async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypat
         emit_event=emit_event,
     )
 
-    assert "focus.md" in session.recent_files
+    assert "workspace/notes.md" in session.recent_files
     assert "soul.md" in session.recent_writes
     assert session.prompt_prefix is None
     assert "prompt_cache_key" not in session.metadata

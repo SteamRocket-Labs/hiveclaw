@@ -40,10 +40,6 @@ from app.tools.decorator import ToolMeta, tool
                 "type": "string",
                 "description": "What you should do when this trigger fires. This will be shown to you as context when you wake up.",
             },
-            "focus_ref": {
-                "type": "string",
-                "description": "Optional free-form label binding this trigger to a focus.md checklist identifier (e.g. 'daily_news_check').",
-            },
             "trigger_class": {
                 "type": "string",
                 "enum": ["scheduled_job", "event_wait", "system_maintenance"],
@@ -100,10 +96,6 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             "reason": {
                 "type": "string",
                 "description": "New reason text",
-            },
-            "focus_ref": {
-                "type": "string",
-                "description": "New focus.md checklist identifier to bind this trigger to. Pass an empty string to clear.",
             },
             "trigger_class": {
                 "type": "string",

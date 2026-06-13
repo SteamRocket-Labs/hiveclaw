@@ -86,8 +86,6 @@ instruction to your future self:
 - Use `trigger_class="scheduled_job"` for `cron`, `once`, or `interval` jobs.
 - Use `trigger_class="event_wait"` for `on_message`, `webhook`, or `poll`
   waits; always include max_fires or expires_at so the wait cannot run forever.
-- `focus_ref` is an optional free-form label that ties a trigger to a checklist
-  item in your `focus.md` scratch file. It is not required.
 - Scheduled jobs can declare context_from, model_id, toolset,
   excluded_tool_names, and workdir in config.
 - When a task is done, cancel obsolete triggers and record the outcome with
@@ -124,7 +122,6 @@ Call:
 set_trigger(type="interval",
   config={"minutes": 30},
   trigger_class="scheduled_job",
-  focus_ref="movie_ticket_reminder",
   reason="Send a Feishu message to Qinrui reminding him to send the movie tickets "
          "(requested by Ray). Vary the tone each time. "
          "After sending, keep this interval trigger active. Also ensure the "
@@ -160,7 +157,6 @@ set_trigger(type="cron",
     "workdir": "reports/ai-funding"
   },
   trigger_class="scheduled_job",
-  focus_ref="ai_funding_daily",
   reason="Search for AI-startup funding news published in the last 24h. Write a Chinese "
          "summary (≤300 words) to workspace/ai-news-daily-YYYY-MM-DD.md. Then send the "
          "summary to the requesting user via send_feishu_message (Reply Channel in "

@@ -827,10 +827,10 @@ class TestHeartbeatLogReasoning:
     def test_includes_decision_reasoning_when_provided(self) -> None:
         result = _format_heartbeat_log(
             [],
-            {"tick": 1, "score": 5, "reasoning": "noop because focus.md unchanged in 30 min"},
+            {"tick": 1, "score": 5, "reasoning": "noop because workspace/notes.md unchanged in 30 min"},
         )
         assert "## Decision Reasoning" in result
-        assert "noop because focus.md unchanged" in result
+        assert "noop because workspace/notes.md unchanged" in result
 
     def test_omits_reasoning_section_when_empty(self) -> None:
         result = _format_heartbeat_log([], {"tick": 1})

@@ -321,7 +321,7 @@ async def test_invoke_agent_forwards_delegation_token_to_tool_governance(monkeyp
                 tool_calls=[
                     {
                         "id": "call_1",
-                        "function": {"name": "read_file", "arguments": '{"path":"focus.md"}'},
+                        "function": {"name": "read_file", "arguments": '{"path":"workspace/notes.md"}'},
                     }
                 ],
                 reasoning_content=None,
@@ -345,9 +345,9 @@ async def test_invoke_agent_forwards_delegation_token_to_tool_governance(monkeyp
         delegation_token=None,
     ):
         assert tool_name == "read_file"
-        assert args == {"path": "focus.md"}
+        assert args == {"path": "workspace/notes.md"}
         assert delegation_token is expected_token
-        return "focus contents"
+        return "notes contents"
 
     async def fake_build_agent_context(*args, **kwargs):
         return "BASE_PROMPT"
@@ -424,11 +424,11 @@ async def test_custom_tool_executor_receives_delegation_token(monkeypatch):
         delegation_token=expected_token,
     )
 
-    result = await _execute_tool_with_request("read_file", {"path": "focus.md"}, request, emit_event)
+    result = await _execute_tool_with_request("read_file", {"path": "workspace/notes.md"}, request, emit_event)
 
     assert result == "custom-ok"
     assert seen["tool_name"] == "read_file"
-    assert seen["args"] == {"path": "focus.md"}
+    assert seen["args"] == {"path": "workspace/notes.md"}
     assert seen["delegation_token"] is expected_token
     assert seen["event_callback"] is emit_event
 
@@ -1311,7 +1311,7 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
                         "id": "call_1",
                         "function": {
                             "name": "write_file",
-                            "arguments": '{"path":"workspace/focus.md","content":"todo"}',
+                            "arguments": '{"path":"workspace/todo.md","content":"todo"}',
                         },
                     }
                 ],
@@ -1372,7 +1372,7 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
     result = await invoke_agent(
         AgentInvocationRequest(
             model=model,
-            messages=[{"role": "user", "content": "写入 focus.md"}],
+            messages=[{"role": "user", "content": "写入 workspace/notes.md"}],
             agent_name="Analyst",
             role_description="Policy analyst",
             agent_id=agent_id,

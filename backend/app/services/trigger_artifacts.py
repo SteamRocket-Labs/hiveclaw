@@ -46,7 +46,6 @@ def write_trigger_output_artifact(
                 "name": str(getattr(trigger, "name", "")),
                 "type": str(getattr(trigger, "type", "")),
                 "trigger_class": str((getattr(trigger, "config", None) or {}).get("trigger_class") or ""),
-                "focus_ref": getattr(trigger, "focus_ref", None),
             }
             for trigger in triggers
         ],

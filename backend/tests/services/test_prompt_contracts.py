@@ -306,13 +306,13 @@ def test_hr_templates_prefer_identity_first_and_install_later() -> None:
         encoding="utf-8"
     )
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
-    hr_focus = (project_root / "backend" / "hr_agent_template" / "focus.md").read_text(encoding="utf-8")
+    hr_focus_path = project_root / "backend" / "hr_agent_template" / "focus.md"
 
     assert "mission / users / outputs / boundaries / first objective" in hr_create_employee
     assert "Do not front-load MCP / ClawHub / marketplace installs" in hr_create_employee
     assert "identity-first, install-later" in hr_soul
     assert "Most new agents should start with builtin tools + default skills only" in hr_soul
-    assert "defer extra installs until a real capability gap is observed" in hr_focus
+    assert not hr_focus_path.exists()
 
 
 def test_hr_templates_use_blueprint_flow_instead_of_five_round_protocol() -> None:
@@ -321,12 +321,11 @@ def test_hr_templates_use_blueprint_flow_instead_of_five_round_protocol() -> Non
         encoding="utf-8"
     )
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
-    hr_focus = (project_root / "backend" / "hr_agent_template" / "focus.md").read_text(encoding="utf-8")
 
     assert "preview_agent_blueprint" in hr_create_employee
     assert "preview_agent_blueprint" in hr_soul
     assert "Round 1" not in hr_soul
-    assert "5-round" not in hr_focus.lower()
+    assert "5-round" not in hr_create_employee.lower()
     assert "Blueprint" in hr_soul
     assert "Phase A" in hr_soul
 
@@ -340,14 +339,14 @@ def test_hr_templates_do_not_reference_retired_objective_ledger() -> None:
         project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide" / "SKILL.md"
     ).read_text(encoding="utf-8")
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
-    hr_focus = (project_root / "backend" / "hr_agent_template" / "focus.md").read_text(encoding="utf-8")
 
-    combined = "\n".join([hr_create_employee, hr_guide, hr_soul, hr_focus])
+    combined = "\n".join([hr_create_employee, hr_guide, hr_soul])
 
     assert "Trigger is wake policy" in combined
     assert "scheduled_job" in combined
     banned_phrases = [
         "Objective Ledger",
+        "focus.md",
         "focus.md is a readable projection",
         "objective_task",
         "list_objectives",

@@ -76,7 +76,7 @@ Mercury 的 loop detection 设计成熟，Hive 几乎是裸奔的；但 Hive 的
 
 ```
 T0 raw logs → T2 learnings → T3 memory → soul.md
-SESSION_CLOSE  RESPONSE_COMPLETE  Heartbeat (45min)  Dream (4h+3 sessions)
+SESSION_CLOSE  RESPONSE_COMPLETE  Heartbeat (120min managed eligibility)  Dream (24h + activity gate)
               (hot fire-forget +
                replay backfill)
 ```
@@ -88,9 +88,9 @@ SESSION_CLOSE  RESPONSE_COMPLETE  Heartbeat (45min)  Dream (4h+3 sessions)
 - **T2 双路径**：
   1. 热路径：`RESPONSE_COMPLETE` hook 触发 LLM 提取（cursor-based）
   2. Backfill 路径：`replay_messages_from_t0` 重放 behavior MD（idempotent）
-- **T3 5 文件**：feedback / knowledge / strategies / blocked / user
-- **Heartbeat（45min）+ KAIROS 持久 session**：跨 tick 保留对话历史，做 T2→T3 curation
-- **Dream（4h + 3 sessions gate）**：T3 → soul.md 提升，flock 序列化防并发
+- **T3 5 文件**：feedback / knowledge / strategies / blocked / user，metadata/counter 在 `lifecycle.json`
+- **Heartbeat（dispatcher 60s，agent eligibility 默认 120min）+ KAIROS 持久 session**：跨 tick 保留对话历史，做 T2→T3 curation；无新增 T2 时跳过
+- **Dream（24h + 3 sessions 或 2 次有效 Heartbeat）**：T3 → soul.md 提升，flock 序列化防并发；soft dream 是 6h T3 缓压路径
 
 ### 诚实对比
 
@@ -253,7 +253,7 @@ Mercury 直接硬编码在 agent loop 里。
 没有显式状态机，但有：
 
 - `execution_mode` 4 种（conversation / coordinator / task / heartbeat）控制风险姿态
-- Heartbeat（45min）+ Dream（4h + 3 sessions）双周期任务
+- Heartbeat（dispatcher 60s，managed eligibility 默认 120min）+ Dream（24h + activity gate）双周期任务
 - KAIROS 持久 session 跨 tick 保留思考连续性
 - system T0（`heartbeat-*.md`, `dream-*.md`）记录"我为什么这么决策"——agent 自己的日记
 

@@ -1360,7 +1360,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             await db.flush()
 
             # Initialize agent file system (standard template)
-            # Override blueprint with LLM-refined values for soul/focus rendering
+            # Override blueprint with LLM-refined values for soul rendering and first-work setup.
             _bp = {
                 **preview_payload["blueprint"],
                 "primary_users": _refined.get("primary_users", preview_payload["blueprint"].get("primary_users", [])),
@@ -1386,8 +1386,6 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             )
 
             agent_dir = agent_manager._agent_dir(agent.id)
-
-            from app.services.focus_state import normalize_focus_task_id as _normalize_focus_task_id
 
             # Create triggers (scheduled tasks)
             if triggers:
@@ -1429,7 +1427,6 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             continue
                     _trigger_name = str(trig.get("name", "task") or "task").strip()
                     _trigger_reason = str(trig.get("reason", "") or "").strip()
-                    _trigger_key = _normalize_focus_task_id(_trigger_name)
                     raw_config = dict(raw_config)
                     raw_config.setdefault(
                         "trigger_class",
@@ -1443,7 +1440,6 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             type=trig_type,
                             config=raw_config,
                             reason=_trigger_reason,
-                            focus_ref=_trigger_key,
                         )
                     )
                 await db.flush()
@@ -1461,7 +1457,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 db.add(
                     AgentTrigger(
                         agent_id=agent.id,
-                        name="focus_boot",
+                        name="first_task_boot",
                         type="once",
                         config=_stamp_hr_blueprint_trigger_exemption(
                             {"at": _fire_at, "trigger_class": "scheduled_job"}
@@ -1470,7 +1466,6 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             f"Read soul.md for your full mission. Start with this first task: {_boot_task}\n\n"
                             "Record progress and evidence in your work ledger as you go."
                         ),
-                        focus_ref="task_1",
                     )
                 )
                 await db.flush()

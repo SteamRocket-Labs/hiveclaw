@@ -37,6 +37,16 @@ def test_objective_retirement_migration_archives_rows_before_dropping_table() ->
     assert source.index("to_jsonb(agent_objectives.*)") < source.index("DROP TABLE IF EXISTS agent_objectives CASCADE")
 
 
+def test_focus_ref_retirement_migration_archives_values_before_dropping_column() -> None:
+    source = _read("alembic/versions/retire_trigger_focus_ref_0613.py")
+
+    assert "retired_trigger_focus_refs_0613" in source
+    assert "SELECT id, agent_id, tenant_id, focus_ref" in source
+    assert source.index("SELECT id, agent_id, tenant_id, focus_ref") < source.index(
+        "ALTER TABLE agent_triggers DROP COLUMN IF EXISTS focus_ref"
+    )
+
+
 def test_legacy_data_dryrun_reports_objective_rows_not_only_table_presence() -> None:
     source = _read("exec_align_legacy_data_dryrun.py")
 

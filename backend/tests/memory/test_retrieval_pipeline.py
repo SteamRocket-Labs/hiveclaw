@@ -39,12 +39,6 @@ def test_legacy_sqlite_store_no_longer_exists(data_root: Path) -> None:
     assert not (data_root / "memory.sqlite3").exists()
 
 
-def _setup_focus(data_root: Path, agent_id: uuid.UUID, content: str) -> None:
-    focus_file = data_root / str(agent_id) / "focus.md"
-    focus_file.parent.mkdir(parents=True, exist_ok=True)
-    focus_file.write_text(content, encoding="utf-8")
-
-
 def _setup_t3_file(data_root: Path, agent_id: uuid.UUID, filename: str, content: str) -> None:
     memory_dir = data_root / str(agent_id) / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
@@ -71,8 +65,7 @@ async def test_retrieve_returns_t3_direct_layer(
     agent_id: uuid.UUID,
     retriever: MemoryRetriever,
 ) -> None:
-    """T3 md-backed semantic items are returned; focus.md is no longer projected."""
-    _setup_focus(data_root, agent_id, "Current focus: ship memory engine P1")
+    """T3 md-backed semantic items are returned without a working-memory file projection."""
     _setup_t3_file(data_root, agent_id, "feedback.md", "# Feedback\n- [2026-04-06] User prefers concise output\n")
     _setup_t3_file(data_root, agent_id, "knowledge.md", "# Knowledge\n- [2026-04-06] Project uses FastAPI and React\n")
 
@@ -83,7 +76,6 @@ async def test_retrieve_returns_t3_direct_layer(
     episodic_items = [i for i in items if i.kind == MemoryKind.EPISODIC]
     external_items = [i for i in items if i.kind == MemoryKind.EXTERNAL]
 
-    # focus.md is a plain scratch file now — it is never projected into memory.
     assert working_items == []
     assert len(semantic_items) == 2
     assert semantic_items[0].source == "memory/feedback.md"
@@ -223,15 +215,6 @@ async def test_retrieve_no_files(data_root: Path, agent_id: uuid.UUID, retriever
     """Retriever returns empty list when no agent data exists."""
     items = await retriever.retrieve(agent_id, "anything", session_id=None, tenant_id=None)
     assert items == []
-
-
-@pytest.mark.asyncio
-async def test_retrieve_empty_focus(data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever) -> None:
-    """Empty focus.md produces no working memory items."""
-    _setup_focus(data_root, agent_id, "")
-    items = await retriever.retrieve(agent_id, "", session_id=None, tenant_id=None)
-    working_items = [i for i in items if i.kind == MemoryKind.WORKING]
-    assert working_items == []
 
 
 @pytest.mark.asyncio

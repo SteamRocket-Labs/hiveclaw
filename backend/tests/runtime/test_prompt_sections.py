@@ -128,14 +128,13 @@ class TestTriggersSection:
                         "trigger_class": "scheduled_job",
                     },
                     "reason": "Produce the daily brief and save the artifact path.",
-                    "focus_ref": "daily_brief",
                 }
             ]
         )
 
         assert "wake policies, not goals" in section
         assert "trigger_class: scheduled_job" in section
-        assert "focus_ref: daily_brief" in section
+        assert "focus_ref" not in section
         assert "objective_id" not in section
 
 

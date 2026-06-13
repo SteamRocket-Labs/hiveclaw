@@ -64,7 +64,7 @@ def test_parse_heartbeat_outcome_structured_tags():
     from app.services.heartbeat import _parse_heartbeat_outcome
 
     outcome, score = _parse_heartbeat_outcome(
-        "I updated focus.md with new priorities.\n\n[OUTCOME:action_taken] [SCORE:7]"
+        "I updated workspace/notes.md with new priorities.\n\n[OUTCOME:action_taken] [SCORE:7]"
     )
     assert outcome == "action_taken"
     assert score == 7

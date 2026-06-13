@@ -21,13 +21,13 @@ is_system: true
 Use this skill when you need to read or write files in your workspace, or
 deliver results through a channel. The workspace is where your long-lived work
 lives — chat history disappears after the session ends, but files in
-`workspace/`, `focus.md`, and `memory/` persist and can be shared, referenced,
+`workspace/` and governed memory files persist and can be shared, referenced,
 and built upon.
 </role>
 
 <when_to_use>
 - You need to discover, read, write, or edit files under your agent workspace
-- You need to track your in-flight tasks in the `focus.md` scratch file
+- You need to create, update, or hand off workspace artifacts
 - You need to deliver a file to the current channel's user
 - You want to confirm workspace structure before creating new files
 - You need to inspect enterprise-wide shared content under `enterprise_info/`
@@ -47,7 +47,6 @@ and built upon.
 
 ```
 soul.md              — Your permanent identity (read-only, updated by dream)
-focus.md             — Scratch file for your current tasks (not auto-projected)
 HEARTBEAT.md         — Heartbeat curation protocol
 relationships.md     — Your colleague list
 
@@ -110,24 +109,8 @@ Always use tools for file operations — tool results are the source of truth:
 ### Reading before writing
 Verify before asserting: `read_file` before claiming a file's contents, `glob_search` or `list_files` before writing to check for existing paths.
 
-### focus.md scratch file
-`focus.md` is an ordinary workspace scratch file for jotting your current
-tasks. It is NOT auto-projected into your prompt and is NOT a source of truth —
-treat it like any other note you keep for yourself.
+### Work Tracking
 
-Format:
-```markdown
-# Focus
-
-## Mission
-Current mission statement
-
-## Tasks
-- [ ] task_id :: description
-- [x] completed_task_id :: description
-```
-
-**Self-direction rules:**
 - When you discover follow-up work → create a trigger as a wake policy and classify it (`scheduled_job` / `event_wait` / `system_maintenance`).
 - When you complete a task → record the outcome with concrete evidence in your work ledger and cancel obsolete triggers.
 
@@ -175,7 +158,7 @@ Correct flow:
 ```
 list_triggers()  # check for an existing equivalent wake policy
 # Then load the Trigger Management Guide and set a `once` wake policy with
-# trigger_class="scheduled_job" and focus_ref="q2_summary"
+# trigger_class="scheduled_job"
 ```
 
 ### Example C — Do NOT write to managed directories
@@ -193,7 +176,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 - ❌ **Write directly to `memory/learnings/`, `evolution/`, or `logs/`** → the automated memory pipeline manages these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences or write to `workspace/` for general notes.
 - ❌ **Claim a file exists without verifying via `read_file` or `glob_search`** → the tool result is the source of truth; don't assert based on what you wrote earlier in the session (might have failed silently).
 - ❌ **Use absolute paths** like `/data/agents/xxx` for channel file delivery → `send_channel_file` expects workspace-relative paths (`workspace/xxx`). Absolute paths either fail or leak internal infrastructure.
-- ❌ **Treat `focus.md` as a source of truth** → it is a personal scratch file, not auto-projected. Durable state belongs in your work ledger or workspace artifacts; create triggers for active follow-up.
+- ❌ **Hide durable work state in ad hoc scratch files** → durable state belongs in your work ledger or workspace artifacts; create triggers for active follow-up.
 - ❌ **Overwrite an existing file without reading it first** → you may clobber prior work. Read before write, or use `edit_file` for a scoped update.
 - ❌ **Forward a message without attribution** → target user can't tell who really asked. Always name the requester ("A asked me to...").
 - ❌ **Invent tool names for operations the workspace doesn't support** → e.g. a fabricated `delete_*` or `move_*` tool when your current toolset doesn't include one. Use what's there; if no tool exists, ask the user or the admin.

@@ -402,6 +402,27 @@ async def websocket_chat(
                 if fallback_llm_model:
                     logger.info(f"[WS] Fallback model loaded: {fallback_llm_model.model}")
 
+            # Fail loud: a configured primary that cannot be resolved (deleted /
+            # disabled / cross-tenant) must NOT be silently swapped for the fallback —
+            # silent swap masks the misconfig and can collapse the context window
+            # (Web3 researcher outage). Surface it so the owner fixes the config.
+            from app.services.model_resolution import primary_model_unavailable
+
+            if primary_model_unavailable(agent, llm_model):
+                logger.error(
+                    f"[WS] Primary model {agent.primary_model_id} unavailable for agent "
+                    f"{agent_id} (deleted/disabled/cross-tenant) — failing loud instead of silent fallback"
+                )
+                await websocket.send_json({
+                    "type": "error",
+                    "content": (
+                        "你为该数字员工配置的主模型当前不可用(可能已删除、被禁用,或不属于本公司),"
+                        "请在「设置 → 模型」中重新选择一个本公司可用的模型。"
+                    ),
+                })
+                await websocket.close(code=4002)
+                return
+
             # Config-level fallback: primary missing -> use fallback
             if not llm_model and fallback_llm_model:
                 llm_model = fallback_llm_model

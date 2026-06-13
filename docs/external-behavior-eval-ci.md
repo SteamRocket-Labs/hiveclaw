@@ -344,6 +344,22 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **gap 状态**：G5（连续分）关闭；D3（硬判据 100% 门控、rubric 0% 门控）实装为 `gating` 字段。
 
+### E5 — evaluator 隔离（反 reward-hack 信任根）✅（2026-06-13，G4/G9）
+
+**完成范围**（新增 `backend/app/evals/evaluator_integrity.py`）：
+- `EVALUATOR_RELATIVE_PATHS`：构成信任根的 grader/runner 文件清单（`baseline.py` / `hive_live_runner.py` / `bakeoff_runtime.py` / `self_evolution_bakeoff.py` / `evaluator_integrity.py` / `evolution_verification.py`）+ `baselines/` 目录。
+- `compute_evaluator_hashes(root)`：对 PR checkout 与 base checkout 分别算 evaluator 文件 hash。
+- `verify_evaluator_integrity(current_hashes, trusted_hashes, authorized_changes)`：**对比 PR（current）与受保护 base（trusted）**——任一文件 hash 不同即"evaluator 被改"；除非 `authorized_changes=True`（CI 从受保护上下文带出的 CODEOWNERS 批准），否则 untrusted。**关键：永不拿 current 与 current 内嵌的 expected hash 比**——这正是 owner 抓的 DGM Node 114 自欺（同 PR 改 grader + expected hash 一起过），机制上堵死。
+- `assert_evaluator_outside_agent_workspace(path)`：evaluator 不能落在 agent 可写路径（`/workspace/`、`/memory/`、`/skills/`、`/.agents/`、`/data/agents/`），否则 raise。
+
+**生产接线**：`assert_evaluator_outside_agent_workspace` 由 `test_evaluator_paths_are_outside_agent_workspace` 对全部真实 evaluator 路径**主动断言**（active guard）；`verify_evaluator_integrity` 由 E8 CI（checkout base branch 取 trusted hash）消费。
+
+**TDD red→green**：`tests/evals/test_evaluator_integrity.py` 9 用例，实现前 `ModuleNotFoundError`；green `9 passed`；ruff clean。
+
+**验收映射**：同 PR 改 grader/hash 不被信任（`test_in_pr_expected_hash_cannot_authorize_grader_change` ← owner 的核心发现）✓；改 grader untrusted（`test_changed_grader_is_untrusted`）✓；改 baseline untrusted（`test_changed_baseline_is_untrusted`）✓；受保护审批才放行（`test_change_with_protected_authorization_is_trusted`）✓；agent 路径被拒（`test_agent_workspace_path_is_rejected`）✓。
+
+**gap 状态**：G4（reward-hack 防御信任根）+ G9（evaluator 隔离）机制已落；base-branch hash 注入 CI = **E8**。
+
 ---
 
 ## 附：关键文件锚点

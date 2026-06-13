@@ -149,6 +149,7 @@ async def test_tool_runtime_service_logs_readonly_tool_calls():
     assert result == "file contents"
     assert logged
     assert logged[0][0][1] == "tool_call"
+    assert logged[0][1]["tenant_id"] == context.tenant_id
     assert logged[0][1]["detail"]["tool"] == "read_file"
 
 
@@ -331,6 +332,7 @@ async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
     assert result == "read result"
     assert logged
     assert logged[0][0][1] == "tool_call_approved"
+    assert logged[0][1]["tenant_id"] == context.tenant_id
     assert logged[0][1]["detail"]["tool"] == "read_file"
 
 

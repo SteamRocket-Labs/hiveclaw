@@ -516,6 +516,8 @@ async def _record_memory_from_result(ctx: SubagentSpawnContext, job: SubagentJob
             spec.name,
             _build_subagent_run_log(job, result),
             distiller=ctx.memory_distiller,
+            tenant_id=ctx.tenant_id,
+            agent_id=ctx.parent_agent_id,
         )
     except Exception as exc:
         logger.warning("[Subagent] memory writeback failed (non-fatal): name=%s err=%s", spec.name, exc)

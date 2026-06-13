@@ -58,6 +58,33 @@ def compute_audit_event_hash(
     return hashlib.sha256(hash_input.encode()).hexdigest()
 
 
+def compute_legacy_audit_event_hash(
+    *,
+    event_type: str,
+    actor_type: str,
+    actor_id: uuid.UUID | None,
+    tenant_id: uuid.UUID,
+    action: str,
+    prev_hash: str,
+) -> str:
+    """Compute the pre-2026-06 audit hash for historical chain verification."""
+    import hashlib
+    import json
+
+    hash_input = json.dumps(
+        {
+            "event_type": event_type,
+            "actor_type": actor_type,
+            "actor_id": str(actor_id),
+            "tenant_id": str(tenant_id),
+            "action": action,
+            "prev_hash": prev_hash,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(hash_input.encode()).hexdigest()
+
+
 def _audit_chain_lock_key(tenant_id: uuid.UUID) -> int:
     import hashlib
 

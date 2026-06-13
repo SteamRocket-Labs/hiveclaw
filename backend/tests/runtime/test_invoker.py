@@ -860,6 +860,8 @@ async def test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when
 
     assert config.tenant_id == tenant_id
     assert config.max_tool_rounds == 33
+    assert config.turn_token_budget is not None
+    assert config.turn_token_budget > 0
     assert config.runtime_continuity_enabled is False
     assert config.skill_candidate_loop_enabled is True
 

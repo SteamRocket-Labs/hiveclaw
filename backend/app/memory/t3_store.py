@@ -39,7 +39,7 @@ from app.memory.md_store import (
     t3_spec_for_category,
 )
 from app.memory.types import CONTAINER_CANDIDATES, MEMORY_CATEGORIES
-from app.memory.write_gate import prepare_memory_write
+from app.memory.write_gate import prepare_memory_write_with_llm
 
 logger = logging.getLogger(__name__)
 
@@ -123,15 +123,19 @@ async def append_t3_memory_candidate(
     if not trimmed:
         return T3AppendResult(status="rejected", category=normalized_category, reason="empty content")
 
-    # 1. Write gate: privacy classification (PL4 rejection), form lint,
-    #    lifecycle metadata (entry_id, sensitivity, status, version).
-    decision = prepare_memory_write(
+    # 1. Write gate: LLM-primary threat classification, privacy classification
+    #    (PL4 rejection), form lint, lifecycle metadata (entry_id,
+    #    sensitivity, status, version). If no tenant/model context is available,
+    #    the gate records a regex_fallback decision in metadata.
+    decision = await prepare_memory_write_with_llm(
         trimmed,
         category=normalized_category,
         evidence_refs=source_refs,
         parent_id=parent_id,
         supersedes=supersedes,
         superseded_by=superseded_by,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
     )
     if decision.rejected:
         logger.info(

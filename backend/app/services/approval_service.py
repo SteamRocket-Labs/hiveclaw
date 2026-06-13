@@ -130,6 +130,13 @@ class ApprovalService:
         except Exception:
             logger.warning("Audit write failed for approval.resolved", exc_info=True)
 
+        # Release the approval/audit transaction before running any approved
+        # external action. write_audit_event takes a per-tenant advisory
+        # transaction lock; holding that lock while executing tools can block
+        # unrelated audit writes for the same tenant.
+        await db.flush()
+        await db.commit()
+
         execution_result = None
         if approval.status == "approved" and approval.details:
             execution_result = await self._execute_approved_action(

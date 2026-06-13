@@ -18,6 +18,45 @@ from app.memory.t3_store import T3AppendResult, append_t3_memory_candidate
 
 
 @pytest.mark.asyncio
+async def test_append_t3_memory_candidate_uses_llm_primary_write_gate(tmp_path: Path, monkeypatch) -> None:
+    from app.memory import t3_store
+    from app.memory.write_gate import MemoryWriteDecision
+
+    tenant_id = uuid.uuid4()
+    calls = []
+
+    async def fake_gate(content: str, **kwargs):
+        calls.append(kwargs)
+        return MemoryWriteDecision(
+            original_content=content,
+            content=content,
+            category=kwargs["category"],
+            sensitivity="PL1_public",
+            metadata={
+                "entry_id": "llm-t3-entry",
+                "sensitivity": "PL1_public",
+                "status": "active",
+                "version": "1",
+                "threat_gate_method": "llm_classifier",
+            },
+        )
+
+    monkeypatch.setattr(t3_store, "prepare_memory_write_with_llm", fake_gate)
+
+    result = await append_t3_memory_candidate(
+        uuid.uuid4(),
+        category="feedback",
+        content="User prefers concise output",
+        proposed_by="heartbeat",
+        tenant_id=tenant_id,
+        data_root=tmp_path,
+    )
+
+    assert result.status == "accepted"
+    assert calls and calls[0]["tenant_id"] == tenant_id
+
+
+@pytest.mark.asyncio
 async def test_append_accepted_entry_has_id_lifecycle_and_index(tmp_path: Path) -> None:
     agent_id = uuid.uuid4()
 

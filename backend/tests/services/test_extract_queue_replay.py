@@ -224,7 +224,7 @@ async def test_end_to_end_replay_drives_real_schedule_extract(queue_root, monkey
     _plant_entry(queue_root, entry_id="e2e-original", source="web")
 
     # Stub _append_to_learnings so the real extract task completes quickly.
-    with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+    with patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1):
         result = await extract_queue_replay.replay_pending_extractions()
 
     # The fresh schedule_extract path will have written its own entry —

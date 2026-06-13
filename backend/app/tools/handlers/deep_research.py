@@ -84,7 +84,10 @@ _ACTIVE_DEEP_RESEARCH_STATUSES = ("pending", "running")
 
 
 def _deep_research_signature(research_request: ResearchRequest) -> str:
-    return deep_research_plan_signature(research_request, worker_topics=research_request.worker_topics)
+    worker_topics = [topic for topic in research_request.worker_topics if str(topic).strip()]
+    if not worker_topics:
+        worker_topics = [research_request.question]
+    return deep_research_plan_signature(research_request, worker_topics=worker_topics)
 
 
 def _canonical_task_id(value: Any) -> str:

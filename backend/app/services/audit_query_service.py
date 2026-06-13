@@ -14,7 +14,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.policy import compute_audit_event_hash
+from app.core.policy import compute_audit_event_hash, compute_legacy_audit_event_hash
 from app.models.security_audit import SecurityAuditEvent
 from app.schemas.audit_schemas import AuditQueryParams
 
@@ -153,7 +153,7 @@ async def verify_chain(
     if not event:
         return {"valid": False, "event_hash": "", "computed_hash": "", "predecessor_id": None}
 
-    computed_hash = compute_audit_event_hash(
+    canonical_hash = compute_audit_event_hash(
         event_type=event.event_type,
         severity=event.severity,
         actor_type=event.actor_type,
@@ -167,6 +167,26 @@ async def verify_chain(
         request_id=event.request_id,
         prev_hash=event.prev_hash,
     )
+    legacy_hash = compute_legacy_audit_event_hash(
+        event_type=event.event_type,
+        actor_type=event.actor_type,
+        actor_id=event.actor_id,
+        tenant_id=event.tenant_id,
+        action=event.action,
+        prev_hash=event.prev_hash,
+    )
+    if event.event_hash == canonical_hash:
+        valid = True
+        computed_hash = canonical_hash
+        hash_version = "canonical_v2"
+    elif event.event_hash == legacy_hash:
+        valid = True
+        computed_hash = legacy_hash
+        hash_version = "legacy_v1"
+    else:
+        valid = False
+        computed_hash = canonical_hash
+        hash_version = "unknown"
 
     # Find predecessor by matching prev_hash
     predecessor_id: uuid.UUID | None = None
@@ -182,8 +202,9 @@ async def verify_chain(
         predecessor_id = pred_result.scalar_one_or_none()
 
     return {
-        "valid": computed_hash == event.event_hash,
+        "valid": valid,
         "event_hash": event.event_hash,
         "computed_hash": computed_hash,
+        "hash_version": hash_version,
         "predecessor_id": predecessor_id,
     }

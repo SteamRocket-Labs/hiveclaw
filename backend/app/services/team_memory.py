@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import get_settings
-from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write
+from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write, prepare_memory_write_with_llm
 
 
 _SECRET_PATTERNS = (
@@ -200,6 +200,31 @@ class TeamMemoryStore:
             raise TeamMemoryWriteRejectedError(decision)
         return decision.content
 
+    async def _prepare_content_for_write_with_llm(
+        self,
+        *,
+        tenant_id: str,
+        workspace_key: str,
+        key: str,
+        content: str,
+        updated_by: str,
+    ) -> str:
+        decision = await prepare_memory_write_with_llm(
+            content,
+            category="team_memory",
+            evidence_refs=[
+                f"team_memory:{tenant_id}/{workspace_key}/{_slugify(key)}",
+                f"updated_by:{updated_by}",
+            ],
+            enforce_form=False,
+            tenant_id=tenant_id,
+        )
+        if decision.rejected:
+            if decision.sensitivity == "PL4_credential":
+                raise SecretScanError(decision)
+            raise TeamMemoryWriteRejectedError(decision)
+        return decision.content
+
     def upsert_entry(
         self,
         *,
@@ -223,6 +248,66 @@ class TeamMemoryStore:
             content=content,
             updated_by=updated_by,
         )
+        return self._upsert_prepared_entry(
+            tenant_id=tenant_id,
+            workspace_key=workspace_key,
+            key=key,
+            title=title,
+            prepared_content=prepared_content,
+            mode=mode,
+            updated_by=updated_by,
+            base_revision=base_revision,
+            sync_token=sync_token,
+        )
+
+    async def upsert_entry_async(
+        self,
+        *,
+        tenant_id: str,
+        workspace_key: str,
+        key: str,
+        title: str,
+        content: str,
+        mode: str = "replace",
+        updated_by: str = "system",
+        base_revision: int | None = None,
+        sync_token: str | None = None,
+    ) -> TeamMemoryEntry:
+        if mode not in {"replace", "append"}:
+            raise InvalidTeamMemoryModeError(f"Unsupported team memory mode: {mode}")
+        self._scan_for_secrets(f"{title}\n{content}")
+        prepared_content = await self._prepare_content_for_write_with_llm(
+            tenant_id=tenant_id,
+            workspace_key=workspace_key,
+            key=key,
+            content=content,
+            updated_by=updated_by,
+        )
+        return self._upsert_prepared_entry(
+            tenant_id=tenant_id,
+            workspace_key=workspace_key,
+            key=key,
+            title=title,
+            prepared_content=prepared_content,
+            mode=mode,
+            updated_by=updated_by,
+            base_revision=base_revision,
+            sync_token=sync_token,
+        )
+
+    def _upsert_prepared_entry(
+        self,
+        *,
+        tenant_id: str,
+        workspace_key: str,
+        key: str,
+        title: str,
+        prepared_content: str,
+        mode: str,
+        updated_by: str,
+        base_revision: int | None,
+        sync_token: str | None,
+    ) -> TeamMemoryEntry:
         path = self._entry_path(tenant_id, workspace_key, key)
         existing_body = ""
         existing_metadata: dict[str, str] = {}

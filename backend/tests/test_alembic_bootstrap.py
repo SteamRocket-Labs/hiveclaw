@@ -87,6 +87,51 @@ def test_bootstrap_schema_creates_tables_and_stamps_heads() -> None:
     assert versions == ["rev_a", "rev_b"]
 
 
+def test_bootstrap_alembic_version_accepts_long_revision_ids() -> None:
+    from app.db_bootstrap import bootstrap_database_to_head
+
+    metadata = MetaData()
+    Table("users", metadata, Column("id", Integer, primary_key=True))
+    long_revision = "rls_stage2c_drop_orphan_tables_0611"
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        bootstrap_database_to_head(conn, metadata, [long_revision])
+        versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))]
+        create_sql = conn.execute(text("SELECT sql FROM sqlite_master WHERE name = 'alembic_version'")).scalar_one()
+
+    assert versions == [long_revision]
+    assert "VARCHAR(255)" in create_sql
+
+
+def test_normal_migration_path_prepares_wide_alembic_version_table() -> None:
+    from app.db_bootstrap import run_migrations_with_bootstrap
+
+    engine = create_engine("sqlite:///:memory:")
+    metadata = MetaData()
+
+    class _AssertWideVersionContext(_DummyAlembicContext):
+        def run_migrations(self) -> None:
+            super().run_migrations()
+            row = self.configured_with["connection"].execute(
+                text("SELECT sql FROM sqlite_master WHERE name = 'alembic_version'")
+            ).one()
+            assert "VARCHAR(255)" in row[0]
+
+    context = _AssertWideVersionContext()
+
+    with engine.connect() as conn:
+        run_migrations_with_bootstrap(
+            conn,
+            alembic_context=context,
+            metadata=metadata,
+            heads=["rls_stage2c_drop_orphan_tables_0611"],
+            should_bootstrap_fn=lambda _conn: False,
+        )
+
+    assert context.events == ["configure", "begin_transaction", "tx_enter", "run_migrations", "tx_exit"]
+
+
 def test_run_migrations_with_bootstrap_uses_bootstrap_path() -> None:
     from app.db_bootstrap import run_migrations_with_bootstrap
 

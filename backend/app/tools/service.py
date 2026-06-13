@@ -341,6 +341,7 @@ class ToolRuntimeService:
                         agent_id,
                         "tool_call",
                         f"Called tool {tool_name}: {result[:80]}",
+                        tenant_id=runtime_context.tenant_id,
                         detail={
                             "tool": tool_name,
                             "backend": self.backend.name if self.backend else "unknown",
@@ -362,6 +363,7 @@ class ToolRuntimeService:
                             agent_id,
                             "error",
                             f"Tool {tool_name} failed: {tool_error_payload.get('error_class', 'unknown')}",
+                            tenant_id=runtime_context.tenant_id,
                             detail=tool_error_payload,
                         )
                     )
@@ -373,6 +375,7 @@ class ToolRuntimeService:
                         agent_id,
                         "error",
                         f"Tool {tool_name} timed out",
+                        tenant_id=runtime_context.tenant_id,
                         detail={
                             "tool_name": tool_name,
                             "error_class": "timeout",
@@ -397,6 +400,7 @@ class ToolRuntimeService:
                         agent_id,
                         "error",
                         f"Tool {tool_name} failed with {type(exc).__name__}",
+                        tenant_id=runtime_context.tenant_id,
                         detail={
                             "tool_name": tool_name,
                             "error_class": "tool_execution_error",
@@ -531,6 +535,7 @@ class ToolRuntimeService:
                             agent_id,
                             activity_type,
                             f"Approved-executed {tool_name}: {result[:80]}",
+                            tenant_id=runtime_context.tenant_id,
                             detail=detail,
                         )
                     )
@@ -745,6 +750,7 @@ class ToolRuntimeService:
                 runtime_context.agent_id,
                 "action_preflight",
                 f"Preflight {preflight.decision.value} for {tool_name}",
+                tenant_id=runtime_context.tenant_id,
                 detail={
                     "tool": tool_name,
                     "decision": preflight.decision.value,

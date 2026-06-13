@@ -5,10 +5,12 @@ how-to craft* — source/judgment calibration, pitfalls, pointer maps — NOT do
 knowledge (that belongs to the digital employee's soul/T3). One layer only:
 task → distill How → write back to 记忆.md. No T3 curation / soul / dream.
 
-Memory Control Plane invariant (铁律): every durable write goes through
-``prepare_memory_write`` (privacy/sensitivity classification, PL4 rejection,
-lifecycle metadata). A rejected write ABORTS — it never falls back to raw
-content, and the store never hand-assembles Markdown around the gate.
+Memory Control Plane invariant (铁律): runtime durable writes go through
+``prepare_memory_write_with_llm`` (LLM-primary threat classification,
+privacy/sensitivity classification, PL4 rejection, lifecycle metadata). The
+sync ``prepare_memory_write`` path is retained for offline tests/migrations. A
+rejected write ABORTS — it never falls back to raw content, and the store never
+hand-assembles Markdown around the gate.
 
 Storage is tenant-scoped (a separate ``base_dir`` per tenant). The offline daemon
 that scans T0 logs and LLM-distills How is wired on top of ``distill_and_record``
@@ -26,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agents.subagent_definition import _tenant_subagent_root, validate_subagent_name
-from app.memory.write_gate import prepare_memory_write
+from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write, prepare_memory_write_with_llm
 from app.services.llm_client import chat_complete
 
 logger = logging.getLogger(__name__)
@@ -70,7 +72,7 @@ class SubagentMemoryStore:
         return path
 
     def record_how(self, spec_name: str, how_text: str, *, category: str) -> HowWriteResult:
-        """Append one implicit-How entry — MUST pass the governed write gate.
+        """Append one implicit-How entry through the sync fallback gate.
 
         * Category must be a How-craft category (never a domain-'what' category).
         * The content is classified/masked by ``prepare_memory_write``; a rejected
@@ -85,6 +87,35 @@ class SubagentMemoryStore:
             )
 
         decision = prepare_memory_write(how_text, category=category)
+        return self._record_decision(spec_name, category=category, decision=decision)
+
+    async def record_how_with_llm(
+        self,
+        spec_name: str,
+        how_text: str,
+        *,
+        category: str,
+        tenant_id: object | None = None,
+        agent_id: object | None = None,
+    ) -> HowWriteResult:
+        """Append one implicit-How entry through the LLM-primary write gate."""
+
+        if category not in SUBAGENT_HOW_CATEGORIES:
+            return HowWriteResult(
+                written=False,
+                rejected=True,
+                reason=f"category {category!r} is not a How-craft category {SUBAGENT_HOW_CATEGORIES}",
+            )
+
+        decision = await prepare_memory_write_with_llm(
+            how_text,
+            category=category,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+        return self._record_decision(spec_name, category=category, decision=decision)
+
+    def _record_decision(self, spec_name: str, *, category: str, decision: MemoryWriteDecision) -> HowWriteResult:
         if decision.rejected:
             logger.warning("[SubagentMemory] write rejected by gate: name=%s reason=%s", spec_name, decision.reason)
             return HowWriteResult(written=False, rejected=True, reason=decision.reason)
@@ -152,6 +183,8 @@ async def distill_and_record(
     run_log: str,
     *,
     distiller: HowDistiller,
+    tenant_id: object | None = None,
+    agent_id: object | None = None,
 ) -> list[HowWriteResult]:
     """One-layer evolution: distill How from a run log, record each via the gate.
 
@@ -162,7 +195,16 @@ async def distill_and_record(
 
     raw = distiller(run_log)
     lessons: list[tuple[str, str]] = await raw if inspect.isawaitable(raw) else raw
-    return [store.record_how(spec_name, how_text, category=category) for category, how_text in lessons]
+    return [
+        await store.record_how_with_llm(
+            spec_name,
+            how_text,
+            category=category,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+        for category, how_text in lessons
+    ]
 
 
 # ── LLM How distiller (production spawn wiring) ────────────────────────────────

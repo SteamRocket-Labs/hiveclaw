@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import get_settings
-from app.memory.t2_store import append_t2_entries, t2_dir
+from app.memory.t2_store import append_t2_entries, append_t2_entries_with_llm, t2_dir
 from app.memory.types import CONTAINER_CANDIDATES
 
 logger = logging.getLogger(__name__)
@@ -650,15 +650,16 @@ def _append_to_learnings(
     extractions: list[dict[str, str]],
     *,
     source: str = "runtime",
+    data_root: Path | None = None,
 ) -> int:
     """Append extractions to T2 learnings files. Returns count written."""
     if not extractions:
         return 0
 
-    data_root = Path(get_settings().AGENT_DATA_DIR)
+    resolved_root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
     try:
         return append_t2_entries(
-            data_root,
+            resolved_root,
             agent_id,
             extractions=extractions,
             source=source,
@@ -669,15 +670,42 @@ def _append_to_learnings(
         return 0
 
 
+async def _append_to_learnings_with_llm(
+    agent_id: uuid.UUID,
+    extractions: list[dict[str, str]],
+    *,
+    tenant_id: uuid.UUID | str | None,
+    source: str = "runtime",
+    data_root: Path | None = None,
+) -> int:
+    """Append extraction output through the LLM-primary write gate."""
+    if not extractions:
+        return 0
+
+    resolved_root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
+    try:
+        return await append_t2_entries_with_llm(
+            resolved_root,
+            agent_id,
+            extractions=extractions,
+            source=source,
+            tenant_id=tenant_id,
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        )
+    except Exception as exc:
+        logger.error("[Extractor] Failed to write LLM-gated weighted T2 entries for %s: %s", agent_id, exc)
+        return 0
+
+
 # ── 切口④: Work Ledger → durable T2 memory (through the write gate) ──
 #
 # docs/agent-task-cognitive-scaffold.md §7 切口④ + §8 invariant 4: when a task
 # completes, the ledger's *verified* findings and key failure-learnings should
 # settle into long-term memory — but only ever through the Memory Control Plane
 # write gate (PL4 credentials rejected, sensitivity classified, lifecycle/evidence
-# metadata stamped). We do NOT re-implement or bypass the gate: we shape ledger
-# findings into the same ``extractions`` list that ``_append_to_learnings`` →
-# ``append_t2_entries`` already runs through ``prepare_memory_write`` per entry.
+# metadata stamped). We do NOT re-implement or bypass the gate: runtime paths
+# shape ledger findings into the same ``extractions`` list consumed by the
+# LLM-primary T2 writer; sync/offline callers retain the deterministic fallback.
 
 
 def ledger_findings_to_extractions(ledger: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -757,9 +785,10 @@ def consolidate_ledger_findings_to_t2(
 
     Thin orchestrator (§7 切口④): load the scoped ledger → map verified findings to
     extractions → hand them to ``_append_to_learnings``, which runs every entry
-    through ``prepare_memory_write`` (PL4 rejection / sensitivity / lifecycle). The
-    write gate is reused untouched; nothing here bypasses it. Returns the number of
-    T2 entries actually written (gate-rejected and duplicate entries are not counted).
+    through the deterministic write-gate fallback (PL4 rejection / sensitivity /
+    lifecycle). Runtime async callers should use
+    ``consolidate_ledger_findings_to_t2_with_llm`` so the LLM classifier is the
+    primary threat judge.
     """
 
     from app.services.agent_work_ledger import load_agent_work_ledger
@@ -775,7 +804,41 @@ def consolidate_ledger_findings_to_t2(
     extractions = ledger_findings_to_extractions(ledger)
     if not extractions:
         return 0
-    return _append_to_learnings(agent_id, extractions, source=source)
+    return _append_to_learnings(agent_id, extractions, source=source, data_root=root)
+
+
+async def consolidate_ledger_findings_to_t2_with_llm(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | str | None,
+    plan_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
+    source: str = "work_ledger",
+    data_root: Path | None = None,
+) -> int:
+    """Async runtime ledger settlement through the LLM-primary write gate."""
+
+    from app.services.agent_work_ledger import load_agent_work_ledger
+
+    root = data_root if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
+    ledger = load_agent_work_ledger(
+        agent_id=agent_id,
+        plan_id=plan_id,
+        runtime_task_id=runtime_task_id,
+        session_id=session_id,
+        data_root=root,
+    )
+    extractions = ledger_findings_to_extractions(ledger)
+    if not extractions:
+        return 0
+    return await _append_to_learnings_with_llm(
+        agent_id,
+        extractions,
+        tenant_id=tenant_id,
+        source=source,
+        data_root=root,
+    )
 
 
 # ── ExtractAgent (per-agent state management) ──
@@ -930,7 +993,7 @@ class ExtractAgent:
 
         # Write to T2
         if extractions:
-            written = _append_to_learnings(agent_id, extractions, source=source)
+            written = await _append_to_learnings_with_llm(agent_id, extractions, tenant_id=tenant_id, source=source)
             logger.info("[Extractor] Wrote %d items to T2 for %s", written, agent_id)
 
             # Emit MEMORY_EXTRACTED hook → monitoring/debug notification
@@ -1380,7 +1443,12 @@ async def backfill_missing_extractions(
                 extractions = _pattern_extract(messages)
 
             if extractions:
-                written = _append_to_learnings(agent_id, extractions, source="t0_backfill")
+                written = await _append_to_learnings_with_llm(
+                    agent_id,
+                    extractions,
+                    tenant_id=tenant_id,
+                    source="t0_backfill",
+                )
                 written_total += written
                 extracted_count += 1
                 logger.info(

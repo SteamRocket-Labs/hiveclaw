@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import re
 import uuid
+import logging
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from app.memory.lifecycle_store import record_active_memory_lifecycle
 from app.memory.types import CONTAINER_CANDIDATES
-from app.memory.write_gate import prepare_memory_write
+from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write, prepare_memory_write_with_llm
 
+logger = logging.getLogger(__name__)
 
 T2_FILE_MAP: dict[str, str] = {
     "feedback": "insights.md",
@@ -321,6 +323,7 @@ def append_t2_entries(
     extractions: list[dict[str, str]],
     source: str,
     timestamp: str | None = None,
+    write_decisions: list[MemoryWriteDecision | None] | None = None,
 ) -> int:
     if not extractions:
         return 0
@@ -329,22 +332,33 @@ def append_t2_entries(
     written = 0
     grouped: dict[str, list[str]] = {}
 
-    for extraction in extractions:
+    for idx, extraction in enumerate(extractions):
         category = extraction.get("category", "general")
         content = (extraction.get("content") or "").strip()
         if not content:
             continue
         source_refs = extraction.get("source_refs") or extraction.get("refs")
-        decision = prepare_memory_write(
-            content,
-            category=category,
-            evidence_refs=source_refs,
-            parent_id=extraction.get("parent_id"),
-            supersedes=extraction.get("supersedes"),
-            superseded_by=extraction.get("superseded_by"),
-            expires_at=extraction.get("expires_at"),
+        decision = (
+            write_decisions[idx]
+            if write_decisions is not None and idx < len(write_decisions) and write_decisions[idx] is not None
+            else prepare_memory_write(
+                content,
+                category=category,
+                evidence_refs=source_refs,
+                parent_id=extraction.get("parent_id"),
+                supersedes=extraction.get("supersedes"),
+                superseded_by=extraction.get("superseded_by"),
+                expires_at=extraction.get("expires_at"),
+            )
         )
         if decision.rejected:
+            logger.warning(
+                "[T2Store] write gate rejected extraction for agent=%s category=%s reason=%s source=%s",
+                agent_id,
+                category,
+                decision.reason or decision.metadata.get("reason", "unknown"),
+                source,
+            )
             continue
         metadata = {**decision.metadata, **_feedback_metadata(extraction)}
         if extraction.get("concept"):
@@ -411,6 +425,44 @@ def append_t2_entries(
         written += len(new_lines)
 
     return written
+
+
+async def append_t2_entries_with_llm(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    extractions: list[dict[str, str]],
+    source: str,
+    tenant_id: uuid.UUID | str | None = None,
+    timestamp: str | None = None,
+) -> int:
+    decisions: list[MemoryWriteDecision | None] = []
+    for extraction in extractions:
+        content = (extraction.get("content") or "").strip()
+        if not content:
+            decisions.append(None)
+            continue
+        decisions.append(
+            await prepare_memory_write_with_llm(
+                content,
+                category=extraction.get("category", "general"),
+                evidence_refs=extraction.get("source_refs") or extraction.get("refs"),
+                parent_id=extraction.get("parent_id"),
+                supersedes=extraction.get("supersedes"),
+                superseded_by=extraction.get("superseded_by"),
+                expires_at=extraction.get("expires_at"),
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+            )
+        )
+    return append_t2_entries(
+        data_root,
+        agent_id,
+        extractions=extractions,
+        source=source,
+        timestamp=timestamp,
+        write_decisions=decisions,
+    )
 
 
 def _feedback_metadata(extraction: dict[str, str]) -> dict[str, str]:

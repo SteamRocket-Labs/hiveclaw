@@ -191,9 +191,9 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 
 ## 5. P2 与其余(简表)
 
-**已整改(2026-06-12)**:工具并行 all-or-nothing、取消不穿透工具执行、round 耗尽冷错误、缺 turn 级 token 预算、空 tool result 防御已按 §12.36 收口;PTL 恢复顺序已改为先 LLM full-compress、后机械 round-group fallback,见 §12.37;refreshTools/外部文件变更 attachment、prompt sections 三振规则重复、双时钟双时区、压缩恢复指针精确化已按 §12.38 收口;`SECRETS_MASTER_KEY` 生产空值 fail-fast、审批 org_admin 同租户解析、delegation 显式 `execution_identity` 传递/恢复、worker-safe delegation memory-write grant 泄漏已按 §12.39 收口;审计 hash 链 tenant-scoped 串行化、hash 覆盖 `details`、读类工具 activity log 已按 §12.40 收口;默认 JSON logs 与无请求 daemon 日志稳定 process trace 已按 §12.41 收口;`team_memory` 服务层接入 `prepare_memory_write`、记忆写入 prompt-injection 机械拒绝兜底已按 §12.42 收口;heartbeat `curated` lane 不再折叠为 `action_taken`,scorecard/activity/hook/runtime metadata 已按 §12.43 收口;Deep Research dedup 已从纯进程内 dict 升级为 signature + active RuntimeTask 持久扫描,plan handoff 同路继承,见 §12.44;全量 backend/frontend 测试、ruff、compileall 的契约漂移已按 §12.45 收口。
+**已整改(2026-06-12)**:工具并行 all-or-nothing、取消不穿透工具执行、round 耗尽冷错误、缺 turn 级 token 预算、空 tool result 防御已按 §12.36 收口;PTL 恢复顺序已改为先 LLM full-compress、后机械 round-group fallback,见 §12.37;refreshTools/外部文件变更 attachment、prompt sections 三振规则重复、双时钟双时区、压缩恢复指针精确化已按 §12.38 收口;`SECRETS_MASTER_KEY` 生产空值 fail-fast、审批 org_admin 同租户解析、delegation 显式 `execution_identity` 传递/恢复、worker-safe delegation memory-write grant 泄漏已按 §12.39 收口;审计 hash 链 tenant-scoped 串行化、hash 覆盖 `details`、读类工具 activity log 已按 §12.40 收口;默认 JSON logs 与无请求 daemon 日志稳定 process trace 已按 §12.41 收口;`team_memory` 服务层接入 `prepare_memory_write`、记忆写入 prompt-injection 机械拒绝兜底已按 §12.42 收口;heartbeat `curated` lane 不再折叠为 `action_taken`,scorecard/activity/hook/runtime metadata 已按 §12.43 收口;Deep Research dedup 已从纯进程内 dict 升级为 signature + active RuntimeTask 持久扫描,plan handoff 同路继承,见 §12.44;全量 backend/frontend 测试、ruff、compileall 的契约漂移已按 §12.45 收口。复核发现 §12.45 后端命令曾绑定到缺少 `testcontainers` 的全局 Python,导致真 PG 测试被 skip;生产镜像 `bwrap`、compose secrets 透传、Alembic version 表宽度、Deep Research empty-topic signature 与 `.venv` 真 PG 全量验收已按 §12.46 收口。Claude review 中其余 5 个非红线设计缺陷(legacy audit hash 兼容、approval 长持锁、write_gate 误漏判与 T2 静默丢弃、读工具审计 tenant 热路径、turn_token_budget 生产构造)已按 §12.47 收口。复核追打发现的 `write_gate` L1 债、合法业务保密误杀、T2/T3/team-memory/subagent-memory runtime 主路径未接 LLM classifier、compose 默认 debug 绕过 fail-fast 已按 §12.48 收口。
 
-本轮结论:§12.36-§12.45 列出的 P2 清单与全量测试漂移已清零;后续只保留本文其它章节已明确标出的系统性工程项与生产级复验项,不再把已实装项留作隐性 TODO。
+本轮结论:§12.36-§12.48 列出的 P2 清单、部署红线、review 设计缺陷与全量测试漂移已清零;§12.45 的旧后端数字只保留为验收盲区复盘,当前后端真 PG 口径以 §12.48 最终复验为准。后续只保留本文其它章节已明确标出的系统性工程项与生产级复验项,不再把已实装项留作隐性 TODO。
 
 ---
 
@@ -2306,7 +2306,223 @@ npm run build
 npm run test
 ```
 
-当前结果:backend `3985 passed,155 skipped,11 warnings`;ruff `All checks passed!`;compileall 通过;frontend build 通过;frontend Vitest `39 passed / 198 tests passed`。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
+复核更正(2026-06-12):本节后端命令若绑定到全局 Python 3.13,会因未安装 `testcontainers` 产生 `3990 passed,155 skipped,11 warnings`,其中真实 PostgreSQL/Testcontainers 覆盖被整体跳过。因此本节旧数字不能作为真 PG 全量验收结论;后端最终验收以 §12.46 的 `backend/.venv/bin/python -m pytest backend/tests -q` 为准。frontend build/Vitest 与 ruff/compileall 结果仍作为当时前端与静态检查证据保留。
+
+### 12.46 2026-06-12 第四十六批:Claude review 部署红线与真 PG 验收收口
+
+**范围**
+- 关闭 §12.45 暴露的验收环境盲区:后端全量验收必须使用已安装 dev extras/testcontainers 的 `backend/.venv` 解释器,不能用全局 Python 的 skip 结果冒充真 PG。
+- 生产镜像补齐 `bubblewrap`,使 `HIVE_CODE_SANDBOX_MODE=auto` 在 Linux 容器内能进入 `bwrap` sandbox,不再因镜像缺依赖而 fail-closed 拒绝所有 `execute_code/run_command`。
+- `docker-compose.yml` 转发 `DEBUG` 与 `SECRETS_MASTER_KEY`;本节先补齐变量透传,默认值在后续 §12.48 进一步收紧为 `DEBUG=false`,避免默认 compose 绕过生产 secrets fail-fast。
+- Alembic `alembic_version.version_num` 从旧默认 `VARCHAR(32)` 扩到 `VARCHAR(255)`,并在 bootstrap path 与正常 Alembic path 都先建/改宽,避免 `rls_stage2c_drop_orphan_tables_0611` 这类长 revision id 在真 PG 上截断。
+- Deep Research dedup signature 与 workflow args 统一 empty `worker_topics` 语义:创建与查询均把空 worker topics canonicalize 为 `[question]`,重启后 DB dedup 不再 miss。
+
+**代码证据**
+- `Dockerfile` / `backend/Dockerfile`:production apt install 均加入 `bubblewrap`。
+- `docker-compose.yml`:backend service environment 增加 `DEBUG` 与 `SECRETS_MASTER_KEY` 透传;`DEBUG` 默认值由 §12.48 收紧为 `${DEBUG:-false}`。
+- `backend/app/db_bootstrap.py`:新增 `ensure_alembic_version_table_width()`,bootstrap 与 `run_migrations_with_bootstrap()` 正常迁移 path 均调用;PostgreSQL 执行 `ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)`。
+- `backend/app/tools/handlers/deep_research.py`:`_deep_research_signature()` 过滤空白 topics,空列表回退为 `[research_request.question]`,与 `deep_research_workflow_args()` 一致。
+- `backend/tests/architecture/test_deployment_contracts.py`:新增部署契约测试,防止生产镜像再次漏装 `bubblewrap` 或 compose 漏转发 secrets/debug。
+- `backend/tests/test_alembic_bootstrap.py`:新增 `VARCHAR(255)` schema 与长 revision id 覆盖;正常迁移 path 也断言会准备宽表。
+- `backend/tests/tools/test_deep_research_handler.py`:新增 empty worker topics signature 等价测试,并把 persisted dedup 测试改为使用 workflow args 的 canonical signature。
+
+**回归测试**
+
+Red 阶段失败摘要:
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main
+pytest backend/tests/architecture/test_deployment_contracts.py \
+  backend/tests/test_alembic_bootstrap.py::test_bootstrap_alembic_version_accepts_long_revision_ids \
+  backend/tests/test_alembic_bootstrap.py::test_normal_migration_path_prepares_wide_alembic_version_table \
+  backend/tests/tools/test_deep_research_handler.py::test_deep_research_start_dedups_against_persisted_active_runtime_task \
+  backend/tests/tools/test_deep_research_handler.py::test_deep_research_background_metadata_records_signature \
+  backend/tests/tools/test_deep_research_handler.py::test_deep_research_signature_matches_workflow_args_for_empty_worker_topics -q
+```
+
+初始结果:`6 failed,1 passed,10 warnings`。失败点分别为 production Dockerfile 未安装 `bubblewrap`、compose 未转发 `DEBUG/SECRETS_MASTER_KEY`、正常 Alembic path 不会准备宽 `alembic_version`、Deep Research empty-topic signature 创建/查询不一致、persisted active RuntimeTask dedup miss。
+
+Green 阶段通过摘要:
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main
+pytest backend/tests/architecture/test_deployment_contracts.py \
+  backend/tests/test_alembic_bootstrap.py::test_bootstrap_alembic_version_accepts_long_revision_ids \
+  backend/tests/test_alembic_bootstrap.py::test_normal_migration_path_prepares_wide_alembic_version_table \
+  backend/tests/tools/test_deep_research_handler.py::test_deep_research_start_dedups_against_persisted_active_runtime_task \
+  backend/tests/tools/test_deep_research_handler.py::test_deep_research_background_metadata_records_signature \
+  backend/tests/tools/test_deep_research_handler.py::test_deep_research_signature_matches_workflow_args_for_empty_worker_topics -q
+
+pytest backend/tests/test_alembic_bootstrap.py \
+  backend/tests/tools/test_deep_research_handler.py \
+  backend/tests/deep_research/test_workflow_definition.py \
+  backend/tests/architecture/test_deployment_contracts.py -q
+
+backend/.venv/bin/python -m pytest backend/tests/integration backend/tests/migrations backend/tests/models backend/tests/runtime backend/tests/deep_research -q -rs
+backend/.venv/bin/python -m pytest backend/tests -q
+backend/.venv/bin/ruff check backend/app/db_bootstrap.py backend/app/tools/handlers/deep_research.py backend/tests/architecture/test_deployment_contracts.py backend/tests/test_alembic_bootstrap.py backend/tests/tools/test_deep_research_handler.py
+```
+
+当批结果:聚焦红线 `7 passed,10 warnings`;相关 Alembic/DR/deployment 回归 `27 passed,5 skipped,11 warnings`;真实 PG/Testcontainers 关键目录 `668 passed,4 warnings`;后端全量真 PG `4138 passed,7 skipped,4 warnings`。后续 §12.47 新增设计缺陷测试后,最终后端全量真 PG 口径更新为 `4144 passed,7 skipped`;ruff `All checks passed!`。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
+
+### 12.47 2026-06-12 第四十七批:Claude review 设计缺陷收口
+
+**范围**
+- 审计 hash verify 兼容 pre-§12.40 历史算法:旧事件仍按 `legacy_v1` 判定有效,新事件继续按覆盖 `details/severity/resource/ip/request` 的 `canonical_v2` 判定,不把历史数据全部误报 tampered。
+- Approval resolution 不再持有审批/审计事务执行外部动作:状态、AuditLog 与 SecurityAuditEvent 先 flush+commit,释放 tenant advisory transaction lock 后再调用 approved tool,避免同租户审计写被外部动作阻塞。
+- `prepare_memory_write()` 的机械 prompt-injection 兜底补齐多限定词英文与中文攻击短语;明显标注为 prompt-injection example/attack 且写明不要遵循的 meta-memory 不再误杀。
+- T2 distillation 的 write gate reject 不再静默 `continue`;记录带 agent/category/source/reason 的 warning,让丢弃可观测。
+- 读工具审计仍保留,但不再每条工具日志都重复 BYPASS 查 tenant:ToolRuntimeService 把已解析的 `runtime_context.tenant_id` 透传给 `log_activity()`,activity logger 仅在缺 tenant_id 时才回退 resolver;resolver 本身增加 bounded process-local cache。
+- `turn_token_budget` 不再只存在于测试构造;`_resolve_runtime_config()` 按 agent `max_tool_rounds` 派生生产默认 turn budget,接入 kernel 既有预算消费逻辑。
+
+**代码证据**
+- `backend/app/core/policy.py`:新增 `compute_legacy_audit_event_hash()`。
+- `backend/app/services/audit_query_service.py`:`verify_chain()` 先算 canonical v2,再算 legacy v1,返回 `hash_version`。
+- `backend/app/services/approval_service.py`:`resolve_approval()` 在 approved action 之前执行 `flush()` + `commit()`。
+- `backend/app/memory/write_gate.py`:扩展 `_MEMORY_THREAT_PATTERNS`,新增 `_META_MEMORY_SAFE_PATTERNS` 与 `_is_labeled_prompt_injection_meta_memory()`。
+- `backend/app/memory/t2_store.py`:write gate reject 时记录 `[T2Store] write gate rejected extraction ...` warning。
+- `backend/app/services/activity_logger.py`:新增可选 `tenant_id`;`backend/app/tools/service.py` 在 normal/approved/error/preflight activity logging 全部透传 `runtime_context.tenant_id`。
+- `backend/app/services/tenant_resolver.py`:新增 bounded `_AGENT_TENANT_CACHE` 与 `clear_tenant_resolution_cache()`。
+- `backend/app/runtime/invoker.py`:新增 `_derive_turn_token_budget()` 并写入成功路径 `RuntimeConfig.turn_token_budget`。
+
+**回归测试**
+
+Red 阶段失败摘要:
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_audit_query_service.py::test_verify_chain_accepts_legacy_pre_details_hashes \
+  backend/tests/services/test_approval_service.py::test_resolve_approval_commits_before_approved_external_action \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_rejects_multi_qualifier_and_chinese_prompt_injection \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_allows_labeled_prompt_injection_meta_memory \
+  backend/tests/memory/test_t2_store.py::test_append_t2_entries_logs_write_gate_rejections \
+  backend/tests/services/test_tenant_resolver.py::test_resolve_tenant_for_agent_caches_successful_agent_lookup \
+  backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when_missing -q
+
+backend/.venv/bin/python -m pytest \
+  backend/tests/tools/test_service.py::test_tool_runtime_service_logs_readonly_tool_calls \
+  backend/tests/tools/test_service.py::test_tool_runtime_service_execute_approved_logs_readonly_tools -q
+```
+
+初始结果:第一组 `7 failed,4 warnings`;第二组 `2 failed,3 warnings`。失败点分别为 legacy hash 被判 invalid、approval 执行动作前没有 commit、英文多限定词/中文注入漏检、meta-memory 被 prompt-injection 误杀、T2 reject 无日志、tenant resolver 无 cache、生产 RuntimeConfig 不填 turn budget、ToolRuntimeService 不向 activity logger 透传 tenant_id。
+
+Green 阶段通过摘要:
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_audit_query_service.py::test_verify_chain_accepts_legacy_pre_details_hashes \
+  backend/tests/services/test_approval_service.py::test_resolve_approval_commits_before_approved_external_action \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_rejects_multi_qualifier_and_chinese_prompt_injection \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_allows_labeled_prompt_injection_meta_memory \
+  backend/tests/memory/test_t2_store.py::test_append_t2_entries_logs_write_gate_rejections \
+  backend/tests/services/test_tenant_resolver.py::test_resolve_tenant_for_agent_caches_successful_agent_lookup \
+  backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when_missing -q
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_audit_query_service.py \
+  backend/tests/core/test_policy_audit.py \
+  backend/tests/services/test_approval_service.py \
+  backend/tests/memory/test_write_gate.py \
+  backend/tests/memory/test_t2_store.py \
+  backend/tests/services/test_tenant_resolver.py \
+  backend/tests/tools/test_service.py \
+  backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_defaults_skill_candidate_loop_to_true_when_missing \
+  backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_agent_not_found_sets_tenant_error \
+  backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_db_exception_sets_tenant_error \
+  backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_success_does_not_set_tenant_error -q
+
+backend/.venv/bin/ruff check backend/app/core/policy.py backend/app/services/audit_query_service.py backend/app/services/approval_service.py backend/app/memory/write_gate.py backend/app/memory/t2_store.py backend/app/services/tenant_resolver.py backend/app/services/activity_logger.py backend/app/tools/service.py backend/app/runtime/invoker.py backend/tests/services/test_audit_query_service.py backend/tests/services/test_approval_service.py backend/tests/memory/test_write_gate.py backend/tests/memory/test_t2_store.py backend/tests/services/test_tenant_resolver.py backend/tests/runtime/test_invoker.py backend/tests/tools/test_service.py backend/tests/architecture/test_deployment_contracts.py backend/tests/test_alembic_bootstrap.py backend/tests/tools/test_deep_research_handler.py
+backend/.venv/bin/python -m compileall -q backend/app backend/tests
+backend/.venv/bin/python -m pytest backend/tests -q
+```
+
+当前结果:聚焦红线第一组 `7 passed,4 warnings`;ToolRuntimeService tenant 透传红线 `2 passed,3 warnings`;相关 audit/approval/memory/tenant/tool/runtime 回归 `53 passed,4 warnings`;ruff `All checks passed!`;compileall 通过;后端全量真 PG `4144 passed,7 skipped,4 warnings`。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
+
+### 12.48 2026-06-12 第四十八批:write_gate LLM-primary 与 compose 生产默认最终收口
+
+**范围**
+- 关闭 Claude review 复核后唯一剩余的 L1 债:`write_gate` 不再把需要语义判断的 durable memory threat classification 交给机械正则主路径;LLM classifier 是 async runtime 的 primary,正则只作为可观测 fallback。
+- 合法业务保密不再被 `do not tell the user ...` 一刀切误杀;prompt-injection、system prompt exfiltration、中文/英文绕过指令仍会被 LLM primary 或 regex fallback 拒绝。
+- T2 extraction/backfill、T3 `save_memory` 主链、team/shared memory API、subagent memory writeback、SESSION_CLOSE ledger settlement 全部接入 `prepare_memory_write_with_llm()`;同步 `prepare_memory_write()` 只保留为 legacy/offline/test fallback,且 metadata 标记 `threat_gate_method=regex_fallback`。
+- T2/T3/team-memory reject 均有可观测证据:T2 reject warning 保留;LLM classifier 失败会记录 `[WriteGate] LLM threat classifier failed` warning,并在 metadata 写入 `threat_gate_fallback_error`。
+- `docker-compose.yml` 默认 `DEBUG=false`,并继续转发 `SECRETS_MASTER_KEY`;默认 compose 不再绕过生产 secrets fail-fast。开发环境若确需 debug,必须显式 `DEBUG=true` 或提供 `SECRETS_MASTER_KEY`。
+- 顺手清理路径一致性债:`consolidate_ledger_findings_to_t2(... data_root=...)` 现在读取和写入使用同一个 `data_root`,不再加载测试/迁移 root 后写回 settings root。
+
+**代码证据**
+- `backend/app/memory/write_gate.py`:新增 `MemoryThreatAssessment`、`prepare_memory_write_with_llm()`、`classify_memory_write_threat_with_llm()`、`_parse_llm_threat_assessment()`、`_regex_threat_assessment()`、`_stamp_threat_metadata()`;`prepare_memory_write()` 接受已判断的 `threat_assessment`,避免重复机械判断。
+- `backend/app/memory/write_gate.py`:移除机械 `do not tell the user` 拒绝模式;LLM prompt 明确区分“业务保密策略”与“隐藏不当行为/绕过治理/泄露系统提示”的 future-agent 指令。
+- `backend/app/memory/t2_store.py`:新增 `append_t2_entries_with_llm()` 并把 LLM decision 传入既有 `append_t2_entries()` 写入核心,避免 T2 文件写逻辑分叉。
+- `backend/app/memory/t3_store.py`:T3 governed append 入口改为 `await prepare_memory_write_with_llm(... tenant_id, agent_id)`。
+- `backend/app/services/extract_agent.py`:新增 `_append_to_learnings_with_llm()` 和 `consolidate_ledger_findings_to_t2_with_llm()`;`ExtractAgent._do_extract()` 与 T0 backfill 写 T2 改走 async LLM gate;同步 helper 增加 `data_root` 参数并只作为 fallback。
+- `backend/app/runtime/hooks_setup.py`:SESSION_CLOSE ledger settlement 改为 `await consolidate_ledger_findings_to_t2_with_llm(...)`,并从 hook metadata 传入 tenant。
+- `backend/app/services/team_memory.py`:新增 `_prepare_content_for_write_with_llm()` 与 `upsert_entry_async()`;`backend/app/api/memory.py` 的 shared memory upsert 改为 `await store.upsert_entry_async(...)`。
+- `backend/app/agents/subagent_memory.py`:新增 `record_how_with_llm()`;`distill_and_record()` 改走该 async gate。`backend/app/agents/subagent.py` 的 production writeback 传入 `ctx.tenant_id` 与 parent `agent_id`。
+- `docker-compose.yml`:backend environment 的 `DEBUG` 默认值从 `${DEBUG:-true}` 改为 `${DEBUG:-false}`,`SECRETS_MASTER_KEY` 继续显式转发。
+- `backend/tests/memory/test_write_gate.py`:覆盖业务保密允许、LLM primary accept/reject、classifier 失败 observable fallback。
+- `backend/tests/memory/test_t2_store.py` / `backend/tests/memory/test_t3_store.py` / `backend/tests/services/test_team_memory_service.py`:覆盖 T2/T3/team-memory async runtime path 真调用 LLM write gate。
+- `backend/tests/agents/test_subagent_memory.py`:覆盖 subagent memory async writeback 真调用 LLM write gate 并透传 tenant/agent。
+- `backend/tests/architecture/test_deployment_contracts.py`:compose 契约断言更新为 `DEBUG: ${DEBUG:-false}`。
+- `backend/tests/services/test_extract_agent.py` / `backend/tests/services/test_extract_queue_replay.py`:runtime/backfill 测试 mock 目标改为 `_append_to_learnings_with_llm`,防止测试继续保护旧同步路径。
+
+**回归测试**
+
+Red 阶段失败摘要:
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main
+backend/.venv/bin/python -m pytest \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_allows_business_confidentiality \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_primary_accepts_business_confidentiality \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_primary_rejects_prompt_injection \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_falls_back_observably_when_classifier_fails \
+  backend/tests/memory/test_t2_store.py::test_append_t2_entries_with_llm_uses_primary_write_gate \
+  backend/tests/memory/test_t3_store.py::test_append_t3_memory_candidate_uses_llm_primary_write_gate \
+  backend/tests/architecture/test_deployment_contracts.py::test_docker_compose_forwards_debug_and_secrets_master_key -q
+```
+
+初始结果:`7 failed`。失败点分别为合法业务保密被 `deception_hide` 误杀、`MemoryThreatAssessment` / `prepare_memory_write_with_llm` 不存在、T2/T3 没有导入或调用 LLM write gate、compose 默认仍是 `DEBUG: ${DEBUG:-true}`。
+
+Green 阶段通过摘要:
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main
+backend/.venv/bin/python -m pytest \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_allows_business_confidentiality \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_primary_accepts_business_confidentiality \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_primary_rejects_prompt_injection \
+  backend/tests/memory/test_write_gate.py::test_prepare_memory_write_with_llm_falls_back_observably_when_classifier_fails \
+  backend/tests/memory/test_t2_store.py::test_append_t2_entries_with_llm_uses_primary_write_gate \
+  backend/tests/memory/test_t3_store.py::test_append_t3_memory_candidate_uses_llm_primary_write_gate \
+  backend/tests/services/test_team_memory_service.py::test_team_memory_async_upsert_uses_llm_primary_write_gate \
+  backend/tests/architecture/test_deployment_contracts.py::test_docker_compose_forwards_debug_and_secrets_master_key -q
+
+backend/.venv/bin/python -m pytest backend/tests/memory/test_write_gate.py \
+  backend/tests/memory/test_t2_store.py \
+  backend/tests/memory/test_t3_store.py \
+  backend/tests/services/test_team_memory_service.py \
+  backend/tests/architecture/test_deployment_contracts.py -q
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_extract_agent.py \
+  backend/tests/services/test_ledger_to_memory_gate.py \
+  backend/tests/services/test_extract_queue_replay.py \
+  backend/tests/test_memory_integration.py -q
+
+backend/.venv/bin/python -m pytest backend/tests/agents/test_subagent_memory.py \
+  backend/tests/agents/test_subagent.py \
+  backend/tests/agents/test_subagent_scope_resolution.py \
+  backend/tests/agents/test_subagent_evolution.py -q
+
+backend/.venv/bin/ruff check backend/app backend/tests
+backend/.venv/bin/python -m compileall -q backend/app backend/tests
+backend/.venv/bin/python -m pytest backend/tests -q
+
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run build
+npm run test
+```
+
+当前结果:聚焦 LLM-write-gate/deployment 红线 `8 passed`;memory/team/deployment 相关回归 `46 passed,3 warnings`;extraction/ledger/queue/memory integration `149 passed,3 warnings`;subagent memory/evolution 相关回归 `69 passed,4 warnings`;全量 ruff `All checks passed!`;compileall 通过;后端全量真 PG `4152 passed,7 skipped,4 warnings`;frontend build 通过;Vitest `39 passed` test files / `198 passed` tests。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
 
 ---
 

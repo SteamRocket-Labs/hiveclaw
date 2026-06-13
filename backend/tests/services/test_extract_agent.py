@@ -464,7 +464,7 @@ class TestExtractAgent:
         """Cursor should advance after extraction."""
         msgs = [{"role": "user", "content": "Don't use approach X, it fails badly"}]
         with (
-            patch("app.services.extract_agent._append_to_learnings", return_value=1),
+            patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1),
             patch("app.services.extract_agent.get_settings") as mock_settings,
         ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
@@ -480,7 +480,7 @@ class TestExtractAgent:
         """Second call with same messages should be skipped."""
         msgs = [{"role": "user", "content": "Don't use approach X, it fails badly"}]
         with (
-            patch("app.services.extract_agent._append_to_learnings", return_value=1),
+            patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1),
             patch("app.services.extract_agent.get_settings") as mock_settings,
         ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
@@ -502,7 +502,7 @@ class TestExtractAgent:
 
         with (
             patch("app.services.extract_agent.get_settings") as mock_settings,
-            patch("app.services.extract_agent._append_to_learnings", return_value=1),
+            patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1),
         ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             await first.extract(agent_id, msgs, source="web")
@@ -592,7 +592,7 @@ class TestExtractAgent:
     async def test_schedule_extract_tracks_task(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """schedule_extract stores task in _in_flight so drain() can await it."""
         key = str(agent_id)
-        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+        with patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1):
             extractor.schedule_extract(
                 agent_id,
                 [{"role": "user", "content": "Don't use mocks, always use real DB"}],
@@ -606,7 +606,7 @@ class TestExtractAgent:
     async def test_schedule_extract_cleans_up_on_completion(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """_in_flight entry is removed once the task finishes."""
         key = str(agent_id)
-        with patch("app.services.extract_agent._append_to_learnings", return_value=0):
+        with patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=0):
             extractor.schedule_extract(agent_id, [{"role": "user", "content": "Hello world test"}], source="web")
             await extractor.drain(agent_id, timeout_s=5.0)
         assert key not in extractor._in_flight
@@ -618,7 +618,7 @@ class TestExtractAgent:
     ) -> None:
         """Two rapid schedule_extract calls must not cause drain() to miss the second task."""
         key = str(agent_id)
-        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+        with patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1):
             extractor.schedule_extract(
                 agent_id,
                 [{"role": "user", "content": "Don't use mocks ever in tests"}],
@@ -654,7 +654,7 @@ class TestExtractAgent:
         monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
         queue_root = tmp_path / ".failed_extractions"
 
-        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+        with patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1):
             extractor.schedule_extract(
                 agent_id,
                 [{"role": "user", "content": "Don't mock the database in integration tests"}],
@@ -724,7 +724,7 @@ class TestExtractAgent:
 
         monkeypatch.setattr(extract_queue, "enqueue", _enqueue_fails)
 
-        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+        with patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1):
             with caplog.at_level("ERROR"):
                 extractor.schedule_extract(
                     agent_id,
@@ -751,7 +751,7 @@ class TestExtractAgent:
 
         monkeypatch.setattr(extract_queue, "enqueue", _enqueue_fails)
 
-        with patch("app.services.extract_agent._append_to_learnings", return_value=1):
+        with patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1):
             with caplog.at_level("ERROR"):
                 scheduled = extractor.schedule_extract(
                     agent_id,
@@ -909,7 +909,7 @@ class TestAuditAndBackfill:
                 body="## Turn 1\n**User**: I prefer concise answers\n**Agent**: noted\n",
             )
 
-            with patch("app.services.extract_agent._append_to_learnings") as mock_append:
+            with patch("app.services.extract_agent._append_to_learnings_with_llm") as mock_append:
                 report = await backfill_missing_extractions(agent_id, days=30, dry_run=True)
 
             assert report["would_extract"] == 1
@@ -933,7 +933,7 @@ class TestAuditAndBackfill:
                     "app.services.extract_agent._pattern_extract",
                     return_value=fake_extractions,
                 ),
-                patch("app.services.extract_agent._append_to_learnings", return_value=1) as mock_append,
+                patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1) as mock_append,
             ):
                 report = await backfill_missing_extractions(agent_id, days=30)
 
@@ -952,7 +952,7 @@ class TestAuditAndBackfill:
             )
             _write_backfill_cursor(agent_id, {"sess-Z"})
 
-            with patch("app.services.extract_agent._append_to_learnings") as mock_append:
+            with patch("app.services.extract_agent._append_to_learnings_with_llm") as mock_append:
                 report = await backfill_missing_extractions(agent_id, days=30)
 
             assert report["extracted"] == 0

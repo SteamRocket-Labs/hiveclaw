@@ -4,7 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-12T09:52Z [sid:267d9f0b]; branch:main; 9 files (compact-snapshot.md, orphan-trail.md, enterprise.py, +6); last commit: aac4044a fix frontend auth 401 messaging
+- 2026-06-12T18:03Z [sid:267d9f0b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_memory.py, +30); last commit: 4a02c6fd Refactor agent runtime and align memory controls
 - 2026-06-11T07:42Z [sid:145e9276]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: aac4044a fix frontend auth 401 messaging
 - 2026-06-11T07:23Z [sid:33d833cd]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, request.ts); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n
 - 2026-06-11T06:49Z [sid:09d3585c]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n

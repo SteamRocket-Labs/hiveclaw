@@ -17,12 +17,48 @@ an authenticated request's ``current_user`` to a tenant; this one resolves a
 from __future__ import annotations
 
 import uuid
+from collections import OrderedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session, enter_rls_bypass
 from app.models.agent import Agent
+
+_AGENT_TENANT_CACHE_MAX = 4096
+_AGENT_TENANT_CACHE: OrderedDict[uuid.UUID, uuid.UUID] = OrderedDict()
+
+
+def clear_tenant_resolution_cache() -> None:
+    """Clear the process-local resolver cache. Intended for tests and reloads."""
+    _AGENT_TENANT_CACHE.clear()
+
+
+def _normalize_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if not value:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_cached_agent_tenant(agent_id: uuid.UUID) -> uuid.UUID | None:
+    tenant_id = _AGENT_TENANT_CACHE.get(agent_id)
+    if tenant_id is not None:
+        _AGENT_TENANT_CACHE.move_to_end(agent_id)
+    return tenant_id
+
+
+def _cache_agent_tenant(agent_id: uuid.UUID, tenant_id: uuid.UUID | None) -> None:
+    if tenant_id is None:
+        return
+    _AGENT_TENANT_CACHE[agent_id] = tenant_id
+    _AGENT_TENANT_CACHE.move_to_end(agent_id)
+    while len(_AGENT_TENANT_CACHE) > _AGENT_TENANT_CACHE_MAX:
+        _AGENT_TENANT_CACHE.popitem(last=False)
 
 
 async def resolve_tenant_for_agent(
@@ -37,13 +73,22 @@ async def resolve_tenant_for_agent(
     for tests that hold their own engine (Testcontainers); production callers
     omit it and get the app engine.
     """
-    if not agent_id:
+    agent_uuid = _normalize_uuid(agent_id)
+    if not agent_uuid:
         return None
+    use_cache = session_factory is None
+    if use_cache:
+        cached = _get_cached_agent_tenant(agent_uuid)
+        if cached is not None:
+            return cached
     factory = session_factory or async_session
     async with factory() as db:
-        async with enter_rls_bypass(db, reason=f"tenant resolution for agent {agent_id}") as bypass_db:
-            result = await bypass_db.execute(select(Agent.tenant_id).where(Agent.id == agent_id))
-            return result.scalar_one_or_none()
+        async with enter_rls_bypass(db, reason=f"tenant resolution for agent {agent_uuid}") as bypass_db:
+            result = await bypass_db.execute(select(Agent.tenant_id).where(Agent.id == agent_uuid))
+            tenant_id = result.scalar_one_or_none()
+            if use_cache:
+                _cache_agent_tenant(agent_uuid, tenant_id)
+            return tenant_id
 
 
 async def resolve_tenant_for_plan(

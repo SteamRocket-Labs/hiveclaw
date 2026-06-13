@@ -33,6 +33,30 @@ def test_record_how_writes_when_gate_allows(tmp_path, monkeypatch):
     assert "source_calibration" in loaded
 
 
+@pytest.mark.asyncio
+async def test_record_how_with_llm_uses_primary_write_gate(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_gate(content, **kwargs):
+        calls.append(kwargs)
+        return _allowed_decision(content, **kwargs)
+
+    monkeypatch.setattr(mem_mod, "prepare_memory_write_with_llm", fake_gate, raising=False)
+    store = SubagentMemoryStore(tmp_path)
+
+    result = await store.record_how_with_llm(
+        "scout",
+        "Prefer primary sources.",
+        category="source_calibration",
+        tenant_id="tenant-1",
+        agent_id="agent-1",
+    )
+
+    assert result.written is True
+    assert calls and calls[0]["tenant_id"] == "tenant-1"
+    assert calls[0]["agent_id"] == "agent-1"
+
+
 def test_record_how_aborts_when_gate_rejects(tmp_path, monkeypatch):
     monkeypatch.setattr(mem_mod, "prepare_memory_write", _rejected_decision)
     store = SubagentMemoryStore(tmp_path)

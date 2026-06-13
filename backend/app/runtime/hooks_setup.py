@@ -340,14 +340,16 @@ async def _t0_session_close(ctx: HookContext) -> None:
     # Drain pending extractions before session ends
     await extract_agent.drain(agent_id, timeout_s=10.0)
     # 切口④: settle the session's verified ledger findings into durable T2 memory.
-    # Runs through the same write gate as all extractions (PL4 rejected, sensitivity
-    # classified) — see extract_agent.consolidate_ledger_findings_to_t2. Best-effort:
+    # Runtime settlement uses the LLM-primary write gate; a missing tenant/model
+    # context is recorded as a regex_fallback decision by the gate. Best-effort:
     # a consolidation failure must not abort SESSION_CLOSE T0 logging below.
     try:
-        from app.services.extract_agent import consolidate_ledger_findings_to_t2
+        from app.services.extract_agent import consolidate_ledger_findings_to_t2_with_llm
 
-        written = consolidate_ledger_findings_to_t2(
+        tenant_id_raw = ctx.metadata.get("tenant_id")
+        written = await consolidate_ledger_findings_to_t2_with_llm(
             agent_id,
+            tenant_id=uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None,
             session_id=ctx.session_id,
             source="work_ledger",
         )

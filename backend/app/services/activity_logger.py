@@ -27,6 +27,7 @@ def _fallback_action_type(action_type: str, exc: Exception) -> str | None:
 async def _insert_activity(
     *,
     agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | str | None = None,
     action_type: str,
     summary: str,
     detail: dict | None,
@@ -38,11 +39,11 @@ async def _insert_activity(
         # session writes tenant_id=NULL (globally visible) and, under the
         # non-owner role, the INSERT itself fails closed. Pin the GUC to the
         # agent's tenant and stamp the row so isolation holds on read.
-        tenant_id = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(tenant_id) as db:
+        resolved_tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(resolved_tenant_id) as db:
             db.add(AgentActivityLog(
                 agent_id=agent_id,
-                tenant_id=tenant_id,
+                tenant_id=resolved_tenant_id,
                 action_type=action_type,
                 summary=summary[:500] if summary else "",
                 detail_json=detail,
@@ -64,11 +65,13 @@ async def log_activity(
     summary: str,
     detail: dict | None = None,
     related_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | str | None = None,
 ) -> None:
     """Record an agent activity. Fire-and-forget, never raises."""
     try:
         await _insert_activity(
             agent_id=agent_id,
+            tenant_id=tenant_id,
             action_type=action_type,
             summary=summary,
             detail=detail,
@@ -89,6 +92,7 @@ async def log_activity(
                 )
                 await _insert_activity(
                     agent_id=agent_id,
+                    tenant_id=tenant_id,
                     action_type=fallback,
                     summary=summary,
                     detail=fallback_detail,

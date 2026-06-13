@@ -300,7 +300,7 @@ async def upsert_team_memory(
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
     store = TeamMemoryStore()
     try:
-        entry = store.upsert_entry(
+        entry = await store.upsert_entry_async(
             tenant_id=str(target_tenant_id),
             workspace_key=data.workspace_key,
             key=data.key,

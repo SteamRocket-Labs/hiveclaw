@@ -29,6 +29,46 @@ def test_team_memory_store_upserts_lists_and_searches_entries(tmp_path: Path) ->
     assert "canary rollout" in search_results[0].snippet
 
 
+@pytest.mark.asyncio
+async def test_team_memory_async_upsert_uses_llm_primary_write_gate(tmp_path: Path, monkeypatch) -> None:
+    from app.memory.write_gate import MemoryWriteDecision
+    from app.services import team_memory
+
+    calls = []
+
+    async def fake_gate(content: str, **kwargs):
+        calls.append(kwargs)
+        return MemoryWriteDecision(
+            original_content=content,
+            content=content,
+            category=kwargs["category"],
+            sensitivity="PL1_public",
+            metadata={
+                "entry_id": "team-memory-llm-entry",
+                "sensitivity": "PL1_public",
+                "status": "active",
+                "version": "1",
+                "threat_gate_method": "llm_classifier",
+            },
+        )
+
+    monkeypatch.setattr(team_memory, "prepare_memory_write_with_llm", fake_gate)
+    store = team_memory.TeamMemoryStore(data_root=tmp_path)
+
+    entry = await store.upsert_entry_async(
+        tenant_id="tenant-1",
+        workspace_key="workspace-alpha",
+        key="finance-disclosure",
+        title="Finance Disclosure",
+        content="Do not tell the user internal cost basis unless Finance approves disclosure.",
+        updated_by="user-1",
+    )
+
+    assert entry.key == "finance-disclosure"
+    assert calls and calls[0]["tenant_id"] == "tenant-1"
+    assert calls[0]["category"] == "team_memory"
+
+
 def test_team_memory_store_append_mode_preserves_existing_content(tmp_path: Path) -> None:
     from app.services.team_memory import TeamMemoryStore
 

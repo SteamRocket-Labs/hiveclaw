@@ -10,6 +10,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.sql.schema import MetaData
 
 _ALEMBIC_VERSION_TABLE = "alembic_version"
+_ALEMBIC_VERSION_NUM_LENGTH = 255
 _CORE_APP_TABLES = {
     "users",
     "agents",
@@ -165,6 +166,34 @@ def should_bootstrap_database(connection: Connection) -> bool:
     return bool(tables & _CORE_APP_TABLES)
 
 
+def ensure_alembic_version_table_width(connection: Connection) -> None:
+    """Ensure Alembic can stamp long, descriptive revision identifiers.
+
+    Alembic's default version table uses VARCHAR(32). This repository already
+    has descriptive revision ids longer than that, so PostgreSQL upgrades must
+    create or widen the table before Alembic writes `alembic_version`.
+    """
+
+    connection.execute(
+        text(
+            f"""
+            CREATE TABLE IF NOT EXISTS alembic_version (
+                version_num VARCHAR({_ALEMBIC_VERSION_NUM_LENGTH}) NOT NULL PRIMARY KEY
+            )
+            """
+        )
+    )
+    if connection.dialect.name == "postgresql":
+        connection.execute(
+            text(
+                f"""
+                ALTER TABLE alembic_version
+                ALTER COLUMN version_num TYPE VARCHAR({_ALEMBIC_VERSION_NUM_LENGTH})
+                """
+            )
+        )
+
+
 def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads: Sequence[str]) -> None:
     """Create the current schema and stamp Alembic heads into an unversioned DB."""
     metadata.create_all(bind=connection)
@@ -172,15 +201,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     # Apply the RLS policies explicitly so fresh deployments are not born
     # without tenant isolation (§9 P0 gap fix).
     apply_rls_policies(connection)
-    connection.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS alembic_version (
-                version_num VARCHAR(32) NOT NULL PRIMARY KEY
-            )
-            """
-        )
-    )
+    ensure_alembic_version_table_width(connection)
     connection.execute(text("DELETE FROM alembic_version"))
     for head in heads:
         connection.execute(
@@ -206,6 +227,7 @@ def run_migrations_with_bootstrap(
             connection.commit()
         return
 
+    ensure_alembic_version_table_width(connection)
     alembic_context.configure(connection=connection, target_metadata=metadata)
     with alembic_context.begin_transaction():
         alembic_context.run_migrations()

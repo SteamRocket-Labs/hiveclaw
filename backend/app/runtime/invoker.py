@@ -84,10 +84,17 @@ _RUNTIME_FLAG_DEFAULTS: dict[str, bool] = {
     "runtime_continuity_v1": False,
     "skill_candidate_loop_v1": True,
 }
+_DEFAULT_TURN_TOKENS_PER_ROUND = 8192
+_MAX_DERIVED_TURN_TOKEN_BUDGET = 1_000_000
 
 
 def _context_engine() -> DefaultContextEngine:
     return DefaultContextEngine()
+
+
+def _derive_turn_token_budget(max_tool_rounds: int | None) -> int:
+    rounds = max(1, int(max_tool_rounds or 200))
+    return min(_MAX_DERIVED_TURN_TOKEN_BUDGET, max(_DEFAULT_TURN_TOKENS_PER_ROUND, rounds * _DEFAULT_TURN_TOKENS_PER_ROUND))
 
 
 def _normalize_invocation_session_context(request: AgentInvocationRequest) -> None:
@@ -233,6 +240,7 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                 tenant_id=agent.tenant_id,
                 max_tool_rounds=agent.max_tool_rounds or 200,
                 quota_message=quota_message,
+                turn_token_budget=_derive_turn_token_budget(agent.max_tool_rounds or 200),
                 execution_mode=getattr(agent, "execution_mode", None),
                 runtime_continuity_enabled=await _resolve_flag("runtime_continuity_v1"),
                 skill_candidate_loop_enabled=await _resolve_flag("skill_candidate_loop_v1"),

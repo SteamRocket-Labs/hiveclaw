@@ -37,6 +37,81 @@ class _FakeDb:
         return _FakeResult(self.rows)
 
 
+class _FakeOneResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _ResolveApprovalDb:
+    def __init__(self, approval, agent, events):
+        self._values = [approval, agent]
+        self.events = []
+        self._events = events
+        self.added = []
+
+    async def execute(self, _query):
+        return _FakeOneResult(self._values.pop(0))
+
+    def add(self, item):
+        self.added.append(item)
+
+    async def flush(self):
+        self.events.append("flush")
+        self._events.append("flush")
+
+    async def commit(self):
+        self.events.append("commit")
+        self._events.append("commit")
+
+
+@pytest.mark.asyncio
+async def test_resolve_approval_commits_before_approved_external_action(monkeypatch) -> None:
+    from app.services.approval_service import ApprovalService
+
+    events: list[str] = []
+    tenant_id = uuid4()
+    approval = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        action_type="write_file",
+        status="pending",
+        created_at=None,
+        resolved_at=None,
+        resolved_by=None,
+        details={"tool": "write_file", "args": {"path": "focus.md"}},
+    )
+    agent = SimpleNamespace(id=approval.agent_id, tenant_id=tenant_id, creator_id=uuid4(), name="Ops Agent")
+    user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
+    db = _ResolveApprovalDb(approval, agent, events)
+
+    async def fake_write_audit_event(*_args, **_kwargs):
+        events.append("audit")
+
+    async def fake_send_notification(*_args, **_kwargs):
+        events.append("notify")
+
+    class _Service(ApprovalService):
+        async def _execute_approved_action(self, *args, **kwargs):
+            events.append("execute")
+            assert "commit" in db.events
+            return "ok"
+
+        async def _publish_approval_result_to_origin(self, *args, **kwargs):
+            events.append("publish")
+            return {"type": "approval_tool_result"}
+
+    monkeypatch.setattr("app.core.policy.write_audit_event", fake_write_audit_event)
+    monkeypatch.setattr("app.services.notification_service.send_notification", fake_send_notification)
+
+    resolved = await _Service().resolve_approval(db, approval.id, user, "approve")  # type: ignore[arg-type]
+
+    assert resolved.status == "approved"
+    assert events.index("commit") < events.index("execute")
+
+
 @pytest.mark.asyncio
 async def test_approval_result_is_published_to_origin_session_and_active_run() -> None:
     from app.services.approval_service import ApprovalService

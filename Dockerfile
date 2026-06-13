@@ -24,7 +24,7 @@ FROM python:3.12-slim AS production
 WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 curl gnupg git \
-        fonts-noto-cjk fonts-noto-core fonts-liberation libicu76 && \
+        bubblewrap fonts-noto-cjk fonts-noto-core fonts-liberation libicu76 && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     npm install -g @larksuite/cli && \

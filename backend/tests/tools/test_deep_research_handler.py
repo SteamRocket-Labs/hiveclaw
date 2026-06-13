@@ -122,15 +122,15 @@ async def test_deep_research_start_dedups_against_persisted_active_runtime_task(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services.deep_research.plan_mode import deep_research_plan_signature
     from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.workflow_definition import deep_research_workflow_args
     from app.tools.handlers import deep_research as handler
 
     req = _request(tmp_path, session_id="session-work-ledger")
     args = {"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True}
     req.arguments.update(args)
     research_request = ResearchRequest.from_arguments(args)
-    signature = deep_research_plan_signature(research_request, worker_topics=research_request.worker_topics)
+    signature = deep_research_workflow_args(research_request)["deep_research_signature"]
     existing_task_id = str(uuid.uuid4())
     scheduled: dict = {}
 
@@ -164,8 +164,8 @@ async def test_deep_research_background_metadata_records_signature(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services.deep_research.plan_mode import deep_research_plan_signature
     from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.workflow_definition import deep_research_workflow_args
     from app.tools.handlers import deep_research as handler
 
     agent_id = uuid.uuid4()
@@ -174,7 +174,7 @@ async def test_deep_research_background_metadata_records_signature(
     research_request = ResearchRequest.from_arguments(
         {"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True}
     )
-    signature = deep_research_plan_signature(research_request, worker_topics=research_request.worker_topics)
+    signature = deep_research_workflow_args(research_request)["deep_research_signature"]
     updates: list[tuple[str, dict]] = []
 
     async def fake_workflow_run(**_kwargs):
@@ -200,6 +200,20 @@ async def test_deep_research_background_metadata_records_signature(
     assert updates[0][0] == run_id.hex
     assert updates[0][1]["metadata_json"]["deep_research_signature"] == signature
     assert updates[0][1]["metadata_json"]["deep_research_question"] == "RWA adoption"
+
+
+def test_deep_research_signature_matches_workflow_args_for_empty_worker_topics() -> None:
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.deep_research.workflow_definition import deep_research_workflow_args
+    from app.tools.handlers import deep_research as handler
+
+    research_request = ResearchRequest.from_arguments(
+        {"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True}
+    )
+
+    assert handler._deep_research_signature(research_request) == deep_research_workflow_args(research_request)[
+        "deep_research_signature"
+    ]
 
 
 @pytest.mark.asyncio

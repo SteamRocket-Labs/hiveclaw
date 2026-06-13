@@ -375,6 +375,18 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **gap 状态**：Voyager 入库前执行 gate 机制已落；microVM 真跑由 E8 CI 在 skill/code 候选晋升前调用。
 
+### E7 — Hermes 真跑横向（消灭 §1.1 假对比）✅（2026-06-13）
+
+**完成范围**：
+- 新增 `backend/app/evals/hermes_baseline.py`：`extract_hermes_live_scores`（只从 trusted complete live run 提分；fallback/partial/incomplete → 空 = unavailable）+ `hermes_baseline_status` + `compare_hive_to_hermes`（**unavailable → 跳过横向门 `gated=False`，绝不假 fail**；live → 逐场景 hive≥hermes）。这是 E8 nightly 用 `run_runtime_bakeoff('hermes_agent')` 真跑后喂入的 canonical 横向对比。
+- 清理 `backend/app/evals/self_evolution_bakeoff.py`：**删除 grep-marker 假分** `_score_by_markers` + `_derive_hermes_scores`（~75 行）；`_normalize_hermes_scores` 无真跑注入 → `unavailable` + 空分（不再 `repo_evidence_fallback` 假分）；`_comparison_passed` 在 hermes unavailable 时跳过相对门、只靠 Hive 绝对阈值（hive≥80）；run 循环 hermes_score 可为 None（`delta=None`）。
+
+**TDD red→green**：`tests/evals/test_hermes_baseline.py` 7 用例，实现前 `ModuleNotFoundError`；green。回归 `hermes_baseline + self_evolution_bakeoff（含现有 2 injected 测试）+ harness_ci_workflow + run` = **18 passed**；ruff clean。
+
+**验收映射**：live 提分（`test_live_hermes_scores_extracted`）✓；fallback/partial → unavailable（`test_fallback_transport_is_unavailable`）✓；unavailable 跳过门不假 fail（`test_compare_skips_gate_when_unavailable`）✓；live 时逐场景门控（`test_compare_gates_when_live_and_hive_matches` / `test_compare_detects_hive_below_hermes`）✓；grep-marker 函数已删（`test_self_evolution_bakeoff_no_grep_marker_function`）✓；无真跑 → unavailable 空分（`test_self_evolution_bakeoff_marks_hermes_unavailable_without_real_run`）✓。
+
+**仍待后续 E**：CI nightly 真 shell-out hermes + 喂 `compare_hive_to_hermes` = **E8**；`harness-ci.yml` 的注入 `--hermes-scores-json`（CI 硬编码假分）移除 = **E8**。
+
 ---
 
 ## 附：关键文件锚点

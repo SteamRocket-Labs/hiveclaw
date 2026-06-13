@@ -2,12 +2,9 @@
 
 import asyncio
 import logging
-import os
-import platform
-import shutil
-import tempfile
 from pathlib import Path
 
+from app.services.subprocess_sandbox import build_sandboxed_agent_command
 from app.services.subprocess_env import build_agent_subprocess_env
 
 logger = logging.getLogger(__name__)
@@ -107,103 +104,9 @@ def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
     return work_dir, safe_env
 
 
-def _allow_unsandboxed_code_exec() -> bool:
-    return os.environ.get("HIVE_ALLOW_UNSANDBOXED_CODE_EXEC", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _sandbox_unavailable_message(mode: str) -> str:
-    return (
-        "❌ Execution sandbox unavailable "
-        f"(mode={mode}). Configure Linux bubblewrap (`bwrap`) or macOS `sandbox-exec`, "
-        "or set HIVE_ALLOW_UNSANDBOXED_CODE_EXEC=1 for explicit local-development bypass."
-    )
-
-
-def _escape_sandbox_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _darwin_sandbox_command(command: list[str], *, work_dir: Path, home: Path) -> tuple[list[str], list[Path]]:
-    sandbox_exec = shutil.which("sandbox-exec")
-    if not sandbox_exec:
-        return [], []
-
-    fd, profile_path_str = tempfile.mkstemp(prefix="hive-sandbox-", suffix=".sb")
-    profile_path = Path(profile_path_str)
-    os.close(fd)
-    work = _escape_sandbox_string(str(work_dir))
-    home_s = _escape_sandbox_string(str(home))
-    profile = f"""(version 1)
-(allow default)
-(deny network*)
-(deny file-read* (subpath "/Users"))
-(deny file-write* (subpath "/Users"))
-(allow file-read* (subpath "{work}") (subpath "{home_s}"))
-(allow file-write* (subpath "{work}") (subpath "{home_s}"))
-"""
-    profile_path.write_text(profile, encoding="utf-8")
-    return [sandbox_exec, "-f", str(profile_path), *command], [profile_path]
-
-
-def _linux_bwrap_command(command: list[str], *, work_dir: Path, home: Path) -> tuple[list[str], list[Path]]:
-    bwrap = shutil.which("bwrap")
-    if not bwrap:
-        return [], []
-
-    args = [
-        bwrap,
-        "--die-with-parent",
-        "--unshare-all",
-        "--new-session",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--tmpfs",
-        "/tmp",
-        "--bind",
-        str(work_dir),
-        str(work_dir),
-        "--bind",
-        str(home),
-        str(home),
-        "--setenv",
-        "HOME",
-        str(home),
-        "--chdir",
-        str(work_dir),
-    ]
-    for path in ("/bin", "/usr", "/lib", "/lib64", "/opt/homebrew"):
-        if Path(path).exists():
-            args.extend(["--ro-bind", path, path])
-    return [*args, *command], []
-
-
 def _sandbox_command(command: list[str], *, work_dir: Path, env: dict[str, str]) -> tuple[list[str] | None, list[Path], str | None]:
-    mode = os.environ.get("HIVE_CODE_SANDBOX_MODE", "auto").strip().lower() or "auto"
-    if mode in {"none", "off", "disabled"}:
-        if _allow_unsandboxed_code_exec():
-            return command, [], None
-        return None, [], _sandbox_unavailable_message(mode)
-
-    home = Path(env["HOME"]).resolve()
-    if mode in {"auto", "darwin", "sandbox-exec"} and platform.system() == "Darwin":
-        sandboxed, cleanup = _darwin_sandbox_command(command, work_dir=work_dir, home=home)
-        if sandboxed:
-            return sandboxed, cleanup, None
-        if mode != "auto":
-            return None, [], _sandbox_unavailable_message(mode)
-
-    if mode in {"auto", "bwrap", "bubblewrap", "linux"}:
-        sandboxed, cleanup = _linux_bwrap_command(command, work_dir=work_dir, home=home)
-        if sandboxed:
-            return sandboxed, cleanup, None
-        if mode != "auto":
-            return None, [], _sandbox_unavailable_message(mode)
-
-    if _allow_unsandboxed_code_exec():
-        return command, [], None
-    return None, [], _sandbox_unavailable_message(mode)
+    sandbox = build_sandboxed_agent_command(command, work_dir=work_dir, env=env)
+    return sandbox.command, sandbox.cleanup_paths, sandbox.error
 
 
 async def _execute_code(ws: Path, arguments: dict) -> str:

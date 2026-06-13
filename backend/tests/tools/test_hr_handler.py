@@ -313,6 +313,7 @@ async def test_install_external_skill_from_skills_ref_copies_cli_installed_skill
         "get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
     )
+    sandbox_calls = []
 
     class _FakeProc:
         returncode = 0
@@ -324,15 +325,25 @@ async def test_install_external_skill_from_skills_ref_copies_cli_installed_skill
             return None
 
     async def fake_create_subprocess_exec(*cmd, **kwargs):
-        assert cmd[:3] == ("bash", "-lc", "npx skills add patricio0312rev/skills@design-to-component-translator -y")
+        assert cmd[:4] == (
+            "sandbox",
+            "bash",
+            "-lc",
+            "npx skills add patricio0312rev/skills@design-to-component-translator -y",
+        )
         sandbox_skill_dir = tmp_path / "exec-home" / ".agents" / "skills" / "design-to-component-translator"
         sandbox_skill_dir.mkdir(parents=True, exist_ok=True)
         (sandbox_skill_dir / "SKILL.md").write_text("# Installed skill", encoding="utf-8")
         return _FakeProc()
 
+    def fake_build_sandboxed_agent_command(command, *, work_dir, env):
+        sandbox_calls.append({"command": command, "work_dir": work_dir, "env": env})
+        return SimpleNamespace(command=["sandbox", *command], cleanup_paths=[], error=None)
+
     async def fake_wait_for(awaitable, timeout):
         return await awaitable
 
+    monkeypatch.setattr(hr_mod, "build_sandboxed_agent_command", fake_build_sandboxed_agent_command)
     monkeypatch.setattr(hr_mod.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(hr_mod.asyncio, "wait_for", fake_wait_for)
     monkeypatch.setattr(hr_mod.tempfile, "mkdtemp", lambda prefix: str(tmp_path / "exec-home"))
@@ -345,3 +356,34 @@ async def test_install_external_skill_from_skills_ref_copies_cli_installed_skill
     assert result["status"] == "installed"
     assert result["folder_name"] == "design-to-component-translator"
     assert (tmp_path / str(agent_id) / "skills" / "design-to-component-translator" / "SKILL.md").exists()
+    assert sandbox_calls
+    assert sandbox_calls[0]["env"]["HOME"] == str(tmp_path / "exec-home")
+
+
+@pytest.mark.asyncio
+async def test_install_external_skill_from_skills_ref_fails_closed_without_sandbox(tmp_path, monkeypatch) -> None:
+    import app.tools.handlers.hr as hr_mod
+
+    agent_id = uuid4()
+    monkeypatch.setattr(
+        hr_mod,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+    monkeypatch.setattr(hr_mod.tempfile, "mkdtemp", lambda prefix: str(tmp_path / "exec-home"))
+    monkeypatch.setattr(
+        hr_mod,
+        "build_sandboxed_agent_command",
+        lambda *_args, **_kwargs: SimpleNamespace(command=None, cleanup_paths=[], error="sandbox unavailable"),
+    )
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        raise AssertionError("skills.sh install must not run without sandbox")
+
+    monkeypatch.setattr(hr_mod.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    with pytest.raises(RuntimeError, match="sandbox unavailable"):
+        await hr_mod._install_external_skill_from_skills_ref(
+            agent_id=agent_id,
+            ref="patricio0312rev/skills@design-to-component-translator",
+        )

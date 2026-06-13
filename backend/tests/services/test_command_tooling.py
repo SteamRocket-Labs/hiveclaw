@@ -97,3 +97,23 @@ def test_execution_environment_does_not_inherit_platform_secrets(tmp_path: Path,
     assert "SECRETS_MASTER_KEY" not in env
     assert "DATABASE_URL" not in env
     assert "OPENAI_API_KEY" not in env
+
+
+def test_execution_environment_strips_registry_url_credentials(tmp_path: Path, monkeypatch):
+    from app.services.agent_tool_domains.code_exec import _prepare_execution_environment
+
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://user:token@example.com/simple")
+    monkeypatch.setenv(
+        "PIP_EXTRA_INDEX_URL",
+        "https://alpha:secret@extra.example/simple https://public.example/simple",
+    )
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "https://npm-user:npm-token@registry.example/npm/")
+
+    _work_dir, env = _prepare_execution_environment(tmp_path)
+
+    assert env["PIP_INDEX_URL"] == "https://example.com/simple"
+    assert env["PIP_EXTRA_INDEX_URL"] == "https://extra.example/simple https://public.example/simple"
+    assert env["NPM_CONFIG_REGISTRY"] == "https://registry.example/npm/"
+    assert "token" not in " ".join(env.values())
+    assert "secret" not in " ".join(env.values())

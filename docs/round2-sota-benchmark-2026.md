@@ -906,6 +906,42 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **一手校准**：Anthropic extended-thinking docs — `https://platform.claude.com/docs/en/build-with-claude/extended-thinking`，interleaved thinking 段说明 `interleaved-thinking-2025-05-14` 对旧 Claude 4 模型仍是启用方式，对更新直连 Claude API 模型不需要或会安全忽略。
 
+### 12.10 第三仗 G1 已实装：agent subprocess 凭据出口收口 + HR skills.sh sandbox 统一（2026-06-13）
+
+**完成范围**：`backend/app/services/subprocess_env.py` 不再把 registry URL userinfo 原样交给 agent subprocess；`PIP_INDEX_URL`、`PIP_EXTRA_INDEX_URL`、`NPM_CONFIG_REGISTRY` 会保留 registry endpoint、剥离 `user:token@` 凭据。新增 `backend/app/services/subprocess_sandbox.py` 作为唯一 OS sandbox command builder，集中维护 Linux `bubblewrap` / macOS `sandbox-exec` / 显式 dev bypass 逻辑。`backend/app/services/agent_tool_domains/code_exec.py` 的 `_execute_code()` / `_run_command()` 继续保留本地兼容入口，但实际委托到统一 builder。`backend/app/tools/handlers/hr.py` 的 `npx skills add <ref> -y` 外部 skill 安装不再裸跑：先走同一 sandbox builder，sandbox 不可用即 fail-closed，不会降级到宿主进程；同时无论成功/失败都清理 sandbox profile 与临时 HOME。Docker production 镜像已在两条 Dockerfile 安装 `bubblewrap`，本节复跑 deployment contract 保持该部署保障。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_command_tooling.py::test_execution_environment_strips_registry_url_credentials backend/tests/tools/test_hr_handler.py::test_install_external_skill_from_skills_ref_copies_cli_installed_skill backend/tests/tools/test_hr_handler.py::test_install_external_skill_from_skills_ref_fails_closed_without_sandbox -q
+```
+
+结果：`3 failed`。失败点分别为 `PIP_INDEX_URL` 仍包含 `user:token@`，`hr.py` 没有 `build_sandboxed_agent_command` 可 monkeypatch，且 sandbox 不可用时测试无法证明 subprocess 没有裸跑。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_command_tooling.py::test_execution_environment_strips_registry_url_credentials backend/tests/tools/test_hr_handler.py::test_install_external_skill_from_skills_ref_copies_cli_installed_skill backend/tests/tools/test_hr_handler.py::test_install_external_skill_from_skills_ref_fails_closed_without_sandbox -q
+# 3 passed, 3 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_command_tooling.py backend/tests/tools/test_hr_handler.py backend/tests/architecture/test_deployment_contracts.py -q
+# 22 passed, 3 warnings
+
+rg -n "_darwin_sandbox_command|_linux_bwrap_command|_allow_unsandboxed_code_exec|_sandbox_unavailable_message|dict\\(os\\.environ\\)|safe_env = dict\\(os\\.environ\\)|PIP_INDEX_URL|PIP_EXTRA_INDEX_URL|NPM_CONFIG_REGISTRY|build_sandboxed_agent_command" backend/app backend/tests -g '*.py'
+# sandbox internals only in subprocess_sandbox.py; code_exec.py and hr.py both call build_sandboxed_agent_command; registry credential tests only in test_command_tooling.py
+
+backend/.venv/bin/ruff check backend/app/services/subprocess_env.py backend/app/services/subprocess_sandbox.py backend/app/services/agent_tool_domains/code_exec.py backend/app/tools/handlers/hr.py backend/tests/services/test_command_tooling.py backend/tests/tools/test_hr_handler.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/subprocess_env.py backend/app/services/subprocess_sandbox.py backend/app/services/agent_tool_domains/code_exec.py backend/app/tools/handlers/hr.py backend/tests/services/test_command_tooling.py backend/tests/tools/test_hr_handler.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4184 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只过滤 `DATABASE_URL` / `OPENAI_API_KEY` 这类显性 secrets，也不是只让 code_exec 走 sandbox。所有 agent-controlled subprocess 的共用 env builder 会剥离 registry URL userinfo；外部 skills.sh install 与 code_exec/run_command 共用同一个 sandbox builder 和 fail-closed 策略。后续如果引入 capability-scoped package credentials，应走显式出口代理或一次性 token 注入，不再靠继承 backend env。
+
 **第三仗 — Goal-2 地基（执行隔离 + agent 身份）**
 - **目标线**：Codex（OS 级 fail-closed + 默认断网）/ microVM + Claude SDK（凭据出口代理注入）+ Entra Agent ID（一等 agent 身份 + sponsor 生命周期）+ Glean（模型见数据前预过滤）。
 - **动作**：① 验证 bwrap 生产可行（或 gVisor/microVM）+ seccomp + 凭据出口注入替 env 透传；② RLS 之上加 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）。

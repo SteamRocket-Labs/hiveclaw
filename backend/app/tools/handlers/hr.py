@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shlex
 import shutil
 import tempfile
 import uuid
@@ -18,6 +19,7 @@ from app.config import get_settings
 from app.services.capability_reuse_service import reuse_existing_skill_for_agent
 from app.services import plan_mode_core
 from app.services.subprocess_env import build_agent_subprocess_env
+from app.services.subprocess_sandbox import build_sandboxed_agent_command
 from app.services.skill_seeder import BUILTIN_SKILLS
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -676,80 +678,90 @@ async def _install_external_skill_from_skills_ref(
 
     exec_home = Path(tempfile.mkdtemp(prefix=f"hr_skill_ref_{agent_id}_"))
     safe_env = build_agent_subprocess_env(home=exec_home)
-
-    proc = await asyncio.create_subprocess_exec(
-        "bash",
-        "-lc",
-        f"npx skills add {ref} -y",
-        cwd=str(work_dir),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=safe_env,
-    )
-
+    cleanup_paths: list[Path] = []
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
-        raise RuntimeError("skills.sh install timed out after 120s")
+        command = ["bash", "-lc", f"npx skills add {shlex.quote(ref)} -y"]
+        sandboxed = build_sandboxed_agent_command(command, work_dir=work_dir, env=safe_env)
+        cleanup_paths = list(sandboxed.cleanup_paths)
+        if sandboxed.error:
+            raise RuntimeError(sandboxed.error)
 
-    if proc.returncode != 0:
-        message = stderr.decode("utf-8", errors="replace") or stdout.decode("utf-8", errors="replace")
-        raise RuntimeError(message[:300] or "skills.sh install failed")
+        proc = await asyncio.create_subprocess_exec(
+            *(sandboxed.command or []),
+            cwd=str(work_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=safe_env,
+        )
 
-    sandbox_skills = exec_home / ".agents" / "skills"
-    if not sandbox_skills.exists():
-        raise RuntimeError("skills.sh install completed but no skill files were produced")
-
-    from app.services.skill_guard import scan_skill_files
-
-    files_for_guard: list[dict] = []
-    for candidate in sandbox_skills.rglob("*"):
-        if not candidate.is_file():
-            continue
-        rel = candidate.relative_to(sandbox_skills).as_posix()
         try:
-            content = candidate.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            content = ""
-        files_for_guard.append({"path": rel, "content": content})
-    guard_report = scan_skill_files(files_for_guard, source=f"skills_ref:{ref}")
-    if not guard_report.allowed:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            raise RuntimeError("skills.sh install timed out after 120s")
+
+        if proc.returncode != 0:
+            message = stderr.decode("utf-8", errors="replace") or stdout.decode("utf-8", errors="replace")
+            raise RuntimeError(message[:300] or "skills.sh install failed")
+
+        sandbox_skills = exec_home / ".agents" / "skills"
+        if not sandbox_skills.exists():
+            raise RuntimeError("skills.sh install completed but no skill files were produced")
+
+        from app.services.skill_guard import scan_skill_files
+
+        files_for_guard: list[dict] = []
+        for candidate in sandbox_skills.rglob("*"):
+            if not candidate.is_file():
+                continue
+            rel = candidate.relative_to(sandbox_skills).as_posix()
+            try:
+                content = candidate.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                content = ""
+            files_for_guard.append({"path": rel, "content": content})
+        guard_report = scan_skill_files(files_for_guard, source=f"skills_ref:{ref}")
+        if not guard_report.allowed:
+            categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
+            raise RuntimeError(f"SkillGuard blocked external skill before activation: {categories}")
+
+        copied: list[str] = []
+        agent_skills = agent_dir / "skills"
+        agent_skills.mkdir(parents=True, exist_ok=True)
+        for skill_path in sandbox_skills.iterdir():
+            dest = agent_skills / skill_path.name
+            if skill_path.is_dir():
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(skill_path, dest)
+                copied.append(skill_path.name)
+            elif skill_path.is_file() and skill_path.suffix.lower() == ".md":
+                shutil.copy2(skill_path, dest)
+                copied.append(skill_path.name)
+
+        if not copied:
+            raise RuntimeError("skills.sh install completed but copied 0 skill files")
+
+        expected_folder = ref.split("@", 1)[1]
+        folder_name = (
+            expected_folder if expected_folder in copied or (agent_skills / expected_folder).exists() else copied[0]
+        )
+
+        return {
+            "status": "installed",
+            "folder_name": folder_name,
+            "files_written": len(copied),
+            "skill_guard": guard_report.to_dict(),
+            "source_ref": ref,
+        }
+    finally:
+        for cleanup_path in cleanup_paths:
+            try:
+                cleanup_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         shutil.rmtree(exec_home, ignore_errors=True)
-        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
-        raise RuntimeError(f"SkillGuard blocked external skill before activation: {categories}")
-
-    copied: list[str] = []
-    agent_skills = agent_dir / "skills"
-    agent_skills.mkdir(parents=True, exist_ok=True)
-    for skill_path in sandbox_skills.iterdir():
-        dest = agent_skills / skill_path.name
-        if skill_path.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(skill_path, dest)
-            copied.append(skill_path.name)
-        elif skill_path.is_file() and skill_path.suffix.lower() == ".md":
-            shutil.copy2(skill_path, dest)
-            copied.append(skill_path.name)
-
-    if not copied:
-        raise RuntimeError("skills.sh install completed but copied 0 skill files")
-
-    expected_folder = ref.split("@", 1)[1]
-    folder_name = (
-        expected_folder if expected_folder in copied or (agent_skills / expected_folder).exists() else copied[0]
-    )
-    shutil.rmtree(exec_home, ignore_errors=True)
-
-    return {
-        "status": "installed",
-        "folder_name": folder_name,
-        "files_written": len(copied),
-        "skill_guard": guard_report.to_dict(),
-        "source_ref": ref,
-    }
 
 
 async def _install_external_skill_ref(

@@ -766,6 +766,39 @@ backend/.venv/bin/python -m pytest backend/tests -q
 - **目标线**：Temporal（completion 去重边界）+ CC（withRetry 10 次指数 + 输出 cap escalate）+ Claude SDK（checkpoint between tool calls + continuation token）。
 - **动作**：① K1 内核 529 撤一击毙命（允许同模型重试 + 切 fallback）+ 客户端 10 次指数退避+jitter；② workflow journal 升 completion 去重边界；③ D2 workflow_completed 接真消费方；④ subagent 背景化落 RuntimeTask 持久化 + delegation step 级 journal（替整段重放）；⑤ K2 interleaved-thinking beta 头 + 签名 round-trip。
 
+### 12.6 第二仗 K1 已实装：LLM status/network retry + 529 fallback（2026-06-13）
+
+**完成范围**：`backend/app/services/llm_client.py` 新增统一 retry policy：非流式 HTTP status 路径、OpenAI-compatible stream、Gemini stream、Anthropic stream 全部使用 `_LLM_HTTP_MAX_ATTEMPTS=10`，退避为指数 `1,2,4,8,16,30...` 并带 jitter，`Retry-After` / `anthropic-ratelimit-unified-reset` 仍优先。非流式 `ConnectError` / `ReadError` / `ConnectTimeout` / `ReadTimeout` 也走同一 10 次策略；三条 stream 网络异常分支补齐 `ReadTimeout`。`backend/app/services/llm_error_policy.py` 把 `529/overloaded` 从 `429` 中拆出：529 是 provider transient，允许 kernel 在同模型重试耗尽后切 fallback；401/403/429/quota/model-not-found 仍 `requires_user_decision=True`，不自动切模型掩盖账号/配置真相。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_llm_client_retry.py backend/tests/kernel/test_cancel_and_fallback.py::test_agent_kernel_uses_fallback_for_provider_overloaded_529 -q
+```
+
+结果：`3 failed, 1 passed`。失败点：`llm_client.random` 不存在（无 jitter helper）、网络异常首错即抛/无同策略 retry、`HTTP 529: overloaded` 被分类成需要用户决策的 rate limit，kernel 没有创建 fallback client。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_llm_client_retry.py backend/tests/kernel/test_cancel_and_fallback.py::test_agent_kernel_uses_fallback_for_provider_overloaded_529 backend/tests/kernel/test_cancel_and_fallback.py::test_agent_kernel_does_not_fallback_for_provider_account_errors -q
+# 7 passed, 3 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_llm_client_retry.py backend/tests/services/test_llm_reasoning_adapter.py backend/tests/services/test_llm_client_from_config.py backend/tests/kernel/test_cancel_and_fallback.py backend/tests/kernel/test_engine.py::test_agent_kernel_emits_runtime_fallback_event_after_prompt_too_long -q
+# 30 passed, 3 warnings
+
+backend/.venv/bin/ruff check backend/app/services/llm_client.py backend/app/services/llm_error_policy.py backend/tests/services/test_llm_client_retry.py backend/tests/kernel/test_cancel_and_fallback.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/llm_client.py backend/app/services/llm_error_policy.py backend/tests/services/test_llm_client_retry.py backend/tests/kernel/test_cancel_and_fallback.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4175 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只给 OpenAI 非流式加重试。所有 `llm_client.py` 内部直接 HTTP status retry 的 provider 路径共享同一 attempt/backoff helper；stream partial retry 仍发送 `STREAM_RETRY_TOMBSTONE` 清理已吐出的片段；账号、权限、模型不存在、配额耗尽、429 明确限流仍保持用户决策边界，不会为了“可用性”静默换模型隐藏运营问题。
+
 **第三仗 — Goal-2 地基（执行隔离 + agent 身份）**
 - **目标线**：Codex（OS 级 fail-closed + 默认断网）/ microVM + Claude SDK（凭据出口代理注入）+ Entra Agent ID（一等 agent 身份 + sponsor 生命周期）+ Glean（模型见数据前预过滤）。
 - **动作**：① 验证 bwrap 生产可行（或 gVisor/microVM）+ seccomp + 凭据出口注入替 env 透传；② RLS 之上加 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）。

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import time
 import uuid
@@ -21,6 +22,10 @@ from loguru import logger
 from app.services.token_tracker import record_autonomous_llm_token_usage
 
 STREAM_RETRY_TOMBSTONE = "[[HIVE_STREAM_RETRY_TOMBSTONE]]"
+_LLM_HTTP_MAX_ATTEMPTS = 10
+_LLM_HTTP_BACKOFF_BASE_SECONDS = 1.0
+_LLM_HTTP_BACKOFF_CAP_SECONDS = 30.0
+_LLM_HTTP_BACKOFF_JITTER_RATIO = 0.10
 
 
 # ============================================================================
@@ -355,6 +360,14 @@ def _is_retryable_http_status(status_code: int) -> bool:
     return status_code in {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
 
+def _retry_backoff_seconds(attempt_index: int) -> float:
+    base = _LLM_HTTP_BACKOFF_BASE_SECONDS * (2**attempt_index)
+    capped = min(base, _LLM_HTTP_BACKOFF_CAP_SECONDS)
+    jitter_room = max(0.0, _LLM_HTTP_BACKOFF_CAP_SECONDS - capped)
+    jitter_cap = min(capped * _LLM_HTTP_BACKOFF_JITTER_RATIO, jitter_room)
+    return min(_LLM_HTTP_BACKOFF_CAP_SECONDS, capped + random.uniform(0.0, jitter_cap))
+
+
 def _retry_after_seconds(headers: dict | httpx.Headers, *, fallback: float, cap: float = 30.0) -> float:
     retry_after = None
     for header_name in ("retry-after", "anthropic-ratelimit-unified-reset"):
@@ -376,15 +389,29 @@ async def _post_with_status_retries(
     *,
     payload: dict[str, Any],
     headers: dict[str, str],
-    max_retries: int = 3,
+    max_retries: int = _LLM_HTTP_MAX_ATTEMPTS,
 ) -> httpx.Response:
     for attempt in range(max_retries):
-        response = await client.post(url, json=payload, headers=headers)
+        try:
+            response = await client.post(url, json=payload, headers=headers)
+        except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+            if attempt >= max_retries - 1:
+                raise
+            wait = _retry_backoff_seconds(attempt)
+            logger.warning(
+                "LLM provider network error {}, retrying request attempt {}/{} in {}s...",
+                type(exc).__name__,
+                attempt + 2,
+                max_retries,
+                wait,
+            )
+            await asyncio.sleep(wait)
+            continue
         if response.status_code < 400:
             return response
         if not _is_retryable_http_status(response.status_code) or attempt >= max_retries - 1:
             return response
-        wait = _retry_after_seconds(response.headers, fallback=(attempt + 1) * 2)
+        wait = _retry_after_seconds(response.headers, fallback=_retry_backoff_seconds(attempt))
         logger.warning(
             "HTTP {} from LLM provider, retrying request attempt {}/{} in {}s...",
             response.status_code,
@@ -773,7 +800,7 @@ class OpenAICompatibleClient(LLMClient):
         in_think = False
         tag_buffer = ""
 
-        max_retries = 3
+        max_retries = _LLM_HTTP_MAX_ATTEMPTS
         client = await self._get_client()
 
         async def reset_partial_stream_for_retry() -> None:
@@ -797,7 +824,7 @@ class OpenAICompatibleClient(LLMClient):
                         async for chunk in resp.aiter_bytes():
                             error_body += chunk.decode(errors="replace")
                         if _is_retryable_http_status(resp.status_code) and attempt < max_retries - 1:
-                            wait = _retry_after_seconds(resp.headers, fallback=(attempt + 1) * 2)
+                            wait = _retry_after_seconds(resp.headers, fallback=_retry_backoff_seconds(attempt))
                             logger.warning(
                                 "Stream HTTP {} from provider, retrying attempt {}/{} in {}s...",
                                 resp.status_code,
@@ -864,9 +891,9 @@ class OpenAICompatibleClient(LLMClient):
                 if e.response.status_code == 429:
                     if attempt < max_retries - 1:
                         try:
-                            retry_after = int(e.response.headers.get("retry-after", (attempt + 1) * 2))
+                            retry_after = int(e.response.headers.get("retry-after", _retry_backoff_seconds(attempt)))
                         except (ValueError, TypeError):
-                            retry_after = (attempt + 1) * 2
+                            retry_after = _retry_backoff_seconds(attempt)
                         wait = min(retry_after, 30)
                         logger.warning(f"Rate limited (429), waiting {wait}s before retry...")
                         await asyncio.sleep(wait)
@@ -875,9 +902,9 @@ class OpenAICompatibleClient(LLMClient):
                         raise LLMError(f"Rate limited after {max_retries} attempts: {e}")
                 else:
                     raise LLMError(f"HTTP {e.response.status_code}: {e.response.text[:200]}")
-            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
                 if attempt < max_retries - 1:
-                    wait = (attempt + 1) * 1
+                    wait = _retry_backoff_seconds(attempt)
                     logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
                     await asyncio.sleep(wait)
                     await reset_partial_stream_for_retry()
@@ -1603,7 +1630,7 @@ class GeminiClient(LLMClient):
         final_finish_reason: str | None = None
 
         client = await self._get_client()
-        max_retries = 3
+        max_retries = _LLM_HTTP_MAX_ATTEMPTS
 
         for attempt in range(max_retries):
             try:
@@ -1619,7 +1646,7 @@ class GeminiClient(LLMClient):
                         async for chunk in resp.aiter_bytes():
                             error_body += chunk.decode(errors="replace")
                         if _is_retryable_http_status(resp.status_code) and attempt < max_retries - 1:
-                            wait = _retry_after_seconds(resp.headers, fallback=(attempt + 1) * 2)
+                            wait = _retry_after_seconds(resp.headers, fallback=_retry_backoff_seconds(attempt))
                             logger.warning(
                                 "[Gemini] Stream HTTP {} retrying attempt {}/{} in {}s...",
                                 resp.status_code,
@@ -1687,9 +1714,9 @@ class GeminiClient(LLMClient):
                                 })
                 break
 
-            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
                 if attempt < max_retries - 1:
-                    await asyncio.sleep((attempt + 1) * 1)
+                    await asyncio.sleep(_retry_backoff_seconds(attempt))
                     full_text = ""
                     tool_calls = []
                     seen_tool_calls = set()
@@ -1915,8 +1942,8 @@ class AnthropicClient(LLMClient):
 
         client = await self._get_client()
 
-        # Retry loop for transient connection failures (ME-08)
-        max_retries = 2
+        # Retry loop for transient provider status and connection failures.
+        max_retries = _LLM_HTTP_MAX_ATTEMPTS
         for attempt in range(max_retries):
             try:
                 async with client.stream("POST", url, json=payload, headers=self._get_headers()) as resp:
@@ -1925,7 +1952,7 @@ class AnthropicClient(LLMClient):
                         async for chunk in resp.aiter_bytes():
                             error_body += chunk.decode(errors="replace")
                         if _is_retryable_http_status(resp.status_code) and attempt < max_retries - 1:
-                            wait = _retry_after_seconds(resp.headers, fallback=(attempt + 1) * 2)
+                            wait = _retry_after_seconds(resp.headers, fallback=_retry_backoff_seconds(attempt))
                             logger.warning(
                                 "[Anthropic] Stream HTTP {} retrying attempt {}/{} in {}s...",
                                 resp.status_code,
@@ -2028,10 +2055,10 @@ class AnthropicClient(LLMClient):
 
                 break  # Stream completed successfully
 
-            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout) as e:
+            except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
                 if attempt < max_retries - 1:
                     logger.warning("[Anthropic] Stream attempt %d failed, retrying: %s", attempt + 1, e)
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(_retry_backoff_seconds(attempt))
                     # Reset accumulators for clean retry
                     full_content = ""
                     full_reasoning = ""

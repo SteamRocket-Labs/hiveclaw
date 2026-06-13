@@ -44,15 +44,14 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
             requires_user_decision=True,
         )
 
-    if (
-        "429" in msg
-        or "529" in msg
-        or "overloaded" in lower
-        or "too many requests" in lower
-        or "rate_limit" in lower
-        or "rate limit" in lower
-        or "速率限制" in msg
-    ):
+    if "529" in msg or "overloaded" in lower:
+        return LLMErrorClassification(
+            kind="rate_limited",
+            user_message="[LLM Error] AI 模型服务方暂时过载，已重试仍失败，请稍后重试。",
+            requires_user_decision=False,
+        )
+
+    if "429" in msg or "too many requests" in lower or "rate_limit" in lower or "rate limit" in lower or "速率限制" in msg:
         return LLMErrorClassification(
             kind="rate_limited",
             user_message="[LLM Error] AI 模型服务方已限流，请稍后重试，或由用户选择切换模型。",

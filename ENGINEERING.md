@@ -1,12 +1,22 @@
 # Hive Engineering Documentation
 
-Current snapshot: 2026-05-27
+Current snapshot: 2026-06-13
 Product version: 1.7.0 (`backend/VERSION`, `frontend/VERSION`)
 Stack: FastAPI + React 19 + PostgreSQL + Redis + Railway
 
 This document describes the current engineering shape of Hive. It is the main
 technical reference for architecture, runtime contracts, deployment, and the
 recent product surface changes.
+
+## Current Closure Baseline
+
+The current engineering baseline is the post-harness, post-round2 closure state:
+
+- Canonical review evidence lives in `docs/harness-engineering-audit-2026-06-11.md` and `docs/round2-sota-benchmark-2026.md`.
+- Runtime self-evolution is treated as a governed harness problem: hard verification, source evidence, rollback metadata, audit records, and replay/eval gates are part of the promotion path.
+- Production-grade runtime contracts now include restart-resumable `RuntimeTask` execution, DB-backed `invocation_spans`, provider retry/overload fallback, token budget gates, Anthropic thinking-signature preservation, prompt-cache anchoring, and unified sandboxing for agent-controlled subprocesses.
+- Enterprise-control contracts now include per-agent identity/sponsor lifecycle, fail-closed principal retrieval for memory, MCP token-passthrough rejection, A2A-style Agent Cards, machine-readable interoperability profile, and memory hygiene startup repair.
+- Most recent full backend verification before this documentation pass: `cd backend && source .venv/bin/activate && pytest tests -q` -> `4223 passed, 7 skipped, 4 warnings`.
 
 ## System Shape
 
@@ -23,7 +33,9 @@ Backend (FastAPI, SQLAlchemy async)
   - Tool governance and capability packs
   - Memory Control Plane
   - Web chat durable RuntimeTask runs
+  - Invocation trace spine and provider fallback
   - Channel stream managers
+  - Interoperability profile and A2A-style Agent Cards
         |
         +-- PostgreSQL 15, tenant-scoped models and RLS
         +-- Redis 7, cache/pubsub/session support
@@ -37,17 +49,17 @@ Counts are from the current tree, not historical docs.
 
 | Area | Current Size | Notes |
 |------|--------------|-------|
-| API routers | 55 files | Mounted under both `/api` and `/api/v1`, except public webhooks and WebSocket. |
-| ORM models | 36 files | Tenant-scoped SQLAlchemy models, including runtime tasks, coordination, objectives, identity, pending replies, and channel config. |
-| Services | 130 files | Runtime, channel delivery, memory, extraction, evolution, office, Feishu, triggers, skills, governance. |
+| API routers | 62 files | Mounted under both `/api` and `/api/v1`, except public webhooks and WebSocket. |
+| ORM models | 43 files | Tenant-scoped SQLAlchemy models, including runtime tasks, coordination, objectives, identity, pending replies, channel config, invocation spans, and session feedback. |
+| Services | 163 files | Runtime, channel delivery, memory, extraction, evolution, office, Feishu, triggers, skills, governance, trace, MCP authz, interoperability. |
 | Tool handlers | 16 files | filesystem, search, communication, email, Feishu, memory, office, finance, HR, MCP, deep research, objectives, plaza, tasks, triggers. |
 | Tool domain services | 21 files | Feishu office domains, workspace, messaging, objectives, web MCP, code exec, image upload. |
-| Memory modules | 18 files | write gate, activation, retriever, T2 store, lifecycle, retention, access log, replay corpus, optional backends. |
+| Memory modules | 25 files | write gate, activation, retriever, T2 store, lifecycle, retention, access log, replay corpus, hygiene, optional backends. |
 | Runtime modules | 13 files | invoker, prompt builder, context budget, hooks, session, recovery manifest, coordinator, eval helpers. |
-| Alembic migrations | 58 files | `alembic heads` must stay single-head before new migrations. |
+| Alembic migrations | 79 files | `alembic heads` must stay single-head before new migrations. |
 | Frontend pages | 16 page files | App, workspace, admin, login/setup, agent detail, Agent Circle. |
 | Frontend section files | 25 section files | Agent detail, workspace admin, admin companies. |
-| Frontend API domains | 25 production adapters | Typed adapters for agents, chat, office, deep research, memory, autonomy, enterprise, etc.; 30 files including tests and index. |
+| Frontend API domains | 37 files | Typed adapters for agents, chat, office, deep research, memory, autonomy, enterprise, etc.; count includes tests and index files. |
 
 ## Product Surfaces
 
@@ -106,19 +118,20 @@ API from booting.
 6. Migrate legacy workspace files and objective ledger projections.
 7. Seed built-in tools, default company, Atlassian/Rovo tools, skills, and default agents.
 8. Run tool coverage and capability mapping audits.
-9. Resume persisted async delegations and reconcile orphaned runtime tasks.
-10. Replay pending memory extraction queue entries from previous crashes or deploy restarts.
-11. Register runtime memory hooks.
-12. Backfill legacy trigger reply contexts.
-13. Start background tasks:
+9. Apply workspace memory hygiene repair when an agent workspace is bootstrapped; the standalone `python -m app.scripts.repair_memory_hygiene --apply --confirm` path is available for fleet repair.
+10. Resume persisted async delegations and reconcile orphaned runtime tasks.
+11. Replay pending memory extraction queue entries from previous crashes or deploy restarts.
+12. Register runtime memory hooks.
+13. Backfill legacy trigger reply contexts.
+14. Start background tasks:
     - `trigger_daemon`
     - `evolution_daemon`
     - `feishu_ws`
     - `dingtalk_stream`
     - `wecom_stream`
     - `wechat_personal_stream`
-14. Start optional `ss-local` SOCKS5 proxy for Discord.
-15. On shutdown, stop WeChat personal streams, close Redis, close OpenViking, close memory backends.
+15. Start optional `ss-local` SOCKS5 proxy for Discord.
+16. On shutdown, stop WeChat personal streams, close Redis, close OpenViking, close memory backends.
 
 ## API Routing
 
@@ -135,6 +148,7 @@ Important routers added or promoted in the current architecture:
 - `chat_sessions.py`: web chat sessions and durable run endpoints.
 - `office.py`: ONLYOFFICE editor config, download/callback/force-save endpoints.
 - `deep_research.py`: deep research job control and stream proxy.
+- `interoperability.py`: machine-readable platform interoperability profile.
 - `tenant_channels.py`, `email_channel.py`, `telegram.py`, `wechat_personal.py`: per-channel configuration and runtime surfaces.
 - `objectives.py`, `autonomy.py`: durable objectives and autonomy overview/repair.
 - `desktop_auth.py`, `desktop_sync.py`, `desktop_agents.py`, `desktop_audit.py`: desktop sync foundation.
@@ -166,6 +180,9 @@ Runtime facts:
 - Per-round aggregate tool result budget is 200,000 characters.
 - Microcompaction clears old tool results after 60 minutes, or after 10 minutes once context pressure is at or above 60%.
 - Prompt prefix caching uses `SessionContext` and an explicit prompt cache version.
+- Anthropic list content blocks preserve signed thinking blocks and `cache_control` hints through provider formatting.
+- Provider retry/fallback handles transient network failures, 429/5xx retryable responses, and overload failover without changing the kernel entry contract.
+- `record_invocation_span` persists invocation, generation, and tool spans to PostgreSQL while also preserving file-backed JSONL compatibility.
 
 ## Web Chat Runtime
 
@@ -253,6 +270,7 @@ flowchart LR
 | Understanding graph | `memory/understandings.md` | `memory/understanding_store.py` | Relationship-shaped knowledge with evidence, confidence, contradictions, boundaries, and open questions. |
 | Identity | `soul.md` | dream / charter evolution path | Stable self-model, role, boundaries, and operating style. Promotion requires evidence and rollback metadata. |
 | Evolution evidence | `workspace/evolution/evolution_ledger.jsonl` | heartbeat, dream, evolution services | Candidate, eval, promotion/hold decisions for prompt, skill, memory, and policy changes. |
+| Session feedback | PostgreSQL `session_feedback_events` + governed T3 writeback | chat session feedback API | Useful/misleading labels and calibration notes tied to agent/session/decision context. |
 
 Optional semantic backends such as Hindsight are read-side accelerators. They do
 not replace Markdown as the canonical memory source.
@@ -317,6 +335,13 @@ wrapper that calls it.
 This gate is what keeps memory from becoming a transcript dump. Durable entries
 must be concise, evidence-backed, scoped, and safe to activate later.
 
+Memory hygiene is part of the write-safety surface, not a one-off migration.
+`memory/hygiene.py` retires legacy `memory.sqlite3` / `memory.json` shadow stores,
+quarantines dead `reflections.md` stubs, backfills missing lifecycle metadata,
+and writes a report for operator review. Startup workspace bootstrapping applies
+the repair per agent, while `app.scripts.repair_memory_hygiene` provides a dry-run
+and explicit `--apply --confirm` fleet path.
+
 ### Activation Loop
 
 Prompt memory is selected at invocation time. The retriever does not blindly
@@ -376,6 +401,7 @@ Memory policy itself is not allowed to drift silently.
 | `services/evolution_ledger.py` | Records candidates, eval runs, promotion decisions, source refs, and rollback strategy. |
 | `services/heartbeat.py` | Produces evolution file writeback and skill candidates under runtime governance. |
 | `services/auto_dream.py` | Consolidates memory and decides which memory/soul promotions are strong enough to apply. |
+| `services/session_feedback.py` | Persists useful/misleading feedback events and feeds calibrated durable memory through governed write paths. |
 
 The intended promotion path is:
 
@@ -384,7 +410,9 @@ runtime evidence -> candidate -> replay/eval -> promote or hold -> rollback-capa
 ```
 
 No prompt, skill, memory policy, or identity change should become durable simply
-because a single run produced a plausible idea.
+because a single run produced a plausible idea. Verified promotion requires
+hard evidence where available, explicit eval/verification records, and rollback
+metadata.
 
 ### Memory Invariants
 
@@ -429,6 +457,16 @@ Static tool packs currently include:
 - `deep_research_pack`
 
 MCP server imports generate dynamic pack names such as `mcp_server:{slug}`.
+MCP auth is intentionally conservative: registry URLs with userinfo,
+`access_token`, or passthrough credentials are rejected; legacy `apiKey` query
+parameters are normalized into an authorization header before execution. This
+prevents agent-controlled tool configuration from smuggling bearer tokens into
+remote URLs or subprocess environments.
+
+Agent-controlled subprocesses must be launched through
+`services/subprocess_sandbox.py`. Linux production uses `bubblewrap`; macOS
+development uses `sandbox-exec`; unavailable sandboxes fail closed unless an
+explicit development bypass is configured.
 
 ## Office Editing Runtime
 
@@ -461,6 +499,16 @@ Required production env:
 - `ONLYOFFICE_JWT_SECRET`
 - `ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS` optional, default 300
 - `BASE_URL` or `PUBLIC_BASE_URL` for signed document URLs
+
+## Interoperability Surface
+
+Hive exposes machine-readable interoperability descriptors without pretending
+that unimplemented standards are complete:
+
+- `GET /api/v1/interoperability/profile` returns the platform profile, including MCP hardening status and A2A/OAuth support boundaries.
+- `GET /api/v1/agents/{agent_id}/a2a-card` returns an A2A-style Agent Card guarded by `check_agent_access()`.
+- The card declares implemented Hive surfaces such as OpenClaw gateway poll/report/send-message, tenant-scoped messages, and agent identity/sponsor/security-zone metadata.
+- OAuth delegation and A2A JSON-RPC task surfaces are explicitly marked `not_exposed` until they are implemented end to end.
 
 ## Channels
 
@@ -600,6 +648,13 @@ npm run test
 npm run build
 ```
 
+For current harness/control-plane closure checks:
+
+```bash
+cd backend
+pytest tests/services/test_invocation_trace_service.py tests/kernel/test_invocation_trace.py tests/services/test_session_feedback.py tests/services/test_interoperability.py tests/api/test_interoperability_api.py tests/memory/test_hygiene.py tests/architecture/test_deployment_contracts.py -q
+```
+
 ## Non-Negotiable Invariants
 
 - All LLM execution goes through `invoke_agent()` and `AgentKernel.handle()`.
@@ -610,5 +665,10 @@ npm run build
 - Agent creation must render first-person accountability plus frozen company/owner charter sections in `soul.md`.
 - WebSocket disconnects must not cancel durable web chat runs.
 - Office document saves must preserve path safety and revision history.
+- Agent-controlled subprocesses must use the shared sandbox/environment builder and must not inherit host secrets.
+- MCP imports and execution must go through `mcp_authz`; URL userinfo and token passthrough are forbidden.
+- A2A/interoperability descriptors must be honest machine-readable contracts; unsupported OAuth delegation or JSON-RPC task surfaces must stay marked `not_exposed`.
+- Invocation trace spans are append-only runtime evidence and must carry tenant/runtime join keys.
+- Memory hygiene repair must be reversible, reportable, and applied through the shared hygiene path rather than ad hoc workspace edits.
 - UI text changes must update both English and Chinese i18n files.
 - Migrations require a single Alembic head.

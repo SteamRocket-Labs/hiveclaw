@@ -33,12 +33,32 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, and an owner/company-aware Memory Control Plane.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, and an owner/company-aware Memory Control Plane.
 
 - **Version:** 1.7.0 (tracked in `backend/VERSION` and `frontend/VERSION`)
 - **License:** Apache 2.0
 - **Stack:** FastAPI (Python 3.12) + React 19 (TypeScript 5) + PostgreSQL 15 + Redis 7
 - **Deployment:** Docker / Railway
+
+## Current Engineering Baseline (2026-06-13)
+
+Treat these documents as the current truth surface before making architecture claims:
+
+- `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
+- `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark and current improvement route.
+- `docs/self-evolution-sota-plan.md` — canonical self-evolution foundation, now a completed substrate plus ongoing benchmark baseline.
+- `docs/agent-memory-purity-spec.md` — memory purity, lifecycle, and hygiene contract.
+
+Current implemented closures that future work must preserve:
+
+- Hard verification and rollback metadata are required for durable self-evolution promotion.
+- `RuntimeTask` execution is restart-resumable and web chat disconnects do not cancel runs.
+- `invocation_spans` are the canonical DB trace surface; JSONL spans remain compatibility artifacts.
+- Provider retry/overload fallback, token budget gates, CJK-aware estimates, canonical prompt-cache anchors, and Anthropic thinking-signature preservation are runtime contracts.
+- Agent-controlled subprocesses use the shared sandbox/environment builder; Linux production requires `bubblewrap`.
+- MCP authz rejects token passthrough and URL userinfo; A2A Agent Cards and `/interoperability/profile` must state unsupported OAuth/JSON-RPC surfaces as `not_exposed`.
+- Memory hygiene startup repair retires legacy shadow stores and quarantines dead stubs through a reversible shared path.
+- Latest full backend evidence before the current documentation-only update: `cd backend && source .venv/bin/activate && pytest tests -q` -> `4223 passed, 7 skipped, 4 warnings`.
 
 ## Commands
 
@@ -56,6 +76,8 @@ ruff check app/ --fix && ruff format app/
 pytest
 alembic upgrade head
 alembic revision --autogenerate -m "desc"
+python -m app.scripts.repair_memory_hygiene      # dry-run fleet memory hygiene
+python -m app.scripts.repair_memory_hygiene --apply --confirm
 
 # Frontend (cd frontend/)
 npm run dev                        # Vite on :3008
@@ -71,50 +93,50 @@ docker compose up -d --build       # Full stack → :3008
 
 | Layer | Files | LOC | Purpose |
 |-------|-------|-----|---------|
-| API Routes | 55 | ~20K | FastAPI routers |
-| Models | 36 | ~1.8K | SQLAlchemy ORM (async, RLS) |
-| Services | 130 | ~49K | Business logic |
+| API Routes | 62 | — | FastAPI routers |
+| Models | 43 | — | SQLAlchemy ORM (async, RLS) |
+| Services | 163 | — | Business logic |
 | Tool Domains | 21 | — | Feishu office, messaging, tasks, workspace, email |
 | Kernel | 3 | ~2.7K | Core LLM execution engine |
 | Tools | 16 handlers | — | Handler implementations |
 | Skills | 5 | ~310 | Markdown skill system |
-| Memory | 18 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding |
-| Migrations | 58 | — | Alembic schema versions |
+| Memory | 25 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding, hygiene |
+| Migrations | 79 | — | Alembic schema versions |
 
-### API Routers (55 files)
+### API Routers (62 files)
 
 Core: `agents`, `auth`, `users`, `tenants`, `enterprise`, `admin`
 Agent features: `tasks`, `triggers`, `schedules`, `relationships`, `skills`, `files`, `chat_sessions`, `objectives`, `autonomy`, `deep_research`
 Channels: `feishu`, `slack`, `discord_bot`, `dingtalk`, `wecom`, `wechat_personal`, `teams`, `telegram`, `email_channel`, `tenant_channels`
-Platform: `tools`, `packs`, `capabilities`, `plaza`, `notification`, `websocket`, `office`
+Platform: `tools`, `packs`, `capabilities`, `plaza`, `notification`, `websocket`, `office`, `interoperability`
 Enterprise: `organization`, `memory`, `guard_policies`, `feature_flags`, `config_history`, `role_templates`
 Desktop: `desktop_auth`, `desktop_sync`, `desktop_agents`, `desktop_audit`
 Other: `upload`, `webhooks`, `gateway`, `llm_proxy`, `oidc`, `onboarding`, `advanced`, `atlassian`
 
 Most routers are mounted under both `/api` and `/api/v1`; public webhooks and `/ws/chat/{agent_id}` are mounted without the API prefix.
 
-### Models (36 files)
+### Models (43 files)
 
 Core entities: `User`, `Agent`, `Tenant`, `LLMModel`, `Tool`, `Skill`, `Task`, `RuntimeTask`, `Objective`
 Agent config: `AgentTrigger`, `AgentSchedule`, `ChannelConfig`, `AgentPermission`, `AgentTemplate`
 Relationships: `AgentRelationship`, `AgentAgentRelationship`, `OrgMember`, `OrgDepartment`, coordination lease/signal/checkpoint models
-Audit: `AuditLog`, `SecurityAuditEvent`, `ChatMessage`, `ChatSession`, `AgentActivityLog`
+Audit: `AuditLog`, `SecurityAuditEvent`, `ChatMessage`, `ChatSession`, `AgentActivityLog`, `InvocationSpan`, `SessionFeedbackEvent`
 Platform: `CapabilityPolicy`, `CapabilityInstall`, `GuardPolicy`, `FeatureFlag`, `Notification`
 Auth: `RefreshToken`, `InvitationCode`, `Participant`, identity provider models
 Social: `PlazaPost`, `PlazaComment`, `PlazaLike`
 
-### Services (130 files)
+### Services (163 files)
 
 | Category | Services |
 |----------|---------|
 | Agent lifecycle | `agent_manager`, `agent_seeder`, `auto_dream`, `auto_provision` |
 | LLM | `llm_client` (OpenAI/Anthropic/Gemini/compatible), `llm_utils` |
-| Execution | `trigger_daemon` (15s loop), `task_executor`, `scheduler`, `heartbeat`, `evolution_daemon`, `web_chat_runtime`, `long_task_runtime` |
+| Execution | `trigger_daemon` (15s loop), `task_executor`, `scheduler`, `heartbeat`, `evolution_daemon`, `web_chat_runtime`, `long_task_runtime`, `invocation_trace` |
 | Channels | `feishu_service`, `feishu_ws`, `dingtalk_stream`, `wecom_stream`, `wechat_personal_stream`, `channel_delivery_service` |
 | Tools | `agent_tools`, `agent_tool_assignment_service`, `tool_seeder`, `tool_telemetry` |
-| Security | `capability_gate`, `approval_service`, `quota_guard`, `secrets_provider`, `audit_logger` |
-| Memory | `memory_service`, `conversation_summarizer`, `knowledge_inject`, `extract_agent`, `extract_queue`, `agency_charter`, `decision_trace` |
-| Integration | `mcp_client`, `mcp_registry_service`, `email_service`, `viking_client` |
+| Security | `capability_gate`, `approval_service`, `quota_guard`, `secrets_provider`, `audit_logger`, `mcp_authz`, `subprocess_sandbox`, `agent_identity_lifecycle` |
+| Memory | `memory_service`, `conversation_summarizer`, `knowledge_inject`, `extract_agent`, `extract_queue`, `agency_charter`, `decision_trace`, `session_feedback` |
+| Integration | `mcp_client`, `mcp_registry_service`, `email_service`, `viking_client`, `interoperability` |
 | Multi-tenant | `enterprise_sync`, `org_sync_service`, `sync_service` |
 | Office / docs | `office_document_service`, `officecli_adapter`, `text_extractor` |
 | Other | `pack_service`, `skill_creator_content`, `token_tracker`, `objective_service`, `autonomy_repair_plan` |
@@ -127,8 +149,10 @@ Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is go
 |------------|--------------------|-------------------|
 | Principal + charter context | `services/agency_charter.py`, `services/principal_context.py` | Memory/action decisions must know direct owner, company, creator/current user, and delegation context when available. |
 | Write safety | `memory/write_gate.py`, `memory/t2_store.py`, `tools/handlers/memory.py` | New durable memories must pass privacy/sensitivity classification before T2/T3 persistence; PL4 credentials are rejected. |
+| Memory hygiene | `memory/hygiene.py`, `tools/workspace.py`, `scripts/repair_memory_hygiene.py` | Legacy shadow stores and dead stubs are retired through reversible quarantine/backfill paths; no ad hoc workspace surgery. |
 | Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is selected by owner/company/goal/open-loop relevance and sensitivity access, not by static file inclusion alone. |
 | Decision trace + preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, sensitive, irreversible, or company-conflicting tool calls must pass preflight before execution. |
+| Session feedback | `services/session_feedback.py`, `models/session_feedback.py`, `api/chat_sessions.py` | Useful/misleading feedback is persisted with tenant/session/agent context and re-enters memory through governed write paths. |
 | Coordination primitives | `agents/coordination.py`, `agents/orchestrator.py`, `tools/service.py` | Cross-agent work uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel can emit Signal or Checkpoint. |
 | Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk work, but external-visible action requires Checkpoint and policy tuning requires replay guard. |
 
@@ -140,6 +164,7 @@ Web chat runs are durable background tasks:
 - `web_chat_runtime.py` creates and executes `RuntimeTask(task_type="web_chat_turn")`.
 - `web_chat_broker.py` broadcasts session-scoped runtime events to WebSocket subscribers.
 - `websocket.py` is a subscription and compatibility start path; disconnecting the browser must not cancel the run.
+- Active-run uniqueness and persisted `RuntimeTask` scanning prevent duplicate web-chat/deep-research runs after process restarts.
 - Frontend `AgentDetail.tsx` sends a 30s keepalive ping while waiting/streaming; backend replies with `pong`.
 - `WS_IDLE_TIMEOUT_SECONDS` defaults to 3600; if an active run exists, idle close is deferred.
 
@@ -165,6 +190,9 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 - Parallel-safe tool execution
 - Vision support for multimodal models
 - Provider-specific cache hints
+- DB-backed invocation/generation/tool spans through `record_invocation_span`
+- Provider retry/overload fallback, output-cap telemetry, and Anthropic thinking-signature preservation
+- Turn-level token budget gates where runtime config provides a budget
 
 ### Tool Handlers (60+ tools)
 
@@ -218,18 +246,23 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 
 Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put<T>()` with JWT auth and tenant header injection.
 
-25 production domain adapters in `api/domains/` (30 files including tests and index), including agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, deepResearch, memory, objectives, autonomy, and evolution.
+37 files in `api/domains/` including tests and index, covering agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, deepResearch, memory, objectives, autonomy, and evolution.
 
 ## Conventions
 
 - **Multi-tenancy:** All entities tenant-scoped. PostgreSQL RLS. `check_agent_access()` required.
 - **Kernel invariant:** All LLM calls via `invoke_agent()` → `AgentKernel.handle()`. Never direct.
 - **Tool governance:** All tool calls via `ToolRuntimeService.execute()`. Never bypass.
+- **Subprocess sandbox:** Agent-controlled subprocesses must go through `services/subprocess_sandbox.py` and `services/subprocess_env.py`; never inherit host secrets or launch raw `subprocess` from tool handlers.
+- **MCP authz:** MCP imports/execution must go through `services/mcp_authz.py`; URL userinfo, `access_token`, and token passthrough credentials are forbidden.
 - **Memory write invariant:** Do not write T2/T3 durable memory directly from tools or extractors; use `prepare_memory_write()` or an existing wrapper that calls it.
 - **Memory read invariant:** Prompt memory retrieval must preserve `ActivationContext` and sensitivity stripping when current user/owner/company context is known.
+- **Memory hygiene invariant:** Legacy memory artifacts are repaired by `memory/hygiene.py` only, with reversible quarantine/backfill reports.
 - **Action boundary invariant:** Do not bypass `ActionPreflightService` for external-visible, sensitive, irreversible, or company-boundary actions.
 - **Agent creation invariant:** New employee agents must render first-person accountability plus frozen Company Charter and Owner Agency Charter sections in `soul.md`.
 - **Coordination invariant:** Duplicate delegation should acquire a Lease; progress/handoff should use Signal; confirm-first work should create Checkpoint metadata.
+- **Trace invariant:** Invocation spans are append-only evidence with tenant, agent, user, runtime task, session, request, trace, and parent span join keys.
+- **Interoperability invariant:** A2A/interoperability descriptors are contracts, not marketing; unsupported OAuth delegation and JSON-RPC task surfaces must remain `not_exposed`.
 - **i18n:** Both `en.json` and `zh.json` must be updated for any UI text.
 - **Migrations:** `alembic heads` must show single head before creating new migration.
 - **Ruff:** `target-version = "py311"`, `line-length = 120`.

@@ -33,9 +33,29 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, durable web chat runs, Office workbench editing, and an owner/company-aware Memory Control Plane. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, durable web chat runs, Office workbench editing, and an owner/company-aware Memory Control Plane. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
 
 **Version:** tracked in `backend/VERSION` and `frontend/VERSION` (currently 1.7.0).
+
+## Current Engineering Baseline (2026-06-13)
+
+Before making architecture claims, use the current evidence surface:
+
+- `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
+- `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark and current improvement route.
+- `docs/self-evolution-sota-plan.md` — canonical self-evolution foundation and completed substrate baseline.
+- `docs/agent-memory-purity-spec.md` — memory purity, lifecycle, and hygiene contract.
+
+Current closures that must not regress:
+
+- Durable self-evolution promotion requires evidence, verification/eval, rollback metadata, and audit records.
+- Web chat and long tasks are `RuntimeTask` backed and restart-resumable; browser disconnects are subscription changes, not cancellation.
+- `invocation_spans` is the canonical PostgreSQL trace surface; JSONL spans are compatibility artifacts.
+- Provider retry/overload fallback, CJK-aware token estimates, canonical assistant-turn prompt-cache anchors, output-cap telemetry, and Anthropic thinking-signature preservation are runtime contracts.
+- Agent-controlled subprocesses must use the shared sandbox/environment builder; production Linux images install `bubblewrap`.
+- MCP authz forbids URL userinfo/token passthrough; A2A Agent Cards and `/interoperability/profile` must mark unsupported OAuth/JSON-RPC surfaces as `not_exposed`.
+- Memory hygiene startup repair retires legacy shadow stores and quarantines dead stubs through a reversible shared path.
+- Latest full backend evidence before the current documentation-only update: `cd backend && source .venv/bin/activate && pytest tests -q` -> `4223 passed, 7 skipped, 4 warnings`.
 
 ## Development Commands
 
@@ -65,6 +85,8 @@ pytest tests/test_foo.py::test_bar -v        # Single case
 alembic upgrade head                         # Apply migrations
 alembic revision --autogenerate -m "desc"    # New migration
 alembic heads                                # Must be single head
+python -m app.scripts.repair_memory_hygiene  # Dry-run memory hygiene
+python -m app.scripts.repair_memory_hygiene --apply --confirm
 ```
 
 ### Frontend (cd frontend/)
@@ -118,7 +140,7 @@ tools/executors/ — core.py, extended.py, integrations.py
 | `runtime/session.py` | `SessionContext` — tracks source, channel, active_packs per invocation |
 | `core/execution_context.py` | `ExecutionIdentity` ContextVar — agent_bot vs delegated_user, read by audit |
 
-**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200**; heartbeat overrides to **40**. Round-pressure warnings are injected at 80% and with 2 rounds remaining. Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget is 200K chars. Semantic loop detection is wired via `LoopGuard` over assistant text, tool calls, and tool results; the round cap is the backstop.
+**Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200**; heartbeat overrides to **40**. Round-pressure warnings are injected at 80% and with 2 rounds remaining. Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget is 200K chars. Semantic loop detection is wired via `LoopGuard` over assistant text, tool calls, and tool results; the round cap is the backstop. Invocation, generation, and tool spans are persisted through `record_invocation_span`, and provider behavior is wrapped by retry/overload fallback, output-cap telemetry, prompt-cache anchor stability, and Anthropic thinking-signature preservation.
 
 ### Tool System (`app/tools/`)
 
@@ -142,7 +164,7 @@ Markdown files with YAML frontmatter defining agent capabilities. `SkillParser` 
 
 ### Memory System — 4-Layer MD Pyramid + Control Plane
 
-MD files are the source of truth; the legacy SQLite shadow store was retired.
+MD files are the source of truth; the legacy SQLite/JSON shadow stores are retired and repaired through `memory/hygiene.py`.
 
 ```
 T0 (raw logs, 30d)  →  T2 (learnings/*.md)  →  T3 (memory/*.md)  →  soul.md (identity)
@@ -180,8 +202,9 @@ logs/YYYY-MM-DD/
 2. **Backfill path (PR-4)**: behavior T0 MD → `replay_messages_from_t0`
    → same extractor → `learnings/*.md`. Gated by
    `learnings/.backfill_cursor.json` (idempotent by `session_id`).
-   Triggered manually via `POST /api/admin/agents/{id}/backfill-t2`
-   or programmatically from lifespan startup (future).
+   Triggered manually via `POST /api/admin/agents/{id}/backfill-t2`.
+   Lifespan startup replays the durable hot-path extract queue via
+   `extract_queue_replay`; full T0 backfill remains an explicit admin action.
 
 | Layer | Location | Written By | Read By |
 |-------|----------|-----------|---------|
@@ -202,6 +225,8 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is activated by objective, owner/company relevance, open-loop pressure, retention/confidence, and sensitivity access. |
 | Decision trace + action preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, irreversible, sensitive, or company-conflicting actions must pass preflight before tool execution. |
 | Feedback learning | `services/extract_agent.py`, `memory/t2_store.py`, `services/auto_dream.py` | Owner feedback should carry reaction/polarity and link back to `decision/<id>` when possible; dream may propose calibration, not silently mutate charter. |
+| Session calibration | `services/session_feedback.py`, `models/session_feedback.py`, `api/chat_sessions.py` | Useful/misleading session feedback is persisted and re-enters durable memory only through governed write paths. |
+| Memory hygiene | `memory/hygiene.py`, `tools/workspace.py`, `scripts/repair_memory_hygiene.py` | Legacy shadow stores, dead stubs, and missing lifecycle metadata are repaired through reversible shared reports. |
 | Coordination runtime | `agents/coordination.py`, `agents/orchestrator.py` | Delegation uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel emits Signal or Checkpoint for trigger-like open loops. |
 | Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk artifacts; external-visible actions require Checkpoint; activation policy changes must pass replay guard. |
 
@@ -213,9 +238,12 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata; source bucket weights live in `memory/t2_store.py`. |
 | `services/heartbeat.py` | T2→T3 curation (KAIROS persistent session, 45min ticks). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` — **already SOP-driven** |
 | `services/auto_dream.py` | T3→soul consolidation (24h + 3 sessions gate). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback is applied by the Memory Control Plane/internal dream service, not by direct `write_file` under `memory/`. |
-| `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace (not yet implemented) |
+| `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace. |
+| `services/invocation_trace.py` | Per-invocation runtime trace: file-backed JSONL compatibility plus PostgreSQL `invocation_spans` canonical query surface. |
+| `services/session_feedback.py` | Persists useful/misleading feedback and writes calibrated memory through governed paths. |
+| `memory/hygiene.py` | Retires legacy shadow stores, quarantines dead stubs, and backfills lifecycle metadata with dry-run/apply reports. |
 | `memory/retriever.py` | Read T3 into prompt. High-priority files are injected directly where policy allows; knowledge/strategy/user entries are scored against query. |
-| `memory/md_store.py` | Maintains Markdown T3 stores and `memory/INDEX.md`; the index is still a shadow artifact and not the primary retriever route. |
+| `memory/md_store.py` | Maintains Markdown T3 stores and `memory/INDEX.md`; the index is a navigation artifact, not the primary retriever route. |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)
@@ -274,18 +302,18 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 
 | Directory | Count | Purpose |
 |-----------|-------|---------|
-| `api/` | 55 files | FastAPI routers — agents, auth, chat sessions, enterprise, triggers, channels, admin, plaza, office, deep research |
-| `models/` | 36 files | SQLAlchemy ORM — all async, tenant-scoped with RLS |
-| `services/` | 130 files | Business logic — LLM client, trigger/evolution daemons, channel streaming, memory, office, quota, approval |
+| `api/` | 62 files | FastAPI routers — agents, auth, chat sessions, enterprise, triggers, channels, admin, plaza, office, deep research, interoperability |
+| `models/` | 43 files | SQLAlchemy ORM — all async, tenant-scoped with RLS, including invocation spans and session feedback |
+| `services/` | 163 files | Business logic — LLM client, trigger/evolution daemons, channel streaming, memory, office, quota, approval, trace, MCP authz, interoperability |
 | `services/agent_tool_domains/` | 21 files | Tool domain implementations — Feishu, messaging, tasks, workspace, email |
 | `kernel/` | 3 files | Core engine — invocation loop, contracts, context management |
 | `runtime/` | 13 files | Hooks, invoker, prompt builder, prompt sections, session context, recovery/coordinator helpers |
 | `tools/` | 16 files | Tool registry, governance, packs, catalog, result envelopes, workspace |
 | `skills/` | 5 files | Skill parser, loader, registry |
-| `memory/` | 18 files | MD-first: retriever, assembler, md_store (T3), t2_store, write gate, activation, lifecycle, retention, access log, replay corpus, optional backends |
+| `memory/` | 25 files | MD-first: retriever, assembler, md_store (T3), t2_store, write gate, activation, lifecycle, retention, access log, replay corpus, hygiene, optional backends |
 | `memory/backends/` | `hindsight.py` | Optional read-side accelerator; opt-in per tenant via `tenants.memory_backend` column. Module docstring has the design invariants and operator runbook. |
 | `core/` | — | Security, permissions, middleware, Redis pub/sub |
-| `migrations/` | 58 versions | Alembic schema evolution |
+| `migrations/` | 79 versions | Alembic schema evolution |
 
 ### Frontend Layout (`frontend/src/`)
 
@@ -294,7 +322,7 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 | `pages/` | 16 pages + 25 section files — AgentDetail, Agent Circle, Company Admin workbench/settings, Admin |
 | `components/` | 9 reusable components — ChannelConfig, FileBrowser, MarkdownRenderer, etc. |
 | `api/core/` | HTTP abstraction — `request<T>()` with JWT, error handling, upload progress |
-| `api/domains/` | 25 production typed adapters; 30 files including tests and index — agents, enterprise, tools, chat, office, deep research, memory, notifications, etc. |
+| `api/domains/` | 37 files including tests and index — agents, enterprise, tools, chat, office, deep research, memory, notifications, etc. |
 | `stores/` | Zustand — `useAuthStore` (user/token) + `useAppStore` (sidebar/selection) |
 | `i18n/` | i18next — `en.json` + `zh.json` (both must be updated for any UI text) |
 | `types/` | Core TypeScript interfaces — User, Agent, Task, ChatMessage |
@@ -314,6 +342,21 @@ All agent execution goes through `invoke_agent()` → `AgentKernel.handle()`. Ne
 
 ### Tool Governance Invariant
 All tool execution goes through `ToolRuntimeService.execute()` → `run_tool_governance()`. Never call a tool handler directly without governance checks.
+
+### Subprocess Sandbox Invariant
+Agent-controlled subprocesses must go through `services/subprocess_sandbox.py` and `services/subprocess_env.py`. Do not launch raw subprocesses from tool handlers or pass host secrets into agent-controlled environments.
+
+### MCP Authz Invariant
+MCP import/execution must go through `services/mcp_authz.py`. URL userinfo, `access_token`, and token passthrough credentials are forbidden; legacy `apiKey` query credentials are normalized to authorization headers.
+
+### Trace Invariant
+Runtime evidence lives in append-only invocation spans. Spans must carry tenant, agent, user, runtime task, session, request, trace, span, and parent identifiers where available.
+
+### Interoperability Invariant
+A2A/interoperability descriptors are machine-readable contracts. Unsupported OAuth delegation or JSON-RPC task surfaces must remain `not_exposed`.
+
+### Memory Hygiene Invariant
+Do not manually edit legacy memory stores or dead stubs as a one-off fix. Use `memory/hygiene.py` or `python -m app.scripts.repair_memory_hygiene` so repairs are reversible and reportable.
 
 ### Capability Packs
 Agents start with kernel-only tools (file I/O, skill loading, triggers). Capability packs (web, feishu, email, etc.) activate on-demand when a skill is loaded. Pack state tracked in `SessionContext.active_packs`.

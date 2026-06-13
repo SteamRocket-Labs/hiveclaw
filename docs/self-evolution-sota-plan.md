@@ -11,6 +11,21 @@
 
 ---
 
+## 2026-06-13 Current Status
+
+This file remains the canonical foundation plan for the single-agent self-evolution kernel, but its P0-P7 substrate is now closed. Treat the detailed phase table below as completed historical evidence, not as the active open-work list.
+
+Current active truth surface:
+
+- `docs/round2-sota-benchmark-2026.md` is the current SOTA benchmark and second-round roadmap.
+- `docs/harness-engineering-audit-2026-06-11.md` is the harness audit and remediation evidence log.
+- `docs/agent-memory-purity-spec.md` is the memory purity/lifecycle/hygiene contract.
+- Current implemented closures include hard verification and rollback metadata for promotions, fast reflection and session calibration, patch-first skill candidates, restart-resumable runtime tasks, DB-backed invocation trace spans, provider retry/overload fallback, prompt-cache anchoring, Anthropic thinking-signature preservation, unified subprocess sandboxing, MCP authz hard gates, A2A-style Agent Cards, and startup memory hygiene repair.
+
+Interpretation rule: any older wording in this file that says the foundation is "not yet" in place is historical context for why P0-P7 were built. Current work should use the round2 benchmark plus harness audit as the active delta list.
+
+---
+
 ## Phase Status
 
 | Phase | Status | Evidence |

@@ -1,5 +1,9 @@
 # Agent 工程闭环一次性计划（Engineering Closure Plan）
 
+> **2026-06-13 状态更新**: 本文件是第一轮 Agent 工程闭环的历史计划与证据，不再是当前 open-work 清单。R1/R2/R3 之后的 harness、memory purity、round2 SOTA、部署红线、write_gate L1 债、trace spine、MCP authz、A2A profile、memory hygiene 等后续闭环，以 `docs/harness-engineering-audit-2026-06-11.md`、`docs/round2-sota-benchmark-2026.md`、`docs/agent-memory-purity-spec.md` 和根目录 `AGENTS.md` / `CLAUDE.md` 的 2026-06-13 基线为准。
+>
+> **解释规则**: 下文保留当时的 review 裁决、红测、验收和行号证据，用于追溯第一轮 closure 的决策过程；不要把其中的"待执行"或"已知 delta"直接当成当前事实，必须先到当前基线文档和源码复核。
+
 > 状态: **v0.4 — R1/R2/R3 返工已落地(2026-06-07)**。v0.1 = 双 AI 交叉 review 合成；v0.2 = 采纳 Codex 四点反馈后用户拍板执行；v0.3 = 全部实装后做第二轮交叉 review，发现 B1/B2"测试全绿但生产空转"必须返工、C 轨道需降级；**v0.4 = R1 父唤醒生产接线、R2 T2 retention 诚实降级、R3 discovered schema recovery 全部回写证据**。执行方式 = 一项一 commit 红测先行，批次间独立可验收可 push。
 > ⚠️ **工程闭环已收口，但不可声称完整 CC 对齐**：B1/B2 生产空转缺口已返工；C 轨道是 T3a 保守默认，`tool_search` 发现后的 schema recovery 已补，但 turn-1 deferred tool name seeding 仍是已知 delta。以 §7 为准。
 > 范围: **Agent 本身的运行时**——① Max Token / 限制机制 ② Runtime 四元能力（Subagent / Skill / MCP / Workflow）③ Memory。把全部已验证的缺陷与断点一次性补齐。

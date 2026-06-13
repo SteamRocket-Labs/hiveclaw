@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Hive</h1>
-  <h3>Open-source digital employees with persistent identity and long-term memory.</h3>
+  <h3>Open-source enterprise digital employees with governed self-evolution.</h3>
   <p><strong>English</strong> | <a href="README.zh-CN.md">简体中文</a></p>
 </div>
 
@@ -13,19 +13,21 @@
 
 <br>
 
-Hive is a self-hosted platform for building **digital employees** — AI agents that remember the conversations they have, learn from them autonomously, live inside your team's IM tools, and act on their own when something needs doing. Instead of stateless chatbots that forget everything when the tab closes, Hive agents have an identity contract, a private workspace, a 4-layer memory that consolidates while they "sleep," and a Memory Control Plane that keeps their judgment aligned with their owner and company.
+Hive is a self-hosted platform for building **digital employees** — AI agents that remember the conversations they have, learn from them autonomously, live inside your team's IM tools, and act on their own when something needs doing. The project has two first-class goals: a self-evolving agent runtime with enterprise-grade access control, and a company-scale control plane for operating those agents. Instead of stateless chatbots that forget everything when the tab closes, Hive agents have an identity contract, a private workspace, a 4-layer memory that consolidates while they "sleep," and a Memory Control Plane that keeps their judgment aligned with their owner and company.
 
 **What makes Hive different:**
 
 - **Persistent identity** — Each agent has a `soul.md` — its role, voice, boundaries, and quality bar. It survives across conversations, sessions, and even model swaps.
-- **4-layer memory pyramid + control plane** — Raw logs → learnings → semantic memory → identity, governed by owner/company context, privacy gates, dynamic activation, decision traces, and replay-guarded policy evolution. No manual RAG setup.
-- **Heartbeat & Dream** — Background daemons think for the agent while you're away — organizing what it learned, preparing low-risk follow-ups, deciding what's worth keeping, and proposing safe identity/policy evolution.
+- **4-layer memory pyramid + control plane** — Raw logs → learnings → semantic memory → identity, governed by owner/company context, privacy gates, dynamic activation, decision traces, session feedback, memory hygiene, and replay-guarded policy evolution. No manual RAG setup.
+- **Governed self-evolution** — Heartbeat, Dream, fast reflection, skill distillation, and patch-first skill candidates can improve the agent, but durable promotion must carry source evidence, verification, rollback metadata, and audit records.
 - **Durable web chat** — Web chat turns run as background `RuntimeTask` jobs. Refreshing or closing the browser disconnects the subscription, not the agent's work.
+- **Harness-grade runtime** — Restart-resumable tasks, invocation trace spans in PostgreSQL, provider retry/overload fallback, Anthropic thinking-signature preservation, prompt-cache anchoring, and token budget gates are part of the runtime contract.
 - **Office workbench** — Agent workspaces now support browser-based DOCX/XLSX/PPTX editing through ONLYOFFICE, with signed callbacks and revision history.
 - **Lives in your chat** — First-class connectors for Feishu/Lark, Slack, Discord, DingTalk, WeChat Work, and Microsoft Teams. Same agent, same memory, every channel.
 - **Created by conversation** — An HR Agent interviews you in 2–3 rounds and builds a new digital employee for you. No prompt engineering required.
 - **Acts on its own** — Cron, interval, webhook, polling, and message-event triggers. Agents wake up to do work, not just answer.
 - **Enterprise-ready governance** — Security zones, capability policies, human-in-the-loop approvals, multi-tenant PostgreSQL RLS, full audit trail.
+- **Honest interoperability** — MCP imports reject token-passthrough/userinfo credentials, and A2A-style Agent Cards expose only implemented capabilities while marking OAuth delegation and JSON-RPC task surfaces as not exposed.
 - **60+ tools out of the box** — File I/O, web search, the Feishu office suite, email, OfficeCLI/ONLYOFFICE document workflows, deep research, and MCP server import for anything else.
 
 > [!NOTE]
@@ -87,7 +89,7 @@ Entry point  →  invoker.py (resolve deps, build prompt)
              →  tools/governance.py (security zone → capability → approval)
 ```
 
-The kernel has **zero database imports** — all I/O goes through injected callbacks. This means the same kernel runs web chat, Feishu webhooks, scheduled triggers, heartbeat, and agent-to-agent delegation, with identical semantics for context compaction, tool budgets, and prompt caching.
+The kernel has **zero database imports** — all I/O goes through injected callbacks. This means the same kernel runs web chat, Feishu webhooks, scheduled triggers, heartbeat, and agent-to-agent delegation, with identical semantics for context compaction, tool budgets, prompt caching, invocation trace recording, provider retry handling, and governed tool execution.
 
 Web chat is durable: the browser WebSocket subscribes to a background `RuntimeTask(task_type="web_chat_turn")`. If the page is refreshed or temporarily disconnected, the run keeps going and the UI recovers through active-run polling.
 
@@ -124,6 +126,8 @@ The pyramid is only the storage path. Runtime behavior is governed by the **Memo
 | Privacy + write safety | Classifies memory before persistence; credentials are rejected, PII can be masked, and durable entries carry evidence/lifecycle metadata. |
 | Dynamic activation | Retrieves memory by current objective, owner/company relevance, open-loop pressure, retention score, and sensitivity access. |
 | Decision trace + feedback | Records why an agent acted, asked, refused, or escalated, then links owner feedback back to the decision that caused it. |
+| Session calibration | Stores useful/misleading feedback events and feeds calibrated learnings back through the same T2/T3 write gates. |
+| Memory hygiene | Retires legacy shadow stores, quarantines dead stubs, backfills missing lifecycle metadata, and keeps Markdown memory as the canonical source of truth. |
 | Coordination runtime | Uses Lease, Signal, Checkpoint, and Sentinel primitives so multi-agent work and confirm-first actions are explicit runtime objects. |
 | Proactive steward loop | Heartbeat can prepare useful low-risk artifacts, but external-visible actions require Checkpoint approval and policy changes must pass replay evaluation. |
 
@@ -159,14 +163,14 @@ Channel configs are **per-agent**, so different employees can live in different 
 
 | Layer | Files | Notes |
 |-------|-------|-------|
-| API routers | 55 | Agents, auth, chat sessions, enterprise, channels, admin, Agent Circle/plaza, triggers, office, deep research |
-| ORM models | 36 | Tenant-scoped SQLAlchemy models with RLS, runtime tasks, coordination, objectives, identity |
-| Services | 130 | LLM client, trigger/evolution daemons, channel streamers, memory, office, governance, skills |
+| API routers | 62 | Agents, auth, chat sessions, enterprise, channels, admin, Agent Circle/plaza, triggers, office, deep research, interoperability |
+| ORM models | 43 | Tenant-scoped SQLAlchemy models with RLS, runtime tasks, coordination, objectives, identity, invocation spans, session feedback |
+| Services | 163 | LLM client, trigger/evolution daemons, channel streamers, memory, office, governance, skills, trace, MCP authz, interoperability |
 | Tool handlers | 60+ | filesystem · search · communication · email · feishu · office · memory · deep research · plaza · skills · triggers · hr · mcp |
-| Kernel | 1 stateless engine | 200 default max tool rounds · 75% compaction threshold · 50KB tool result eviction |
-| Migrations | 58 | Alembic, single-head invariant |
+| Kernel | 1 stateless engine | 200 default max tool rounds · 75% compaction threshold · 50KB tool result eviction · trace spans · thinking signatures |
+| Migrations | 79 | Alembic, single-head invariant |
 | Frontend pages | 16 + 25 sub-sections | AgentDetail, Agent Circle, Company Admin workbench/settings, Platform Admin |
-| Frontend API | 25 production domain adapters | TanStack Query for server state, Zustand for UI state |
+| Frontend API | 37 domain adapter files | TanStack Query for server state, Zustand for UI state |
 
 For deeper technical detail, see [`ENGINEERING.md`](ENGINEERING.md) (architecture, invariants, runtime contracts) and [`AGENTS.md`](AGENTS.md) (developer reference for AI coding assistants).
 
@@ -218,6 +222,10 @@ Three layers, in increasing order of effort:
 - [`AGENTS.md`](AGENTS.md) — Technical reference for AI coding assistants (commands, invariants, conventions)
 - [`ENGINEERING.md`](ENGINEERING.md) — Full architecture: kernel, prompt assembly, governance, memory, deployment
 - [`CLAUDE.md`](CLAUDE.md) — Project guidance for Claude Code sessions
+- [`docs/harness-engineering-audit-2026-06-11.md`](docs/harness-engineering-audit-2026-06-11.md) — Harness audit, remediation log, and verification evidence
+- [`docs/round2-sota-benchmark-2026.md`](docs/round2-sota-benchmark-2026.md) — Second-round SOTA benchmark and current improvement roadmap
+- [`docs/self-evolution-sota-plan.md`](docs/self-evolution-sota-plan.md) — Canonical self-evolution foundation plan
+- [`docs/agent-memory-purity-spec.md`](docs/agent-memory-purity-spec.md) — Memory purity, lifecycle, and hygiene contract
 
 ## Acknowledgements
 

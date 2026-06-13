@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Hive</h1>
-  <h3>开源数字员工平台 —— 拥有持久身份与长期记忆的多智能体协作系统</h3>
+  <h3>开源企业级数字员工平台 —— 具备受治理的自我进化能力</h3>
   <p><a href="README.md">English</a> | <strong>简体中文</strong></p>
 </div>
 
@@ -13,19 +13,21 @@
 
 <br>
 
-Hive 是一个可自部署的**数字员工**平台 —— 它构建的不是关掉浏览器就忘掉一切的无状态聊天机器人，而是有身份、能记忆、住在你工作群里、并能自主行动的 AI 同事。每个 Hive Agent 都拥有一份身份契约（`soul.md`）、一个私有工作目录、一套四层记忆体系、在你不在线时仍会持续"思考"和"做梦"的后台守护进程，以及一层让判断始终对齐 owner 与公司边界的 Memory Control Plane。
+Hive 是一个可自部署的**数字员工**平台 —— 它构建的不是关掉浏览器就忘掉一切的无状态聊天机器人，而是有身份、能记忆、住在你工作群里、并能自主行动的 AI 同事。项目的一等目标有两个：企业级权限治理下的自我进化 Agent 运行时，以及面向公司规模运营这些 Agent 的控制中台。每个 Hive Agent 都拥有一份身份契约（`soul.md`）、一个私有工作目录、一套四层记忆体系、在你不在线时仍会持续"思考"和"做梦"的后台守护进程，以及一层让判断始终对齐 owner 与公司边界的 Memory Control Plane。
 
 **Hive 与众不同之处：**
 
 - **持久身份** —— 每个 Agent 都有一份 `soul.md`：它的角色、语气、边界与质量标准。它跨越对话、跨越会话、甚至跨越模型切换都不会丢失。
-- **四层记忆金字塔 + 控制平面** —— 原始日志 → 学习提取 → 语义记忆 → 身份固化，同时由 owner/company 语境、隐私门、动态激活、决策轨迹与 replay 守卫来治理。无需手动配置 RAG。
-- **Heartbeat 与 Dream** —— 后台守护进程在你不在时替 Agent 思考：整理它学到的东西、准备低风险跟进材料、决定哪些值得保留，并提出安全的身份/策略演化建议。
+- **四层记忆金字塔 + 控制平面** —— 原始日志 → 学习提取 → 语义记忆 → 身份固化，同时由 owner/company 语境、隐私门、动态激活、决策轨迹、会话反馈、记忆卫生和 replay 守卫来治理。无需手动配置 RAG。
+- **受治理的自我进化** —— Heartbeat、Dream、fast reflection、skill distillation 与 patch-first skill candidate 可以推动 Agent 变强，但任何持久化提升都必须带 source evidence、verification、rollback metadata 和 audit record。
 - **可恢复 Web Chat** —— Web 聊天回合现在作为后台 `RuntimeTask` 执行。刷新页面或临时断开只会断订阅，不会中断 Agent 正在做的事。
+- **Harness 级运行时** —— restart-resumable task、PostgreSQL invocation trace span、provider retry / overload fallback、Anthropic thinking signature 保留、prompt-cache anchor 与 token budget gate 都是运行时契约的一部分。
 - **Office 工作台** —— Agent workspace 已支持通过 ONLYOFFICE 在浏览器里编辑 DOCX/XLSX/PPTX，并带签名回调与版本修订。
 - **直接住在群聊里** —— 一等公民支持飞书/Lark、Slack、Discord、钉钉、企业微信、Microsoft Teams。同一个 Agent，同一份记忆，跨所有渠道。
 - **对话式创建** —— HR Agent 通过 2–3 轮对话面试你，自动生成新员工。无需写 Prompt。
 - **自主行动** —— 支持 cron、interval、webhook、轮询、消息事件触发。Agent 会主动起来工作，而不只是被动回答。
 - **企业级治理** —— 安全分区、能力策略、人工审批流、多租户 PostgreSQL RLS 隔离、完整审计链。
+- **诚实互操作** —— MCP 导入拒绝 token passthrough / URL userinfo 凭据；A2A-style Agent Card 只暴露已实装能力，OAuth delegation 与 JSON-RPC task surface 明确标为 not exposed。
 - **60+ 内置工具** —— 文件读写、网页搜索、飞书办公套件、邮件、OfficeCLI/ONLYOFFICE 文档流、Deep Research，以及任意 MCP Server 一键导入。
 
 > [!NOTE]
@@ -87,7 +89,7 @@ docker compose up -d --build    # 全栈运行在 http://localhost:3008
       →  tools/governance.py（安全分区 → 能力闸门 → 审批流）
 ```
 
-Kernel **不导入任何数据库代码** —— 所有 I/O 都通过注入回调完成。这意味着同一个 kernel 同时跑 Web 聊天、飞书 webhook、定时触发器、Heartbeat、Agent 间委派，上下文压缩、工具预算、Prompt 缓存语义完全一致。
+Kernel **不导入任何数据库代码** —— 所有 I/O 都通过注入回调完成。这意味着同一个 kernel 同时跑 Web 聊天、飞书 webhook、定时触发器、Heartbeat、Agent 间委派，上下文压缩、工具预算、Prompt 缓存、invocation trace、provider retry 与受治理工具执行语义完全一致。
 
 Web Chat 是可恢复执行：浏览器 WebSocket 只是订阅后台 `RuntimeTask(task_type="web_chat_turn")`。页面刷新或临时断开后，后台 run 会继续，前端通过 active-run 轮询恢复状态。
 
@@ -124,6 +126,8 @@ T0 原始日志  ← t0_logger      （游标式增量写入，会话空闲/关�
 | 隐私与写入安全 | 记忆持久化前先分类；凭证直接拒绝，PII 可脱敏，长期条目必须带 evidence/lifecycle metadata。 |
 | 动态激活 | 按当前目标、owner/company 相关性、open loop 压力、retention 分数和敏感度访问权来选择进入上下文的记忆。 |
 | 决策轨迹与反馈 | 记录 Agent 为什么行动、询问、拒绝或升级，并把 owner feedback 反连到当时的 decision。 |
+| 会话校准 | 持久化 useful/misleading feedback event，并让校准学习继续走 T2/T3 写入门。 |
+| 记忆卫生 | 退役 legacy shadow store，隔离 dead stub，补齐缺失 lifecycle metadata，保持 Markdown 记忆为唯一真相源。 |
 | 协调运行时 | 用 Lease、Signal、Checkpoint、Sentinel 让多 Agent 协作和 confirm-first 动作成为显式运行时对象。 |
 | 主动员工循环 | Heartbeat 可以准备低风险有用材料，但对外可见动作必须走 Checkpoint，策略调参必须通过 replay evaluation。 |
 
@@ -159,14 +163,14 @@ Hive 现在分成三层界面：
 
 | 模块 | 文件数 | 说明 |
 |-------|-------|-------|
-| API 路由 | 55 | Agents、auth、chat sessions、enterprise、channels、admin、Agent圈/plaza、triggers、office、deep research |
-| ORM 模型 | 36 | 租户隔离 SQLAlchemy 模型，包含 runtime tasks、coordination、objectives、identity |
-| 业务服务 | 130 | LLM 客户端、trigger/evolution 守护、渠道流、记忆、Office、治理、技能 |
+| API 路由 | 62 | Agents、auth、chat sessions、enterprise、channels、admin、Agent圈/plaza、triggers、office、deep research、interoperability |
+| ORM 模型 | 43 | 租户隔离 SQLAlchemy 模型，包含 runtime tasks、coordination、objectives、identity、invocation spans、session feedback |
+| 业务服务 | 163 | LLM 客户端、trigger/evolution 守护、渠道流、记忆、Office、治理、技能、trace、MCP authz、interoperability |
 | 工具处理器 | 60+ | filesystem · search · communication · email · feishu · office · memory · deep research · plaza · skills · triggers · hr · mcp |
-| Kernel | 1 个无状态引擎 | 默认最多 200 轮工具 · 75% 上下文压缩阈值 · 50KB 单工具结果上限 |
-| 数据库迁移 | 58 | Alembic，单 head 不可变约束 |
+| Kernel | 1 个无状态引擎 | 默认最多 200 轮工具 · 75% 上下文压缩阈值 · 50KB 单工具结果上限 · trace spans · thinking signatures |
+| 数据库迁移 | 79 | Alembic，单 head 不可变约束 |
 | 前端页面 | 16 + 25 子区块 | AgentDetail、Agent圈、公司后台工作台/设置、平台后台 |
-| 前端 API | 25 个生产类型化领域适配器 | TanStack Query 管服务端状态、Zustand 管 UI 状态 |
+| 前端 API | 37 个领域适配器文件 | TanStack Query 管服务端状态、Zustand 管 UI 状态 |
 
 更深入的技术细节请见 [`ENGINEERING.md`](ENGINEERING.md)（架构、不变量、运行时契约）与 [`AGENTS.md`](AGENTS.md)（给 AI 编程助手的开发参考）。
 
@@ -218,6 +222,10 @@ Hive 现在分成三层界面：
 - [`AGENTS.md`](AGENTS.md) —— 给 AI 编程助手的技术参考（命令、不变量、约定）
 - [`ENGINEERING.md`](ENGINEERING.md) —— 完整架构：kernel、Prompt 装配、治理、记忆、部署
 - [`CLAUDE.md`](CLAUDE.md) —— 给 Claude Code 会话的项目指引
+- [`docs/harness-engineering-audit-2026-06-11.md`](docs/harness-engineering-audit-2026-06-11.md) —— Harness 审计、整改日志与验证证据
+- [`docs/round2-sota-benchmark-2026.md`](docs/round2-sota-benchmark-2026.md) —— 第二轮 SOTA 对标与当前优化路线
+- [`docs/self-evolution-sota-plan.md`](docs/self-evolution-sota-plan.md) —— 自我进化基石计划
+- [`docs/agent-memory-purity-spec.md`](docs/agent-memory-purity-spec.md) —— 记忆纯净、生命周期与卫生契约
 
 ## 致谢
 

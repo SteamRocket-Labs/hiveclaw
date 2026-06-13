@@ -51,6 +51,21 @@ def choose_runtime_model_pair(
     return model, fallback
 
 
+def primary_model_unavailable(agent: Any, resolved_primary: Any | None) -> bool:
+    """True when an agent has a primary model configured but it could not be resolved.
+
+    A configured ``primary_model_id`` that resolves to nothing (deleted / disabled /
+    cross-tenant record) must make the caller FAIL LOUD, not silently swap in the
+    fallback model. Silent fallback hides the misconfiguration and can collapse the
+    effective context window (the Web3 researcher outage: a cross-tenant DeepSeek
+    reference degraded to a 200K MiniMax window and thrashed compaction).
+
+    A *missing* primary (``primary_model_id`` is None) is not a failure — the agent
+    simply has no explicit primary, so the caller may legitimately use a fallback.
+    """
+    return bool(getattr(agent, "primary_model_id", None)) and resolved_primary is None
+
+
 async def resolve_default_model_for_tenant(
     db: AsyncSession,
     tenant_id: uuid.UUID,

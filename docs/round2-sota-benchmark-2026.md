@@ -503,7 +503,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 G1 subprocess env/sandbox 已收口；仍缺生产 userns 探测+seccomp/microVM+出口代理 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
 | 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
-| 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🔴 trace 写了无人读、反馈环死、无行为 eval | trace 落库+reader+跨invocation树；建外部 eval |
+| 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🟡 trace/feedback 生产地基已接：invocation_spans 落库+reader+Prometheus、Session Useful/Misleading；仍缺外部行为 eval CI | 在 §12.13 基础上建外部行为 eval CI |
 | 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 有 MCP，缺 A2A/委托标准 | 原生说开放标准=中立平面具体化 |
 
 ---
@@ -521,7 +521,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 1. **验证门**（假门——研究铁律最忌的自评，**最高优先**，§2.3/§9）。
 2. **持久执行**（只 workflow 一条线，subagent/delegation 裸奔，§7.1）。
 3. **agent 身份控制面**（基础 per-agent sponsor/participant + soft-delete 生命周期已在 §12.11 关闭；剩 Entra 式目录级 CA/A2A 审计，§6）。
-4. **可观测**（trace 死、反馈环死、无行为 eval，§9 + 审计 O1/O2）。
+4. **可观测**（trace/反馈地基已在 §12.5/§12.13 关闭；无外部行为 eval CI 仍是下一仗硬缺口，§9 + 审计 O1/O2）。
 5. **隔离部署**（bwrap 生产可行性未验证，§8）。
 
 **独有可占的真空（护城河，无人发货）**：
@@ -1025,6 +1025,49 @@ backend/.venv/bin/python -m pytest backend/tests -q
 **第四仗 — 可观测地基（为前三仗提供验收仪表，可先动工）**
 - **目标线**：OpenAI Agents SDK（trace 默认开 + 全链 trace 树）+ Decagon（100% 会话 QA）。
 - **动作**：① invocation_spans 落库 + reader/API + 跨 invocation trace 树（父 trace_id 注入子）；② request_id 回填 governance；③ Prometheus 接 invocation/token；④ 建 §9 的外部行为 eval CI（自进化"超越"的证据基础）。
+
+### 12.13 第四仗 O1 已实装：invocation span 落库 + trace reader + Prometheus runtime metrics（2026-06-13）
+
+**完成范围**：`backend/app/services/invocation_trace.py` 不再只是写 `$AGENT_DATA_DIR/{agent}/traces/invocation_spans.jsonl`，而是保留 JSONL 兼容面的同时新增 Postgres canonical query surface：`backend/app/models/invocation_span.py` + `backend/alembic/versions/invocation_spans_0613.py`。`AgentKernel` 新增可选 `record_invocation_span` dependency，生产 `runtime/invoker.py` 接到 `persist_invocation_span()`；generation / tool / invocation 三类 span 都会携带 `tenant_id`、`agent_id`、`user_id`、`runtime_task_id`、`session_id`、`request_id`、`trace_id`、`span_id`、`parent_span_id`、`parent_trace_id`、provider/model/usage metadata 落库。root span 每次 invocation 使用唯一 `invocation-*` span id，避免长会话复用 `trace_id` 时唯一键冲突；子 span 自动挂到该 root。
+
+**reader / API**：新增 `get_invocation_trace_tree()`，会以 `trace_id` 为根递归拉取同 tenant 内 `trace_id` 或 `parent_trace_id` 命中的 span，构建跨 invocation tree；新增 `GET /api/admin/invocation-traces/{trace_id}?tenant_id=...` / `/api/v1/admin/...` reader，平台管理员可直接查 root trace 与子 trace。`invocation_spans` 在 migration 与 fresh bootstrap 两条路径都 `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY`，并加入 `RLS_FORCED_TENANT_TABLES`，避免 create_all+stamp 新库漏策略。
+
+**request/runtime 路径统一**：web chat 两条入口现在都写 `RuntimeTask.tenant_id`，并在 `metadata_json` 与运行时 `SessionContext.metadata` 中统一注入 `runtime_task_id`、`request_id`、`trace_id`；heartbeat / trigger RuntimeTask 创建也生成同一组 join key，并在实际 `invoke_agent()` 的 `SessionContext` 里传给 kernel。这样 span、RuntimeTask、token event、后续审计可用同一 request/runtime/trace 维度 join。
+
+**Prometheus 证据**：`backend/app/memory/metrics.py` 新增 `record_invocation_span_metric()`，`/metrics` 导出 `hive_invocation_spans_total`、`hive_invocation_span_duration_ms`、`hive_invocation_tokens_total`。token 统计从 provider usage payload 取 `total_tokens` 或 `input_tokens + output_tokens`，保持 OpenAI/Anthropic 兼容。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_invocation_trace_service.py tests/kernel/test_invocation_trace.py::test_kernel_persists_invocation_spans_with_runtime_join_keys tests/memory/test_metrics.py::test_invocation_span_metrics_snapshot_and_prometheus_export tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head tests/services/test_web_chat_runtime.py::test_start_web_chat_run_creates_runtime_task_and_user_message tests/services/test_web_chat_runtime.py::test_start_channel_chat_run_from_saved_turn_creates_runtime_task_without_duplicate_user_message -q
+# 7 failed
+```
+
+失败点覆盖真实缺口：`get_invocation_trace_tree` / admin reader 不存在、`KernelDependencies.record_invocation_span` 不存在、`record_invocation_span_metric` 不存在、Alembic head 仍是 `agent_identity_lifecycle_0613`、web chat 第一入口缺 `tenant_id`、channel 入口缺 `runtime_task_id/request_id/trace_id` metadata。
+
+**Green / 回归证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_invocation_trace_service.py tests/kernel/test_invocation_trace.py::test_kernel_persists_invocation_spans_with_runtime_join_keys tests/memory/test_metrics.py::test_invocation_span_metrics_snapshot_and_prometheus_export tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head tests/services/test_web_chat_runtime.py::test_start_web_chat_run_creates_runtime_task_and_user_message tests/services/test_web_chat_runtime.py::test_start_channel_chat_run_from_saved_turn_creates_runtime_task_without_duplicate_user_message -q
+# 7 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/kernel/test_invocation_trace.py tests/memory/test_metrics.py tests/services/test_invocation_trace_service.py tests/services/test_web_chat_runtime.py tests/migrations/test_workflow_migration.py -q
+# 72 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/models/invocation_span.py app/services/invocation_trace.py app/kernel/engine.py app/runtime/invoker.py app/services/web_chat_runtime.py app/services/heartbeat.py app/services/trigger_daemon.py app/db_bootstrap.py app/api/admin.py tests/services/test_invocation_trace_service.py tests/kernel/test_invocation_trace.py tests/memory/test_metrics.py tests/migrations/test_workflow_migration.py tests/services/test_web_chat_runtime.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && python -m compileall -q app/models/invocation_span.py app/services/invocation_trace.py app/kernel/engine.py app/runtime/invoker.py app/services/web_chat_runtime.py app/services/heartbeat.py app/services/trigger_daemon.py app/db_bootstrap.py app/api/admin.py tests/services/test_invocation_trace_service.py tests/kernel/test_invocation_trace.py tests/memory/test_metrics.py tests/migrations/test_workflow_migration.py tests/services/test_web_chat_runtime.py
+# passed with no output
+
+cd backend && source .venv/bin/activate && alembic heads
+# invocation_spans_0613 (head)
+
+cd backend && source .venv/bin/activate && pytest tests -q
+# 4202 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只加日志，也不是只包 invoker root span。kernel 的 generation/tool/invocation span 都有 DB writer；migration 与 bootstrap 两条建库路径都有 FORCE RLS；reader/API/Prometheus 同步接通；web/channel/heartbeat/trigger 入口的 runtime join key 同步统一。剩余未关闭项是第四仗动作 ④：外部行为 eval CI（Decagon 式 100% 会话 QA / 自进化不退化证据）仍需单独落地，不能据此宣称“已超越”。
 
 **第五仗 — cache + 互操作 + 诚实债收尾**
 - C2 CJK 校准 + canonical last-assistant 锚；评估 Code-Execution-over-MCP（工具量大省 98.7%）；原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。

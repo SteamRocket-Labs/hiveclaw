@@ -121,6 +121,30 @@ def test_prompt_cache_metrics_snapshot_and_prometheus_export() -> None:
     assert 'hive_prompt_cache_hit_rate{provider="anthropic"} 0.8' in text
 
 
+def test_invocation_span_metrics_snapshot_and_prometheus_export() -> None:
+    from app.memory.metrics import record_invocation_span_metric, render_prometheus
+
+    record_invocation_span_metric(
+        span_type="generation",
+        status="ok",
+        duration_ms=42.0,
+        usage={"total_tokens": 13},
+        provider="openai",
+        model="gpt-4.1",
+        source="web",
+    )
+
+    snap = snapshot()
+    assert snap["invocation_spans_total"]["generation:ok"] == 1
+    assert snap["invocation_span_duration_ms"]["generation:ok"]["p95"] == 42.0
+    assert snap["invocation_tokens_total"]["openai:gpt-4.1:web"] == 13
+
+    text = render_prometheus()
+    assert 'hive_invocation_spans_total{span_type="generation",status="ok"} 1' in text
+    assert 'hive_invocation_span_duration_ms{span_type="generation",status="ok",stat="p95"} 42' in text
+    assert 'hive_invocation_tokens_total{provider="openai",model="gpt-4.1",source="web"} 13' in text
+
+
 # ── LatencyWindow ─────────────────────────────────────────────
 
 

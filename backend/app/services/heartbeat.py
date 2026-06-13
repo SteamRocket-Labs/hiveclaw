@@ -202,13 +202,22 @@ def _compact_heartbeat_runtime_messages(messages: list[dict]) -> list[dict]:
 
 async def _create_heartbeat_runtime_task(agent_id: uuid.UUID) -> str | None:
     try:
+        task_id = uuid.uuid4().hex
+        trace_id = f"heartbeat:{task_id}"
         return await create_runtime_task_record(
-            task_id=uuid.uuid4().hex,
+            task_id=task_id,
             task_type="heartbeat",
             status="running",
             parent_agent_id=agent_id,
             prompt="Heartbeat self-evolution tick",
-            metadata_json={"source": "heartbeat", "agent_id": str(agent_id)},
+            trace_id=trace_id,
+            metadata_json={
+                "source": "heartbeat",
+                "agent_id": str(agent_id),
+                "runtime_task_id": task_id,
+                "request_id": str(uuid.UUID(task_id)),
+                "trace_id": trace_id,
+            },
         )
     except Exception as exc:
         logger.warning("[Heartbeat] Failed to create RuntimeTask for {}: {}", agent_id, exc)
@@ -279,7 +288,13 @@ def _has_complete_heartbeat_session_state(agent_id: uuid.UUID) -> bool:
     return False
 
 
-def _get_or_create_heartbeat_session_ctx(agent_id: uuid.UUID, session_id: uuid.UUID) -> "SessionContext":
+def _get_or_create_heartbeat_session_ctx(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | None = None,
+    runtime_task_id: str | None = None,
+) -> "SessionContext":
     """Return a persistent SessionContext for heartbeat ticks.
 
     On first call for an agent, creates a new context; subsequent calls
@@ -289,6 +304,15 @@ def _get_or_create_heartbeat_session_ctx(agent_id: uuid.UUID, session_id: uuid.U
     if ctx is not None:
         # Update session_id if it changed (e.g. after day-boundary reset)
         ctx.session_id = str(session_id)
+        if tenant_id or runtime_task_id:
+            ctx.metadata.update(
+                {
+                    "tenant_id": str(tenant_id) if tenant_id else None,
+                    "runtime_task_id": runtime_task_id,
+                    "request_id": str(uuid.UUID(runtime_task_id)) if runtime_task_id else None,
+                    "trace_id": f"heartbeat:{runtime_task_id}" if runtime_task_id else None,
+                }
+            )
         return ctx
     ctx = SessionContext(
         source="heartbeat",
@@ -296,6 +320,15 @@ def _get_or_create_heartbeat_session_ctx(agent_id: uuid.UUID, session_id: uuid.U
         session_id=str(session_id),
         metadata={"agent_id": str(agent_id)},
     )
+    if tenant_id or runtime_task_id:
+        ctx.metadata.update(
+            {
+                "tenant_id": str(tenant_id) if tenant_id else None,
+                "runtime_task_id": runtime_task_id,
+                "request_id": str(uuid.UUID(runtime_task_id)) if runtime_task_id else None,
+                "trace_id": f"heartbeat:{runtime_task_id}" if runtime_task_id else None,
+            }
+        )
     _heartbeat_session_ctxs[agent_id] = ctx
     return ctx
 
@@ -1666,7 +1699,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                             identity_id=agent_id,
                             label=f"Agent: {agent.name} (heartbeat)",
                         ),
-                        session_context=_get_or_create_heartbeat_session_ctx(agent_id, session_id),
+                        session_context=_get_or_create_heartbeat_session_ctx(
+                            agent_id,
+                            session_id,
+                            tenant_id=tenant_id,
+                            runtime_task_id=runtime_task_id,
+                        ),
                         on_tool_call=_on_tool_call,
                         tool_executor=_build_heartbeat_tool_executor(agent_id, agent.creator_id),
                         core_tools_only=False,

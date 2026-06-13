@@ -76,12 +76,22 @@ async def _create_trigger_runtime_task(
     }
     metadata.update(metadata_json or {})
     try:
+        task_id = uuid.uuid4().hex
+        trace_id = f"trigger:{task_id}"
+        metadata.update(
+            {
+                "runtime_task_id": task_id,
+                "request_id": str(uuid.UUID(task_id)),
+                "trace_id": trace_id,
+            }
+        )
         return await create_runtime_task_record(
-            task_id=uuid.uuid4().hex,
+            task_id=task_id,
             task_type="trigger",
             status="running",
             parent_agent_id=agent_id,
             prompt=f"Trigger wake: {', '.join(name for name in trigger_names if name) or 'unknown'}",
+            trace_id=trace_id,
             metadata_json=metadata,
         )
     except Exception as exc:
@@ -1346,6 +1356,8 @@ async def _invoke_agent_for_triggers(
             )
         system_prompt_suffix = "\n".join(system_prompt_suffix_parts)
         try:
+            from app.runtime.session import SessionContext
+
             reply = await call_llm(
                 model=model,
                 messages=messages,
@@ -1369,6 +1381,17 @@ async def _invoke_agent_for_triggers(
                 # source drives the unattended Plan Mode lane and the T0 bucket
                 # (trigger-*.md, not chat-*.md) — defaulting to "web" mis-routed
                 # both and polluted T2 source weights.
+                session_context=SessionContext(
+                    session_id=str(session_id),
+                    source="trigger",
+                    channel="trigger",
+                    metadata={
+                        "tenant_id": str(agent_tenant_id) if agent_tenant_id else None,
+                        "runtime_task_id": runtime_task_id,
+                        "request_id": str(uuid.UUID(runtime_task_id)) if runtime_task_id else None,
+                        "trace_id": f"trigger:{runtime_task_id}" if runtime_task_id else None,
+                    },
+                ),
                 session_source="trigger",
                 session_channel="trigger",
             )

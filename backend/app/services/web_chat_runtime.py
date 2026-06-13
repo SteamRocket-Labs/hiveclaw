@@ -314,9 +314,13 @@ async def start_web_chat_run(
         child_session_id=str(session.id),
         depth=1,
         started_at=now,
+        tenant_id=getattr(agent, "tenant_id", None),
         metadata_json={
             "user_id": str(user.id),
             "session_id": str(session.id),
+            "runtime_task_id": run_uuid.hex,
+            "request_id": str(run_uuid),
+            "trace_id": f"web-chat:{run_uuid.hex}",
             "display_content": display_content,
             "file_name": file_name,
             "source": "web",
@@ -438,6 +442,9 @@ async def start_channel_chat_run_from_saved_turn(
     metadata = {
         "user_id": str(user.id),
         "session_id": str(session.id),
+        "runtime_task_id": run_uuid.hex,
+        "request_id": str(run_uuid),
+        "trace_id": f"{source_channel}-chat:{run_uuid.hex}",
         "display_content": display_content,
         "file_name": file_name,
         "source": source_channel,
@@ -1138,6 +1145,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
         runtime_session_context.source = str(metadata.get("source") or runtime_session_context.source or "web")
         runtime_session_context.channel = str(metadata.get("channel") or runtime_session_context.channel or "web")
+        runtime_session_context.metadata["tenant_id"] = str(agent.tenant_id) if agent.tenant_id else None
+        runtime_session_context.metadata["runtime_task_id"] = run_uuid.hex
+        runtime_session_context.metadata["request_id"] = str(run_uuid)
+        runtime_session_context.metadata["trace_id"] = (
+            getattr(runtime_task, "trace_id", None)
+            or metadata.get("trace_id")
+            or f"{runtime_session_context.source or 'web'}-chat:{run_uuid.hex}"
+        )
+        if metadata.get("parent_trace_id"):
+            runtime_session_context.metadata["parent_trace_id"] = metadata.get("parent_trace_id")
 
         plan_mode_response = await _maybe_handle_plan_mode_entry(
             agent_id=agent.id,

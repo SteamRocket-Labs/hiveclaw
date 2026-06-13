@@ -129,6 +129,13 @@ _prompt_cache_write_tokens_total: dict[str, int] = defaultdict(int)
 _prompt_cache_uncached_input_tokens_total: dict[str, int] = defaultdict(int)
 _prompt_cache_input_tokens_total: dict[str, int] = defaultdict(int)
 
+# ── Invocation trace metrics ──────────────────────────────────
+# Persisted invocation_spans are the durable query surface; these in-process
+# counters are the scrape-friendly signal for liveness, latency, and token burn.
+_invocation_spans_total: dict[tuple[str, str], int] = defaultdict(int)  # (span_type, status)
+_invocation_span_duration_ms: dict[tuple[str, str], LatencyWindow] = defaultdict(LatencyWindow)
+_invocation_tokens_total: dict[tuple[str, str, str], int] = defaultdict(int)  # (provider, model, source)
+
 _EXTRACT_FAILURE_RATIO_ALERT_THRESHOLD = 0.20
 _EXTRACT_FAILURE_RATIO_MIN_EVENTS = 5
 
@@ -227,6 +234,15 @@ def snapshot() -> dict[str, Any]:
             )
             for provider, total in _prompt_cache_input_tokens_total.items()
         },
+        "invocation_spans_total": {
+            f"{k[0]}:{k[1]}": v for k, v in _invocation_spans_total.items()
+        },
+        "invocation_span_duration_ms": {
+            f"{k[0]}:{k[1]}": v.snapshot() for k, v in _invocation_span_duration_ms.items()
+        },
+        "invocation_tokens_total": {
+            f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _invocation_tokens_total.items()
+        },
     }
 
 
@@ -273,6 +289,24 @@ def _latency_window_samples(windows: dict[tuple[str, str], LatencyWindow]) -> li
                     {
                         "backend": backend,
                         "tenant_id": tenant_id,
+                        "stat": stat_name,
+                    },
+                    value,
+                )
+            )
+    return samples
+
+
+def _invocation_duration_samples() -> list[tuple[dict[str, str], int | float]]:
+    samples: list[tuple[dict[str, str], int | float]] = []
+    for (span_type, status), window in _invocation_span_duration_ms.items():
+        snap = window.snapshot()
+        for stat_name, value in snap.items():
+            samples.append(
+                (
+                    {
+                        "span_type": span_type,
+                        "status": status,
                         "stat": stat_name,
                     },
                     value,
@@ -617,6 +651,33 @@ def render_prometheus() -> str:
             for provider, total in _prompt_cache_input_tokens_total.items()
         ],
     )
+    _append_prometheus_metric(
+        lines,
+        name="hive_invocation_spans_total",
+        metric_type="counter",
+        help_text="Total runtime invocation spans observed in this process.",
+        samples=[
+            ({"span_type": span_type, "status": status}, count)
+            for (span_type, status), count in _invocation_spans_total.items()
+        ],
+    )
+    _append_prometheus_metric(
+        lines,
+        name="hive_invocation_span_duration_ms",
+        metric_type="gauge",
+        help_text="Sliding-window runtime span duration in milliseconds.",
+        samples=_invocation_duration_samples(),
+    )
+    _append_prometheus_metric(
+        lines,
+        name="hive_invocation_tokens_total",
+        metric_type="counter",
+        help_text="Total tokens observed from invocation span usage payloads.",
+        samples=[
+            ({"provider": provider, "model": model, "source": source}, count)
+            for (provider, model, source), count in _invocation_tokens_total.items()
+        ],
+    )
 
     return "\n".join(lines) + "\n"
 
@@ -653,6 +714,9 @@ def reset_all() -> None:
     _prompt_cache_write_tokens_total.clear()
     _prompt_cache_uncached_input_tokens_total.clear()
     _prompt_cache_input_tokens_total.clear()
+    _invocation_spans_total.clear()
+    _invocation_span_duration_ms.clear()
+    _invocation_tokens_total.clear()
 
 
 # ── Extraction recorders (P0-2c) ──────────────────────────────
@@ -721,6 +785,32 @@ def record_llm_output_cap_hit(
 def record_hook_failure(*, event: str, source: str, reason: str) -> None:
     """Bump a non-fatal runtime hook failure counter."""
     _hook_failure_total[(event or "unknown", source or "unknown", reason or "unknown")] += 1
+
+
+def record_invocation_span_metric(
+    *,
+    span_type: str,
+    status: str,
+    duration_ms: float,
+    usage: dict[str, Any] | None = None,
+    provider: str = "unknown",
+    model: str = "unknown",
+    source: str = "unknown",
+) -> None:
+    """Record one runtime span metric sample."""
+    clean_span_type = span_type or "unknown"
+    clean_status = status or "unknown"
+    _invocation_spans_total[(clean_span_type, clean_status)] += 1
+    _invocation_span_duration_ms[(clean_span_type, clean_status)].observe(max(0.0, float(duration_ms or 0.0)))
+
+    token_count = 0
+    if isinstance(usage, dict):
+        if usage.get("total_tokens") is not None:
+            token_count = int(usage.get("total_tokens") or 0)
+        else:
+            token_count = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+    if token_count > 0:
+        _invocation_tokens_total[(provider or "unknown", model or "unknown", source or "unknown")] += token_count
 
 
 def record_prompt_cache_metrics(metrics: Any) -> None:

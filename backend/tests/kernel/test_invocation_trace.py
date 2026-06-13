@@ -147,3 +147,81 @@ async def test_kernel_records_tool_span(monkeypatch, tmp_path):
     assert tool["name"] == "read_file"
     assert tool["metadata"]["status"] == "ok"
     assert tool["metadata"]["result_chars"] == len("file content")
+
+
+@pytest.mark.asyncio
+async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypatch, tmp_path):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+    from app.services import invocation_trace
+
+    monkeypatch.setattr(invocation_trace, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    runtime_task_id = uuid4()
+    request_id = uuid4()
+    captured: list[dict] = []
+    fake_client = _FakeClient(
+        [SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 11})]
+    )
+
+    async def record_invocation_span(**kwargs):
+        captured.append(kwargs)
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            record_invocation_span=record_invocation_span,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    session_ctx = SessionContext(
+        session_id="session-runtime",
+        source="web",
+        metadata={
+            "runtime_task_id": str(runtime_task_id),
+            "request_id": str(request_id),
+            "parent_trace_id": "trace-parent",
+        },
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Trace Agent",
+            role_description="desc",
+            agent_id=agent_id,
+            user_id=user_id,
+            session_context=session_ctx,
+        )
+    )
+
+    assert result.content == "done"
+    assert {row["span_type"] for row in captured} == {"generation", "invocation"}
+    generation = next(row for row in captured if row["span_type"] == "generation")
+    invocation = next(row for row in captured if row["span_type"] == "invocation")
+    assert generation["tenant_id"] == tenant_id
+    assert generation["agent_id"] == agent_id
+    assert generation["user_id"] == user_id
+    assert generation["runtime_task_id"] == runtime_task_id
+    assert generation["request_id"] == request_id
+    assert generation["parent_trace_id"] == "trace-parent"
+    assert generation["parent_span_id"].startswith("invocation-")
+    assert generation["usage"]["total_tokens"] == 11
+    assert invocation["span_id"] == generation["parent_span_id"]
+    assert invocation["runtime_task_id"] == runtime_task_id

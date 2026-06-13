@@ -211,9 +211,13 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert task.task_type == "web_chat_turn"
     assert task.parent_agent_id == agent_id
     assert task.child_agent_id == agent_id
+    assert task.tenant_id == agent.tenant_id
     assert task.parent_session_id == str(session_id)
     assert task.child_session_id == str(session_id)
     assert task.metadata_json["user_id"] == str(user_id)
+    assert task.metadata_json["runtime_task_id"] == task.id.hex
+    assert task.metadata_json["request_id"] == str(task.id)
+    assert task.metadata_json["trace_id"] == task.trace_id
     assert db.commits == 1
     assert scheduled
 
@@ -266,8 +270,12 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     assert not any(isinstance(item, ChatMessage) for item in db.added)
     task = next(item for item in db.added if isinstance(item, RuntimeTask))
     assert task.task_type == "web_chat_turn"
+    assert task.tenant_id == agent.tenant_id
     assert task.parent_session_id == str(session_id)
     assert task.prompt == "处理这条飞书消息"
+    assert task.metadata_json["runtime_task_id"] == task.id.hex
+    assert task.metadata_json["request_id"] == str(task.id)
+    assert task.metadata_json["trace_id"] == task.trace_id
     assert task.metadata_json["source"] == "feishu"
     assert task.metadata_json["channel"] == "feishu"
     assert task.metadata_json["delivery_target_json"] == session.delivery_target_json

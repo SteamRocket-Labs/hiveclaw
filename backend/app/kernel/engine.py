@@ -168,6 +168,7 @@ CreateClient = Callable[[Any], Any]
 ExecuteTool = Callable[[str, dict, InvocationRequest, Callable[[dict], Awaitable[None]]], Awaitable[str] | str]
 PersistMemory = Callable[..., Awaitable[None] | None]
 RecordTokenUsage = Callable[[Any, int], Awaitable[None] | None]
+RecordInvocationSpan = Callable[..., Awaitable[None] | None]
 GetMaxTokens = Callable[[str, str, int | None], int]
 ExtractUsageTokens = Callable[[dict | None], int | None]
 EstimateTokensFromChars = Callable[[int], int]
@@ -190,6 +191,7 @@ class KernelDependencies:
     get_max_tokens: GetMaxTokens
     extract_usage_tokens: ExtractUsageTokens
     estimate_tokens_from_chars: EstimateTokensFromChars
+    record_invocation_span: RecordInvocationSpan | None = None
     resolve_tool_expansion: ResolveToolExpansion | None = None
     resolve_runtime_metadata_context: ResolveRuntimeMetadataContext | None = None
     resolve_retrieval_context: ResolveRetrievalContext | None = None
@@ -652,6 +654,98 @@ def _session_trusted_plan_decline_metadata(request: InvocationRequest, tool_name
     return dict(value) if isinstance(value, dict) else None
 
 
+def _uuid_from_metadata(metadata: dict[str, Any], key: str):
+    raw = metadata.get(key)
+    if not raw:
+        return None
+    import uuid
+
+    try:
+        return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _span_session_metadata(request: InvocationRequest) -> dict[str, Any]:
+    metadata = getattr(request.session_context, "metadata", None) if request.session_context is not None else None
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _span_source(request: InvocationRequest) -> str:
+    if request.session_context is None:
+        return "runtime"
+    return str(getattr(request.session_context, "source", "") or "runtime")
+
+
+def _span_session_id(request: InvocationRequest) -> str | None:
+    if request.memory_session_id:
+        return request.memory_session_id
+    if request.session_context is not None:
+        session_id = getattr(request.session_context, "session_id", None)
+        return str(session_id) if session_id else None
+    return None
+
+
+async def _record_runtime_span(
+    *,
+    deps: KernelDependencies,
+    request: InvocationRequest,
+    runtime_config: RuntimeConfig | None,
+    root_span_id: str,
+    span_type: str,
+    name: str,
+    started_at_ms: float,
+    invocation_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    clean_metadata = dict(metadata or {})
+    clean_metadata.setdefault("source", _span_source(request))
+    clean_metadata.setdefault("parent_span_id", root_span_id if span_type != "invocation" else None)
+    session_metadata = _span_session_metadata(request)
+    if session_metadata.get("parent_trace_id") and not clean_metadata.get("parent_trace_id"):
+        clean_metadata["parent_trace_id"] = session_metadata.get("parent_trace_id")
+    if span_type == "invocation":
+        clean_metadata["span_id"] = root_span_id
+
+    payload = append_invocation_span(
+        agent_id=request.agent_id,
+        invocation_id=invocation_id,
+        span_type=span_type,
+        name=name,
+        started_at_ms=started_at_ms,
+        metadata=clean_metadata,
+    )
+    if payload is None or deps.record_invocation_span is None:
+        return payload
+    tenant_id = getattr(runtime_config, "tenant_id", None) if runtime_config is not None else None
+    if tenant_id is None:
+        return payload
+
+    await _maybe_await(
+        deps.record_invocation_span(
+            tenant_id=tenant_id,
+            trace_id=str(payload["trace_id"]),
+            span_id=str(payload["span_id"]),
+            parent_span_id=payload.get("parent_span_id"),
+            parent_trace_id=payload.get("parent_trace_id"),
+            span_type=span_type,
+            name=name,
+            status=str(payload.get("status") or "ok"),
+            duration_ms=float(payload.get("duration_ms") or 0.0),
+            agent_id=request.agent_id,
+            user_id=request.user_id,
+            runtime_task_id=_uuid_from_metadata(session_metadata, "runtime_task_id")
+            or _uuid_from_metadata(session_metadata, "task_id"),
+            session_id=_span_session_id(request),
+            request_id=_uuid_from_metadata(session_metadata, "request_id"),
+            metadata=clean_metadata,
+            usage=clean_metadata.get("usage") if isinstance(clean_metadata.get("usage"), dict) else None,
+            error=str(clean_metadata.get("error") or "")[:4000] if clean_metadata.get("error") else None,
+        )
+    )
+    return payload
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -661,6 +755,7 @@ async def _execute_tool_with_hooks(
     emit_event: Callable[[dict], Awaitable[None]],
     tools_for_llm: list[dict] | None = None,
     api_messages: list | None = None,
+    record_span: Callable[..., Awaitable[dict[str, Any] | None]] | None = None,
 ) -> tuple[str, dict[str, Any], bool]:
     """Execute a tool with consistent pre/post/failure hook semantics."""
     from app.runtime.hooks import HookEvent, emit_hook
@@ -676,13 +771,21 @@ async def _execute_tool_with_hooks(
     if hook_result and hook_result.modified_args:
         effective_args = hook_result.modified_args
     if hook_result and hook_result.block:
-        append_invocation_span(
-            agent_id=request.agent_id,
-            span_type="tool",
-            name=tool_name,
-            started_at_ms=monotonic_ms(),
-            metadata={"status": "blocked_by_hook", "reason": hook_result.reason or "policy"},
-        )
+        if record_span:
+            await record_span(
+                span_type="tool",
+                name=tool_name,
+                started_at_ms=monotonic_ms(),
+                metadata={"status": "blocked_by_hook", "reason": hook_result.reason or "policy"},
+            )
+        else:
+            append_invocation_span(
+                agent_id=request.agent_id,
+                span_type="tool",
+                name=tool_name,
+                started_at_ms=monotonic_ms(),
+                metadata={"status": "blocked_by_hook", "reason": hook_result.reason or "policy"},
+            )
         return "Blocked by hook: " + (hook_result.reason or "policy"), effective_args, False
 
     tool_started_ms = monotonic_ms()
@@ -695,13 +798,21 @@ async def _execute_tool_with_hooks(
             api_messages=api_messages,
         )
         if rejection:
-            append_invocation_span(
-                agent_id=request.agent_id,
-                span_type="tool",
-                name=tool_name,
-                started_at_ms=tool_started_ms,
-                metadata={"status": "rejected", "reason": "web_search_fanout"},
-            )
+            if record_span:
+                await record_span(
+                    span_type="tool",
+                    name=tool_name,
+                    started_at_ms=tool_started_ms,
+                    metadata={"status": "rejected", "reason": "web_search_fanout"},
+                )
+            else:
+                append_invocation_span(
+                    agent_id=request.agent_id,
+                    span_type="tool",
+                    name=tool_name,
+                    started_at_ms=tool_started_ms,
+                    metadata={"status": "rejected", "reason": "web_search_fanout"},
+                )
             return rejection, effective_args, False
 
     token = None
@@ -720,23 +831,39 @@ async def _execute_tool_with_hooks(
                 emit_event,
             )
         except _KernelCancelledError:
-            append_invocation_span(
-                agent_id=request.agent_id,
-                span_type="tool",
-                name=tool_name,
-                started_at_ms=tool_started_ms,
-                metadata={"status": "cancelled"},
-            )
+            if record_span:
+                await record_span(
+                    span_type="tool",
+                    name=tool_name,
+                    started_at_ms=tool_started_ms,
+                    metadata={"status": "cancelled"},
+                )
+            else:
+                append_invocation_span(
+                    agent_id=request.agent_id,
+                    span_type="tool",
+                    name=tool_name,
+                    started_at_ms=tool_started_ms,
+                    metadata={"status": "cancelled"},
+                )
             raise
         except Exception as exc:
             err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
-            append_invocation_span(
-                agent_id=request.agent_id,
-                span_type="tool",
-                name=tool_name,
-                started_at_ms=tool_started_ms,
-                metadata={"status": "error", "error_class": type(exc).__name__, "error": str(exc)[:500]},
-            )
+            if record_span:
+                await record_span(
+                    span_type="tool",
+                    name=tool_name,
+                    started_at_ms=tool_started_ms,
+                    metadata={"status": "error", "error_class": type(exc).__name__, "error": str(exc)[:500]},
+                )
+            else:
+                append_invocation_span(
+                    agent_id=request.agent_id,
+                    span_type="tool",
+                    name=tool_name,
+                    started_at_ms=tool_started_ms,
+                    metadata={"status": "error", "error_class": type(exc).__name__, "error": str(exc)[:500]},
+                )
             await emit_hook(
                 HookEvent.POST_TOOL_FAILURE,
                 agent_id=request.agent_id,
@@ -767,16 +894,27 @@ async def _execute_tool_with_hooks(
             "source": getattr(request.session_context, "source", None) if request.session_context else None,
         },
     )
-    append_invocation_span(
-        agent_id=request.agent_id,
-        span_type="tool",
-        name=tool_name,
-        started_at_ms=tool_started_ms,
-        metadata={
-            "status": "ok",
-            "result_chars": len(result_str),
-        },
-    )
+    if record_span:
+        await record_span(
+            span_type="tool",
+            name=tool_name,
+            started_at_ms=tool_started_ms,
+            metadata={
+                "status": "ok",
+                "result_chars": len(result_str),
+            },
+        )
+    else:
+        append_invocation_span(
+            agent_id=request.agent_id,
+            span_type="tool",
+            name=tool_name,
+            started_at_ms=tool_started_ms,
+            metadata={
+                "status": "ok",
+                "result_chars": len(result_str),
+            },
+        )
 
     # B-05 + P0.5: track all high-value tool outcomes for post-compact restoration
     _session = request.session_context
@@ -1808,6 +1946,21 @@ class AgentKernel:
         trace_token = None
         invocation_started_ms = monotonic_ms()
         invocation_id = ""
+        invocation_span_id = f"invocation-{new_invocation_id()[:16]}"
+        runtime_config_for_spans: RuntimeConfig | None = None
+        runtime_span_kwargs = {
+            "deps": self._deps,
+            "request": request,
+        }
+
+        async def _record_span(**kwargs) -> dict[str, Any] | None:
+            return await _record_runtime_span(
+                **runtime_span_kwargs,
+                runtime_config=runtime_config_for_spans,
+                root_span_id=invocation_span_id,
+                **kwargs,
+            )
+
         if request.agent_id:
             metadata = request.session_context.metadata if request.session_context else {}
             invocation_id = str(metadata.get("trace_id") or new_invocation_id())
@@ -1827,6 +1980,7 @@ class AgentKernel:
                 return _build_error_result("[Error] No LLM model configured — unable to invoke agent.")
 
             runtime_config = await _maybe_await(self._deps.resolve_runtime_config(request.agent_id))
+            runtime_config_for_spans = runtime_config
             # P0-1b: invoker fallback paths set tenant_resolution_error instead
             # of silently returning tenant_id=None. Abort before any tool runs;
             # governance (P0-1a) is the second line of defence if a caller
@@ -2415,8 +2569,7 @@ class AgentKernel:
                                 on_thinking=_emit_thinking,
                                 reasoning_kwargs=reasoning_kwargs,
                             )
-                            append_invocation_span(
-                                agent_id=request.agent_id,
+                            await _record_span(
                                 span_type="generation",
                                 name="llm.stream",
                                 started_at_ms=llm_started_ms,
@@ -2438,8 +2591,7 @@ class AgentKernel:
                                 )
                             break
                         except _KernelCancelledError:
-                            append_invocation_span(
-                                agent_id=request.agent_id,
+                            await _record_span(
                                 span_type="generation",
                                 name="llm.stream",
                                 started_at_ms=llm_started_ms,
@@ -2463,8 +2615,7 @@ class AgentKernel:
                                 collected_parts=collected_parts,
                             )
                         except LLMError as exc:
-                            append_invocation_span(
-                                agent_id=request.agent_id,
+                            await _record_span(
                                 span_type="generation",
                                 name="llm.stream",
                                 started_at_ms=llm_started_ms,
@@ -3069,6 +3220,7 @@ class AgentKernel:
                                         emit_event=_emit_event,
                                         tools_for_llm=tools_for_llm,
                                         api_messages=api_messages,
+                                        record_span=_record_span,
                                     )
                             finally:
                                 done_events[index].set()
@@ -3222,6 +3374,7 @@ class AgentKernel:
                                     emit_event=_emit_event,
                                     tools_for_llm=tools_for_llm,
                                     api_messages=api_messages,
+                                    record_span=_record_span,
                                 )
                             except _KernelCancelledError:
                                 if request.agent_id and accumulated_tokens > 0:
@@ -3612,8 +3765,7 @@ class AgentKernel:
                 else:
                     clear_execution_identity()
             if trace_token is not None:
-                append_invocation_span(
-                    agent_id=request.agent_id,
+                await _record_span(
                     invocation_id=invocation_id,
                     span_type="invocation",
                     name="agent_kernel.handle",

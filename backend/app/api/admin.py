@@ -292,6 +292,23 @@ async def get_workflow_metrics(
     return snapshot_workflow_metrics()
 
 
+@router.get("/invocation-traces/{trace_id}")
+async def get_invocation_trace(
+    trace_id: str,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a persisted invocation span tree for operator debugging."""
+    del current_user
+    from app.services.invocation_trace import get_invocation_trace_tree
+
+    payload = await get_invocation_trace_tree(db, tenant_id=tenant_id, trace_id=trace_id)
+    if payload["span_count"] == 0:
+        raise HTTPException(status_code=404, detail="Invocation trace not found")
+    return payload
+
+
 @router.get("/workflows/{run_id}")
 async def inspect_workflow_run(
     run_id: uuid.UUID,

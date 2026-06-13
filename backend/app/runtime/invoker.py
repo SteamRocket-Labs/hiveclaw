@@ -55,6 +55,7 @@ from app.services.agent_tools import (
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.knowledge_inject import fetch_relevant_knowledge
 from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
+from app.services.invocation_trace import persist_invocation_span
 from app.services.memory_service import (
     build_memory_context,
     maybe_compress_messages,
@@ -905,6 +906,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             execute_tool=_kernel_execute_tool,
             persist_memory=persist_runtime_memory,
             record_token_usage=record_token_usage,
+            record_invocation_span=persist_invocation_span,
             get_max_tokens=get_max_tokens,
             extract_usage_tokens=extract_usage_tokens,
             estimate_tokens_from_chars=estimate_tokens_from_chars,

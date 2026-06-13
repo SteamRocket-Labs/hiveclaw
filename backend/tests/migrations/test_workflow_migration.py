@@ -29,7 +29,8 @@ from tests.integration.conftest import BACKEND_ROOT
 _WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_calls", "workflow_quotas")
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 _FEEDBACK_TABLES = ("session_feedback_events",)
-_CURRENT_CLOSURE_HEAD = "agent_identity_lifecycle_0613"
+_INVOCATION_TRACE_TABLES = ("invocation_spans",)
+_CURRENT_CLOSURE_HEAD = "invocation_spans_0613"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -152,6 +153,38 @@ async def _assert_feedback_tables_forced_rls(database_url: str) -> None:
     assert all(name == f"tenant_isolation_{table}" for table, name in policies)
 
 
+async def _assert_invocation_trace_tables_forced_rls(database_url: str) -> None:
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = ANY(:names)"
+                    ),
+                    {"names": list(_INVOCATION_TRACE_TABLES)},
+                )
+            ).all()
+            policies = (
+                await conn.execute(
+                    text("SELECT tablename, policyname FROM pg_policies WHERE tablename = ANY(:names)"),
+                    {"names": list(_INVOCATION_TRACE_TABLES)},
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+
+    found = {row.relname: row for row in rows}
+    assert set(found) == set(_INVOCATION_TRACE_TABLES), (
+        f"missing invocation trace tables: {set(_INVOCATION_TRACE_TABLES) - set(found)}"
+    )
+    for table in _INVOCATION_TRACE_TABLES:
+        assert found[table].relrowsecurity is True, f"{table}: RLS not enabled"
+        assert found[table].relforcerowsecurity is True, f"{table}: RLS not FORCEd"
+    assert {t for t, _ in policies} == set(_INVOCATION_TRACE_TABLES)
+    assert all(name == f"tenant_isolation_{table}" for table, name in policies)
+
+
 async def test_upgrade_path_creates_workflow_tables_with_forced_rls(chain_migrated_pg_url):
     """The migration's own DDL (executed, not stamped) must produce the contract."""
     await _assert_workflow_tables_forced_rls(chain_migrated_pg_url)
@@ -177,6 +210,14 @@ async def test_upgrade_path_creates_session_feedback_events_with_forced_rls(chai
 
 async def test_bootstrap_path_creates_session_feedback_events_with_forced_rls(migrated_pg_url):
     await _assert_feedback_tables_forced_rls(migrated_pg_url)
+
+
+async def test_upgrade_path_creates_invocation_spans_with_forced_rls(chain_migrated_pg_url):
+    await _assert_invocation_trace_tables_forced_rls(chain_migrated_pg_url)
+
+
+async def test_bootstrap_path_creates_invocation_spans_with_forced_rls(migrated_pg_url):
+    await _assert_invocation_trace_tables_forced_rls(migrated_pg_url)
 
 
 async def test_upgrade_path_adds_chat_message_thinking_signature(chain_migrated_pg_url):

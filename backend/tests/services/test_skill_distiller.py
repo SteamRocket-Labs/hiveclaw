@@ -13,6 +13,16 @@ def _jsonl_records(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _passing_behavior_report() -> dict:
+    return {
+        "kind": "behavior_eval",
+        "transport": "hive_live",
+        "benchmark_complete": True,
+        "fallback_used": False,
+        "scenarios": {"coding": {"ready": True, "score": 100}},
+    }
+
+
 def test_build_workflow_signature_filters_noise_and_consecutive_duplicates() -> None:
     from app.services.skill_distiller import _build_workflow_signature
 
@@ -220,7 +230,10 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
+        runtime_config=SimpleNamespace(
+            skill_candidate_loop_enabled=True,
+            skill_distiller_behavior_report=_passing_behavior_report(),
+        ),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -296,16 +309,17 @@ async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatc
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
+        runtime_config=SimpleNamespace(
+            skill_candidate_loop_enabled=True,
+            skill_distiller_behavior_report=_passing_behavior_report(),
+        ),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
     skill_path = workspace / "skills" / "unsafe-installer-loop" / "SKILL.md"
     ledger_records = _jsonl_records(workspace / "evolution" / "evolution_ledger.jsonl")
     eval_runs = [record for record in ledger_records if record["schema"] == "evolution_eval_run.v1"]
-    promotion_decisions = [
-        record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"
-    ]
+    promotion_decisions = [record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"]
 
     assert result["status"] == "deferred"
     assert result["reason"] == "verification failed"
@@ -377,7 +391,10 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
+        runtime_config=SimpleNamespace(
+            skill_candidate_loop_enabled=True,
+            skill_distiller_behavior_report=_passing_behavior_report(),
+        ),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -386,9 +403,7 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
     ledger_records = _jsonl_records(workspace / "evolution" / "evolution_ledger.jsonl")
     candidates = [record for record in ledger_records if record["schema"] == "evolution_candidate.v1"]
     eval_runs = [record for record in ledger_records if record["schema"] == "evolution_eval_run.v1"]
-    promotion_decisions = [
-        record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"
-    ]
+    promotion_decisions = [record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"]
 
     assert result["status"] == "patched"
     assert result["skill_name"] == "Web Research"
@@ -478,7 +493,10 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
         agent_id=uuid4(),
         workspace=workspace,
         tenant_id=None,
-        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
+        runtime_config=SimpleNamespace(
+            skill_candidate_loop_enabled=True,
+            skill_distiller_behavior_report=_passing_behavior_report(),
+        ),
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
     )
 
@@ -499,6 +517,7 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
 # XML tags, pipeline context, decision matrix, anti-patterns for
 # time-sensitive content, and JSON output contract.
 # ──────────────────────────────────────────────────────────────────────────
+
 
 def _extract_system_prompt_literal() -> str:
     """Read the system_prompt literal out of _draft_skill_with_llm source."""

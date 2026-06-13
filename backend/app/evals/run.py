@@ -629,6 +629,7 @@ def main(argv: list[str] | None = None, *, output_root: str | Path | None = None
     parser.add_argument("--target", required=True)
     parser.add_argument("--mode", required=True)
     parser.add_argument("--ablation", default="full")
+    parser.add_argument("--fail-under", type=float, default=None, help="E8 G3: exit 1 if pass_rate < this")
     args = parser.parse_args(argv)
 
     report = run_eval_suite(
@@ -643,6 +644,10 @@ def main(argv: list[str] | None = None, *, output_root: str | Path | None = None
         f"ablation={report['ablation']} average_score={report['summary']['average_score']} "
         f"pass_rate={report['summary']['pass_rate']} output_dir={report['output_dir']}"
     )
+    pass_rate = float(report["summary"]["pass_rate"])
+    if args.fail_under is not None and pass_rate < args.fail_under:
+        print(f"[eval] FAIL: pass_rate {pass_rate} < fail_under {args.fail_under} (E8 G3 regression gate)")
+        return 1
     return 0
 
 

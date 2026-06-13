@@ -1,0 +1,18 @@
+{
+  "schema": "behavior_eval_baseline.v1",
+  "suite": "core_behavior_v1",
+  "baseline_version": "0.1.0-provisional",
+  "baseline_model": "claude-opus-4-8",
+  "baseline_date": "2026-06-13",
+  "commit_sha": "pending-e2-live-run",
+  "note": "Provisional seed. score_p50 values are placeholders to be overwritten by the first real Hive agent-core live run (E2) via an explicit, governed rebaseline step. Until then the regression gate treats this suite as require-live and does not trust these scores as passing evidence.",
+  "provisional": true,
+  "scenarios": {
+    "coding": {"score_p50": 0.0, "score_p95_variance": 0.0, "transport": "pending"},
+    "review": {"score_p50": 0.0, "score_p95_variance": 0.0, "transport": "pending"},
+    "research": {"score_p50": 0.0, "score_p95_variance": 0.0, "transport": "pending"},
+    "operations": {"score_p50": 0.0, "score_p95_variance": 0.0, "transport": "pending"},
+    "memory_recall": {"score_p50": 0.0, "score_p95_variance": 0.0, "transport": "pending"},
+    "long_context_after_compaction": {"score_p50": 0.0, "score_p95_variance": 0.0, "transport": "pending"}
+  }
+}

@@ -51,7 +51,11 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "disclosure and static guard evidence."
         ),
         "max_score": 92,
-        "behavior_assertions": ["promote_after_repeated_success", "patch_after_loaded_skill_miss", "candidate_file_written"],
+        "behavior_assertions": [
+            "promote_after_repeated_success",
+            "patch_after_loaded_skill_miss",
+            "candidate_file_written",
+        ],
     },
     {
         "name": "long_task_resume",
@@ -69,7 +73,12 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "credential hygiene."
         ),
         "max_score": 96,
-        "behavior_assertions": ["manifest_validates", "pl4_refused", "company_conflict_escalates", "skill_guard_blocks_secret"],
+        "behavior_assertions": [
+            "manifest_validates",
+            "pl4_refused",
+            "company_conflict_escalates",
+            "skill_guard_blocks_secret",
+        ],
     },
 ]
 
@@ -95,7 +104,9 @@ def _behavior_check(check_id: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"id": check_id, "passed": bool(passed), "detail": detail}
 
 
-def _behavior_result(case: dict[str, Any], *, checks: list[dict[str, Any]], transcript: dict[str, Any]) -> dict[str, Any]:
+def _behavior_result(
+    case: dict[str, Any], *, checks: list[dict[str, Any]], transcript: dict[str, Any]
+) -> dict[str, Any]:
     passed_count = sum(1 for check in checks if check["passed"])
     score = int(round((passed_count / len(checks)) * int(case["max_score"]))) if checks else 0
     return {
@@ -183,8 +194,7 @@ def _score_hive(repo_root: Path) -> dict[str, Any]:
                 ),
                 _behavior_check(
                     "projection_rendered",
-                    "Session Learning" in rendered_projection
-                    and "Simplified Chinese" in rendered_projection,
+                    "Session Learning" in rendered_projection and "Simplified Chinese" in rendered_projection,
                     rendered_projection,
                 ),
             ],
@@ -468,87 +478,16 @@ def _score_hive(repo_root: Path) -> dict[str, Any]:
     }
 
 
-def _score_by_markers(text: str, *, markers: list[str], baseline: int, max_score: int) -> int:
-    if not markers:
-        return baseline
-    lowered = text.lower()
-    hits = sum(1 for marker in markers if marker.lower() in lowered)
-    return min(max_score, baseline + round((hits / len(markers)) * (max_score - baseline)))
-
-
-def _derive_hermes_scores(hermes_root: Path) -> dict[str, int]:
-    if not hermes_root.exists():
-        return {
-            "next_turn_adaptation": 82,
-            "repeated_workflow_learning": 78,
-            "tool_failure_lesson_reuse": 72,
-            "skill_candidate_creation": 74,
-            "long_task_resume": 68,
-            "safety_tenant_policy": 58,
-        }
-
-    memory_text = _safe_read(hermes_root / "tools/memory_tool.py")
-    skills_text = "\n".join(
-        [
-            _safe_read(hermes_root / "tools/skills_tool.py"),
-            _safe_read(hermes_root / "tools/skills_hub.py"),
-            _safe_read(hermes_root / "tools/skill_usage.py"),
-            _safe_read(hermes_root / "tools/skill_provenance.py"),
-        ]
-    )
-    guard_text = _safe_read(hermes_root / "tools/skills_guard.py")
-    agent_text = "\n".join(
-        [
-            _safe_read(hermes_root / "run_agent.py"),
-            _safe_read(hermes_root / "environments/agent_loop.py"),
-            _safe_read(hermes_root / "agent/context_compressor.py"),
-        ]
-    )
-
-    return {
-        "next_turn_adaptation": _score_by_markers(
-            f"{memory_text}\n{agent_text}",
-            markers=["memory", "session", "reflection", "compress"],
-            baseline=76,
-            max_score=88,
-        ),
-        "repeated_workflow_learning": _score_by_markers(
-            skills_text,
-            markers=["skill", "usage", "provenance", "sync"],
-            baseline=72,
-            max_score=86,
-        ),
-        "tool_failure_lesson_reuse": _score_by_markers(
-            f"{skills_text}\n{agent_text}",
-            markers=["error", "failed", "exception", "retry"],
-            baseline=68,
-            max_score=82,
-        ),
-        "skill_candidate_creation": _score_by_markers(
-            skills_text,
-            markers=["create", "install", "skill", "provenance"],
-            baseline=70,
-            max_score=84,
-        ),
-        "long_task_resume": _score_by_markers(
-            agent_text,
-            markers=["compress", "context", "resume", "summary"],
-            baseline=62,
-            max_score=78,
-        ),
-        "safety_tenant_policy": _score_by_markers(
-            guard_text,
-            markers=["guard", "path", "traversal", "secret"],
-            baseline=54,
-            max_score=72,
-        ),
-    }
-
-
 def _normalize_hermes_scores(hermes_scores: dict[str, int] | None, *, hermes_root: Path) -> tuple[str, dict[str, int]]:
+    # E7: Hermes scores must come from a real live run (hermes_baseline /
+    # bakeoff_runtime). This module no longer accepts caller-injected scores:
+    # absent real-run evidence is 'unavailable' with empty scores, and the
+    # cross-comparison gate is skipped (round2 §1.1: no fake Hive-vs-Hermes
+    # numbers).
+    del hermes_root
     if hermes_scores is not None:
-        return "injected", {case["name"]: int(hermes_scores.get(case["name"], 0)) for case in _FOUNDATION_CASES}
-    return "repo_evidence_fallback", _derive_hermes_scores(hermes_root)
+        raise ValueError("Hermes scores must come from a live run, not injected JSON")
+    return "unavailable", {}
 
 
 def _cost_latency_report(repo_root: Path) -> dict[str, Any]:
@@ -572,9 +511,12 @@ def _cost_latency_report(repo_root: Path) -> dict[str, Any]:
     }
 
 
-def _comparison_passed(name: str, hive_score: int, hermes_score: int) -> bool:
+def _comparison_passed(name: str, hive_score: int, hermes_score: int | None) -> bool:
     if hive_score < 80:
         return False
+    # E7: Hermes unavailable -> rely on the Hive absolute threshold only (no fake relative gate).
+    if hermes_score is None:
+        return True
     if name == "next_turn_adaptation":
         return hive_score >= hermes_score
     if name == "safety_tenant_policy":
@@ -605,14 +547,15 @@ def run_self_evolution_bakeoff(
         name = case["name"]
         hive_scenario = hive_report["scenarios"][name]
         hive_score = int(hive_scenario["score"])
-        hermes_score = int(normalized_hermes_scores.get(name, 0))
+        hermes_raw = normalized_hermes_scores.get(name)
+        hermes_score = int(hermes_raw) if hermes_raw is not None else None
         passed = _comparison_passed(name, hive_score, hermes_score)
         if not passed:
             failed_requirements.append(name)
         comparisons[name] = {
             "hive_score": hive_score,
             "hermes_score": hermes_score,
-            "delta": hive_score - hermes_score,
+            "delta": (hive_score - hermes_score) if hermes_score is not None else None,
             "passed": passed,
             "hive_evidence": hive_scenario["checks"],
             "hermes_source": hermes_source,
@@ -658,12 +601,10 @@ def write_self_evolution_bakeoff_report(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run deterministic Hive vs Hermes self-evolution bakeoff.")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--hermes-scores-json", default="")
     parser.add_argument("--hermes-root", type=Path, default=_DEFAULT_HERMES_ROOT)
     args = parser.parse_args(argv)
 
-    hermes_scores = json.loads(args.hermes_scores_json) if args.hermes_scores_json else None
-    report = run_self_evolution_bakeoff(hermes_scores=hermes_scores, hermes_root=args.hermes_root)
+    report = run_self_evolution_bakeoff(hermes_root=args.hermes_root)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")

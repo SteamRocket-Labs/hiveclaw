@@ -29,13 +29,21 @@ def _check_result(
     passed: bool,
     message: str,
     evidence: dict[str, Any] | None = None,
+    gating: bool = True,
+    score: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "type": check_type,
         "passed": passed,
         "message": message,
         "evidence": evidence or {},
     }
+    # E4/D3: only gating checks decide pass/fail; non-gating checks are observational.
+    if not gating:
+        result["gating"] = False
+    if score is not None:
+        result["score"] = score
+    return result
 
 
 def _run_deterministic_command(workspace: Path, grader: dict[str, Any]) -> dict[str, Any]:
@@ -342,11 +350,22 @@ def _run_skill_guard_check(workspace: Path, grader: dict[str, Any]) -> dict[str,
 
 
 def _run_llm_rubric_check(grader: dict[str, Any]) -> dict[str, Any]:
+    # E4/D3: an LLM rubric is an OBSERVATIONAL quality signal only — it never gates
+    # pass/fail (round2 §2.3: self-eval drifts and reward-hacks). It contributes a
+    # continuous score to verification_quality_score but is excluded from the hard
+    # gate (gating=False), so a verification can never pass on a rubric alone.
+    raw = grader.get("score")
+    score: float | None = None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        value = float(raw)
+        score = max(0.0, min(1.0, value / 100.0 if value > 1.0 else value))
     return _check_result(
         check_type="llm_rubric",
-        passed=False,
-        message="llm_rubric is not an executable verifier; use deterministic, skill_guard, tool_call, or human checks",
-        evidence={"rubric": grader.get("rubric", ""), "score": grader.get("score")},
+        passed=True,
+        message="llm_rubric is observational only (non-gating quality signal; never decides pass/fail)",
+        evidence={"rubric": grader.get("rubric", ""), "raw_score": raw},
+        gating=False,
+        score=score,
     )
 
 
@@ -357,6 +376,38 @@ def _run_human_confirmation_check(grader: dict[str, Any]) -> dict[str, Any]:
         passed=confirmed,
         message="human confirmation present" if confirmed else "human confirmation missing",
         evidence={"reviewer": grader.get("reviewer", "")},
+    )
+
+
+def _run_agent_behavior_check(grader: dict[str, Any]) -> dict[str, Any]:
+    """E2: consume a behavior-eval report; pass only on a complete, trusted live run."""
+
+    report = grader.get("behavior_report")
+    if not isinstance(report, dict):
+        return _check_result(
+            check_type="agent_behavior_check",
+            passed=False,
+            message="missing behavior_report",
+            evidence={"grader_keys": sorted(grader.keys())},
+        )
+    from app.evals.hive_live_runner import behavior_eval_passed
+
+    passed = behavior_eval_passed(report)
+    scenarios = report.get("scenarios") or {}
+    not_ready = [name for name, entry in scenarios.items() if not entry.get("ready")]
+    transport = report.get("transport")
+    return _check_result(
+        check_type="agent_behavior_check",
+        passed=passed,
+        message=(
+            "behavior eval passed" if passed else f"behavior eval failed (transport={transport}, not_ready={not_ready})"
+        ),
+        evidence={
+            "transport": transport,
+            "benchmark_complete": report.get("benchmark_complete"),
+            "fallback_used": report.get("fallback_used"),
+            "not_ready": not_ready,
+        },
     )
 
 
@@ -381,6 +432,8 @@ def run_evolution_verification(
             checks.append(_run_llm_rubric_check(grader))
         elif grader_type == "human_confirmation":
             checks.append(_run_human_confirmation_check(grader))
+        elif grader_type == "agent_behavior_check":
+            checks.append(_run_agent_behavior_check(grader))
         else:
             checks.append(
                 _check_result(
@@ -391,8 +444,11 @@ def run_evolution_verification(
                 )
             )
 
-    passed = bool(checks) and all(bool(check.get("passed")) for check in checks)
-    return {
+    # E4/D3: only GATING checks decide pass/fail. Non-gating checks (llm_rubric)
+    # are observational; a verification with no gating check fails closed.
+    gating_checks = [check for check in checks if check.get("gating", True)]
+    passed = bool(gating_checks) and all(bool(check.get("passed")) for check in gating_checks)
+    report = {
         "schema": "evolution_verification_report.v1",
         "created_at": _now_iso(),
         "candidate_id": candidate.get("candidate_id"),
@@ -402,6 +458,26 @@ def run_evolution_verification(
         "checks": checks,
         "trace_refs": candidate.get("source_attempt_ids") or candidate.get("manifest", {}).get("trace_refs") or [],
     }
+    report["quality_score"] = verification_quality_score(report)
+    return report
+
+
+def verification_quality_score(report: dict[str, Any]) -> float:
+    """E4: continuous quality score (0-1) over all checks — rubric contributes its
+    normalized score, hard checks contribute pass=1.0 / fail=0.0. Observational,
+    NOT the gate (round2 §2.3 / D3)."""
+
+    checks = report.get("checks") or []
+    if not checks:
+        return 0.0
+    total = 0.0
+    for check in checks:
+        raw = check.get("score")
+        if raw is not None:
+            total += max(0.0, min(1.0, float(raw)))
+        else:
+            total += 1.0 if check.get("passed") else 0.0
+    return round(total / len(checks), 4)
 
 
 def record_verification_eval(
@@ -412,12 +488,17 @@ def record_verification_eval(
     dataset: str = "evolution_verification",
 ) -> dict[str, Any]:
     passed = bool(verification_report.get("passed"))
-    failed_checks = [check for check in verification_report.get("checks", []) if not bool(check.get("passed"))]
+    # E4: gating checks that failed are the regression signal (rubric never counts).
+    failed_checks = [
+        check
+        for check in verification_report.get("checks", [])
+        if check.get("gating", True) and not bool(check.get("passed"))
+    ]
     return record_eval_run(
         workspace,
         candidate_id=str(candidate.get("candidate_id") or ""),
         dataset=dataset,
-        reward=1.0 if passed else 0.0,
+        reward=verification_quality_score(verification_report),
         baseline_reward=0.0,
         passed=passed,
         traces=[str(ref) for ref in verification_report.get("trace_refs") or [] if str(ref).strip()],
@@ -426,14 +507,70 @@ def record_verification_eval(
     )
 
 
+def execution_evidence(verification_report: dict[str, Any]) -> dict[str, bool]:
+    """E3: summarize agent-behavior (execution) evidence inside a verification report."""
+
+    checks = verification_report.get("checks") or []
+    behavior_checks = [check for check in checks if check.get("type") == "agent_behavior_check"]
+    return {
+        "has_behavior_check": bool(behavior_checks),
+        "execution_passed": bool(behavior_checks) and all(bool(check.get("passed")) for check in behavior_checks),
+    }
+
+
 def decide_verified_promotion(
     candidate: dict[str, Any],
     *,
     verification_report: dict[str, Any] | None,
+    regression_report: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     del candidate
     if verification_report is None:
         return {"decision": "hold", "reason": "verification evidence is required"}
     if not bool(verification_report.get("passed")):
         return {"decision": "reject", "reason": "verification failed"}
+    # E3 no_regressions: a behavior regression vs the version-pinned baseline blocks promotion.
+    if regression_report is not None and not bool(regression_report.get("passed")):
+        regressed = (
+            [r.get("scenario") for r in regression_report.get("regressions", []) if r.get("regressed")]
+            or regression_report.get("missing_scenarios")
+            or []
+        )
+        return {"decision": "hold", "reason": f"behavior regression vs baseline: {regressed}"}
+    # E3 execution_passed: if behavior evidence is present it must pass. verification.passed
+    # already requires this; we assert it explicitly so a caller that computes passed
+    # differently cannot bypass the behavior gate.
+    evidence = execution_evidence(verification_report)
+    if evidence["has_behavior_check"] and not evidence["execution_passed"]:
+        return {"decision": "reject", "reason": "agent behavior eval failed"}
     return {"decision": "promote", "reason": "verification passed"}
+
+
+def decide_behavior_gated_promotion(
+    candidate: dict[str, Any],
+    *,
+    verification_report: dict[str, Any] | None,
+    behavior_report: dict[str, Any] | None,
+    regression_report: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """E3: canonical hard promotion gate — verification passed AND behavior eval
+    passed (execution_passed) AND no baseline regression (no_regressions).
+
+    Composes E1 (regression_report from compare_to_baseline) + E2 (behavior_report
+    via behavior_eval_passed) + static verification. E8's CI eval path calls this
+    with reports produced by the Hive live runner, so a self-evolution candidate
+    cannot promote without proving real, non-regressed behavior.
+    """
+
+    base = decide_verified_promotion(
+        candidate,
+        verification_report=verification_report,
+        regression_report=regression_report,
+    )
+    if base["decision"] != "promote":
+        return base
+    from app.evals.hive_live_runner import behavior_eval_passed
+
+    if not isinstance(behavior_report, dict) or not behavior_eval_passed(behavior_report):
+        return {"decision": "hold", "reason": "behavior eval did not pass (execution_passed required)"}
+    return {"decision": "promote", "reason": "verification + behavior eval passed, no regression"}

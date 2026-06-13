@@ -8,13 +8,14 @@ Transport is auto-detected: tries Streamable HTTP first, falls back to SSE.
 Reference: https://modelcontextprotocol.io/docs
 """
 
-import httpx
-
-from app.tools.result_envelope import render_tool_error
 import json
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse
 
+import httpx
 from loguru import logger
+
+from app.services.mcp_authz import split_mcp_server_url_and_api_key
+from app.tools.result_envelope import render_tool_error
 
 
 class MCPClient:
@@ -24,17 +25,7 @@ class MCPClient:
     """
 
     def __init__(self, server_url: str, api_key: str | None = None):
-        # Extract apiKey from URL query params and move to Authorization header
-        parsed = urlparse(server_url)
-        qs = parse_qs(parsed.query, keep_blank_values=True)
-
-        self.api_key = api_key
-        if not self.api_key and "apiKey" in qs:
-            self.api_key = qs.pop("apiKey")[0]
-
-        # Rebuild URL without apiKey in query string
-        remaining_qs = urlencode({k: v[0] for k, v in qs.items()}) if qs else ""
-        self.server_url = urlunparse(parsed._replace(query=remaining_qs)).rstrip("/")
+        self.server_url, self.api_key = split_mcp_server_url_and_api_key(server_url, explicit_api_key=api_key)
 
         # Transport state
         self._transport: str | None = None  # "streamable" or "sse"

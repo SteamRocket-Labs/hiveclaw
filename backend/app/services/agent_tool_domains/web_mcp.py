@@ -984,6 +984,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
     try:
         from app.models.agent import Agent
         from app.models.tool import AgentTool, Tool
+        from app.services.mcp_authz import MCPAuthzError, assert_no_mcp_token_passthrough
         from app.services.mcp_client import MCPClient
         from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
@@ -1040,6 +1041,20 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
             return f"❌ MCP tool {tool_name} has no server URL configured"
 
         merged_config = {**(getattr(tool, "config", None) or {}), **agent_config}
+        try:
+            assert_no_mcp_token_passthrough(merged_config)
+        except MCPAuthzError as exc:
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="authz_policy_violation",
+                message=str(exc),
+                provider="mcp",
+                retryable=False,
+                actionable_hint=(
+                    "Do not pass user/OAuth tokens through MCP tool config. "
+                    "Use a server-scoped credential or tenant-managed connector authorization."
+                ),
+            )
         mcp_url = tool.mcp_server_url
         mcp_name = tool.mcp_tool_name or tool_name
 

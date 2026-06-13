@@ -499,12 +499,12 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 5 | 记忆企业治理（独有轴） | 无人做全 | per-tenant 隔离+脱密+拒不可信源+溯源+审计 | 🟡 write-gate 有分级，缺用前校验/TTL/会话归因 | 缝 Devin(Useful/Misleading)+Copilot(引用校验/TTL)+decision_trace |
 | 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🔴 仅 workflow 一条线；subagent/delegation 裸奔 | journal 升"completion 去重边界"+withRetry+输出cap续写 |
 | 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡 原语齐全，缺重规划；D2 信号死线 | 补 task/progress-ledger；修 workflow_completed 零消费 |
-| 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算；✅ canonical last-assistant cache anchor + Anthropic block 透传 | 评估 Code-Execution-over-MCP |
+| 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算；✅ canonical last-assistant cache anchor + Anthropic block 透传；✅ MCP authz passthrough hard gate | 后续只在工具数爆炸时再引入 Code-Exec-over-MCP 模块树 |
 | 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 G1 subprocess env/sandbox 已收口；仍缺生产 userns 探测+seccomp/microVM+出口代理 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
 | 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
 | 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🟡 trace/feedback 生产地基已接：invocation_spans 落库+reader+Prometheus、Session Useful/Misleading；仍缺外部行为 eval CI | 在 §12.13 基础上建外部行为 eval CI |
-| 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 有 MCP，缺 A2A/委托标准 | 原生说开放标准=中立平面具体化 |
+| 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 MCP authz passthrough hard gate 已接；仍缺 A2A Agent Card/委托标准面 | 原生说开放标准=中立平面具体化 |
 
 ---
 
@@ -1123,8 +1123,35 @@ cd backend && source .venv/bin/activate && pytest tests/runtime/test_prompt_cach
 
 **非 MVP 收口**：不是只改 hint policy，也不是只改测试断言。cache hint 选择、Anthropic payload formatter、thinking signature 共存路径一起闭环；system frozen/dynamic split 保留，conversation/heartbeat/trigger/task TTL 策略不变。剩余第五仗项仍是：Code-Execution-over-MCP 评估、A2A/OAuth 委托标准、D1 半桩测试补真、文档 §3 诚实降级。
 
+### 12.16 第五仗 MCP authz 已实装：禁 token passthrough + Code-Execution-over-MCP 评估收口（2026-06-13）
+
+**完成范围**：新增 `backend/app/services/mcp_authz.py` 作为 MCP authorization choke point。`MCPClient` 现在统一拒绝 MCP server URL userinfo，拒绝 `access_token` / `authorization` / `id_token` / `refresh_token` / `bearer_token` 等 OAuth/user token query passthrough；legacy `apiKey` / `api_key` query 只作为 server-scoped credential 兼容入口，会被移出 URL 并改走 `Authorization: Bearer ...` header，不再留在 `server_url`。`backend/app/services/agent_tool_domains/web_mcp.py::_execute_mcp_tool()` 在 Smithery Connect 与 direct MCP 两条执行路径前统一检查 merged config，发现 user/OAuth token 字段即 fail-closed，不会把它传给任意 MCP server。
+
+**Code-Execution-over-MCP 评估结论**：Hive 当前 MCP 工具面已经通过 `tool_search` / deferred MCP schema injection 延迟加载，MCP 工具不在首轮核心 prompt 全量展开；因此本节不把外部 MCP server 重新包装成代码执行模块树，避免在现有 OS sandbox 之外新增一层 agent 可执行代码面。后续只有当单 agent 已分配 MCP tool surface 达到“工具定义本身成为主要 context 成本”的规模时，才应引入 Anthropic 式 Code-Execution-over-MCP，并且必须复用 §12.10 的 subprocess sandbox builder 与本节 authz choke point。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_mcp_authz.py -q
+# 3 failed, 1 passed
+```
+
+失败点覆盖真实缺口：`MCPClient` 接受 URL userinfo；`MCPClient` 接受 `access_token` query；`_execute_mcp_tool()` 遇到 `config.access_token` 仍会初始化并调用 MCPClient。
+
+**Green / 回归证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_mcp_authz.py -q
+# 4 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_mcp_authz.py tests/services/test_mcp_tool_discovery.py tests/services/test_agent_mcp_gating.py tests/services/test_mcp_backfill.py tests/services/test_agent_tools.py::test_execute_approved_tool_registry_miss_uses_mcp_passthrough tests/services/test_agent_tools_executor_dispatch.py::test_execute_tool_inner_falls_back_to_mcp_executor tests/api/test_mcp_servers_api.py -q
+# 47 passed, 4 warnings
+```
+
+**非 MVP 收口**：不是只在 client 构造函数里移除 `apiKey`。URL 解析、credential extraction、direct execution、Smithery execution 前置 config 检查都走同一个 MCP authz 模块；违反策略时返回结构化 tool error，而不是继续调用外部 server。诚实边界：这还不是完整 MCP OAuth 2.1 resource-server implementation（RFC 9728 metadata discovery / RFC 8707 resource indicators / PKCE flow），但它先关闭了规范里最危险、且本仓当前真实存在的 confused-deputy/token-passthrough 入口。
+
 **第五仗 — cache + 互操作 + 诚实债收尾**
-- C2 CJK 校准与 canonical last-assistant cache anchor 已关闭；继续评估 Code-Execution-over-MCP（工具量大省 98.7%）；原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
+- C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate 已关闭；继续原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
 
 **贯穿所有仗的铁律**：① 验证器外部且硬、在 agent 可改写面之外；② 替换语义可解释可逆；③ 进化 lineage 一等审计；④ 多租户隔离（经验/语料/技能不跨租户）；⑤ 做完外部行为 eval 前不宣称"已超越"。
 

@@ -36,3 +36,4 @@ docs/
 !backend/docs/
 backend/docs/*
 !backend/docs/autonomous-trigger-system.md
+.vercel

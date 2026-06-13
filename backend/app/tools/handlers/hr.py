@@ -10,7 +10,6 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-import asyncio
 
 from app.services.archetype import apply_archetype_defaults
 
@@ -19,7 +18,7 @@ from app.config import get_settings
 from app.services.capability_reuse_service import reuse_existing_skill_for_agent
 from app.services import plan_mode_core
 from app.services.subprocess_env import build_agent_subprocess_env
-from app.services.subprocess_sandbox import build_sandboxed_agent_command
+from app.services.code_execution.service import execute_agent_command
 from app.services.skill_seeder import BUILTIN_SKILLS
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -673,36 +672,28 @@ async def _install_external_skill_from_skills_ref(
         raise ValueError("Invalid skills.sh ref")
 
     agent_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-    work_dir = agent_dir / "workspace"
-    work_dir.mkdir(parents=True, exist_ok=True)
-
+    # Isolated empty work_dir for the npx process; skill artifacts land under
+    # $HOME/.agents/skills, which the execution provider syncs back to exec_home
+    # (local: bwrap HOME; vercel: remote HOME tarred back).
+    work_dir = Path(tempfile.mkdtemp(prefix=f"hr_skill_work_{agent_id}_"))
     exec_home = Path(tempfile.mkdtemp(prefix=f"hr_skill_ref_{agent_id}_"))
     safe_env = build_agent_subprocess_env(home=exec_home)
-    cleanup_paths: list[Path] = []
     try:
         command = ["bash", "-lc", f"npx skills add {shlex.quote(ref)} -y"]
-        sandboxed = build_sandboxed_agent_command(command, work_dir=work_dir, env=safe_env)
-        cleanup_paths = list(sandboxed.cleanup_paths)
-        if sandboxed.error:
-            raise RuntimeError(sandboxed.error)
-
-        proc = await asyncio.create_subprocess_exec(
-            *(sandboxed.command or []),
-            cwd=str(work_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        # `npx skills add` needs node + npm-registry egress. Run on the node
+        # runtime with network allowed; the local provider ignores runtime.
+        result = await execute_agent_command(
+            command,
+            work_dir=work_dir,
             env=safe_env,
+            timeout=120,
+            runtime="node24",
+            network_policy="allow-all",
         )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            raise RuntimeError("skills.sh install timed out after 120s")
-
-        if proc.returncode != 0:
-            message = stderr.decode("utf-8", errors="replace") or stdout.decode("utf-8", errors="replace")
+        if result.error:
+            raise RuntimeError(result.error)
+        if result.exit_code != 0:
+            message = result.stderr or result.stdout
             raise RuntimeError(message[:300] or "skills.sh install failed")
 
         sandbox_skills = exec_home / ".agents" / "skills"
@@ -756,11 +747,7 @@ async def _install_external_skill_from_skills_ref(
             "source_ref": ref,
         }
     finally:
-        for cleanup_path in cleanup_paths:
-            try:
-                cleanup_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+        shutil.rmtree(work_dir, ignore_errors=True)
         shutil.rmtree(exec_home, ignore_errors=True)
 
 

@@ -39,6 +39,7 @@ dependencies = [
     "reportlab>=4.0.0",
     "pypdf>=4.0.0",
     "XlsxWriter>=3.2.0",
+    "vercel>=0.5.9,<0.6",
 ]
 
 [project.optional-dependencies]

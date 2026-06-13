@@ -1,10 +1,11 @@
 """Code execution domain — sandboxed Python/Bash/Node execution."""
 
-import asyncio
 import logging
+import os
 from pathlib import Path
 
-from app.services.subprocess_sandbox import build_sandboxed_agent_command
+from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
+from app.services.code_execution.service import execute_agent_command
 from app.services.subprocess_env import build_agent_subprocess_env
 
 logger = logging.getLogger(__name__)
@@ -104,11 +105,6 @@ def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
     return work_dir, safe_env
 
 
-def _sandbox_command(command: list[str], *, work_dir: Path, env: dict[str, str]) -> tuple[list[str] | None, list[Path], str | None]:
-    sandbox = build_sandboxed_agent_command(command, work_dir=work_dir, env=env)
-    return sandbox.command, sandbox.cleanup_paths, sandbox.error
-
-
 async def _execute_code(ws: Path, arguments: dict) -> str:
     """Execute code in a sandboxed subprocess within the agent's workspace."""
     language = arguments.get("language", "python")
@@ -146,31 +142,15 @@ async def _execute_code(ws: Path, arguments: dict) -> str:
     try:
         script_path.write_text(code, encoding="utf-8")
 
-        sandboxed_cmd, cleanup_paths, sandbox_error = _sandbox_command(
-            [*cmd_prefix, str(script_path)],
+        result = await execute_agent_command(
+            [*cmd_prefix, script_path.name],
             work_dir=work_dir,
             env=safe_env,
+            timeout=timeout,
+            runtime="node24" if language == "node" else "python3.13",
         )
-        if sandbox_error:
-            return sandbox_error
-
-        proc = await asyncio.create_subprocess_exec(
-            *(sandboxed_cmd or []),
-            cwd=str(work_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=safe_env,
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return f"❌ Code execution timed out after {timeout}s"
-
-        stdout_str = stdout.decode("utf-8", errors="replace")[:10000]
-        stderr_str = stderr.decode("utf-8", errors="replace")[:5000]
+        stdout_str = result.stdout[:10000]
+        stderr_str = result.stderr[:5000]
 
         # Post-exec: copy skills installed by `npx skills add` from sandbox HOME to agent workspace
         sandbox_skills = Path(safe_env["HOME"]) / ".agents" / "skills"
@@ -200,8 +180,10 @@ async def _execute_code(ws: Path, arguments: dict) -> str:
             result_parts.append(f"📤 Output:\n{stdout_str}")
         if stderr_str.strip():
             result_parts.append(f"⚠️ Stderr:\n{stderr_str}")
-        if proc.returncode != 0:
-            result_parts.append(f"Exit code: {proc.returncode}")
+        if result.error:
+            return result.error
+        if result.exit_code != 0:
+            result_parts.append(f"Exit code: {result.exit_code}")
 
         if not result_parts:
             return "✅ Code executed successfully (no output)"
@@ -211,11 +193,6 @@ async def _execute_code(ws: Path, arguments: dict) -> str:
     except Exception as e:
         return f"❌ Execution error: {str(e)[:200]}"
     finally:
-        for cleanup_path in locals().get("cleanup_paths", []):
-            try:
-                cleanup_path.unlink(missing_ok=True)
-            except Exception as e:
-                logger.debug("Suppressed sandbox cleanup error: %s", e)
         # Clean up temp script
         try:
             script_path.unlink(missing_ok=True)
@@ -236,47 +213,20 @@ async def _run_command(ws: Path, arguments: dict) -> str:
         return safety_error
 
     work_dir, safe_env = _prepare_execution_environment(ws)
-    sandboxed_cmd, cleanup_paths, sandbox_error = _sandbox_command(
+    result = await execute_agent_command(
         ["bash", "-lc", command],
         work_dir=work_dir,
         env=safe_env,
+        timeout=timeout,
+        runtime=os.environ.get("HIVE_VERCEL_SANDBOX_RUNTIME", "python3.13"),
     )
-    if sandbox_error:
-        return sandbox_error
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *(sandboxed_cmd or []),
-            cwd=str(work_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=safe_env,
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return f"❌ Command timed out after {timeout}s"
-    finally:
-        for cleanup_path in cleanup_paths:
-            try:
-                cleanup_path.unlink(missing_ok=True)
-            except Exception as e:
-                logger.debug("Suppressed sandbox cleanup error: %s", e)
-
-    stdout_str = stdout.decode("utf-8", errors="replace")[:12000]
-    stderr_str = stderr.decode("utf-8", errors="replace")[:6000]
-
-    result_parts = [f"💻 Command: {command}"]
-    if stdout_str.strip():
-        result_parts.append(f"📤 Output:\n{stdout_str}")
-    if stderr_str.strip():
-        result_parts.append(f"⚠️ Stderr:\n{stderr_str}")
-    if proc.returncode != 0:
-        result_parts.append(f"Exit code: {proc.returncode}")
-    elif not stdout_str.strip() and not stderr_str.strip():
-        result_parts.append("✅ Command executed successfully (no output)")
-
-    return "\n\n".join(result_parts)
+    return render_command_result(
+        command,
+        CodeExecutionResult(
+            stdout=result.stdout[:12000],
+            stderr=result.stderr[:6000],
+            exit_code=result.exit_code,
+            error=result.error,
+            timed_out=result.timed_out,
+        ),
+    )

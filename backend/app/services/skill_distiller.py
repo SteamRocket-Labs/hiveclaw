@@ -66,6 +66,7 @@ _EXTERNAL_ACTION_TOOLS = {
 _INTERNAL_SESSION_SOURCES = {"heartbeat", "trigger", "task"}
 _PROMOTE_WINDOW_DAYS = 14
 _PROMOTE_THRESHOLD = 3
+_PATCH_THRESHOLD = 2
 _MIN_CONFIDENCE = 0.85
 _TIME_SENSITIVE_PATTERNS = (
     re.compile(r"\b(?:today|tomorrow|yesterday|this session|current session)\b", re.IGNORECASE),
@@ -98,6 +99,7 @@ class SessionWorkflowEvidence:
     summary: str
     assistant_reply: str
     tool_names: tuple[str, ...]
+    loaded_skill_names: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -427,6 +429,14 @@ def _session_is_after_cursor(
 
 
 def _parse_tool_call_content(content: str) -> str | None:
+    payload = _parse_tool_call_payload(content)
+    if payload is None:
+        return None
+    name = payload.get("name") or payload.get("tool")
+    return str(name).strip() if name else None
+
+
+def _parse_tool_call_payload(content: str) -> dict[str, Any] | None:
     try:
         payload = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -434,8 +444,29 @@ def _parse_tool_call_content(content: str) -> str | None:
         return None
     if not isinstance(payload, dict):
         return None
-    name = payload.get("name") or payload.get("tool")
-    return str(name).strip() if name else None
+    return payload
+
+
+def _parse_loaded_skill_name(content: str) -> str | None:
+    payload = _parse_tool_call_payload(content)
+    if payload is None:
+        return None
+    name = str(payload.get("name") or payload.get("tool") or "").strip()
+    if name != "load_skill":
+        return None
+    args = payload.get("args") or payload.get("arguments") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
+    for key in ("skill_name", "name", "skill", "query"):
+        value = str(args.get(key) or "").strip()
+        if value:
+            return value[:120]
+    return None
 
 
 def _normalize_session_status(reply: str) -> str:
@@ -454,6 +485,33 @@ def _summarize_assistant_reply(reply: str) -> str:
         return "Internal workflow session recorded."
     first_line = reply.strip().splitlines()[0].strip()
     return first_line[:200]
+
+
+def _evidence_summary_dict(item: SessionWorkflowEvidence) -> dict[str, Any]:
+    return {
+        "session_id": item.session_id,
+        "source": item.source,
+        "occurred_at": item.occurred_at,
+        "status": item.status,
+        "used_skill": item.used_skill,
+        "loaded_skill_names": list(item.loaded_skill_names),
+        "tools": list(item.tool_names),
+        "summary": item.summary,
+    }
+
+
+def render_skill_evidence_contrast(evidence: list[SessionWorkflowEvidence]) -> str:
+    """Render Devin-style success/failure contrast for the skill distiller."""
+    successful = [item for item in evidence if item.status == "success"]
+    failed = [item for item in evidence if item.status in {"failed", "workaround"}]
+    payload = {
+        "schema": "skill_distiller_success_failure_contrast.v1",
+        "successful_examples": [_evidence_summary_dict(item) for item in successful[:4]],
+        "failed_examples": [_evidence_summary_dict(item) for item in failed[:4]],
+        "patch_signal_count": sum(1 for item in failed if item.used_skill),
+        "promote_signal_count": len(successful),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 async def _load_internal_session_evidence(
@@ -513,6 +571,7 @@ async def _load_internal_session_evidence(
             )
 
             tool_names: list[str] = []
+            loaded_skill_names: list[str] = []
             assistant_reply = ""
             used_skill = False
             for message in messages:
@@ -522,6 +581,9 @@ async def _load_internal_session_evidence(
                         tool_names.append(tool_name)
                         if tool_name == "load_skill":
                             used_skill = True
+                            loaded_skill_name = _parse_loaded_skill_name(message.content or "")
+                            if loaded_skill_name:
+                                loaded_skill_names.append(loaded_skill_name)
                 elif message.role == "assistant" and (message.content or "").strip():
                     assistant_reply = message.content.strip()
 
@@ -538,6 +600,7 @@ async def _load_internal_session_evidence(
                     summary=_summarize_assistant_reply(assistant_reply),
                     assistant_reply=assistant_reply,
                     tool_names=tuple(tool_names),
+                    loaded_skill_names=tuple(dict.fromkeys(loaded_skill_names)),
                 )
             )
 
@@ -569,6 +632,9 @@ async def _draft_skill_with_llm(
     evidence: list[SessionWorkflowEvidence],
     declared_packs: tuple[str, ...],
     workspace: Path,
+    distillation_intent: str = "promote",
+    target_skill_name: str | None = None,
+    evidence_contrast: str | None = None,
     memory_candidates: list[dict[str, str]] | None = None,
     skill_candidate_drafts: list[dict[str, str]] | None = None,
     agent_id: uuid.UUID | None = None,
@@ -597,6 +663,15 @@ async def _draft_skill_with_llm(
         "The caller parses your JSON directly. Any extra prose, markdown fences,\n"
         "or missing keys breaks the pipeline.\n"
         "</pipeline_context>\n\n"
+        "<patch_first_policy>\n"
+        "Hive is patch-first. If a workflow involved an already loaded skill\n"
+        "and the attached success/failure contrast shows repeated failures,\n"
+        "prefer patching that existing SKILL.md over creating a new skill.\n"
+        "Use the success/failure contrast like Devin Session Insights: isolate\n"
+        "what the successful traces did that the failed traces missed, then\n"
+        "patch only that reusable delta. Do not create a duplicate skill when\n"
+        "an existing skill can absorb the improvement.\n"
+        "</patch_first_policy>\n\n"
         "<autonomy_boundary>\n"
         "A trigger is wake policy, not the goal itself.\n"
         "Skills capture reusable procedures, not active work state.\n"
@@ -635,6 +710,8 @@ async def _draft_skill_with_llm(
     for item in evidence[:3]:
         evidence_lines.append(
             f"- session={item.session_id} source={item.source} at={item.occurred_at}\n"
+            f"  status={item.status} used_skill={item.used_skill}"
+            f" loaded_skills={', '.join(item.loaded_skill_names) or '-'}\n"
             f"  tools={', '.join(item.tool_names)}\n"
             f"  summary={item.summary}"
         )
@@ -661,6 +738,8 @@ async def _draft_skill_with_llm(
     )
     prompt = (
         "Draft a reusable internal skill.\n\n"
+        f"distillation_intent: {distillation_intent}\n"
+        f"target_skill_name: {target_skill_name or '(none)'}\n"
         f"workflow_signature: {workflow_signature}\n"
         f"suggested_skill_name: {_infer_skill_name(workflow_signature)}\n"
         f"declared_packs: {', '.join(declared_packs) or '(none)'}\n"
@@ -668,6 +747,8 @@ async def _draft_skill_with_llm(
         f"{_render_existing_skill_summaries(workspace)}\n\n"
         "recent_evidence:\n"
         f"{chr(10).join(evidence_lines)}\n\n"
+        "success_failure_contrast:\n"
+        f"{evidence_contrast or render_skill_evidence_contrast(evidence)}\n\n"
         f"{memory_block}"
         f"{draft_block}"
         "Respond with JSON only using:\n"
@@ -861,9 +942,14 @@ async def run_skill_distillation_cycle(
         if item.status == "noop":
             continue
 
+        skill_record_name = (
+            item.loaded_skill_names[0]
+            if item.used_skill and item.loaded_skill_names
+            else _infer_skill_name(fingerprint.workflow_signature)
+        )
         decision = record_skill_execution(
             workspace,
-            skill_name=_infer_skill_name(fingerprint.workflow_signature),
+            skill_name=skill_record_name,
             workflow_signature=fingerprint.workflow_signature,
             status=item.status,
             used_skill=item.used_skill,
@@ -885,6 +971,12 @@ async def run_skill_distillation_cycle(
     save_distiller_state(workspace, state)
 
     candidates = load_skill_candidates(workspace)
+    patchable = [
+        record
+        for record in candidates.values()
+        if not record.blocker and len(record.patch_candidates) >= _PATCH_THRESHOLD
+    ]
+    patchable.sort(key=lambda item: (len(item.patch_candidates), item.last_updated_at), reverse=True)
     promotable = [
         record
         for record in candidates.values()
@@ -894,10 +986,11 @@ async def run_skill_distillation_cycle(
         and len(record.patch_candidates) == 0
     ]
     promotable.sort(key=lambda item: (len(item.promote_candidates), item.last_updated_at), reverse=True)
-    if not promotable or model is None:
+    if (not patchable and not promotable) or model is None:
         return {"status": "candidate", "processed_sessions": processed}
 
-    record = promotable[0]
+    distillation_intent = "patch" if patchable else "promote"
+    record = patchable[0] if patchable else promotable[0]
     evidence_for_candidate = grouped.get(record.workflow_signature, [])
     if not evidence_for_candidate:
         evidence_for_candidate = [
@@ -916,6 +1009,9 @@ async def run_skill_distillation_cycle(
         if evidence_for_candidate
         else (),
         workspace=workspace,
+        distillation_intent=distillation_intent,
+        target_skill_name=record.skill_name if distillation_intent == "patch" else None,
+        evidence_contrast=render_skill_evidence_contrast(evidence_for_candidate),
         memory_candidates=memory_skill_candidates,
         skill_candidate_drafts=flywheel_skill_candidate_drafts,
         agent_id=agent_id,
@@ -923,8 +1019,27 @@ async def run_skill_distillation_cycle(
     )
 
     conflict = resolve_existing_skill_conflict(workspace=workspace, draft=draft)
+    if draft.decision in {"defer", "reject"} or draft.confidence < _MIN_CONFIDENCE:
+        note = draft.reason or "LLM confidence was below the promotion threshold."
+        update_skill_candidate_record(
+            workspace,
+            workflow_signature=record.workflow_signature,
+            skill_name=draft.name or record.skill_name,
+            blocker="llm_deferred",
+            last_status="defer",
+            last_note=note,
+            last_updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        record_skill_lifecycle_event(
+            workspace,
+            skill_name=draft.name or record.skill_name,
+            status="defer",
+            note=note,
+        )
+        return {"status": "deferred", "processed_sessions": processed}
+
     final_decision = conflict.final_decision
-    if draft.decision == "patch":
+    if distillation_intent == "patch" or draft.decision == "patch":
         final_decision = "patch"
     effective_draft = (
         replace(draft, name=conflict.existing_skill_name)
@@ -1006,6 +1121,8 @@ async def run_skill_distillation_cycle(
                 "declared_packs": list(effective_draft.declared_packs),
                 "existing_skill_name": patch_target.metadata.name,
                 "reason": effective_draft.reason or conflict.reason,
+                "distillation_intent": distillation_intent,
+                "evidence_contrast": render_skill_evidence_contrast(evidence_for_candidate),
             },
         )
         verification_report = run_evolution_verification(
@@ -1132,25 +1249,6 @@ async def run_skill_distillation_cycle(
             "workflow_candidates_recorded": workflow_candidates_recorded,
         }
 
-    if draft.decision != "promote" or draft.confidence < _MIN_CONFIDENCE:
-        note = draft.reason or "LLM confidence was below the promotion threshold."
-        update_skill_candidate_record(
-            workspace,
-            workflow_signature=record.workflow_signature,
-            skill_name=draft.name or record.skill_name,
-            blocker="llm_deferred",
-            last_status="defer",
-            last_note=note,
-            last_updated_at=datetime.now(timezone.utc).isoformat(),
-        )
-        record_skill_lifecycle_event(
-            workspace,
-            skill_name=draft.name or record.skill_name,
-            status="defer",
-            note=note,
-        )
-        return {"status": "deferred", "processed_sessions": processed}
-
     from app.services.evolution_ledger import (
         record_evolution_candidate,
         record_promotion_decision,
@@ -1173,6 +1271,8 @@ async def run_skill_distillation_cycle(
             "confidence": draft.confidence,
             "declared_tools": list(draft.declared_tools),
             "declared_packs": list(draft.declared_packs),
+            "distillation_intent": distillation_intent,
+            "evidence_contrast": render_skill_evidence_contrast(evidence_for_candidate),
         },
     )
     verification_report = run_evolution_verification(

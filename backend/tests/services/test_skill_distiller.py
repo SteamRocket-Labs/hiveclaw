@@ -106,6 +106,42 @@ def test_resolve_existing_skill_as_patch_recommendation(tmp_path: Path) -> None:
     assert resolution.existing_skill_name == "Web Research"
 
 
+def test_render_skill_evidence_contrast_splits_success_and_failure_examples() -> None:
+    from app.services.skill_distiller import SessionWorkflowEvidence, render_skill_evidence_contrast
+
+    contrast = render_skill_evidence_contrast(
+        [
+            SessionWorkflowEvidence(
+                session_id="success-1",
+                source="heartbeat",
+                occurred_at="2026-04-01T10:00:00Z",
+                status="success",
+                used_skill=False,
+                summary="Completed the workflow.",
+                assistant_reply="[OUTCOME:action_taken] [SCORE:8] completed workflow",
+                tool_names=("web_search", "web_fetch", "write_file"),
+            ),
+            SessionWorkflowEvidence(
+                session_id="failure-1",
+                source="trigger",
+                occurred_at="2026-04-02T10:00:00Z",
+                status="failed",
+                used_skill=True,
+                summary="Loaded Web Research but missed synthesis.",
+                assistant_reply="[OUTCOME:failure] [SCORE:2] missed synthesis",
+                tool_names=("load_skill", "web_search", "web_fetch"),
+                loaded_skill_names=("Web Research",),
+            ),
+        ]
+    )
+
+    assert "successful_examples" in contrast
+    assert "failed_examples" in contrast
+    assert "success-1" in contrast
+    assert "failure-1" in contrast
+    assert "Web Research" in contrast
+
+
 @pytest.mark.asyncio
 async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(monkeypatch, tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
@@ -367,6 +403,94 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
     assert promotion_decisions[-1]["rollback_ref"] == "skills/web-research/SKILL.md"
 
 
+@pytest.mark.asyncio
+async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeypatch, tmp_path: Path) -> None:
+    from app.services.agent_tool_domains.workspace import _save_skill
+    from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+    _save_skill(
+        workspace,
+        name="Web Research",
+        description="Run a basic web research workflow.",
+        instructions="Search first, then fetch one page.",
+        declared_tools=("web_search", "web_fetch"),
+        declared_packs=("web_pack",),
+    )
+    captured_draft_kwargs: dict = {}
+
+    async def fake_load_internal_session_evidence(*, agent_id, since_days, state, current_session_id):
+        del agent_id, since_days, state, current_session_id
+        patch_failures = [
+            SessionWorkflowEvidence(
+                session_id=f"patch-fail-{index}",
+                source="trigger",
+                occurred_at=f"2026-04-0{index}T10:00:00Z",
+                status="failed",
+                used_skill=True,
+                summary="Loaded Web Research but missed source synthesis.",
+                assistant_reply="[OUTCOME:failure] [SCORE:2] missed synthesis",
+                tool_names=("load_skill", "web_search", "web_fetch"),
+                loaded_skill_names=("Web Research",),
+            )
+            for index in range(1, 3)
+        ]
+        promote_successes = [
+            SessionWorkflowEvidence(
+                session_id=f"new-success-{index}",
+                source="heartbeat",
+                occurred_at=f"2026-04-1{index}T10:00:00Z",
+                status="success",
+                used_skill=False,
+                summary="Completed a different new workflow.",
+                assistant_reply="[OUTCOME:action_taken] [SCORE:8] wrote a report",
+                tool_names=("web_search", "web_fetch", "write_file"),
+            )
+            for index in range(1, 4)
+        ]
+        return [*patch_failures, *promote_successes]
+
+    async def fake_draft_skill(**kwargs):
+        captured_draft_kwargs.update(kwargs)
+        return DistilledSkillDraft(
+            decision="promote",
+            confidence=0.91,
+            name="Web Research",
+            description="Run web research and always synthesize source-backed findings.",
+            instructions_markdown=(
+                "1. Search reputable sources.\n"
+                "2. Fetch the strongest pages.\n"
+                "3. Synthesize findings with source links before finishing.\n"
+            ),
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="Patch existing skill after repeated loaded-skill failures.",
+        )
+
+    monkeypatch.setattr(
+        "app.services.skill_distiller._load_internal_session_evidence",
+        fake_load_internal_session_evidence,
+    )
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
+
+    result = await run_skill_distillation_cycle(
+        agent_id=uuid4(),
+        workspace=workspace,
+        tenant_id=None,
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
+    )
+
+    skill_content = (workspace / "skills" / "web-research" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert result["status"] == "patched"
+    assert captured_draft_kwargs["distillation_intent"] == "patch"
+    assert captured_draft_kwargs["target_skill_name"] == "Web Research"
+    assert captured_draft_kwargs["workflow_signature"] == "web_search -> web_fetch"
+    assert "Synthesize findings with source links before finishing." in skill_content
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # PR-20: Skill distiller system prompt structural invariants
 #
@@ -417,6 +541,11 @@ class TestSkillDistillerPromptStructure:
         prompt = _extract_system_prompt_literal()
         for decision in ["promote", "patch", "defer", "reject"]:
             assert decision in prompt, f"missing decision: {decision}"
+
+    def test_patch_first_policy_is_explicit(self) -> None:
+        prompt = _extract_system_prompt_literal()
+        assert "patch-first" in prompt.lower()
+        assert "success/failure contrast" in prompt.lower()
 
     def test_pipeline_context_warns_json_parsing(self) -> None:
         prompt = _extract_system_prompt_literal()

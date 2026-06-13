@@ -624,6 +624,45 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：没有新建旁路，也没有只做 fixture stub。生产 hook 已接线；LLM 调用进入 `record_autonomous_llm_call(source="fast_reflection_learning_brain", ...)` 指标；失败时仍回到已有 mechanical fallback，且该 fallback 的 `classification_method` 会在 ledger 中可见。learning brain 不直接写 T2/T3/skill，而是只产候选决策，继续走 session projection、evolution ledger、skill flywheel 和 M1 verification gate。
 
+### 12.3 第一仗 M3 已实装：patch-first + Devin 式成败对比（2026-06-13）
+
+**完成范围**：`backend/app/services/skill_distiller.py` 已把 patch 从"LLM 可选动作"升级成调度优先级。`record_skill_execution()` 仍记录成功候选与 patch 候选；`run_skill_distillation_cycle()` 现在先选择 `patch_candidates >= 2` 且未被 blocker 关闭的记录，再考虑新 skill promotion。`SessionWorkflowEvidence` 新增 `loaded_skill_names`，`_load_internal_session_evidence()` 会从 `load_skill` tool args 解析真实技能名，patch target 不再靠工具重叠猜测。`render_skill_evidence_contrast()` 生成 `skill_distiller_success_failure_contrast.v1`，把 successful examples、failed examples、patch signal count、promote signal count 交给 LLM；`_draft_skill_with_llm()` prompt 新增 `<patch_first_policy>`，要求优先 patch 已加载技能，并用 success/failure contrast 提取可复用 delta。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_skill_distiller.py::test_render_skill_evidence_contrast_splits_success_and_failure_examples \
+  backend/tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_prioritizes_patch_candidates \
+  backend/tests/services/test_skill_distiller.py::TestSkillDistillerPromptStructure::test_patch_first_policy_is_explicit -q
+```
+
+结果：`3 failed`，失败点分别是 `render_skill_evidence_contrast` 不存在、`SessionWorkflowEvidence` 没有 `loaded_skill_names`、prompt 没有 patch-first / success-failure contrast 明文合同。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_skill_distiller.py::test_render_skill_evidence_contrast_splits_success_and_failure_examples \
+  backend/tests/services/test_skill_distiller.py::test_run_skill_distillation_cycle_prioritizes_patch_candidates \
+  backend/tests/services/test_skill_distiller.py::TestSkillDistillerPromptStructure::test_patch_first_policy_is_explicit -q
+# 3 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_skill_distiller.py backend/tests/services/test_skill_lifecycle.py backend/tests/services/test_evolution_verification.py -q
+# 35 passed, 4 warnings
+
+backend/.venv/bin/ruff check backend/app/services/skill_distiller.py backend/tests/services/test_skill_distiller.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/skill_distiller.py backend/tests/services/test_skill_distiller.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4162 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：没有只改 prompt。调度层、证据结构、LLM 输入、patch target 解析、ledger metadata 全部接上：patch 候选会生成 `target_type="skill_patch"` candidate，走 M1 `skill_guard` 硬验证门，通过后覆盖既有 `skills/<slug>/SKILL.md`，失败则持久记录 held/deferred，不会静默吞掉。
+
 **第二仗 — 可靠性 + 持久执行（北极星①韧性 + 无人值守命门）**
 - **目标线**：Temporal（completion 去重边界）+ CC（withRetry 10 次指数 + 输出 cap escalate）+ Claude SDK（checkpoint between tool calls + continuation token）。
 - **动作**：① K1 内核 529 撤一击毙命（允许同模型重试 + 切 fallback）+ 客户端 10 次指数退避+jitter；② workflow journal 升 completion 去重边界；③ D2 workflow_completed 接真消费方；④ subagent 背景化落 RuntimeTask 持久化 + delegation step 级 journal（替整段重放）；⑤ K2 interleaved-thinking beta 头 + 签名 round-trip。
@@ -662,5 +701,3 @@ backend/.venv/bin/python -m pytest backend/tests -q
 ---
 
 *调研执行 2026-06-12，7 路并行深度调研 + 多路子任务补全，全部一手来源核实。所有 benchmark 数字标来源；vendor 自报且互相矛盾的（LOCOMO 等）标 vendor-contested。本文是第二轮的目标线基准，后续每仗对照验收。与第一轮 harness 审计（docs/harness-engineering-audit-2026-06-11.md）配套使用：第一轮回答"对齐 CC 没有"，本轮回答"对标各家最强、成为最强数字员工还差什么"。*
-
-

@@ -85,6 +85,50 @@ def test_fast_reflection_prefers_llm_classification_over_marker_fallback(tmp_pat
     assert candidate["metadata"]["lesson"] == "Reusable deploy checklist: build, migrate, restart, then verify."
 
 
+def test_fast_reflection_persists_learning_brain_decision(tmp_path) -> None:
+    from app.services.evolution_ledger import load_evolution_ledger
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    agent_id = uuid.uuid4()
+    result = create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-brain",
+        messages=[{"role": "user", "content": "下次部署按 build -> migrate -> restart -> healthcheck。"}],
+        metadata={
+            "skill_candidate_loop_enabled": False,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "repeated_task_pattern",
+                "lesson": "Reuse the governed deploy flow: build, migrate, restart, then healthcheck.",
+                "confidence": 0.92,
+                "learning_brain_decision": {
+                    "schema": "fast_reflection_learning_brain_decision.v1",
+                    "signal_type": "repeated_task_pattern",
+                    "lesson": "Reuse the governed deploy flow: build, migrate, restart, then healthcheck.",
+                    "confidence": 0.92,
+                    "container": "skill_candidate",
+                    "promotion_intent": "candidate",
+                    "rationale": "The user corrected a repeated deployment procedure.",
+                    "evidence_refs": ["message:0"],
+                    "boundary_checks": {
+                        "no_credentials": True,
+                        "not_direct_memory_write": True,
+                    },
+                },
+            },
+        },
+    )
+
+    workspace = tmp_path / str(agent_id)
+    candidate = load_evolution_ledger(workspace)[0]
+
+    assert result["classification_method"] == "learning_brain_agent"
+    assert candidate["metadata"]["learning_brain_decision"]["container"] == "skill_candidate"
+    assert candidate["metadata"]["learning_brain_decision"]["promotion_intent"] == "candidate"
+    assert candidate["metadata"]["learning_brain_decision"]["evidence_refs"] == ["message:0"]
+
+
 def test_fast_reflection_llm_low_signal_suppresses_marker_fallback(tmp_path) -> None:
     from app.services.fast_reflection_service import create_fast_reflection_candidate
 

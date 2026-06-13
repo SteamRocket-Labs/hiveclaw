@@ -68,7 +68,7 @@ def _classification_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | 
         return {
             "signal_type": "low_signal",
             "lesson": "",
-            "method": str(raw.get("method") or "llm_classifier").strip() or "llm_classifier",
+            "method": str(raw.get("method") or "learning_brain_agent").strip() or "learning_brain_agent",
             "confidence": float(raw.get("confidence") or 0.0),
         }
     if signal_type not in _SIGNAL_TYPES:
@@ -76,12 +76,16 @@ def _classification_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | 
     lesson = str(raw.get("lesson") or raw.get("signal") or "").strip()
     if not lesson:
         return None
-    return {
+    result = {
         "signal_type": signal_type,
         "lesson": lesson[:1000],
-        "method": str(raw.get("method") or "llm_classifier").strip() or "llm_classifier",
+        "method": str(raw.get("method") or "learning_brain_agent").strip() or "learning_brain_agent",
         "confidence": float(raw.get("confidence") or 0.0),
     }
+    learning_brain_decision = raw.get("learning_brain_decision")
+    if isinstance(learning_brain_decision, dict):
+        result["learning_brain_decision"] = learning_brain_decision
+    return result
 
 
 def _classify_signal(messages: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any] | None:
@@ -176,6 +180,9 @@ def create_fast_reflection_candidate(
         "final_response": str(metadata.get("final_response") or "")[:1000],
         "promotion_state": "candidate",
     }
+    learning_brain_decision = signal.get("learning_brain_decision")
+    if isinstance(learning_brain_decision, dict):
+        payload["learning_brain_decision"] = learning_brain_decision
     for key in ("loaded_skill_name", "umbrella_skill_name", "support_file_path", "repeated_workflow_signature"):
         if metadata.get(key):
             payload[key] = str(metadata[key])

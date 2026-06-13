@@ -693,7 +693,7 @@ def record_extract_replay_outcome(*, scheduled: int, skipped_stale: int, failed:
 def record_autonomous_llm_call(*, source: str, outcome: str) -> None:
     """Bump an autonomous LLM call counter.
 
-    `source` is one of {"dream", "heartbeat", "skill_distiller"}.
+    `source` is one of {"dream", "heartbeat", "skill_distiller", "fast_reflection_learning_brain"}.
     `outcome` is {"success", "failure", "skipped"} so dashboards can
     chart success rate alongside volume.
     """

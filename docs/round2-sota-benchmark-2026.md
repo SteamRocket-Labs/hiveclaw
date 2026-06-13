@@ -581,6 +581,49 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：没有新增默认关闭 flag，没有留下单独的"后续接线"。验证报告现在持久暴露 `guard`、`parse_smoke`、`load_smoke`、`tool_dry_run`、`resource_check` 五类证据，`record_verification_eval()` 仍把失败硬门计为 `critical_regressions`，`decide_verified_promotion()` 继续以该报告作为 promotion 的唯一自动判据。
 
+### 12.2 第一仗 M2 已实装：fast reflection learning brain（2026-06-13）
+
+**完成范围**：`RESPONSE_COMPLETE` 后的 fast reflection 主路从旧 `llm_classifier` 升级为 `backend/app/services/fast_reflection_learning_brain.py`。新服务构造完整 post-turn learning brain prompt，输入包含完整 message context、runtime metadata、已有 session learning projection；输出不再只是三字段分类，而是 `fast_reflection_learning_brain_decision.v1`：`signal_type`、`lesson`、`confidence`、`container`、`promotion_intent`、`rationale`、`evidence_refs`、`boundary_checks`。`backend/app/runtime/hooks_setup.py` 已移除旧 last-8 digest classifier 主路，改为 `_run_fast_reflection_learning_brain()`；`backend/app/services/fast_reflection_service.py` 继续用同一 ledger/projection/skill-candidate 桥接路径，但会把 richer decision 持久写入 candidate metadata。历史 `llm_classifier` metadata 仍可被 `_classification_from_metadata()` 读取，保证旧 ledger/test/eval 兼容。
+
+**TDD red 证据**：先补三层测试：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_fast_reflection_learning_brain.py \
+  backend/tests/runtime/test_fast_reflection_hook.py::test_response_complete_fast_reflection_hook_schedules_non_blocking \
+  backend/tests/services/test_fast_reflection_candidate.py::test_fast_reflection_persists_learning_brain_decision -q
+```
+
+结果：`5 failed`，失败点分别是新 service 模块不存在、hook 无 `_run_fast_reflection_learning_brain`、candidate metadata 没有 `learning_brain_decision`。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_fast_reflection_learning_brain.py \
+  backend/tests/runtime/test_fast_reflection_hook.py::test_response_complete_fast_reflection_hook_schedules_non_blocking \
+  backend/tests/services/test_fast_reflection_candidate.py::test_fast_reflection_persists_learning_brain_decision -q
+# 5 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest \
+  backend/tests/services/test_fast_reflection_learning_brain.py \
+  backend/tests/services/test_fast_reflection_candidate.py \
+  backend/tests/runtime/test_fast_reflection_hook.py \
+  backend/tests/evals/test_self_evolution_bakeoff.py -q
+# 16 passed, 4 warnings
+
+backend/.venv/bin/ruff check backend/app/services/fast_reflection_learning_brain.py backend/app/runtime/hooks_setup.py backend/app/services/fast_reflection_service.py backend/app/memory/metrics.py backend/tests/services/test_fast_reflection_learning_brain.py backend/tests/runtime/test_fast_reflection_hook.py backend/tests/services/test_fast_reflection_candidate.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/fast_reflection_learning_brain.py backend/app/runtime/hooks_setup.py backend/app/services/fast_reflection_service.py backend/app/memory/metrics.py backend/tests/services/test_fast_reflection_learning_brain.py backend/tests/runtime/test_fast_reflection_hook.py backend/tests/services/test_fast_reflection_candidate.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4159 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：没有新建旁路，也没有只做 fixture stub。生产 hook 已接线；LLM 调用进入 `record_autonomous_llm_call(source="fast_reflection_learning_brain", ...)` 指标；失败时仍回到已有 mechanical fallback，且该 fallback 的 `classification_method` 会在 ledger 中可见。learning brain 不直接写 T2/T3/skill，而是只产候选决策，继续走 session projection、evolution ledger、skill flywheel 和 M1 verification gate。
+
 **第二仗 — 可靠性 + 持久执行（北极星①韧性 + 无人值守命门）**
 - **目标线**：Temporal（completion 去重边界）+ CC（withRetry 10 次指数 + 输出 cap escalate）+ Claude SDK（checkpoint between tool calls + continuation token）。
 - **动作**：① K1 内核 529 撤一击毙命（允许同模型重试 + 切 fallback）+ 客户端 10 次指数退避+jitter；② workflow journal 升 completion 去重边界；③ D2 workflow_completed 接真消费方；④ subagent 背景化落 RuntimeTask 持久化 + delegation step 级 journal（替整段重放）；⑤ K2 interleaved-thinking beta 头 + 签名 round-trip。
@@ -619,7 +662,5 @@ backend/.venv/bin/python -m pytest backend/tests -q
 ---
 
 *调研执行 2026-06-12，7 路并行深度调研 + 多路子任务补全，全部一手来源核实。所有 benchmark 数字标来源；vendor 自报且互相矛盾的（LOCOMO 等）标 vendor-contested。本文是第二轮的目标线基准，后续每仗对照验收。与第一轮 harness 审计（docs/harness-engineering-audit-2026-06-11.md）配套使用：第一轮回答"对齐 CC 没有"，本轮回答"对标各家最强、成为最强数字员工还差什么"。*
-
-
 
 

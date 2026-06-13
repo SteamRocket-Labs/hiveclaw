@@ -360,6 +360,21 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **gap 状态**：G4（reward-hack 防御信任根）+ G9（evaluator 隔离）机制已落；base-branch hash 注入 CI = **E8**。
 
+### E6 — 产物执行 gate（Voyager microVM）✅（2026-06-13）
+
+**完成范围**（新增 `backend/app/evals/artifact_gate.py`）：
+- `run_artifact_execution_gate(candidate_files, verification_command, expected_stdout, ...)`——把候选写进隔离临时工作区，在 microVM（`services/code_execution`，按 `HIVE_CODE_EXEC_PROVIDER` 选 provider）真跑验证命令；**判断在 microVM 外**：只信 `CodeExecutionResult` 的 `exit_code/timed_out/error/stdout`，passed = exit 0 ∧ 未超时 ∧ 无 error ∧ 满足声明断言。
+- 默认 `network_policy="deny-all"`（产物不能联网）；`execute` 可注入测试，默认生产 `execute_agent_command`。
+- `artifact_gate_passed(result)` helper。
+
+**Voyager / 反 reward-hack 核心**：候选打印"all tests passed"但 exit 非零 → **拦**（`test_candidate_claim_does_not_override_exit_code`），信 exit_code 不信候选自述（DGM Node 114 抗性）。
+
+**TDD red→green**：`tests/evals/test_artifact_gate.py` 7 用例，实现前 `ModuleNotFoundError`；green `7 passed`；ruff clean。
+
+**验收映射**：好产物通过（`test_good_artifact_passes`）✓；exit 非零/超时/error 拦（`test_nonzero_exit_fails`/`test_timeout_fails`/`test_execution_error_fails`）✓；声明断言不满足拦（`test_missing_expected_stdout_fails`）✓；自述不覆盖 exit_code（`test_candidate_claim_does_not_override_exit_code`）✓；产物真写进 microVM 工作区 + deny-all（`test_candidate_files_written_to_microvm_workdir`）✓。
+
+**gap 状态**：Voyager 入库前执行 gate 机制已落；microVM 真跑由 E8 CI 在 skill/code 候选晋升前调用。
+
 ---
 
 ## 附：关键文件锚点

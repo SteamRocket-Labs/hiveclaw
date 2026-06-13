@@ -1,0 +1,165 @@
+"""E2/G0/G1: Hive agent-core live behavior runner + ledger wiring + grader (red first)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.evals.hive_live_runner import (
+    TRUSTED_LIVE_TRANSPORTS,
+    behavior_eval_passed,
+    build_invoke_agent_runner,
+    record_behavior_eval_run,
+    run_hive_behavior_eval,
+)
+from app.services.evolution_verification import run_evolution_verification
+
+
+# ---- fake agent runners (stand in for invoke_agent without DB/LLM) ----
+
+
+async def _good_coding_runner(prompt: str, workspace_dir: Path) -> dict:
+    (workspace_dir / "calculator.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    return {
+        "status": "success",
+        "answer": "fixed add()",
+        "evidence": ["calculator.py"],
+        "files_created": ["calculator.py"],
+        "used_parallelism": False,
+        "notes": "done",
+    }
+
+
+async def _bad_coding_runner(prompt: str, workspace_dir: Path) -> dict:
+    return {
+        "status": "failed",
+        "answer": "could not fix",
+        "evidence": [],
+        "files_created": [],
+        "used_parallelism": False,
+        "notes": "",
+    }
+
+
+async def _raising_runner(prompt: str, workspace_dir: Path) -> dict:
+    raise RuntimeError("agent core unavailable (no DB/LLM)")
+
+
+def _live_report(
+    transport: str = "hive_live", *, ready: bool = True, complete: bool = True, fallback: bool = False
+) -> dict:
+    return {
+        "kind": "behavior_eval",
+        "transport": transport,
+        "benchmark_complete": complete,
+        "fallback_used": fallback,
+        "scenarios": {
+            "coding": {"ready": ready, "score": 100 if ready else 0},
+        },
+    }
+
+
+# ---- behavior_eval_passed (the fallback-not-passed gate, security-critical) ----
+
+
+def test_behavior_eval_passed_true_for_complete_hive_live() -> None:
+    assert behavior_eval_passed(_live_report("hive_live")) is True
+
+
+def test_behavior_eval_passed_false_for_untrusted_transport() -> None:
+    # repo_evidence is a diagnostic fallback, never a passing gate signal
+    assert behavior_eval_passed(_live_report("repo_evidence_fallback")) is False
+    assert "repo_evidence_fallback" not in TRUSTED_LIVE_TRANSPORTS
+
+
+def test_behavior_eval_passed_false_on_fallback_used() -> None:
+    assert behavior_eval_passed(_live_report("hive_live", fallback=True)) is False
+
+
+def test_behavior_eval_passed_false_when_incomplete() -> None:
+    assert behavior_eval_passed(_live_report("hive_live", complete=False)) is False
+
+
+def test_behavior_eval_passed_false_when_scenario_not_ready() -> None:
+    assert behavior_eval_passed(_live_report("hive_live", ready=False)) is False
+
+
+# ---- run_hive_behavior_eval (real orchestration + hard-grader scoring) ----
+
+
+async def test_run_hive_behavior_eval_scores_with_hard_grader(tmp_path: Path) -> None:
+    report = await run_hive_behavior_eval(agent_runner=_good_coding_runner, output_dir=tmp_path, scenarios=("coding",))
+    assert report["transport"] == "hive_live"
+    assert report["scenarios"]["coding"]["ready"] is True
+    assert behavior_eval_passed(report) is True
+
+
+async def test_run_hive_behavior_eval_failing_agent_not_ready(tmp_path: Path) -> None:
+    report = await run_hive_behavior_eval(agent_runner=_bad_coding_runner, output_dir=tmp_path, scenarios=("coding",))
+    assert report["scenarios"]["coding"]["ready"] is False
+    assert behavior_eval_passed(report) is False
+
+
+async def test_run_hive_behavior_eval_agent_error_is_fail_closed(tmp_path: Path) -> None:
+    report = await run_hive_behavior_eval(agent_runner=_raising_runner, output_dir=tmp_path, scenarios=("coding",))
+    assert report["transport"] == "hive_live_unavailable"
+    assert report["benchmark_complete"] is False
+    assert behavior_eval_passed(report) is False
+
+
+# ---- record_behavior_eval_run (G1: behavior result -> ledger) ----
+
+
+def test_record_behavior_eval_run_live_passed(tmp_path: Path) -> None:
+    event = record_behavior_eval_run(tmp_path, candidate_id="cand-1", report=_live_report("hive_live"))
+    assert event["passed"] is True
+    assert 0.0 < float(event["reward"]) <= 1.0  # continuous, normalized
+
+
+def test_record_behavior_eval_run_fallback_not_passed(tmp_path: Path) -> None:
+    event = record_behavior_eval_run(tmp_path, candidate_id="cand-2", report=_live_report("repo_evidence_fallback"))
+    assert event["passed"] is False
+
+
+# ---- build_invoke_agent_runner (G0: real invoke_agent wiring, injectable) ----
+
+
+async def test_build_invoke_agent_runner_constructs_request(tmp_path: Path) -> None:
+    captured: dict = {}
+
+    async def fake_invoke(request):
+        captured["request"] = request
+        from app.runtime.invoker import AgentInvocationResult
+
+        return AgentInvocationResult(
+            content='{"status":"success","answer":"ok","evidence":[],"files_created":[],"used_parallelism":false,"notes":""}'
+        )
+
+    runner = build_invoke_agent_runner(
+        model="model-x", agent_name="eval-agent", role_description="evaluation agent", invoke=fake_invoke
+    )
+    payload = await runner("complete TASK.md", tmp_path)
+    request = captured["request"]
+    assert request.agent_name == "eval-agent"
+    assert "complete TASK.md" in request.messages[-1]["content"]
+    assert payload["status"] == "success"
+
+
+# ---- agent_behavior_check grader (into run_evolution_verification dispatch) ----
+
+
+def test_agent_behavior_check_grader_trusted_passes(tmp_path: Path) -> None:
+    report = run_evolution_verification(
+        workspace=tmp_path,
+        candidate={"candidate_id": "c1", "target_type": "skill"},
+        graders=[{"type": "agent_behavior_check", "behavior_report": _live_report("hive_live")}],
+    )
+    assert report["passed"] is True
+
+
+def test_agent_behavior_check_grader_fallback_fails(tmp_path: Path) -> None:
+    report = run_evolution_verification(
+        workspace=tmp_path,
+        candidate={"candidate_id": "c1", "target_type": "skill"},
+        graders=[{"type": "agent_behavior_check", "behavior_report": _live_report("repo_evidence_fallback")}],
+    )
+    assert report["passed"] is False

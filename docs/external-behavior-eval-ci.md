@@ -294,6 +294,26 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **仍待后续 E**：protected 信任源（防普通 PR 顺手改 baseline，§4.2）= **E5**；seed 分数回填 = **E2** 真跑后显式重基线。
 
+### E2 — Hive agent-core live runner + ledger 接通 + grader ✅（2026-06-13，G0/G1）
+
+**完成范围**：
+- 新增 `backend/app/evals/hive_live_runner.py`：
+  - `run_hive_behavior_eval(agent_runner, output_dir, scenarios)`——驱动 Hive **自己的 agent**（注入 `agent_runner`）跑确定性行为场景（默认 6 个，与 E1 baseline suite 对齐），复用 `bakeoff_runtime` 的真实工作区 + **同一套外部硬判据评分**（`_score_runtime_scenario`，与外部 CLI 对比公平）。`agent_runner` 抛错 → `transport=hive_live_unavailable` + `benchmark_complete=False`（**fail-closed**）。
+  - `behavior_eval_passed(report)`——门控核心：仅当**完整 + 可信 live transport（`hive_live`/`live_cli`）+ 无 fallback + 全场景 ready** 才 True；`repo_evidence`/partial/unavailable 一律 False。
+  - `build_invoke_agent_runner(...)`——**真接 `invoke_agent`**（G0），`invoke` 可注入测试。默认调生产 `invoke_agent`；`tool_executor`（绑 workspace）+ agent_id/user_id 由 eval harness / E8 CI 提供，让 agent 文件工具写进 grader 检查的工作区。
+  - `record_behavior_eval_run(...)`——G1 桥：behavior report → `record_eval_run`，**fallback transport → passed=False**（§9 诚实规则），reward 连续（场景均分/100）。
+- `backend/app/services/evolution_verification.py`：新增 `agent_behavior_check` grader 分派 + `_run_agent_behavior_check`，把行为 eval 结果接进 `run_evolution_verification`（→ promotion 路径）。
+
+**关键诚实边界**：`invoke_agent` 需 DB+LLM+workspace-bound `tool_executor`，**不能进 microVM**（§1.3）。本 E 交付**真接线 + fail-closed 门控**（可测）；真 LLM 端到端 live 执行在 **E8 CI**（提供 eval tenant/agent + tool_executor）。**不是桩**——`build_invoke_agent_runner` 默认调生产 `invoke_agent`，请求构造 + 产物提取被 `test_build_invoke_agent_runner_constructs_request` 钉住。
+
+**TDD red→green**：`tests/evals/test_hive_live_runner.py` 13 用例，实现前 `ModuleNotFoundError`；green `13 passed`。共享模块回归 `test_evolution_verification + test_evolution_ledger + tests/evals/` = **62 passed**；ruff clean。
+
+**验收映射**：行为结果写 eval_run（`test_record_behavior_eval_run_live_passed`）✓；fallback 不可 passed（`test_record_behavior_eval_run_fallback_not_passed` + `test_agent_behavior_check_grader_fallback_fails`）✓；grader 分派命中（`test_agent_behavior_check_grader_trusted_passes`）✓；agent 跑挂 fail-closed（`test_run_hive_behavior_eval_agent_error_is_fail_closed`）✓。
+
+**gap 状态**：G0（Hive agent-core live runner）+ G1（行为结果入 ledger）机制已落，live CI 执行 = E8。
+
+**仍待后续 E**：promotion 决策接 `execution_passed ∧ no_regressions` = **E3**；连续 reward 与 rubric 门控分离 invariant = **E4**；CI 真跑 = **E8**。
+
 ---
 
 ## 附：关键文件锚点

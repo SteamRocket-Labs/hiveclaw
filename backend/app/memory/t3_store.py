@@ -44,6 +44,18 @@ from app.memory.write_gate import prepare_memory_write_with_llm
 logger = logging.getLogger(__name__)
 
 _MAX_CONTENT_CHARS = 2000
+_HARMFUL_EVIDENCE_MARKERS = frozenset(
+    {
+        "harmful",
+        "misleading",
+        "negative",
+        "failure",
+        "failed",
+        "wrong",
+        "rejected",
+        "user_rejected",
+    }
+)
 
 # Retirement reasons that record a SUPERSEDED edge; everything else archives.
 _SUPERSEDE_REASONS = frozenset({"superseded", "dedup_superseded", "contradiction_resolved"})
@@ -71,6 +83,76 @@ def looks_episodic_observation(content: str) -> bool:
     if not text:
         return False
     return bool(_EPISODIC_OBSERVATION_VERB.search(text) and _EPISODIC_NULL_OR_COUNT.search(text))
+
+
+def _safe_counter(value: str | None) -> int:
+    try:
+        return max(0, int(str(value or "0").strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _reinforcement_kind(evidence: str) -> str:
+    normalized = (evidence or "").strip().lower()
+    if any(marker in normalized for marker in _HARMFUL_EVIDENCE_MARKERS):
+        return "harmful"
+    return "helpful"
+
+
+def _memory_signature(*, category: str, content: str) -> str:
+    spec = t3_spec_for_category(category)
+    return _stable_entry_id(spec["filename"], content)
+
+
+def _counter_seed_metadata(
+    *,
+    category: str,
+    content: str,
+    evidence: str,
+    proposed_by: str,
+    now: str,
+) -> dict[str, str]:
+    kind = _reinforcement_kind(evidence)
+    return {
+        "memory_signature": _memory_signature(category=category, content=content),
+        "reinforcement_count": "1",
+        "helpful_count": "1" if kind == "helpful" else "0",
+        "harmful_count": "1" if kind == "harmful" else "0",
+        "last_reinforced_at": now,
+        "last_reinforcement_evidence": (evidence or "").strip().lower() or "unspecified",
+        "last_reinforced_by": (proposed_by or "manual").strip().lower() or "manual",
+    }
+
+
+def _increment_reinforcement_counters(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    entry_id: str,
+    content: str,
+    category: str,
+    evidence: str,
+    proposed_by: str,
+) -> dict[str, str]:
+    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    existing = store.metadata_map().get(entry_id, {})
+    kind = _reinforcement_kind(evidence)
+    now = datetime.now(timezone.utc).isoformat()
+    reinforcement_count = _safe_counter(existing.get("reinforcement_count")) + 1
+    helpful_count = _safe_counter(existing.get("helpful_count")) + (1 if kind == "helpful" else 0)
+    harmful_count = _safe_counter(existing.get("harmful_count")) + (1 if kind == "harmful" else 0)
+    updates = {
+        "memory_signature": existing.get("memory_signature") or _memory_signature(category=category, content=content),
+        "reinforcement_count": str(reinforcement_count),
+        "helpful_count": str(helpful_count),
+        "harmful_count": str(harmful_count),
+        "last_reinforced_at": now,
+        "last_reinforcement_evidence": (evidence or "").strip().lower() or "unspecified",
+        "last_reinforced_by": (proposed_by or "manual").strip().lower() or "manual",
+    }
+    store.upsert_active(entry_id, content=content, metadata=updates)
+    rebuild_index(data_root, agent_id)
+    return updates
 
 
 @dataclass(slots=True)
@@ -182,18 +264,44 @@ async def append_t3_memory_candidate(
     if excluded_ids:
         similar = [hit for hit in similar if str(hit.get("id") or "").strip() not in excluded_ids]
     if similar:
+        reinforced = dict(similar[0])
+        counter_delta = _increment_reinforcement_counters(
+            data_root,
+            agent_id,
+            entry_id=str(reinforced["id"]),
+            content=str(reinforced.get("content") or decision.content),
+            category=decision.category,
+            evidence=evidence,
+            proposed_by=proposed_by,
+        )
+        reinforced["counter_delta"] = counter_delta
         return T3AppendResult(
             status="duplicate",
             category=decision.category,
-            reason=f"similar entry exists (similarity={similar[0]['similarity']:.2f})",
+            entry_id=str(reinforced["id"]),
+            reason=f"similar entry reinforced (similarity={reinforced['similarity']:.2f})",
             sensitivity=decision.sensitivity,
-            similar=similar[0],
+            similar=reinforced,
         )
 
     # 3. Stamp lane + routing metadata, then append (append_t3_entry records
     #    the lifecycle entry and rebuilds INDEX.md).
     metadata = dict(decision.metadata)
+    now_iso = datetime.now(timezone.utc).isoformat()
     metadata["proposed_by"] = (proposed_by or "manual").strip().lower() or "manual"
+    metadata.update(
+        {
+            key: value
+            for key, value in _counter_seed_metadata(
+                category=decision.category,
+                content=decision.content,
+                evidence=evidence,
+                proposed_by=proposed_by,
+                now=now_iso,
+            ).items()
+            if key not in metadata
+        }
+    )
     normalized_container = (container_candidate or "").strip().lower()
     if normalized_container in CONTAINER_CANDIDATES:
         metadata["container"] = normalized_container

@@ -141,6 +141,78 @@ async def test_append_skips_near_duplicate(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_duplicate_append_reinforces_existing_entry_counters(tmp_path: Path) -> None:
+    agent_id = uuid.uuid4()
+
+    first = await append_t3_memory_candidate(
+        agent_id,
+        category="feedback",
+        content="User prefers concise deployment summaries",
+        evidence="user_stated",
+        proposed_by="heartbeat",
+        data_root=tmp_path,
+    )
+    second = await append_t3_memory_candidate(
+        agent_id,
+        category="feedback",
+        content="The user prefers concise deployment summaries.",
+        evidence="user_stated",
+        proposed_by="heartbeat",
+        data_root=tmp_path,
+    )
+
+    assert second.status == "duplicate"
+    assert second.entry_id == first.entry_id
+    assert second.similar is not None
+    assert second.similar["counter_delta"]["reinforcement_count"] == "2"
+    assert second.similar["counter_delta"]["helpful_count"] == "2"
+
+    lifecycle = json.loads((tmp_path / str(agent_id) / "memory" / "lifecycle.json").read_text(encoding="utf-8"))
+    record = next(r for r in lifecycle if r["id"] == first.entry_id)
+    assert record["metadata"]["memory_signature"]
+    assert record["metadata"]["reinforcement_count"] == "2"
+    assert record["metadata"]["helpful_count"] == "2"
+    assert record["metadata"]["harmful_count"] == "0"
+
+    body = (tmp_path / str(agent_id) / "memory" / "feedback.md").read_text(encoding="utf-8")
+    assert body.count("concise deployment summaries") == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_append_tracks_harmful_counter_without_new_prose(tmp_path: Path) -> None:
+    agent_id = uuid.uuid4()
+
+    first = await append_t3_memory_candidate(
+        agent_id,
+        category="strategy",
+        content="Use cached vendor data before running a full crawl",
+        evidence="system_observed",
+        proposed_by="heartbeat",
+        data_root=tmp_path,
+    )
+    second = await append_t3_memory_candidate(
+        agent_id,
+        category="strategy",
+        content="Use cached vendor data before doing a full crawl.",
+        evidence="misleading",
+        proposed_by="feedback",
+        data_root=tmp_path,
+    )
+
+    assert second.status == "duplicate"
+    assert second.entry_id == first.entry_id
+
+    lifecycle = json.loads((tmp_path / str(agent_id) / "memory" / "lifecycle.json").read_text(encoding="utf-8"))
+    record = next(r for r in lifecycle if r["id"] == first.entry_id)
+    assert record["metadata"]["reinforcement_count"] == "2"
+    assert record["metadata"]["helpful_count"] == "1"
+    assert record["metadata"]["harmful_count"] == "1"
+
+    body = (tmp_path / str(agent_id) / "memory" / "strategies.md").read_text(encoding="utf-8")
+    assert body.count("cached vendor data") == 1
+
+
+@pytest.mark.asyncio
 async def test_append_preserves_container_candidate_marker(tmp_path: Path) -> None:
     agent_id = uuid.uuid4()
 

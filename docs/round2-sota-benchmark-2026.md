@@ -663,6 +663,45 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：没有只改 prompt。调度层、证据结构、LLM 输入、patch target 解析、ledger metadata 全部接上：patch 候选会生成 `target_type="skill_patch"` candidate，走 M1 `skill_guard` 硬验证门，通过后覆盖既有 `skills/<slug>/SKILL.md`，失败则持久记录 held/deferred，不会静默吞掉。
 
+### 12.4 第一仗 M4 已实装：ACE 式 T3 增量计数与确定性去重（2026-06-13）
+
+**完成范围**：`backend/app/memory/t3_store.py` 的 T3 governed append 路径新增 deterministic `memory_signature` 与 reinforcement counters。首次 accepted entry 会在 lifecycle sidecar 中写入 `memory_signature`、`reinforcement_count=1`、`helpful_count`、`harmful_count`、`last_reinforced_at`、`last_reinforcement_evidence`、`last_reinforced_by`。near-duplicate 不再只是返回 `duplicate`，而是用相同 T3 prose entry 作为聚合点更新 sidecar counter delta，并返回 `entry_id` + `similar.counter_delta`。这样 repeated evidence 变成增量强化，负向/误导证据进入 harmful counter，不新增重复 prose，也不要求 dream 整体重写文件。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/memory/test_t3_store.py::test_duplicate_append_reinforces_existing_entry_counters \
+  backend/tests/memory/test_t3_store.py::test_duplicate_append_tracks_harmful_counter_without_new_prose \
+  backend/tests/memory/test_t3_store.py::test_append_skips_near_duplicate -q
+```
+
+结果：`2 failed, 1 passed`，失败点是 duplicate result 没有返回原 `entry_id`，也没有 sidecar counter delta。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest \
+  backend/tests/memory/test_t3_store.py::test_duplicate_append_reinforces_existing_entry_counters \
+  backend/tests/memory/test_t3_store.py::test_duplicate_append_tracks_harmful_counter_without_new_prose \
+  backend/tests/memory/test_t3_store.py::test_append_skips_near_duplicate -q
+# 3 passed
+
+backend/.venv/bin/python -m pytest backend/tests/memory/test_t3_store.py backend/tests/memory/test_retrieval_pipeline.py backend/tests/memory/test_t3_store.py backend/tests/services/test_dream_phase6.py -q
+# 52 passed, 3 warnings
+
+backend/.venv/bin/ruff check backend/app/memory/t3_store.py backend/tests/memory/test_t3_store.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/memory/t3_store.py backend/tests/memory/test_t3_store.py
+# passed with no output
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4164 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：没有新建第二套 memory curation 文件，也没有只在某个 writer 上做特例。`append_t3_memory_candidate()` 是 T3 durable write 单入口，agent tool、heartbeat、dream/manual 共享；duplicate delta 写 lifecycle sidecar，`build_t3_entry_manifest()` 读侧天然 join metadata，`rebuild_index()` 立刻反映 counter-driven heat。active Markdown prose 仍保持一条事实，避免 ACE collapse 风险里的重复/整体重写。
+
 **第二仗 — 可靠性 + 持久执行（北极星①韧性 + 无人值守命门）**
 - **目标线**：Temporal（completion 去重边界）+ CC（withRetry 10 次指数 + 输出 cap escalate）+ Claude SDK（checkpoint between tool calls + continuation token）。
 - **动作**：① K1 内核 529 撤一击毙命（允许同模型重试 + 切 fallback）+ 客户端 10 次指数退避+jitter；② workflow journal 升 completion 去重边界；③ D2 workflow_completed 接真消费方；④ subagent 背景化落 RuntimeTask 持久化 + delegation step 级 journal（替整段重放）；⑤ K2 interleaved-thinking beta 头 + 签名 round-trip。

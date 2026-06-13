@@ -188,6 +188,7 @@ def _clone_msg(msg, **overrides):
         tool_calls=overrides.get("tool_calls", msg.tool_calls),
         tool_call_id=overrides.get("tool_call_id", msg.tool_call_id),
         reasoning_content=overrides.get("reasoning_content", msg.reasoning_content),
+        reasoning_signature=overrides.get("reasoning_signature", msg.reasoning_signature),
     )
 
 

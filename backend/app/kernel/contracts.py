@@ -71,6 +71,7 @@ class InvocationResult:
     tokens_used: int = 0
     final_tools: list[dict] | None = None
     parts: list[MessagePart] = field(default_factory=list)
+    reasoning_signature: str | None = None
 
 
 @dataclass(slots=True)

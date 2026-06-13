@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.services.llm_client import LLMMessage, OpenAICompatibleClient, STREAM_RETRY_TOMBSTONE
+from app.services.llm_client import AnthropicClient, LLMMessage, OpenAICompatibleClient, STREAM_RETRY_TOMBSTONE
 
 
 class _FakeStreamResponse:
@@ -98,6 +98,14 @@ class _RetryPostStatusClient:
             200,
             data={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]},
         )
+
+
+def test_anthropic_headers_enable_interleaved_thinking_beta():
+    client = AnthropicClient(api_key="test-key", model="claude-sonnet-4")
+
+    headers = client._get_headers()
+
+    assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
 
 
 class _InterruptedStreamResponse:

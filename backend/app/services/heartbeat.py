@@ -1635,6 +1635,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                                         "args": data.get("args"),
                                         "status": "done",
                                         "result": str(data.get("result", ""))[:2000],
+                                        "reasoning_content": data.get("reasoning_content"),
+                                        "reasoning_signature": data.get("reasoning_signature"),
                                     },
                                     ensure_ascii=False,
                                     default=str,

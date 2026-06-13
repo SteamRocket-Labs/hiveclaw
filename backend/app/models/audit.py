@@ -64,6 +64,7 @@ class ChatMessage(Base):
     participant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("participants.id"), nullable=True)
     # Model thinking process
     thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thinking_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 

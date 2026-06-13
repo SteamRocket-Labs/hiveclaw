@@ -865,6 +865,47 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 **非 MVP 收口**：不是只把当前 startup 的 returned ids 加进 exclude。恢复资格落到 RuntimeTask 自身的 task_type / metadata 语义上，覆盖 delegation 与 web-chat 两条后台执行线；仍不可恢复的进程内任务继续由 orphan sweep 暴露为 failed。delegation step 级 journal 仍是下一步细粒度副作用去重问题，本节先关闭“可恢复任务被启动清扫误杀”的硬断点。
 
+### 12.9 第二仗 K2 已实装：Anthropic interleaved-thinking header + signed thinking round-trip（2026-06-13）
+
+**完成范围**：`backend/app/services/llm_client.py` 为 Anthropic Messages API 请求统一带 `anthropic-beta: interleaved-thinking-2025-05-14`。按 Anthropic 当前 extended-thinking 文档，Claude 4 的部分模型仍需该 beta header；Claude Opus 4.8/4.7/4.6、Mythos Preview 等新模型不再需要或已自动启用，但直连 Claude API 会安全忽略该 header，因此这是向后兼容的 harness 开关。`backend/app/kernel/engine.py` 不再只保留 `reasoning_content`，而是在 `_llm_messages_to_dicts()`、`_dicts_to_llm_messages()`、初始历史加载、output-cap continuation、assistant tool-call 回合、tool running/done event、final `InvocationResult` 全链路保留 `reasoning_signature`。`backend/app/runtime/invoker.py` 把签名转到 `AgentInvocationResult`，`backend/app/services/web_chat_runtime.py` 将 final assistant 的 `thinking_signature` 写入 `chat_messages`，并在历史重载时把 assistant rows 与 tool_call JSON 里的 `reasoning_signature` 回放给 provider。`trigger_daemon`、`task_executor`、`heartbeat` 的 tool_call 持久化同步写签名，避免不同入口历史格式分叉。`backend/alembic/versions/chat_message_thinking_signature_0613.py` 新增 `chat_messages.thinking_signature` 列，migration chain head 更新为 `chat_message_thinking_signature_0613`。
+
+**TDD red 证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_llm_client_streaming.py::test_anthropic_headers_enable_interleaved_thinking_beta backend/tests/kernel/test_engine.py::test_llm_message_dict_round_trip_preserves_reasoning_signature backend/tests/kernel/test_engine.py::test_kernel_round_trips_reasoning_signature_after_tool_call backend/tests/api/test_websocket_call_llm.py::test_history_rehydration_maps_stored_thinking_to_reasoning_content backend/tests/services/test_web_chat_runtime.py::test_persist_assistant_message_stores_thinking_signature -q
+```
+
+结果：`5 failed`。失败点分别为 `anthropic-beta` header 缺失、`_llm_messages_to_dicts()` 丢 `reasoning_signature`、`InvocationResult` 无 `reasoning_signature`、历史重载只回放 `reasoning_content`、`_persist_assistant_message()` 不接受 `thinking_signature`。
+
+**Green / 回归证据**：
+
+```bash
+backend/.venv/bin/python -m pytest backend/tests/services/test_llm_client_streaming.py::test_anthropic_headers_enable_interleaved_thinking_beta backend/tests/kernel/test_engine.py::test_llm_message_dict_round_trip_preserves_reasoning_signature backend/tests/kernel/test_engine.py::test_kernel_round_trips_reasoning_signature_after_tool_call backend/tests/api/test_websocket_call_llm.py::test_history_rehydration_maps_stored_thinking_to_reasoning_content backend/tests/services/test_web_chat_runtime.py::test_persist_assistant_message_stores_thinking_signature -q
+# 5 passed, 4 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/services/test_llm_client_streaming.py backend/tests/services/test_llm_reasoning_adapter.py backend/tests/kernel/test_engine.py backend/tests/api/test_websocket_call_llm.py backend/tests/services/test_web_chat_runtime.py backend/tests/services/test_prompt_cache.py -q
+# 131 passed, 3 warnings
+
+backend/.venv/bin/python -m pytest backend/tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head backend/tests/migrations/test_workflow_migration.py::test_upgrade_path_creates_session_feedback_events_with_forced_rls backend/tests/migrations/test_workflow_migration.py::test_upgrade_path_adds_chat_message_thinking_signature backend/tests/integration/test_rls_tenant_isolation.py::test_alembic_applied_rls_to_production_tables -q
+# 4 passed
+
+backend/.venv/bin/ruff check backend/app/services/llm_client.py backend/app/kernel/contracts.py backend/app/kernel/engine.py backend/app/runtime/invoker.py backend/app/services/web_chat_runtime.py backend/app/services/prompt_cache.py backend/app/models/audit.py backend/app/api/feishu.py backend/app/services/trigger_daemon.py backend/app/services/task_executor.py backend/app/services/heartbeat.py backend/tests/services/test_llm_client_streaming.py backend/tests/kernel/test_engine.py backend/tests/api/test_websocket_call_llm.py backend/tests/services/test_web_chat_runtime.py backend/tests/migrations/test_workflow_migration.py backend/alembic/versions/chat_message_thinking_signature_0613.py
+# All checks passed!
+
+backend/.venv/bin/python -m compileall -q backend/app/services/llm_client.py backend/app/kernel/contracts.py backend/app/kernel/engine.py backend/app/runtime/invoker.py backend/app/services/web_chat_runtime.py backend/app/services/prompt_cache.py backend/app/models/audit.py backend/app/api/feishu.py backend/app/services/trigger_daemon.py backend/app/services/task_executor.py backend/app/services/heartbeat.py backend/tests/services/test_llm_client_streaming.py backend/tests/kernel/test_engine.py backend/tests/api/test_websocket_call_llm.py backend/tests/services/test_web_chat_runtime.py backend/tests/migrations/test_workflow_migration.py backend/alembic/versions/chat_message_thinking_signature_0613.py
+# passed with no output
+
+cd backend && .venv/bin/alembic heads
+# chat_message_thinking_signature_0613 (head)
+
+backend/.venv/bin/python -m pytest backend/tests -q
+# 4182 passed, 7 skipped, 4 warnings
+```
+
+**非 MVP 收口**：不是只删 synthetic signature 或只在 client 内解析签名。签名现在贯穿 provider response → kernel tool loop → prompt cache clone → invocation result → web/chat DB → history reload → 下一轮 provider request；`tool_call` JSON 与 final assistant row 都有持久化位置。`ChatMessageOut` 不暴露 `thinking_signature`，避免把 provider 签名当用户内容泄露。若后续接入 Bedrock/Vertex 原生 Anthropic 参数，应在各自 provider adapter 上做等价 beta/header 映射，本节先完成当前 `AnthropicClient` 生产路径。
+
+**一手校准**：Anthropic extended-thinking docs — `https://platform.claude.com/docs/en/build-with-claude/extended-thinking`，interleaved thinking 段说明 `interleaved-thinking-2025-05-14` 对旧 Claude 4 模型仍是启用方式，对更新直连 Claude API 模型不需要或会安全忽略。
+
 **第三仗 — Goal-2 地基（执行隔离 + agent 身份）**
 - **目标线**：Codex（OS 级 fail-closed + 默认断网）/ microVM + Claude SDK（凭据出口代理注入）+ Entra Agent ID（一等 agent 身份 + sponsor 生命周期）+ Glean（模型见数据前预过滤）。
 - **动作**：① 验证 bwrap 生产可行（或 gVisor/microVM）+ seccomp + 凭据出口注入替 env 透传；② RLS 之上加 **per-agent 身份构造** + sponsor 生命周期 + soft-delete 级联；③ 权限预过滤扩到 retrieval/memory；④ 预算 enforcement（P1-1）。

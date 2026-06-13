@@ -1176,6 +1176,8 @@ def _llm_messages_to_dicts(messages: list[LLMMessage]) -> list[dict]:
             d["tool_call_id"] = m.tool_call_id
         if m.reasoning_content:
             d["reasoning_content"] = m.reasoning_content
+        if m.reasoning_signature:
+            d["reasoning_signature"] = m.reasoning_signature
         result.append(d)
     return result
 
@@ -1239,6 +1241,7 @@ def _dicts_to_llm_messages(dicts: list[dict]) -> list[LLMMessage]:
             tool_calls=d.get("tool_calls"),
             tool_call_id=d.get("tool_call_id"),
             reasoning_content=d.get("reasoning_content"),
+            reasoning_signature=d.get("reasoning_signature"),
         )
         for d in dicts
     ]
@@ -1747,7 +1750,12 @@ async def _continue_after_output_cap(
         attempts += 1
         continuation_messages = [
             *stream_messages,
-            LLMMessage(role="assistant", content=response.content or ""),
+            LLMMessage(
+                role="assistant",
+                content=response.content or "",
+                reasoning_content=getattr(response, "reasoning_content", None),
+                reasoning_signature=getattr(response, "reasoning_signature", None),
+            ),
             LLMMessage(role="user", content=_STREAM_OUTPUT_CONTINUATION_PROMPT),
         ]
         continuation = await _stream_with_cancel(
@@ -2253,6 +2261,7 @@ class AgentKernel:
                         tool_calls=msg.get("tool_calls"),
                         tool_call_id=msg.get("tool_call_id"),
                         reasoning_content=msg.get("reasoning_content"),
+                        reasoning_signature=msg.get("reasoning_signature"),
                     )
                 )
 
@@ -2919,6 +2928,7 @@ class AgentKernel:
                             content=final_content,
                             tokens_used=accumulated_tokens,
                             final_tools=tools_for_llm,
+                            reasoning_signature=getattr(response, "reasoning_signature", None),
                             parts=collected_parts
                             + build_done_event(
                                 final_content,
@@ -2937,6 +2947,7 @@ class AgentKernel:
                             content=response.content or None,
                             tool_calls=_sanitize_tool_calls_for_history(expanded_tool_calls),
                             reasoning_content=response.reasoning_content,
+                            reasoning_signature=getattr(response, "reasoning_signature", None),
                         )
                     )
 
@@ -3014,6 +3025,7 @@ class AgentKernel:
                                 "args": args,
                                 "status": "running",
                                 "reasoning_content": full_reasoning_content,
+                                "reasoning_signature": getattr(response, "reasoning_signature", None),
                             }
                             if request.on_tool_call:
                                 try:
@@ -3109,6 +3121,7 @@ class AgentKernel:
                                 "status": "done",
                                 "result": result,
                                 "reasoning_content": full_reasoning_content,
+                                "reasoning_signature": getattr(response, "reasoning_signature", None),
                             }
                             if request.on_tool_call:
                                 try:
@@ -3186,6 +3199,7 @@ class AgentKernel:
                                 "args": args,
                                 "status": "running",
                                 "reasoning_content": full_reasoning_content,
+                                "reasoning_signature": getattr(response, "reasoning_signature", None),
                             }
                             if request.on_tool_call:
                                 try:
@@ -3341,6 +3355,7 @@ class AgentKernel:
                                 "status": "done",
                                 "result": result,
                                 "reasoning_content": full_reasoning_content,
+                                "reasoning_signature": getattr(response, "reasoning_signature", None),
                             }
                             if request.on_tool_call:
                                 try:

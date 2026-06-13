@@ -163,6 +163,8 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 }
                 if tc_data.get("reasoning_content"):
                     assistant_msg["reasoning_content"] = tc_data["reasoning_content"]
+                if tc_data.get("reasoning_signature"):
+                    assistant_msg["reasoning_signature"] = tc_data["reasoning_signature"]
                 conversation.append(assistant_msg)
 
                 tool_result = str(tc_result)
@@ -182,6 +184,8 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
         entry = {"role": msg.role, "content": msg.content}
         if getattr(msg, "thinking", None):
             entry["reasoning_content"] = msg.thinking
+        if getattr(msg, "thinking_signature", None):
+            entry["reasoning_signature"] = msg.thinking_signature
         conversation.append(entry)
     return conversation
 
@@ -614,6 +618,7 @@ async def _persist_assistant_message(
     session_id: str,
     content: str,
     thinking: str | None,
+    thinking_signature: str | None = None,
 ) -> None:
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
@@ -627,6 +632,7 @@ async def _persist_assistant_message(
                 role="assistant",
                 content=content,
                 thinking=thinking,
+                thinking_signature=thinking_signature,
                 conversation_id=session_id,
             )
         )
@@ -661,6 +667,7 @@ async def _persist_tool_call(
                         "status": "done",
                         "result": raw_str,
                         "reasoning_content": data.get("reasoning_content"),
+                        "reasoning_signature": data.get("reasoning_signature"),
                     },
                     ensure_ascii=False,
                 ),
@@ -1326,6 +1333,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             session_id=session_id,
             content=assistant_response,
             thinking=thinking,
+            thinking_signature=getattr(result, "reasoning_signature", None),
         )
         status = (
             "killed"

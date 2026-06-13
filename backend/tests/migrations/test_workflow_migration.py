@@ -29,7 +29,7 @@ from tests.integration.conftest import BACKEND_ROOT
 _WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_calls", "workflow_quotas")
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 _FEEDBACK_TABLES = ("session_feedback_events",)
-_CURRENT_CLOSURE_HEAD = "session_feedback_events_0613"
+_CURRENT_CLOSURE_HEAD = "chat_message_thinking_signature_0613"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -177,6 +177,29 @@ async def test_upgrade_path_creates_session_feedback_events_with_forced_rls(chai
 
 async def test_bootstrap_path_creates_session_feedback_events_with_forced_rls(migrated_pg_url):
     await _assert_feedback_tables_forced_rls(migrated_pg_url)
+
+
+async def test_upgrade_path_adds_chat_message_thinking_signature(chain_migrated_pg_url):
+    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            exists = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_name = 'chat_messages'
+                              AND column_name = 'thinking_signature'
+                        )
+                        """
+                    )
+                )
+            ).scalar_one()
+        assert exists is True
+    finally:
+        await engine.dispose()
 
 
 async def test_workflow_tables_cross_tenant_invisible(migrated_pg_url, owner_engine, app_user_engine):

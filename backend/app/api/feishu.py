@@ -1212,6 +1212,8 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 entry = {"role": m.role, "content": m.content}
                 if getattr(m, "thinking", None):
                     entry["reasoning_content"] = m.thinking
+                if getattr(m, "thinking_signature", None):
+                    entry["reasoning_signature"] = m.thinking_signature
                 history.append(entry)
 
             try:

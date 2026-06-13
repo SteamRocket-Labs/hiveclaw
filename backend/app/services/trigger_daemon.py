@@ -1291,6 +1291,7 @@ async def _invoke_agent_for_triggers(
                                         "status": "done",
                                         "result": result_str,
                                         "reasoning_content": data.get("reasoning_content"),
+                                        "reasoning_signature": data.get("reasoning_signature"),
                                     },
                                     ensure_ascii=False,
                                     default=str,

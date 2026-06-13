@@ -166,6 +166,7 @@ class AgentInvocationResult:
     tokens_used: int = 0
     final_tools: list[dict] | None = None
     parts: list[dict] | None = None
+    reasoning_signature: str | None = None
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -1141,4 +1142,5 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         tokens_used=result.tokens_used,
         final_tools=result.final_tools,
         parts=result.parts,
+        reasoning_signature=getattr(result, "reasoning_signature", None),
     )

@@ -120,6 +120,48 @@ async def test_cancel_web_chat_run_sets_cancel_event_and_marks_runtime_task_kill
 
 
 @pytest.mark.asyncio
+async def test_persist_assistant_message_stores_thinking_signature(monkeypatch):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    added = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            return None
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+
+    await runtime._persist_assistant_message(
+        agent_id=agent_id,
+        user_id=uuid4(),
+        session_id=uuid4().hex,
+        content="answer",
+        thinking="private thinking",
+        thinking_signature="sig-db",
+    )
+
+    assert added[0].tenant_id == tenant_id
+    assert added[0].thinking == "private thinking"
+    assert added[0].thinking_signature == "sig-db"
+
+
+@pytest.mark.asyncio
 async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.audit import ChatMessage

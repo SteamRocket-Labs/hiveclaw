@@ -22,6 +22,7 @@ from loguru import logger
 from app.services.token_tracker import record_autonomous_llm_token_usage
 
 STREAM_RETRY_TOMBSTONE = "[[HIVE_STREAM_RETRY_TOMBSTONE]]"
+ANTHROPIC_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 _LLM_HTTP_MAX_ATTEMPTS = 10
 _LLM_HTTP_BACKOFF_BASE_SECONDS = 1.0
 _LLM_HTTP_BACKOFF_CAP_SECONDS = 30.0
@@ -1775,6 +1776,7 @@ class AnthropicClient(LLMClient):
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": self.API_VERSION,
+            "anthropic-beta": ANTHROPIC_INTERLEAVED_THINKING_BETA,
         }
 
     def _get_anthropic_max_tokens(self) -> int:

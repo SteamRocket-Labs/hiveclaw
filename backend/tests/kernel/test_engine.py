@@ -25,6 +25,26 @@ class _FakeClient:
         return None
 
 
+def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:
+    from app.kernel.engine import _dicts_to_llm_messages, _llm_messages_to_dicts
+    from app.services.llm_client import LLMMessage
+
+    messages = [
+        LLMMessage(
+            role="assistant",
+            content="tool decision",
+            reasoning_content="signed thinking",
+            reasoning_signature="sig-round-trip",
+        )
+    ]
+
+    as_dicts = _llm_messages_to_dicts(messages)
+    restored = _dicts_to_llm_messages(as_dicts)
+
+    assert as_dicts[0]["reasoning_signature"] == "sig-round-trip"
+    assert restored[0].reasoning_signature == "sig-round-trip"
+
+
 def test_split_concatenated_json_returns_single_object_when_valid():
     """T1-4: a single valid JSON object passes through untouched."""
     from app.kernel.engine import _split_concatenated_json
@@ -812,6 +832,90 @@ async def test_agent_kernel_handles_tool_round_and_collects_parts():
         {"type": "text", "text": "final answer"},
     ]
     assert persisted_payloads
+
+
+@pytest.mark.asyncio
+async def test_kernel_round_trips_reasoning_signature_after_tool_call() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(provider="anthropic", model="claude-sonnet-4", api_key="key", base_url=None)
+    agent_id = uuid4()
+    user_id = uuid4()
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "function": {"name": "read_file", "arguments": '{"path":"notes.md"}'},
+                    }
+                ],
+                reasoning_content="tool thinking",
+                reasoning_signature="sig-tool-turn",
+                usage={"total_tokens": 10},
+            ),
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content="final thinking",
+                reasoning_signature="sig-final",
+                usage={"total_tokens": 5},
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    async def execute_tool(tool_name, args, request, emit_event):
+        del request, emit_event
+        assert tool_name == "read_file"
+        assert args == {"path": "notes.md"}
+        return "file contents"
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=execute_tool,
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "read notes"}],
+            agent_name="Researcher",
+            role_description="Research agent",
+            agent_id=agent_id,
+            user_id=user_id,
+        )
+    )
+
+    assert result.content == "done"
+    assert result.reasoning_signature == "sig-final"
+    second_round_messages = fake_client.calls[1]["messages"]
+    assistant_tool_turn = next(message for message in second_round_messages if message.role == "assistant")
+    assert assistant_tool_turn.reasoning_content == "tool thinking"
+    assert assistant_tool_turn.reasoning_signature == "sig-tool-turn"
 
 
 @pytest.mark.asyncio

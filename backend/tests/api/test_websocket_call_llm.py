@@ -14,7 +14,12 @@ def test_history_rehydration_maps_stored_thinking_to_reasoning_content():
 
     entries = _conversation_from_history_messages(
         [
-            SimpleNamespace(role="assistant", content="之前的回答", thinking="hidden reasoning"),
+            SimpleNamespace(
+                role="assistant",
+                content="之前的回答",
+                thinking="hidden reasoning",
+                thinking_signature="sig-history",
+            ),
         ]
     )
 
@@ -23,6 +28,7 @@ def test_history_rehydration_maps_stored_thinking_to_reasoning_content():
             "role": "assistant",
             "content": "之前的回答",
             "reasoning_content": "hidden reasoning",
+            "reasoning_signature": "sig-history",
         }
     ]
 

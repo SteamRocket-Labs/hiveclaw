@@ -62,6 +62,14 @@ def test_build_summary_input_head_drop_only_when_over_window():
     assert "msg-0-mark" not in text  # oldest dropped
 
 
+def test_estimate_tokens_counts_cjk_text_without_ascii_underestimate() -> None:
+    from app.services.conversation_summarizer import estimate_tokens
+
+    content = "中文预算校准会影响压缩触发和上下文保护" * 100
+
+    assert estimate_tokens([{"role": "user", "content": content}], provider="openai") >= int(len(content) * 0.9)
+
+
 async def test_llm_summarize_sends_full_history_and_raised_max_tokens(monkeypatch):
     """Integration: _llm_summarize sends full history and max_tokens >= 8000 (was 2500).
 

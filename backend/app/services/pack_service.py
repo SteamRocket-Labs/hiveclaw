@@ -17,7 +17,7 @@ from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
 from app.services.capability_gate import CAPABILITY_MAP
 from app.services.llm_client import get_provider_spec
 from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_enabled
-from app.services.token_tracker import estimate_tokens_from_chars
+from app.services.token_tracker import estimate_tokens_from_text
 from app.skills.types import ParsedSkill
 from app.tools import ensure_workspace
 from app.tools.runtime_tool_groups import (
@@ -286,13 +286,17 @@ def _summarize_chat_messages(messages: list) -> dict:
 
 
 def _estimate_session_input_tokens(messages: list) -> int:
-    total_chars = 0
+    text_parts: list[str] = []
     for msg in messages:
-        total_chars += len(getattr(msg, "content", "") or "")
-        total_chars += len(getattr(msg, "thinking", "") or "")
-    if total_chars <= 0:
+        content = getattr(msg, "content", "") or ""
+        thinking = getattr(msg, "thinking", "") or ""
+        if content:
+            text_parts.append(content)
+        if thinking:
+            text_parts.append(thinking)
+    if not text_parts:
         return 0
-    return estimate_tokens_from_chars(total_chars)
+    return estimate_tokens_from_text("".join(text_parts))
 
 
 def _resolve_context_window_tokens(model: LLMModel | None, agent: Agent | None) -> int | None:

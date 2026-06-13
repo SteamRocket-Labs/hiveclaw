@@ -200,6 +200,32 @@ class TestFrozenPrefixMetering:
         assert sections[0].chars > sections[1].chars > sections[2].chars
         assert sections[0].tokens == int(sections[0].chars / 3.5)
 
+    def test_section_breakdown_counts_cjk_by_text_not_ascii_ratio(self) -> None:
+        from app.runtime.prompt_builder import _measure_frozen_prefix_sections
+
+        prefix = "## Identity & Mission\n" + ("中文预算校准" * 300)
+
+        [section] = _measure_frozen_prefix_sections(prefix)
+
+        assert section.name == "identity_mission"
+        assert section.tokens > int(section.chars / 3.5) * 3
+        assert section.tokens >= int(section.chars * 0.85)
+
+    def test_cjk_frozen_prefix_overrun_is_not_hidden_by_ascii_ratio(self, caplog) -> None:
+        import logging
+
+        from app.memory import metrics
+        from app.runtime.prompt_builder import _meter_frozen_prefix
+
+        oversized = "中文预算" * 5000
+        with caplog.at_level(logging.ERROR, logger="app.runtime.prompt_builder"):
+            _meter_frozen_prefix(oversized)
+
+        snap = metrics.snapshot()
+        assert snap["frozen_prefix_warn_total"] == 1
+        assert snap["frozen_prefix_overrun_total"] == 1
+        assert any("exceeds hard limit" in rec.message for rec in caplog.records)
+
     def test_warn_log_includes_top_section_diagnostics(self, caplog) -> None:
         import logging
 

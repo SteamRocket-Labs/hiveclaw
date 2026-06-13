@@ -4,15 +4,34 @@ All LLM call paths (web chat, heartbeat, triggers, A2A) go through this module.
 """
 
 import uuid
-from typing import Any
+import re
 from datetime import datetime, timezone
+from typing import Any
 
 from loguru import logger
 
+_DEFAULT_CHARS_PER_TOKEN = 3.5
+_CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
+
 
 def estimate_tokens_from_chars(total_chars: int) -> int:
-    """Rough token estimate when real usage is unavailable. ~3.5 chars per token."""
-    return max(int(total_chars / 3.5), 1)
+    """Legacy rough estimate when only a character count is available."""
+    return max(int(total_chars / _DEFAULT_CHARS_PER_TOKEN), 1)
+
+
+def estimate_tokens_from_text(text: str, *, chars_per_token: float = _DEFAULT_CHARS_PER_TOKEN) -> int:
+    """Estimate tokens from actual text, preserving CJK density.
+
+    Character-count-only callers cannot know script density and keep the legacy
+    ASCII-leaning ratio. Callers with the text must use this path so Chinese,
+    Japanese, and Korean content is not undercounted by ~3.5x.
+    """
+    if not text:
+        return 0
+    cpt = chars_per_token if chars_per_token > 0 else _DEFAULT_CHARS_PER_TOKEN
+    cjk_chars = len(_CJK_CHAR_RE.findall(text))
+    other_chars = max(len(text) - cjk_chars, 0)
+    return max(int(cjk_chars + (other_chars / cpt)), 1)
 
 
 def extract_usage_tokens(usage: dict | None) -> int | None:

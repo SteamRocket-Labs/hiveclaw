@@ -499,7 +499,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 5 | 记忆企业治理（独有轴） | 无人做全 | per-tenant 隔离+脱密+拒不可信源+溯源+审计 | 🟡 write-gate 有分级，缺用前校验/TTL/会话归因 | 缝 Devin(Useful/Misleading)+Copilot(引用校验/TTL)+decision_trace |
 | 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🔴 仅 workflow 一条线；subagent/delegation 裸奔 | journal 升"completion 去重边界"+withRetry+输出cap续写 |
 | 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡 原语齐全，缺重规划；D2 信号死线 | 补 task/progress-ledger；修 workflow_completed 零消费 |
-| 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；🟡 C2 中文首轮低估 | C2 CJK 校准；评估 Code-Execution-over-MCP |
+| 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算已接到 frozen-prefix / compaction / runtime summary | canonical last-assistant 锚；评估 Code-Execution-over-MCP |
 | 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟡 G1 subprocess env/sandbox 已收口；仍缺生产 userns 探测+seccomp/microVM+出口代理 | 验证 bwrap/换 gVisor+凭据出口注入+seccomp |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
 | 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
@@ -1069,8 +1069,35 @@ cd backend && source .venv/bin/activate && pytest tests -q
 
 **非 MVP 收口**：不是只加日志，也不是只包 invoker root span。kernel 的 generation/tool/invocation span 都有 DB writer；migration 与 bootstrap 两条建库路径都有 FORCE RLS；reader/API/Prometheus 同步接通；web/channel/heartbeat/trigger 入口的 runtime join key 同步统一。剩余未关闭项是第四仗动作 ④：外部行为 eval CI（Decagon 式 100% 会话 QA / 自进化不退化证据）仍需单独落地，不能据此宣称“已超越”。
 
+### 12.14 第五仗 C2 已实装：CJK-aware fallback token estimation（2026-06-13）
+
+**完成范围**：`backend/app/services/token_tracker.py` 新增 `estimate_tokens_from_text()`，把实际文本估算从 legacy char-only `/3.5` 分离出来：只有调用方拿不到文本、只剩 char count 时才继续走 `estimate_tokens_from_chars()`；拿得到内容的路径必须按文本估算，CJK（中日韩统一表意、日文假名、韩文音节）按接近 1 char/token 计入，ASCII/非 CJK 继续使用 provider/legacy chars-per-token。
+
+**生产接线**：`backend/app/runtime/prompt_builder.py` 的 frozen-prefix 总量 metering、section breakdown、overrun 判断与 CJK 文本预算裁剪都改走 `estimate_tokens_from_text()`，避免中文 `soul.md` / 技能目录 / 运行规则在 prompt cache 与 hard cap 上被低估 3.5 倍；`backend/app/services/conversation_summarizer.py` 的 compaction trigger 估算改为文本估算，中文长对话不会过晚压缩；`backend/app/services/pack_service.py` 的 session runtime summary 改为聚合真实消息文本后估算，保持 ASCII 旧汇总语义、不人为插入换行，同时修正中文运行时剩余 context 观测。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_token_tracker.py tests/runtime/test_prompt_builder.py::TestFrozenPrefixMetering::test_section_breakdown_counts_cjk_by_text_not_ascii_ratio tests/runtime/test_prompt_builder.py::TestFrozenPrefixMetering::test_cjk_frozen_prefix_overrun_is_not_hidden_by_ascii_ratio tests/services/test_conversation_summarizer.py::test_estimate_tokens_counts_cjk_text_without_ascii_underestimate -q
+# 6 failed
+```
+
+失败点覆盖真实缺口：`estimate_tokens_from_text` 不存在；`_measure_frozen_prefix_sections()` 仍把中文 section 按 `/3.5` 算；`_meter_frozen_prefix()` 对 20K 中文字符不 warn/overrun；`conversation_summarizer.estimate_tokens()` 把 1900 个中文字符估成 475 token。
+
+**Green / 回归证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_token_tracker.py tests/runtime/test_prompt_builder.py::TestFrozenPrefixMetering::test_section_breakdown_counts_cjk_by_text_not_ascii_ratio tests/runtime/test_prompt_builder.py::TestFrozenPrefixMetering::test_cjk_frozen_prefix_overrun_is_not_hidden_by_ascii_ratio tests/services/test_conversation_summarizer.py::test_estimate_tokens_counts_cjk_text_without_ascii_underestimate -q
+# 6 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_token_tracker.py tests/runtime/test_prompt_builder.py tests/services/test_conversation_summarizer.py tests/services/test_pack_service_runtime_summary.py tests/runtime/test_context_budget.py -q
+# 70 passed, 4 warnings
+```
+
+**非 MVP 收口**：不是把全局 3.5 常量粗暴改掉。`context_budget` 仍保留 token-window → char-budget 的反向换算，避免把预算上限设计误变成内容估算；kernel dependency 仍保留 char-only 函数给只有长度的路径。所有拿得到真实文本的 runtime/cache/compaction 观测路径已接 CJK-aware 估算。剩余第五仗项仍是：canonical last-assistant 锚、Code-Execution-over-MCP 评估、A2A/OAuth 委托标准、D1 半桩测试补真。
+
 **第五仗 — cache + 互操作 + 诚实债收尾**
-- C2 CJK 校准 + canonical last-assistant 锚；评估 Code-Execution-over-MCP（工具量大省 98.7%）；原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
+- C2 CJK 校准已关闭；继续做 canonical last-assistant 锚；评估 Code-Execution-over-MCP（工具量大省 98.7%）；原生说 A2A；D1 测试半桩补真；文档 §3 "已整改" 按真实完成度降级。
 
 **贯穿所有仗的铁律**：① 验证器外部且硬、在 agent 可改写面之外；② 替换语义可解释可逆；③ 进化 lineage 一等审计；④ 多租户隔离（经验/语料/技能不跨租户）；⑤ 做完外部行为 eval 前不宣称"已超越"。
 

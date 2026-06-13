@@ -4,6 +4,7 @@ import logging
 import re
 
 from app.services.llm_error_policy import is_llm_error_message
+from app.services.token_tracker import estimate_tokens_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -36,16 +37,16 @@ def estimate_tokens(messages: list[dict], *, provider: str = "") -> int:
     Uses ProviderSpec.chars_per_token for better accuracy per provider.
     """
     cpt = _get_chars_per_token(provider)
-    total_chars = 0
+    total_tokens = 0
     for msg in messages:
         content = msg.get("content")
         if isinstance(content, str):
-            total_chars += len(content)
+            total_tokens += estimate_tokens_from_text(content, chars_per_token=cpt)
         elif isinstance(content, list):
             # Vision format: array of parts
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
-                    total_chars += len(part.get("text", ""))
+                    total_tokens += estimate_tokens_from_text(part.get("text", ""), chars_per_token=cpt)
                 elif isinstance(part, dict) and part.get("type") == "image_url":
                     # Image tokens vary by detail level: ~85 low, ~765 high.
                     detail = "auto"
@@ -53,13 +54,17 @@ def estimate_tokens(messages: list[dict], *, provider: str = "") -> int:
                     if isinstance(img_data, dict):
                         detail = img_data.get("detail", "auto")
                     tokens_for_image = 85 if detail == "low" else 765 if detail == "high" else 300
-                    total_chars += int(tokens_for_image * cpt)
+                    total_tokens += tokens_for_image
         # Tool calls: estimate actual JSON arg size instead of flat 200
         if msg.get("tool_calls"):
             for tc in msg["tool_calls"]:
                 fn = tc.get("function", {})
-                total_chars += len(fn.get("name", "")) + len(fn.get("arguments", "")) + 50
-    return int(total_chars / cpt)
+                total_tokens += estimate_tokens_from_text(
+                    f"{fn.get('name', '')}{fn.get('arguments', '')}",
+                    chars_per_token=cpt,
+                )
+                total_tokens += max(int(50 / cpt), 1)
+    return int(total_tokens)
 
 
 def _extract_tool_summary(messages: list[dict]) -> str:

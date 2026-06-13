@@ -15,7 +15,7 @@ from typing import Any
 from app.memory.metrics import record_frozen_prefix_metering
 from app.runtime.context_budget import ContextBudget, compute_system_prompt_budget
 from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY  # noqa: F401
-from app.services.token_tracker import estimate_tokens_from_chars
+from app.services.token_tracker import estimate_tokens_from_text
 
 
 # Re-export the cache boundary marker from the provider-agnostic prompt_cache
@@ -41,9 +41,9 @@ _SYSTEM_PROMPT_SUFFIX_CHAR_CAP = 5000
 # Guard rails are calibrated for long-context production agents: 16K frozen
 # tokens is still a small slice of a 256K context, while 12K gives operators
 # enough headroom to see static prefix growth before it hurts cache efficiency.
-# `_CHARS_PER_TOKEN_ESTIMATE` mirrors token_tracker.estimate_tokens_from_chars
-# (3.5 chars/token) — kept here so the inverse direction (token budget →
-# char budget) does not silently drift if either side changes.
+# `_CHARS_PER_TOKEN_ESTIMATE` is intentionally only for inverse direction
+# (token budget → char budget). Measured text paths use CJK-aware token
+# estimation from token_tracker.
 _FROZEN_PREFIX_TOKEN_WARN = 12000
 _FROZEN_PREFIX_TOKEN_LIMIT = 16000
 # I.3: cap scales with context window: max(16K, min(10% of window, 32K)) tokens.
@@ -128,6 +128,34 @@ def _normalize_frozen_prefix_section_name(raw_name: str) -> str:
     return normalized or "unnamed"
 
 
+def _char_limit_for_token_cap(text: str, cap_tokens: int, *, fallback_chars: int) -> int:
+    """Find a char cap whose actual text estimate stays within `cap_tokens`."""
+    if cap_tokens <= 0:
+        return 0
+    upper = max(min(len(text), fallback_chars), 0)
+    if upper <= 0:
+        return 0
+    if estimate_tokens_from_text(text[:upper]) <= cap_tokens:
+        return fallback_chars
+
+    lo = 0
+    hi = upper
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if estimate_tokens_from_text(text[:mid]) <= cap_tokens:
+            lo = mid
+        else:
+            hi = mid - 1
+    return max(lo, 1)
+
+
+def _trim_to_token_cap(text: str, cap_tokens: int) -> str:
+    if estimate_tokens_from_text(text) <= cap_tokens:
+        return text
+    char_limit = _char_limit_for_token_cap(text, cap_tokens, fallback_chars=len(text))
+    return _trim_block(text, budget_chars=char_limit)
+
+
 def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
     """Return rendered frozen-prefix section sizes in render order.
 
@@ -147,7 +175,7 @@ def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
             FrozenPrefixSection(
                 name="unsectioned",
                 chars=chars,
-                tokens=estimate_tokens_from_chars(chars),
+                tokens=estimate_tokens_from_text(prefix),
             )
         ]
 
@@ -158,7 +186,7 @@ def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
             FrozenPrefixSection(
                 name="preamble",
                 chars=chars,
-                tokens=estimate_tokens_from_chars(chars),
+                tokens=estimate_tokens_from_text(preamble),
             )
         )
 
@@ -172,7 +200,7 @@ def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
             FrozenPrefixSection(
                 name=_normalize_frozen_prefix_section_name(match.group(1)),
                 chars=chars,
-                tokens=estimate_tokens_from_chars(chars),
+                tokens=estimate_tokens_from_text(block),
             )
         )
 
@@ -241,8 +269,10 @@ def build_frozen_prompt_prefix(
         parts.append(skill_catalog)
     prefix = "\n\n".join(parts)
 
-    if estimate_tokens_from_chars(len(prefix)) > cap_tokens:
-        prefix = _enforce_frozen_prefix_budget(base_parts, skill_catalog, char_limit=cap_chars)
+    if estimate_tokens_from_text(prefix) > cap_tokens:
+        text_aware_cap_chars = _char_limit_for_token_cap(prefix, cap_tokens, fallback_chars=cap_chars)
+        prefix = _enforce_frozen_prefix_budget(base_parts, skill_catalog, char_limit=text_aware_cap_chars)
+        prefix = _trim_to_token_cap(prefix, cap_tokens)
 
     _meter_frozen_prefix(prefix)
     return prefix
@@ -388,7 +418,7 @@ def _meter_frozen_prefix(prefix: str) -> None:
     import logging
 
     chars = len(prefix)
-    tokens = estimate_tokens_from_chars(chars)
+    tokens = estimate_tokens_from_text(prefix)
     warn = tokens >= _FROZEN_PREFIX_TOKEN_WARN
     overrun = tokens > _FROZEN_PREFIX_TOKEN_LIMIT
     record_frozen_prefix_metering(chars=chars, tokens=tokens, warn=warn, overrun=overrun)

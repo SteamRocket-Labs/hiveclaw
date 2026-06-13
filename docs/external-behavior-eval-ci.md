@@ -419,6 +419,39 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **gap 状态**：铁律2（验证器在 agent 可改写面之外）可证；nightly CI 可跑 `run_adversarial_suite` 当回归门。
 
+### E10 — 成本/时延强制 ✅（2026-06-13，G6）
+
+**完成范围**（新增 `backend/app/evals/cost_budget.py`）：
+- `DEFAULT_SCENARIO_BUDGET`（`max_duration_ms=120k`、`max_tokens=200k`）+ `check_cost_budget(scenario_costs, per_scenario_budget)`——逐场景标记超 duration/token 预算者；token=0（未测量）不误报。
+- `extract_scenario_costs(behavior_report)`——从 `score_breakdown` 提 duration_ms + tokens；`format_budget_warnings(report)`——CI `::warning::` 行。
+
+**对比现状**：旧 `_cost_latency_report` 只查 guard 存在性（rerank_timeout/prompt_cache）；E10 真强制 per-scenario 预算。
+
+**TDD red→green**：`tests/evals/test_cost_budget.py` 6 用例，实现前 `ModuleNotFoundError`；green `6 passed`；ruff clean。
+
+**验收映射**：超 duration 标记（`test_over_duration_is_flagged`）✓；超 token 标记（`test_over_tokens_is_flagged`）✓；token 未测不误报（`test_zero_tokens_not_measured_never_violates`）✓；从报告提成本（`test_extract_scenario_costs_from_behavior_report`）✓；告警格式（`test_format_budget_warnings`）✓。
+
+**gap 状态**：G6（per-scenario 成本强制）机制已落；nightly 记录时序。
+
+---
+
+## 9. E1–E10 完成总览（2026-06-13）
+
+| E | 工件 | gap 关闭 | 机制状态 | live 真跑状态 |
+|---|---|---|---|---|
+| E1 | `baseline.py` + seed 工件 | G2/G7/G8 | ✅ 实装+测试 | seed 分数待 E2 真跑回填 |
+| E2 | `hive_live_runner.py` + grader | G0/G1 | ✅ 实装+测试 | invoke_agent live 执行待 eval 环境（E8 nightly） |
+| E3 | `decide_behavior_gated_promotion` | promotion 硬门 | ✅ 实装+测试 | 喂真 report 待 E8 nightly |
+| E4 | 连续 reward + rubric 非门控 | G5/D3 | ✅ 实装+测试 | — |
+| E5 | `evaluator_integrity.py` | G4/G9 | ✅ 实装+测试 | base-branch hash 注入待 E8 CI |
+| E6 | `artifact_gate.py` | Voyager gate | ✅ 实装+测试 | microVM 真跑待候选晋升 |
+| E7 | `hermes_baseline.py` + 删 grep-marker | §1.1 假对比 | ✅ 实装+测试 | hermes CLI 真跑待 E8 nightly |
+| E8 | `ci_gate.py` + run `--fail-under` + CI yaml | G1/G3 | ✅ 实装+测试 | per-PR fail-gate 已活；live 行为 gate 待 eval secrets |
+| E9 | `adversarial_suite.py` | 铁律2 可证 | ✅ 实装+测试 | — |
+| E10 | `cost_budget.py` | G6 | ✅ 实装+测试 | nightly 时序 |
+
+**诚实定位**：E1–E10 的**机制 + 门控逻辑 + 反作弊**全部实装并 TDD 验证（per-PR fail-gate 已真跑 block merge）。**唯一未在真环境跑通的是 Hive agent-core 的 live `invoke_agent` 执行**——它需要 eval tenant + LLM key + Postgres（§1.3：不能进 microVM），由 E8 nightly 的 secret-guarded job 在 eval 环境配置后激活。**因此本仗按 §9 铁律仍不构成"已超越 hermes"的最终证据**：必须等 live 行为 eval 在真环境跑出 Hive vs Hermes 的行为级 delta，才可把 round2 §10/§11 的"仍缺外部行为 eval CI"改为已关闭。在此之前，"已超越" 仍是未验证 Speculation。
+
 ---
 
 ## 附：关键文件锚点

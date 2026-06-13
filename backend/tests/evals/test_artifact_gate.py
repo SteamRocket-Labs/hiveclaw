@@ -110,3 +110,36 @@ async def test_candidate_files_written_to_microvm_workdir() -> None:
     assert seen["exists"] is True
     assert "VERIFIED-OK" in seen["content"]
     assert seen["network_policy"] == "deny-all"  # isolated by default
+
+
+async def test_candidate_path_traversal_is_rejected(tmp_path: Path) -> None:
+    escaped = tmp_path / "escaped.py"
+    result = await run_artifact_execution_gate(
+        candidate_files={str(escaped): "print('escaped')", "../relative_escape.py": "print('escaped')"},
+        verification_command=["python3", "skill_check.py"],
+        execute=_ok_execute(),
+    )
+
+    assert result["passed"] is False
+    assert "unsafe candidate path" in result["reason"]
+    assert escaped.exists() is False
+
+
+async def test_artifact_gate_passes_safe_home_env_to_executor() -> None:
+    seen: dict[str, str | None] = {}
+
+    async def _execute(command, *, work_dir, env, timeout, runtime=None, network_policy=None):
+        seen["home"] = env.get("HOME")
+        seen["tmpdir"] = env.get("TMPDIR")
+        return CodeExecutionResult(stdout="VERIFIED-OK", exit_code=0)
+
+    result = await run_artifact_execution_gate(
+        candidate_files={"skill_check.py": "print('VERIFIED-OK')"},
+        verification_command=["python3", "skill_check.py"],
+        expected_stdout="VERIFIED-OK",
+        execute=_execute,
+    )
+
+    assert result["passed"] is True
+    assert seen["home"]
+    assert seen["tmpdir"]

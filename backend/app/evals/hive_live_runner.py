@@ -21,10 +21,15 @@ live end-to-end.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import inspect
 import json
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 
 from app.evals.bakeoff_runtime import (
@@ -52,6 +57,24 @@ DETERMINISTIC_BEHAVIOR_SCENARIOS: tuple[str, ...] = (
 TRUSTED_LIVE_TRANSPORTS: frozenset[str] = frozenset({"hive_live", "live_cli"})
 
 AgentRunner = Callable[[str, Path], Awaitable[dict[str, Any]]]
+
+_EVAL_WORKSPACE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "list_files",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "delete_file",
+        "glob_search",
+        "grep_search",
+        "read_document",
+        "execute_code",
+        "run_command",
+        "fs_read",
+        "fs_write",
+        "fs_list",
+    }
+)
 
 
 def behavior_eval_passed(report: dict[str, Any]) -> bool:
@@ -165,6 +188,59 @@ def record_behavior_eval_run(
     )
 
 
+async def _maybe_await_tool_result(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _eval_initial_tools() -> list[dict[str, Any]]:
+    from app.services.agent_tools import get_combined_openai_tools
+
+    return [
+        tool
+        for tool in get_combined_openai_tools()
+        if tool.get("function", {}).get("name") in _EVAL_WORKSPACE_TOOL_NAMES
+    ]
+
+
+def build_workspace_tool_executor(
+    workspace_dir: Path, *, tenant_id: str | None = None
+) -> Callable[..., Awaitable[str]]:
+    """Build a scenario-local filesystem executor for live behavior eval.
+
+    The evaluator only needs local workspace tools. Binding the executor to the
+    scenario workspace makes the grader inspect the same files the agent wrote.
+    """
+
+    from app.tools.handlers import filesystem
+
+    handlers: dict[str, Callable[..., Any]] = {
+        "list_files": filesystem.list_files,
+        "read_file": filesystem.read_file,
+        "write_file": filesystem.write_file,
+        "edit_file": filesystem.edit_file,
+        "delete_file": filesystem.delete_file,
+        "glob_search": filesystem.glob_search,
+        "grep_search": filesystem.grep_search,
+        "read_document": filesystem.read_document,
+        "execute_code": filesystem.execute_code,
+        "run_command": filesystem.run_command,
+        "fs_read": filesystem.fs_read,
+        "fs_write": filesystem.fs_write,
+        "fs_list": filesystem.fs_list,
+    }
+
+    async def execute(tool_name: str, args: dict[str, Any] | None = None, **_: Any) -> str:
+        handler = handlers.get(tool_name)
+        if handler is None:
+            return f"[eval tool unavailable] {tool_name}"
+        result = await _maybe_await_tool_result(handler(workspace_dir, args or {}, tenant_id))
+        return str(result)
+
+    return execute
+
+
 def build_invoke_agent_runner(
     *,
     model: Any,
@@ -187,6 +263,7 @@ def build_invoke_agent_runner(
     async def agent_runner(prompt: str, workspace_dir: Path) -> dict[str, Any]:
         from app.runtime.invoker import AgentInvocationRequest
 
+        scenario_tool_executor = tool_executor or build_workspace_tool_executor(workspace_dir)
         task_prompt = (
             f"{prompt}\n\nYour evaluation workspace is: {workspace_dir}\n"
             "Use only local workspace files; do not use the network."
@@ -198,7 +275,9 @@ def build_invoke_agent_runner(
             role_description=role_description,
             agent_id=agent_id,
             user_id=user_id,
-            tool_executor=tool_executor,
+            tool_executor=scenario_tool_executor,
+            initial_tools=_eval_initial_tools(),
+            allowed_tool_names=tuple(sorted(_EVAL_WORKSPACE_TOOL_NAMES)),
             invocation_scope="eval",
             core_tools_only=True,
         )
@@ -221,3 +300,54 @@ def build_invoke_agent_runner(
             }
 
     return agent_runner
+
+
+async def _run_cli(args: argparse.Namespace) -> int:
+    api_key = os.environ.get(args.api_key_env, "")
+    model = SimpleNamespace(
+        provider=args.provider,
+        model=args.model,
+        api_key=api_key,
+        base_url=args.base_url,
+        max_output_tokens=args.max_output_tokens,
+    )
+    runner = build_invoke_agent_runner(
+        model=model,
+        agent_name=args.agent_name,
+        role_description=args.role_description,
+        agent_id=args.agent_id,
+        user_id=args.user_id,
+    )
+    report = await run_hive_behavior_eval(
+        agent_runner=runner,
+        output_dir=args.output.parent,
+        scenarios=tuple(args.scenario) if args.scenario else DETERMINISTIC_BEHAVIOR_SCENARIOS,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps({"transport": report["transport"], "benchmark_complete": report["benchmark_complete"]}))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run Hive invoke_agent live behavior eval and write a JSON report.")
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--provider", default=os.environ.get("HIVE_EVAL_PROVIDER", "anthropic"))
+    parser.add_argument("--api-key-env", default="HIVE_EVAL_LLM_API_KEY")
+    parser.add_argument("--base-url", default=os.environ.get("HIVE_EVAL_BASE_URL") or None)
+    parser.add_argument("--max-output-tokens", type=int, default=None)
+    parser.add_argument("--agent-name", default="Hive behavior eval agent")
+    parser.add_argument(
+        "--role-description",
+        default="Complete behavior-eval tasks by editing files in the provided local evaluation workspace.",
+    )
+    parser.add_argument("--agent-id", default=os.environ.get("HIVE_EVAL_AGENT_ID") or None)
+    parser.add_argument("--user-id", default=os.environ.get("HIVE_EVAL_USER_ID") or None)
+    parser.add_argument("--scenario", choices=DETERMINISTIC_BEHAVIOR_SCENARIOS, action="append")
+    args = parser.parse_args(argv)
+    return asyncio.run(_run_cli(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

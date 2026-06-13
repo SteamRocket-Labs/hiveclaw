@@ -26,6 +26,18 @@ from app.services.code_execution.contracts import CodeExecutionResult
 ExecuteCommand = Callable[..., Awaitable[CodeExecutionResult]]
 
 
+def _artifact_gate_failure(reason: str) -> dict[str, Any]:
+    return {
+        "passed": False,
+        "exit_code": None,
+        "timed_out": False,
+        "error": reason,
+        "expected_satisfied": False,
+        "stdout_tail": "",
+        "reason": reason,
+    }
+
+
 def _failure_reason(result: CodeExecutionResult, expected_satisfied: bool) -> str:
     if result.error:
         return f"execution error: {result.error}"
@@ -36,6 +48,34 @@ def _failure_reason(result: CodeExecutionResult, expected_satisfied: bool) -> st
     if not expected_satisfied:
         return "artifact ran but did not satisfy the declared stdout assertion"
     return "artifact execution failed"
+
+
+def _candidate_target(work_dir: Path, candidate_path: str) -> Path:
+    path = Path(candidate_path)
+    if path.is_absolute():
+        raise ValueError(f"unsafe candidate path: {candidate_path!r} is absolute")
+    resolved_work_dir = work_dir.resolve()
+    target = (resolved_work_dir / path).resolve()
+    try:
+        target.relative_to(resolved_work_dir)
+    except ValueError as exc:
+        raise ValueError(f"unsafe candidate path: {candidate_path!r} escapes artifact workdir") from exc
+    if target == resolved_work_dir:
+        raise ValueError(f"unsafe candidate path: {candidate_path!r} does not name a file")
+    return target
+
+
+def _sandbox_env(work_dir: Path) -> dict[str, str]:
+    tmp_dir = work_dir / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "HOME": str(work_dir),
+        "TMPDIR": str(tmp_dir),
+        "TMP": str(tmp_dir),
+        "TEMP": str(tmp_dir),
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+    }
 
 
 async def run_artifact_execution_gate(
@@ -61,14 +101,18 @@ async def run_artifact_execution_gate(
 
     with tempfile.TemporaryDirectory(prefix="hive-artifact-gate-") as tmp:
         work_dir = Path(tmp)
+        try:
+            targets = {relative_path: _candidate_target(work_dir, relative_path) for relative_path in candidate_files}
+        except ValueError as exc:
+            return _artifact_gate_failure(str(exc))
         for relative_path, content in candidate_files.items():
-            target = work_dir / relative_path
+            target = targets[relative_path]
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         result = await run_command(
             verification_command,
             work_dir=work_dir,
-            env={},
+            env=_sandbox_env(work_dir),
             timeout=timeout,
             runtime=runtime,
             network_policy=network_policy,

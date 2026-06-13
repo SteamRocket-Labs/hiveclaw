@@ -14,7 +14,10 @@ live on an agent-writable workspace path (the DGM Node 114 guard).
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
+from dataclasses import asdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,9 +25,15 @@ from pathlib import Path
 # A change to any of these requires CODEOWNERS review from the protected base —
 # it can never be self-approved inside the candidate PR.
 EVALUATOR_RELATIVE_PATHS: tuple[str, ...] = (
+    "app/evals/adversarial_suite.py",
+    "app/evals/artifact_gate.py",
     "app/evals/baseline.py",
-    "app/evals/hive_live_runner.py",
     "app/evals/bakeoff_runtime.py",
+    "app/evals/ci_gate.py",
+    "app/evals/cost_budget.py",
+    "app/evals/hermes_baseline.py",
+    "app/evals/hive_live_runner.py",
+    "app/evals/run.py",
     "app/evals/self_evolution_bakeoff.py",
     "app/evals/evaluator_integrity.py",
     "app/services/evolution_verification.py",
@@ -122,3 +131,39 @@ def assert_evaluator_outside_agent_workspace(path: Path | str) -> None:
             raise EvaluatorIntegrityError(
                 f"evaluator path is inside an agent-writable workspace: {path} (marker {marker!r})"
             )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate evaluator integrity report from a protected trust root.")
+    parser.add_argument("--current-root", type=Path, required=True, help="backend root for the current checkout")
+    parser.add_argument(
+        "--trusted-root", type=Path, required=True, help="backend root from the protected base checkout"
+    )
+    parser.add_argument("--output", type=Path, required=True, help="path to write the integrity JSON report")
+    parser.add_argument(
+        "--authorized-changes",
+        action="store_true",
+        help="set only from protected CI context after evaluator CODEOWNERS approval",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        assert_evaluator_outside_agent_workspace(args.current_root)
+        assert_evaluator_outside_agent_workspace(args.trusted_root)
+        report = verify_evaluator_integrity(
+            current_hashes=compute_evaluator_hashes(args.current_root),
+            trusted_hashes=compute_evaluator_hashes(args.trusted_root),
+            authorized_changes=args.authorized_changes,
+        )
+    except Exception as exc:  # fail closed and let ci_gate emit the blocking exit code
+        report = IntegrityReport(trusted=False, reason=f"evaluator integrity check failed: {exc}")
+
+    payload = asdict(report)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

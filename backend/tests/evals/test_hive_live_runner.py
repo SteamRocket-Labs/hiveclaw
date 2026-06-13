@@ -141,6 +141,9 @@ async def test_build_invoke_agent_runner_constructs_request(tmp_path: Path) -> N
     request = captured["request"]
     assert request.agent_name == "eval-agent"
     assert "complete TASK.md" in request.messages[-1]["content"]
+    assert request.tool_executor is not None
+    await request.tool_executor("write_file", {"path": "artifact.txt", "content": "ok"})
+    assert (tmp_path / "artifact.txt").read_text(encoding="utf-8") == "ok"
     assert payload["status"] == "success"
 
 

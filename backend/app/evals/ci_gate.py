@@ -104,6 +104,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--baseline", type=Path, required=True, help="path to a behavior_eval_baseline.v1 JSON file")
     parser.add_argument("--running-model", required=True)
+    parser.add_argument(
+        "--integrity-report",
+        type=Path,
+        help="JSON integrity report from app.evals.evaluator_integrity",
+    )
     parser.add_argument("--tolerance", type=float, default=0.0)
     parser.add_argument(
         "--allow-fallback", action="store_true", help="nightly observation only — never on the per-PR gate"
@@ -111,6 +116,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     report = json.loads(args.behavior_report.read_text(encoding="utf-8")) if args.behavior_report.is_file() else {}
+    integrity = None
+    if args.integrity_report is not None:
+        if args.integrity_report.is_file():
+            integrity = json.loads(args.integrity_report.read_text(encoding="utf-8"))
+        else:
+            integrity = {
+                "trusted": False,
+                "reason": f"integrity report unavailable: {args.integrity_report}",
+            }
 
     from app.evals.baseline import BaselineUnavailableError, load_baseline
 
@@ -123,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         behavior_report=report,
         baseline=baseline,
         running_model=args.running_model,
+        integrity=integrity,
         require_live=not args.allow_fallback,
         tolerance=args.tolerance,
     )

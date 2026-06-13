@@ -45,7 +45,7 @@
 **线 A — `self_evolution_bakeoff.py`（service-level 自进化检查，已接 CI）** — *Fact*
 - 6 个固定场景（`next_turn_adaptation` / `repeated_workflow_learning` / `tool_failure_lesson_reuse` / `skill_candidate_creation` / `long_task_resume` / `safety_tenant_policy`，line 19-74）。
 - `_score_hive`（line 111）直接调 Hive 的 **service 函数**（`create_fast_reflection_candidate`、`record_skill_execution`、`scan_skill_files`…），检查返回结构 / 文件存在性 / 字段值。**这是 service-level 行为/结构检查，不是 `invoke_agent()` 驱动的 agent-core live run。**
-- Hermes 分数：要么 `--hermes-scores-json` **硬编码注入**（CI line 60），要么 `_derive_hermes_scores`（line 479）**grep hermes 源码里的关键词 marker 计数**。**两条都不是 Hermes 真跑——是数代码里有没有某些字符串。**（审计 P1-13 已实锤"92 vs 85 是源码字符串存在性"。）
+- 本轮修复前的 Hermes 分数来源：要么 `--hermes-scores-json` **硬编码注入**，要么 `_derive_hermes_scores` **grep hermes 源码里的关键词 marker 计数**。**两条都不是 Hermes 真跑——是数代码里有没有某些字符串。**（审计 P1-13 已实锤"92 vs 85 是源码字符串存在性"。）本轮已删除 CLI 注入入口；无 live Hermes 运行时只标记 `unavailable`，不参与横向门控。
 - `main()`（line 658）`return 0 if passed else 1`——它**会** fail CI，但门控的是 service-level 自进化检查 + Hermes 注入/源码回退分，不是 agent-core live 行为。
 
 **修订原因**：`docs/harness-engineering-audit-2026-06-11.md` 已记录 Hive 侧从旧 marker 检查升级为 `local_behavior_scenarios`，所以继续称它为"静态代码打分"不准确；但它仍没有让完整 agent loop 在真实任务上运行，不能当 §9 的外部行为证据。
@@ -321,13 +321,13 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 - 新增 `execution_evidence(verification_report)`：把 verification 里 `agent_behavior_check` 的存在性 + 结果显式化。
 - 新增 `decide_behavior_gated_promotion(...)`——**canonical 硬门**：组合 E1（`compare_to_baseline` 的 regression_report）+ E2（`behavior_eval_passed`）+ static verification，三者全过才 promote。这是 E8 CI eval 路径调用的决策函数，自进化候选不过真实行为就晋升不了。
 
-**生产接线**：`decide_verified_promotion` 的两个生产调用方（`skill_distiller.py:1145/1295`）签名向后兼容（新参数默认 None，静态 skill_guard 路径行为不变）；`decide_behavior_gated_promotion` 是 E8 CI 行为门的消费点。
+**生产接线**：`skill_distiller.py` 的两个真实 promotion 调用方（patch existing skill / create new skill）已切到 `decide_behavior_gated_promotion(...)`。缺少 live behavior report 时 **hold 而不是 promote**；未来只有把 E8 产出的 `behavior_report` 接入候选 metadata / promotion 调用链后，skill distiller 才能在 `verification_passed ∧ behavior_eval_passed ∧ no_regressions` 下晋升。
 
-**TDD red→green**：`tests/services/test_promotion_hard_gate.py` 13 用例，实现前 Pyright 缺符号/参数；green。回归 `test_promotion_hard_gate + test_evolution_verification + test_skill_distiller + test_skill_flywheel` = **45 passed**；现有 reject reason `"verification failed"`（skill_distiller exact-match）保持不变；ruff clean。
+**TDD red→green**：`tests/services/test_promotion_hard_gate.py` 增加真实调用点结构钉，先红后绿；目标回归与 eval gate 套件合跑 **48 passed**。
 
 **验收映射**：退化候选 hold（`test_decide_verified_promotion_holds_on_regression` / `test_behavior_gated_holds_on_regression`）✓；行为 fail hold（`test_behavior_gated_holds_on_behavior_fail`）✓；verification fail reject（`test_behavior_gated_rejects_on_verification_fail`）✓；全过才 promote（`test_behavior_gated_promotes_when_all_pass`）✓。
 
-**仍待后续 E**：CI 真跑 `decide_behavior_gated_promotion` 喂真 behavior_report + regression_report = **E8**。
+**仍待后续 E**：把 nightly live behavior report / regression report 显式写入具体候选 promotion 上下文；在此之前 skill distiller 会因缺 behavior report fail-closed hold。
 
 ### E4 — 连续 reward + rubric 非门控 ✅（2026-06-13，G5 + D3）
 
@@ -347,31 +347,31 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 ### E5 — evaluator 隔离（反 reward-hack 信任根）✅（2026-06-13，G4/G9）
 
 **完成范围**（新增 `backend/app/evals/evaluator_integrity.py`）：
-- `EVALUATOR_RELATIVE_PATHS`：构成信任根的 grader/runner 文件清单（`baseline.py` / `hive_live_runner.py` / `bakeoff_runtime.py` / `self_evolution_bakeoff.py` / `evaluator_integrity.py` / `evolution_verification.py`）+ `baselines/` 目录。
+- `EVALUATOR_RELATIVE_PATHS`：构成信任根的 grader/runner/gate 文件清单（`baseline.py` / `hive_live_runner.py` / `bakeoff_runtime.py` / `self_evolution_bakeoff.py` / `ci_gate.py` / `artifact_gate.py` / `hermes_baseline.py` / `adversarial_suite.py` / `cost_budget.py` / `run.py` / `evaluator_integrity.py` / `evolution_verification.py`）+ `baselines/` 目录。
 - `compute_evaluator_hashes(root)`：对 PR checkout 与 base checkout 分别算 evaluator 文件 hash。
 - `verify_evaluator_integrity(current_hashes, trusted_hashes, authorized_changes)`：**对比 PR（current）与受保护 base（trusted）**——任一文件 hash 不同即"evaluator 被改"；除非 `authorized_changes=True`（CI 从受保护上下文带出的 CODEOWNERS 批准），否则 untrusted。**关键：永不拿 current 与 current 内嵌的 expected hash 比**——这正是 owner 抓的 DGM Node 114 自欺（同 PR 改 grader + expected hash 一起过），机制上堵死。
 - `assert_evaluator_outside_agent_workspace(path)`：evaluator 不能落在 agent 可写路径（`/workspace/`、`/memory/`、`/skills/`、`/.agents/`、`/data/agents/`），否则 raise。
 
-**生产接线**：`assert_evaluator_outside_agent_workspace` 由 `test_evaluator_paths_are_outside_agent_workspace` 对全部真实 evaluator 路径**主动断言**（active guard）；`verify_evaluator_integrity` 由 E8 CI（checkout base branch 取 trusted hash）消费。
+**生产接线**：`assert_evaluator_outside_agent_workspace` 由 `test_evaluator_paths_are_outside_agent_workspace` 对全部真实 evaluator 路径**主动断言**（active guard）；`app.evals.evaluator_integrity` 提供 CLI，从当前 checkout 与 protected base checkout 计算 hash 并输出 integrity report，E8 `ci_gate` 通过 `--integrity-report` fail-closed 消费。
 
 **TDD red→green**：`tests/evals/test_evaluator_integrity.py` 9 用例，实现前 `ModuleNotFoundError`；green `9 passed`；ruff clean。
 
 **验收映射**：同 PR 改 grader/hash 不被信任（`test_in_pr_expected_hash_cannot_authorize_grader_change` ← owner 的核心发现）✓；改 grader untrusted（`test_changed_grader_is_untrusted`）✓；改 baseline untrusted（`test_changed_baseline_is_untrusted`）✓；受保护审批才放行（`test_change_with_protected_authorization_is_trusted`）✓；agent 路径被拒（`test_agent_workspace_path_is_rejected`）✓。
 
-**gap 状态**：G4（reward-hack 防御信任根）+ G9（evaluator 隔离）机制已落；base-branch hash 注入 CI = **E8**。
+**gap 状态**：G4（reward-hack 防御信任根）+ G9（evaluator 隔离）机制已落；base-branch hash 生成与 `ci_gate` 消费已接入 nightly workflow。
 
 ### E6 — 产物执行 gate（Voyager microVM）✅（2026-06-13）
 
 **完成范围**（新增 `backend/app/evals/artifact_gate.py`）：
 - `run_artifact_execution_gate(candidate_files, verification_command, expected_stdout, ...)`——把候选写进隔离临时工作区，在 microVM（`services/code_execution`，按 `HIVE_CODE_EXEC_PROVIDER` 选 provider）真跑验证命令；**判断在 microVM 外**：只信 `CodeExecutionResult` 的 `exit_code/timed_out/error/stdout`，passed = exit 0 ∧ 未超时 ∧ 无 error ∧ 满足声明断言。
-- 默认 `network_policy="deny-all"`（产物不能联网）；`execute` 可注入测试，默认生产 `execute_agent_command`。
+- 默认 `network_policy="deny-all"`（产物不能联网）；候选路径必须解析在临时 workdir 内（绝对路径 / `..` 逃逸 fail-closed）；执行 env 只注入 `HOME`/`TMPDIR`/最小 `PATH` 等必要安全变量，不继承宿主 secrets；`execute` 可注入测试，默认生产 `execute_agent_command`。
 - `artifact_gate_passed(result)` helper。
 
 **Voyager / 反 reward-hack 核心**：候选打印"all tests passed"但 exit 非零 → **拦**（`test_candidate_claim_does_not_override_exit_code`），信 exit_code 不信候选自述（DGM Node 114 抗性）。
 
-**TDD red→green**：`tests/evals/test_artifact_gate.py` 7 用例，实现前 `ModuleNotFoundError`；green `7 passed`；ruff clean。
+**TDD red→green**：`tests/evals/test_artifact_gate.py` 增加路径逃逸和安全 env 钉，先红后绿；目标回归合跑 **48 passed**。
 
-**验收映射**：好产物通过（`test_good_artifact_passes`）✓；exit 非零/超时/error 拦（`test_nonzero_exit_fails`/`test_timeout_fails`/`test_execution_error_fails`）✓；声明断言不满足拦（`test_missing_expected_stdout_fails`）✓；自述不覆盖 exit_code（`test_candidate_claim_does_not_override_exit_code`）✓；产物真写进 microVM 工作区 + deny-all（`test_candidate_files_written_to_microvm_workdir`）✓。
+**验收映射**：好产物通过（`test_good_artifact_passes`）✓；exit 非零/超时/error 拦（`test_nonzero_exit_fails`/`test_timeout_fails`/`test_execution_error_fails`）✓；声明断言不满足拦（`test_missing_expected_stdout_fails`）✓；自述不覆盖 exit_code（`test_candidate_claim_does_not_override_exit_code`）✓；产物真写进 microVM 工作区 + deny-all（`test_candidate_files_written_to_microvm_workdir`）✓；路径逃逸被拒（`test_candidate_path_traversal_is_rejected`）✓；默认 executor 不再因缺 `HOME` 崩（`test_artifact_gate_passes_safe_home_env_to_executor`）✓。
 
 **gap 状态**：Voyager 入库前执行 gate 机制已落；microVM 真跑由 E8 CI 在 skill/code 候选晋升前调用。
 
@@ -379,28 +379,28 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 **完成范围**：
 - 新增 `backend/app/evals/hermes_baseline.py`：`extract_hermes_live_scores`（只从 trusted complete live run 提分；fallback/partial/incomplete → 空 = unavailable）+ `hermes_baseline_status` + `compare_hive_to_hermes`（**unavailable → 跳过横向门 `gated=False`，绝不假 fail**；live → 逐场景 hive≥hermes）。这是 E8 nightly 用 `run_runtime_bakeoff('hermes_agent')` 真跑后喂入的 canonical 横向对比。
-- 清理 `backend/app/evals/self_evolution_bakeoff.py`：**删除 grep-marker 假分** `_score_by_markers` + `_derive_hermes_scores`（~75 行）；`_normalize_hermes_scores` 无真跑注入 → `unavailable` + 空分（不再 `repo_evidence_fallback` 假分）；`_comparison_passed` 在 hermes unavailable 时跳过相对门、只靠 Hive 绝对阈值（hive≥80）；run 循环 hermes_score 可为 None（`delta=None`）。
+- 清理 `backend/app/evals/self_evolution_bakeoff.py`：**删除 grep-marker 假分** `_score_by_markers` + `_derive_hermes_scores`（~75 行）；删除 CLI `--hermes-scores-json` 注入入口；`_normalize_hermes_scores` 对注入分数直接 raise，缺少真跑证据时只返回 `unavailable` + 空分（不再 `repo_evidence_fallback` 假分）；`_comparison_passed` 在 hermes unavailable 时跳过相对门、只靠 Hive 绝对阈值（hive≥80）；run 循环 hermes_score 可为 None（`delta=None`）。
 
-**TDD red→green**：`tests/evals/test_hermes_baseline.py` 7 用例，实现前 `ModuleNotFoundError`；green。回归 `hermes_baseline + self_evolution_bakeoff（含现有 2 injected 测试）+ harness_ci_workflow + run` = **18 passed**；ruff clean。
+**TDD red→green**：`tests/evals/test_hermes_baseline.py` + `tests/evals/test_self_evolution_bakeoff.py` 覆盖 live-only 提分、unavailable 跳过横向门、注入分数拒绝、CLI 注入参数拒绝；目标回归合跑 **48 passed**。
 
 **验收映射**：live 提分（`test_live_hermes_scores_extracted`）✓；fallback/partial → unavailable（`test_fallback_transport_is_unavailable`）✓；unavailable 跳过门不假 fail（`test_compare_skips_gate_when_unavailable`）✓；live 时逐场景门控（`test_compare_gates_when_live_and_hive_matches` / `test_compare_detects_hive_below_hermes`）✓；grep-marker 函数已删（`test_self_evolution_bakeoff_no_grep_marker_function`）✓；无真跑 → unavailable 空分（`test_self_evolution_bakeoff_marks_hermes_unavailable_without_real_run`）✓。
 
-**仍待后续 E**：CI nightly 真 shell-out hermes + 喂 `compare_hive_to_hermes` = **E8**；`harness-ci.yml` 的注入 `--hermes-scores-json`（CI 硬编码假分）移除 = **E8**。
+**仍待后续 E**：CI nightly 真 shell-out hermes + 喂 `compare_hive_to_hermes`。注入 JSON / grep-marker 假分路径已从门控路径删除。
 
 ### E8 — 双层 CI + fail-gate ✅（2026-06-13，G1/G3）
 
 **完成范围**：
 - 新增 `backend/app/evals/ci_gate.py`：`evaluate_ci_gate(behavior_report, baseline, running_model, integrity, require_live, tolerance)`——组合 **E5（evaluator 信任）→ E2（require complete live）→ E1（baseline 存在 + 模型匹配 + 无退化）**，首个失败门给 distinct 非零退出码（`EXIT_REGRESSION=1` / `REQUIRED_LIVE_FALLBACK=2` / `UNTRUSTED_EVALUATOR=3` / `BASELINE_UNAVAILABLE=4`）；+ `main()` CLI 供 CI 调用。
 - `backend/app/evals/run.py`：`main()` 加 `--fail-under` → pass_rate 低于阈值 exit 1（此前恒 `return 0`，G3）。
-- `.github/workflows/harness-ci.yml`：① per-PR `Internal harness eval --fail-under 90`（block merge on regression）；② self-evolution bakeoff **删注入假 hermes**（E7，改 Hive 绝对门）；③ 新增 `schedule` nightly 触发 + `behavior-eval-nightly` job（full eval suite 回归 + 行为 gate；live 行为 gate **secret-guarded**，未配置则 graceful skip 不假红）。
+- `.github/workflows/harness-ci.yml`：① per-PR `Internal harness eval --fail-under 90`（block merge on regression）；② self-evolution bakeoff **删注入假 hermes**（E7，改 Hive 绝对门）；③ 新增 `schedule` nightly 触发 + `behavior-eval-nightly` job（full eval suite 回归 + protected base checkout + `app.evals.evaluator_integrity --output "$HIVE_EVAL_INTEGRITY"` + `app.evals.hive_live_runner --output "$HIVE_EVAL_REPORT"` + `ci_gate --integrity-report "$HIVE_EVAL_INTEGRITY"`；live 行为 gate **secret-guarded**，未配置则 graceful skip 不假红）。
 
-**关键诚实边界**：per-PR fail-gate（`internal --fail-under` + self-evolution 绝对门）**真跑 block merge** ✓；行为 eval 的 live 执行（invoke_agent 需 LLM key + Postgres + eval tenant）由 nightly secret-guarded job 在 eval 环境配置后激活——ci_gate 逻辑 + CLI 已就绪且测试，**CLI smoke 实证空报告 → exit 2**（required-live fail-closed）。
+**关键诚实边界**：per-PR fail-gate（`internal --fail-under` + self-evolution 绝对门）**真跑 block merge** ✓；nightly workflow 已真实生成 integrity report 与 Hive live behavior report 后再 gate；行为 eval 的 live 执行（invoke_agent 需 LLM key + Postgres + eval tenant）仍要在 eval 环境配置后产出 passing report，fallback/unavailable 仍由 `ci_gate` exit 2 fail-closed。
 
-**TDD red→green**：`tests/evals/test_ci_gate.py` 7 + `test_run_fail_gate.py` 3 用例；green `17 passed`（含 run）。CLI smoke：空报告 exit 2 ✓；yaml 解析 triggers=[pull_request,push,schedule] + 2 jobs ✓；ruff clean。
+**TDD red→green**：`tests/evals/test_ci_gate.py` 增加 `--integrity-report` CLI 钉；`tests/evals/test_harness_ci_workflow.py` 增加 live report / integrity report 先于 gate 的顺序钉；目标回归合跑 **48 passed**。
 
 **验收映射**：regression → exit 1（`test_gate_fails_on_regression` + `test_fail_under_exits_nonzero_below_threshold`）✓；required-live fallback → 非零（`test_gate_fails_on_required_live_fallback` + CLI smoke exit 2）✓；untrusted evaluator → 非零（`test_gate_fails_on_untrusted_evaluator`）✓；baseline 缺 fail-closed（`test_gate_fails_on_baseline_unavailable`）✓；模型漂移（`test_gate_fails_on_model_drift`）✓。
 
-**gap 状态**：G1（live 行为 eval 入 CI）+ G3（regression fail-gate）机制已落；live 执行随 eval secrets 配置激活。
+**gap 状态**：G1（live 行为 eval 入 CI）+ G3（regression fail-gate）机制已落；nightly 已有 report generation + gate wiring，是否通过取决于 eval secrets/tenant/DB 真实环境。
 
 ### E9 — reward-hack 对抗套件 ✅（2026-06-13，铁律2 可证）
 
@@ -440,13 +440,13 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 | E | 工件 | gap 关闭 | 机制状态 | live 真跑状态 |
 |---|---|---|---|---|
 | E1 | `baseline.py` + seed 工件 | G2/G7/G8 | ✅ 实装+测试 | seed 分数待 E2 真跑回填 |
-| E2 | `hive_live_runner.py` + grader | G0/G1 | ✅ 实装+测试 | invoke_agent live 执行待 eval 环境（E8 nightly） |
-| E3 | `decide_behavior_gated_promotion` | promotion 硬门 | ✅ 实装+测试 | 喂真 report 待 E8 nightly |
+| E2 | `hive_live_runner.py` + grader | G0/G1 | ✅ 实装+测试 | nightly 已调用 live runner；passing 结果待 eval 环境 |
+| E3 | `decide_behavior_gated_promotion` + `skill_distiller` 接线 | promotion 硬门 | ✅ 实装+测试 | 缺 behavior report 时 fail-closed hold；喂真 report 待 eval 环境 |
 | E4 | 连续 reward + rubric 非门控 | G5/D3 | ✅ 实装+测试 | — |
-| E5 | `evaluator_integrity.py` | G4/G9 | ✅ 实装+测试 | base-branch hash 注入待 E8 CI |
-| E6 | `artifact_gate.py` | Voyager gate | ✅ 实装+测试 | microVM 真跑待候选晋升 |
-| E7 | `hermes_baseline.py` + 删 grep-marker | §1.1 假对比 | ✅ 实装+测试 | hermes CLI 真跑待 E8 nightly |
-| E8 | `ci_gate.py` + run `--fail-under` + CI yaml | G1/G3 | ✅ 实装+测试 | per-PR fail-gate 已活；live 行为 gate 待 eval secrets |
+| E5 | `evaluator_integrity.py` | G4/G9 | ✅ 实装+测试 | nightly 已从 protected base 生成 integrity report |
+| E6 | `artifact_gate.py` | Voyager gate | ✅ 实装+测试 | 路径/env 已 harden；microVM 真跑待候选晋升 |
+| E7 | `hermes_baseline.py` + 删 grep-marker/注入 | §1.1 假对比 | ✅ 实装+测试 | hermes CLI 真跑待 nightly 横向接入 |
+| E8 | `ci_gate.py` + run `--fail-under` + CI yaml | G1/G3 | ✅ 实装+测试 | per-PR fail-gate 已活；nightly 已生成 report 后 gate，passing 待 eval secrets |
 | E9 | `adversarial_suite.py` | 铁律2 可证 | ✅ 实装+测试 | — |
 | E10 | `cost_budget.py` | G6 | ✅ 实装+测试 | nightly 时序 |
 
@@ -458,11 +458,15 @@ agent 在自进化时**能写 workspace**。若 grader 代码或基线在 agent 
 
 | 文件 | 角色 |
 |---|---|
-| `backend/app/evals/bakeoff_runtime.py` | 外部 CLI live 行为 runner 骨架（已接 `run.py`，待 E2/E8 硬化与门控） |
-| `backend/app/evals/self_evolution_bakeoff.py` | service-level 自进化检查（线 A，Hermes 注入/源码回退分待 E7 清理出门控路径） |
-| `backend/app/evals/run.py` | 统一 eval runner（双层 CI 挂载点；待 E8 增加 fail-on-regression / require-live 退出语义） |
+| `backend/app/evals/bakeoff_runtime.py` | 外部 CLI live 行为 runner 骨架（已接 `run.py`，fallback 仅诊断，不可作为门控 pass） |
+| `backend/app/evals/self_evolution_bakeoff.py` | service-level 自进化检查（线 A，Hermes 注入/源码回退分已从门控路径删除） |
+| `backend/app/evals/hive_live_runner.py` | Hive `invoke_agent` live 行为 eval runner + scenario workspace executor + report CLI |
+| `backend/app/evals/ci_gate.py` | 行为 report + baseline + evaluator integrity 的 hard CI gate |
+| `backend/app/evals/evaluator_integrity.py` | protected base trust-root hash 生成与 integrity report CLI |
+| `backend/app/evals/run.py` | 统一 eval runner（双层 CI 挂载点；已支持 `--fail-under`） |
 | `backend/app/services/evolution_ledger.py` | candidate→eval→promotion 审计链（E2/E3） |
-| `backend/app/services/evolution_verification.py` | grader 分派（新增 `agent_behavior_check`，E2/E5） |
+| `backend/app/services/evolution_verification.py` | grader 分派（新增 `agent_behavior_check` + behavior-gated promotion，E2/E3/E5） |
+| `backend/app/services/skill_distiller.py` | 真实 skill promotion 调用点；缺 behavior report 时 fail-closed hold |
 | `backend/app/services/code_execution/` | microVM 产物执行（E6） |
-| `.github/workflows/harness-ci.yml` | CI（E8 双层改造，line 57-60 现挂 service-level self-evolution bakeoff） |
+| `.github/workflows/harness-ci.yml` | CI（per-PR fail-under；nightly protected integrity + Hive live report + ci_gate） |
 | `backend/app/evals/baselines/` | 版本化基线快照（新建，E1） |

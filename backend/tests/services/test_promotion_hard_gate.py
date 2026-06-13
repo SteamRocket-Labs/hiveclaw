@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.services.evolution_verification import (
     decide_behavior_gated_promotion,
     decide_verified_promotion,
@@ -138,3 +140,12 @@ def test_behavior_gated_holds_on_missing_behavior_report() -> None:
         behavior_report=None,
     )
     assert decision["decision"] == "hold"
+
+
+def test_skill_distiller_real_promotion_paths_use_behavior_gate() -> None:
+    source = (Path(__file__).resolve().parents[2] / "app" / "services" / "skill_distiller.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "decide_behavior_gated_promotion" in source
+    assert "decide_verified_promotion(candidate, verification_report=verification_report)" not in source

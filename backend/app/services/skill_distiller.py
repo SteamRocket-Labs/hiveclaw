@@ -122,6 +122,25 @@ class SkillConflictResolution:
     reason: str = ""
 
 
+def _candidate_behavior_report(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = candidate.get("metadata") if isinstance(candidate, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    for key in ("behavior_report", "behavior_eval_report"):
+        report = metadata.get(key)
+        if isinstance(report, dict):
+            return report
+    return None
+
+
+def _runtime_behavior_report(runtime_config: Any) -> dict[str, Any] | None:
+    for key in ("skill_distiller_behavior_report", "behavior_eval_report", "behavior_report"):
+        report = getattr(runtime_config, key, None)
+        if isinstance(report, dict):
+            return report
+    return None
+
+
 # ── Memory candidate lane (spec §12 P4) ──
 #
 # The Memory Curator (heartbeat) promotes strategy evidence into T3 with a
@@ -1101,12 +1120,13 @@ async def run_skill_distillation_cycle(
             record_promotion_decision,
         )
         from app.services.evolution_verification import (
-            decide_verified_promotion,
+            decide_behavior_gated_promotion,
             record_verification_eval,
             run_evolution_verification,
         )
 
         patch_relative_path = patch_target.relative_path
+        behavior_report = _runtime_behavior_report(runtime_config)
         candidate = record_evolution_candidate(
             workspace,
             target_type="skill_patch",
@@ -1123,6 +1143,7 @@ async def run_skill_distillation_cycle(
                 "reason": effective_draft.reason or conflict.reason,
                 "distillation_intent": distillation_intent,
                 "evidence_contrast": render_skill_evidence_contrast(evidence_for_candidate),
+                **({"behavior_report": behavior_report} if behavior_report is not None else {}),
             },
         )
         verification_report = run_evolution_verification(
@@ -1142,7 +1163,12 @@ async def run_skill_distillation_cycle(
             verification_report=verification_report,
             dataset="skill_distiller.verified_skill_guard",
         )
-        promotion_decision = decide_verified_promotion(candidate, verification_report=verification_report)
+        behavior_report = _candidate_behavior_report(candidate)
+        promotion_decision = decide_behavior_gated_promotion(
+            candidate,
+            verification_report=verification_report,
+            behavior_report=behavior_report,
+        )
         if promotion_decision["decision"] != "promote":
             record_promotion_decision(
                 workspace,
@@ -1150,7 +1176,10 @@ async def run_skill_distillation_cycle(
                 decision="held",
                 reason=promotion_decision["reason"],
                 rollback_ref=patch_relative_path,
-                metadata={"verification_passed": verification_report["passed"]},
+                metadata={
+                    "verification_passed": verification_report["passed"],
+                    "behavior_eval_present": behavior_report is not None,
+                },
             )
             update_skill_candidate_record(
                 workspace,
@@ -1254,11 +1283,12 @@ async def run_skill_distillation_cycle(
         record_promotion_decision,
     )
     from app.services.evolution_verification import (
-        decide_verified_promotion,
+        decide_behavior_gated_promotion,
         record_verification_eval,
         run_evolution_verification,
     )
 
+    behavior_report = _runtime_behavior_report(runtime_config)
     candidate = record_evolution_candidate(
         workspace,
         target_type="skill",
@@ -1273,6 +1303,7 @@ async def run_skill_distillation_cycle(
             "declared_packs": list(draft.declared_packs),
             "distillation_intent": distillation_intent,
             "evidence_contrast": render_skill_evidence_contrast(evidence_for_candidate),
+            **({"behavior_report": behavior_report} if behavior_report is not None else {}),
         },
     )
     verification_report = run_evolution_verification(
@@ -1292,7 +1323,12 @@ async def run_skill_distillation_cycle(
         verification_report=verification_report,
         dataset="skill_distiller.verified_skill_guard",
     )
-    promotion_decision = decide_verified_promotion(candidate, verification_report=verification_report)
+    behavior_report = _candidate_behavior_report(candidate)
+    promotion_decision = decide_behavior_gated_promotion(
+        candidate,
+        verification_report=verification_report,
+        behavior_report=behavior_report,
+    )
     rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
     if promotion_decision["decision"] != "promote":
         record_promotion_decision(
@@ -1300,7 +1336,10 @@ async def run_skill_distillation_cycle(
             candidate_id=candidate["candidate_id"],
             decision="held",
             reason=promotion_decision["reason"],
-            metadata={"verification_passed": verification_report["passed"]},
+            metadata={
+                "verification_passed": verification_report["passed"],
+                "behavior_eval_present": behavior_report is not None,
+            },
         )
         update_skill_candidate_record(
             workspace,

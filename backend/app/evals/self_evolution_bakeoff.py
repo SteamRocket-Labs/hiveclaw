@@ -51,7 +51,11 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "disclosure and static guard evidence."
         ),
         "max_score": 92,
-        "behavior_assertions": ["promote_after_repeated_success", "patch_after_loaded_skill_miss", "candidate_file_written"],
+        "behavior_assertions": [
+            "promote_after_repeated_success",
+            "patch_after_loaded_skill_miss",
+            "candidate_file_written",
+        ],
     },
     {
         "name": "long_task_resume",
@@ -69,7 +73,12 @@ _FOUNDATION_CASES: list[dict[str, Any]] = [
             "credential hygiene."
         ),
         "max_score": 96,
-        "behavior_assertions": ["manifest_validates", "pl4_refused", "company_conflict_escalates", "skill_guard_blocks_secret"],
+        "behavior_assertions": [
+            "manifest_validates",
+            "pl4_refused",
+            "company_conflict_escalates",
+            "skill_guard_blocks_secret",
+        ],
     },
 ]
 
@@ -95,7 +104,9 @@ def _behavior_check(check_id: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"id": check_id, "passed": bool(passed), "detail": detail}
 
 
-def _behavior_result(case: dict[str, Any], *, checks: list[dict[str, Any]], transcript: dict[str, Any]) -> dict[str, Any]:
+def _behavior_result(
+    case: dict[str, Any], *, checks: list[dict[str, Any]], transcript: dict[str, Any]
+) -> dict[str, Any]:
     passed_count = sum(1 for check in checks if check["passed"])
     score = int(round((passed_count / len(checks)) * int(case["max_score"]))) if checks else 0
     return {
@@ -183,8 +194,7 @@ def _score_hive(repo_root: Path) -> dict[str, Any]:
                 ),
                 _behavior_check(
                     "projection_rendered",
-                    "Session Learning" in rendered_projection
-                    and "Simplified Chinese" in rendered_projection,
+                    "Session Learning" in rendered_projection and "Simplified Chinese" in rendered_projection,
                     rendered_projection,
                 ),
             ],
@@ -468,16 +478,15 @@ def _score_hive(repo_root: Path) -> dict[str, Any]:
     }
 
 
-def _normalize_hermes_scores(
-    hermes_scores: dict[str, int] | None, *, hermes_root: Path
-) -> tuple[str, dict[str, int]]:
-    # E7: Hermes scores must come from a real live run (bakeoff_runtime hermes CLI),
-    # injected here by the caller. There is NO grep-marker fallback — an absent real
-    # run is 'unavailable' with empty scores, and the cross-comparison gate is
-    # skipped (round2 §1.1: no fake Hive-vs-Hermes numbers).
+def _normalize_hermes_scores(hermes_scores: dict[str, int] | None, *, hermes_root: Path) -> tuple[str, dict[str, int]]:
+    # E7: Hermes scores must come from a real live run (hermes_baseline /
+    # bakeoff_runtime). This module no longer accepts caller-injected scores:
+    # absent real-run evidence is 'unavailable' with empty scores, and the
+    # cross-comparison gate is skipped (round2 §1.1: no fake Hive-vs-Hermes
+    # numbers).
     del hermes_root
     if hermes_scores is not None:
-        return "injected", {case["name"]: int(hermes_scores.get(case["name"], 0)) for case in _FOUNDATION_CASES}
+        raise ValueError("Hermes scores must come from a live run, not injected JSON")
     return "unavailable", {}
 
 
@@ -592,12 +601,10 @@ def write_self_evolution_bakeoff_report(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run deterministic Hive vs Hermes self-evolution bakeoff.")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--hermes-scores-json", default="")
     parser.add_argument("--hermes-root", type=Path, default=_DEFAULT_HERMES_ROOT)
     args = parser.parse_args(argv)
 
-    hermes_scores = json.loads(args.hermes_scores_json) if args.hermes_scores_json else None
-    report = run_self_evolution_bakeoff(hermes_scores=hermes_scores, hermes_root=args.hermes_root)
+    report = run_self_evolution_bakeoff(hermes_root=args.hermes_root)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")

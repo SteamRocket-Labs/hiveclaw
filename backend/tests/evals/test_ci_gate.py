@@ -5,6 +5,9 @@ per-PR blocks merge on regression or a required-live fallback (decision D2/D3).
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from app.evals.ci_gate import (
     EXIT_BASELINE_UNAVAILABLE,
     EXIT_OK,
@@ -12,6 +15,7 @@ from app.evals.ci_gate import (
     EXIT_REQUIRED_LIVE_FALLBACK,
     EXIT_UNTRUSTED_EVALUATOR,
     evaluate_ci_gate,
+    main,
 )
 
 
@@ -107,3 +111,30 @@ def test_gate_tolerance_allows_small_dip() -> None:
         tolerance=2.0,
     )
     assert decision.passed is True
+
+
+def test_cli_fails_on_integrity_report_untrusted(tmp_path: Path) -> None:
+    behavior_report = tmp_path / "behavior.json"
+    baseline = tmp_path / "core_behavior_v1.json"
+    integrity_report = tmp_path / "integrity.json"
+    behavior_report.write_text(json.dumps(_report({"coding": 100})), encoding="utf-8")
+    baseline.write_text(json.dumps(_baseline({"coding": 100})), encoding="utf-8")
+    integrity_report.write_text(
+        json.dumps({"trusted": False, "reason": "evaluator modified without protected review"}),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--behavior-report",
+            str(behavior_report),
+            "--baseline",
+            str(baseline),
+            "--running-model",
+            "claude-opus-4-8",
+            "--integrity-report",
+            str(integrity_report),
+        ]
+    )
+
+    assert exit_code == EXIT_UNTRUSTED_EVALUATOR

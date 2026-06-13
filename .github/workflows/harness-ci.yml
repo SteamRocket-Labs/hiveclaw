@@ -80,6 +80,11 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout protected evaluator trust root
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: protected-base
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -99,13 +104,23 @@ jobs:
         env:
           HIVE_EVAL_LLM_API_KEY: ${{ secrets.HIVE_EVAL_LLM_API_KEY }}
           HIVE_EVAL_REPORT: /tmp/hive-behavior-report.json
+          HIVE_EVAL_INTEGRITY: /tmp/hive-evaluator-integrity.json
           HIVE_EVAL_MODEL: ${{ vars.HIVE_EVAL_MODEL }}
         run: |
           if [ -z "$HIVE_EVAL_LLM_API_KEY" ]; then
             echo "::warning::behavior eval gate skipped — HIVE_EVAL_LLM_API_KEY not configured"
             exit 0
           fi
+          python -m app.evals.evaluator_integrity \
+            --current-root . \
+            --trusted-root ../protected-base/backend \
+            --output "$HIVE_EVAL_INTEGRITY"
+          python -m app.evals.hive_live_runner \
+            --output "$HIVE_EVAL_REPORT" \
+            --model "${HIVE_EVAL_MODEL:-claude-opus-4-8}" \
+            --api-key-env HIVE_EVAL_LLM_API_KEY
           python -m app.evals.ci_gate \
             --behavior-report "$HIVE_EVAL_REPORT" \
             --baseline app/evals/baselines/core_behavior_v1.json \
-            --running-model "${HIVE_EVAL_MODEL:-claude-opus-4-8}"
+            --running-model "${HIVE_EVAL_MODEL:-claude-opus-4-8}" \
+            --integrity-report "$HIVE_EVAL_INTEGRITY"

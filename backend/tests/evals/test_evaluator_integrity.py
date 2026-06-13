@@ -8,6 +8,7 @@ against a PR-embedded hash.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from app.evals.evaluator_integrity import (
     EvaluatorIntegrityError,
     assert_evaluator_outside_agent_workspace,
     compute_evaluator_hashes,
+    main,
     verify_evaluator_integrity,
 )
 
@@ -88,6 +90,45 @@ def test_evaluator_paths_are_outside_agent_workspace() -> None:
         assert_evaluator_outside_agent_workspace(rel)  # must not raise
 
 
+def test_integrity_root_covers_behavior_gate_files() -> None:
+    required = {
+        "app/evals/adversarial_suite.py",
+        "app/evals/artifact_gate.py",
+        "app/evals/ci_gate.py",
+        "app/evals/cost_budget.py",
+        "app/evals/hermes_baseline.py",
+        "app/evals/hive_live_runner.py",
+        "app/evals/run.py",
+    }
+    assert required <= set(EVALUATOR_RELATIVE_PATHS)
+
+
 def test_agent_workspace_path_is_rejected() -> None:
     with pytest.raises(EvaluatorIntegrityError):
         assert_evaluator_outside_agent_workspace("/data/agents/abc/workspace/grader.py")
+
+
+def test_cli_writes_untrusted_integrity_report_for_changed_evaluator(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    trusted = tmp_path / "trusted"
+    for root, content in ((current, "x = 2\n"), (trusted, "x = 1\n")):
+        path = root / "app" / "evals" / "baseline.py"
+        path.parent.mkdir(parents=True)
+        path.write_text(content, encoding="utf-8")
+    output = tmp_path / "integrity.json"
+
+    exit_code = main(
+        [
+            "--current-root",
+            str(current),
+            "--trusted-root",
+            str(trusted),
+            "--output",
+            str(output),
+        ]
+    )
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert payload["trusted"] is False
+    assert "app/evals/baseline.py" in payload["changed_paths"]

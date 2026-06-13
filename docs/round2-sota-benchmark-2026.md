@@ -1190,7 +1190,7 @@ cd backend && source .venv/bin/activate && pytest tests -q
 
 ### 12.18 第五仗 D1/诚实债已收口：memory hygiene startup apply + §3 完成度降级（2026-06-13）
 
-**完成范围**：新增 `backend/app/memory/hygiene.py` 作为 D1/D2/D8/D10 的统一生产清理路径；`migrate_all_workspaces()` 启动迁移现在会对每个 UUID agent workspace 调用 `repair_agent_memory_hygiene(..., dry_run=False)`，不再只留下单 agent admin backfill。`backend/app/scripts/repair_memory_hygiene.py` 提供同一逻辑的 ops dry-run/apply 命令，默认 dry-run，`--apply` 必须带 `--confirm`。
+**完成范围**：新增 `backend/app/memory/hygiene.py` 作为 D1/D2/D8/D10 的统一生产清理路径，导出单 agent 入口 `repair_agent_memory_hygiene()` 与批量入口 `repair_all_memory_hygiene()`；`backend/app/tools/workspace.py` 的 `migrate_all_workspaces()` 启动迁移现在会对每个 UUID agent workspace 调用 `repair_agent_memory_hygiene(..., dry_run=False)`，不再只留下单 agent admin backfill。`backend/app/scripts/repair_memory_hygiene.py` 提供同一逻辑的 ops dry-run/apply 命令，默认 dry-run，`--apply` 必须带 `--confirm`。
 
 **关键 bug 修复**：`backfill_t3_prose()` 原本只证明 `sensitivity` 从 inline prose 迁入 sidecar，但没有证明 `access_count/last_accessed` 进入专用 telemetry 字段；旧实现会把 `access_count=97` 变成 sidecar `access_count=0`。`MemoryLifecycleStore` 现在在 `_create()` / `upsert_active()` 统一把 legacy inline telemetry 拆到 dedicated fields，并从 metadata 中清除，避免 D1 遥测继续污染或失效。
 

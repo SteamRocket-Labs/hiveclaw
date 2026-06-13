@@ -4,6 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-13T04:30Z [sid:4b8a1e2a]; branch:main; 1 files (round2-sota-benchmark-2026.md); last commit: 788583cc docs: align project guides with harness baseline
 - 2026-06-12T18:03Z [sid:267d9f0b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_memory.py, +30); last commit: 4a02c6fd Refactor agent runtime and align memory controls
 - 2026-06-11T07:42Z [sid:145e9276]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: aac4044a fix frontend auth 401 messaging
 - 2026-06-11T07:23Z [sid:33d833cd]; branch:main; 3 files (compact-snapshot.md, orphan-trail.md, request.ts); last commit: 79a2cbb0 fix(rls): run entrypoint backfill in background — n
@@ -103,4 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-02T22:19Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 4ee13da refactor(runtime): rename pack->runtime_tool_group a
 - 2026-06-02T21:49Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 48466d2 feat(mcp): backfill functional core + parity proofs 
 - 2026-06-02T21:21Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 04b7d8e docs(agent-extension): close tenant-isolation, parit
-- 2026-06-02T19:14Z [sid:98e36c4c]; branch:feature/plan-mode-paradigm; 2 files (orphan-trail.md, agent-extension-surface-skill-mcp.md); last commit: d2f3e86 docs(plan-mode): record Phase 4C accepted-skip decis

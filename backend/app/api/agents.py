@@ -299,6 +299,46 @@ async def get_or_create_hr_agent(
     return {"id": str(hr_agent.id), "name": hr_agent.name, "status": hr_agent.status}
 
 
+async def _validate_model_refs(
+    db: AsyncSession,
+    tenant_id: uuid.UUID | None,
+    *,
+    primary_model_id: uuid.UUID | None,
+    fallback_model_id: uuid.UUID | None,
+) -> None:
+    """Fail loud if an agent points at a model it cannot actually use.
+
+    An agent's primary/fallback model must exist, belong to the agent's tenant,
+    and be enabled. A dangling / cross-tenant / disabled reference makes the
+    runtime model lookup return None and silently fall back to a different model
+    (the Web3 researcher outage: a cross-tenant DeepSeek ref degraded to a 200K
+    MiniMax window and thrashed compaction). Reject it at the configuration edge.
+    """
+    from app.models.llm import LLMModel
+
+    for label, model_id in (
+        ("primary_model_id", primary_model_id),
+        ("fallback_model_id", fallback_model_id),
+    ):
+        if model_id is None:
+            continue
+        result = await db.execute(
+            select(LLMModel).where(
+                LLMModel.id == model_id,
+                LLMModel.tenant_id == tenant_id,
+                LLMModel.enabled.is_(True),
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{label} 指向的模型不存在、未启用或不属于本公司,"
+                    "请选择本公司已启用的模型"
+                ),
+            )
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_agent(
     data: AgentCreate,
@@ -323,6 +363,13 @@ async def create_agent(
             default_max_triggers = tenant.default_max_triggers or 20
             default_min_poll = tenant.min_poll_interval_floor or 5
             default_webhook_rate = tenant.max_webhook_rate_ceiling or 5
+
+    await _validate_model_refs(
+        db,
+        target_tenant_id,
+        primary_model_id=data.primary_model_id,
+        fallback_model_id=data.fallback_model_id,
+    )
 
     agent = Agent(
         name=data.name,
@@ -662,6 +709,14 @@ async def update_agent(
                         "applied": update_data["webhook_rate_limit"],
                         "reason": "company_ceiling",
                     })
+
+    if "primary_model_id" in update_data or "fallback_model_id" in update_data:
+        await _validate_model_refs(
+            db,
+            agent.tenant_id,
+            primary_model_id=update_data.get("primary_model_id"),
+            fallback_model_id=update_data.get("fallback_model_id"),
+        )
 
     for field, value in update_data.items():
         setattr(agent, field, value)

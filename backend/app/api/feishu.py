@@ -2329,6 +2329,21 @@ async def _call_agent_llm(
         )
         fallback_model = fb_result.scalar_one_or_none()
 
+    # Fail loud (parity with web chat): a configured primary that cannot be
+    # resolved (deleted / disabled / cross-tenant) must NOT be silently swapped
+    # for a different model — surface it so the owner fixes the config.
+    from app.services.model_resolution import primary_model_unavailable
+
+    if primary_model_unavailable(agent, model):
+        logger.error(
+            f"[Channel] Primary model {agent.primary_model_id} unavailable for agent "
+            f"{getattr(agent, 'id', None)} (deleted/disabled/cross-tenant) — failing loud instead of silent fallback"
+        )
+        return (
+            "你为该数字员工配置的主模型当前不可用(可能已删除、被禁用,或不属于本公司),"
+            "请在「设置 → 模型」中重新选择一个本公司可用的模型。"
+        )
+
     # Config-level fallback: primary missing -> use fallback
     if not model and fallback_model:
         model = fallback_model

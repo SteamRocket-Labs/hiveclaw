@@ -1,69 +1,51 @@
 name: deep_research_pack
 version: "0.1.0"
-description: |
-  First-class source-attributed deep research workflows with dedicated
-  planning, collection, source ledger, claim ledger, evaluation, and report tools.
+description: "Source-attributed deep research: plan, collect, source/claim ledger, eval, report."
 license: Proprietary
 author: Hive Research Team
+source:
+  kind: builtin
 
 tools:
   - name: deep_research_run
-    locale: cloud
+    role: owns
     governance:
       security_zone: restricted
-      approval_required: false
   - name: deep_research_start
-    locale: cloud
+    role: owns
     governance:
       security_zone: restricted
-      approval_required: false
   - name: deep_research_check
-    locale: cloud
+    role: owns
     governance:
       security_zone: public
   - name: deep_research_cancel
-    locale: cloud
+    role: owns
     governance:
       security_zone: restricted
-      approval_required: false
   - name: deep_research_export
-    locale: cloud
+    role: owns
     governance:
       security_zone: restricted
-      approval_required: false
   - name: web_search
-    locale: cloud
+    role: requires_core
     governance:
       security_zone: public
   - name: web_fetch
-    locale: cloud
+    role: requires_core
     governance:
       security_zone: public
   - name: firecrawl_fetch
-    locale: cloud
+    role: optional_provider
     governance:
       security_zone: public
-      credential_scope: tenant
   - name: xcrawl_scrape
-    locale: cloud
+    role: optional_provider
     governance:
       security_zone: public
-      credential_scope: tenant
+
 skills:
   - skills/deep-research
-
-data_sources:
-  public_default:
-    - web_search
-    - web_fetch
-    - duckduckgo_fallback
-  paid_optional:
-    - tavily
-    - exa
-    - firecrawl
-    - xcrawl
-
-mcp_servers: []
 
 credential_requirements:
   - key: tavily_api_key
@@ -88,10 +70,7 @@ credential_requirements:
       - xcrawl_scrape
 
 activation:
+  default_state: inactive
   required_capabilities:
     - research.deep.run
     - research.deep.read
-  default_state: inactive
-
-sandbox_requirements:
-  pip_packages: []

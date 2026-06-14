@@ -1,0 +1,31 @@
+name: email_pack
+version: "0.1.0"
+description: Email send/read/reply over SMTP/IMAP.
+source:
+  kind: builtin
+
+tools:
+  - name: send_email
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: read_emails
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: reply_email
+    role: owns
+    governance:
+      security_zone: restricted
+
+credential_requirements:
+  - key: email_connection
+    scope: tenant
+    storage: encrypted_tool_config
+    used_by:
+      - send_email
+      - read_emails
+      - reply_email
+
+activation:
+  default_state: active

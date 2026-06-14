@@ -1,149 +1,68 @@
 name: office_pack
 version: "0.1.0"
-description: |
-  Office productivity skill package for document, spreadsheet, presentation,
-  PDF, weekly report, meeting minutes, and pitch deck workflows.
+description: "Office productivity: documents, spreadsheets, presentations, PDF, reports."
 license: Proprietary
 author: Hive Office Team
+source:
+  kind: builtin
 
 tools:
-  - name: read_file
-    locale: cloud
-    governance:
-      security_zone: public
   - name: read_document
-    locale: cloud
+    role: owns
     governance:
       security_zone: public
-  - name: list_files
-    locale: cloud
-    governance:
-      security_zone: public
-  - name: write_file
-    locale: cloud
-    governance:
-      security_zone: restricted
-      approval_required: false
-  - name: edit_file
-    locale: cloud
-    governance:
-      security_zone: restricted
-      approval_required: false
   - name: office_document_create
-    locale: cloud
+    role: owns
     governance:
       security_zone: restricted
-      approval_required: false
   - name: office_document_view
-    locale: cloud
+    role: owns
     governance:
       security_zone: public
   - name: office_document_query
-    locale: cloud
+    role: owns
     governance:
       security_zone: public
   - name: office_document_apply
-    locale: cloud
+    role: owns
     governance:
       security_zone: restricted
-      approval_required: false
   - name: office_document_validate
-    locale: cloud
+    role: owns
     governance:
       security_zone: public
   - name: office_document_dump
-    locale: cloud
+    role: owns
     governance:
       security_zone: public
+  - name: read_file
+    role: requires_core
+    governance:
+      security_zone: public
+  - name: list_files
+    role: requires_core
+    governance:
+      security_zone: public
+  - name: write_file
+    role: requires_core
+    governance:
+      security_zone: restricted
+  - name: edit_file
+    role: requires_core
+    governance:
+      security_zone: restricted
   - name: send_channel_file
-    locale: cloud
+    role: requires_core
     governance:
       security_zone: restricted
-      credential_scope: tenant
-  - name: send_email
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: read_emails
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: reply_email
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: feishu_doc_read
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: feishu_doc_create
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: feishu_doc_append
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: feishu_doc_share
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: feishu_sheet_info
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
-  - name: feishu_sheet_read
-    locale: cloud
-    governance:
-      security_zone: restricted
-      credential_scope: tenant
 
 skills:
   - skills/office-productivity
 
-data_sources:
-  public_default:
-    - workspace_files
-    - uploaded_documents
-  tenant_optional:
-    - email_mailbox
-    - feishu_docs
-    - feishu_sheets
-  paid_optional: []
-
-mcp_servers: []
-
-credential_requirements:
-  - key: email_connection
-    scope: tenant
-    storage: encrypted_tool_config
-    used_by:
-      - send_email
-      - read_emails
-      - reply_email
-  - key: feishu_channel_config
-    scope: tenant
-    storage: encrypted_tool_config
-    used_by:
-      - feishu_doc_read
-      - feishu_doc_create
-      - feishu_doc_append
-      - feishu_doc_share
-      - feishu_sheet_info
-      - feishu_sheet_read
-
 activation:
+  default_state: inactive
   required_capabilities:
     - office_productivity
-  default_state: inactive
 
 sandbox_requirements:
   binaries:

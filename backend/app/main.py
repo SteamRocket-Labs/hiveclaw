@@ -307,9 +307,10 @@ async def lifespan(app: FastAPI):
     # Hard invariant (Step 0): no CORE tool may also be a pack member. Fail-fast
     # at startup so CORE∩pack drift is caught at deploy time, not in production.
     # NOT wrapped in try/except — a violation must crash startup, not warn.
-    from app.tools.audit import assert_core_pack_disjoint
+    from app.tools.audit import assert_core_pack_disjoint, assert_manifests_valid
 
     assert_core_pack_disjoint()
+    assert_manifests_valid()
 
     # Run tool coverage audit — flag tools without any discovery path
     # (no pack, no declared_tools in a system/template skill, no prompt mention).

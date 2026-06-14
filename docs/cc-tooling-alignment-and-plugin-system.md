@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-2 已实施落地**（2026-06-14，全量 4415 passed / 0 failed，证据见 §8 实施日志）。Step 3-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-2 + 4 已实施落地**（2026-06-14，全量 4426 passed / 0 failed，证据见 §8 实施日志）。Step 3/5-11 待实施（Step 4 先于依赖它的 Step 3/5）。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -113,7 +113,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **1** ✅ | tool-contract | 消除 `read_only/parallel_safe` 双定义(删 `registry.py:80-163` 静态名单，单源 decorator)；`ToolMeta` 增 `destructive:bool`+`max_result_chars:int\|None`；`read_file/read_document` 设 ∞ | 0 |
 | **2** ✅ | tool-contract | 修 critical：扩展现有 `result_envelope.py` 或新建 `ToolContentEnvelope(text+blocks)`（避免与 error/fallback envelope 命名碰撞），`adapt_and_call` 透传 typed content block(image/pdf)；`read_document`(PDF)/`read_file`(图)首接；保留纯字符串默认 | 1 |
 | **3** | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数；补 turn-1 deferred 清单+`select:` 直选；token-阈值 auto 模式；loaded-tool state 必须进入 compaction/replay/prompt-cache 稳定排序/invocation span。**实现 provider-neutral**：Hive 自己的 schema expansion/event path 为主，`tool_reference` 仅作 Anthropic fast path(守 L3) | 0,4 |
-| **4** | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
+| **4** ✅ | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
 | **5** | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
 | **6** | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解)；**命名迁移必须同时审计** `Tool.name` 列宽(当前 `String(100)` `tool.py:25`，长名易超)、provider tool-name 约束、确定性 slug、旧名 alias、历史 transcript、skills declared tools、`AgentTool`/MCP override rows——**禁止直接拼长名后 rename**；统一双执行路径(`FALLBACK_EXECUTOR_NAME` 是活兜底，先核实)；收敛 `mcp_server:*` 伪 pack 到 assignment | 0,5 |
 | **7** | mcp | `MCPClient` 加 `resources/list`+`resources/read`(blob 落 artifacts)；DB 自省工具更名 `list_mcp_tools/inspect_mcp_tool`；新建 `mcp_oauth.py` 标准 OAuth2(加密存凭据，守 mcp_authz)；填 `auth_status` | 6 |
@@ -298,3 +298,31 @@ $ pytest tests -q          # 全量后端回归
 $ ruff check <核心文件>     # All checks passed!
 ```
 注：`adapters.py`/`result_envelope.py` 的 format-dirty 是 pre-existing（`param.kind in (` 重排、render_tool_fallback 多行字符串），非本 Step 改动区，按 scope-discipline 不触发存量 churn。
+
+### Step 4 — plugin-system 清单 schema + validator（✅ 2026-06-14）
+
+**改动文件：**
+- `app/packs/catalog_reader.py`：删 severance 注释（不再"intentionally does not participate"）；`PackManifest` 加 `agents`/`hooks`/`dependencies`/`source` 字段 + **role-based 工具分类**（每个 tool entry 的 `role`: owns/requires_core/optional_provider；`owns_names`/`requires_core_names`/`optional_provider_names` properties）；新增 `validate_manifest()` **fail-closed** 校验（未知 role、raw/非 allowlist hook handler、unpinned dependency、未识别/远程 source kind 全部结构化拒绝）。
+- 为 7 个活 pack 创建/升级 `pack.yaml`（`packs/` + `backend/packs/` 两套副本，共 14 文件）：web/feishu/plaza/email/mcp_admin（新建）+ office/deep_research（升级为 role-based）。office 清理掉混入的 email/feishu 工具（归各自 pack），CORE 文件工具标 requires_core；deep_research 的 web_search/web_fetch 标 requires_core、firecrawl/xcrawl 标 optional_provider。
+- `app/tools/audit.py`：`assert_core_pack_disjoint` 扩展覆盖 manifest `owns`（requires_core 允许引用 CORE）；新增 `assert_manifests_valid()`（validation_errors + manifest 声明工具必须是注册 @tool = manifest/decorator 一致）+ `_iter_manifests()`（跨 repo/backend 副本去重）。
+- `app/main.py`：startup 调用 `assert_manifests_valid()`（fail-closed）。
+- `app/services/pack_service.py`：`get_pack_catalog` 改为 manifest **增强而非覆盖** RUNTIME_TOOL_GROUPS——runtime 字段（source/requires_channel/summary/tools）保留，manifest 加 install/composition 字段（version/skills/owns/requires_core/optional_providers/credential_requirements）。
+- 测试：新建 `tests/tools/test_pack_manifest.py`（11）；修复 4 个 pin 旧"无 manifest"行为的测试（test_catalog_reader full_skill_packages 改只验 cloud skill pack；3 个 pack_service catalog 测试随增强逻辑通过）。
+
+**范围边界（Step 4 vs Step 5）：** Step 4 把 pack.yaml 升为 install/composition/governance 真相源（schema + validator + audit 校验 + catalog 增强），manifest 与 @tool decorator 一致性由 `assert_manifests_valid` 保证。runtime 工具**可见性**仍由 CORE + pack policy 决定；切换到 `TenantInstalledPlugin`/`AgentPluginAssignment` 接管是 Step 5。`RUNTIME_TOOL_GROUPS` 仍是 runtime 真相源（Step 5 退化为 fallback）。
+
+**governed inclusion（§6 决策 7）框架：** validator 对 hooks（仅 allowlist handler，禁 raw shell/import/webhook）、dependencies（必须 pinned）、source（builtin/local 可安装；git/url/npm/pip 识别但 fail-closed，待 signature+sandbox 基础设施）做 fail-closed 校验。框架完整，远程 source 数据点被安全门挡住（真零债，非伪 defer）。
+
+**验证证据：**
+```
+$ pytest tests/tools/test_pack_manifest.py tests/packs/test_catalog_reader.py tests/services/test_pack_service.py -q
+34 passed
+
+$ python -c "from app.tools.audit import assert_core_pack_disjoint, assert_manifests_valid; assert_core_pack_disjoint(); assert_manifests_valid()"
+# 通过(7 manifest 全 valid + CORE∩owns=∅ + manifest/decorator 一致)
+
+$ pytest tests -q          # 全量后端回归
+4426 passed, 7 skipped, 4 warnings   # 0 failed (= Step2 的 4415 + 11 新测试)
+
+$ ruff check <核心文件>     # All checks passed!
+```

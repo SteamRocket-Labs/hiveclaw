@@ -1,0 +1,34 @@
+name: web_pack
+version: "0.1.0"
+description: Web search and provider-backed page extraction.
+source:
+  kind: builtin
+
+tools:
+  - name: web_search
+    role: owns
+    governance:
+      security_zone: public
+  - name: firecrawl_fetch
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: xcrawl_scrape
+    role: optional_provider
+    governance:
+      security_zone: public
+
+credential_requirements:
+  - key: firecrawl_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    used_by:
+      - firecrawl_fetch
+  - key: xcrawl_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    used_by:
+      - xcrawl_scrape
+
+activation:
+  default_state: active

@@ -77,19 +77,31 @@ def _pack_tools() -> frozenset[str]:
     return frozenset(tools)
 
 
+def _iter_manifests():
+    """Yield unique pack manifests (deduped by name across repo/backend copies)."""
+    from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
+
+    seen: set[str] = set()
+    for packs_dir in find_pack_dirs(Path(__file__).resolve()):
+        reader = PackCatalogReader(packs_dir)
+        reader.discover()
+        for manifest in reader.list_packs():
+            if manifest.name not in seen:
+                seen.add(manifest.name)
+                yield manifest
+
+
 def assert_core_pack_disjoint() -> None:
-    """Hard invariant: no CORE tool may also be a *runtime* pack member.
+    """Hard invariant: no CORE tool may also be a pack-owned tool.
 
     A CORE tool is turn-1 visible via the ``_always_tools`` fallback and bypasses
-    pack policy, so listing it in a RUNTIME_TOOL_GROUPS pack is a zero-effect
-    "straddle" that spawns a drifting second source of truth. Raises at startup
-    (fail-fast) so the drift is caught at deploy time rather than in production.
+    pack policy, so declaring it as a pack member is a zero-effect "straddle" that
+    spawns a drifting second source of truth. Raises at startup (fail-fast) so the
+    drift is caught at deploy time rather than in production.
 
-    Scope: checks the runtime truth source (RUNTIME_TOOL_GROUPS). The manifest
-    pack.yaml catalog is NOT runtime-participating in v1 (see
-    ``app/packs/catalog_reader.py``) and legitimately references CORE tools as
-    workflow dependencies; Step 4 splits manifest tools into owns/requires_core
-    and extends this invariant to manifest *owns* only.
+    Scope: ① the runtime truth source (RUNTIME_TOOL_GROUPS) and ② manifest
+    ``owns`` (Step 4). A manifest's ``requires_core`` MAY reference CORE tools (a
+    pack legitimately depends on CORE) — only ``owns`` must be disjoint.
     """
     from app.services.agent_tools import CORE_TOOL_NAMES
     from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
@@ -101,6 +113,39 @@ def assert_core_pack_disjoint() -> None:
             "CORE∩pack invariant violated — these CORE tools are also declared as "
             f"runtime pack members; remove them from RUNTIME_TOOL_GROUPS: {straddlers}"
         )
+
+    owns_tools: set[str] = set()
+    for manifest in _iter_manifests():
+        owns_tools.update(manifest.owns_names)
+    owns_straddlers = sorted(CORE_TOOL_NAMES & owns_tools)
+    if owns_straddlers:
+        raise RuntimeError(
+            "CORE∩manifest.owns invariant violated — these CORE tools are declared "
+            f"role=owns in a pack.yaml; mark them role=requires_core instead: {owns_straddlers}"
+        )
+
+
+def assert_manifests_valid() -> None:
+    """Hard invariant (Step 4): every pack.yaml is structurally valid and its
+    declared tools are real registered @tool handlers.
+
+    pack.yaml is install/composition truth; the @tool decorator is
+    executable-schema truth — they must agree. Fail-closed at startup so a broken
+    or drifted manifest is caught at deploy time, not when an install is attempted.
+    """
+    from app.tools.collector import collect_tools
+
+    registered = {req["function"]["name"] for req in collect_tools().openai_tools}
+
+    problems: list[str] = []
+    for manifest in _iter_manifests():
+        if manifest.validation_errors:
+            problems.append(f"{manifest.name}: validation {list(manifest.validation_errors)}")
+        missing = sorted(name for name in manifest.tool_names if name not in registered)
+        if missing:
+            problems.append(f"{manifest.name}: declares unregistered tools {missing}")
+    if problems:
+        raise RuntimeError("Pack manifest invariant violated — fix pack.yaml: " + "; ".join(problems))
 
 
 def _template_skill_declared_tools(backend_root: Path | None = None) -> frozenset[str]:

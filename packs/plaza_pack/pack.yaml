@@ -1,0 +1,22 @@
+name: plaza_pack
+version: "0.1.0"
+description: "Shared plaza feed: browse, post, comment."
+source:
+  kind: builtin
+
+tools:
+  - name: plaza_get_new_posts
+    role: owns
+    governance:
+      security_zone: public
+  - name: plaza_create_post
+    role: owns
+    governance:
+      security_zone: public
+  - name: plaza_add_comment
+    role: owns
+    governance:
+      security_zone: public
+
+activation:
+  default_state: active

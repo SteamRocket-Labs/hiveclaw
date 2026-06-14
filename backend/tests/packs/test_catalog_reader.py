@@ -117,7 +117,10 @@ def test_repo_and_deploy_pack_manifests_are_full_skill_packages():
             failures.append(f"{pack_root.relative_to(REPO_ROOT)} missing packs {sorted(missing_packs)}")
             continue
 
-        for manifest in manifests.values():
+        # Only cloud skill packages must ship a full skill bundle; tool-only packs
+        # (web/plaza/email/mcp_admin) legitimately declare a manifest with no skills.
+        for pack_name in sorted(REQUIRED_CLOUD_PACKS):
+            manifest = manifests[pack_name]
             if not manifest.skills:
                 failures.append(f"{manifest.manifest_path.relative_to(REPO_ROOT)} does not declare skills")
                 continue

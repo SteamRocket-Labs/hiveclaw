@@ -1,0 +1,149 @@
+name: feishu_pack
+version: "0.1.0"
+description: Feishu/Lark messaging, docs, wiki, sheets, base, approvals, tasks, calendar.
+source:
+  kind: builtin
+
+tools:
+  - name: send_feishu_message
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_user_search
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_wiki_list
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_doc_read
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_url_resolve
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_url_read
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_drive_file_read
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_doc_create
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_doc_append
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_doc_share
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_doc_delete
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_sheet_info
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_sheet_read
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_app_create
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_field_list
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_field_create
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_table_list
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_record_list
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_record_upload_attachment
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_record_upsert
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_base_record_delete
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_approval_create
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_approval_definition
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_approval_query
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_approval_get
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_task_comment
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_task_complete
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_task_create
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_task_list
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_calendar_list
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_calendar_create
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_calendar_update
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: feishu_calendar_delete
+    role: owns
+    governance:
+      security_zone: restricted
+
+credential_requirements:
+  - key: feishu_channel_config
+    scope: tenant
+    storage: encrypted_tool_config
+    used_by:
+      - send_feishu_message
+
+activation:
+  default_state: active

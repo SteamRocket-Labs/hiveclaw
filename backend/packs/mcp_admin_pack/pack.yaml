@@ -1,0 +1,30 @@
+name: mcp_admin_pack
+version: "0.1.0"
+description: MCP resource discovery, import, and resource read.
+source:
+  kind: builtin
+
+tools:
+  - name: discover_resources
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: import_mcp_server
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: list_mcp_resources
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: read_mcp_resource
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: call_mcp_tool
+    role: owns
+    governance:
+      security_zone: restricted
+
+activation:
+  default_state: inactive

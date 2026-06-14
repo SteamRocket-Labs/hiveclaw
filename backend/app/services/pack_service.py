@@ -140,21 +140,52 @@ def _manifest_pack_to_dict(manifest: PackManifest) -> dict:
     }
 
 
-def _load_manifest_pack_catalog() -> list[dict]:
+def _load_manifest_packs() -> dict[str, PackManifest]:
     manifests: dict[str, PackManifest] = {}
     for packs_dir in _PACKS_DIRS:
         reader = PackCatalogReader(packs_dir)
         reader.discover()
         for manifest in reader.list_packs():
             manifests.setdefault(manifest.name, manifest)
-    return [_manifest_pack_to_dict(manifest) for manifest in manifests.values()]
+    return manifests
+
+
+def _manifest_install_fields(manifest: PackManifest) -> dict:
+    """Install-side manifest fields that ENRICH (never replace) a runtime catalog
+    entry — runtime fields (source/requires_channel/summary/activation_mode/tools)
+    stay owned by RUNTIME_TOOL_GROUPS; the manifest adds install/composition data."""
+    return {
+        "has_manifest": True,
+        "version": manifest.version,
+        "license": manifest.license,
+        "author": manifest.author,
+        "owns": list(manifest.owns_names),
+        "requires_core": list(manifest.requires_core_names),
+        "optional_providers": list(manifest.optional_provider_names),
+        "skills": list(manifest.skills),
+        "agents": list(manifest.agents),
+        "credential_requirements": list(manifest.credential_requirements),
+        "activation": manifest.activation,
+        "sandbox_requirements": manifest.sandbox_requirements,
+        "manifest_source": manifest.source,
+    }
 
 
 def get_pack_catalog() -> list[dict]:
-    """Return full pack catalog with capability annotations."""
+    """Return full pack catalog with capability annotations.
+
+    RUNTIME_TOOL_GROUPS is the runtime truth (source/channel/summary/tools); a
+    pack.yaml manifest, when present, ENRICHES that entry with install/composition
+    metadata rather than replacing it (so runtime fields like requires_channel are
+    never lost). A manifest with no runtime group is added as a manifest-only entry.
+    """
     catalog_by_name = {pack.name: _pack_to_dict(pack) for pack in RUNTIME_TOOL_GROUPS}
-    for manifest_pack in _load_manifest_pack_catalog():
-        catalog_by_name[manifest_pack["name"]] = manifest_pack
+    for name, manifest in _load_manifest_packs().items():
+        base = catalog_by_name.get(name)
+        if base is None:
+            catalog_by_name[name] = _manifest_pack_to_dict(manifest)
+        else:
+            base.update(_manifest_install_fields(manifest))
     return list(catalog_by_name.values())
 
 

@@ -116,6 +116,10 @@ jobs:
           fi
           curl -fsSL https://railway.app/install.sh | bash
           export PATH="$HOME/.railway/bin:$PATH"
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "github-actions-hive-eval-${GITHUB_RUN_ID}" >/dev/null
+          chmod 600 "$HOME/.ssh/id_ed25519"
           python -m app.evals.evaluator_integrity \
             --current-root . \
             --trusted-root ../protected-base/backend \

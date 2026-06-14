@@ -34,6 +34,7 @@ def test_nightly_behavior_gate_generates_live_report_and_integrity_before_gate()
     assert "--model ${HIVE_EVAL_MODEL" not in source
     assert "curl -fsSL https://railway.app/install.sh | bash" in source
     assert "curl -fsSL https://railway.app/install.sh | sh" not in source
+    assert "ssh-keygen -t ed25519" in source
     assert live_runner in source
     assert "--production-runtime" in source
     assert "::hive-behavior-report::" in source
@@ -43,5 +44,6 @@ def test_nightly_behavior_gate_generates_live_report_and_integrity_before_gate()
     assert integrity in source
     assert '--output "$HIVE_EVAL_INTEGRITY"' in source
     assert '--integrity-report "$HIVE_EVAL_INTEGRITY"' in source
+    assert source.index("ssh-keygen -t ed25519") < source.index("railway ssh")
     assert source.index(live_runner) < source.index(gate)
     assert source.index(integrity) < source.index(gate)

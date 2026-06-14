@@ -49,6 +49,7 @@ async def main():
     import app.models.plaza          # noqa
     import app.models.activity_log   # noqa
     import app.models.org            # noqa
+    import app.models.identity       # noqa
     import app.models.system_settings # noqa
     import app.models.invitation_code # noqa
     import app.models.tenant         # noqa

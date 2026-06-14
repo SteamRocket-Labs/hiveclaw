@@ -23,6 +23,8 @@ def test_nightly_behavior_gate_generates_live_report_and_integrity_before_gate()
     integrity = "python -m app.evals.evaluator_integrity"
     gate = "python -m app.evals.ci_gate"
 
+    assert "workflow_dispatch:" in source
+    assert "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'" in source
     assert "railway ssh" in source
     assert "RAILWAY_EVAL_PROJECT_ID" in source
     assert "RAILWAY_EVAL_ENVIRONMENT" in source

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 
@@ -30,3 +31,15 @@ def test_docker_compose_forwards_debug_and_secrets_master_key() -> None:
 
     assert "DEBUG: ${DEBUG:-false}" in backend_block
     assert "SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY:-}" in backend_block
+
+
+def test_harness_ci_sqlite_driver_is_declared() -> None:
+    """Harness CI imports app.database with sqlite+aiosqlite, so the driver must
+    be present in the default backend install rather than only in local venvs."""
+
+    workflow = _read(".github/workflows/harness-ci.yml")
+    assert "sqlite+aiosqlite" in workflow
+
+    pyproject = tomllib.loads(_read("backend/pyproject.toml"))
+    dependencies = pyproject["project"]["dependencies"]
+    assert any(dependency.split(">=", 1)[0] == "aiosqlite" for dependency in dependencies)

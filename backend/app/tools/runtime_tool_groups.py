@@ -23,7 +23,7 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         summary="网页搜索与抓取能力，用于公开信息检索与网页内容提取。",
         source="system",
         activation_mode="通过 tool_search 发现 schema；需要方法时另读 web research skill",
-        tools=("web_search", "firecrawl_fetch", "xcrawl_scrape"),
+        tools=("firecrawl_fetch", "xcrawl_scrape"),
     ),
     RuntimeToolGroupSpec(
         name="feishu_pack",

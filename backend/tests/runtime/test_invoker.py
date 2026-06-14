@@ -533,7 +533,7 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
         return [
             {
                 "type": "function",
-                "function": {"name": "web_search", "description": "", "parameters": {"type": "object"}},
+                "function": {"name": "firecrawl_fetch", "description": "", "parameters": {"type": "object"}},
             }
         ]
 
@@ -552,16 +552,16 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
             session_context=session,
         ),
         "tool_search",
-        {"query": "web_search"},
+        {"query": "firecrawl_fetch"},
     )
 
     assert result is not None
-    assert requested_names_seen == [["web_search"]]
-    assert [tool["function"]["name"] for tool in result.tools] == ["web_search"]
-    assert session.discovered_tools == ["web_search"]
-    assert session.metadata["discovered_tools"] == ["web_search"]
+    assert requested_names_seen == [["firecrawl_fetch"]]
+    assert [tool["function"]["name"] for tool in result.tools] == ["firecrawl_fetch"]
+    assert session.discovered_tools == ["firecrawl_fetch"]
+    assert session.metadata["discovered_tools"] == ["firecrawl_fetch"]
     assert result.event_payload["type"] == "deferred_tools_delta"
-    assert result.event_payload["discovered_tools"] == ["web_search"]
+    assert result.event_payload["discovered_tools"] == ["firecrawl_fetch"]
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ source:
 
 tools:
   - name: web_search
-    role: owns
+    role: requires_core
     governance:
       security_zone: public
   - name: firecrawl_fetch

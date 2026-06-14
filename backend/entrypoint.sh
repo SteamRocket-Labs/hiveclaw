@@ -60,6 +60,8 @@ async def main():
     import app.models.gateway_message # noqa
     import app.models.runtime_task    # noqa
     import app.models.capability_install  # noqa
+    import app.models.mcp_server          # noqa
+    import app.models.installed_plugin    # noqa — plugin system (Step 5): 3 install tables
 
     # Create all tables that don't exist yet (safe to run on every startup)
     async with engine.begin() as conn:

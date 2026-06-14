@@ -275,7 +275,7 @@ def test_collect_skill_declared_packs_merges_explicit_and_inferred_packs():
         {
             "name": "web_pack",
             "skills": ["Web Research"],
-            "tools": ["firecrawl_fetch", "web_search"],
+            "tools": ["firecrawl_fetch"],
         },
     ]
 
@@ -307,7 +307,7 @@ def test_collect_skill_declared_packs_uses_metadata_pack_without_tool_inference_
         {
             "name": "web_pack",
             "skills": ["Deep Research"],
-            "tools": ["firecrawl_fetch", "web_search"],
+            "tools": ["firecrawl_fetch"],
         },
     ]
 

@@ -36,6 +36,7 @@ from app.tools import (
     ToolRuntimeService,
     run_tool_governance,
 )
+from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime_tool_groups import (
     make_mcp_server_pack_name,
     normalize_tool_query,
@@ -174,6 +175,10 @@ CORE_TOOL_NAMES = {
     "send_channel_file",
     "tool_search",
     "web_fetch",
+    # web_search joins CORE (Step 5): it has a SearXNG/DDG no-key fallback, so it is
+    # a turn-1 base capability like web_fetch. firecrawl/xcrawl need provider keys and
+    # stay optional_provider tools in web_pack.
+    "web_search",
     # Source capabilities (T1.1, execution-mode-spectrum §4.6): subagent and
     # workflow are runtime primitives — their schemas must be turn-1 visible,
     # never gated behind a skill-activated pack. Call-time governance
@@ -748,7 +753,7 @@ async def execute_approved_tool(
     *,
     approved_by_user_id: uuid.UUID | None = None,
     approval_id: uuid.UUID | None = None,
-) -> str:
+) -> str | ToolContentEnvelope:
     """Execute a tool after an explicit approval decision.
 
     Approval handling is a governance boundary, so callers should use this
@@ -772,8 +777,8 @@ async def execute_tool(
     delegation_token: Any | None = None,
     session_id: str | None = None,
     plan_mode_interactive_available: bool = False,
-) -> str:
-    """Execute a tool call and return the result as a string."""
+) -> str | ToolContentEnvelope:
+    """Execute a tool call and return the result (str, or a typed content envelope)."""
     return await _get_tool_runtime_service().execute(
         tool_name,
         arguments,
@@ -790,7 +795,7 @@ async def _execute_tool_inner(
     tool_name: str,
     arguments: dict,
     context,
-) -> str:
+) -> str | ToolContentEnvelope:
     """Inner tool dispatch — called with timeout wrapper from execute_tool()."""
     return await _get_tool_runtime_service().execute_with_context(
         tool_name,

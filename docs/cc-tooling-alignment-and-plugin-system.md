@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-2 + 4 已实施落地**（2026-06-14，全量 4426 passed / 0 failed，证据见 §8 实施日志）。Step 3/5-11 待实施（Step 4 先于依赖它的 Step 3/5）。
+> 状态：v1.3 设计定稿 + **Step 0-2 + 4-5 已实施落地**（2026-06-14，全量 4434 passed / 0 failed，证据见 §8 实施日志）。Step 3/6-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -114,7 +114,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **2** ✅ | tool-contract | 修 critical：扩展现有 `result_envelope.py` 或新建 `ToolContentEnvelope(text+blocks)`（避免与 error/fallback envelope 命名碰撞），`adapt_and_call` 透传 typed content block(image/pdf)；`read_document`(PDF)/`read_file`(图)首接；保留纯字符串默认 | 1 |
 | **3** | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数；补 turn-1 deferred 清单+`select:` 直选；token-阈值 auto 模式；loaded-tool state 必须进入 compaction/replay/prompt-cache 稳定排序/invocation span。**实现 provider-neutral**：Hive 自己的 schema expansion/event path 为主，`tool_reference` 仅作 Anthropic fast path(守 L3) | 0,4 |
 | **4** ✅ | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
-| **5** | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
+| **5** ✅ | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
 | **6** | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解)；**命名迁移必须同时审计** `Tool.name` 列宽(当前 `String(100)` `tool.py:25`，长名易超)、provider tool-name 约束、确定性 slug、旧名 alias、历史 transcript、skills declared tools、`AgentTool`/MCP override rows——**禁止直接拼长名后 rename**；统一双执行路径(`FALLBACK_EXECUTOR_NAME` 是活兜底，先核实)；收敛 `mcp_server:*` 伪 pack 到 assignment | 0,5 |
 | **7** | mcp | `MCPClient` 加 `resources/list`+`resources/read`(blob 落 artifacts)；DB 自省工具更名 `list_mcp_tools/inspect_mcp_tool`；新建 `mcp_oauth.py` 标准 OAuth2(加密存凭据，守 mcp_authz)；填 `auth_status` | 6 |
 | **8** | subagent | schema 暴露 `run_in_background`，接通 completion consume tool/prompt、parent wake、tenant context、depth recursion guard、budget trace；补 RuntimeTask/SubagentRun 级 durable run recovery（当前 PG Signal/wake 持久，但 `asyncio.create_task` worker 本身未跨重启）；加 `check_subagent`；governance 按 type 分级(read-only explorer/critic 轻于 worker)；fan-out 决断(见 §6) | 0 |
@@ -324,5 +324,30 @@ $ python -c "from app.tools.audit import assert_core_pack_disjoint, assert_manif
 $ pytest tests -q          # 全量后端回归
 4426 passed, 7 skipped, 4 warnings   # 0 failed (= Step2 的 4415 + 11 新测试)
 
+$ ruff check <核心文件>     # All checks passed!
+```
+
+### Step 5 — plugin-system 安装层 + web_search 进 CORE（✅ 2026-06-14）
+
+**改动文件：**
+- `app/services/agent_tools.py`：`web_search` 进 `CORE_TOOL_NAMES`（turn-1 base，有 SearXNG/DDG 无 key 兜底）+ 全链 tool-result 返回类型补 `ToolContentEnvelope`（Step 2 延伸）。
+- `app/tools/runtime_tool_groups.py` + `packs/web_pack/pack.yaml`(×2)：`web_pack` 清出 `web_search`（进 CORE，避免 CORE∩pack）；manifest 中 `web_search` 改 `requires_core`。
+- `app/models/installed_plugin.py`：新建 `TenantInstalledPlugin` + `AgentPluginAssignment` + `PluginHookRegistration`（镜像 MCPServer：tenant_id 强制 + FK CASCADE + UniqueConstraint）。
+- `alembic/versions/add_installed_plugin_tables_0614.py`：3 表 migration，RLS **ENABLE + FORCE** + tenant policy（P0 gap B：owner 连接也受约束）。`db_bootstrap.py` RLS_FORCED + `entrypoint.sh` import + `import_all_models`(pkgutil 自动) 三处 create_all 地基齐补（critic §5.2#1 防 Railway 漏表/漏 RLS）。
+- `app/services/plugin_install_service.py`：install/list/uninstall/backfill，全程 `tenant_scoped_session`（RLS-bound）+ manifest validate + source policy fail-closed（builtin/local 可装，远程拒）+ pinned lockfile + hook allowlist 校验。
+- `app/api/plugins.py` + `main.py`：`/enterprise/plugins/install|list|uninstall|backfill`（admin），router 挂载。
+- `app/services/pack_policy_service.py`：`get_tenant_pack_policies` 融合 installed plugin（用独立 session 不扰乱 caller，mock 测试自动 fallback）。
+- 测试：新建 `tests/services/test_plugin_install_service.py`（8）；修复 16 个 pin 了"web_search 非 CORE / 旧 alembic head / get_tenant_pack_policies 调用序列"的测试。
+
+**完成判据（非 built-but-unwired）：** TenantInstalledPlugin 安装记录经 `get_tenant_pack_policies` → `is_pack_enabled`（agent_tools runtime 路径）**真改变 turn-1 工具集**——装 `mcp_admin_pack`（default inactive）→ 其工具 turn-1 可见，测试 `test_installed_plugin_enables_pack_in_policies` 钉死。
+
+**不灰度断（critic §5.3）：** is_pack_enabled 语义未硬翻——installed → enabled（覆盖 manifest default），未 installed → fallback manifest default + explicit policy（现有租户无记录时保持现状）；`backfill` 同步安装记录；explicit policy False 最高优（租户 opt-out）。
+
+**验证证据：**
+```
+$ pytest tests/services/test_plugin_install_service.py -q   # 8 passed
+$ pytest tests -q          # 全量后端回归
+4434 passed, 7 skipped, 4 warnings   # 0 failed (= Step4 的 4426 + 8 新测试)
+$ alembic heads            # add_installed_plugin_tables_0614 (single head)
 $ ruff check <核心文件>     # All checks passed!
 ```

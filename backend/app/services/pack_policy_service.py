@@ -27,7 +27,41 @@ async def get_tenant_pack_policies(db: AsyncSession, tenant_id: uuid.UUID | None
     setting = result.scalar_one_or_none()
     value = getattr(setting, "value", None) or {}
     policies = value.get("packs", value)
-    return policies if isinstance(policies, dict) else {}
+    explicit = dict(policies) if isinstance(policies, dict) else {}
+
+    # Step 5: an installed plugin (TenantInstalledPlugin, status=enabled) is enabled
+    # unless the tenant explicitly overrode it. This is how a pack.yaml install
+    # actually changes the runtime tool surface (e.g. installing mcp_admin_pack —
+    # default_state=inactive — makes its tools turn-1 visible). An uninstalled pack
+    # falls back to its manifest default, so no tenant is silently grayed out.
+    #
+    # Read on a DEDICATED tenant-scoped session so this merge never perturbs the
+    # caller's session/transaction (and unit tests that mock the caller db keep
+    # working). Falls back to explicit policies if the table is absent
+    # (pre-migration) or there is no live DB.
+    try:
+        from app.database import tenant_scoped_session
+        from app.models.installed_plugin import TenantInstalledPlugin
+
+        async with tenant_scoped_session(tenant_id) as plugin_db:
+            installed = (
+                (
+                    await plugin_db.execute(
+                        select(TenantInstalledPlugin.plugin_key).where(
+                            TenantInstalledPlugin.tenant_id == tenant_id,
+                            TenantInstalledPlugin.status == "enabled",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        merged = dict(explicit)
+        for key in installed:
+            merged.setdefault(key, True)
+        return merged
+    except Exception:
+        return explicit
 
 
 async def set_tenant_pack_policy(

@@ -48,6 +48,7 @@ from app.api.oidc import router as oidc_router
 from app.api.onboarding import router as onboarding_router
 from app.api.office import router as office_router
 from app.api.mcp_servers import router as mcp_servers_router
+from app.api.plugins import router as plugins_router
 from app.api.organization import router as org_router
 from app.api.packs import router as packs_router
 from app.api.plans import router as plans_router
@@ -587,6 +588,7 @@ _api_routers = [
     onboarding_router,
     packs_router,
     mcp_servers_router,
+    plugins_router,
     plans_router,
     office_router,
     autonomy_router,

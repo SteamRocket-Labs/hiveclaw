@@ -217,7 +217,7 @@ async def test_get_agent_tools_for_llm_core_only_matches_first_round_surface(mon
     assert "list_triggers" in names
     assert "update_trigger" in names
     assert "cancel_trigger" in names
-    assert "web_search" not in names
+    assert "web_search" in names  # Step 5: web_search promoted to CORE (turn-1)
 
 
 @pytest.mark.asyncio

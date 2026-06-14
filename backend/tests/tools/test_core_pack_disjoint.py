@@ -21,12 +21,12 @@ def test_core_pack_disjoint_invariant_holds():
 
 def test_assert_core_pack_disjoint_raises_on_straddle(monkeypatch):
     """A CORE tool that also sits in a RUNTIME_TOOL_GROUPS pack must fail the
-    invariant (fail-fast). web_search is a real web_pack member; pretend it
+    invariant (fail-fast). firecrawl_fetch is a real web_pack member; pretend it
     became CORE."""
     import app.services.agent_tools as agent_tools
     import app.tools.audit as audit
 
-    monkeypatch.setattr(agent_tools, "CORE_TOOL_NAMES", agent_tools.CORE_TOOL_NAMES | {"web_search"})
+    monkeypatch.setattr(agent_tools, "CORE_TOOL_NAMES", agent_tools.CORE_TOOL_NAMES | {"firecrawl_fetch"})
     with pytest.raises(RuntimeError, match="CORE∩pack invariant violated"):
         audit.assert_core_pack_disjoint()
 

@@ -11,7 +11,6 @@ from pathlib import Path
 from app.config import get_settings
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.skills import SkillRegistry, WorkspaceSkillLoader
-from app.tools.runtime_tool_groups import iter_runtime_tool_groups
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -842,7 +841,8 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
 
 
 async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | None = None) -> str:
-    packs = iter_runtime_tool_groups(query)
+    from app.services.agent_tools import discoverable_tool_names_for_query
+
     registry = _build_skill_registry(ws)
     normalized = query.strip().lower()
     matching_skills = [
@@ -854,36 +854,28 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         or any(normalized in tool.lower() for tool in skill.metadata.declared_tools)
     ]
 
-    # J: list the agent-reachable MCP tools too, via the shared DB-aware enumerator,
-    # so the text the model reads matches what the schema path actually loads (🦴#2).
-    # agent_id falls back to the workspace dir name (AGENT_DATA_DIR/<agent_id>).
-    mcp_tool_names: list[str] = []
+    # Step 3: single source of truth — the deferred tool names listed here are
+    # EXACTLY what the schema path loads. discoverable_tool_names_for_query covers
+    # static packs + agent-reachable MCP and excludes CORE (already turn-1). Text
+    # == schema (🦴#2). agent_id falls back to the workspace dir name.
+    deferred_names: list[str] = []
     resolved_agent_id = agent_id if agent_id is not None else ws.name
     if resolved_agent_id:
         try:
-            from app.services.agent_tools import list_agent_mcp_deferred_tools
-
-            mcp_tool_names = await list_agent_mcp_deferred_tools(uuid.UUID(str(resolved_agent_id)), query)
+            deferred_names = await discoverable_tool_names_for_query(uuid.UUID(str(resolved_agent_id)), query)
         except Exception:
-            mcp_tool_names = []
+            deferred_names = []
 
     lines = [
         "Tool search discovered deferred capabilities. Matching deferred tool schemas become callable in this session.",
     ]
-    if packs:
+    if deferred_names:
         lines.append("")
         lines.append(
-            "Available deferred packs/tools (matching schemas are loaded by this search; use `load_skill` only for method instructions):"
+            "Discovered deferred tools (matching schemas are loaded by this search; "
+            "use `load_skill` only for method instructions):"
         )
-        for pack in packs:
-            tools = ", ".join(pack.tools)
-            lines.append(
-                f"- {pack.name}: {pack.summary} | tools: {tools}"
-            )
-    if mcp_tool_names:
-        lines.append("")
-        lines.append("Matching MCP tools (imported server tools — schemas become callable after this search):")
-        lines.append(f"- {', '.join(mcp_tool_names)}")
+        lines.append(f"- {', '.join(deferred_names)}")
     if matching_skills:
         lines.append("")
         lines.append("Matching skills:")

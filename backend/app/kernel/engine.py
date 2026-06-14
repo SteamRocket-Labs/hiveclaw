@@ -9,7 +9,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Coroutine, cast
 
 from app.core.execution_context import (
     ExecutionIdentity,
@@ -45,6 +45,7 @@ from app.services.invocation_trace import (
     set_invocation_id,
 )
 from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
+from app.tools.result_envelope import ToolContentEnvelope
 
 # Mid-loop compaction: check every N rounds and compress when approaching context limit.
 # P1-W2-3: Tightened from 0.90 to 0.75 — the audit found that running to 90%
@@ -159,7 +160,10 @@ ResolveToolExpansion = Callable[
 ]
 MaybeCompressMessages = Callable[..., Awaitable[list[dict]] | list[dict]]
 CreateClient = Callable[[Any], Any]
-ExecuteTool = Callable[[str, dict, InvocationRequest, Callable[[dict], Awaitable[None]]], Awaitable[str] | str]
+ExecuteTool = Callable[
+    [str, dict, InvocationRequest, Callable[[dict], Awaitable[None]]],
+    Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope,
+]
 PersistMemory = Callable[..., Awaitable[None] | None]
 RecordTokenUsage = Callable[[Any, int], Awaitable[None] | None]
 RecordInvocationSpan = Callable[..., Awaitable[None] | None]
@@ -585,7 +589,8 @@ async def _execute_tool_call_with_cancel(
     if not inspect.isawaitable(value):
         return value
 
-    tool_task = asyncio.create_task(value)
+    # execute_tool is an async callback, so an awaitable value is always a coroutine.
+    tool_task = asyncio.create_task(cast(Coroutine[Any, Any, Any], value))
     cancel_task = asyncio.create_task(cancel_event.wait())
     try:
         done, pending = await asyncio.wait({tool_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -621,8 +626,6 @@ def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dic
     string. Provider mapping happens in llm_client — Anthropic carries the blocks
     natively; OpenAI/Gemini fall back to the text part (L3 model equality).
     """
-    from app.tools.result_envelope import ToolContentEnvelope
-
     if not isinstance(raw_result, ToolContentEnvelope):
         return text_content
     media_blocks = [b for b in raw_result.blocks if b.type != "text"]

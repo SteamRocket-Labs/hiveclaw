@@ -47,10 +47,10 @@ from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reas
 from app.services.agent_work_ledger import should_enable_work_ledger
 from app.services.agent_tools import (
     CORE_TOOL_NAMES,
+    discoverable_tool_names_for_query,
     execute_tool,
     get_agent_tools_for_llm,
     get_combined_openai_tools,
-    list_agent_mcp_deferred_tools,
 )
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.knowledge_inject import fetch_relevant_knowledge
@@ -67,10 +67,9 @@ from app.services.token_tracker import (
     extract_usage_tokens,
     record_token_usage,
 )
+from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime_tool_groups import (
     RUNTIME_TOOL_GROUPS,
-    iter_runtime_tool_groups,
-    normalize_tool_query,
     runtime_tool_group_for_name,
 )
 
@@ -646,33 +645,10 @@ def _infer_active_tool_groups(
 
 
 async def _deferred_tool_names_for_query(agent_id: uuid.UUID, query: str) -> list[str]:
-    normalized = query.strip().lower()
-    compact = normalize_tool_query(normalized)
-    if normalized:
-        for pack in RUNTIME_TOOL_GROUPS:
-            for tool_name in pack.tools:
-                if (
-                    tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact
-                ) and tool_name not in CORE_TOOL_NAMES:
-                    return [tool_name]
-    requested: list[str] = []
-    seen: set[str] = set()
-    for pack in iter_runtime_tool_groups(query):
-        for tool_name in pack.tools:
-            if tool_name in CORE_TOOL_NAMES or tool_name in seen:
-                continue
-            requested.append(tool_name)
-            seen.add(tool_name)
-    # J: imported MCP server tools are deferred too — append the agent-reachable
-    # ones (governed listing) so tool_search discovers MCP exactly as it does the
-    # static packs. The shared enumerator keeps this schema path consistent with
-    # the text result the model reads (🦴#2).
-    for mcp_name in await list_agent_mcp_deferred_tools(agent_id, query):
-        if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
-            continue
-        requested.append(mcp_name)
-        seen.add(mcp_name)
-    return requested
+    # Step 3: single source of truth — both this schema path and the text path
+    # (workspace._tool_search) route through discoverable_tool_names_for_query so
+    # "what the model is told it can discover" == "what actually loads".
+    return await discoverable_tool_names_for_query(agent_id, query)
 
 
 async def _resolve_tool_expansion(
@@ -751,7 +727,7 @@ async def _execute_tool_with_request(
     args: dict,
     request: AgentInvocationRequest,
     emit_event: Callable[[dict], Any],
-) -> str:
+) -> str | ToolContentEnvelope:
     if request.tool_executor:
         executor_kwargs: dict[str, Any] = {}
         try:
@@ -887,7 +863,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         args: dict,
         request: InvocationRequest,
         emit_event: Callable[[dict], Any],
-    ) -> str:
+    ) -> str | ToolContentEnvelope:
         return await _execute_tool_with_request(tool_name, args, request, emit_event)  # type: ignore[arg-type]
 
     return AgentKernel(

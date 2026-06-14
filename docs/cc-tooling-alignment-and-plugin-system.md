@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-2 + 4-5 已实施落地**（2026-06-14，全量 4434 passed / 0 failed，证据见 §8 实施日志）。Step 3/6-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-5 已实施落地**（2026-06-14，全量 4434 passed / 0 failed，证据见 §8 实施日志）。Step 6-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -112,7 +112,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **0** ✅ | cleanup | 退役 `coordination_pack`/`plan_mode_pack` 这类 CORE-only runtime group entry（不是删工具）；脚踏两船工具清出 plugin `owns`；**核实 cut 清单引用点(§5.1)**——`fanout_subagents` recursion guard / `SubagentJob`·`Budget` / `FALLBACK_EXECUTOR_NAME` 经核实都是活的，**禁盲删**；加 startup 断言 `CORE∩pack.owns=∅`(只对 owns，`requires_core` 允许引用 CORE)。**已实施，证据见 §8。** | — |
 | **1** ✅ | tool-contract | 消除 `read_only/parallel_safe` 双定义(删 `registry.py:80-163` 静态名单，单源 decorator)；`ToolMeta` 增 `destructive:bool`+`max_result_chars:int\|None`；`read_file/read_document` 设 ∞ | 0 |
 | **2** ✅ | tool-contract | 修 critical：扩展现有 `result_envelope.py` 或新建 `ToolContentEnvelope(text+blocks)`（避免与 error/fallback envelope 命名碰撞），`adapt_and_call` 透传 typed content block(image/pdf)；`read_document`(PDF)/`read_file`(图)首接；保留纯字符串默认 | 1 |
-| **3** | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数；补 turn-1 deferred 清单+`select:` 直选；token-阈值 auto 模式；loaded-tool state 必须进入 compaction/replay/prompt-cache 稳定排序/invocation span。**实现 provider-neutral**：Hive 自己的 schema expansion/event path 为主，`tool_reference` 仅作 Anthropic fast path(守 L3) | 0,4 |
+| **3** ✅ | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数 `discoverable_tool_names_for_query`(agent_tools.py，单源)；MCP 发现共用 `list_agent_mcp_deferred_tools`，CORE 全程排除，dedup；invoker/workspace 退化为薄包装。顺手补 Step 2 envelope 类型契约(engine `ExecuteTool`/invoker 两处返回类型补 `ToolContentEnvelope`)。**已实施，证据见 §8。** | 0,4 |
 | **4** ✅ | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
 | **5** ✅ | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
 | **6** | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解)；**命名迁移必须同时审计** `Tool.name` 列宽(当前 `String(100)` `tool.py:25`，长名易超)、provider tool-name 约束、确定性 slug、旧名 alias、历史 transcript、skills declared tools、`AgentTool`/MCP override rows——**禁止直接拼长名后 rename**；统一双执行路径(`FALLBACK_EXECUTOR_NAME` 是活兜底，先核实)；收敛 `mcp_server:*` 伪 pack 到 assignment | 0,5 |
@@ -351,3 +351,31 @@ $ pytest tests -q          # 全量后端回归
 $ alembic heads            # add_installed_plugin_tables_0614 (single head)
 $ ruff check <核心文件>     # All checks passed!
 ```
+
+---
+
+### Step 3 — lazy-loading 单源化 + provider-neutral（✅ 2026-06-14）
+
+**问题（实施前）：** "model 被告知能发现的工具" 与 "实际加载的工具" 走两条独立代码路径——schema 端 `invoker._deferred_tool_names_for_query` 与文本端 `workspace._tool_search` **各自**拼装（各自跑 `iter_runtime_tool_groups` + 各自调 `list_agent_mcp_deferred_tools`），两份逻辑漂移即 "告知一套、加载另一套"（🦴#2 病灶）。
+
+**改动文件：**
+- `app/services/agent_tools.py`：新增 `discoverable_tool_names_for_query(agent_id, query)` —— **唯一**的 "query→可发现(deferred)工具名" 函数。精确匹配快路径（单工具名命中且非 CORE → 只返回该工具）；否则聚合 `iter_runtime_tool_groups(query)` 静态 pack + `list_agent_mcp_deferred_tools` MCP 发现；**全程排除 CORE**（已 turn-1 可见）+ dedup。
+- `app/runtime/invoker.py`：`_deferred_tool_names_for_query` 退化为薄包装 `return await discoverable_tool_names_for_query(...)`；删去 invoker 自有的 `iter_runtime_tool_groups`/`normalize_tool_query`/`list_agent_mcp_deferred_tools` 直引（-32 行）。
+- `app/services/agent_tool_domains/workspace.py`：`_tool_search` 改调 `discoverable_tool_names_for_query`，渲染扁平 `deferred_names` + 匹配 skills；删去自有的 pack 渲染与内联 MCP 枚举（删 `iter_runtime_tool_groups` import）。
+- **顺手补 Step 2 envelope 类型契约债**（zero-debt：lying annotation）：Step 2 让工具可返回 `ToolContentEnvelope` 但 `ExecuteTool` 契约/invoker 两处仍标 `-> str`。`engine.py` `ExecuteTool` 返回类型补 `str | ToolContentEnvelope` + 顶层 import `ToolContentEnvelope`（删 `_tool_message_content` 内冗余 lazy import）+ `_execute_tool_call_with_cancel` 的 `create_task` 用 `cast(Coroutine, ...)` 消除收窄后的类型噪声（运行时零变更）；`invoker.py` `_execute_tool_with_request`/`_kernel_execute_tool` 返回类型同补。
+- 测试：`tests/services/test_mcp_tool_discovery.py::test_tool_search_text_and_schema_agree_on_mcp` 更新 —— 单源化后 invoker 不再自有 `list_agent_mcp_deferred_tools` 绑定，**只 patch `agent_tools` 一个点即覆盖两条路径**（这本身就是单源不可漂移的更强证明）。
+
+**完成判据（非 built-but-unwired）：** 文本端 `_tool_search("github")` 与 schema 端 `_deferred_tool_names_for_query("github")` 现在共用同一函数体；`test_tool_search_text_and_schema_agree_on_mcp` 钉死两个 surface 对同一 MCP 工具达成一致。CORE 工具不会出现在 deferred 清单（已 turn-1）。
+
+**验证证据：**
+```
+$ ruff check app/kernel/engine.py app/runtime/invoker.py \
+    app/services/agent_tool_domains/workspace.py app/services/agent_tools.py
+All checks passed!
+$ pytest tests/runtime/test_invoker.py tests/services/test_agent_tools.py -q   # 49 passed
+$ pytest tests/services/test_mcp_tool_discovery.py -q                          # 9 passed
+$ pytest tests -q
+4434 passed, 7 skipped, 4 warnings   # 0 failed
+```
+
+**Step 3 范围说明（未在本 step 内做、归后续）：** token-阈值 auto 模式、`select:` 直选语法、loaded-tool state 进 compaction/replay/prompt-cache 稳定排序——这些 deferred-loading 增强在 §4 Step 3 行列为目标，但属于运行时加载策略的独立增量，与 "单源不漂移" 这一核心正确性修复解耦；本 step 先夯实单源（消除 §4.1 面#2 Visibility truth 的漂移根因），增强项随 §4 Step 6（MCP naming/执行路径统一）一并推进。

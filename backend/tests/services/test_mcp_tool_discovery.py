@@ -394,8 +394,9 @@ async def test_schema_load_excludes_other_tenant_default_mcp(monkeypatch):
 @pytest.mark.asyncio
 async def test_tool_search_text_and_schema_agree_on_mcp(monkeypatch, tmp_path):
     """Both the text result (_tool_search) and the schema path
-    (_deferred_tool_names_for_query) route through the same enumerator, so the
-    model is never told one set of MCP tools while a different set loads."""
+    (_deferred_tool_names_for_query) route through the SAME single source
+    (``agent_tools.discoverable_tool_names_for_query``), so the model is never told
+    one set of MCP tools while a different set loads (Step 3 / 🦴#2)."""
     import app.runtime.invoker as invoker
     import app.services.agent_tools as agent_tools
     from app.services.agent_tool_domains.workspace import _tool_search
@@ -405,10 +406,11 @@ async def test_tool_search_text_and_schema_agree_on_mcp(monkeypatch, tmp_path):
     async def fake_enumerator(_agent_id, _query):
         return ["mcp_github_issue_search"]
 
-    # workspace imports the enumerator from agent_tools at call time; invoker binds
-    # it at import time — patch both so each surface uses the shared list.
+    # Step 3 unified the two surfaces: both route through
+    # discoverable_tool_names_for_query, which reads the MCP enumerator from the
+    # agent_tools module global at call time. Patching the single source proves the
+    # two surfaces can no longer diverge — one patch point covers both.
     monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools", fake_enumerator)
-    monkeypatch.setattr(invoker, "list_agent_mcp_deferred_tools", fake_enumerator)
 
     text = await _tool_search(tmp_path, "github", agent_id=agent_id)
     schema_names = await invoker._deferred_tool_names_for_query(agent_id, "github")

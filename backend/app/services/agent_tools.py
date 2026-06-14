@@ -38,6 +38,8 @@ from app.tools import (
 )
 from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime_tool_groups import (
+    RUNTIME_TOOL_GROUPS,
+    iter_runtime_tool_groups,
     make_mcp_server_pack_name,
     normalize_tool_query,
     static_runtime_tool_group_names_for_tool,
@@ -503,6 +505,40 @@ def _tool_tenant_predicate(ToolModel: Any, agent: Any | None):
     if agent_tenant_id is None:
         return ToolModel.tenant_id.is_(None)
     return or_(ToolModel.tenant_id.is_(None), ToolModel.tenant_id == agent_tenant_id)
+
+
+async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> list[str]:
+    """Single source for "query → discoverable (deferred) tool names" (Step 3).
+
+    Used by BOTH the schema path (``invoker._deferred_tool_names_for_query``) and
+    the text path (``workspace._tool_search``) so "what the model is told it can
+    discover" == "what actually loads". Excludes CORE tools (already turn-1
+    visible) and routes MCP discovery through the DB-aware
+    ``list_agent_mcp_deferred_tools``.
+    """
+    normalized = query.strip().lower()
+    compact = normalize_tool_query(normalized)
+    if normalized:
+        for pack in RUNTIME_TOOL_GROUPS:
+            for tool_name in pack.tools:
+                if (
+                    tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact
+                ) and tool_name not in CORE_TOOL_NAMES:
+                    return [tool_name]
+    requested: list[str] = []
+    seen: set[str] = set()
+    for pack in iter_runtime_tool_groups(query):
+        for tool_name in pack.tools:
+            if tool_name in CORE_TOOL_NAMES or tool_name in seen:
+                continue
+            requested.append(tool_name)
+            seen.add(tool_name)
+    for mcp_name in await list_agent_mcp_deferred_tools(agent_id, query):
+        if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
+            continue
+        requested.append(mcp_name)
+        seen.add(mcp_name)
+    return requested
 
 
 async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:

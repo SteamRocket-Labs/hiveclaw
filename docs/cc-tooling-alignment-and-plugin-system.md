@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-7 已实施落地**（2026-06-14，全量 4460 passed / 0 failed，证据见 §8 实施日志）。Step 8-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-8 已实施落地**（2026-06-14，全量 4467 passed / 0 failed，证据见 §8 实施日志）。Step 9-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -117,7 +117,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **5** ✅ | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
 | **6** ✅ | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解+slug+长度/碰撞,单源)；canonical 名进 `resource_discovery` 5 个生成点；canonical 别名在 `_execute_mcp_tool`(canonical 名对未 backfill 的 legacy 行也可解析→生成可先于 backfill 部署)；dry-run+apply backfill 脚本(纯 planner 已测,旧名→新名报告即回滚记录)；**核实**=`FALLBACK_EXECUTOR_NAME` registry 分支实为死代码(无人注册`__mcp_fallback__`,活兜底是 service `fallback_executor` kwarg)→删死分支统一单路径；`mcp_server:*` 伪 pack 实为 no-op(从不写该 policy+未知 pack 默认 True)→退役两处 gate+删 `make_mcp_server_pack_name`,MCP 可见性归 assignment 单一治理。**已实施，证据见 §8。** | 0,5 |
 | **7** ✅ | mcp | `MCPClient.list_resources/read_resource`(blob 走现有 >8KB artifact 溢出)+协议工具 `mcp_list_resources/mcp_read_resource`；DB 自省工具更名 `list_mcp_resources→list_mcp_tools`/`read_mcp_resource→inspect_mcp_tool`(旧名 alias 不破 transcript)；新建 `mcp_oauth.py` 标准 OAuth2 PKCE(加密存 token/守 mcp_authz/fail-closed)+`/enterprise/mcp/oauth/start\|callback` API+`resolve_mcp_oauth_bearer` 接入执行路径+`auth_status` 生命周期。**已实施，证据见 §8(含 OAuth live 验证诚实边界)。** | 6 |
-| **8** | subagent | schema 暴露 `run_in_background`，接通 completion consume tool/prompt、parent wake、tenant context、depth recursion guard、budget trace；补 RuntimeTask/SubagentRun 级 durable run recovery（当前 PG Signal/wake 持久，但 `asyncio.create_task` worker 本身未跨重启）；加 `check_subagent`；governance 按 type 分级(read-only explorer/critic 轻于 worker)；fan-out 决断(见 §6) | 0 |
+| **8** ✅ | subagent | schema 暴露 `run_in_background`(此前后端通但 LLM 不可达)；background spawn 落 `RuntimeTask(task_type="subagent")` durable record(非 resumable→startup `reconcile_orphaned_runtime_tasks` 把崩溃的 run 标 failed,parent poll 不再永久 running)；加 `check_subagent`(run_id 查/列表,ownership-scoped)；governance 按 type 分级**已存在**(`_TYPE_PRESETS` 给 explorer/critic 只读工具集,worker 才能编辑);completion wake/signal/tenant/recursion guard 沿用现有。**已实施，证据见 §8。** | 0 |
 | **9** | skill | catalog 移出 frozen prefix→动态 suffix(修 cache 击穿)；删死字段；distiller 晋升硬门改 `evolution_ledger` 外部 eval(非 LLM 自评)；`allowed_tools` 接 scoped 治理引导 | 4 |
 | **10** | workflow | preview/start_workflow 确认仅留 CORE；`office_workflow_examples` 接 platform-template seeder 或删(⚠️核实)；修 `runtime_task` 注释+`phase` 死列；文档化"结构化数据 over 脚本"为显式防御决策 | 0,5 |
 | **11** | docs | 修 CLAUDE.md 文档漂移(packs.py→runtime_tool_groups.py+pack.yaml)；记录插件安装生命周期 | 4,5,6,7 |
@@ -441,4 +441,31 @@ $ python -c "import app.main; [r.path ... 'oauth' ...]"       # /api/enterprise/
 $ ruff check <9 核心文件 + 7 测试>                            # All checks passed!
 $ pytest tests -q
 4460 passed, 7 skipped, 4 warnings   # 0 failed (= Step6 的 4448 + 12 OAuth 测试)
+```
+
+---
+
+### Step 8 — subagent run_in_background 进 schema + durable run recovery（✅ 2026-06-14）
+
+**先核实(§5.1)：** 后端 `spawn_subagent(run_in_background=True)` 早已全通(asyncio task + PG 持久 completion Signal + `subagent_wake_consumer` 唤父),但 LLM **不可达**——`_SPAWN_PARAMETERS` 不暴露该参数,handler 永远走同步 `handle.result`。governance 按 type **也已存在**:`_TYPE_PRESETS` 给 explorer/critic 只读工具集、worker 才可编辑(治理按 type 分级 = 工具面收窄,非另造)。真缺口=① schema 暴露 ② 崩溃恢复(asyncio worker 不跨重启,但**无 run 记录**→ orphan 无法检测 → parent `check_subagent` 永久 running)。
+
+**改动文件：**
+- `app/tools/handlers/subagent.py`：`_SPAWN_PARAMETERS` 加 `run_in_background`;handler background 分支=先 `start_subagent_run` 落 durable record→`spawn_subagent(run_in_background=True, on_complete=make_run_completer(run_id))`→立即返回 `run_id`(不等)。新增 `check_subagent` 工具(run_id 查单个/省略列最近,ownership-scoped)。
+- `app/agents/subagent.py`：`spawn_subagent` 加 `on_complete` 回调,在 `_run_and_signal` 里**先**更新 durable record **再**发 wake signal(父被唤醒时已能 `check_subagent` 看到终态);`check_subagent` 进 `_SUBAGENT_BASE_EXCLUDED_TOOLS`(子不能 spawn 故无背景子可查,递归守卫)。
+- `app/services/subagent_run_service.py`(新)：`start_subagent_run`(建 `RuntimeTask(task_type="subagent", running)`)/`make_run_completer`(result.ok→completed 否则 failed)/`get_subagent_run`(ownership-scoped,防按 id 猜读他人 run)/`list_subagent_runs`。复用 `create/update/get_runtime_task_record` 既有 helper。
+- `app/services/agent_tools.py`+`capability_gate.py`：`check_subagent` 进 CORE_TOOL_NAMES(spawn 的读伴侣)+CAPABILITY_MAP(`agent.subagent.read`)+discovery 豁免集(只读)。
+- 测试：`test_subagent_run_service.py`(新,7:start 落 subagent 类型 running/completer ok→completed·fail→failed/ownership scope/拒非 subagent 类型/schema 暴露 run_in_background+check 工具注册/`subagent` 类型非 resumable)；修 2 个 tool-set pin(test_tool_registry CORE + bridge canonical 加 check_subagent)。
+
+**durable recovery 复用既有基建：** `task_type="subagent"` 不在 `_RESTART_RESUMABLE_TASK_TYPES=("workflow","web_chat_turn")` → startup `reconcile_orphaned_runtime_tasks`(main.py:336 已调)把卡 running 的 run 标 `failed`+`orphaned_by_restart` → `check_subagent` 读到 failed → 父开环闭合。零新 startup 钩子。
+
+**完成判据(非 built-but-unwired)：** `run_in_background` 进 schema(LLM 可达,test 钉死);background spawn 真建 `RuntimeTask` 且 completion 真更新(on_complete 接线);`check_subagent` 进 CORE + 真读 record;orphan 走既有 reconcile→failed(`subagent` 类型非 resumable,test 钉死)。
+
+**诚实边界([[feedback_design_draft_overstates_maturity]])：** durable recovery 是 **fail-closed**(崩溃的 worker 报 failed),**非 mid-run resume**——非幂等 worker 不能安全自动重放(可能重复副作用),故报失败而非重跑。read-only explorer/critic 理论可安全重放,但本轮统一按 fail-closed 处理(简单可解释)。
+
+**验证证据：**
+```
+$ pytest tests/services/test_subagent_run_service.py -q   # 7 passed
+$ ruff check <5 核心文件 + 1 测试>                        # All checks passed!
+$ pytest tests -q
+4467 passed, 7 skipped, 4 warnings   # 0 failed (= Step7 的 4460 + 7 subagent-run 测试)
 ```

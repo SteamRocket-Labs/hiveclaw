@@ -111,6 +111,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         # T1.1 (execution-mode-spectrum §4.6): source capabilities are runtime
         # primitives — turn-1 visible, never gated behind a skill pack.
         "spawn_subagent",
+        "check_subagent",
         "preview_workflow",
         "start_workflow",
         # T1.2: work ledger is core working memory, not DB-conditional.

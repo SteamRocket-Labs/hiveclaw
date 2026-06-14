@@ -110,6 +110,7 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
     "delegate_to_agent",
     "send_message_to_agent",
     "spawn_subagent",
+    "check_subagent",
     "fanout_subagents",
     # Workflow source capabilities are CORE_TOOL_NAMES members (T1.1): without
     # this explicit deny they would leak into child tool surfaces through the
@@ -839,6 +840,7 @@ async def spawn_subagent(
     context_brief: str | None = None,
     run_in_background: bool = False,
     ledger_todo_id: str | None = None,
+    on_complete: Callable[[SubagentResult], Awaitable[None]] | None = None,
     invoke: InvokeAgent = invoke_agent,
 ) -> SubagentHandle:
     """Public single-worker spawn entry (cut ② sync, cut ④ adds background).
@@ -882,6 +884,13 @@ async def spawn_subagent(
             set_current_tenant(str(ctx.tenant_id))
         result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
         _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
+        # Update the durable run record (if any) BEFORE the wake signal, so a parent
+        # woken by the signal already sees the terminal status via check_subagent.
+        if on_complete is not None:
+            try:
+                await on_complete(result)
+            except Exception as exc:  # durable bookkeeping is best-effort, never blocks the signal
+                logger.warning("[Subagent] on_complete callback failed (non-fatal): %s", exc)
         await _emit_completion_signal(ctx, result)
         return result
 

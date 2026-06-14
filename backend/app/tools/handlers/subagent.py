@@ -149,6 +149,14 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
             "type": "integer",
             "description": "Optional cap on the subagent's tool rounds (default 8).",
         },
+        "run_in_background": {
+            "type": "boolean",
+            "description": (
+                "When true, fire-and-forget: returns a run_id immediately instead of waiting for the "
+                "result, so you can keep working and spawn more. Poll the result later with "
+                "check_subagent(run_id). Default false (run to completion and return the digest now)."
+            ),
+        },
         "ledger_todo_id": {
             "type": "string",
             "description": (
@@ -290,6 +298,44 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     )
 
     ledger_todo_id = str(request.arguments.get("ledger_todo_id") or "").strip() or None
+
+    if bool(request.arguments.get("run_in_background")):
+        # Durable fire-and-forget: record the run so a crash → reconcile → failed
+        # (not a forever-"running" poll), then schedule the worker and return now.
+        from app.services.subagent_run_service import make_run_completer, start_subagent_run
+
+        run_id = await start_subagent_run(
+            parent_agent_id=agent_id,
+            spec_name=spec.name,
+            spec_type=spec.type,
+            task=task,
+            parent_session_id=request.context.session_id,
+        )
+        await spawn_subagent(
+            ctx,
+            spec,
+            task,
+            fork=spec.isolation,
+            ledger_todo_id=ledger_todo_id,
+            run_in_background=True,
+            on_complete=make_run_completer(run_id),
+        )
+        return _json(
+            {
+                "ok": True,
+                "mode": "background",
+                "run_id": run_id,
+                "subagent": spec.name,
+                "type": spec.type,
+                "definition_scope": definition_scope,
+                "status": "running",
+                "message": (
+                    f"Subagent {spec.name!r} is running in the background. Keep working and poll the "
+                    f"result later with check_subagent(run_id={run_id!r})."
+                ),
+            }
+        )
+
     handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id)
     result = handle.result
     return _json(
@@ -304,3 +350,53 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             "tokens_used": result.tokens_used if result else 0,
         }
     )
+
+
+@tool(
+    ToolMeta(
+        name="check_subagent",
+        description=(
+            "Check a background subagent spawned with spawn_subagent(run_in_background=true). "
+            "Pass run_id to get one run's status and (when finished) its conclusion digest; omit run_id "
+            "to list your recent background runs. A run is 'running', 'completed' (result ready), or "
+            "'failed' — including a worker that died in a process restart, which resolves as failed rather "
+            "than staying 'running' forever, so this poll always terminates."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The run_id returned by a background spawn_subagent. Omit to list recent runs.",
+                },
+            },
+        },
+        category="coordination",
+        display_name="Check Subagent",
+        icon="🔍",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
+async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.subagent_run_service import get_subagent_run, list_subagent_runs
+
+    run_id = str(arguments.get("run_id") or "").strip()
+    if run_id:
+        record = await get_subagent_run(run_id, agent_id)
+        if record is None:
+            return _json({"ok": False, "error": f"no background subagent run {run_id!r} for this agent"})
+        metadata = record.get("metadata") or {}
+        return _json(
+            {
+                "ok": True,
+                "run_id": run_id,
+                "name": record.get("child_agent_name"),
+                "status": record.get("status"),
+                "result": record.get("result") or "",
+                "orphaned_by_restart": bool(metadata.get("orphaned_by_restart")),
+            }
+        )
+    return _json({"ok": True, "runs": await list_subagent_runs(agent_id)})

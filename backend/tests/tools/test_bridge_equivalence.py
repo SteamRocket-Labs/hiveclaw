@@ -28,6 +28,7 @@ def test_combined_openai_tools_matches_canonical_surface():
             "request_plan_mode",
             "run_command",
             "spawn_subagent",
+            "check_subagent",
             "preview_workflow",
             "start_workflow",
             "feishu_approval_create",

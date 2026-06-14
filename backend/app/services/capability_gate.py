@@ -122,6 +122,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "delegate_to_agent": "agent.message.send",
     "send_message_to_agent": "agent.message.send",
     "spawn_subagent": "agent.subagent.spawn",
+    "check_subagent": "agent.subagent.read",
     "preview_workflow": "agent.workflow.preview",
     "start_workflow": "agent.workflow.run",
     "check_async_task": "agent.async_task.read",
@@ -196,6 +197,7 @@ _CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset(
         "read_mcp_resource",  # alias of inspect_mcp_tool
         "mcp_list_resources",
         "mcp_read_resource",
+        "check_subagent",
         "get_current_time",
         # CC-align Phase B: asks the current user, no external side effect → exempt
         "ask_user_question",

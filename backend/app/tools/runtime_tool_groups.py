@@ -23,7 +23,7 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         summary="网页搜索与抓取能力，用于公开信息检索与网页内容提取。",
         source="system",
         activation_mode="通过 tool_search 发现 schema；需要方法时另读 web research skill",
-        tools=("web_search", "web_fetch", "firecrawl_fetch", "xcrawl_scrape"),
+        tools=("web_search", "firecrawl_fetch", "xcrawl_scrape"),
     ),
     RuntimeToolGroupSpec(
         name="feishu_pack",
@@ -85,22 +85,6 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         tools=("send_email", "read_emails", "reply_email"),
     ),
     RuntimeToolGroupSpec(
-        name="coordination_pack",
-        summary="Agent 协作与轻量 subagent 扇出能力，用于同事协作、后台任务跟进和隔离式探索。",
-        source="system",
-        activation_mode="通过 tool_search 发现协作工具 schema；source capability 仍可直接使用",
-        tools=(
-            "send_message_to_agent",
-            "delegate_to_agent",
-            "spawn_subagent",
-            "check_async_task",
-            "cancel_async_task",
-            "list_async_tasks",
-            "preview_workflow",
-            "start_workflow",
-        ),
-    ),
-    RuntimeToolGroupSpec(
         name="mcp_admin_pack",
         summary="MCP 资源发现、导入与资源读取能力。",
         source="mcp",
@@ -119,16 +103,13 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         source="system",
         activation_mode="通过 tool_search 发现 schema；需要方法时另读 Office Productivity skill",
         tools=(
-            "read_file",
             "read_document",
-            "list_files",
             "office_document_create",
             "office_document_view",
             "office_document_query",
             "office_document_apply",
             "office_document_validate",
             "office_document_dump",
-            "send_channel_file",
         ),
         infer_from_tools=False,
     ),
@@ -144,20 +125,6 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
             "deep_research_cancel",
             "deep_research_export",
         ),
-        infer_from_tools=False,
-    ),
-    RuntimeToolGroupSpec(
-        name="plan_mode_pack",
-        summary=(
-            "计划模式能力：主 agent 可用 request_plan_mode 请求进入计划模式（用户批准后才进入），"
-            "进入后只读探索、用 ask_user_question 澄清关键问题，再用 exit_plan_mode 提交待确认计划。"
-        ),
-        source="system",
-        activation_mode=(
-            "request_plan_mode 由用户批准进入；进入后 runtime 注入提示词，"
-            "ask_user_question 澄清、exit_plan_mode 收口"
-        ),
-        tools=("request_plan_mode", "exit_plan_mode", "ask_user_question"),
         infer_from_tools=False,
     ),
 )

@@ -72,12 +72,15 @@ def test_request_plan_mode_excluded_from_subagents():
     assert "request_plan_mode" in _SUBAGENT_BASE_EXCLUDED_TOOLS
 
 
-def test_request_plan_mode_in_plan_mode_pack():
+def test_request_plan_mode_is_core_plan_mode_pack_retired():
+    # Step 0: plan_mode_pack was a CORE-only catalog anchor (request_plan_mode /
+    # exit_plan_mode / ask_user_question are all CORE, turn-1 visible). The
+    # zero-effect pack entry is retired; the tool stays CORE.
+    from app.services.agent_tools import CORE_TOOL_NAMES
     from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
-    pack = runtime_tool_group_for_name("plan_mode_pack")
-    assert pack is not None
-    assert "request_plan_mode" in pack.tools
+    assert runtime_tool_group_for_name("plan_mode_pack") is None
+    assert "request_plan_mode" in CORE_TOOL_NAMES
 
 
 def test_request_plan_mode_ends_turn_like_clarification():

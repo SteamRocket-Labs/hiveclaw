@@ -304,6 +304,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Builtin tools seed failed: {e}")
 
+    # Hard invariant (Step 0): no CORE tool may also be a pack member. Fail-fast
+    # at startup so CORE∩pack drift is caught at deploy time, not in production.
+    # NOT wrapped in try/except — a violation must crash startup, not warn.
+    from app.tools.audit import assert_core_pack_disjoint
+
+    assert_core_pack_disjoint()
+
     # Run tool coverage audit — flag tools without any discovery path
     # (no pack, no declared_tools in a system/template skill, no prompt mention).
     try:

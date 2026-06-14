@@ -100,16 +100,16 @@ def test_delegation_profiles_never_grant_source_capabilities():
         assert not leaked, f"{profile.name} leaks {leaked}"
 
 
-# ── Red test #7 — pack keeps catalog semantics ──────────────────────
+# ── Step 0 — CORE-only pack retired, no catalog straddle ─────────────
 
 
-def test_coordination_pack_remains_catalog_for_source_capabilities():
-    """The pack stays as a directory/grouping anchor; promotion to core does
-    not delete it. (Deliberately NOT asserting that disabling the pack hides
-    the three tools — core members bypass pack policy via the
-    ``_always_tools`` fallback, §8.2#1.)"""
+def test_coordination_pack_retired_source_capabilities_stay_core():
+    """Step 0: the zero-effect ``coordination_pack`` catalog anchor is retired.
+    Its members were all CORE (turn-1 visible via the ``_always_tools`` fallback,
+    bypassing pack policy), so the pack entry added no discovery signal — only a
+    drifting second source of truth. The source capabilities remain CORE."""
+    from app.services.agent_tools import CORE_TOOL_NAMES
     from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
-    pack = runtime_tool_group_for_name("coordination_pack")
-    assert pack is not None
-    assert SOURCE_CAPABILITY_TOOLS <= set(pack.tools)
+    assert runtime_tool_group_for_name("coordination_pack") is None
+    assert SOURCE_CAPABILITY_TOOLS <= CORE_TOOL_NAMES

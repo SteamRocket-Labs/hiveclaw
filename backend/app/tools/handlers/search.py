@@ -140,7 +140,6 @@ async def web_search(arguments: dict) -> str:
     read_only=True,
     parallel_safe=True,
     governance="safe",
-    pack="web_pack",
     aliases=("read_webpage",),
     adapter="args_only",
 ))

@@ -92,7 +92,7 @@ async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) 
     # caller already holds (subagent definition's tenant). None pins an empty
     # GUC (fail-closed) which is the same safe default as get_db().
     async with tenant_scoped_session(tenant_id) as db:
-        base_filters = [LLMModel.enabled.is_(True)]
+        base_filters: list[Any] = [LLMModel.enabled.is_(True)]
         if tenant_id is not None:
             base_filters.append(LLMModel.tenant_id == tenant_id)
 
@@ -185,7 +185,6 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         display_name="Spawn Subagent",
         icon="🧬",
         governance="sensitive",
-        pack="coordination_pack",
         adapter="request",
     )
 )

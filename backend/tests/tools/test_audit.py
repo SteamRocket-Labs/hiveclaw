@@ -30,6 +30,7 @@ def test_coverage_as_dict_schema():
         "total_tools",
         "orphans",
         "unregistered_system_skill_dirs",
+        "covered_by_core",
         "covered_by_pack_only",
         "covered_by_skill_only",
         "covered_by_prompt_only",

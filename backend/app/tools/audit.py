@@ -32,6 +32,7 @@ class ToolAuditReport:
     covered_by_pack: frozenset[str] = field(default_factory=frozenset)
     covered_by_skill: frozenset[str] = field(default_factory=frozenset)
     covered_by_prompt: frozenset[str] = field(default_factory=frozenset)
+    covered_by_core: frozenset[str] = field(default_factory=frozenset)
     orphans: frozenset[str] = field(default_factory=frozenset)
     unregistered_system_skill_dirs: frozenset[str] = field(default_factory=frozenset)
 
@@ -40,9 +41,16 @@ class ToolAuditReport:
             "total_tools": self.total_tools,
             "orphans": sorted(self.orphans),
             "unregistered_system_skill_dirs": sorted(self.unregistered_system_skill_dirs),
-            "covered_by_pack_only": sorted(self.covered_by_pack - self.covered_by_skill - self.covered_by_prompt),
-            "covered_by_skill_only": sorted(self.covered_by_skill - self.covered_by_pack - self.covered_by_prompt),
-            "covered_by_prompt_only": sorted(self.covered_by_prompt - self.covered_by_pack - self.covered_by_skill),
+            "covered_by_core": sorted(self.covered_by_core),
+            "covered_by_pack_only": sorted(
+                self.covered_by_pack - self.covered_by_skill - self.covered_by_prompt - self.covered_by_core
+            ),
+            "covered_by_skill_only": sorted(
+                self.covered_by_skill - self.covered_by_pack - self.covered_by_prompt - self.covered_by_core
+            ),
+            "covered_by_prompt_only": sorted(
+                self.covered_by_prompt - self.covered_by_pack - self.covered_by_skill - self.covered_by_core
+            ),
         }
 
 
@@ -67,6 +75,32 @@ def _pack_tools() -> frozenset[str]:
         logger.debug("[tool-audit] failed to read manifest pack catalog: %s", exc)
 
     return frozenset(tools)
+
+
+def assert_core_pack_disjoint() -> None:
+    """Hard invariant: no CORE tool may also be a *runtime* pack member.
+
+    A CORE tool is turn-1 visible via the ``_always_tools`` fallback and bypasses
+    pack policy, so listing it in a RUNTIME_TOOL_GROUPS pack is a zero-effect
+    "straddle" that spawns a drifting second source of truth. Raises at startup
+    (fail-fast) so the drift is caught at deploy time rather than in production.
+
+    Scope: checks the runtime truth source (RUNTIME_TOOL_GROUPS). The manifest
+    pack.yaml catalog is NOT runtime-participating in v1 (see
+    ``app/packs/catalog_reader.py``) and legitimately references CORE tools as
+    workflow dependencies; Step 4 splits manifest tools into owns/requires_core
+    and extends this invariant to manifest *owns* only.
+    """
+    from app.services.agent_tools import CORE_TOOL_NAMES
+    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
+
+    pack_tools = {tool for pack in RUNTIME_TOOL_GROUPS for tool in pack.tools}
+    straddlers = sorted(CORE_TOOL_NAMES & pack_tools)
+    if straddlers:
+        raise RuntimeError(
+            "CORE∩pack invariant violated — these CORE tools are also declared as "
+            f"runtime pack members; remove them from RUNTIME_TOOL_GROUPS: {straddlers}"
+        )
 
 
 def _template_skill_declared_tools(backend_root: Path | None = None) -> frozenset[str]:
@@ -140,6 +174,7 @@ def _unregistered_system_skill_dirs(backend_root: Path | None = None) -> frozens
 def audit_tool_coverage(*, backend_root: Path | None = None) -> ToolAuditReport:
     """Compute which tools have at least one discovery path; return the full report."""
     from app.tools.collector import collect_tools
+    from app.services.agent_tools import CORE_TOOL_NAMES
 
     collected = collect_tools()
     all_tools = frozenset(request["function"]["name"] for request in collected.openai_tools)
@@ -147,8 +182,12 @@ def audit_tool_coverage(*, backend_root: Path | None = None) -> ToolAuditReport:
     covered_pack = _pack_tools() & all_tools
     covered_skill = _template_skill_declared_tools(backend_root) & all_tools
     covered_prompt = _prompt_section_mentions(all_tools, backend_root)
+    # CORE tools are turn-1 visible via the _always_tools fallback — their schema
+    # IS the discovery signal, so core membership is a first-class discovery path.
+    # Without this, retiring a CORE-only pack mislabels its core tools as orphans.
+    covered_core = frozenset(CORE_TOOL_NAMES) & all_tools
 
-    covered = covered_pack | covered_skill | covered_prompt
+    covered = covered_pack | covered_skill | covered_prompt | covered_core
     orphans = all_tools - covered
 
     return ToolAuditReport(
@@ -156,6 +195,7 @@ def audit_tool_coverage(*, backend_root: Path | None = None) -> ToolAuditReport:
         covered_by_pack=covered_pack,
         covered_by_skill=covered_skill,
         covered_by_prompt=covered_prompt,
+        covered_by_core=covered_core,
         orphans=orphans,
         unregistered_system_skill_dirs=_unregistered_system_skill_dirs(backend_root),
     )

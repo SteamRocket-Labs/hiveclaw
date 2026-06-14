@@ -103,47 +103,32 @@ jobs:
         # image + eval Postgres/Redis + eval tenant/agent runtime. GitHub only
         # retrieves the JSON report and applies the baseline/integrity gate.
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_EVAL_PROJECT_ID: ${{ secrets.RAILWAY_EVAL_PROJECT_ID }}
-          RAILWAY_EVAL_ENVIRONMENT: ${{ secrets.RAILWAY_EVAL_ENVIRONMENT }}
-          RAILWAY_EVAL_SERVICE: ${{ secrets.RAILWAY_EVAL_SERVICE }}
+          HIVE_EVAL_API_URL: ${{ secrets.HIVE_EVAL_API_URL }}
+          HIVE_EVAL_CI_TOKEN: ${{ secrets.HIVE_EVAL_CI_TOKEN }}
           HIVE_EVAL_REPORT: /tmp/hive-behavior-report.json
           HIVE_EVAL_INTEGRITY: /tmp/hive-evaluator-integrity.json
         run: |
-          if [ -z "$RAILWAY_TOKEN" ] || [ -z "$RAILWAY_EVAL_PROJECT_ID" ] || [ -z "$RAILWAY_EVAL_ENVIRONMENT" ] || [ -z "$RAILWAY_EVAL_SERVICE" ]; then
-            echo "::warning::behavior eval gate skipped — Railway eval service secrets not configured"
+          if [ -z "$HIVE_EVAL_API_URL" ] || [ -z "$HIVE_EVAL_CI_TOKEN" ]; then
+            echo "::warning::behavior eval gate skipped — Hive eval API secrets not configured"
             exit 0
           fi
-          curl -fsSL https://railway.app/install.sh | bash
-          export PATH="$HOME/.railway/bin:$PATH"
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "github-actions-hive-eval-${GITHUB_RUN_ID}" >/dev/null
-          chmod 600 "$HOME/.ssh/id_ed25519"
           python -m app.evals.evaluator_integrity \
             --current-root . \
             --trusted-root ../protected-base/backend \
             --output "$HIVE_EVAL_INTEGRITY"
-          REMOTE_OUTPUT="$(railway ssh \
-            --project "$RAILWAY_EVAL_PROJECT_ID" \
-            --environment "$RAILWAY_EVAL_ENVIRONMENT" \
-            --service "$RAILWAY_EVAL_SERVICE" \
-            "cd /app && python -m app.evals.hive_live_runner --production-runtime --output -")"
-          printf '%s\n' "$REMOTE_OUTPUT"
-          REPORT_B64="$(printf '%s\n' "$REMOTE_OUTPUT" | sed -n 's/^::hive-behavior-report:://p' | tail -n 1)"
-          if [ -z "$REPORT_B64" ]; then
-            echo "::error::Railway eval did not emit ::hive-behavior-report:: marker"
+          HTTP_STATUS="$(curl -sS \
+            -o "$HIVE_EVAL_REPORT" \
+            -w '%{http_code}' \
+            -X POST \
+            "${HIVE_EVAL_API_URL%/}/api/eval-ci/behavior" \
+            -H "Authorization: Bearer $HIVE_EVAL_CI_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{}')"
+          cat "$HIVE_EVAL_REPORT"
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::error::Hive eval API returned HTTP $HTTP_STATUS"
             exit 1
           fi
-          python - "$REPORT_B64" "$HIVE_EVAL_REPORT" <<'PY'
-          import base64
-          import json
-          import sys
-          from pathlib import Path
-
-          payload = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
-          Path(sys.argv[2]).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-          PY
           RUNNING_MODEL="$(python - "$HIVE_EVAL_REPORT" <<'PY'
           import json
           import sys

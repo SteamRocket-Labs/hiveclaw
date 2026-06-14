@@ -77,55 +77,12 @@ _OFFICE = {
     "office_document_dump",
 }
 
-_STATIC_READ_ONLY_TOOL_NAMES = {
-    "read_file",
-    "glob_search",
-    "grep_search",
-    "read_document",
-    "list_files",
-    "list_triggers",
-    "web_search",
-    "web_fetch",
-    "firecrawl_fetch",
-    "xcrawl_scrape",
-    "tool_search",
-    "search_memory",
-    "load_memory",
-    "discover_resources",
-    "list_mcp_resources",
-    "read_mcp_resource",
-    "check_async_task",
-    "list_async_tasks",
-    "search_memory",
-    "load_memory",
-    "get_current_time",
-    "office_document_view",
-    "office_document_query",
-    "office_document_validate",
-    "office_document_dump",
-}
 
-_STATIC_PARALLEL_SAFE_TOOL_NAMES = {
-    "read_file",
-    "glob_search",
-    "grep_search",
-    "read_document",
-    "list_files",
-    "list_triggers",
-    "web_search",
-    "web_fetch",
-    "firecrawl_fetch",
-    "xcrawl_scrape",
-    "check_async_task",
-    "list_async_tasks",
-    "get_current_time",
-    "office_document_view",
-    "office_document_query",
-    "office_document_validate",
-    "office_document_dump",
-}
-
-
+# Single source of truth for tool classification = ToolMeta flags on each @tool
+# handler (collected by collector.collect_tools). The previous hardcoded
+# _STATIC_READ_ONLY / _STATIC_PARALLEL_SAFE name lists were a drifting second
+# source — removed (Step 1). The static set was a strict subset of the decorator
+# set, so removal is behavior-preserving.
 def _resolve_collected_registry_names() -> tuple[frozenset[str], frozenset[str]]:
     from .collector import collect_tools
 
@@ -134,16 +91,20 @@ def _resolve_collected_registry_names() -> tuple[frozenset[str], frozenset[str]]
 
 
 class _LazyToolNameSet(Set[str]):
-    def __init__(self, static_names: set[str], kind: str) -> None:
-        self._static_names = frozenset(static_names)
+    """Lazy, decorator-sourced view of a tool classification.
+
+    Resolution is deferred to first access because importing the collector at
+    module load would create an import cycle.
+    """
+
+    def __init__(self, kind: str) -> None:
         self._kind = kind
         self._resolved: frozenset[str] | None = None
 
     def _ensure(self) -> frozenset[str]:
         if self._resolved is None:
             read_only, parallel_safe = _resolve_collected_registry_names()
-            dynamic = read_only if self._kind == "read_only" else parallel_safe
-            self._resolved = frozenset(set(self._static_names) | set(dynamic))
+            self._resolved = read_only if self._kind == "read_only" else parallel_safe
         return self._resolved
 
     def __contains__(self, item: object) -> bool:
@@ -159,8 +120,23 @@ class _LazyToolNameSet(Set[str]):
         return repr(self._ensure())
 
 
-READ_ONLY_TOOL_NAMES: Set[str] = _LazyToolNameSet(_STATIC_READ_ONLY_TOOL_NAMES, "read_only")
-PARALLEL_SAFE_TOOL_NAMES: Set[str] = _LazyToolNameSet(_STATIC_PARALLEL_SAFE_TOOL_NAMES, "parallel_safe")
+READ_ONLY_TOOL_NAMES: Set[str] = _LazyToolNameSet("read_only")
+PARALLEL_SAFE_TOOL_NAMES: Set[str] = _LazyToolNameSet("parallel_safe")
+
+# Lazy decorator-sourced caches for destructive flags and per-tool result-char
+# limits (ToolMeta.destructive / ToolMeta.max_result_chars).
+_DESTRUCTIVE_NAMES: frozenset[str] | None = None
+_RESULT_CHAR_LIMITS: dict[str, int | None] | None = None
+
+
+def _ensure_destructive_and_limits() -> None:
+    global _DESTRUCTIVE_NAMES, _RESULT_CHAR_LIMITS
+    if _DESTRUCTIVE_NAMES is None or _RESULT_CHAR_LIMITS is None:
+        from .collector import collect_tools
+
+        collected = collect_tools()
+        _DESTRUCTIVE_NAMES = collected.destructive_names
+        _RESULT_CHAR_LIMITS = dict(collected.result_char_limits)
 
 
 def is_read_only_tool(name: str) -> bool:
@@ -169,6 +145,21 @@ def is_read_only_tool(name: str) -> bool:
 
 def is_parallel_safe_tool(name: str) -> bool:
     return name in PARALLEL_SAFE_TOOL_NAMES
+
+
+def is_destructive_tool(name: str) -> bool:
+    """True if the tool is flagged destructive (irreversible / overwriting)."""
+    _ensure_destructive_and_limits()
+    assert _DESTRUCTIVE_NAMES is not None
+    return name in _DESTRUCTIVE_NAMES
+
+
+def result_char_limit_for_tool(name: str) -> int | None:
+    """Return the tool's configured ToolMeta.max_result_chars, or None if unset
+    (caller falls back to the global eviction threshold)."""
+    _ensure_destructive_and_limits()
+    assert _RESULT_CHAR_LIMITS is not None
+    return _RESULT_CHAR_LIMITS.get(name)
 
 
 def infer_category(tool_name: str) -> str:

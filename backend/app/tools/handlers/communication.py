@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from app.tools.decorator import ToolMeta, tool
+from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
 
 # -- send_feishu_message ------------------------------------------------------
@@ -222,6 +222,7 @@ async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="check_async_task",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description="Check the status of a previously spawned async agent task. Returns running/completed/failed plus result when available.",
         parameters={
             "type": "object",
@@ -284,6 +285,7 @@ async def cancel_async_task(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="list_async_tasks",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description="List recent async agent tasks that you spawned. Useful for coordinators that need to inspect multiple worker tasks.",
         parameters={
             "type": "object",
@@ -310,6 +312,7 @@ async def list_async_tasks(agent_id: uuid.UUID) -> str:
 @tool(
     ToolMeta(
         name="get_current_time",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description="Return the current local time for your effective timezone. Useful for scheduling, trigger creation, and time-aware planning.",
         parameters={
             "type": "object",

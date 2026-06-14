@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0 已实施落地**（2026-06-14，全量 4399 passed / 0 failed，证据见 §8 实施日志）。Step 1-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-1 已实施落地**（2026-06-14，全量 4407 passed / 0 failed，证据见 §8 实施日志）。Step 2-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -110,7 +110,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | Step | 子系统 | 核心改动 | 依赖 |
 |------|--------|---------|------|
 | **0** ✅ | cleanup | 退役 `coordination_pack`/`plan_mode_pack` 这类 CORE-only runtime group entry（不是删工具）；脚踏两船工具清出 plugin `owns`；**核实 cut 清单引用点(§5.1)**——`fanout_subagents` recursion guard / `SubagentJob`·`Budget` / `FALLBACK_EXECUTOR_NAME` 经核实都是活的，**禁盲删**；加 startup 断言 `CORE∩pack.owns=∅`(只对 owns，`requires_core` 允许引用 CORE)。**已实施，证据见 §8。** | — |
-| **1** | tool-contract | 消除 `read_only/parallel_safe` 双定义(删 `registry.py:80-163` 静态名单，单源 decorator)；`ToolMeta` 增 `destructive:bool`+`max_result_chars:int\|None`；`read_file/read_document` 设 ∞ | 0 |
+| **1** ✅ | tool-contract | 消除 `read_only/parallel_safe` 双定义(删 `registry.py:80-163` 静态名单，单源 decorator)；`ToolMeta` 增 `destructive:bool`+`max_result_chars:int\|None`；`read_file/read_document` 设 ∞ | 0 |
 | **2** | tool-contract | 修 critical：扩展现有 `result_envelope.py` 或新建 `ToolContentEnvelope(text+blocks)`（避免与 error/fallback envelope 命名碰撞），`adapt_and_call` 透传 typed content block(image/pdf)；`read_document`(PDF)/`read_file`(图)首接；保留纯字符串默认 | 1 |
 | **3** | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数；补 turn-1 deferred 清单+`select:` 直选；token-阈值 auto 模式；loaded-tool state 必须进入 compaction/replay/prompt-cache 稳定排序/invocation span。**实现 provider-neutral**：Hive 自己的 schema expansion/event path 为主，`tool_reference` 仅作 Anthropic fast path(守 L3) | 0,4 |
 | **4** | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
@@ -243,3 +243,31 @@ $ pytest tests -q          # 全量后端回归
 $ ruff check <改动文件>     # All checks passed!
 ```
 注：`search.py` 全文件 format-dirty 是 pre-existing（紧凑 `@tool(ToolMeta(` 风格 vs ruff 展开式，298→358 行），本 Step 只删 1 行(`git diff --stat` = 1 deletion)，按 scope-discipline 不触发存量 churn。
+
+### Step 1 — tool-contract（✅ 2026-06-14，单源分类 + destructive + per-tool 落盘）
+
+**改动文件：**
+- `app/tools/decorator.py`：`ToolMeta` 加 `destructive: bool`（CC isDestructive 对标）+ `max_result_chars: int | None`（CC per-tool maxResultSizeChars 对标）；加常量 `RESULT_CHARS_UNLIMITED = 0`。
+- `app/tools/collector.py`：`CollectedTools` 加 `destructive_names` + `result_char_limits`，collect 时从 ToolMeta 收集。
+- `app/tools/registry.py`：**删 `_STATIC_READ_ONLY_TOOL_NAMES` + `_STATIC_PARALLEL_SAFE_TOOL_NAMES` 两份硬编码双定义名单**；`_LazyToolNameSet` 简化为纯 decorator 单源（去静态合并）；加 `is_destructive_tool()` + `result_char_limit_for_tool()`。
+- 15 个工具 decorator 设 `max_result_chars=RESULT_CHARS_UNLIMITED`（search/communication/filesystem/skills/triggers）；5 个破坏性工具设 `destructive=True`（delete_file / retire_memory / feishu_doc_delete / feishu_base_record_delete / feishu_calendar_delete）。
+- `app/kernel/engine.py`：**删硬编码 `_EVICTION_EXEMPT_TOOLS` 集合**，新增 `_resolve_eviction_threshold()`（per-tool 落盘阈值，单源 `ToolMeta.max_result_chars`），`_maybe_evict_tool_result` + microcompact 用它；新增 `_is_concurrency_safe_tool()`（parallel_safe ∧ ¬destructive），4 处并发判断改用它（破坏性工具永不并发）。
+- 测试：新建 `tests/tools/test_tool_contract.py`（8 测试）。
+
+**消除的双定义/硬编码（单源化）：**
+1. **read_only/parallel_safe**：`registry._STATIC_*` 名单 ✗ → 纯 `@tool` decorator（collector）单源。验证：静态名单是 decorator 名单的真子集（static-only 差集 = ∅），删除行为保持（READ_ONLY size 46 不变）。
+2. **落盘豁免**：`engine._EVICTION_EXEMPT_TOOLS` 硬编码 18 工具集 ✗ → `ToolMeta.max_result_chars=∞` decorator 单源。验证：旧集的 15 个 alive 工具与新标注的 15 个**完全一致**；死条目 `get_task`/`list_tasks`（已不存在的工具）随之清除。
+
+**destructive 消费（§6 决策 5"先观察"）：** 一等标志 → collector 收集 → registry 查询 → engine 并发防御（`_is_concurrency_safe_tool` 确保破坏性工具即使误标 parallel_safe 也不并发，对标 CC destructive 不并发）。不进 DB（read_only/parallel_safe 同为纯运行时元数据，Tool model 无这些列）。
+
+**验证证据：**
+```
+$ pytest tests/tools/test_tool_contract.py tests/tools/ -q
+317 passed
+
+$ pytest tests -q          # 全量后端回归
+4407 passed, 7 skipped, 4 warnings   # 0 failed (= Step0 的 4399 + 8 新测试)
+
+$ ruff check <核心文件>     # All checks passed!
+```
+注：`char_limits` 实际 16 项（15 主名 + `bing_search` alias 继承 web_search 的 ToolMeta，合理）。`memory.py:642/673`、`engine.py` 多处 Pyright ✘ 是 pre-existing 类型 narrowing 噪音（运行时正常，全量绿），非本 Step 引入，未纳入。

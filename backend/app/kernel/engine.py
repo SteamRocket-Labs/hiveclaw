@@ -44,7 +44,7 @@ from app.services.invocation_trace import (
     reset_invocation_id,
     set_invocation_id,
 )
-from app.tools.registry import is_parallel_safe_tool
+from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
 
 # Mid-loop compaction: check every N rounds and compress when approaching context limit.
 # P1-W2-3: Tightened from 0.90 to 0.75 — the audit found that running to 90%
@@ -126,29 +126,21 @@ def _compute_microcompact_gap(used_tokens: int, model_window: int | None) -> int
     return _MICROCOMPACT_GAP_SECONDS
 
 
-# Tools whose output should never be evicted (small, structural results).
-_EVICTION_EXEMPT_TOOLS = frozenset(
-    {
-        "list_files",
-        "read_file",
-        "load_skill",
-        "tool_search",
-        "fs_read",
-        "fs_list",
-        "discover_resources",
-        "list_triggers",
-        "list_tasks",
-        "get_task",
-        "get_current_time",
-        "check_async_task",
-        "list_async_tasks",
-        # Content-critical tools — already have their own internal truncation.
-        "web_search",
-        "firecrawl_fetch",
-        "xcrawl_scrape",
-        "read_document",
-    }
-)
+def _resolve_eviction_threshold(tool_name: str) -> int | None:
+    """Per-tool tool-result eviction threshold in chars; None = never evict.
+
+    Single source = ToolMeta.max_result_chars (collected into the registry):
+    unset → global default; RESULT_CHARS_UNLIMITED (0) or negative → unlimited
+    (replaces the former hardcoded _EVICTION_EXEMPT_TOOLS set); positive → that
+    limit. Small / structural / self-truncating tools (read_file, list_files,
+    web_search, …) declare RESULT_CHARS_UNLIMITED on their @tool decorator.
+    """
+    limit = result_char_limit_for_tool(tool_name)
+    if limit is None:
+        return _TOOL_RESULT_EVICTION_THRESHOLD
+    if limit <= 0:
+        return None
+    return limit
 
 logger = logging.getLogger(__name__)
 
@@ -634,11 +626,20 @@ def _turn_token_budget_message(tokens_used: int, token_budget: int) -> str:
     )
 
 
+def _is_concurrency_safe_tool(name: str) -> bool:
+    """A tool may run concurrently only if it is parallel-safe AND not destructive.
+
+    Destructive tools never run concurrently even if mis-flagged parallel_safe
+    (CC isDestructive parity / concurrency defense).
+    """
+    return is_parallel_safe_tool(name) and not is_destructive_tool(name)
+
+
 def _can_parallelize_batch(tool_calls: list[dict]) -> bool:
     """Check if all tool calls in a batch can run in parallel."""
     for tc in tool_calls:
         name = tc["function"]["name"]
-        if not is_parallel_safe_tool(name):
+        if not _is_concurrency_safe_tool(name):
             return False
     return True
 
@@ -1764,16 +1765,20 @@ def _maybe_evict_tool_result(
 
     result_len = len(result)
 
-    if tool_name in _EVICTION_EXEMPT_TOOLS and not force:
+    threshold = _resolve_eviction_threshold(tool_name)
+    if threshold is None and not force:
+        # Tool opted out of eviction (ToolMeta.max_result_chars=RESULT_CHARS_UNLIMITED):
+        # small / structural / self-truncating results are kept inline.
         if result_len > _TOOL_RESULT_EVICTION_THRESHOLD:
             logger.info(
-                "[Kernel] Tool result kept (exempt): tool=%s, chars=%d, tool_call_id=%s",
+                "[Kernel] Tool result kept (unlimited): tool=%s, chars=%d, tool_call_id=%s",
                 tool_name,
                 result_len,
                 tool_call_id,
             )
         return result
-    if result_len <= _TOOL_RESULT_EVICTION_THRESHOLD and not force:
+    effective_threshold = _TOOL_RESULT_EVICTION_THRESHOLD if threshold is None else threshold
+    if result_len <= effective_threshold and not force:
         return result
     if force and result_len <= _TOOL_RESULT_PREVIEW_LENGTH:
         return result
@@ -1782,7 +1787,7 @@ def _maybe_evict_tool_result(
         "[Kernel] Tool result evicted: tool=%s, chars=%d, threshold=%d, tool_call_id=%s, reason=%s",
         tool_name,
         result_len,
-        _TOOL_RESULT_EVICTION_THRESHOLD,
+        effective_threshold,
         tool_call_id,
         reason,
     )
@@ -3173,7 +3178,7 @@ class AgentKernel:
                                 return await _abort_for_loop_guard(call_loop_decision)
 
                     if len(parsed_tool_calls) > 1 and any(
-                        is_parallel_safe_tool(tool_name) for _tc, tool_name, _args in parsed_tool_calls
+                        _is_concurrency_safe_tool(tool_name) for _tc, tool_name, _args in parsed_tool_calls
                     ):
                         # --- Segmented parallel execution ---
                         # Parallel-safe tools run concurrently within their ordered
@@ -3220,14 +3225,14 @@ class AgentKernel:
                         unsafe_indices = [
                             idx
                             for idx, (_tc, t_name, _t_args) in enumerate(parsed_tool_calls)
-                            if not is_parallel_safe_tool(t_name)
+                            if not _is_concurrency_safe_tool(t_name)
                         ]
 
                         async def _run_tool(
                             index: int, t_name: str, t_args: dict
                         ) -> tuple[str, dict[str, Any], bool]:
                             try:
-                                if is_parallel_safe_tool(t_name):
+                                if _is_concurrency_safe_tool(t_name):
                                     for prev_unsafe in unsafe_indices:
                                         if prev_unsafe >= index:
                                             break
@@ -3632,7 +3637,7 @@ class AgentKernel:
                                 _is_exempt = any(
                                     prev.role == "assistant"
                                     and any(
-                                        tc.get("function", {}).get("name", "") in _EVICTION_EXEMPT_TOOLS
+                                        _resolve_eviction_threshold(tc.get("function", {}).get("name", "")) is None
                                         for tc in (prev.tool_calls or [])
                                         if tc.get("id") == _tc_id
                                     )

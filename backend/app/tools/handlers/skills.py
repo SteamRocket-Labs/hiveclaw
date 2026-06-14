@@ -5,13 +5,14 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from app.tools.decorator import ToolMeta, tool
+from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
 
 # -- load_skill ---------------------------------------------------------------
 
 @tool(ToolMeta(
     name="load_skill",
+    max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
         "Load the full instructions for a named skill from the skills/ directory.\n\n"
         "Usage:\n"
@@ -156,6 +157,7 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
 
 @tool(ToolMeta(
     name="tool_search",
+    max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
         "Discover deferred capability packs, tools, and skills that can be used on demand.\n\n"
         "Usage:\n"

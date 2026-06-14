@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from app.tools.decorator import ToolMeta, tool
+from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
 # ── web_search ───────────────────────────────────────────────────────
 
 @tool(ToolMeta(
     name="web_search",
+    max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
         "Search the internet for public information. Prefer Exa when it is configured; otherwise fall back to Tavily or DuckDuckGo.\n\n"
         "Usage:\n"
@@ -152,6 +153,7 @@ async def web_fetch(arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="firecrawl_fetch",
+    max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
         "Fetch a known URL with Firecrawl for heavier page extraction, JS-heavy pages, or cleaner markdown than a raw fetch.\n\n"
         "Usage:\n"
@@ -189,6 +191,7 @@ async def firecrawl_fetch(arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="xcrawl_scrape",
+    max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
         "Scrape a known URL with XCrawl for JS-rendered, anti-bot, or otherwise difficult pages.\n\n"
         "Usage:\n"
@@ -226,6 +229,7 @@ async def xcrawl_scrape(arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="discover_resources",
+    max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
         "Search public MCP registries (Smithery + ModelScope) for tools and capabilities that can extend your abilities.\n\n"
         "Usage:\n"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.tools.decorator import ToolMeta, tool
+from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
 
 # -- set_trigger --------------------------------------------------------------
@@ -154,6 +154,7 @@ async def cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
 
 @tool(ToolMeta(
     name="list_triggers",
+    max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
         "List all your active triggers.\n\n"
         "Usage:\n"

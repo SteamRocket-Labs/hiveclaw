@@ -19,6 +19,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+# max_result_chars sentinel: a tool result with this limit is never evicted to a
+# workspace file (CC Read=∞ parity). Distinct from None, which means "use the
+# global default eviction threshold".
+RESULT_CHARS_UNLIMITED = 0
+
 
 @dataclass(frozen=True, slots=True)
 class ToolMeta:
@@ -36,6 +41,15 @@ class ToolMeta:
     is_default: bool = True
     read_only: bool = False
     parallel_safe: bool = False
+    # CC isDestructive parity: an irreversible / data-destroying op (delete or
+    # overwrite). A destructive tool never runs concurrently even if it were
+    # mis-flagged parallel_safe (observability + concurrency defense).
+    destructive: bool = False
+    # CC per-tool maxResultSizeChars parity: char threshold above which the tool
+    # result is evicted to a workspace file and replaced with a preview. None =
+    # use the global default threshold; RESULT_CHARS_UNLIMITED (0) = never evict
+    # (small / structural / self-truncating results, e.g. read_file/read_document).
+    max_result_chars: int | None = None
 
     # Governance
     governance: str = ""  # "" | "safe" | "sensitive"

@@ -308,6 +308,7 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
 @tool(
     ToolMeta(
         name="retire_memory",
+        destructive=True,
         description=(
             "Retire an obsolete or incorrect long-term memory entry by ID. The entry is removed from active "
             "recall and preserved in memory/archive.md plus lifecycle.json; it is never physically deleted."

@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from app.tools.decorator import ToolMeta, tool
+from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
 
 async def _maybe_await_tool_result(value):
@@ -20,6 +20,7 @@ async def _maybe_await_tool_result(value):
 @tool(
     ToolMeta(
         name="list_files",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description="List files and folders in a directory within my workspace. Can also list enterprise_info/ for shared company information.",
         parameters={
             "type": "object",
@@ -51,6 +52,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
 @tool(
     ToolMeta(
         name="read_file",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Read file contents from the workspace.\n\n"
             "Usage:\n"
@@ -270,6 +272,7 @@ def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None) 
 @tool(
     ToolMeta(
         name="delete_file",
+        destructive=True,
         description=(
             "Delete a file from the workspace. This is a DESTRUCTIVE operation — the file cannot be recovered.\n\n"
             "Usage:\n"
@@ -306,6 +309,7 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None) 
 @tool(
     ToolMeta(
         name="read_document",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description="Read office document contents (PDF, Word, Excel, PPT, etc.) and extract text. Suitable for reading knowledge base documents.",
         parameters={
             "type": "object",
@@ -436,6 +440,7 @@ async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = 
 @tool(
     ToolMeta(
         name="fs_read",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Unified filesystem read. Pick a `mode`:\n"
             "  - `text` (default): plain text / markdown / json — same as read_file\n"
@@ -563,6 +568,7 @@ async def fs_write(workspace: Path, arguments: dict, tenant_id: str | None = Non
 @tool(
     ToolMeta(
         name="fs_list",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
             "Unified filesystem listing. Wraps list_files. Provide `path` "
             "(directory, defaults to root) to enumerate immediate children."

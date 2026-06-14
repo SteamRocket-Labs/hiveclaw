@@ -53,6 +53,8 @@ class CollectedTools:
     sensitive_tools: frozenset[str]
     read_only_names: frozenset[str]
     parallel_safe_names: frozenset[str]
+    destructive_names: frozenset[str]
+    result_char_limits: dict[str, int | None]
     pack_tool_groups: dict[str, list[str]]
 
 
@@ -124,6 +126,8 @@ def collect_tools() -> CollectedTools:
     sensitive: set[str] = set()
     read_only: set[str] = set()
     parallel_safe: set[str] = set()
+    destructive: set[str] = set()
+    result_char_limits: dict[str, int | None] = {}
     pack_groups: dict[str, list[str]] = {}
 
     seen_canonical: set[str] = set()
@@ -144,6 +148,10 @@ def collect_tools() -> CollectedTools:
             read_only.add(name)
         if meta.parallel_safe:
             parallel_safe.add(name)
+        if meta.destructive:
+            destructive.add(name)
+        if meta.max_result_chars is not None:
+            result_char_limits[name] = meta.max_result_chars
 
         if meta.pack and is_canonical:
             pack_groups.setdefault(meta.pack, []).append(name)
@@ -166,6 +174,8 @@ def collect_tools() -> CollectedTools:
         sensitive_tools=frozenset(sensitive),
         read_only_names=frozenset(read_only),
         parallel_safe_names=frozenset(parallel_safe),
+        destructive_names=frozenset(destructive),
+        result_char_limits=result_char_limits,
         pack_tool_groups=pack_groups,
     )
 

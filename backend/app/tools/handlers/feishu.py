@@ -657,6 +657,7 @@ async def feishu_base_record_upsert(agent_id: uuid.UUID, arguments: dict) -> str
 @tool(
     ToolMeta(
         name="feishu_base_record_delete",
+        destructive=True,
         description=(
             "Delete one record from a Feishu Base table. Use this when an existing row must be removed permanently."
         ),
@@ -1071,6 +1072,7 @@ async def feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_doc_delete",
+        destructive=True,
         description="Delete a Feishu document by token. Use this when a generated document should be removed from Drive.",
         parameters={
             "type": "object",
@@ -1515,6 +1517,7 @@ async def feishu_calendar_update(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="feishu_calendar_delete",
+        destructive=True,
         description="Delete (cancel) a meeting previously created on the agent/bot calendar.",
         parameters={
             "type": "object",

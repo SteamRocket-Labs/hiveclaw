@@ -12,11 +12,22 @@ from app.config import get_settings
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.tools.runtime_tool_groups import iter_runtime_tool_groups
-from app.tools.result_envelope import render_tool_error
+from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
 logger = logging.getLogger(__name__)
 
 WORKSPACE_ROOT = Path(get_settings().AGENT_DATA_DIR)
+
+# read_file returns these as a typed image block (CC Read parity) so
+# vision-capable models see the image natively rather than mojibake.
+_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — base64 inline guard
 
 
 def _workspace_error(
@@ -92,7 +103,9 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name
     return header + "\n".join(items)
 
 
-def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name: str = "read_file") -> str:
+def _read_file(
+    ws: Path, rel_path: str, tenant_id: str | None = None, tool_name: str = "read_file"
+) -> "str | ToolContentEnvelope":
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
@@ -114,6 +127,28 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name:
             f"File not found: {rel_path}",
             actionable_hint="Check the path or use glob_search/list_files to discover the correct file first.",
         )
+
+    # Image files → typed image block (CC Read parity): vision-capable models see
+    # the image natively; the text fallback names the file for text-only providers.
+    image_media = _IMAGE_MEDIA_TYPES.get(file_path.suffix.lower())
+    if image_media:
+        try:
+            import base64
+
+            raw = file_path.read_bytes()
+            if len(raw) > _MAX_IMAGE_BYTES:
+                return _workspace_error(
+                    tool_name,
+                    "operation_failed",
+                    f"Image too large ({len(raw)} bytes; max {_MAX_IMAGE_BYTES}).",
+                )
+            return ToolContentEnvelope.image(
+                text=f"[image: {rel_path} ({image_media}, {len(raw)} bytes)]",
+                media_type=image_media,
+                data=base64.b64encode(raw).decode("ascii"),
+            )
+        except Exception as e:
+            return _workspace_error(tool_name, "operation_failed", f"Image read failed: {e}")
 
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -147,7 +182,9 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
         if not str(path).startswith(str(skills_dir)):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
         rel_path = path.relative_to(ws).as_posix()
-        return _read_file(ws, rel_path, tool_name=tool_name)
+        skill_text = _read_file(ws, rel_path, tool_name=tool_name)
+        # Skill files are always text; collapse to str for the str-typed caller.
+        return skill_text if isinstance(skill_text, str) else str(skill_text)
 
     requested_path = requested
     if requested_path.startswith("skills/"):

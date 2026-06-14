@@ -10,6 +10,7 @@ import inspect
 from typing import Any, Callable
 
 from app.tools.decorator import ToolMeta
+from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime import ToolExecutionRequest
 
 
@@ -17,7 +18,7 @@ async def adapt_and_call(
     meta: ToolMeta,
     fn: Callable[..., Any],
     request: ToolExecutionRequest,
-) -> str:
+) -> str | ToolContentEnvelope:
     """Route from ToolExecutionRequest to the handler's native signature."""
     match meta.adapter:
         case "request":
@@ -49,6 +50,11 @@ async def adapt_and_call(
 
     if inspect.isawaitable(result):
         result = await result
+    # A typed multimodal envelope passes through untouched (AI-Native L1: do not
+    # flatten structured/intelligent output to a string). It carries a text
+    # fallback for every str-assuming downstream path.
+    if isinstance(result, ToolContentEnvelope):
+        return result
     # Enforce str return type — tools must return strings for LLM consumption
     if not isinstance(result, str):
         if result is None:

@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.core.execution_context import ExecutionIdentity
+from app.tools.result_envelope import ToolContentEnvelope
 
-
-ToolExecutor = Callable[["ToolExecutionRequest"], Awaitable[str] | str]
+ToolExecutor = Callable[["ToolExecutionRequest"], Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope]
 FALLBACK_EXECUTOR_NAME = "__mcp_fallback__"
 
 
@@ -45,7 +45,7 @@ class ToolExecutionRegistry:
         """Return every executable tool name, including aliases."""
         return frozenset(self._executors.keys())
 
-    async def try_execute(self, request: ToolExecutionRequest) -> str | None:
+    async def try_execute(self, request: ToolExecutionRequest) -> str | ToolContentEnvelope | None:
         executor = self._executors.get(request.tool_name)
         if executor is None:
             executor = self._executors.get(FALLBACK_EXECUTOR_NAME)

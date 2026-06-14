@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from app.tools.adapters import adapt_and_call
 from app.tools.decorator import ToolMeta, get_all_registered_tools
+from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime import ToolExecutionRegistry, ToolExecutionRequest
 
 logger = logging.getLogger(__name__)
@@ -183,7 +184,7 @@ def collect_tools() -> CollectedTools:
 def _make_executor(meta: ToolMeta, fn: Callable[..., Any]) -> Callable[[ToolExecutionRequest], Any]:
     """Create a ToolExecutor closure that adapts the request to the handler signature."""
 
-    async def executor(request: ToolExecutionRequest) -> str:
+    async def executor(request: ToolExecutionRequest) -> str | ToolContentEnvelope:
         return await adapt_and_call(meta, fn, request)
 
     return executor

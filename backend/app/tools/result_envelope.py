@@ -1,9 +1,49 @@
-"""Structured tool result envelopes for recoverable failures."""
+"""Structured tool result envelopes: recoverable-failure renders + typed
+multimodal content (text + image/document blocks)."""
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass(frozen=True)
+class ToolResultBlock:
+    """Provider-neutral content block inside a tool result."""
+
+    type: str  # "text" | "image" | "document"
+    text: str | None = None
+    media_type: str | None = None  # e.g. "image/png", "application/pdf"
+    data: str | None = None  # base64-encoded bytes (for image / document)
+
+
+@dataclass(frozen=True)
+class ToolContentEnvelope:
+    """A tool result carrying typed content blocks plus a plain-text fallback.
+
+    ``text`` is the always-present rendering used by every str-assuming path
+    (eviction, logging, loop detection, and providers without multimodal
+    tool-result support). ``blocks`` carry typed content mapped per-provider at
+    the llm_client adapter layer — L3 model equality means best-effort per
+    provider (Anthropic supports image/document tool_result; OpenAI/Gemini fall
+    back to ``text``). ``__str__`` returns ``text`` so existing string-typed
+    code paths keep working untouched.
+    """
+
+    text: str
+    blocks: tuple[ToolResultBlock, ...] = ()
+
+    def __str__(self) -> str:
+        return self.text
+
+    @classmethod
+    def image(cls, *, text: str, media_type: str, data: str) -> "ToolContentEnvelope":
+        return cls(text=text, blocks=(ToolResultBlock(type="image", media_type=media_type, data=data),))
+
+    @classmethod
+    def document(cls, *, text: str, media_type: str, data: str) -> "ToolContentEnvelope":
+        return cls(text=text, blocks=(ToolResultBlock(type="document", media_type=media_type, data=data),))
 
 
 def classify_http_status(status_code: int) -> tuple[str, bool]:

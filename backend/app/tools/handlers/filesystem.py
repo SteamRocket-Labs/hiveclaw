@@ -6,6 +6,7 @@ import inspect
 from pathlib import Path
 
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
+from app.tools.result_envelope import ToolContentEnvelope
 
 
 async def _maybe_await_tool_result(value):
@@ -82,7 +83,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         adapter="workspace_args",
     )
 )
-def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -> "str | ToolContentEnvelope":
     from app.services.agent_tool_domains.workspace import _read_file
 
     return _read_file(workspace, arguments.get("path", ""), tenant_id)

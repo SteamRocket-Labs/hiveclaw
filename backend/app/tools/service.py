@@ -29,7 +29,7 @@ from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.privacy_layer import PrivacyLayer
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
 from app.tools.plan_gate_registry import hard_gated_action_kind
-from app.tools.result_envelope import render_tool_error
+from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
 from app.tools.backends import LocalToolRuntimeBackend, ToolRuntimeBackend
 
@@ -286,7 +286,7 @@ class ToolRuntimeService:
         session_id: str | None = None,
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
-    ) -> str:
+    ) -> str | ToolContentEnvelope:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             return plan_mode_block
@@ -334,13 +334,16 @@ class ToolRuntimeService:
                 self.execute_with_context(tool_name, arguments, runtime_context),
                 timeout=timeout_seconds,
             )
-            tool_error_payload = _extract_tool_error_payload(result)
+            # result may be a ToolContentEnvelope — use its text rendering for
+            # logging / error extraction, but return the value untouched.
+            result_text = str(result)
+            tool_error_payload = _extract_tool_error_payload(result_text)
             if self.activity_logger:
                 await _maybe_await(
                     self.activity_logger(
                         agent_id,
                         "tool_call",
-                        f"Called tool {tool_name}: {result[:80]}",
+                        f"Called tool {tool_name}: {result_text[:80]}",
                         tenant_id=runtime_context.tenant_id,
                         detail={
                             "tool": tool_name,
@@ -353,7 +356,7 @@ class ToolRuntimeService:
                                 )
                                 for k, v in arguments.items()
                             },
-                            "result": result[:300],
+                            "result": result_text[:300],
                         },
                     )
                 )
@@ -426,7 +429,7 @@ class ToolRuntimeService:
         *,
         agent_id: uuid.UUID,
         user_id: uuid.UUID | None = None,
-    ) -> str:
+    ) -> str | ToolContentEnvelope:
         """Execute a tool after approval, with basic validation.
 
         Governance is intentionally skipped (approval already granted), but
@@ -450,7 +453,7 @@ class ToolRuntimeService:
         agent_id: uuid.UUID,
         approved_by_user_id: uuid.UUID | None = None,
         approval_id: uuid.UUID | None = None,
-    ) -> str:
+    ) -> str | ToolContentEnvelope:
         """Execute a tool after a recorded approval decision.
 
         This is the public post-approval entrypoint. It skips governance
@@ -482,7 +485,7 @@ class ToolRuntimeService:
         activity_type: str,
         activity_detail: dict[str, Any],
         log_label: str,
-    ) -> str:
+    ) -> str | ToolContentEnvelope:
         _logger = logging.getLogger(__name__)
 
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
@@ -508,7 +511,7 @@ class ToolRuntimeService:
                 context=runtime_context,
             )
 
-            async def _execute_approved_request(inner_request: ToolExecutionRequest) -> str:
+            async def _execute_approved_request(inner_request: ToolExecutionRequest) -> str | ToolContentEnvelope:
                 direct_result = await _maybe_await(self.registry.try_execute(inner_request))
                 if direct_result is not None:
                     return direct_result
@@ -521,20 +524,22 @@ class ToolRuntimeService:
                 )
 
             result = await self.backend.execute(request, _execute_approved_request)
+            # result may be a ToolContentEnvelope — text rendering for logging only.
+            result_text = str(result)
             # Activity log for audit trail (mirrors execute() behavior)
             if self.activity_logger:
                 try:
                     detail = {
                         "tool": tool_name,
                         "backend": self.backend.name if self.backend else "unknown",
-                        "result": result[:300],
+                        "result": result_text[:300],
                         **activity_detail,
                     }
                     await _maybe_await(
                         self.activity_logger(
                             agent_id,
                             activity_type,
-                            f"Approved-executed {tool_name}: {result[:80]}",
+                            f"Approved-executed {tool_name}: {result_text[:80]}",
                             tenant_id=runtime_context.tenant_id,
                             detail=detail,
                         )
@@ -558,7 +563,7 @@ class ToolRuntimeService:
         tool_name: str,
         arguments: dict,
         context: ToolExecutionContext,
-    ) -> str:
+    ) -> str | ToolContentEnvelope:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             return plan_mode_block
@@ -570,7 +575,7 @@ class ToolRuntimeService:
             context=context,
         )
 
-        async def _execute_request(inner_request: ToolExecutionRequest) -> str:
+        async def _execute_request(inner_request: ToolExecutionRequest) -> str | ToolContentEnvelope:
             registry_result = await _maybe_await(self.registry.try_execute(inner_request))
             if registry_result is not None:
                 return registry_result

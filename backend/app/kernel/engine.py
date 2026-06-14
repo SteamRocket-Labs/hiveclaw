@@ -612,6 +612,30 @@ def _normalize_tool_result_for_llm(result: Any) -> str:
     return result_str
 
 
+def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dict[str, Any]]":
+    """Build tool-result message content, preserving typed multimodal blocks.
+
+    If the raw tool result was a ToolContentEnvelope with image/document blocks,
+    return ``[text_block, *media_blocks]`` (text = the possibly-evicted
+    ``text_content``; media blocks are never evicted). Otherwise return the plain
+    string. Provider mapping happens in llm_client — Anthropic carries the blocks
+    natively; OpenAI/Gemini fall back to the text part (L3 model equality).
+    """
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    if not isinstance(raw_result, ToolContentEnvelope):
+        return text_content
+    media_blocks = [b for b in raw_result.blocks if b.type != "text"]
+    if not media_blocks:
+        return text_content
+    content: list[dict[str, Any]] = []
+    if text_content:
+        content.append({"type": "text", "text": text_content})
+    for b in media_blocks:
+        content.append({"type": b.type, "media_type": b.media_type, "data": b.data})
+    return content
+
+
 def _tool_round_limit_message(max_rounds: int) -> str:
     return (
         f"I reached the configured tool-round limit ({max_rounds}) before I could finish. "
@@ -3354,7 +3378,13 @@ class AgentKernel:
                                 tools_for_llm=tools_for_llm,
                                 api_messages=api_messages,
                             )
-                            api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
+                            api_messages.append(
+                                LLMMessage(
+                                    role="tool",
+                                    tool_call_id=tc["id"],
+                                    content=_tool_message_content(_content, result),
+                                )
+                            )
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
                     else:
@@ -3590,7 +3620,13 @@ class AgentKernel:
                                 tools_for_llm=tools_for_llm,
                                 api_messages=api_messages,
                             )
-                            api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"], content=_content))
+                            api_messages.append(
+                                LLMMessage(
+                                    role="tool",
+                                    tool_call_id=tc["id"],
+                                    content=_tool_message_content(_content, result),
+                                )
+                            )
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
 

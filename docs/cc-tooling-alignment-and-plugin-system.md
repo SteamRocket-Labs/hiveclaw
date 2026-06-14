@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-1 已实施落地**（2026-06-14，全量 4407 passed / 0 failed，证据见 §8 实施日志）。Step 2-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-2 已实施落地**（2026-06-14，全量 4415 passed / 0 failed，证据见 §8 实施日志）。Step 3-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -111,7 +111,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 |------|--------|---------|------|
 | **0** ✅ | cleanup | 退役 `coordination_pack`/`plan_mode_pack` 这类 CORE-only runtime group entry（不是删工具）；脚踏两船工具清出 plugin `owns`；**核实 cut 清单引用点(§5.1)**——`fanout_subagents` recursion guard / `SubagentJob`·`Budget` / `FALLBACK_EXECUTOR_NAME` 经核实都是活的，**禁盲删**；加 startup 断言 `CORE∩pack.owns=∅`(只对 owns，`requires_core` 允许引用 CORE)。**已实施，证据见 §8。** | — |
 | **1** ✅ | tool-contract | 消除 `read_only/parallel_safe` 双定义(删 `registry.py:80-163` 静态名单，单源 decorator)；`ToolMeta` 增 `destructive:bool`+`max_result_chars:int\|None`；`read_file/read_document` 设 ∞ | 0 |
-| **2** | tool-contract | 修 critical：扩展现有 `result_envelope.py` 或新建 `ToolContentEnvelope(text+blocks)`（避免与 error/fallback envelope 命名碰撞），`adapt_and_call` 透传 typed content block(image/pdf)；`read_document`(PDF)/`read_file`(图)首接；保留纯字符串默认 | 1 |
+| **2** ✅ | tool-contract | 修 critical：扩展现有 `result_envelope.py` 或新建 `ToolContentEnvelope(text+blocks)`（避免与 error/fallback envelope 命名碰撞），`adapt_and_call` 透传 typed content block(image/pdf)；`read_document`(PDF)/`read_file`(图)首接；保留纯字符串默认 | 1 |
 | **3** | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数；补 turn-1 deferred 清单+`select:` 直选；token-阈值 auto 模式；loaded-tool state 必须进入 compaction/replay/prompt-cache 稳定排序/invocation span。**实现 provider-neutral**：Hive 自己的 schema expansion/event path 为主，`tool_reference` 仅作 Anthropic fast path(守 L3) | 0,4 |
 | **4** | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
 | **5** | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
@@ -271,3 +271,30 @@ $ pytest tests -q          # 全量后端回归
 $ ruff check <核心文件>     # All checks passed!
 ```
 注：`char_limits` 实际 16 项（15 主名 + `bing_search` alias 继承 web_search 的 ToolMeta，合理）。`memory.py:642/673`、`engine.py` 多处 Pyright ✘ 是 pre-existing 类型 narrowing 噪音（运行时正常，全量绿），非本 Step 引入，未纳入。
+
+### Step 2 — tool-contract（✅ 2026-06-14，typed 多模态 tool result，消除 L1 违例）
+
+**改动文件：**
+- `app/tools/result_envelope.py`：新增 `ToolResultBlock` + `ToolContentEnvelope`（provider-neutral text + blocks；`__str__` 返回 text fallback；`.image()`/`.document()` 构造器）。
+- `app/tools/adapters.py`：`adapt_and_call` 透传 `ToolContentEnvelope`（**消除强制 `str()` 的 L1 违例**——case law 修复），返回类型 `str | ToolContentEnvelope`。
+- `app/kernel/engine.py`：新增 `_tool_message_content()`——envelope 含 image/document 时构建 `[text, *media]` content list，否则纯字符串；parallel + sequential 两处 tool-message 构建用它。落盘/检测/budget 仍走 `str(result)`（envelope 的 `__str__`=text，零破坏）。
+- `app/services/llm_client.py`：新增 `_anthropic_tool_result_content()`（Anthropic 原生 image/document tool_result blocks）+ `_flatten_tool_content_to_text()`（OpenAI/Gemini text-only 通道降级，**标注被省略的非文本块——不静默丢弃**）；4 处 provider 序列化接入（to_anthropic_format / to_openai_format / OpenAI Responses / Gemini）。
+- `app/tools/service.py`：`execute` + `execute_approved` 的 activity-log 切片改用 `str(result)`（envelope 无 `__getitem__`，否则 execute 路径会把 envelope 误当工具失败）。
+- `app/services/agent_tool_domains/workspace.py` + `handlers/filesystem.py`：`read_file` 图片首接——`.png/.jpg/.jpeg/.gif/.webp` 读 bytes→base64→`ToolContentEnvelope.image`（CC Read parity，5MB guard）；`_read_skill_file` str 保护；文本文件不变。
+- 测试：新建 `tests/tools/test_tool_content_envelope.py`（8 测试）。
+
+**L3 模型平等（best-effort per provider）：** Anthropic 的 tool_result 原生支持 image/document content blocks → 直接映射；OpenAI `function_call_output` / Gemini `functionResponse` 是 text-only 通道 → 降级为 text 并标注省略的块（模型知道存在多模态内容，非静默丢弃）。`envelope.text` 是所有 str-assuming 路径（落盘/日志/loop 检测/text-only provider）的统一 fallback。
+
+**read_document 决策：** 保持文本提取（它是 Hive 特有的 PDF/Word/Excel→text 工具，不同于 CC Read；PDF base64 直灌 context 不现实、provider 支持参差）。read_file 图片首接是 typed-block 的示范接入点。
+
+**验证证据：**
+```
+$ pytest tests/tools/test_tool_content_envelope.py -q
+8 passed
+
+$ pytest tests -q          # 全量后端回归
+4415 passed, 7 skipped, 4 warnings   # 0 failed (= Step1 的 4407 + 8 新测试)
+
+$ ruff check <核心文件>     # All checks passed!
+```
+注：`adapters.py`/`result_envelope.py` 的 format-dirty 是 pre-existing（`param.kind in (` 重排、render_tool_fallback 多行字符串），非本 Step 改动区，按 scope-discipline 不触发存量 churn。

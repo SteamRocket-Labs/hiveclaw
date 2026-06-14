@@ -29,6 +29,62 @@ _LLM_HTTP_BACKOFF_CAP_SECONDS = 30.0
 _LLM_HTTP_BACKOFF_JITTER_RATIO = 0.10
 
 
+def _anthropic_tool_result_content(content: "str | list | None") -> "str | list[dict[str, Any]]":
+    """Map provider-neutral tool-result content to Anthropic tool_result content.
+
+    Anthropic natively supports text + image/document blocks inside a tool_result.
+    A plain string passes through; a block list maps to Anthropic's
+    {type:image|document, source:{type:base64, media_type, data}} shape.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    out: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            out.append({"type": "text", "text": block.get("text", "")})
+        elif btype in ("image", "document"):
+            out.append(
+                {
+                    "type": btype,
+                    "source": {
+                        "type": "base64",
+                        "media_type": block.get("media_type", ""),
+                        "data": block.get("data", ""),
+                    },
+                }
+            )
+    return out or ""
+
+
+def _flatten_tool_content_to_text(content: "str | list | None") -> str:
+    """Flatten provider-neutral tool-result content to plain text.
+
+    For providers whose tool/function-result channel is text-only (OpenAI
+    function_call_output, Gemini functionResponse), keep the text blocks and note
+    any dropped non-text blocks so the model knows multimodal content existed
+    (L3 model equality: best-effort per provider).
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    dropped = [b.get("type", "?") for b in content if isinstance(b, dict) and b.get("type") != "text"]
+    joined = "\n".join(t for t in texts if t)
+    if dropped:
+        note = (
+            f"[{len(dropped)} non-text block(s) ({', '.join(dropped)}) omitted — "
+            "provider has no multimodal tool-result channel]"
+        )
+        joined = f"{joined}\n{note}" if joined else note
+    return joined
+
+
 # ============================================================================
 # Data Models
 # ============================================================================
@@ -49,7 +105,10 @@ class LLMMessage:
         """Convert to OpenAI format."""
         msg: dict[str, Any] = {"role": self.role}
         if self.content is not None:
-            msg["content"] = self.content
+            # OpenAI's tool-result channel is text-only; flatten multimodal blocks.
+            msg["content"] = (
+                _flatten_tool_content_to_text(self.content) if self.role == "tool" else self.content
+            )
         if self.tool_calls:
             msg["tool_calls"] = self.tool_calls
         if self.tool_call_id:
@@ -73,7 +132,7 @@ class LLMMessage:
                     {
                         "type": "tool_result",
                         "tool_use_id": self.tool_call_id,
-                        "content": self.content or ""
+                        "content": _anthropic_tool_result_content(self.content),
                     }
                 ]
             }
@@ -1034,7 +1093,7 @@ class OpenAIResponsesClient(LLMClient):
                 input_items.append({
                     "type": "function_call_output",
                     "call_id": msg.tool_call_id or "",
-                    "output": msg.content or "",
+                    "output": _flatten_tool_content_to_text(msg.content),
                 })
 
         return input_items
@@ -1451,7 +1510,7 @@ class GeminiClient(LLMClient):
 
             if msg.role == "tool":
                 name = tool_name_map.get(msg.tool_call_id or "", msg.tool_call_id or "tool_result")
-                response_content = msg.content or ""
+                response_content = _flatten_tool_content_to_text(msg.content)
                 if isinstance(response_content, str):
                     try:
                         parsed = json.loads(response_content)

@@ -10,18 +10,19 @@ import inspect
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
-from app.tools.result_envelope import render_tool_error
+from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 from app.tools.runtime import ToolExecutionRequest
 
 
-ToolBackendExecutor = Callable[[ToolExecutionRequest], Awaitable[str] | str]
+ToolBackendExecutor = Callable[[ToolExecutionRequest], Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope]
 
 
 class ToolRuntimeBackend(Protocol):
     name: str
 
-    async def execute(self, request: ToolExecutionRequest, executor: ToolBackendExecutor) -> str:
+    async def execute(self, request: ToolExecutionRequest, executor: ToolBackendExecutor) -> str | ToolContentEnvelope:
         """Run one governed tool request through this backend."""
+        ...
 
 
 async def _maybe_await_result(value):
@@ -34,7 +35,7 @@ async def _maybe_await_result(value):
 class LocalToolRuntimeBackend:
     name: str = "local"
 
-    async def execute(self, request: ToolExecutionRequest, executor: ToolBackendExecutor) -> str:
+    async def execute(self, request: ToolExecutionRequest, executor: ToolBackendExecutor) -> str | ToolContentEnvelope:
         return await _maybe_await_result(executor(request))
 
 
@@ -44,7 +45,7 @@ class DockerToolRuntimeBackend:
     enabled: bool = False
     name: str = "docker"
 
-    async def execute(self, request: ToolExecutionRequest, executor: ToolBackendExecutor) -> str:
+    async def execute(self, request: ToolExecutionRequest, executor: ToolBackendExecutor) -> str | ToolContentEnvelope:
         if not self.enabled:
             return render_tool_error(
                 tool_name=request.tool_name,

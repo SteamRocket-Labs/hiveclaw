@@ -1,7 +1,7 @@
-import type React from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { IconCheck, IconSquare, IconSquareFilled } from '@tabler/icons-react';
+import { IconCheck, IconChevronDown, IconChevronRight, IconSquare, IconSquareFilled } from '@tabler/icons-react';
 
 import { autonomyApi, type RuntimeWorkLedgerItem, type RuntimeWorkLedgerView } from '../../api/domains/autonomy';
 
@@ -10,6 +10,7 @@ interface ChatWorkLedgerDockProps {
   runtimeTaskId?: string | null;
   sessionId?: string | null;
   live?: boolean;
+  initialCollapsed?: boolean;
 }
 
 type CanonicalTaskStatus = 'pending' | 'in_progress' | 'completed';
@@ -54,8 +55,10 @@ export default function ChatWorkLedgerDock({
   runtimeTaskId,
   sessionId,
   live = false,
+  initialCollapsed = false,
 }: ChatWorkLedgerDockProps) {
   const { t } = useTranslation();
+  const [collapsed, setCollapsed] = useState(initialCollapsed);
   const sessionQuery = useQuery({
     queryKey: ['chat-session-work-ledger', agentId, sessionId],
     queryFn: () => autonomyApi.getSessionWorkLedger(agentId, sessionId as string),
@@ -101,6 +104,11 @@ export default function ChatWorkLedgerDock({
   if ((!data && !isLoading) || displayItems.length === 0) {
     return null;
   }
+  const counts = taskCounts(displayItems);
+  const openCount = counts.pending + counts.inProgress;
+  const countLabel = openCount > 0
+    ? `${openCount}/${counts.total} ${t('agent.chat.workLedger.openSuffix', 'open')}`
+    : t('agent.chat.workLedger.allDone', 'All done');
 
   return (
     <div
@@ -120,22 +128,45 @@ export default function ChatWorkLedgerDock({
           padding: '10px 12px',
         }}
       >
-        <TaskList items={displayItems} />
+        <button
+          type="button"
+          data-testid="chat-work-ledger-toggle"
+          aria-expanded={!collapsed}
+          aria-controls="agent-task-list"
+          onClick={() => setCollapsed((value) => !value)}
+          style={{
+            width: '100%',
+            border: 'none',
+            background: 'transparent',
+            padding: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px',
+            cursor: 'pointer',
+            color: 'inherit',
+            textAlign: 'left',
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+            {collapsed
+              ? <IconChevronRight size={13} stroke={2} color="var(--text-tertiary)" />
+              : <IconChevronDown size={13} stroke={2} color="var(--text-tertiary)" />}
+            <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-tertiary)' }}>
+              {t('agent.chat.workLedger.todoTitle', 'Todo')}
+            </span>
+          </span>
+          <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+            {countLabel}
+          </span>
+        </button>
+        {!collapsed && <TaskList items={displayItems} />}
       </div>
     </div>
   );
 }
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: '5px' }}>
-      {children}
-    </div>
-  );
-}
-
 function TaskList({ items }: { items: RuntimeWorkLedgerItem[] }) {
-  const { t } = useTranslation();
   if (items.length === 0) return null;
 
   const maxDisplay = 10;
@@ -167,8 +198,7 @@ function TaskList({ items }: { items: RuntimeWorkLedgerItem[] }) {
     : '';
 
   return (
-    <div data-testid="agent-task-list">
-      <SectionTitle>{t('agent.chat.workLedger.todoTitle', 'Todo')}</SectionTitle>
+    <div id="agent-task-list" data-testid="agent-task-list" style={{ marginTop: '8px' }}>
       <div style={{ display: 'grid', gap: '6px' }}>
         {visibleItems.map((item) => {
           const status = taskStatus(item.status);

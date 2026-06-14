@@ -222,33 +222,6 @@ function isRawCompactionSummaryContent(content: unknown): content is string {
   return sectionCount >= 2 && /\*\*Recovery Context:\*\*/i.test(text);
 }
 
-function extractCompactionSection(content: string, label: string): string {
-  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const sectionRe = new RegExp(
-    `\\*\\*${escapedLabel}:\\*\\*\\s*([\\s\\S]*?)(?=\\n\\*\\*(?:${RAW_COMPACTION_SECTION_PATTERN}):\\*\\*|$)`,
-    'i',
-  );
-  const match = content.match(sectionRe);
-  if (!match) return '';
-  return cleanCompactionSection(match[1]);
-}
-
-function cleanCompactionSection(value: string): string {
-  const cleaned = value
-    .replace(/\*\[Generation stopped\]\*/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!cleaned || cleaned === '-' || /^\(?none captured\)?$/i.test(cleaned) || /^\(?unknown\)?$/i.test(cleaned)) {
-    return '';
-  }
-  return cleaned;
-}
-
-function truncateVisibleSummary(value: string, maxLength = 260): string {
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, maxLength - 3).trimEnd()}...`;
-}
-
 function getEmbeddedRuntimeEventPayload(payload: any): Record<string, unknown> | null {
   const jsonEvent = payload?.role === 'system' ? parseJsonObject(payload?.content) : null;
   const jsonEventType = jsonEvent?.event_type || jsonEvent?.type;
@@ -290,15 +263,9 @@ export function getCompactionDisplayContent(content: string): {
     return { compacted: false, visible: text, details: null };
   }
 
-  const visible =
-    extractCompactionSection(text, 'Current Work') ||
-    extractCompactionSection(text, 'Primary Request and Intent') ||
-    extractCompactionSection(text, 'Task Ledger') ||
-    extractCompactionSection(text, 'Pending Tasks');
-
   return {
     compacted: true,
-    visible: truncateVisibleSummary(visible),
+    visible: '',
     details: text,
   };
 }

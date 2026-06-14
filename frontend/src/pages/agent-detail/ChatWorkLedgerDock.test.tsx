@@ -207,4 +207,23 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).not.toContain('Fetched source ledger');
     expect(markup).not.toContain('Temporary source timeout');
   });
+
+  it('can render the persistent todo dock collapsed without task rows', () => {
+    queryHarness.sessionData = ledger('task-current', 'Collapsible todo');
+
+    const markup = renderToStaticMarkup(
+      <ChatWorkLedgerDock
+        agentId="agent-1"
+        sessionId="session-1"
+        runtimeTaskId="task-current"
+        initialCollapsed
+      />,
+    );
+
+    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('Todo');
+    expect(markup).not.toContain('data-testid="agent-task-list"');
+    expect(markup).not.toContain('Collapsible todo');
+  });
 });

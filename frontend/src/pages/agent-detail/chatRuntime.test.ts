@@ -222,7 +222,7 @@ describe('chatRuntime helpers', () => {
     ].join('\n'));
 
     expect(display.compacted).toBe(true);
-    expect(display.visible).toBe('Hide the recovery summary from the default chat transcript while preserving details.');
+    expect(display.visible).toBe('');
     expect(display.visible).not.toContain('Recovery Context');
     expect(display.details).toContain('Recovery Context');
   });

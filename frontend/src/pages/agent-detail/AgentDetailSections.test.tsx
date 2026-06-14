@@ -1003,6 +1003,12 @@ describe('AgentDetail extracted sections', () => {
   });
 
   it('renders AgentChatSection as a standalone chat module', () => {
+    const rawCompactionSummary = [
+      '**Primary Request and Intent:** Do not render this internal summary in the default chat UI.',
+      '**Tool Outcomes:** Search ran successfully.',
+      '**Current Work:** Hide raw compaction details from the runtime chrome.',
+      '**Recovery Context:** Internal restore details should stay behind an explicit disclosure.',
+    ].join('\n');
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
@@ -1065,7 +1071,7 @@ describe('AgentDetail extracted sections', () => {
           blocked_capabilities: [],
           compaction_count: 2,
           last_compaction: {
-            summary: 'Compacted older turns and kept the active work context.',
+            summary: rawCompactionSummary,
             original_message_count: 26,
             kept_message_count: 8,
           },
@@ -1100,6 +1106,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('notes.md');
     expect(markup).toContain('chat-input');
     expect(markup).toContain('send');
+    expect(markup).not.toContain('Primary Request and Intent');
+    expect(markup).not.toContain('Recovery Context');
   });
 
   it('extracts Plan Mode plan ids from assistant replies', () => {

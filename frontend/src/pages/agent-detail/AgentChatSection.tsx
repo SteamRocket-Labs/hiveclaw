@@ -536,7 +536,12 @@ export default function AgentChatSection({
       if (msg.eventCapability) metaParts.push(msg.eventCapability);
       if (msg.eventSecurityZone) metaParts.push(`zone:${msg.eventSecurityZone}`);
       if (msg.eventApprovalId) metaParts.push(`approval:${msg.eventApprovalId}`);
-      const compactionDisplay = msg.eventType === 'session_compact' ? getCompactionDisplayContent(msg.content) : null;
+      const isCompactionEvent = msg.eventType === 'session_compact';
+      const compactionDisplay = isCompactionEvent ? getCompactionDisplayContent(msg.content) : null;
+      const compactionDetails = isCompactionEvent
+        ? compactionDisplay?.details || (msg.content?.trim() ? msg.content : null)
+        : null;
+      const compactionInProgress = msg.eventStatus === 'running' || msg.eventStatus === 'in_progress';
 
       return (
         <div key={`event-${index}`} style={{ paddingLeft: '36px', marginBottom: '8px' }}>
@@ -551,26 +556,27 @@ export default function AgentChatSection({
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
               <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
               <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                {msg.eventTitle || t('agent.chat.runtime.eventTitle', 'Runtime Event')}
+                {isCompactionEvent
+                  ? (compactionInProgress
+                      ? t('agent.chat.runtime.compactingTitle', 'Automatic compression in progress')
+                      : t('agent.chat.runtime.compactionCompleteTitle', 'Automatic compression complete'))
+                  : msg.eventTitle || t('agent.chat.runtime.eventTitle', 'Runtime Event')}
               </span>
             </div>
-            {compactionDisplay?.compacted ? (
+            {isCompactionEvent ? (
               <div style={{ display: 'grid', gap: '6px' }}>
                 <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-                  {t('agent.chat.runtime.compactedNotice', 'Context was compressed. The active working state was preserved.')}
+                  {compactionInProgress
+                    ? t('agent.chat.runtime.compactingNotice', 'Automatically compressing context...')
+                    : t('agent.chat.runtime.compactedNotice', 'Context was compressed. The active working state was preserved.')}
                 </div>
-                {compactionDisplay.visible && (
-                  <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap' }}>
-                    {compactionDisplay.visible}
-                  </div>
-                )}
-                {compactionDisplay.details && (
+                {compactionDetails && (
                   <details style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                     <summary style={{ cursor: 'pointer', userSelect: 'none' }}>
                       {t('agent.chat.runtime.compactionDetails', 'Show compression details')}
                     </summary>
                     <div style={{ marginTop: '6px' }}>
-                      <RawToolResultBlock text={compactionDisplay.details} />
+                      <RawToolResultBlock text={compactionDetails} />
                     </div>
                   </details>
                 )}
@@ -1307,9 +1313,6 @@ export default function AgentChatSection({
                   <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{item.value}</span>
                 </div>
               ))}
-              {runtimeSummary?.last_compaction?.summary && (
-                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{runtimeSummary.last_compaction.summary}</span>
-              )}
               {runtimeSummary?.last_tool_budget_event?.reason && (
                 <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                   {`${runtimeSummary.last_tool_budget_event.reason}${runtimeSummary.last_tool_budget_event.tool_name ? ` · ${runtimeSummary.last_tool_budget_event.tool_name}` : ''}`}

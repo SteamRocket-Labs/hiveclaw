@@ -148,10 +148,16 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
     ),
     RuntimeToolGroupSpec(
         name="plan_mode_pack",
-        summary="计划模式能力：主 agent 只读探索后用 ask_user_question 澄清关键问题，再用 exit_plan_mode 提交待确认计划。",
+        summary=(
+            "计划模式能力：主 agent 可用 request_plan_mode 请求进入计划模式（用户批准后才进入），"
+            "进入后只读探索、用 ask_user_question 澄清关键问题，再用 exit_plan_mode 提交待确认计划。"
+        ),
         source="system",
-        activation_mode="由 runtime 在 interactive Plan Mode 中注入提示词；ask_user_question 澄清、exit_plan_mode 收口",
-        tools=("exit_plan_mode", "ask_user_question"),
+        activation_mode=(
+            "request_plan_mode 由用户批准进入；进入后 runtime 注入提示词，"
+            "ask_user_question 澄清、exit_plan_mode 收口"
+        ),
+        tools=("request_plan_mode", "exit_plan_mode", "ask_user_question"),
         infer_from_tools=False,
     ),
 )

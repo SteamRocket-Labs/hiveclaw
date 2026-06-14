@@ -166,6 +166,10 @@ CORE_TOOL_NAMES = {
     # CC-align Phase B: clarification is a turn-1 capability so the agent can SEE
     # and call it (plan mode + normal chat); subagents exclude it (no user channel).
     "ask_user_question",
+    # CC EnterPlanMode parity: requesting Plan Mode is a turn-1 capability so the
+    # agent can SEE and call it in normal live chat *before* Plan Mode is active —
+    # the user approves before entry. Subagents exclude it (no user to approve).
+    "request_plan_mode",
     "send_channel_message",
     "send_channel_file",
     "tool_search",

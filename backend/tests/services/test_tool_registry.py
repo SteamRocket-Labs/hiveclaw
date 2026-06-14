@@ -100,6 +100,9 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "get_current_time",
         "exit_plan_mode",
         "ask_user_question",
+        # CC EnterPlanMode parity: requesting Plan Mode is turn-1 visible so the
+        # agent can ask the user to enter Plan Mode before it is active.
+        "request_plan_mode",
         "send_channel_file",
         "send_channel_message",
         "tool_search",

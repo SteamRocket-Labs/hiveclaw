@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from app.services import plan_mode_core
-from app.services.plan_mode_runtime_context import interactive_plan_mode_metadata
+from app.services.plan_mode_runtime_context import (
+    interactive_plan_mode_active,
+    interactive_plan_mode_metadata,
+)
 from app.services.plan_mode_service import get_plan_mode_service
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -462,3 +465,93 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
         ),
     }
     return json.dumps(payload, ensure_ascii=False)
+
+
+@tool(
+    ToolMeta(
+        name="request_plan_mode",
+        description=(
+            "Request to enter Plan Mode for the current task. Use this when the work warrants drafting "
+            "and confirming a plan before acting — multi-step or multi-system changes, irreversible or "
+            "externally visible actions (sends, deletes, schedules, posts, payments), ambiguous scope, "
+            "or expensive long-running work. You do NOT enter Plan Mode yourself: this surfaces an "
+            "approval card to the user. If they approve, Plan Mode starts and you draft a confirmable "
+            "plan; if they decline, you continue normally. After calling it, END your turn and wait — "
+            "the user's decision arrives as the next message. Do not use it for simple, single-step, or "
+            "read-only requests, or for work the user already approved or asked you to start."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why planning this task first helps — name what makes it multi-step, risky, "
+                        "ambiguous, or expensive, and what the plan would cover. Shown to the user on "
+                        "the approval card."
+                    ),
+                },
+            },
+            "required": ["reason"],
+        },
+        category="plan",
+        display_name="Request Plan Mode",
+        icon="\U0001f5fa️",
+        read_only=True,
+        parallel_safe=False,
+        governance="safe",
+        adapter="request",
+    )
+)
+async def request_plan_mode(request: ToolExecutionRequest) -> str:
+    """Request user approval to enter Plan Mode (CC EnterPlanMode parity).
+
+    Two-step async shape: this handler only emits a ``plan_mode_entry_requested``
+    signal and the agent ends its turn. The user is the gate — the frontend shows
+    an approval card; on approval it sends a message carrying ``plan_mode_requested``
+    which drives the existing entry path (``_maybe_handle_plan_mode_entry`` →
+    ``classify_plan_mode_entry`` → ``_activate_interactive_plan_mode``). Nothing
+    flips into Plan Mode from this tool result alone. Read-only: it neither writes
+    nor calls out, it only surfaces the request to the current user.
+    """
+    # Already inside Plan Mode → requesting entry is meaningless. Use
+    # exit_plan_mode (submit the plan) or ask_user_question (clarify) instead.
+    if interactive_plan_mode_active():
+        return json.dumps(
+            {
+                "status": "error",
+                "error_code": "already_in_plan_mode",
+                "message": (
+                    "Plan Mode is already active. Draft the plan and submit it with exit_plan_mode, or "
+                    "use ask_user_question if a blocking decision is still open."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    args = dict(request.arguments or {})
+    reason = str(args.get("reason") or "").strip()
+    if not reason:
+        return json.dumps(
+            {
+                "status": "error",
+                "error_code": "missing_reason",
+                "message": (
+                    "request_plan_mode requires a non-empty 'reason' — explain why planning this task "
+                    "first helps so the user can decide whether to approve."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    payload = {
+        "status": "plan_mode_entry_requested",
+        "reason": reason,
+        "next_action": (
+            "END your turn now — the approval card is shown to the user. If they approve, Plan Mode "
+            "starts and you draft a confirmable plan next turn; if they decline, continue normally. "
+            "Do NOT start the work or assume approval until they reply."
+        ),
+        "requested_by_user_id": str(request.context.user_id),
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str)

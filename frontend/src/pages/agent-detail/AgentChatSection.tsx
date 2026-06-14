@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import AskUserQuestionCard from './AskUserQuestionCard';
+import PlanModeRequestCard from './PlanModeRequestCard';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
@@ -76,6 +77,12 @@ interface AgentChatSectionProps {
   onSendChatMsg: () => void;
   /** Sends an explicit message (not from the composer) — used by inline cards. */
   onSendMessage?: (text: string) => void | Promise<unknown>;
+  /**
+   * Approves a Plan Mode entry request: sends the given reason as a message
+   * carrying `plan_mode_requested=true` so the existing entry path activates
+   * Plan Mode. Used by the inline plan-mode-request approval card.
+   */
+  onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
   planModeRequested?: boolean;
   onTogglePlanMode?: () => void;
   isStreaming: boolean;
@@ -88,12 +95,20 @@ interface StructuredToolResultBodyProps {
   toolResult?: string;
   toolRawResult?: string;
   agentId?: string;
+  /** The agent's display name — shown on the plan-mode-request approval card. */
+  agentName?: string | null;
   /**
    * Sends a new user chat message. Threaded from the component that owns the
    * send handler (AgentDetail → AgentChatSection). Used by the clarification
    * card to post the user's answer so the agent's turn resumes.
    */
   onSendMessage?: (text: string) => void | Promise<unknown>;
+  /**
+   * Approves a Plan Mode entry request — sends a message with
+   * `plan_mode_requested=true` so the existing entry path activates Plan Mode.
+   * Used by the inline plan-mode-request approval card.
+   */
+  onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
 }
 
 const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
@@ -188,7 +203,9 @@ export function StructuredToolResultBody({
   toolResult,
   toolRawResult,
   agentId,
+  agentName,
   onSendMessage,
+  onEnterPlanMode,
 }: StructuredToolResultBodyProps) {
   const { t } = useTranslation();
   const rawText = typeof toolRawResult === 'string' && toolRawResult.trim() ? toolRawResult : '';
@@ -218,6 +235,35 @@ export function StructuredToolResultBody({
         blocking={toolMeta.blocking}
         nextAction={toolMeta.nextAction}
         onSubmit={(answerText) => onSendMessage(answerText)}
+        dense
+      />
+    );
+  }
+
+  if (toolMeta.kind === 'plan_mode_request') {
+    // CC EnterPlanMode parity: the agent requested Plan Mode; the user is the gate.
+    // Approve → onEnterPlanMode sends the reason with plan_mode_requested=true so
+    // the existing entry path activates Plan Mode. Decline → a normal message so
+    // the agent continues without Plan Mode. With no send path (read-only history
+    // view) render a static, already-decided card.
+    if (!onEnterPlanMode || !onSendMessage) {
+      return (
+        <PlanModeRequestCard
+          agentName={agentName}
+          reason={toolMeta.reason}
+          onApprove={() => undefined}
+          onDecline={() => undefined}
+          submitted
+          dense
+        />
+      );
+    }
+    return (
+      <PlanModeRequestCard
+        agentName={agentName}
+        reason={toolMeta.reason}
+        onApprove={() => onEnterPlanMode(toolMeta.reason)}
+        onDecline={() => onSendMessage(t('agent.plan.request.declineMessage', 'Continue without entering Plan Mode.'))}
         dense
       />
     );
@@ -411,6 +457,7 @@ export default function AgentChatSection({
   onHandlePaste,
   onSendChatMsg,
   onSendMessage,
+  onEnterPlanMode,
   planModeRequested = false,
   onTogglePlanMode,
   isStreaming,
@@ -782,7 +829,9 @@ export default function AgentChatSection({
               toolResult={msg.toolResult}
               toolRawResult={msg.toolRawResult}
               agentId={agent?.id}
+              agentName={agent?.name}
               onSendMessage={onSendMessage}
+              onEnterPlanMode={onEnterPlanMode}
             />
           </div>
         )}
@@ -798,7 +847,9 @@ export default function AgentChatSection({
         toolResult={msg.toolResult}
         toolRawResult={msg.toolRawResult}
         agentId={agent?.id}
+        agentName={agent?.name}
         onSendMessage={onSendMessage}
+        onEnterPlanMode={onEnterPlanMode}
       />
     </div>
   );
@@ -853,7 +904,8 @@ export default function AgentChatSection({
       if (!showInternalTrace) {
         if (
           message.toolMeta?.kind === 'plan_needs_confirmation' ||
-          message.toolMeta?.kind === 'user_clarification'
+          message.toolMeta?.kind === 'user_clarification' ||
+          message.toolMeta?.kind === 'plan_mode_request'
         ) {
           return renderInlinePlanToolCall(message, index);
         }

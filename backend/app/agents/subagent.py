@@ -126,6 +126,9 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
     # CC-align Phase B: a worker has no user-interaction channel — it must return
     # to its parent, not block on a clarification it can never receive an answer to.
     "ask_user_question",
+    # CC EnterPlanMode parity: a worker has no user to approve a Plan Mode entry —
+    # it must return to its parent, not request a plan mode it can never enter.
+    "request_plan_mode",
 )
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth

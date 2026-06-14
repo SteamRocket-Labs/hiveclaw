@@ -71,12 +71,19 @@ export interface UserClarificationToolMeta {
   nextAction: string | null;
 }
 
+export interface PlanModeRequestToolMeta {
+  kind: 'plan_mode_request';
+  reason: string;
+  nextAction: string | null;
+}
+
 export type ToolCallMeta =
   | HrPreviewToolResult
   | CreateEmployeeSuccessToolMeta
   | DeepResearchToolMeta
   | PlanNeedsConfirmationToolMeta
-  | UserClarificationToolMeta;
+  | UserClarificationToolMeta
+  | PlanModeRequestToolMeta;
 
 export interface NormalizedToolCallResult {
   displayResult: string;
@@ -329,6 +336,26 @@ function buildUserClarificationDisplayResult(meta: UserClarificationToolMeta): s
   return `The agent needs your input on ${meta.questions.length} questions.`;
 }
 
+export function parsePlanModeRequestResult(rawResult: unknown): PlanModeRequestToolMeta | null {
+  const parsed = parseStructuredToolPayload(rawResult);
+  if (parsed?.status !== 'plan_mode_entry_requested') {
+    return null;
+  }
+  const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : '';
+  if (!reason) {
+    return null;
+  }
+  return {
+    kind: 'plan_mode_request',
+    reason,
+    nextAction: typeof parsed.next_action === 'string' ? parsed.next_action : null,
+  };
+}
+
+function buildPlanModeRequestDisplayResult(meta: PlanModeRequestToolMeta): string {
+  return meta.reason;
+}
+
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
 
@@ -349,6 +376,16 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
       createdAgentId: null,
       raw,
       toolMeta: userClarification,
+    };
+  }
+
+  const planModeRequest = parsePlanModeRequestResult(rawResult);
+  if (planModeRequest) {
+    return {
+      displayResult: buildPlanModeRequestDisplayResult(planModeRequest),
+      createdAgentId: null,
+      raw,
+      toolMeta: planModeRequest,
     };
   }
 

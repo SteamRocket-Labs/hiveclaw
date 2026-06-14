@@ -1416,13 +1416,15 @@ def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
 def _tool_result_requests_user_clarification(tool_name: str, result_str: str) -> bool:
     """True when a blocking interaction card is the intended terminal output.
 
-    The ask_user_question handler already emits the card payload through the
-    tool event stream. The kernel must stop after that payload instead of
-    letting the model continue in the same run, otherwise the card appears
-    while the active run still blocks the user's answer.
+    The ask_user_question handler emits an ``awaiting_user_clarification`` card and
+    request_plan_mode emits a ``plan_mode_entry_requested`` approval card (CC
+    EnterPlanMode parity); both pause the run for the user's decision. The kernel
+    must stop after either payload instead of letting the model continue in the
+    same run, otherwise the card appears while the active run still blocks the
+    user's answer.
     """
 
-    if tool_name != "ask_user_question":
+    if tool_name not in ("ask_user_question", "request_plan_mode"):
         return False
     try:
         data = json.loads(result_str)
@@ -1430,6 +1432,8 @@ def _tool_result_requests_user_clarification(tool_name: str, result_str: str) ->
         return False
     if not isinstance(data, dict):
         return False
+    if tool_name == "request_plan_mode":
+        return data.get("status") == "plan_mode_entry_requested"
     return data.get("status") == "awaiting_user_clarification" and data.get("blocking", True) is not False
 
 

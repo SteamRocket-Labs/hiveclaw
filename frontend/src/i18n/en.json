@@ -399,6 +399,15 @@
       "needsConfirmation": "A plan needs your confirmation.",
       "inlineLoading": "Loading plan card...",
       "inlineLoadFailed": "Plan card could not load. Open Aware > Plan Queue if it is still pending.",
+      "request": {
+        "badge": "Plan Mode request",
+        "title": "{{agent}} wants to enter Plan Mode to plan this first:",
+        "approve": "Approve and enter Plan Mode",
+        "decline": "Not needed",
+        "sent": "Your decision was sent.",
+        "agentFallback": "The agent",
+        "declineMessage": "Continue without entering Plan Mode."
+      },
       "noActions": "No actions available for this plan.",
       "handoffState": "Handoff: {{state}}",
       "detailsSummary": "Plan details",

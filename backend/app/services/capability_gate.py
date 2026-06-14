@@ -52,6 +52,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "read_ledger": "agent.task.read",
     "exit_plan_mode": "agent.plan.modify",
     "ask_user_question": "agent.plan.clarify",
+    "request_plan_mode": "agent.plan.request",
     "search_memory": "agent.memory.read",
     "load_memory": "agent.memory.read",
     "save_memory": "agent.memory.write",
@@ -188,6 +189,10 @@ _CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset(
         "get_current_time",
         # CC-align Phase B: asks the current user, no external side effect → exempt
         "ask_user_question",
+        # CC EnterPlanMode parity: requests user approval to enter Plan Mode — a
+        # read-only signal to the current user, no external side effect → exempt,
+        # so the agent can request it without a per-tenant capability policy.
+        "request_plan_mode",
         "check_async_task",
         "list_async_tasks",
         # Work Ledger cognitive-scaffold read (切口①): read-only introspection of

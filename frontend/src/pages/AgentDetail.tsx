@@ -936,8 +936,10 @@ function AgentDetailInner() {
     // chat cards (e.g. the ask_user_question clarification card) to post the
     // user's answer so the agent's blocked turn resumes. Reuses the same
     // startSessionRun path as sendChatMsg — the answer reaches the backend as a
-    // normal user message.
-    const sendChatMessageText = async (text: string) => {
+    // normal user message. When `planMode` is true the message carries
+    // plan_mode_requested=true so the existing Plan Mode entry path activates
+    // Plan Mode (used by the plan-mode-request approval card).
+    const sendChatMessageText = async (text: string, options?: { planMode?: boolean }) => {
         const userMsg = text.trim();
         if (!id || !activeSession?.id || !userMsg) return;
         const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
@@ -957,6 +959,7 @@ function AgentDetailInner() {
             const run = await chatApi.startSessionRun(id, String(activeSession.id), {
                 content: userMsg,
                 display_content: userMsg,
+                ...(options?.planMode ? { plan_mode_requested: true } : {}),
             });
             setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
             invalidateSessionRuntimeQueries(id, String(activeSession.id));
@@ -1544,6 +1547,7 @@ function AgentDetailInner() {
                             onHandlePaste={handlePaste}
                             onSendChatMsg={sendChatMsg}
                             onSendMessage={sendChatMessageText}
+                            onEnterPlanMode={(reason: string) => sendChatMessageText(reason, { planMode: true })}
                             isStreaming={isStreaming}
                             onAbortGeneration={() => {
                                 if (!id || !activeSession?.id) return;

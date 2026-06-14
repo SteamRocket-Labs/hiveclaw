@@ -399,6 +399,15 @@
       "needsConfirmation": "有一个计划需要你确认。",
       "inlineLoading": "正在加载计划卡片...",
       "inlineLoadFailed": "计划卡片加载失败。如果该计划仍在等待确认,请打开 Aware > 计划队列。",
+      "request": {
+        "badge": "进入计划模式请求",
+        "title": "{{agent}} 想进入计划模式来先规划这件事:",
+        "approve": "批准并进入计划模式",
+        "decline": "暂不需要",
+        "sent": "你的决定已发送。",
+        "agentFallback": "Agent",
+        "declineMessage": "继续处理,不需要进入计划模式。"
+      },
       "noActions": "该计划当前没有可执行的操作。",
       "handoffState": "交接:{{state}}",
       "detailsSummary": "计划详情",

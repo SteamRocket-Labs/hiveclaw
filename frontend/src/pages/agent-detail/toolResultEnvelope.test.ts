@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeToolCallResult,
   parseCreateEmployeeToolResult,
+  parsePlanModeRequestResult,
   parsePreviewAgentBlueprintResult,
 } from './toolResultEnvelope';
 
@@ -293,5 +294,48 @@ describe('parseCreateEmployeeToolResult', () => {
       JSON.stringify({ status: 'awaiting_user_clarification', questions: [{ header: 'No question text' }] }),
     );
     expect(malformed.toolMeta).toBeNull();
+  });
+});
+
+describe('parsePlanModeRequestResult', () => {
+  it('parses a plan_mode_entry_requested payload into the request meta', () => {
+    const meta = parsePlanModeRequestResult(
+      JSON.stringify({
+        status: 'plan_mode_entry_requested',
+        reason: 'This spans several files and an external send — confirm the plan first.',
+        next_action: 'END your turn now — the approval card is shown to the user.',
+        requested_by_user_id: 'u-1',
+      }),
+    );
+
+    expect(meta).toEqual({
+      kind: 'plan_mode_request',
+      reason: 'This spans several files and an external send — confirm the plan first.',
+      nextAction: 'END your turn now — the approval card is shown to the user.',
+    });
+  });
+
+  it('returns null for a non-request status', () => {
+    expect(parsePlanModeRequestResult(JSON.stringify({ status: 'needs_plan' }))).toBeNull();
+    expect(parsePlanModeRequestResult(JSON.stringify({ status: 'plan_mode_entry_requested' }))).toBeNull();
+    expect(parsePlanModeRequestResult('not json')).toBeNull();
+  });
+
+  it('normalizeToolCallResult surfaces the plan_mode_request meta with the reason as display result', () => {
+    const normalized = normalizeToolCallResult(
+      'request_plan_mode',
+      JSON.stringify({
+        status: 'plan_mode_entry_requested',
+        reason: 'Multi-step refactor across the kernel.',
+        next_action: 'END your turn.',
+      }),
+    );
+
+    expect(normalized.toolMeta).toEqual({
+      kind: 'plan_mode_request',
+      reason: 'Multi-step refactor across the kernel.',
+      nextAction: 'END your turn.',
+    });
+    expect(normalized.displayResult).toBe('Multi-step refactor across the kernel.');
   });
 });

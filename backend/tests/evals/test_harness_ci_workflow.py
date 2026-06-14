@@ -32,6 +32,8 @@ def test_nightly_behavior_gate_generates_live_report_and_integrity_before_gate()
     assert "HIVE_EVAL_LLM_API_KEY" not in source
     assert "HIVE_EVAL_MODEL:" not in source
     assert "--model ${HIVE_EVAL_MODEL" not in source
+    assert "curl -fsSL https://railway.app/install.sh | bash" in source
+    assert "curl -fsSL https://railway.app/install.sh | sh" not in source
     assert live_runner in source
     assert "--production-runtime" in source
     assert "::hive-behavior-report::" in source

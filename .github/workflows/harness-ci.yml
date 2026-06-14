@@ -114,7 +114,7 @@ jobs:
             echo "::warning::behavior eval gate skipped — Railway eval service secrets not configured"
             exit 0
           fi
-          curl -fsSL https://railway.app/install.sh | sh
+          curl -fsSL https://railway.app/install.sh | bash
           export PATH="$HOME/.railway/bin:$PATH"
           python -m app.evals.evaluator_integrity \
             --current-root . \

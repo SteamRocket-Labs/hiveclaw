@@ -127,7 +127,6 @@ async def test_discovery_lists_reachable_mcp_tool(monkeypatch):
         return _FakeSession(
             [
                 _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
-                _ScalarResult(None),  # pack policy
                 _ListResult([_assignment(agent_id=agent_id, server_id=server)]),
                 _ListResult([_server_tool(server_id=server, tool_id=t.id, tool_name="issue_search")]),
                 _ListResult([]),  # overrides
@@ -158,7 +157,6 @@ async def test_discovery_excludes_denied_tool(monkeypatch):
         return _FakeSession(
             [
                 _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
-                _ScalarResult(None),
                 _ListResult([_assignment(agent_id=agent_id, server_id=server)]),
                 _ListResult(
                     [
@@ -194,7 +192,6 @@ async def test_discovery_excludes_disabled_server(monkeypatch):
         return _FakeSession(
             [
                 _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
-                _ScalarResult(None),
                 _ListResult([_assignment(agent_id=agent_id, server_id=server, enabled=False)]),
                 _ListResult([_server_tool(server_id=server, tool_id=t.id, tool_name="issue_search")]),
                 _ListResult([]),
@@ -227,7 +224,6 @@ async def test_discovery_legacy_fallback_lists_default_not_nondefault(monkeypatc
         return _FakeSession(
             [
                 _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
-                _ScalarResult(None),
                 _ListResult([]),  # no assignments → _resolve_agent_mcp_gating returns None (un-backfilled)
                 _ListResult([default_tool, nondefault_tool]),
                 _ListResult([]),  # no legacy AgentTool rows
@@ -268,7 +264,6 @@ async def test_discovery_excludes_other_tenant_default_mcp(monkeypatch):
         return _FakeSession(
             [
                 _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
-                _ScalarResult(None),
                 _ListResult([]),  # no MCP assignments -> legacy default fallback
                 _ListResult([local_default, foreign_default]),
                 _ListResult([]),  # no legacy AgentTool rows

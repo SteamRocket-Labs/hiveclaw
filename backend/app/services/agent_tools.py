@@ -40,7 +40,6 @@ from app.tools.result_envelope import ToolContentEnvelope
 from app.tools.runtime_tool_groups import (
     RUNTIME_TOOL_GROUPS,
     iter_runtime_tool_groups,
-    make_mcp_server_pack_name,
     normalize_tool_query,
     static_runtime_tool_group_names_for_tool,
 )
@@ -567,7 +566,6 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
         tid = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tid) as db:
             agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
-            pack_policies = await get_tenant_pack_policies(db, getattr(agent, "tenant_id", None))
             mcp_gating = await _resolve_agent_mcp_gating(db, agent_id)
             mcp_tools = (
                 (
@@ -597,10 +595,9 @@ async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") ->
                     reachable = at.enabled if at else bool(t.is_default)
                 if not reachable:
                     continue
-                # The server's pack must be enabled (same gate the schema-load path applies).
-                pack_name = make_mcp_server_pack_name(t.mcp_server_name, t.mcp_server_url)
-                if not is_pack_enabled(pack_policies, pack_name):
-                    continue
+                # MCP visibility is governed solely by assignment + override gating
+                # (above); the legacy mcp_server:* pseudo-pack was a no-op (no such
+                # policy is ever written) and was retired in Step 6.
                 if not _mcp_tool_matches_query(query, t):
                     continue
                 if t.name in seen:
@@ -716,9 +713,10 @@ async def get_agent_tools_for_llm(
                     ):
                         continue
 
+                # MCP tools are gated by assignment reachability (above), not by a
+                # pack policy — the mcp_server:* pseudo-pack was retired in Step 6.
+                # Non-MCP tools still respect their static pack policy.
                 static_packs = set(static_runtime_tool_group_names_for_tool(t.name))
-                if t.type == "mcp":
-                    static_packs.add(make_mcp_server_pack_name(t.mcp_server_name, t.mcp_server_url))
                 if static_packs and not any(is_pack_enabled(pack_policies, pack_name) for pack_name in static_packs):
                     continue
 

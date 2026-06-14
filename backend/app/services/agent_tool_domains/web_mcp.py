@@ -986,6 +986,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         from app.models.tool import AgentTool, Tool
         from app.services.mcp_authz import MCPAuthzError, assert_no_mcp_token_passthrough
         from app.services.mcp_client import MCPClient
+        from app.services.mcp_naming import build_mcp_tool_name, is_mcp_tool_name
         from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
         # RLS 阶段1: reads `agents`/`tools` (policy-bearing) then filters
@@ -997,6 +998,14 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         async with tenant_scoped_session(tid) as db:
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
             candidates = _result_scalars_or_one(result)
+            if not candidates and is_mcp_tool_name(tool_name):
+                # Canonical-name alias (Step 6): a mcp__server__tool call resolves
+                # against a row whose stored name may still be legacy (pre-backfill)
+                # by recomputing the canonical name from (mcp_server_name,
+                # mcp_tool_name). Makes the canonical name a durable identity, so
+                # canonical generation can deploy before the rename backfill runs.
+                all_mcp = (await db.execute(select(Tool).where(Tool.type == "mcp"))).scalars().all()
+                candidates = [t for t in all_mcp if build_mcp_tool_name(t.mcp_server_name, t.mcp_tool_name) == tool_name]
             agent = None
             if agent_id and any(getattr(t, "tenant_id", None) is not None for t in candidates):
                 agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))

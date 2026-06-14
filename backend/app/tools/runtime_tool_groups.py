@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from urllib.parse import urlparse
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,16 +197,3 @@ def infer_static_runtime_tool_group_names(tool_names: list[str] | tuple[str, ...
                 names.append(pack_name)
                 seen.add(pack_name)
     return tuple(names)
-
-
-def make_mcp_server_pack_name(server_name: str | None, server_url: str | None = None) -> str:
-    # NOTE: Theoretical collision risk exists when different server names normalize
-    # to the same slug (e.g. "my.server" vs "my_server"). Acceptable because MCP
-    # server names are typically unique within a tenant and collisions are benign
-    # (same pack activated twice is a no-op).
-    source = server_name
-    if not source and server_url:
-        parsed = urlparse(server_url)
-        source = parsed.netloc or parsed.path or server_url
-    normalized = re.sub(r"[^a-zA-Z0-9]+", "-", (source or "server").strip().lower()).strip("-") or "server"
-    return f"mcp_server:{normalized}"

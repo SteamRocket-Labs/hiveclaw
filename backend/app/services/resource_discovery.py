@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.tool import Tool, AgentTool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.mcp_naming import build_mcp_tool_name
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
@@ -501,18 +502,28 @@ async def import_mcp_from_smithery(
         _tenant_filter = Tool.tenant_id == agent_tenant_id if agent_tenant_id else Tool.tenant_id.is_(None)
 
         if tools_discovered:
-            # Clean up old generic entry if individual tools are now discovered
-            generic_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}"
-            old_generic_r = await db.execute(select(Tool).where(Tool.name == generic_name, _tenant_filter))
-            old_generic = old_generic_r.scalar_one_or_none()
-            if old_generic:
+            # Clean up any prior standalone generic entry for this server now that
+            # individual tools are discovered. Match by structural identity
+            # (server + no remote tool) so it works regardless of the entry's
+            # canonical/legacy name format.
+            old_generic_r = await db.execute(
+                select(Tool).where(
+                    Tool.type == "mcp",
+                    Tool.mcp_server_name == display_name,
+                    Tool.mcp_tool_name.is_(None),
+                    _tenant_filter,
+                )
+            )
+            for old_generic in old_generic_r.scalars().all():
                 await db.execute(delete(AgentTool).where(AgentTool.tool_id == old_generic.id))
                 await db.delete(old_generic)
-                await db.flush()
+            await db.flush()
 
-            # Create one Tool record per MCP tool
+            # Create one Tool record per MCP tool (canonical mcp__server__tool name).
+            _taken_names: set[str] = set()
             for mcp_tool in tools_discovered:
-                tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}_{mcp_tool['name']}"
+                tool_name = build_mcp_tool_name(display_name, mcp_tool["name"], taken=_taken_names)
+                _taken_names.add(tool_name)
                 tool_display = f"{display_name}: {mcp_tool['name']}"
 
                 # Check by internal name first, then fall back to
@@ -573,8 +584,8 @@ async def import_mcp_from_smithery(
                 await _ensure_agent_tool(tool.id)
                 imported_tools.append(f"✅ {tool_display}")
         else:
-            # Fallback: create a single generic tool entry
-            tool_name = f"mcp_{server_id.replace('/', '_').replace('@', '')}"
+            # Fallback: create a single generic tool entry (server-level passthrough).
+            tool_name = build_mcp_tool_name(display_name, None)
             tool_display = display_name
 
             existing_r = await db.execute(select(Tool).where(Tool.name == tool_name, _tenant_filter))
@@ -655,7 +666,6 @@ async def import_mcp_direct(
         full_url = f"{mcp_url}?apiKey={api_key}"
 
     display_name = server_name or mcp_url.split("//")[-1].split("/")[0].split(":")[0]
-    safe_name = display_name.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
 
     # Try to list tools from the endpoint
     tools_discovered = []
@@ -689,8 +699,10 @@ async def import_mcp_direct(
         _tenant_filter = Tool.tenant_id == agent_tenant_id if agent_tenant_id else Tool.tenant_id.is_(None)
 
         if tools_discovered:
+            _taken_names: set[str] = set()
             for mcp_tool in tools_discovered:
-                tool_name = f"mcp_{safe_name}_{mcp_tool['name']}"
+                tool_name = build_mcp_tool_name(display_name, mcp_tool["name"], taken=_taken_names)
+                _taken_names.add(tool_name)
                 tool_display = f"{display_name}: {mcp_tool['name']}"
 
                 # Check by internal name first, then fall back to
@@ -745,7 +757,7 @@ async def import_mcp_direct(
                 await _ensure_agent_tool(tool.id)
                 imported_tools.append(f"✅ {tool_display}")
         else:
-            tool_name = f"mcp_{safe_name}"
+            tool_name = build_mcp_tool_name(display_name, None)
             existing_r = await db.execute(select(Tool).where(Tool.name == tool_name, _tenant_filter))
             existing_tool = existing_r.scalar_one_or_none()
             if existing_tool:

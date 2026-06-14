@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-5 已实施落地**（2026-06-14，全量 4434 passed / 0 failed，证据见 §8 实施日志）。Step 6-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-6 已实施落地**（2026-06-14，全量 4448 passed / 0 failed，证据见 §8 实施日志）。Step 7-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -115,7 +115,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **3** ✅ | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数 `discoverable_tool_names_for_query`(agent_tools.py，单源)；MCP 发现共用 `list_agent_mcp_deferred_tools`，CORE 全程排除，dedup；invoker/workspace 退化为薄包装。顺手补 Step 2 envelope 类型契约(engine `ExecuteTool`/invoker 两处返回类型补 `ToolContentEnvelope`)。**已实施，证据见 §8。** | 0,4 |
 | **4** ✅ | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
 | **5** ✅ | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
-| **6** | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解)；**命名迁移必须同时审计** `Tool.name` 列宽(当前 `String(100)` `tool.py:25`，长名易超)、provider tool-name 约束、确定性 slug、旧名 alias、历史 transcript、skills declared tools、`AgentTool`/MCP override rows——**禁止直接拼长名后 rename**；统一双执行路径(`FALLBACK_EXECUTOR_NAME` 是活兜底，先核实)；收敛 `mcp_server:*` 伪 pack 到 assignment | 0,5 |
+| **6** ✅ | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解+slug+长度/碰撞,单源)；canonical 名进 `resource_discovery` 5 个生成点；canonical 别名在 `_execute_mcp_tool`(canonical 名对未 backfill 的 legacy 行也可解析→生成可先于 backfill 部署)；dry-run+apply backfill 脚本(纯 planner 已测,旧名→新名报告即回滚记录)；**核实**=`FALLBACK_EXECUTOR_NAME` registry 分支实为死代码(无人注册`__mcp_fallback__`,活兜底是 service `fallback_executor` kwarg)→删死分支统一单路径；`mcp_server:*` 伪 pack 实为 no-op(从不写该 policy+未知 pack 默认 True)→退役两处 gate+删 `make_mcp_server_pack_name`,MCP 可见性归 assignment 单一治理。**已实施，证据见 §8。** | 0,5 |
 | **7** | mcp | `MCPClient` 加 `resources/list`+`resources/read`(blob 落 artifacts)；DB 自省工具更名 `list_mcp_tools/inspect_mcp_tool`；新建 `mcp_oauth.py` 标准 OAuth2(加密存凭据，守 mcp_authz)；填 `auth_status` | 6 |
 | **8** | subagent | schema 暴露 `run_in_background`，接通 completion consume tool/prompt、parent wake、tenant context、depth recursion guard、budget trace；补 RuntimeTask/SubagentRun 级 durable run recovery（当前 PG Signal/wake 持久，但 `asyncio.create_task` worker 本身未跨重启）；加 `check_subagent`；governance 按 type 分级(read-only explorer/critic 轻于 worker)；fan-out 决断(见 §6) | 0 |
 | **9** | skill | catalog 移出 frozen prefix→动态 suffix(修 cache 击穿)；删死字段；distiller 晋升硬门改 `evolution_ledger` 外部 eval(非 LLM 自评)；`allowed_tools` 接 scoped 治理引导 | 4 |
@@ -379,3 +379,36 @@ $ pytest tests -q
 ```
 
 **Step 3 范围说明（未在本 step 内做、归后续）：** token-阈值 auto 模式、`select:` 直选语法、loaded-tool state 进 compaction/replay/prompt-cache 稳定排序——这些 deferred-loading 增强在 §4 Step 3 行列为目标，但属于运行时加载策略的独立增量，与 "单源不漂移" 这一核心正确性修复解耦；本 step 先夯实单源（消除 §4.1 面#2 Visibility truth 的漂移根因），增强项随 §4 Step 6（MCP naming/执行路径统一）一并推进。
+
+---
+
+### Step 6 — MCP 规范命名 + 单一执行路径 + 退役伪 pack（✅ 2026-06-14）
+
+**实施前先核实（§5.1 纪律，纠正两处设计稿/critic 判定）：**
+1. **`FALLBACK_EXECUTOR_NAME` registry 分支实为死代码。** `runtime.py:51` 的 `self._executors.get(FALLBACK_EXECUTOR_NAME)` 永远返回 None——全仓无人 `register("__mcp_fallback__", ...)`(grep `app/`+`tests/` 仅常量定义+该分支)。活的 MCP 兜底是 `ToolRuntimeService.fallback_executor` kwarg(`service.py:582-584` → `_execute_mcp_tool`)。早先 critic 把"MCP 兜底是活的"(对,kwarg 路径)与"`FALLBACK_EXECUTOR_NAME` 常量是活的"(错)混为一谈。"先核实"在此兑现。
+2. **`mcp_server:*` 伪 pack gate 实为 no-op。** `is_pack_enabled` 对未知 pack 返回 `_manifest_default_enablement().get(name, True)` = True(`pack_policy_service.py:118`)，且全仓从不写 `mcp_server:*` policy(grep 仅生产函数+一条"不得用该命名"的断言)→ 两处 gate 恒过。退役零行为变更，真 gate 是 assignment reachability(`_resolve_agent_mcp_gating`)。
+3. **命名实为单下划线 `mcp_{server}_{tool}`(非"无前缀")。** `resource_discovery` 5 个生成点用 `mcp_{server_id}_{tool}`，歧义(无法可靠反解 server/tool)。Step 6 转 CC `mcp__{server}__{tool}` 双下划线=可反解+碰撞安全。FK 安全:`AgentTool` 键 `tool_id`、override 键 `mcp_tool_name`——改 `Tool.name` 不破二者。
+
+**改动文件：**
+- `app/services/mcp_naming.py`(新)：单源 `build_mcp_tool_name`/`parse_mcp_tool_name`/`is_mcp_tool_name`。`slugify` 把非字母数字折叠为 `-`、绝不产 `_`，故 `__` 永不在 slug 内出现→按 `__` split 无歧义。charset `[a-z0-9_-]`、长度 `<=64`(provider 函数名最严约束 OpenAI/Gemini，名直传 provider 不经 sanitize)、超长截断+确定性 hash、可选 `taken` 防 `(tenant_id,name)` 唯一约束碰撞。复用 `mcp_backfill.slugify`(单一 slug 源)。另含纯 planner `plan_mcp_name_canonicalization`(按 tenant 分组、已 canonical 先占位、其余分配碰撞安全名)。
+- `app/services/resource_discovery.py`：5 个生成点(Smithery 3 + 直连 2)改 `build_mcp_tool_name(mcp_server_name, mcp_tool_name)`(用 server_name+tool_name 使 backfill 与重发现产同名)；individual loop 带 `_taken_names` 防组内 slug 碰撞；generic 清理改按结构身份(server + null tool)查找(兼容 legacy/canonical 双格式)；删冗余 `safe_name`。
+- `app/services/agent_tool_domains/web_mcp.py`：`_execute_mcp_tool` 加 canonical 别名——精确名查不到且名是 canonical 时，按各行重算 `build_mcp_tool_name` 匹配。使 canonical 名成持久身份(canonical 调用对未 backfill 的 legacy 行也解析)→ 生成可先于 backfill 安全部署。
+- `app/services/agent_tools.py`：退役 `list_agent_mcp_deferred_tools`+`get_agent_tools_for_llm` 两处 `mcp_server:*` 伪 pack gate(并删 deferred 路径里只为该 gate 而取的 `pack_policies`)+删 `make_mcp_server_pack_name` import。
+- `app/tools/runtime_tool_groups.py`：删死函数 `make_mcp_server_pack_name`+不再用的 `urlparse` import。
+- `app/tools/runtime.py`：`try_execute` 删死的 `FALLBACK_EXECUTOR_NAME` 中间查找+删常量→纯一等查找,未注册即 None,单一 service 兜底接手。
+- `app/scripts/backfill_mcp_tool_names.py`(新)：dry-run 默认/`--apply --confirm` 门(不可逆生产数据=安全门非 MVP)；`enter_rls_bypass` 跨租户审计；打印 JSON(tool_id/old/new)即回滚记录;幂等(已 canonical 跳过)。
+- 测试：`tests/services/test_mcp_naming.py`(新,14:build/parse/is/长度 hash/碰撞/charset/planner 五例)；`tests/services/test_mcp_tool_discovery.py` 5 个 `list_agent_mcp_deferred_tools` queue 删掉已退役的 pack-policy 占位(吞异常 mock-cascade:删 dead query 致 queue 错位,断言 `[]` 的用例曾靠吞异常假过——见 [[project_rls_groupd_mock_cascade]])。
+
+**完成判据（非 built-but-unwired）：** 新导入 MCP 工具即得 `mcp__server__tool` 名(`resource_discovery` 真生成路径)；`_execute_mcp_tool` canonical 别名使 canonical 调用对 legacy 行也解析(执行不依赖 backfill 时序)；伪 pack 退役后 MCP 可见性仅由 assignment 治理决定(零行为变更,5 discovery 测试钉死);死执行分支删除后单一兜底路径(全量回归证明)。
+
+**诚实范围说明（[[feedback_design_draft_overstates_maturity]]）：** "旧名 alias" 实现为 *canonical 名 → legacy 行* 的前向解析(canonical 名是持久身份)，**不**做 *legacy 名 → canonical 行* 的反向 alias——后者需存旧名映射表，价值仅限"部署+backfill 之间某个会话仍调旧名"的瞬态(模型每回合重读工具列表自纠),按 [[feedback_no_mvp_finish_completely]] 的"完整但不镀金"权衡不建表。existing 行的统一由 backfill 脚本(operator 执行,可逆)完成——这是不可逆生产数据的既定安全模式,非 MVP 分期。
+
+**验证证据：**
+```
+$ pytest tests/services/test_mcp_naming.py -q                 # 14 passed
+$ pytest tests/services/test_mcp_tool_discovery.py -q         # 9 passed
+$ python -c "import app.scripts.backfill_mcp_tool_names"      # import OK
+$ ruff check <7 核心文件 + 2 测试>                            # All checks passed!
+$ pytest tests -q
+4448 passed, 7 skipped, 4 warnings   # 0 failed (= Step3 的 4434 + 14 naming 测试)
+```

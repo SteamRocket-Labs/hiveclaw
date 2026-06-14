@@ -12,7 +12,6 @@ from app.core.execution_context import ExecutionIdentity
 from app.tools.result_envelope import ToolContentEnvelope
 
 ToolExecutor = Callable[["ToolExecutionRequest"], Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope]
-FALLBACK_EXECUTOR_NAME = "__mcp_fallback__"
 
 
 @dataclass(slots=True)
@@ -46,9 +45,11 @@ class ToolExecutionRegistry:
         return frozenset(self._executors.keys())
 
     async def try_execute(self, request: ToolExecutionRequest) -> str | ToolContentEnvelope | None:
+        # Pure first-class lookup. An unregistered tool returns None so the single
+        # fallback path (ToolRuntimeService.fallback_executor → MCP passthrough)
+        # handles it — there is no second in-registry fallback (Step 6 unified the
+        # dual execution path; the old __mcp_fallback__ slot was never registered).
         executor = self._executors.get(request.tool_name)
-        if executor is None:
-            executor = self._executors.get(FALLBACK_EXECUTOR_NAME)
         if executor is None:
             return None
 

@@ -156,12 +156,12 @@ async def test_plaza_add_comment_returns_structured_invalid_post_id():
 
 
 @pytest.mark.asyncio
-async def test_read_mcp_resource_requires_tool_name_with_structured_error():
-    from app.tools.handlers.mcp import read_mcp_resource
+async def test_inspect_mcp_tool_requires_tool_name_with_structured_error():
+    from app.tools.handlers.mcp import inspect_mcp_tool
 
-    result = await read_mcp_resource(uuid4(), {})
+    result = await inspect_mcp_tool(uuid4(), {})
 
     payload = _extract_tool_error_payload(result)
-    assert payload["tool_name"] == "read_mcp_resource"
+    assert payload["tool_name"] == "inspect_mcp_tool"
     assert payload["error_class"] == "bad_arguments"
     assert payload["provider"] == "mcp"

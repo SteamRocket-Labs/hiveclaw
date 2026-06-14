@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.agent_tool_domains.web_mcp import _execute_mcp_tool
-from app.tools.handlers.mcp import call_mcp_tool, read_mcp_resource
+from app.tools.handlers.mcp import call_mcp_tool, inspect_mcp_tool
 
 
 # ── DB fake ───────────────────────────────────────────────────
@@ -266,7 +266,7 @@ async def test_read_mcp_resource_lookup_is_scoped_to_enabled_agent_assignment(in
     session = install_fake_session(row)
     agent_id = uuid.uuid4()
 
-    out = await read_mcp_resource(agent_id, {"tool_name": "weather"})
+    out = await inspect_mcp_tool(agent_id, {"tool_name": "weather"})
 
     sql = _compiled_sql(session.executed_statements[0])
     assert "## MCP Tool: weather" in out
@@ -410,7 +410,7 @@ async def test_read_mcp_resource_approval_mode_annotates_not_blocks(install_fake
 
     monkeypatch.setattr("app.services.mcp_server_service.resolve_agent_mcp_tool_mode", fake_mode)
 
-    out = await read_mcp_resource(uuid.uuid4(), {"tool_name": "weather"})
+    out = await inspect_mcp_tool(uuid.uuid4(), {"tool_name": "weather"})
 
     assert "## MCP Tool: weather" in out  # still readable
     assert "requires approval" in out  # explicitly annotated
@@ -418,7 +418,7 @@ async def test_read_mcp_resource_approval_mode_annotates_not_blocks(install_fake
 
 @pytest.mark.asyncio
 async def test_list_mcp_resources_marks_approval_tools(install_fake_session, monkeypatch):
-    from app.tools.handlers.mcp import list_mcp_resources
+    from app.tools.handlers.mcp import list_mcp_tools
 
     rows = [
         SimpleNamespace(
@@ -436,7 +436,7 @@ async def test_list_mcp_resources_marks_approval_tools(install_fake_session, mon
 
     monkeypatch.setattr("app.services.mcp_server_service.resolve_agent_mcp_tool_mode", fake_mode)
 
-    out = await list_mcp_resources(uuid.uuid4(), {})
+    out = await list_mcp_tools(uuid.uuid4(), {})
 
     assert "weather" in out  # approval tools stay discoverable
     assert "[approval required]" in out  # but the cost is visible up front

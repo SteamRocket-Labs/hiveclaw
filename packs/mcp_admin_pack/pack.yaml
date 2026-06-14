@@ -13,15 +13,23 @@ tools:
     role: owns
     governance:
       security_zone: restricted
-  - name: list_mcp_resources
+  - name: list_mcp_tools
     role: owns
     governance:
       security_zone: restricted
-  - name: read_mcp_resource
+  - name: inspect_mcp_tool
     role: owns
     governance:
       security_zone: restricted
   - name: call_mcp_tool
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: mcp_list_resources
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: mcp_read_resource
     role: owns
     governance:
       security_zone: restricted

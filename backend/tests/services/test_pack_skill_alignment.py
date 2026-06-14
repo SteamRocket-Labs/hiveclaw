@@ -50,7 +50,9 @@ def test_mcp_pack_guide_is_parseable_skill_markdown():
     assert set(parsed.metadata.declared_tools) == {
         "discover_resources",
         "import_mcp_server",
-        "list_mcp_resources",
-        "read_mcp_resource",
+        "list_mcp_tools",
+        "inspect_mcp_tool",
         "call_mcp_tool",
+        "mcp_list_resources",
+        "mcp_read_resource",
     }

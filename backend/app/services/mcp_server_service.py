@@ -31,6 +31,7 @@ from app.services.mcp_backfill import (
     plan_agent_assignment,
 )
 from app.services.mcp_backfill_service import backfill_tenant_mcp_servers
+from app.services import mcp_oauth
 
 logger = logging.getLogger(__name__)
 
@@ -803,3 +804,145 @@ async def import_mcp_for_agent_and_register(
         if registered:
             message += "\n\nRegistered MCP server records: " + ", ".join(sorted(registered))
         return message
+
+
+# ── OAuth2 (Step 7) ───────────────────────────────────────────────────────────
+# Tokens live server-side encrypted on MCPServer.config_json["oauth"]; the agent
+# never sees or supplies them (守 mcp_authz). auth_status drives fail-closed.
+
+
+async def start_mcp_oauth(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    server_id: uuid.UUID,
+    *,
+    authorization_endpoint: str,
+    token_endpoint: str,
+    client_id: str,
+    redirect_uri: str,
+    scope: str | None = None,
+    client_secret: str | None = None,
+) -> dict:
+    """Begin the authorization-code + PKCE flow: store a pending challenge and
+    return the authorization URL for the operator to visit."""
+    server = await _require_tenant_server(db, tenant_id, server_id)
+    verifier, challenge = mcp_oauth.generate_pkce_pair()
+    state = mcp_oauth.generate_state()
+    config = dict(server.config_json or {})
+    oauth = dict(config.get("oauth") or {})
+    oauth["pending"] = {
+        "state": state,
+        "code_verifier": mcp_oauth.encrypt_value(verifier),
+        "authorization_endpoint": authorization_endpoint,
+        "token_endpoint": token_endpoint,
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "client_secret": mcp_oauth.encrypt_value(client_secret) if client_secret else None,
+    }
+    config["oauth"] = oauth
+    server.config_json = config
+    await db.commit()
+    url = mcp_oauth.build_authorization_url(
+        authorization_endpoint=authorization_endpoint,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        state=state,
+        code_challenge=challenge,
+        scope=scope,
+    )
+    return {"authorization_url": url, "state": state, "server_id": str(server_id)}
+
+
+async def complete_mcp_oauth(db: AsyncSession, state: str, code: str) -> dict:
+    """Finish the flow from the OAuth redirect: look the server up by the
+    unguessable ``state`` (callback is unauthenticated), exchange the code, and
+    store the encrypted token. Cross-tenant lookup is safe — state is a secret."""
+    if not state or not code:
+        raise ValueError("state and code are required")
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.config_json["oauth"]["pending"]["state"].astext == state)
+    )
+    server = result.scalars().first()
+    if server is None:
+        raise ValueError("No MCP server has a pending OAuth flow for this state")
+    pending = dict((server.config_json or {}).get("oauth", {}).get("pending") or {})
+    verifier = mcp_oauth.decrypt_value(pending.get("code_verifier")) or ""
+    client_secret = mcp_oauth.decrypt_value(pending.get("client_secret"))
+    try:
+        token = await mcp_oauth.exchange_code_for_token(
+            token_endpoint=pending["token_endpoint"],
+            client_id=pending["client_id"],
+            code=code,
+            redirect_uri=pending["redirect_uri"],
+            code_verifier=verifier,
+            client_secret=client_secret,
+        )
+    except mcp_oauth.OAuthError as exc:
+        config = dict(server.config_json or {})
+        config["oauth"] = {**config.get("oauth", {}), "pending": None}
+        server.config_json = config
+        server.auth_status = mcp_oauth.AUTH_ERROR
+        await db.commit()
+        raise ValueError(f"OAuth token exchange failed: {exc.message}") from exc
+    config = dict(server.config_json or {})
+    config["oauth"] = {
+        "token": mcp_oauth.encrypt_token_set(token),
+        "token_endpoint": pending["token_endpoint"],
+        "client_id": pending["client_id"],
+        "client_secret": pending.get("client_secret"),  # already encrypted
+        "pending": None,
+    }
+    server.config_json = config
+    server.auth_status = mcp_oauth.AUTH_CONFIGURED
+    if server.status == "needs_auth":
+        server.status = "connected"
+    await db.commit()
+    return {"server_id": str(server.id), "auth_status": server.auth_status}
+
+
+async def resolve_mcp_oauth_bearer(
+    db: AsyncSession, tenant_id: uuid.UUID | None, server_url: str
+) -> tuple[str | None, str | None]:
+    """Resolve a valid OAuth bearer for a server URL, refreshing if needed.
+
+    Returns ``(bearer, error)``: ``(token, None)`` when authorized; ``(None,
+    None)`` when the server has no OAuth configured (caller falls back to its
+    api_key); ``(None, message)`` fail-closed when OAuth is configured but the
+    token is expired and cannot be refreshed.
+    """
+    import time
+
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.tenant_id == tenant_id, MCPServer.server_url == server_url)
+    )
+    server = result.scalars().first()
+    if server is None:
+        return None, None
+    oauth = (server.config_json or {}).get("oauth") or {}
+    token = mcp_oauth.decrypt_token_set(oauth.get("token"))
+    if token is None:
+        return None, None
+    if not token.is_expired(time.time()):
+        return token.access_token, None
+    if not token.refresh_token:
+        server.auth_status = mcp_oauth.AUTH_EXPIRED
+        await db.commit()
+        return None, "MCP OAuth token expired and has no refresh token; re-authorize the server."
+    try:
+        refreshed = await mcp_oauth.refresh_access_token(
+            token_endpoint=oauth["token_endpoint"],
+            client_id=oauth["client_id"],
+            refresh_token=token.refresh_token,
+            client_secret=mcp_oauth.decrypt_value(oauth.get("client_secret")),
+        )
+    except mcp_oauth.OAuthError:
+        server.auth_status = mcp_oauth.AUTH_EXPIRED
+        await db.commit()
+        return None, "MCP OAuth token refresh failed; re-authorize the server."
+    config = dict(server.config_json or {})
+    config["oauth"] = {**config.get("oauth", {}), "token": mcp_oauth.encrypt_token_set(refreshed)}
+    server.config_json = config
+    server.auth_status = mcp_oauth.AUTH_CONFIGURED
+    await db.commit()
+    return refreshed.access_token, None

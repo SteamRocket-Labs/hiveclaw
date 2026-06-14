@@ -4,9 +4,11 @@ description: Discover, import, inspect, and read MCP integrations directly in ch
 tools:
   - discover_resources
   - import_mcp_server
-  - list_mcp_resources
-  - read_mcp_resource
+  - list_mcp_tools
+  - inspect_mcp_tool
   - call_mcp_tool
+  - mcp_list_resources
+  - mcp_read_resource
 is_system: true
 ---
 
@@ -42,8 +44,10 @@ specific MCP resources.
 |-------------|-----|------------|
 | Find a candidate MCP integration | `discover_resources` | `query` (free text), optional `max_results` |
 | Import a server into the runtime | `import_mcp_server` | `server_id`, `config` (dict with `mcp_url` or registry auth) |
-| Inspect what an imported server exposes | `list_mcp_resources` | (none required) |
-| Read a specific MCP resource payload | `read_mcp_resource` | `uri` (from `list_mcp_resources` output) |
+| See which tools an imported server exposes | `list_mcp_tools` | (none required) |
+| Inspect one imported tool's schema | `inspect_mcp_tool` | `tool_name` (from `list_mcp_tools`) |
+| List a server's first-class resources | `mcp_list_resources` | optional `server` |
+| Read a specific MCP resource payload | `mcp_read_resource` | `uri` (from `mcp_list_resources`), optional `server` |
 
 </tool_reference>
 
@@ -90,11 +94,13 @@ import_mcp_server(
 ### 4. Verify after import
 
 ```python
-list_mcp_resources()
+list_mcp_tools()
 ```
-If the user wants a specific resource, read it directly:
+If the server exposes first-class resources (files/records, not tools), list and
+read them via the protocol resource tools:
 ```python
-read_mcp_resource(uri="mcp://...")
+mcp_list_resources()           # → resource URIs
+mcp_read_resource(uri="mcp://...")
 ```
 
 ### 5. Hosted registry auth guidance
@@ -126,7 +132,7 @@ import_mcp_server(server_id="smithery/notion-official",
   → returns: authorization_url="https://api.smithery.ai/oauth/..."
 # Tell user to open the URL and finish OAuth.
 # Then:
-list_mcp_resources()
+list_mcp_tools()
   → shows: notion_search_pages, notion_query_database, ...
 ```
 Output: `已导入 Notion 集成。请打开 <url> 完成 OAuth 授权，回来后我可以用 notion_search_pages 等工具帮你查数据库。`
@@ -140,7 +146,7 @@ Correct flow:
 import_mcp_server(server_id="my-custom-tools",
                   config={"mcp_url": "https://my-tools.example.com/sse"})
   → success, tools visible
-list_mcp_resources()
+list_mcp_tools()
   → shows the actual tool surface
 ```
 Output: `已接入 https://my-tools.example.com/sse。新工具有：<list>。试试哪个？`
@@ -158,11 +164,11 @@ Correct response: `这个 MCP 服务只能在本地机器上跑（需要 Docker�
 <anti_patterns>
 
 - ❌ **Skip `discover_resources` and guess a server_id from memory** → registry IDs change; your call fails with an obscure error. Always search first.
-- ❌ **Claim "imported" without verifying with `list_mcp_resources`** → `import_mcp_server` can return a soft success while the runtime hasn't actually connected. Always verify.
+- ❌ **Claim "imported" without verifying with `list_mcp_tools`** → `import_mcp_server` can return a soft success while the runtime hasn't actually connected. Always verify.
 - ❌ **Ask the user for an API key before checking if OAuth is available** → duplicates work and may leak secrets unnecessarily. Check if the provider uses OAuth first.
 - ❌ **Echo API keys or OAuth tokens back to the user** → they're secrets; they should stay in tool config only.
 - ❌ **Pretend a Docker-only server was imported** → the runtime cannot reach local binaries. Report the limitation honestly.
-- ❌ **Fabricate MCP URIs** in `read_mcp_resource` calls → they must come from `list_mcp_resources` output.
+- ❌ **Fabricate MCP URIs** in `mcp_read_resource` calls → they must come from `mcp_list_resources` output.
 - ❌ **Import an MCP server when a platform skill already exists** for the same system (e.g. importing a Feishu MCP when `feishu-integration` is installed). Platform skills are first-class; MCP is a last resort.
 
 </anti_patterns>
@@ -171,7 +177,7 @@ Correct response: `这个 MCP 服务只能在本地机器上跑（需要 Docker�
 
 <success_criteria>
 - Every import is preceded by a real `discover_resources` call (or an explicit user-provided URL).
-- Every "imported successfully" claim is backed by `list_mcp_resources` output in this session.
+- Every "imported successfully" claim is backed by `list_mcp_tools` output in this session.
 - Every MCP resource URI in your output came from a real tool response, not memory.
 - API keys and OAuth tokens never appear in your text output to the user.
 - When a platform skill exists for the same system, the user is told to use that skill instead.
@@ -180,10 +186,10 @@ Correct response: `这个 MCP 服务只能在本地机器上跑（需要 Docker�
 ## Invoking an Imported Tool
 
 <invoking_imported_tool>
-Once a server is imported and you can see its tools via `list_mcp_resources`,
+Once a server is imported and you can see its tools via `list_mcp_tools`,
 use `call_mcp_tool` to actually run one. Pass the Hive-side tool name
 from the listing and an arguments dict matching the tool's input schema
-(read it via `read_mcp_resource` first if you're unsure).
+(read it via `inspect_mcp_tool` first if you're unsure).
 
 `call_mcp_tool` opens a fresh MCPClient session per call and forwards
 the request to the remote server, then returns the result string. If the

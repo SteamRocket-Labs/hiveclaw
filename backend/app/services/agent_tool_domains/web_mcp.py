@@ -987,7 +987,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         from app.services.mcp_authz import MCPAuthzError, assert_no_mcp_token_passthrough
         from app.services.mcp_client import MCPClient
         from app.services.mcp_naming import build_mcp_tool_name, is_mcp_tool_name
-        from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
+        from app.services.mcp_server_service import resolve_agent_mcp_tool_mode, resolve_mcp_oauth_bearer
 
         # RLS 阶段1: reads `agents`/`tools` (policy-bearing) then filters
         # global-vs-own-tenant candidates in Python. Scope to the agent's tenant
@@ -995,6 +995,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         # still sees NULL-tenant globals + this tenant's rows — exactly the
         # candidate set the Python filter below expects.
         tid = await resolve_tenant_for_agent(agent_id)
+        oauth_bearer: str | None = None
         async with tenant_scoped_session(tid) as db:
             result = await db.execute(select(Tool).where(Tool.name == tool_name, Tool.type == "mcp"))
             candidates = _result_scalars_or_one(result)
@@ -1041,6 +1042,20 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 mode = await resolve_agent_mcp_tool_mode(db, agent_id, tool)
                 if mode == "deny":
                     return f"❌ MCP tool {tool_name} denied by this agent's MCP server policy"
+            # OAuth bearer (Step 7): server-side encrypted token, resolved + refreshed
+            # here so the agent never sees it. Fail-closed when expired/unrefreshable.
+            _server_url = getattr(tool, "mcp_server_url", None) if tool else None
+            if _server_url:
+                oauth_bearer, oauth_error = await resolve_mcp_oauth_bearer(db, tid, _server_url)
+                if oauth_error:
+                    return render_tool_error(
+                        tool_name=tool_name,
+                        error_class="auth_required",
+                        message=oauth_error,
+                        provider="mcp",
+                        retryable=False,
+                        actionable_hint="Re-authorize this MCP server via the OAuth flow (admin MCP controls).",
+                    )
 
         if not tool:
             return f"Unknown tool: {tool_name}"
@@ -1064,6 +1079,11 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                     "Use a server-scoped credential or tenant-managed connector authorization."
                 ),
             )
+        # Server-resolved OAuth bearer overrides any config key (it is NOT agent
+        # passthrough — assert_no_mcp_token_passthrough already validated the
+        # agent-supplied config above; this is the tenant's stored token).
+        if oauth_bearer:
+            merged_config["api_key"] = oauth_bearer
         mcp_url = tool.mcp_server_url
         mcp_name = tool.mcp_tool_name or tool_name
 

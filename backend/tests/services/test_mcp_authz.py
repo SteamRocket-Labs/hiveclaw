@@ -37,7 +37,8 @@ class _ScalarResult:
         return self._value
 
     def scalars(self):
-        return SimpleNamespace(all=lambda: [self._value] if self._value else [])
+        values = [self._value] if self._value else []
+        return SimpleNamespace(all=lambda: values, first=lambda: values[0] if values else None)
 
 
 class _RoutingSession:

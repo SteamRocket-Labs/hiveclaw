@@ -8,25 +8,28 @@ from app.tools.decorator import ToolMeta, tool
 from app.tools.result_envelope import render_tool_error
 
 
-# -- list_mcp_resources -------------------------------------------------------
+# -- list_mcp_tools (DB introspection; old name list_mcp_resources kept as alias) ---
 
 
 @tool(
     ToolMeta(
-        name="list_mcp_resources",
-        description="List all MCP servers and their tools currently available to this agent.",
+        name="list_mcp_tools",
+        description="List all MCP servers and their tools currently imported and available to this agent.",
         parameters={"type": "object", "properties": {}},
         category="mcp",
-        display_name="List MCP Resources",
+        display_name="List MCP Tools",
         icon="\U0001f4cb",
         pack="mcp_admin_pack",
         read_only=True,
         parallel_safe=True,
         governance="safe",
         adapter="agent_args",
+        # Renamed from list_mcp_resources (it lists imported TOOLS, not protocol
+        # resources — those are mcp_list_resources). Old name stays executable.
+        aliases=("list_mcp_resources",),
     )
 )
-async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
+async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
     from sqlalchemy import select
 
     from app.database import tenant_scoped_session
@@ -81,22 +84,22 @@ async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
             return "\n".join(lines)
     except Exception as exc:
         return render_tool_error(
-            tool_name="list_mcp_resources",
+            tool_name="list_mcp_tools",
             error_class="operation_failed",
-            message=f"Failed to list MCP resources: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to list MCP tools: {type(exc).__name__}: {str(exc)[:200]}",
             provider="mcp",
             retryable=True,
             actionable_hint="Retry after the MCP registry or database becomes available.",
         )
 
 
-# -- read_mcp_resource --------------------------------------------------------
+# -- inspect_mcp_tool (DB introspection; old name read_mcp_resource kept as alias) --
 
 
 @tool(
     ToolMeta(
-        name="read_mcp_resource",
-        description="Read detailed information about a specific MCP tool, including its parameters schema and server configuration.",
+        name="inspect_mcp_tool",
+        description="Inspect a specific imported MCP tool, including its parameters schema and server configuration.",
         parameters={
             "type": "object",
             "properties": {
@@ -108,16 +111,19 @@ async def list_mcp_resources(agent_id: uuid.UUID, arguments: dict) -> str:
             "required": ["tool_name"],
         },
         category="mcp",
-        display_name="Read MCP Resource",
+        display_name="Inspect MCP Tool",
         icon="\U0001f50d",
         pack="mcp_admin_pack",
         read_only=True,
         parallel_safe=True,
         governance="safe",
         adapter="agent_args",
+        # Renamed from read_mcp_resource (it inspects an imported TOOL's schema,
+        # not a protocol resource — those are mcp_read_resource). Old name aliased.
+        aliases=("read_mcp_resource",),
     )
 )
-async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
+async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
     import json
 
     from sqlalchemy import select
@@ -129,12 +135,12 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
     tool_name = arguments.get("tool_name", "")
     if not tool_name:
         return render_tool_error(
-            tool_name="read_mcp_resource",
+            tool_name="inspect_mcp_tool",
             error_class="bad_arguments",
             message="tool_name is required.",
             provider="mcp",
             retryable=False,
-            actionable_hint="Call list_mcp_resources first, then pass one of the returned MCP tool names.",
+            actionable_hint="Call list_mcp_tools first, then pass one of the returned MCP tool names.",
         )
 
     try:
@@ -155,19 +161,19 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
             t = result.scalar_one_or_none()
             if not t:
                 return render_tool_error(
-                    tool_name="read_mcp_resource",
+                    tool_name="inspect_mcp_tool",
                     error_class="not_found",
                     message=f"MCP tool '{tool_name}' not found.",
                     provider="mcp",
                     retryable=False,
-                    actionable_hint="Use list_mcp_resources to discover currently imported MCP tool names.",
+                    actionable_hint="Use list_mcp_tools to discover currently imported MCP tool names.",
                 )
             from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
 
             mode = await resolve_agent_mcp_tool_mode(db, agent_id, t)
             if mode == "deny":
                 return render_tool_error(
-                    tool_name="read_mcp_resource",
+                    tool_name="inspect_mcp_tool",
                     error_class="forbidden",
                     message=f"MCP tool '{tool_name}' is denied by this agent's MCP server policy.",
                     provider="mcp",
@@ -196,9 +202,9 @@ async def read_mcp_resource(agent_id: uuid.UUID, arguments: dict) -> str:
             return "\n".join(info)
     except Exception as exc:
         return render_tool_error(
-            tool_name="read_mcp_resource",
+            tool_name="inspect_mcp_tool",
             error_class="operation_failed",
-            message=f"Failed to read MCP resource: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to inspect MCP tool: {type(exc).__name__}: {str(exc)[:200]}",
             provider="mcp",
             retryable=True,
             actionable_hint="Retry after the MCP registry or database becomes available.",
@@ -255,7 +261,7 @@ async def import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
         name="call_mcp_tool",
         description=(
             "Invoke an imported MCP tool against its remote server. "
-            "Pass `tool_name` (the Hive-side name from list_mcp_resources) and "
+            "Pass `tool_name` (the Hive-side name from list_mcp_tools) and "
             "an `arguments` dict matching the tool's input schema. The result "
             "is returned as a string."
         ),
@@ -264,7 +270,7 @@ async def import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
             "properties": {
                 "tool_name": {
                     "type": "string",
-                    "description": "Hive-side name of the imported MCP tool (use list_mcp_resources to discover)",
+                    "description": "Hive-side name of the imported MCP tool (use list_mcp_tools to discover)",
                 },
                 "arguments": {
                     "type": "object",
@@ -298,7 +304,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
             message="tool_name is required.",
             provider="mcp",
             retryable=False,
-            actionable_hint="Discover MCP tool names via list_mcp_resources.",
+            actionable_hint="Discover MCP tool names via list_mcp_tools.",
         )
 
     if not isinstance(tool_args, dict):
@@ -308,7 +314,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
             message="`arguments` must be an object matching the MCP tool's input schema.",
             provider="mcp",
             retryable=False,
-            actionable_hint="Re-read the schema via read_mcp_resource and rebuild the arguments dict.",
+            actionable_hint="Re-read the schema via inspect_mcp_tool and rebuild the arguments dict.",
         )
 
     # RLS 阶段1: scope the `tools` (policy-bearing) read to the agent's tenant.
@@ -332,7 +338,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
                 message=f"MCP tool '{tool_name}' is not imported. Use import_mcp_server first.",
                 provider="mcp",
                 retryable=False,
-                actionable_hint="Use list_mcp_resources to see what's available.",
+                actionable_hint="Use list_mcp_tools to see what's available.",
             )
         if not row.enabled:
             return render_tool_error(
@@ -380,4 +386,195 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
             provider="mcp",
             retryable=True,
             actionable_hint="Check the MCP server is reachable and the API key is valid.",
+        )
+
+
+# -- MCP protocol resources (resources/list + resources/read) -----------------
+# Distinct from list_mcp_tools/inspect_mcp_tool (which introspect imported TOOLS
+# from the DB): these reach the live server for its first-class *resources*.
+
+
+async def _resolve_agent_mcp_server(agent_id: uuid.UUID, server: str | None) -> tuple[str, str | None] | str:
+    """Resolve (server_url, api_key) for one MCP server the agent may reach.
+
+    Server access follows tool access: the agent must hold at least one enabled,
+    non-denied imported tool from that server. ``server`` matches
+    ``mcp_server_name``; when omitted and the agent has exactly one MCP server it
+    is used, otherwise an actionable error lists the choices. Returns the tuple or
+    a rendered-error string.
+    """
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.tool import AgentTool, Tool
+    from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
+        rows = (
+            (
+                await db.execute(
+                    select(Tool)
+                    .join(AgentTool, AgentTool.tool_id == Tool.id)
+                    .where(
+                        AgentTool.agent_id == agent_id,
+                        AgentTool.enabled.is_(True),
+                        Tool.type == "mcp",
+                        Tool.enabled.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_server: dict[str, tuple[str, Tool]] = {}
+        for row in rows:
+            url = row.mcp_server_url
+            if not url:
+                continue
+            if await resolve_agent_mcp_tool_mode(db, agent_id, row) == "deny":
+                continue
+            name = row.mcp_server_name or url
+            by_server.setdefault(name, (url, row))
+
+    if not by_server:
+        return render_tool_error(
+            tool_name="mcp_list_resources",
+            error_class="not_found",
+            message="This agent has no reachable MCP server.",
+            provider="mcp",
+            retryable=False,
+            actionable_hint="Import an MCP server with import_mcp_server first.",
+        )
+    if server:
+        chosen = by_server.get(server)
+        if chosen is None:
+            return render_tool_error(
+                tool_name="mcp_list_resources",
+                error_class="not_found",
+                message=f"No reachable MCP server named '{server}'.",
+                provider="mcp",
+                retryable=False,
+                actionable_hint=f"Available servers: {', '.join(sorted(by_server))}.",
+            )
+    elif len(by_server) == 1:
+        chosen = next(iter(by_server.values()))
+    else:
+        return render_tool_error(
+            tool_name="mcp_list_resources",
+            error_class="bad_arguments",
+            message="Multiple MCP servers are available; specify which one.",
+            provider="mcp",
+            retryable=False,
+            actionable_hint=f"Pass server=one of: {', '.join(sorted(by_server))}.",
+        )
+    url, row = chosen
+    api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
+    return url, api_key
+
+
+@tool(
+    ToolMeta(
+        name="mcp_list_resources",
+        description="List the first-class resources an imported MCP server exposes (protocol resources/list, distinct from its tools).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name (optional when only one server is imported).",
+                },
+            },
+        },
+        category="mcp",
+        display_name="List MCP Resources",
+        icon="\U0001f5c2",
+        pack="mcp_admin_pack",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
+async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.mcp_client import MCPClient
+
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"))
+    if isinstance(resolved, str):
+        return resolved
+    server_url, api_key = resolved
+    try:
+        resources = await MCPClient(server_url, api_key=api_key).list_resources()
+    except Exception as exc:
+        return render_tool_error(
+            tool_name="mcp_list_resources",
+            error_class="operation_failed",
+            message=f"Failed to list MCP resources: {type(exc).__name__}: {str(exc)[:200]}",
+            provider="mcp",
+            retryable=True,
+            actionable_hint="Check the MCP server is reachable and authorized.",
+        )
+    if not resources:
+        return "This MCP server exposes no resources."
+    lines = [f"## MCP Resources ({len(resources)})\n"]
+    for r in resources:
+        desc = f": {r['description'][:120]}" if r.get("description") else ""
+        mime = f" [{r['mimeType']}]" if r.get("mimeType") else ""
+        lines.append(f"- `{r['uri']}` — {r.get('name') or r['uri']}{mime}{desc}")
+    return "\n".join(lines)
+
+
+@tool(
+    ToolMeta(
+        name="mcp_read_resource",
+        description="Read one MCP server resource by URI (protocol resources/read). Large binary blobs spill to workspace artifacts.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string", "description": "Resource URI from mcp_list_resources."},
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name (optional when only one server is imported).",
+                },
+            },
+            "required": ["uri"],
+        },
+        category="mcp",
+        display_name="Read MCP Resource",
+        icon="\U0001f4c4",
+        pack="mcp_admin_pack",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
+async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.mcp_client import MCPClient
+
+    uri = arguments.get("uri", "")
+    if not uri:
+        return render_tool_error(
+            tool_name="mcp_read_resource",
+            error_class="bad_arguments",
+            message="uri is required.",
+            provider="mcp",
+            retryable=False,
+            actionable_hint="Call mcp_list_resources first, then pass one of the returned URIs.",
+        )
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"))
+    if isinstance(resolved, str):
+        return resolved
+    server_url, api_key = resolved
+    try:
+        return await MCPClient(server_url, api_key=api_key).read_resource(uri)
+    except Exception as exc:
+        return render_tool_error(
+            tool_name="mcp_read_resource",
+            error_class="operation_failed",
+            message=f"Failed to read MCP resource: {type(exc).__name__}: {str(exc)[:200]}",
+            provider="mcp",
+            retryable=True,
+            actionable_hint="Check the URI and that the MCP server is reachable and authorized.",
         )

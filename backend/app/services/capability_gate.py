@@ -65,8 +65,14 @@ CAPABILITY_MAP: dict[str, str] = {
     "get_current_time": "system.time.read",
     "discover_resources": "agent.tool.discover",
     "search_clawhub": "agent.tool.discover",
+    "list_mcp_tools": "agent.mcp.read",
+    "inspect_mcp_tool": "agent.mcp.read",
+    # Old names kept as executable aliases (Step 7 rename); map them too.
     "list_mcp_resources": "agent.mcp.read",
     "read_mcp_resource": "agent.mcp.read",
+    # Protocol resources (resources/list + resources/read) — read-only.
+    "mcp_list_resources": "agent.mcp.read",
+    "mcp_read_resource": "agent.mcp.read",
     "call_mcp_tool": "agent.mcp.call",
     "send_feishu_message": "channel.feishu.message",
     "feishu_wiki_list": "channel.feishu.document",
@@ -184,8 +190,12 @@ _CAPABILITY_GATE_EXEMPT_TOOLS: frozenset[str] = frozenset(
         "tool_search",
         "discover_resources",
         "search_clawhub",
-        "list_mcp_resources",
-        "read_mcp_resource",
+        "list_mcp_tools",
+        "inspect_mcp_tool",
+        "list_mcp_resources",  # alias of list_mcp_tools
+        "read_mcp_resource",  # alias of inspect_mcp_tool
+        "mcp_list_resources",
+        "mcp_read_resource",
         "get_current_time",
         # CC-align Phase B: asks the current user, no external side effect → exempt
         "ask_user_question",

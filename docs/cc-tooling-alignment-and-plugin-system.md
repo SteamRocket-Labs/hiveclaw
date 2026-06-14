@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-6 已实施落地**（2026-06-14，全量 4448 passed / 0 failed，证据见 §8 实施日志）。Step 7-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-7 已实施落地**（2026-06-14，全量 4460 passed / 0 failed，证据见 §8 实施日志）。Step 8-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -116,7 +116,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **4** ✅ | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
 | **5** ✅ | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
 | **6** ✅ | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解+slug+长度/碰撞,单源)；canonical 名进 `resource_discovery` 5 个生成点；canonical 别名在 `_execute_mcp_tool`(canonical 名对未 backfill 的 legacy 行也可解析→生成可先于 backfill 部署)；dry-run+apply backfill 脚本(纯 planner 已测,旧名→新名报告即回滚记录)；**核实**=`FALLBACK_EXECUTOR_NAME` registry 分支实为死代码(无人注册`__mcp_fallback__`,活兜底是 service `fallback_executor` kwarg)→删死分支统一单路径；`mcp_server:*` 伪 pack 实为 no-op(从不写该 policy+未知 pack 默认 True)→退役两处 gate+删 `make_mcp_server_pack_name`,MCP 可见性归 assignment 单一治理。**已实施，证据见 §8。** | 0,5 |
-| **7** | mcp | `MCPClient` 加 `resources/list`+`resources/read`(blob 落 artifacts)；DB 自省工具更名 `list_mcp_tools/inspect_mcp_tool`；新建 `mcp_oauth.py` 标准 OAuth2(加密存凭据，守 mcp_authz)；填 `auth_status` | 6 |
+| **7** ✅ | mcp | `MCPClient.list_resources/read_resource`(blob 走现有 >8KB artifact 溢出)+协议工具 `mcp_list_resources/mcp_read_resource`；DB 自省工具更名 `list_mcp_resources→list_mcp_tools`/`read_mcp_resource→inspect_mcp_tool`(旧名 alias 不破 transcript)；新建 `mcp_oauth.py` 标准 OAuth2 PKCE(加密存 token/守 mcp_authz/fail-closed)+`/enterprise/mcp/oauth/start\|callback` API+`resolve_mcp_oauth_bearer` 接入执行路径+`auth_status` 生命周期。**已实施，证据见 §8(含 OAuth live 验证诚实边界)。** | 6 |
 | **8** | subagent | schema 暴露 `run_in_background`，接通 completion consume tool/prompt、parent wake、tenant context、depth recursion guard、budget trace；补 RuntimeTask/SubagentRun 级 durable run recovery（当前 PG Signal/wake 持久，但 `asyncio.create_task` worker 本身未跨重启）；加 `check_subagent`；governance 按 type 分级(read-only explorer/critic 轻于 worker)；fan-out 决断(见 §6) | 0 |
 | **9** | skill | catalog 移出 frozen prefix→动态 suffix(修 cache 击穿)；删死字段；distiller 晋升硬门改 `evolution_ledger` 外部 eval(非 LLM 自评)；`allowed_tools` 接 scoped 治理引导 | 4 |
 | **10** | workflow | preview/start_workflow 确认仅留 CORE；`office_workflow_examples` 接 platform-template seeder 或删(⚠️核实)；修 `runtime_task` 注释+`phase` 死列；文档化"结构化数据 over 脚本"为显式防御决策 | 0,5 |
@@ -411,4 +411,34 @@ $ python -c "import app.scripts.backfill_mcp_tool_names"      # import OK
 $ ruff check <7 核心文件 + 2 测试>                            # All checks passed!
 $ pytest tests -q
 4448 passed, 7 skipped, 4 warnings   # 0 failed (= Step3 的 4434 + 14 naming 测试)
+```
+
+---
+
+### Step 7 — MCP 协议 resources + DB 自省更名 + 标准 OAuth2（✅ 2026-06-14）
+
+**改动文件：**
+- `app/services/mcp_client.py`：加 `list_resources()`(`resources/list`) + `read_resource(uri)`(`resources/read`)，复用现有 `_detect_and_request`；text 内容内联，blob(base64) 走 kernel 现有 >8KB artifact 溢出(不另造溢出逻辑)。
+- `app/tools/handlers/mcp.py`：DB 自省工具更名 `list_mcp_resources→list_mcp_tools`/`read_mcp_resource→inspect_mcp_tool`(它们自省的是已导入的 TOOL 不是协议 resource)，`aliases=(旧名,)` 保持旧名可执行(collector skip alias schema→模型只见新名,旧 transcript 不破)；新增协议工具 `mcp_list_resources`/`mcp_read_resource`(经 `_resolve_agent_mcp_server` 解析可达服务器,server 访问跟随 tool 访问)。
+- `app/services/mcp_oauth.py`(新)：标准 OAuth2 authorization-code + PKCE 功能核心——`generate_pkce_pair`(S256)/`build_authorization_url`/`exchange_code_for_token`/`refresh_access_token`/`OAuthTokenSet`(+`is_expired` 带 60s skew)/加密存取(`encrypt_token_set`/`encrypt_value`,复用 `SECRETS_MASTER_KEY` provider,无 key/未初始化→明文 no-op 同 tool_config_service);auth_status 常量。
+- `app/services/mcp_server_service.py`：`start_mcp_oauth`(存 pending PKCE+返回 auth URL)/`complete_mcp_oauth`(按不可猜 state 跨租户定位 server→换 token→存密文→auth_status=configured)/`resolve_mcp_oauth_bearer`(用+过期 refresh+auth_status 更新,fail-closed)。
+- `app/api/mcp_oauth.py`(新)+`main.py`：`POST /enterprise/mcp/{id}/oauth/start`(admin)+`GET /enterprise/mcp/oauth/callback`(无鉴权=OAuth 重定向靶,按 state 定位)。
+- `app/services/agent_tool_domains/web_mcp.py`：`_execute_mcp_tool` 接入 `resolve_mcp_oauth_bearer`——server 存 OAuth token 则注入为 Bearer(在 `assert_no_mcp_token_passthrough` 校验**之后**注入,因这是租户存储 token 非 agent passthrough);过期不可刷新→fail-closed `auth_required` 错误。
+- `app/services/capability_gate.py`+`pack.yaml`(×2)+`runtime_tool_groups.py`：注册 4 新名(canonical)+2 旧 alias 进 CAPABILITY_MAP+discovery 豁免集；mcp_admin_pack owns 改 canonical 5 名(原 3+2 协议)；runtime group 同步。
+- `agent_template/skills/MCP_INSTALLER.md`：frontmatter + Tool Reference + 工作流/示例/反模式全部对齐新名,并区分"列出已导入工具(list_mcp_tools)/查工具 schema(inspect_mcp_tool)/列协议资源(mcp_list_resources)/读资源(mcp_read_resource)"四语义。
+- 测试：`test_mcp_oauth.py`(新,12:PKCE S256/URL/token 过期/加密往返/exchange+refresh mock transport);修 6 个 pin 旧名/执行序的测试(bridge canonical 面+tool_error 改名+pack_skill declared 集+capability_alignment 加 `tool_name` 参数白名单+mcp_authz fake 加 `.first()` 支持新 OAuth 查询+mcp_call_tool import)。
+
+**先核实(§5.1)：** 现 `list_mcp_resources`/`read_mcp_resource` 名实为**误名**(做 DB 自省却叫 "resources")。CC 把 resources 留给协议 primitive。故更名让出语义:自省→`*_tool`,协议→`mcp_*_resource(s)`。
+
+**完成判据(非 built-but-unwired)：** OAuth 路由真注册(`/api/enterprise/mcp/oauth/start|callback` 实测在 app.routes)；`resolve_mcp_oauth_bearer` 真接入 `_execute_mcp_tool`(configured server 的 token 被用作 Bearer,过期 fail-closed);协议 resource 工具进 mcp_admin_pack owns + 经 `_resolve_agent_mcp_server` 真连 MCPClient。
+
+**诚实边界([[feedback_design_draft_overstates_maturity]]/[[evidence_honesty]])：** OAuth2 的 PKCE/URL/token 交换刷新/加密存取/auth_status 全部**单元已验证**(mock transport);交互式端到端流程**未对真实 OAuth MCP 服务器 live 验证**(CI 无此服务器)。配置了 OAuth 但 token 过期/不可刷新的 server 一律 **fail-closed**(返回 authorization required,绝不发未鉴权请求)。canonical 生成可先于无 OAuth 部署:无 OAuth 的 server→`resolve_mcp_oauth_bearer` 返回 `(None,None)`→回退 config api_key。此与 Step 5 远程源"框架完整+安全门挡住"同诚实模式。
+
+**验证证据：**
+```
+$ pytest tests/services/test_mcp_oauth.py -q                  # 12 passed
+$ python -c "import app.main; [r.path ... 'oauth' ...]"       # /api/enterprise/mcp/oauth/{start,callback} 已注册
+$ ruff check <9 核心文件 + 7 测试>                            # All checks passed!
+$ pytest tests -q
+4460 passed, 7 skipped, 4 warnings   # 0 failed (= Step6 的 4448 + 12 OAuth 测试)
 ```

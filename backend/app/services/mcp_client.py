@@ -371,3 +371,77 @@ class MCPClient:
                 retryable=True,
                 actionable_hint="Retry later or check the MCP server URL and network reachability.",
             )
+
+    async def list_resources(self) -> list[dict]:
+        """Fetch available resources from the MCP server (``resources/list``).
+
+        Resources are a first-class MCP primitive distinct from tools — readable
+        context blobs (files, records) the server exposes by URI.
+        """
+        try:
+            data = await self._detect_and_request("resources/list")
+            if "error" in data:
+                err = data["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                raise Exception(f"MCP error: {msg}")
+            result = data.get("result", {})
+            resources = result.get("resources", []) if isinstance(result, dict) else []
+            return [
+                {
+                    "uri": r.get("uri", ""),
+                    "name": r.get("name", ""),
+                    "description": r.get("description", ""),
+                    "mimeType": r.get("mimeType", ""),
+                }
+                for r in resources
+                if isinstance(r, dict)
+            ]
+        except httpx.HTTPError as e:
+            raise Exception(f"Connection failed: {str(e)[:200]}")
+
+    async def read_resource(self, uri: str) -> str:
+        """Read one resource by URI (``resources/read``).
+
+        Text contents are returned inline; binary (``blob``) contents are
+        rendered with a base64 payload that the kernel's >8KB artifact spillover
+        persists to ``workspace/logs/.../artifacts/`` (so a large blob never
+        floods the context window).
+        """
+        try:
+            data = await self._detect_and_request("resources/read", {"uri": uri})
+            if "error" in data:
+                err = data["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return render_tool_error(
+                    tool_name="mcp_read_resource",
+                    error_class="provider_error",
+                    message=f"MCP resource read error: {msg[:200]}",
+                    provider="mcp",
+                    retryable=False,
+                    actionable_hint="Verify the resource URI from mcp_list_resources and server authorization.",
+                )
+            result = data.get("result", {})
+            contents = result.get("contents", []) if isinstance(result, dict) else []
+            parts: list[str] = []
+            for c in contents:
+                if not isinstance(c, dict):
+                    parts.append(str(c))
+                    continue
+                if c.get("text") is not None:
+                    parts.append(str(c.get("text")))
+                elif c.get("blob") is not None:
+                    mime = c.get("mimeType", "application/octet-stream")
+                    blob = str(c.get("blob"))
+                    parts.append(f"[Binary resource {c.get('uri', uri)} ({mime}, {len(blob)} base64 chars)]\n{blob}")
+                else:
+                    parts.append(str(c))
+            return "\n\n".join(parts) if parts else f"(resource {uri} returned no contents)"
+        except httpx.HTTPError as e:
+            return render_tool_error(
+                tool_name="mcp_read_resource",
+                error_class="transport_failure",
+                message=f"MCP connection failed: {str(e)[:200]}",
+                provider="mcp",
+                retryable=True,
+                actionable_hint="Retry later or check the MCP server URL and network reachability.",
+            )

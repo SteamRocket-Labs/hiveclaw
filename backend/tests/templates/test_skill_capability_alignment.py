@@ -96,6 +96,7 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "is_system",
     "compatibility",
     # Common parameter names used in doc tables
+    "tool_name",
     "msg_type",
     "approval_code",
     "user_id",

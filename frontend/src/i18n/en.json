@@ -1299,13 +1299,23 @@
       "evalRuntime": {
         "title": "Live Behavior Eval Runtime",
         "summary": "Nightly eval uses this tenant agent and its model settings.",
+        "externalTitle": "Isolated Eval Backend",
+        "externalSummary": "Company admins use this page; CI runs against the isolated Railway eval backend.",
         "railwayTenantEnv": "Railway tenant env",
         "agent": "Eval Agent",
         "user": "Eval User",
         "model": "Resolved Agent Model",
+        "ready": "Ready",
+        "needsModel": "Needs model",
         "noModel": "No enabled model is bound to this eval agent",
+        "noExternalModel": "No model has been synced to the isolated eval backend",
         "noModelWarning": "Select a primary or fallback model in this agent settings before enabling live eval.",
-        "disabledModelWarning": "The bound model is disabled. Live eval will fail closed."
+        "disabledModelWarning": "The bound model is disabled. Live eval will fail closed.",
+        "lastSynced": "Last synced",
+        "liveEval": "Live eval",
+        "syncing": "Syncing...",
+        "useForLiveEval": "Use for live eval",
+        "syncFailed": "Failed to sync live eval model"
       },
       "reasoningModes": {
         "provider_default": "Provider Default",

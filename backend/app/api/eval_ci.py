@@ -6,11 +6,17 @@ import os
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
 
+from app.database import get_db
 from app.evals.hive_live_runner import DETERMINISTIC_BEHAVIOR_SCENARIOS
-from app.services.eval_ci_service import run_production_behavior_eval_for_ci
+from app.services.eval_ci_service import (
+    EvalRuntimeModelConfig,
+    configure_production_behavior_eval_model,
+    get_production_behavior_eval_runtime_status,
+    run_production_behavior_eval_for_ci,
+)
 
 router = APIRouter(prefix="/eval-ci", tags=["eval-ci"])
 
@@ -53,5 +59,30 @@ async def run_behavior_eval(
         return await run_production_behavior_eval_for_ci(scenarios=scenarios)
     except HTTPException:
         raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.get("/runtime")
+async def get_eval_runtime(
+    authorization: str | None = Header(default=None),
+    db=Depends(get_db),
+) -> dict[str, Any]:
+    _require_eval_ci_token(authorization)
+    try:
+        return await get_production_behavior_eval_runtime_status(db)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.post("/runtime/model")
+async def configure_eval_runtime_model(
+    payload: EvalRuntimeModelConfig,
+    authorization: str | None = Header(default=None),
+    db=Depends(get_db),
+) -> dict[str, Any]:
+    _require_eval_ci_token(authorization)
+    try:
+        return await configure_production_behavior_eval_model(db, payload)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc

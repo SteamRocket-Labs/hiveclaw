@@ -1,7 +1,9 @@
 """Enterprise management API routes: LLM pool, enterprise info, approvals, audit logs."""
 
 import logging
+import os
 import uuid
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -68,10 +70,108 @@ class LLMTestRequest(BaseModel):
     provider_options: dict | None = None
 
 
+class EvalRuntimeModelSyncRequest(BaseModel):
+    model_id: uuid.UUID
+
+
 def _llm_test_probe_max_tokens(provider: str, model: str | None) -> int:
     from app.services.llm_client import uses_openai_responses_api
 
     return 1024 if uses_openai_responses_api(provider, model) else 16
+
+
+def _eval_ci_api_endpoint(path: str) -> tuple[str, dict[str, str]]:
+    base_url = os.environ.get("HIVE_EVAL_API_URL", "").strip().rstrip("/")
+    token = os.environ.get("HIVE_EVAL_CI_TOKEN", "").strip()
+    if not base_url or not token:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="eval runtime backend is not configured")
+    api_base = base_url if base_url.endswith("/api") else f"{base_url}/api"
+    return f"{api_base}{path}", {"Authorization": f"Bearer {token}"}
+
+
+async def _call_eval_ci_runtime(method: str, path: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    url, headers = _eval_ci_api_endpoint(path)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                response = await client.get(url, headers=headers)
+            elif method == "POST":
+                response = await client.post(url, json=payload or {}, headers=headers)
+            else:
+                raise ValueError(f"unsupported eval runtime method: {method}")
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, dict) else {"data": data}
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+def _eval_runtime_model_payload(model: LLMModel, *, tenant_id: uuid.UUID) -> dict[str, Any]:
+    return {
+        "source_model_id": str(model.id),
+        "source_tenant_id": str(tenant_id),
+        "provider": model.provider,
+        "model": model.model,
+        "api_key": model.api_key,
+        "base_url": model.base_url,
+        "label": model.label,
+        "enabled": True,
+        "supports_vision": getattr(model, "supports_vision", False),
+        "max_tokens_per_day": getattr(model, "max_tokens_per_day", None),
+        "max_output_tokens": getattr(model, "max_output_tokens", None),
+        "max_input_tokens": getattr(model, "max_input_tokens", None),
+        "temperature": getattr(model, "temperature", None),
+        "reasoning_mode": getattr(model, "reasoning_mode", None),
+        "reasoning_effort": getattr(model, "reasoning_effort", None),
+        "reasoning_budget_tokens": getattr(model, "reasoning_budget_tokens", None),
+        "reasoning_display": getattr(model, "reasoning_display", None),
+        "preserve_reasoning": getattr(model, "preserve_reasoning", None),
+        "text_verbosity": getattr(model, "text_verbosity", None),
+        "provider_options": getattr(model, "provider_options", None),
+    }
+
+
+@router.get("/eval-ci/runtime")
+async def get_eval_ci_runtime_status(
+    current_user: User = Depends(get_current_admin),
+):
+    """Read isolated eval backend runtime status from the unified company backend."""
+    return await _call_eval_ci_runtime("GET", "/eval-ci/runtime")
+
+
+@router.post("/eval-ci/runtime/model")
+async def sync_eval_ci_runtime_model(
+    data: EvalRuntimeModelSyncRequest,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mirror a selected company model into the isolated eval backend."""
+    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.id == data.model_id,
+            LLMModel.tenant_id == target_tenant_id,
+        )
+    )
+    model = result.scalar_one_or_none()
+    if model is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found")
+    if not model.enabled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Model must be enabled before live eval sync")
+    payload = _eval_runtime_model_payload(model, tenant_id=target_tenant_id)
+    response = await _call_eval_ci_runtime("POST", "/eval-ci/runtime/model", payload=payload)
+    response["source_model"] = {
+        "model_id": str(model.id),
+        "tenant_id": str(target_tenant_id),
+        "provider": model.provider,
+        "model": model.model,
+        "label": model.label,
+    }
+    return response
 
 
 @router.post("/llm-test")

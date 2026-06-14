@@ -555,11 +555,17 @@ describe('request cleanup adapters', () => {
 
     await enterpriseApi.getAuditLogs('limit=200&tenant_id=tenant-1');
     await enterpriseApi.testLLM({ provider: 'openai', model: 'gpt-test' });
+    await enterpriseApi.getEvalRuntimeStatus();
+    await enterpriseApi.syncEvalRuntimeModel('model-1', 'tenant-1');
 
     expect(get).toHaveBeenCalledWith('/enterprise/audit-logs?limit=200&tenant_id=tenant-1');
     expect(post).toHaveBeenCalledWith('/enterprise/llm-test', {
       provider: 'openai',
       model: 'gpt-test',
+    });
+    expect(get).toHaveBeenCalledWith('/enterprise/eval-ci/runtime');
+    expect(post).toHaveBeenCalledWith('/enterprise/eval-ci/runtime/model?tenant_id=tenant-1', {
+      model_id: 'model-1',
     });
   });
 });

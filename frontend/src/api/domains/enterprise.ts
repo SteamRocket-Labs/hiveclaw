@@ -102,6 +102,47 @@ export interface LLMTestResult {
   error?: string;
 }
 
+export interface EvalRuntimeStatus {
+  configured: boolean;
+  tenant_id?: string;
+  agent?: {
+    id: string;
+    name?: string | null;
+    status?: string | null;
+    primary_model_id?: string | null;
+    fallback_model_id?: string | null;
+  } | null;
+  user?: {
+    id: string;
+    display_name?: string | null;
+    email?: string | null;
+  } | null;
+  model?: (Partial<LLMModel> & {
+    model_id?: string;
+    model_source?: string;
+  }) | null;
+  fallback_model?: (Partial<LLMModel> & {
+    model_id?: string;
+    model_source?: string;
+  }) | null;
+  mirror?: {
+    model_id?: string;
+    source_model_id?: string;
+    source_tenant_id?: string;
+    provider?: string;
+    model?: string;
+    label?: string;
+    synced_at?: string;
+  } | null;
+  source_model?: {
+    model_id: string;
+    tenant_id: string;
+    provider: string;
+    model: string;
+    label: string;
+  };
+}
+
 export interface EnterpriseStats {
   total_users: number;
   running_agents: number;
@@ -154,6 +195,9 @@ export const enterpriseApi = {
   getLLMProviders: () => get<LLMProviderSpec[]>('/enterprise/llm-providers'),
   setDefaultModel: (modelId: string, tenantId?: string) =>
     put<{ status: string }>(`/enterprise/llm-models/default${tenantId ? `?tenant_id=${tenantId}` : ''}`, { model_id: modelId }),
+  getEvalRuntimeStatus: () => get<EvalRuntimeStatus>('/enterprise/eval-ci/runtime'),
+  syncEvalRuntimeModel: (modelId: string, tenantId?: string) =>
+    post<EvalRuntimeStatus>(`/enterprise/eval-ci/runtime/model${tenantId ? `?tenant_id=${tenantId}` : ''}`, { model_id: modelId }),
 
   /** Enterprise info */
   getInfo: () => get<EnterpriseInfo[]>('/enterprise/info'),

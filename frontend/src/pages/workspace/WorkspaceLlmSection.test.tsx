@@ -247,4 +247,84 @@ describe('WorkspaceLlmSection', () => {
     expect(markup).toContain('Claude Opus Eval');
     expect(markup).toContain('Eval Operator');
   });
+
+  it('renders isolated eval backend sync controls inside the company model page', () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceLlmSection
+        models={[
+          {
+            id: 'model-1',
+            provider: 'anthropic',
+            model: 'claude-sonnet-4-5',
+            label: 'Company Sonnet',
+            enabled: true,
+          },
+        ]}
+        providerOptions={[
+          {
+            provider: 'anthropic',
+            display_name: 'Anthropic',
+            protocol: 'anthropic',
+            default_base_url: 'https://api.anthropic.com',
+            supports_tool_choice: false,
+            default_max_tokens: 8192,
+          },
+        ]}
+        showAddModel={false}
+        editingModelId={null}
+        modelForm={{
+          provider: 'anthropic',
+          model: '',
+          api_key: '',
+          base_url: '',
+          label: '',
+          supports_vision: false,
+          max_output_tokens: '',
+          max_input_tokens: '',
+          temperature: '',
+          reasoning_mode: 'provider_default',
+          reasoning_effort: '',
+          reasoning_budget_tokens: '',
+          reasoning_display: '',
+          preserve_reasoning: false,
+          text_verbosity: '',
+          provider_options: '',
+        }}
+        externalEvalRuntimeStatus={{
+          configured: false,
+          tenant_id: 'eval-tenant-1',
+          agent: {
+            id: 'agent-1',
+            name: 'Behavior Eval Agent',
+            primary_model_id: '',
+            fallback_model_id: '',
+          },
+          user: {
+            id: 'user-1',
+            display_name: 'Eval Operator',
+            email: 'eval@example.com',
+          },
+          model: null,
+          mirror: null,
+        }}
+        onSyncEvalRuntimeModel={() => {}}
+        evalRuntimeModelSyncingId={null}
+        onStartCreateModel={() => {}}
+        onCancelModelForm={() => {}}
+        onModelFormChange={() => {}}
+        onTestDraftModel={() => {}}
+        onCreateModel={() => {}}
+        onTestExistingModel={() => {}}
+        onUpdateModel={() => {}}
+        onToggleModel={() => {}}
+        onEditModel={() => {}}
+        onDeleteModel={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('Isolated Eval Backend');
+    expect(markup).toContain('Behavior Eval Agent');
+    expect(markup).toContain('No model has been synced to the isolated eval backend');
+    expect(markup).toContain('Use for live eval');
+  });
 });

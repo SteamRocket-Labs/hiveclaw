@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { agentApi } from '../api/domains/agents';
 import { authApi } from '../api/domains/auth';
-import { enterpriseApi } from '../api/domains/enterprise';
+import { enterpriseApi, type EvalRuntimeStatus } from '../api/domains/enterprise';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { usersApi } from '../api/domains/users';
@@ -426,6 +426,12 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
         queryFn: () => enterpriseApi.getSetting('behavior_eval_runtime', selectedTenantId || undefined),
         enabled: activeTab === 'llm' && !!selectedTenantId,
     });
+    const { data: externalEvalRuntimeStatus = null } = useQuery<EvalRuntimeStatus | null>({
+        queryKey: ['eval-ci-runtime'],
+        queryFn: () => enterpriseApi.getEvalRuntimeStatus(),
+        enabled: activeTab === 'llm',
+        retry: false,
+    });
     const { data: evalAgents = [] } = useQuery({
         queryKey: ['agents', 'behavior-eval-runtime', selectedTenantId],
         queryFn: () => agentApi.list(selectedTenantId || undefined) as Promise<EvalRuntimeAgent[]>,
@@ -489,6 +495,13 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             selectedTenantId || undefined,
         ),
         onSuccess: () => qc.invalidateQueries({ queryKey: ['system-settings', 'behavior_eval_runtime', selectedTenantId] }),
+    });
+    const syncEvalRuntimeModel = useMutation({
+        mutationFn: (modelId: string) => enterpriseApi.syncEvalRuntimeModel(modelId, selectedTenantId || undefined),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['eval-ci-runtime'] }),
+        onError: (error: any) => {
+            alert(error?.message || t('enterprise.llm.evalRuntime.syncFailed', 'Failed to sync live eval model'));
+        },
     });
 
     const handleModelFormChange = (patch: Partial<typeof modelForm>) => {
@@ -725,7 +738,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                         evalRuntimeConfig={evalRuntimeForm}
                         evalAgents={evalAgents}
                         evalUsers={evalUsers}
+                        externalEvalRuntimeStatus={externalEvalRuntimeStatus}
                         evalRuntimeSaving={saveEvalRuntime.isPending}
+                        evalRuntimeModelSyncingId={syncEvalRuntimeModel.isPending ? syncEvalRuntimeModel.variables || null : null}
                         showAddModel={showAddModel}
                         editingModelId={editingModelId}
                         modelForm={modelForm}
@@ -741,6 +756,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                         onDeleteModel={handleDeleteModel}
                         onEvalRuntimeConfigChange={(patch) => setEvalRuntimeForm((current) => ({ ...current, ...patch }))}
                         onSaveEvalRuntimeConfig={() => saveEvalRuntime.mutate()}
+                        onSyncEvalRuntimeModel={(id: string) => syncEvalRuntimeModel.mutate(id)}
                         onSetDefaultModel={async (id: string) => {
                             await enterpriseApi.setDefaultModel(id, selectedTenantId);
                             qc.invalidateQueries({ queryKey: ['llm-models'] });

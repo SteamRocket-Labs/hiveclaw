@@ -109,6 +109,49 @@ async def _call_eval_ci_runtime(method: str, path: str, *, payload: dict[str, An
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
+def _public_eval_model_metadata(model: Any) -> dict[str, Any] | None:
+    if not isinstance(model, dict):
+        return None
+    public: dict[str, Any] = {}
+    for key in (
+        "provider",
+        "model",
+        "label",
+        "enabled",
+        "supports_vision",
+        "max_output_tokens",
+        "max_input_tokens",
+        "reasoning_mode",
+        "reasoning_effort",
+        "reasoning_budget_tokens",
+        "reasoning_display",
+        "preserve_reasoning",
+        "text_verbosity",
+    ):
+        if key in model:
+            public[key] = model[key]
+    return public
+
+
+def _public_eval_mirror_metadata(mirror: Any) -> dict[str, Any] | None:
+    if not isinstance(mirror, dict):
+        return None
+    public: dict[str, Any] = {}
+    for key in ("source_model_id", "provider", "model", "label", "synced_at"):
+        if key in mirror:
+            public[key] = mirror[key]
+    return public
+
+
+def _public_eval_ci_runtime_response(response: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "configured": bool(response.get("configured")),
+        "model": _public_eval_model_metadata(response.get("model")),
+        "mirror": _public_eval_mirror_metadata(response.get("mirror")),
+        "source_model": _public_eval_mirror_metadata(response.get("source_model")),
+    }
+
+
 def _eval_runtime_model_payload(model: LLMModel, *, tenant_id: uuid.UUID) -> dict[str, Any]:
     return {
         "source_model_id": str(model.id),
@@ -139,7 +182,7 @@ async def get_eval_ci_runtime_status(
     current_user: User = Depends(get_current_admin),
 ):
     """Read isolated eval backend runtime status from the unified company backend."""
-    return await _call_eval_ci_runtime("GET", "/eval-ci/runtime")
+    return _public_eval_ci_runtime_response(await _call_eval_ci_runtime("GET", "/eval-ci/runtime"))
 
 
 @router.post("/eval-ci/runtime/model")
@@ -166,12 +209,12 @@ async def sync_eval_ci_runtime_model(
     response = await _call_eval_ci_runtime("POST", "/eval-ci/runtime/model", payload=payload)
     response["source_model"] = {
         "model_id": str(model.id),
-        "tenant_id": str(target_tenant_id),
+        "source_model_id": str(model.id),
         "provider": model.provider,
         "model": model.model,
         "label": model.label,
     }
-    return response
+    return _public_eval_ci_runtime_response(response)
 
 
 @router.post("/llm-test")

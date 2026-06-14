@@ -1236,6 +1236,7 @@
     "tabs": {
       "dashboard": "工作台",
       "llm": "AI 模型",
+      "evalCi": "行为评测",
       "tools": "工具与扩展",
       "org": "组织架构",
       "info": "公司信息",
@@ -1264,6 +1265,21 @@
       "compressThresholdDesc": "上下文使用超过此比例时压缩对话历史。默认 82%。",
       "keepRecent": "保留最近消息数",
       "keepRecentDesc": "压缩时始终保留最近这么多条消息。"
+    },
+    "evalCi": {
+      "title": "行为评测",
+      "desc": "配置隔离 live 行为评测运行时使用的模型。",
+      "status": "运行状态",
+      "statusDesc": "CI 会调用隔离后端；本页只控制从公司 AI 模型池同步哪一个模型。",
+      "ready": "就绪",
+      "needsModel": "需要配置模型",
+      "currentModel": "当前评测模型",
+      "currentModelDesc": "这是 live 行为评测运行时当前解析到的模型。",
+      "noModel": "尚未同步模型",
+      "model": "Live 评测模型",
+      "modelDesc": "从公司 AI 模型池选择一个已启用模型。API Key 只留在服务端。",
+      "selectModel": "— 选择模型 —",
+      "syncFailed": "同步 live 评测模型失败"
     },
     "invites": {
       "pageTitle": "邀请码",
@@ -1323,27 +1339,6 @@
       "reasoningNoToolsWarning": "该提供商在开启推理时不暴露工具调用能力。",
       "deepseekThinkingFact": "DeepSeek thinking mode 支持工具调用；发生工具调用时需要在后续请求中保留 reasoning_content，thinking 开启时 temperature 不生效。",
       "deepseekTemperatureDesc": "DeepSeek thinking mode 会忽略 temperature；如需调节采样，请先关闭 thinking mode。",
-      "evalRuntime": {
-        "title": "Live 行为评测运行时",
-        "summary": "Nightly eval 使用这个租户员工及其模型设置。",
-        "externalTitle": "隔离 Eval 后端",
-        "externalSummary": "公司管理员仍在本页操作；CI 会调用隔离的 Railway eval 后端。",
-        "railwayTenantEnv": "Railway 租户环境变量",
-        "agent": "Eval 员工",
-        "user": "Eval 用户",
-        "model": "解析后的员工模型",
-        "ready": "就绪",
-        "needsModel": "需要模型",
-        "noModel": "该 eval 员工未绑定已启用模型",
-        "noExternalModel": "尚未同步模型到隔离 eval 后端",
-        "noModelWarning": "启用 live eval 前，请先在该员工设置中选择主模型或备用模型。",
-        "disabledModelWarning": "绑定模型已停用，live eval 会 fail-closed。",
-        "lastSynced": "上次同步",
-        "liveEval": "Live eval",
-        "syncing": "同步中...",
-        "useForLiveEval": "用于 live eval",
-        "syncFailed": "同步 live eval 模型失败"
-      },
       "reasoningModes": {
         "provider_default": "提供商默认",
         "enabled": "开启",

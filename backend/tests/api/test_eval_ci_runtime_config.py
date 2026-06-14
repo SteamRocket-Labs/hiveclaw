@@ -145,10 +145,24 @@ async def test_enterprise_eval_runtime_sync_forwards_decrypted_model_server_side
         def json(self):
             return {
                 "configured": True,
+                "tenant_id": "eval-tenant-internal",
+                "user": {
+                    "id": "eval-user-internal",
+                    "display_name": "Eval Admin",
+                },
                 "model": {
                     "model_id": "eval-model-id",
                     "provider": "anthropic",
                     "model": "claude-sonnet-4-5",
+                    "api_key": "must-not-leak",
+                },
+                "mirror": {
+                    "model_id": "eval-model-id",
+                    "source_model_id": str(model_id),
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-5",
+                    "label": "Company Sonnet",
+                    "synced_at": "2026-06-14T00:00:00+00:00",
                 },
             }
 
@@ -187,7 +201,11 @@ async def test_enterprise_eval_runtime_sync_forwards_decrypted_model_server_side
     assert captured["json"]["source_model_id"] == str(model_id)
     assert captured["json"]["source_tenant_id"] == str(tenant_id)
     assert captured["json"]["provider_options"] == {"beta": "on"}
-    assert result["model"]["model_id"] == "eval-model-id"
+    assert result["model"]["model"] == "claude-sonnet-4-5"
+    assert result["mirror"]["source_model_id"] == str(model_id)
+    assert "tenant_id" not in result
+    assert "user" not in result
+    assert "model_id" not in result["model"]
     assert "api_key" not in result["model"]
 
 

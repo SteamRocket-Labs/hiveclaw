@@ -7,6 +7,7 @@ const ICONS = {
   dashboard: <IconLayoutDashboard size={16} stroke={1.5} />,
   info: <IconFileText size={16} stroke={1.5} />,
   llm: <IconRobot size={16} stroke={1.5} />,
+  eval_ci: <IconChecklist size={16} stroke={1.5} />,
   memory: <IconBrain size={16} stroke={1.5} />,
   hr: <IconUserStar size={16} stroke={1.5} />,
   tools: <IconSettings size={16} stroke={1.5} />,

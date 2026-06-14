@@ -1182,6 +1182,7 @@
     "tabs": {
       "dashboard": "Workbench",
       "llm": "AI Models",
+      "evalCi": "Eval CI",
       "tools": "Tools & Extensions",
       "org": "Org Structure",
       "info": "Company Info",
@@ -1210,6 +1211,21 @@
       "compressThresholdDesc": "Compress conversation history when memory usage exceeds this percentage. Default: 82%.",
       "keepRecent": "Keep Recent Messages",
       "keepRecentDesc": "Always preserve this many recent messages during compression."
+    },
+    "evalCi": {
+      "title": "Eval CI",
+      "desc": "Configure the model used by the isolated live behavior evaluation runtime.",
+      "status": "Runtime Status",
+      "statusDesc": "CI runs against an isolated backend; this page only controls which company model is mirrored into that runtime.",
+      "ready": "Ready",
+      "needsModel": "Needs model",
+      "currentModel": "Current Eval Model",
+      "currentModelDesc": "This is the model currently resolved by the live behavior evaluation runtime.",
+      "noModel": "No model synced yet",
+      "model": "Live Eval Model",
+      "modelDesc": "Choose one enabled model from the company AI model pool. The API key stays server-side.",
+      "selectModel": "— Select a model —",
+      "syncFailed": "Failed to sync live eval model"
     },
     "invites": {
       "pageTitle": "Invitation Codes",
@@ -1296,27 +1312,6 @@
       "reasoningNoToolsWarning": "This provider does not expose tool calling while reasoning is enabled.",
       "deepseekThinkingFact": "DeepSeek thinking mode keeps tool calling available. Preserve reasoning_content for tool-call turns; temperature is ignored while thinking is enabled.",
       "deepseekTemperatureDesc": "DeepSeek thinking mode ignores temperature; disable thinking mode before tuning sampling.",
-      "evalRuntime": {
-        "title": "Live Behavior Eval Runtime",
-        "summary": "Nightly eval uses this tenant agent and its model settings.",
-        "externalTitle": "Isolated Eval Backend",
-        "externalSummary": "Company admins use this page; CI runs against the isolated Railway eval backend.",
-        "railwayTenantEnv": "Railway tenant env",
-        "agent": "Eval Agent",
-        "user": "Eval User",
-        "model": "Resolved Agent Model",
-        "ready": "Ready",
-        "needsModel": "Needs model",
-        "noModel": "No enabled model is bound to this eval agent",
-        "noExternalModel": "No model has been synced to the isolated eval backend",
-        "noModelWarning": "Select a primary or fallback model in this agent settings before enabling live eval.",
-        "disabledModelWarning": "The bound model is disabled. Live eval will fail closed.",
-        "lastSynced": "Last synced",
-        "liveEval": "Live eval",
-        "syncing": "Syncing...",
-        "useForLiveEval": "Use for live eval",
-        "syncFailed": "Failed to sync live eval model"
-      },
       "reasoningModes": {
         "provider_default": "Provider Default",
         "enabled": "Enabled",

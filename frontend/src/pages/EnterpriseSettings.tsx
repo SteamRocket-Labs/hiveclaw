@@ -2,18 +2,17 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { agentApi } from '../api/domains/agents';
 import { authApi } from '../api/domains/auth';
 import { enterpriseApi, type EvalRuntimeStatus } from '../api/domains/enterprise';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
-import { usersApi } from '../api/domains/users';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { useAuthStore } from '../stores';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
 import WorkspaceApprovalsSection from './workspace/WorkspaceApprovalsSection';
 import WorkspaceAuditSection from './workspace/WorkspaceAuditSection';
+import WorkspaceEvalCiSection from './workspace/WorkspaceEvalCiSection';
 import WorkspaceInfoSection from './workspace/WorkspaceInfoSection';
 import WorkspaceInvitesSection from './workspace/WorkspaceInvitesSection';
 import WorkspaceLlmSection from './workspace/WorkspaceLlmSection';
@@ -48,21 +47,6 @@ interface LLMProviderSpec {
     supports_text_verbosity?: boolean;
     supports_tools_with_reasoning?: boolean;
     recommended_models?: Array<Record<string, unknown>>;
-}
-
-interface EvalRuntimeAgent {
-    id: string;
-    name: string;
-    primary_model_id?: string | null;
-    fallback_model_id?: string | null;
-    status?: string;
-}
-
-interface EvalRuntimeUser {
-    id: string;
-    display_name?: string | null;
-    username?: string | null;
-    email?: string | null;
 }
 
 export type EnterpriseSettingsTab = WorkspaceSettingsSectionTab;
@@ -419,40 +403,24 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
     const { data: models = [] } = useQuery({
         queryKey: ['llm-models', selectedTenantId],
         queryFn: () => enterpriseApi.llmModels(selectedTenantId || undefined),
-        enabled: activeTab === 'llm',
-    });
-    const { data: evalRuntimeSetting } = useQuery({
-        queryKey: ['system-settings', 'behavior_eval_runtime', selectedTenantId],
-        queryFn: () => enterpriseApi.getSetting('behavior_eval_runtime', selectedTenantId || undefined),
-        enabled: activeTab === 'llm' && !!selectedTenantId,
+        enabled: activeTab === 'llm' || activeTab === 'eval_ci',
     });
     const { data: externalEvalRuntimeStatus = null } = useQuery<EvalRuntimeStatus | null>({
         queryKey: ['eval-ci-runtime'],
         queryFn: () => enterpriseApi.getEvalRuntimeStatus(),
-        enabled: activeTab === 'llm',
+        enabled: activeTab === 'eval_ci',
         retry: false,
-    });
-    const { data: evalAgents = [] } = useQuery({
-        queryKey: ['agents', 'behavior-eval-runtime', selectedTenantId],
-        queryFn: () => agentApi.list(selectedTenantId || undefined) as Promise<EvalRuntimeAgent[]>,
-        enabled: activeTab === 'llm' && !!selectedTenantId,
-    });
-    const { data: evalUsers = [] } = useQuery({
-        queryKey: ['users', 'behavior-eval-runtime', selectedTenantId],
-        queryFn: () => usersApi.list(selectedTenantId || undefined) as Promise<EvalRuntimeUser[]>,
-        enabled: activeTab === 'llm' && !!selectedTenantId,
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
     const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, max_input_tokens: '' as string, temperature: '' as string, reasoning_mode: 'provider_default', reasoning_effort: '', reasoning_budget_tokens: '', reasoning_display: '', preserve_reasoning: false, text_verbosity: '', provider_options: '' });
-    const [evalRuntimeForm, setEvalRuntimeForm] = useState({ agent_id: '', user_id: '' });
+    const [evalCiModelId, setEvalCiModelId] = useState('');
+    const [evalCiSaved, setEvalCiSaved] = useState(false);
     useEffect(() => {
-        const value = evalRuntimeSetting?.value || {};
-        setEvalRuntimeForm({
-            agent_id: typeof value.agent_id === 'string' ? value.agent_id : '',
-            user_id: typeof value.user_id === 'string' ? value.user_id : '',
-        });
-    }, [evalRuntimeSetting]);
+        if (activeTab !== 'eval_ci') return;
+        const sourceModelId = externalEvalRuntimeStatus?.mirror?.source_model_id || externalEvalRuntimeStatus?.source_model?.source_model_id || '';
+        setEvalCiModelId(sourceModelId);
+    }, [activeTab, externalEvalRuntimeStatus?.mirror?.source_model_id, externalEvalRuntimeStatus?.source_model?.source_model_id]);
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => enterpriseApi.getLLMProviders() as Promise<LLMProviderSpec[]>,
@@ -485,22 +453,15 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
         },
         onSuccess: () => qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }),
     });
-    const saveEvalRuntime = useMutation({
-        mutationFn: () => enterpriseApi.updateSetting(
-            'behavior_eval_runtime',
-            {
-                agent_id: evalRuntimeForm.agent_id,
-                user_id: evalRuntimeForm.user_id,
-            },
-            selectedTenantId || undefined,
-        ),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['system-settings', 'behavior_eval_runtime', selectedTenantId] }),
-    });
     const syncEvalRuntimeModel = useMutation({
         mutationFn: (modelId: string) => enterpriseApi.syncEvalRuntimeModel(modelId, selectedTenantId || undefined),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['eval-ci-runtime'] }),
+        onSuccess: () => {
+            setEvalCiSaved(true);
+            setTimeout(() => setEvalCiSaved(false), 2000);
+            qc.invalidateQueries({ queryKey: ['eval-ci-runtime'] });
+        },
         onError: (error: any) => {
-            alert(error?.message || t('enterprise.llm.evalRuntime.syncFailed', 'Failed to sync live eval model'));
+            alert(error?.message || t('enterprise.evalCi.syncFailed', 'Failed to sync live eval model'));
         },
     });
 
@@ -716,7 +677,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                     <div className="tabs">
                         {([
                             { tabs: ['info', 'org', 'users', 'invites'] as const },
-                            { tabs: ['llm', 'tools', 'skills', 'subagents', 'hr'] as const },
+                            { tabs: ['llm', 'eval_ci', 'tools', 'skills', 'subagents', 'hr'] as const },
                             { tabs: ['quotas', 'approvals', 'audit'] as const },
                         ]).flatMap((group, gi) => [
                             ...(gi > 0 ? [<div key={`sep-${gi}`} className="tab-separator" />] : []),
@@ -734,13 +695,6 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                     <WorkspaceLlmSection
                         models={models}
                         providerOptions={providerOptions}
-                        selectedTenantId={selectedTenantId}
-                        evalRuntimeConfig={evalRuntimeForm}
-                        evalAgents={evalAgents}
-                        evalUsers={evalUsers}
-                        externalEvalRuntimeStatus={externalEvalRuntimeStatus}
-                        evalRuntimeSaving={saveEvalRuntime.isPending}
-                        evalRuntimeModelSyncingId={syncEvalRuntimeModel.isPending ? syncEvalRuntimeModel.variables || null : null}
                         showAddModel={showAddModel}
                         editingModelId={editingModelId}
                         modelForm={modelForm}
@@ -754,12 +708,24 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                         onToggleModel={handleToggleModel}
                         onEditModel={handleEditModel}
                         onDeleteModel={handleDeleteModel}
-                        onEvalRuntimeConfigChange={(patch) => setEvalRuntimeForm((current) => ({ ...current, ...patch }))}
-                        onSaveEvalRuntimeConfig={() => saveEvalRuntime.mutate()}
-                        onSyncEvalRuntimeModel={(id: string) => syncEvalRuntimeModel.mutate(id)}
                         onSetDefaultModel={async (id: string) => {
                             await enterpriseApi.setDefaultModel(id, selectedTenantId);
                             qc.invalidateQueries({ queryKey: ['llm-models'] });
+                        }}
+                    />
+                )}
+
+                {/* ── Eval CI ── */}
+                {activeTab === 'eval_ci' && (
+                    <WorkspaceEvalCiSection
+                        models={models}
+                        runtimeStatus={externalEvalRuntimeStatus}
+                        selectedModelId={evalCiModelId}
+                        saving={syncEvalRuntimeModel.isPending}
+                        saved={evalCiSaved}
+                        onSelectedModelChange={setEvalCiModelId}
+                        onSave={() => {
+                            if (evalCiModelId) syncEvalRuntimeModel.mutate(evalCiModelId);
                         }}
                     />
                 )}

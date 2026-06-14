@@ -104,42 +104,33 @@ export interface LLMTestResult {
 
 export interface EvalRuntimeStatus {
   configured: boolean;
-  tenant_id?: string;
-  agent?: {
-    id: string;
-    name?: string | null;
-    status?: string | null;
-    primary_model_id?: string | null;
-    fallback_model_id?: string | null;
+  model?: {
+    provider?: string;
+    model?: string;
+    label?: string;
+    enabled?: boolean;
+    supports_vision?: boolean;
+    max_output_tokens?: number | null;
+    max_input_tokens?: number | null;
+    reasoning_mode?: string | null;
+    reasoning_effort?: string | null;
+    reasoning_budget_tokens?: number | null;
+    reasoning_display?: string | null;
+    preserve_reasoning?: boolean | null;
+    text_verbosity?: string | null;
   } | null;
-  user?: {
-    id: string;
-    display_name?: string | null;
-    email?: string | null;
-  } | null;
-  model?: (Partial<LLMModel> & {
-    model_id?: string;
-    model_source?: string;
-  }) | null;
-  fallback_model?: (Partial<LLMModel> & {
-    model_id?: string;
-    model_source?: string;
-  }) | null;
   mirror?: {
-    model_id?: string;
     source_model_id?: string;
-    source_tenant_id?: string;
     provider?: string;
     model?: string;
     label?: string;
     synced_at?: string;
   } | null;
   source_model?: {
-    model_id: string;
-    tenant_id: string;
-    provider: string;
-    model: string;
-    label: string;
+    source_model_id?: string;
+    provider?: string;
+    model?: string;
+    label?: string;
   };
 }
 

@@ -4,6 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-14T04:22Z [sid:ffc0ad0e]; branch:main; 1 files (orphan-trail.md); last commit: e0c95b2d feat(llm): refresh ProviderSpec to latest model spe
 - 2026-06-13T10:01Z [sid:5d6cd3f6]; branch:feat/external-behavior-eval-ci; 117 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +114); last commit: 07f92521 feat(eval-ci): E10 per-scenario cost/latency budget
 - 2026-06-13T08:52Z [sid:f4214f60]; branch:main; 50 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +47); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
 - 2026-06-13T08:11Z [sid:5d6cd3f6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
@@ -103,4 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-02T23:42Z [sid:8b13322e]; branch:main; 12 files (orphan-trail.md, mcp_servers.py, packs.py, +9); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
 - 2026-06-02T23:33Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
 - 2026-06-02T23:15Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
-- 2026-06-02T22:59Z [sid:98e36c4c]; branch:main; 9 files (orphan-trail.md, agents.ts, index.ts, +6); last commit: 829acf8 feat(runtime): MCP tool gating via assignment tables

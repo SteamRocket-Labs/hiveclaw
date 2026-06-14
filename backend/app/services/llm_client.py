@@ -470,14 +470,15 @@ class _CapAwareLLMClient(LLMClient):
             phase="initial",
         )
 
-        if tools or (max_tokens is not None and max_tokens >= MAX_OUTPUT_TOKENS_HARD_LIMIT):
+        escalate_ceiling = get_provider_output_ceiling(self.provider)
+        if tools or (max_tokens is not None and max_tokens >= escalate_ceiling):
             return response
 
         retry_response = await self._inner.complete(
             messages=messages,
             tools=tools,
             temperature=temperature,
-            max_tokens=MAX_OUTPUT_TOKENS_HARD_LIMIT,
+            max_tokens=escalate_ceiling,
             **kwargs,
         )
         if _is_output_cap_finish_reason(retry_response.finish_reason):
@@ -546,10 +547,14 @@ class OpenAICompatibleClient(LLMClient):
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
         use_completion_tokens: bool = False,
+        provider: str | None = None,
     ):
         super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
         self.supports_tool_choice = supports_tool_choice
         self.use_completion_tokens = use_completion_tokens
+        # Normalized provider id (e.g. "minimax"). Used to drive provider-native
+        # payload fields that the generic OpenAI-compatible shape doesn't model.
+        self.provider = normalize_provider(provider) if provider else None
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -629,6 +634,13 @@ class OpenAICompatibleClient(LLMClient):
             if self.supports_tool_choice:
                 payload["tool_choice"] = "auto"
                 payload["parallel_tool_calls"] = True
+
+        # MiniMax: thinking is on by default; reasoning_split separates the chain
+        # of thought into reasoning_content instead of inlining it in content
+        # (otherwise it returns mixed in with tags). MiniMax-only — never alter
+        # other providers' payloads. An explicit kwarg below still wins.
+        if self.provider == "minimax" and "reasoning_split" not in kwargs:
+            payload["reasoning_split"] = True
 
         # Add any additional kwargs
         payload.update(kwargs)
@@ -2116,7 +2128,12 @@ class ProviderSpec:
     protocol: Literal["openai_compatible", "anthropic", "openai_responses", "gemini"]
     default_base_url: str | None
     supports_tool_choice: bool = True
-    default_max_tokens: int = 8192
+    default_max_tokens: int = 32768
+    # Hard ceiling for output tokens this provider will accept on a single
+    # request. Used to clamp DB overrides and the output-cap escalate retry.
+    # Class default is intentionally generous (131072); providers with a known
+    # higher (e.g. DeepSeek 384K) or different ceiling override this explicitly.
+    max_output_tokens: int = 131072
     max_input_tokens: int = 256000
     model_max_tokens: dict[str, int] = field(default_factory=dict)
     # Prompt caching: does the API accept cache_control content blocks?
@@ -2192,7 +2209,27 @@ def get_llm_model_identifier_error(provider: str | None, model: str | None) -> s
         return None
     return f"{raw_model or normalized_model} is not an OpenAI API model ID. Use {suggested}."
 
-MAX_OUTPUT_TOKENS_HARD_LIMIT = 65536
+# Global absolute ceiling for output tokens — a final guard against runaway
+# per-provider configs/overrides (cost protection). No per-provider ceiling and
+# no DB override may exceed this, regardless of provider spec.
+ABSOLUTE_MAX_OUTPUT_TOKENS = 524288
+
+# Retained for backward compatibility (referenced by deep-research budgeting
+# notes). Output ceilings are now per-provider via ``ProviderSpec.max_output_tokens``;
+# this falls back to the class default when no provider context is available.
+MAX_OUTPUT_TOKENS_HARD_LIMIT = ProviderSpec.max_output_tokens
+
+
+def get_provider_output_ceiling(provider: str) -> int:
+    """Return the effective output-token ceiling for a provider.
+
+    Resolves the provider's configured ``max_output_tokens`` (falling back to
+    the ``ProviderSpec`` class default for unknown providers) and bounds it by
+    the global :data:`ABSOLUTE_MAX_OUTPUT_TOKENS` cost guard.
+    """
+    spec = get_provider_spec(provider)
+    ceiling = spec.max_output_tokens if spec else ProviderSpec.max_output_tokens
+    return min(ceiling, ABSOLUTE_MAX_OUTPUT_TOKENS)
 
 
 # Canonical provider registry (single source of truth)
@@ -2203,8 +2240,9 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         protocol="anthropic",
         default_base_url="https://api.anthropic.com",
         supports_tool_choice=False,
-        default_max_tokens=8192,
-        max_input_tokens=200000,
+        default_max_tokens=32768,
+        max_output_tokens=131072,
+        max_input_tokens=1000000,
         supports_cache_control=True,
         chars_per_token=3.5,
         reasoning_strategy="anthropic_thinking",
@@ -2213,6 +2251,7 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         supports_reasoning_budget=True,
         supports_reasoning_preservation=True,
         recommended_models=(
+            {"model": "claude-opus-4-8", "label": "Claude Opus 4.8", "supports_reasoning": True, "reasoning_mode": "adaptive"},
             {"model": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5", "supports_reasoning": True},
             {"model": "claude-opus-4-7", "label": "Claude Opus 4.7", "supports_reasoning": True, "reasoning_mode": "adaptive"},
         ),
@@ -2223,7 +2262,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         protocol="openai_compatible",
         default_base_url="https://api.openai.com/v1",
         default_max_tokens=16384,
-        max_input_tokens=128000,
+        max_output_tokens=131072,
+        max_input_tokens=272000,
         use_completion_tokens=True,
         chars_per_token=4.0,
         reasoning_strategy="openai_chat_reasoning",
@@ -2242,7 +2282,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         protocol="openai_responses",
         default_base_url="https://api.openai.com/v1",
         default_max_tokens=16384,
-        max_input_tokens=128000,
+        max_output_tokens=131072,
+        max_input_tokens=272000,
         use_completion_tokens=True,
         chars_per_token=4.0,
         reasoning_strategy="openai_responses",
@@ -2270,7 +2311,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="DeepSeek",
         protocol="openai_compatible",
         default_base_url="https://api.deepseek.com",
-        default_max_tokens=8192,
+        default_max_tokens=65536,
+        max_output_tokens=384000,
         max_input_tokens=1000000,
         chars_per_token=3.3,
         reasoning_strategy="deepseek_thinking",
@@ -2288,8 +2330,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Qwen (DashScope)",
         protocol="openai_compatible",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        default_max_tokens=8192,
-        max_input_tokens=131072,
+        default_max_tokens=32768,
+        max_input_tokens=1000000,
         supports_cache_control=True,
         chars_per_token=3.3,
         model_max_tokens={
@@ -2314,12 +2356,14 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         protocol="openai_compatible",
         default_base_url="https://api.minimaxi.com/v1",
         default_max_tokens=16384,
-        max_input_tokens=204800,
+        max_input_tokens=1000000,
+        model_max_tokens={"MiniMax-M2.7": 204800},
         supports_cache_control=True,
         reasoning_strategy="minimax_reasoning_split",
         supported_reasoning_modes=("provider_default",),
         supports_reasoning_preservation=True,
         recommended_models=(
+            {"model": "MiniMax-M3", "label": "MiniMax M3", "supports_reasoning": True},
             {"model": "MiniMax-M2.7", "label": "MiniMax M2.7", "supports_reasoning": True},
         ),
     ),
@@ -2336,8 +2380,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Zhipu / GLM",
         protocol="openai_compatible",
         default_base_url="https://open.bigmodel.cn/api/paas/v4",
-        default_max_tokens=8192,
-        max_input_tokens=128000,
+        default_max_tokens=32768,
+        max_input_tokens=200000,
         reasoning_strategy="glm_thinking",
         supported_reasoning_modes=("provider_default", "enabled", "disabled"),
         supports_reasoning_preservation=True,
@@ -2360,8 +2404,8 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         display_name="Kimi (Moonshot)",
         protocol="openai_compatible",
         default_base_url="https://api.moonshot.cn/v1",
-        default_max_tokens=8192,
-        max_input_tokens=128000,
+        default_max_tokens=32768,
+        max_input_tokens=262144,
         reasoning_strategy="kimi_thinking",
         supported_reasoning_modes=("provider_default", "enabled", "disabled"),
         supports_reasoning_preservation=True,
@@ -2427,6 +2471,7 @@ def get_provider_manifest() -> list[dict[str, Any]]:
             "default_base_url": spec.default_base_url,
             "supports_tool_choice": spec.supports_tool_choice,
             "default_max_tokens": spec.default_max_tokens,
+            "max_output_tokens": spec.max_output_tokens,
             "max_input_tokens": spec.max_input_tokens,
             "model_max_tokens": spec.model_max_tokens,
             "reasoning_strategy": spec.reasoning_strategy,
@@ -2505,9 +2550,10 @@ def get_max_tokens(provider: str, model: str | None = None, max_output_tokens: i
     spec = get_provider_spec(provider)
     model_limits = spec.model_max_tokens if spec else MAX_TOKENS_BY_MODEL
 
-    # Highest priority: per-model DB override
+    # Highest priority: per-model DB override, clamped to the provider's own
+    # output ceiling (and the global absolute cost guard inside the helper).
     if max_output_tokens and max_output_tokens > 0:
-        return min(max_output_tokens, MAX_OUTPUT_TOKENS_HARD_LIMIT)
+        return min(max_output_tokens, get_provider_output_ceiling(provider))
 
     # Check model-specific limits
     if model:
@@ -2597,6 +2643,7 @@ def create_llm_client(
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
             use_completion_tokens=spec.use_completion_tokens if spec else False,
+            provider=normalized_provider,
         ), provider=normalized_provider, model=model)
     else:
         # Default to OpenAI-compatible for unknown providers
@@ -2606,6 +2653,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
+            provider=normalized_provider,
         ), provider=normalized_provider, model=model)
 
 

@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 
-def test_compute_history_limit_anthropic_200k():
-    """Anthropic 200k context → dynamic budget after reserves."""
+def test_compute_history_limit_anthropic_1m():
+    """Anthropic 1M context → dynamic budget clamps to the 800 maximum."""
     from app.services.memory_service import compute_history_limit
     limit = compute_history_limit("anthropic", "claude-sonnet-4-20250514")
-    # 200000 - 40000(prompt=20%) - 1500(tools) - 8000(gen) - 6000(memory) = 144500 / 300 = 481
-    assert limit == 481
+    # 1M window (ProviderSpec default) - reserves = 784500 / 300 = 2615 → clamped to 800
+    assert limit == 800
 
 
-def test_compute_history_limit_openai_128k():
-    """OpenAI 128k context → dynamic budget after reserves."""
+def test_compute_history_limit_openai_272k():
+    """OpenAI 272k context → dynamic budget after reserves."""
     from app.services.memory_service import compute_history_limit
     limit = compute_history_limit("openai", "gpt-4o")
-    # 128000 - 25600(prompt=20%) - 1500(tools) - 8000(gen) - 6000(memory) = 86900 / 300 = 289
-    assert limit == 289
+    # 272000 - 54400(prompt=20%) - 1500(tools) - 8000(gen) - 6000(memory) = 202100 / 300 = 673
+    assert limit == 673
 
 
 def test_compute_history_limit_small_model():
@@ -40,9 +40,11 @@ def test_compute_history_limit_huge_model():
 def test_compute_history_limit_override_takes_precedence():
     """max_input_tokens_override should override provider default."""
     from app.services.memory_service import compute_history_limit
-    limit_default = compute_history_limit("openai", "gpt-4o")  # 128k default
-    limit_override = compute_history_limit("openai", "gpt-4o", max_input_tokens_override=200_000)
-    assert limit_override > limit_default
+    limit_default = compute_history_limit("openai", "gpt-4o")  # 272k default
+    # Override below the provider default proves the override is honored: a
+    # smaller window yields a smaller budget than the 272k default.
+    limit_override = compute_history_limit("openai", "gpt-4o", max_input_tokens_override=100_000)
+    assert limit_override < limit_default
 
 
 def test_compute_history_limit_unknown_provider_uses_128k_fallback():
@@ -56,9 +58,12 @@ def test_compute_history_limit_unknown_provider_uses_128k_fallback():
 def test_compute_history_limit_with_real_prompt_tokens():
     """When real system_prompt_tokens provided, budget is more accurate."""
     from app.services.memory_service import compute_history_limit
+    # Pin the window to 128k so neither path clamps to the 800 max, keeping the
+    # "real tokens are more accurate than the 20% estimate" contrast observable.
     # Real prompt: 128000 - 8000(prompt) - 3000(tools) - 8000(gen) - 6000(memory) = 103000 / 300 = 343
     limit = compute_history_limit(
         "openai", "gpt-4o",
+        max_input_tokens_override=128_000,
         system_prompt_tokens=8000,
         tool_definitions_tokens=3000,
     )

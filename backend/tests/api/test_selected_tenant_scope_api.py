@@ -413,8 +413,24 @@ async def test_platform_admin_can_update_selected_tenant_llm_model(monkeypatch):
     assert db.committed is True
 
 
-def test_llm_model_create_rejects_oversized_max_output_tokens():
+def test_llm_model_create_accepts_high_max_output_tokens_below_absolute():
+    # Schema bound raised to the absolute ceiling (524288) so high-output
+    # providers (e.g. DeepSeek 384K) can be configured; runtime clamps per provider.
     import app.api.enterprise as enterprise_api
+
+    created = enterprise_api.LLMModelCreate(
+        provider="deepseek",
+        model="deepseek-v4-pro",
+        api_key="secret",
+        label="DeepSeek",
+        max_output_tokens=384000,
+    )
+    assert created.max_output_tokens == 384000
+
+
+def test_llm_model_create_rejects_above_absolute_max_output_tokens():
+    import app.api.enterprise as enterprise_api
+    from app.services.llm_client import ABSOLUTE_MAX_OUTPUT_TOKENS
 
     with pytest.raises(ValidationError):
         enterprise_api.LLMModelCreate(
@@ -422,15 +438,16 @@ def test_llm_model_create_rejects_oversized_max_output_tokens():
             model="qwen3.6-plus",
             api_key="secret",
             label="Qwen",
-            max_output_tokens=70000,
+            max_output_tokens=ABSOLUTE_MAX_OUTPUT_TOKENS + 1,
         )
 
 
-def test_llm_model_update_rejects_oversized_max_output_tokens():
+def test_llm_model_update_rejects_above_absolute_max_output_tokens():
     import app.api.enterprise as enterprise_api
+    from app.services.llm_client import ABSOLUTE_MAX_OUTPUT_TOKENS
 
     with pytest.raises(ValidationError):
-        enterprise_api.LLMModelUpdate(max_output_tokens=70000)
+        enterprise_api.LLMModelUpdate(max_output_tokens=ABSOLUTE_MAX_OUTPUT_TOKENS + 1)
 
 
 class _RowsResult:

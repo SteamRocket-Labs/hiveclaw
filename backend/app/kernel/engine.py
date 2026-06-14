@@ -78,7 +78,9 @@ _PTL_ERROR_PATTERNS = (
 
 _OUTPUT_CAP_FINISH_REASONS = {"length", "max_tokens"}
 _STREAM_OUTPUT_CONTINUATION_MAX_ATTEMPTS = 3
-_STREAM_OUTPUT_CONTINUATION_MAX_TOKENS = 65536
+# Fallback continuation budget when the active model carries no resolvable
+# provider (e.g. test fakes). Real runs resolve the provider's own ceiling.
+_STREAM_OUTPUT_CONTINUATION_FALLBACK_MAX_TOKENS = 131072
 _STREAM_OUTPUT_CONTINUATION_PROMPT = (
     "Continue the previous answer exactly from where it ended. "
     "Do not repeat text that has already been emitted. "
@@ -1871,6 +1873,25 @@ async def _stream_with_cancel(
         cancel_task.cancel()
 
 
+def _resolve_continuation_max_tokens(active_model: Any) -> int:
+    """Resolve the output-cap continuation budget for the active model's provider.
+
+    Uses the provider's own output ceiling (bounded by the global absolute cap)
+    so high-output providers (e.g. DeepSeek 384K) continue at their real ceiling
+    instead of a flat constant. Falls back to a generous constant when the
+    provider cannot be resolved (e.g. test doubles without a real provider).
+    """
+    provider = getattr(active_model, "provider", None)
+    if not provider:
+        return _STREAM_OUTPUT_CONTINUATION_FALLBACK_MAX_TOKENS
+    try:
+        from app.services.llm_client import get_provider_output_ceiling
+
+        return get_provider_output_ceiling(provider)
+    except Exception:  # pragma: no cover - defensive: never block continuation
+        return _STREAM_OUTPUT_CONTINUATION_FALLBACK_MAX_TOKENS
+
+
 async def _continue_after_output_cap(
     *,
     client: Any,
@@ -1882,6 +1903,7 @@ async def _continue_after_output_cap(
     on_thinking: ThinkingCallback | None,
     reasoning_kwargs: dict[str, Any],
 ) -> LLMResponse:
+    continuation_max_tokens = _resolve_continuation_max_tokens(active_model)
     attempts = 0
     while (
         _is_output_cap_finish_reason(getattr(response, "finish_reason", None))
@@ -1905,7 +1927,7 @@ async def _continue_after_output_cap(
             messages=continuation_messages,
             tools=None,
             temperature=resolve_temperature(active_model),
-            max_tokens=_STREAM_OUTPUT_CONTINUATION_MAX_TOKENS,
+            max_tokens=continuation_max_tokens,
             on_chunk=on_chunk,
             on_thinking=on_thinking,
             **reasoning_kwargs,

@@ -112,7 +112,9 @@ async def test_kernel_continues_streaming_output_after_output_cap() -> None:
 
     assert result.content == "part one part two"
     assert result.tokens_used == 16
-    assert [call["max_tokens"] for call in fake_client.calls] == [2048, 65536]
+    # Continuation escalates to the provider's per-provider output ceiling
+    # (openai = 131072), not the old flat 65536.
+    assert [call["max_tokens"] for call in fake_client.calls] == [2048, 131072]
     continuation_messages = fake_client.calls[1]["messages"]
     assert any(message.role == "assistant" and message.content == "part one " for message in continuation_messages)
     assert "Continue the previous answer" in continuation_messages[-1].content

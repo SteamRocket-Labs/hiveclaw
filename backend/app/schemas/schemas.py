@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
 
+from app.services.llm_client import ABSOLUTE_MAX_OUTPUT_TOKENS
+
 
 # ─── Auth ───────────────────────────────────────────────
 
@@ -273,7 +275,7 @@ class LLMModelCreate(BaseModel):
     max_tokens_per_day: int | None = None
     enabled: bool = True
     supports_vision: bool = False
-    max_output_tokens: int | None = Field(default=None, ge=1, le=65536)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_MAX_OUTPUT_TOKENS)
     max_input_tokens: int | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     reasoning_mode: str | None = None
@@ -303,7 +305,7 @@ class LLMModelUpdate(BaseModel):
     max_tokens_per_day: int | None = None
     enabled: bool | None = None
     supports_vision: bool | None = None
-    max_output_tokens: int | None = Field(default=None, ge=1, le=65536)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_MAX_OUTPUT_TOKENS)
     max_input_tokens: int | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     reasoning_mode: str | None = None

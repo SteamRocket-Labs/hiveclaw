@@ -450,5 +450,6 @@ def _depth_expectation(request: ResearchRequest) -> str:
 # dimension + cross-cutting analysis + so-what + ledger) runs well past a model's
 # chat-default output ceiling — f733867 capped near 9K chars, one dimension short
 # of its mandated Contradictions/Ledger sections. 32768 is a report-grade budget
-# modern long-context models support; get_max_tokens still clamps it to
-# MAX_OUTPUT_TOKENS_HARD_LIMIT.
+# modern long-context models support; get_max_tokens still clamps it to the
+# provider's per-provider output ceiling (ProviderSpec.max_output_tokens, bounded
+# by the global ABSOLUTE_MAX_OUTPUT_TOKENS).

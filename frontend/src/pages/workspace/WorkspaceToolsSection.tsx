@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { useTranslation } from 'react-i18next';
 
-import { extensionsApi, type McpServerRecord } from '../../api/domains/extensions';
+import { extensionsApi, type InstalledPlugin, type McpServerRecord } from '../../api/domains/extensions';
 import { toolsApi } from '../../api/domains/tools';
 import ToolIcon from '../../components/ToolIcon';
 
@@ -67,11 +67,15 @@ export default function WorkspaceToolsSection({
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
   const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
   const [configCategory, setConfigCategory] = useState<string | null>(null);
-  const [toolsView, setToolsView] = useState<'global' | 'mcp-servers' | 'agent-installed'>('global');
+  const [toolsView, setToolsView] = useState<'global' | 'mcp-servers' | 'plugins' | 'agent-installed'>('global');
   const [agentInstalledTools, setAgentInstalledTools] = useState<any[]>([]);
   const [collapsedServers, setCollapsedServers] = useState<Set<string>>(new Set());
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
   const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
+  const [pluginsLoaded, setPluginsLoaded] = useState(false);
+  const [pluginKeyInput, setPluginKeyInput] = useState('');
+  const [pluginBusy, setPluginBusy] = useState<string | null>(null);
 
   const loadMcpServers = async () => {
     try {
@@ -81,6 +85,16 @@ export default function WorkspaceToolsSection({
       setMcpServers([]);
     }
     setMcpServersLoaded(true);
+  };
+
+  const loadPlugins = async () => {
+    try {
+      const data = await extensionsApi.listEnterprisePlugins();
+      setPlugins(data);
+    } catch {
+      setPlugins([]);
+    }
+    setPluginsLoaded(true);
   };
 
   const loadAllTools = async () => {
@@ -108,6 +122,7 @@ export default function WorkspaceToolsSection({
         {([
           ['global', t('enterprise.tools.globalTools', 'Global Tools')],
           ['mcp-servers', t('agent.extensions.mcpServers', 'MCP Servers')],
+          ['plugins', t('agent.extensions.plugins', 'Plugins')],
           ['agent-installed', t('enterprise.tools.agentInstalled', 'Agent Installed')],
         ] as const).map(([key, label]) => (
           <button
@@ -118,6 +133,8 @@ export default function WorkspaceToolsSection({
                 loadAgentInstalledTools();
               } else if (key === 'mcp-servers') {
                 loadMcpServers();
+              } else if (key === 'plugins') {
+                loadPlugins();
               }
             }}
             style={{
@@ -242,6 +259,99 @@ export default function WorkspaceToolsSection({
                       ))}
                     </div>
                   ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {toolsView === 'plugins' ? (
+        <div>
+          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+            {t('enterprise.tools.pluginsHint', 'Tenant-installed plugins compose tools, skills, MCP servers, agents, hooks, and dependencies. Agent visibility is controlled per agent.')}
+          </p>
+          <div className="card" style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '12px 16px', marginBottom: '12px' }}>
+            <input
+              className="form-input"
+              value={pluginKeyInput}
+              onChange={(event) => setPluginKeyInput(event.target.value)}
+              placeholder={t('enterprise.tools.pluginKeyPlaceholder', 'plugin key, e.g. web_pack')}
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <button
+              className="btn btn-primary"
+              disabled={!pluginKeyInput.trim() || pluginBusy === 'install'}
+              onClick={async () => {
+                const key = pluginKeyInput.trim();
+                if (!key) return;
+                setPluginBusy('install');
+                try {
+                  await extensionsApi.installEnterprisePlugin({ plugin_key: key });
+                  setPluginKeyInput('');
+                  await loadPlugins();
+                } finally {
+                  setPluginBusy(null);
+                }
+              }}
+            >
+              {t('enterprise.tools.installPlugin', 'Install')}
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={pluginBusy === 'backfill'}
+              onClick={async () => {
+                setPluginBusy('backfill');
+                try {
+                  await extensionsApi.backfillEnterprisePlugins();
+                  await loadPlugins();
+                } finally {
+                  setPluginBusy(null);
+                }
+              }}
+            >
+              {t('enterprise.tools.backfillPlugins', 'Backfill')}
+            </button>
+          </div>
+          {!pluginsLoaded ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
+          ) : plugins.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
+              {t('enterprise.tools.noPlugins', 'No plugins installed')}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {plugins.map((plugin) => (
+                <div key={plugin.id} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontWeight: 600, fontSize: '13px' }}>{plugin.plugin_key}</span>
+                      <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>
+                        {plugin.source_kind}
+                      </span>
+                      <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>{plugin.status}</span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                      {plugin.version}
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn-ghost"
+                    style={{ color: 'var(--error)', fontSize: '12px' }}
+                    disabled={pluginBusy === plugin.plugin_key}
+                    onClick={async () => {
+                      if (!confirm(t('enterprise.tools.uninstallPluginConfirm', { name: plugin.plugin_key, defaultValue: `Uninstall ${plugin.plugin_key}?` }))) return;
+                      setPluginBusy(plugin.plugin_key);
+                      try {
+                        await extensionsApi.uninstallEnterprisePlugin({ plugin_key: plugin.plugin_key });
+                        await loadPlugins();
+                      } finally {
+                        setPluginBusy(null);
+                      }
+                    }}
+                  >
+                    {t('enterprise.tools.uninstallPlugin', 'Uninstall')}
+                  </button>
                 </div>
               ))}
             </div>

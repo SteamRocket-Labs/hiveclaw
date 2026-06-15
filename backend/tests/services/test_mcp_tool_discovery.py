@@ -414,6 +414,21 @@ async def test_tool_search_text_and_schema_agree_on_mcp(monkeypatch, tmp_path):
     assert "mcp_github_issue_search" in schema_names
 
 
+@pytest.mark.asyncio
+async def test_select_syntax_directly_discovers_one_deferred_tool(monkeypatch):
+    """CC-style select:<tool> should directly load one reachable deferred schema."""
+    from app.services import agent_tools as module
+
+    async def no_mcp(_agent_id, _query):
+        return []
+
+    monkeypatch.setattr(module, "list_agent_mcp_deferred_tools", no_mcp)
+
+    names = await module.discoverable_tool_names_for_query(uuid4(), "select:firecrawl_fetch")
+
+    assert names == ["firecrawl_fetch"]
+
+
 # --- dynamic MCP execution fallback: tenant + reachability -----------------
 
 

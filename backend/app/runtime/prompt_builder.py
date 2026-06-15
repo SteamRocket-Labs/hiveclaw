@@ -510,6 +510,7 @@ the next wake-up (or a human) can resume without guessing."""
 def build_dynamic_prompt_suffix(
     *,
     active_tool_groups: list[dict[str, Any]] | None = None,
+    available_deferred_tools: list[str] | tuple[str, ...] | None = None,
     retrieval_context: str = "",
     continuity_context: str = "",
     runtime_metadata_context: str = "",
@@ -611,6 +612,19 @@ def build_dynamic_prompt_suffix(
     packs_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=packs_budget)
     if packs_section:
         parts.append(packs_section)
+
+    if available_deferred_tools:
+        names = [str(name).strip() for name in available_deferred_tools if str(name).strip()]
+        if names:
+            lines = [
+                "## Available Deferred Tools",
+                "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
+            ]
+            for name in names[:40]:
+                lines.append(f"- {name} — `select:{name}`")
+            if len(names) > 40:
+                lines.append(f"- ...(+{len(names) - 40} more)")
+            parts.append(_trim_block("\n".join(lines), budget_chars=min(packs_budget, 1600)))
 
     # § Skills catalog (Step 9 — CC parity): progressive-disclosure index lives
     # in the dynamic suffix, next to the active tool groups it complements, so

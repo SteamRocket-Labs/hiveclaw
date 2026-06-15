@@ -106,6 +106,7 @@ RLS_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "tenant_installed_plugins",
     "agent_plugin_assignments",
     "plugin_hook_registrations",
+    "plugin_dependency_edges",
 )
 
 

@@ -103,6 +103,8 @@ HookMatcher = Callable[[HookContext], bool]
 @dataclass(slots=True, frozen=True)
 class HookMatcherSpec:
     tool_names: tuple[str, ...] = ()
+    agent_ids: tuple[str, ...] = ()
+    tenant_ids: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     session_ids: tuple[str, ...] = ()
     metadata_equals: tuple[tuple[str, Any], ...] = ()
@@ -125,6 +127,8 @@ def _normalize_matcher_spec(spec: HookMatcherSpec | dict[str, Any]) -> HookMatch
         return spec
     return HookMatcherSpec(
         tool_names=tuple(str(name) for name in spec.get("tool_names", ()) if name),
+        agent_ids=tuple(str(agent_id) for agent_id in spec.get("agent_ids", ()) if agent_id),
+        tenant_ids=tuple(str(tenant_id) for tenant_id in spec.get("tenant_ids", ()) if tenant_id),
         sources=tuple(str(source) for source in spec.get("sources", ()) if source),
         session_ids=tuple(str(session_id) for session_id in spec.get("session_ids", ()) if session_id),
         metadata_equals=tuple(
@@ -141,6 +145,8 @@ def _split_if_condition_values(raw_value: str) -> tuple[str, ...]:
 
 def _matcher_spec_from_if_condition(condition: str) -> HookMatcherSpec:
     tool_names: list[str] = []
+    agent_ids: list[str] = []
+    tenant_ids: list[str] = []
     sources: list[str] = []
     session_ids: list[str] = []
     metadata_equals: list[tuple[str, Any]] = []
@@ -158,6 +164,12 @@ def _matcher_spec_from_if_condition(condition: str) -> HookMatcherSpec:
 
         if key == "tool":
             tool_names.extend(_split_if_condition_values(raw_value))
+            continue
+        if key == "agent":
+            agent_ids.extend(_split_if_condition_values(raw_value))
+            continue
+        if key == "tenant":
+            tenant_ids.extend(_split_if_condition_values(raw_value))
             continue
         if key == "source":
             sources.extend(_split_if_condition_values(raw_value))
@@ -181,6 +193,8 @@ def _matcher_spec_from_if_condition(condition: str) -> HookMatcherSpec:
 
     return HookMatcherSpec(
         tool_names=tuple(tool_names),
+        agent_ids=tuple(agent_ids),
+        tenant_ids=tuple(tenant_ids),
         sources=tuple(sources),
         session_ids=tuple(session_ids),
         metadata_equals=tuple(metadata_equals),
@@ -193,6 +207,8 @@ def _matcher_spec_to_dict(spec: HookMatcherSpec | None) -> dict[str, Any] | None
         return None
     return {
         "tool_names": list(spec.tool_names),
+        "agent_ids": list(spec.agent_ids),
+        "tenant_ids": list(spec.tenant_ids),
         "sources": list(spec.sources),
         "session_ids": list(spec.session_ids),
         "metadata_equals": {key: value for key, value in spec.metadata_equals},
@@ -207,6 +223,8 @@ def _merge_matcher_specs(base: HookMatcherSpec, override: HookMatcherSpec | None
     metadata_equals.update(dict(override.metadata_equals))
     return HookMatcherSpec(
         tool_names=tuple(dict.fromkeys((*base.tool_names, *override.tool_names))),
+        agent_ids=tuple(dict.fromkeys((*base.agent_ids, *override.agent_ids))),
+        tenant_ids=tuple(dict.fromkeys((*base.tenant_ids, *override.tenant_ids))),
         sources=tuple(dict.fromkeys((*base.sources, *override.sources))),
         session_ids=tuple(dict.fromkeys((*base.session_ids, *override.session_ids))),
         metadata_equals=tuple(metadata_equals.items()),
@@ -293,6 +311,11 @@ def matcher_from_spec(spec: HookMatcherSpec | dict[str, Any]) -> HookMatcher:
 
     def _matcher(ctx: HookContext) -> bool:
         if normalized.tool_names and ctx.tool_name not in normalized.tool_names:
+            return False
+        if normalized.agent_ids and str(ctx.agent_id or "") not in normalized.agent_ids:
+            return False
+        tenant_id = str(ctx.metadata.get("tenant_id") or "")
+        if normalized.tenant_ids and tenant_id not in normalized.tenant_ids:
             return False
         if normalized.sources and ctx.source not in normalized.sources:
             return False
@@ -427,6 +450,19 @@ class HookRegistry:
                 break
         else:
             logger.debug("[Hooks] Handler not found for %s during unregister", event)
+
+    def unregister_key_prefix(self, prefix: str) -> int:
+        """Remove all handlers whose stable registration key starts with prefix."""
+        removed = 0
+        for event, handlers in self._handlers.items():
+            kept = []
+            for binding in handlers:
+                if binding.key and binding.key.startswith(prefix):
+                    removed += 1
+                    continue
+                kept.append(binding)
+            self._handlers[event] = kept
+        return removed
 
     async def emit(self, ctx: HookContext) -> HookResult | None:
         """Emit an event to all registered handlers.

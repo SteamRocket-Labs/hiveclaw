@@ -64,6 +64,61 @@ async def get_tenant_pack_policies(db: AsyncSession, tenant_id: uuid.UUID | None
         return explicit
 
 
+async def get_agent_pack_policies(
+    db: AsyncSession,
+    tenant_id: uuid.UUID | None,
+    agent_id: uuid.UUID | None,
+) -> dict[str, bool]:
+    """Return pack policies for one agent.
+
+    Installed plugins are only visible when the specific agent has an enabled
+    ``AgentPluginAssignment``. Tenant SystemSetting policies remain as a legacy
+    compatibility override, but they no longer grant plugin visibility by
+    themselves.
+    """
+    if not tenant_id or not agent_id:
+        return {}
+
+    result = await db.execute(select(SystemSetting).where(SystemSetting.key == tenant_pack_policy_key(tenant_id)))
+    setting = result.scalar_one_or_none()
+    value = getattr(setting, "value", None) or {}
+    policies = value.get("packs", value)
+    explicit = dict(policies) if isinstance(policies, dict) else {}
+
+    try:
+        from app.database import tenant_scoped_session
+        from app.models.installed_plugin import AgentPluginAssignment, TenantInstalledPlugin
+
+        async with tenant_scoped_session(tenant_id) as plugin_db:
+            installed = (
+                (
+                    await plugin_db.execute(
+                        select(TenantInstalledPlugin.plugin_key)
+                        .join(
+                            AgentPluginAssignment,
+                            AgentPluginAssignment.installed_plugin_id == TenantInstalledPlugin.id,
+                        )
+                        .where(
+                            TenantInstalledPlugin.tenant_id == tenant_id,
+                            TenantInstalledPlugin.status == "enabled",
+                            AgentPluginAssignment.tenant_id == tenant_id,
+                            AgentPluginAssignment.agent_id == agent_id,
+                            AgentPluginAssignment.enabled.is_(True),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+    except Exception:
+        installed = []
+
+    merged = dict(explicit)
+    for key in installed:
+        merged.setdefault(key, True)
+    return merged
+
+
 async def set_tenant_pack_policy(
     db: AsyncSession,
     tenant_id: uuid.UUID,

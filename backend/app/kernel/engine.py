@@ -780,6 +780,7 @@ async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
     request: InvocationRequest,
+    runtime_config: RuntimeConfig | None = None,
     tool_name: str,
     tool_args: dict[str, Any],
     emit_event: Callable[[dict], Awaitable[None]],
@@ -797,6 +798,12 @@ async def _execute_tool_with_hooks(
         session_id=request.memory_session_id,
         tool_name=tool_name,
         tool_args=effective_args,
+        source=getattr(request.session_context, "source", None) if request.session_context else None,
+        metadata={
+            "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
+            "agent_name": getattr(request, "agent_name", None),
+            "source": getattr(request.session_context, "source", None) if request.session_context else None,
+        },
     )
     if hook_result and hook_result.modified_args:
         effective_args = hook_result.modified_args
@@ -901,6 +908,12 @@ async def _execute_tool_with_hooks(
                 tool_name=tool_name,
                 tool_args=effective_args,
                 error=err,
+                source=getattr(request.session_context, "source", None) if request.session_context else None,
+                metadata={
+                    "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
+                    "agent_name": getattr(request, "agent_name", None),
+                    "source": getattr(request.session_context, "source", None) if request.session_context else None,
+                },
             )
             return err, effective_args, False
     finally:
@@ -918,8 +931,9 @@ async def _execute_tool_with_hooks(
         tool_args=effective_args,
         tool_result=result_str[:500],
         messages=request.messages[-10:] if request.messages else None,
+        source=getattr(request.session_context, "source", None) if request.session_context else None,
         metadata={
-            "tenant_id": getattr(request, "tenant_id", None),
+            "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
             "agent_name": getattr(request, "agent_name", None),
             "source": getattr(request.session_context, "source", None) if request.session_context else None,
         },
@@ -2092,6 +2106,16 @@ class AgentKernel:
             session_ctx = request.session_context
             budget_profile = session_ctx.metadata.get("context_budget") if session_ctx else None
             latest_user_query = _latest_user_query(request.messages)
+            available_deferred_tools: list[str] = []
+            if request.agent_id:
+                try:
+                    from app.services.agent_tools import available_deferred_tool_names_for_agent
+
+                    available_deferred_tools = await available_deferred_tool_names_for_agent(request.agent_id)
+                    if session_ctx is not None:
+                        session_ctx.metadata["available_deferred_tools"] = list(available_deferred_tools)
+                except Exception as exc:
+                    logger.debug("[Kernel] available deferred tool list unavailable: %s", exc)
             # Prompt cache: reuse frozen prefix if available and still matches
             # the session-stable inputs that are rendered into that prefix.
             # The frozen prefix is session-stable by design — it contains
@@ -2144,6 +2168,7 @@ class AgentKernel:
                 # Session has a valid frozen prefix — only rebuild dynamic suffix
                 dynamic_suffix = build_dynamic_prompt_suffix(
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
+                    available_deferred_tools=available_deferred_tools,
                     memory_snapshot=resolved_memory_context,
                     memory_navigation=resolved_memory_navigation_context,
                     skill_catalog=request.skill_catalog,
@@ -2180,6 +2205,7 @@ class AgentKernel:
                     session_ctx._memory_hash = hashlib.sha256(resolved_memory_context.encode("utf-8")).hexdigest()[:16]
                 dynamic_suffix = build_dynamic_prompt_suffix(
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
+                    available_deferred_tools=available_deferred_tools,
                     memory_snapshot=resolved_memory_context,
                     memory_navigation=resolved_memory_navigation_context,
                     skill_catalog=request.skill_catalog,
@@ -2724,6 +2750,7 @@ class AgentKernel:
                                     if _after_chars < _before_chars * 0.8:
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
+                                            available_deferred_tools=available_deferred_tools,
                                             memory_snapshot=resolved_memory_context,
                                             memory_navigation=resolved_memory_navigation_context,
                                             skill_catalog=request.skill_catalog,
@@ -2803,6 +2830,7 @@ class AgentKernel:
                                         # Rebuild system prompt
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
+                                            available_deferred_tools=available_deferred_tools,
                                             memory_snapshot=resolved_memory_context,
                                             memory_navigation=resolved_memory_navigation_context,
                                             skill_catalog=request.skill_catalog,
@@ -2885,6 +2913,7 @@ class AgentKernel:
                                                 active_tool_groups=session_ctx.active_tool_groups
                                                 if session_ctx
                                                 else [],
+                                                available_deferred_tools=available_deferred_tools,
                                                 memory_snapshot=resolved_memory_context,
                                                 memory_navigation=resolved_memory_navigation_context,
                                                 skill_catalog=request.skill_catalog,
@@ -3277,6 +3306,7 @@ class AgentKernel:
                                     return await _execute_tool_with_hooks(
                                         execute_tool=self._deps.execute_tool,
                                         request=request,
+                                        runtime_config=runtime_config,
                                         tool_name=t_name,
                                         tool_args=t_args,
                                         emit_event=_emit_event,
@@ -3437,6 +3467,7 @@ class AgentKernel:
                                 result, args, executed = await _execute_tool_with_hooks(
                                     execute_tool=self._deps.execute_tool,
                                     request=request,
+                                    runtime_config=runtime_config,
                                     tool_name=tool_name,
                                     tool_args=args,
                                     emit_event=_emit_event,
@@ -3540,6 +3571,7 @@ class AgentKernel:
                                                 prompt_prefix,
                                                 build_dynamic_prompt_suffix(
                                                     active_tool_groups=session_context.active_tool_groups,
+                                                    available_deferred_tools=available_deferred_tools,
                                                     memory_snapshot=resolved_memory_context,
                                                     memory_navigation=resolved_memory_navigation_context,
                                                     skill_catalog=request.skill_catalog,

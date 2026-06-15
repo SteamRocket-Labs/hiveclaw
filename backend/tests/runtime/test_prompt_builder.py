@@ -79,6 +79,19 @@ def test_dynamic_suffix_renders_active_packs():
     assert "web_search, firecrawl_fetch" in suffix
 
 
+def test_dynamic_suffix_renders_available_deferred_tools():
+    """Turn-1 prompt should enumerate deferred names and the select:<tool> path."""
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    suffix = build_dynamic_prompt_suffix(
+        available_deferred_tools=["firecrawl_fetch", "mcp__github__search"],
+    )
+
+    assert "## Available Deferred Tools" in suffix
+    assert "select:firecrawl_fetch" in suffix
+    assert "select:mcp__github__search" in suffix
+
+
 def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 

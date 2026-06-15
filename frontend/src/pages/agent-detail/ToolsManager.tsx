@@ -39,6 +39,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   const [configJson, setConfigJson] = useState('');
   const [configSaving, setConfigSaving] = useState(false);
   const [savingServerId, setSavingServerId] = useState<string | null>(null);
+  const [savingPluginKey, setSavingPluginKey] = useState<string | null>(null);
   // MCP servers whose "Advanced tool controls" drawer is expanded (hidden by default).
   const [openAdvanced, setOpenAdvanced] = useState<Set<string>>(new Set());
   const [serverToolsById, setServerToolsById] = useState<Record<string, AgentMcpServerTool[]>>({});
@@ -153,6 +154,28 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
     }
   };
 
+  const togglePlugin = async (pluginKey: string, enabled: boolean) => {
+    setExtensions((prev) =>
+      prev
+        ? {
+            ...prev,
+            plugins: (prev.plugins ?? []).map((plugin) =>
+              plugin.plugin_key === pluginKey ? { ...plugin, enabled } : plugin,
+            ),
+          }
+        : prev,
+    );
+    setSavingPluginKey(pluginKey);
+    try {
+      await extensionsApi.setAgentPluginAssignment(agentId, pluginKey, { enabled });
+    } catch (error) {
+      console.error(error);
+      await loadExtensions();
+    } finally {
+      setSavingPluginKey(null);
+    }
+  };
+
   const openConfig = (tool: any) => {
     setConfigTool(tool);
     const merged = { ...(tool.global_config || {}), ...(tool.agent_config || {}) };
@@ -180,6 +203,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   }
 
   const mcpServers = extensions?.mcp_servers ?? [];
+  const plugins = extensions?.plugins ?? [];
 
   const configToolForServerTool = (server: AgentMcpServer, serverTool: AgentMcpServerTool) =>
     tools.find((tool) => {
@@ -228,7 +252,45 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
   return (
     <>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        {/* ── MCP Servers module (Skills 已移至独立「技能」tab，工具 tab 只管 MCP) ── */}
+        <section>
+          {moduleTitle(t('agent.extensions.plugins', 'Plugins'), plugins.length)}
+          {plugins.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {plugins.map((plugin) => (
+                <div key={plugin.plugin_key} className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontWeight: 600, fontSize: '13px' }}>{plugin.plugin_key}</span>
+                      <span style={{ fontSize: '10px', background: 'var(--primary)', color: '#fff', borderRadius: '4px', padding: '1px 5px' }}>
+                        {plugin.source_kind}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                      {plugin.version} · {plugin.status}
+                    </div>
+                  </div>
+                  {canManage ? (
+                    <Toggle
+                      checked={Boolean(plugin.enabled)}
+                      disabled={savingPluginKey === plugin.plugin_key}
+                      onChange={(next) => void togglePlugin(plugin.plugin_key, next)}
+                    />
+                  ) : (
+                    <span style={{ fontSize: '11px', color: plugin.enabled ? '#22c55e' : 'var(--text-tertiary)', fontWeight: 500 }}>
+                      {plugin.enabled ? t('common.enabled', 'On') : t('common.disabled', 'Off')}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="card" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+              {t('agent.extensions.noPlugins', 'No plugins assigned')}
+            </div>
+          )}
+        </section>
+
+        {/* ── MCP Servers module (Skills 已移至独立「技能」tab，工具 tab 管 MCP + plugins) ── */}
         <section>
           {moduleTitle(t('agent.extensions.mcpServers', 'MCP Servers'), mcpServers.length)}
           {mcpServers.length > 0 ? (

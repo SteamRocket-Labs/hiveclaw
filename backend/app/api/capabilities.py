@@ -9,14 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
+from app.core.permissions import check_agent_access
 from app.database import get_db
+from app.models.chat_session import ChatSession
 from app.models.capability_policy import CapabilityPolicy
 from app.models.user import User
 from app.services.capability_gate import get_all_capabilities
+from app.services.pack_service import get_capability_summary, get_session_runtime_summary
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/enterprise/capabilities", tags=["capabilities"])
+router = APIRouter(tags=["capabilities"])
 
 
 class CapabilityPolicyUpdate(BaseModel):
@@ -38,7 +41,7 @@ class CapabilityPolicyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-@router.get("/definitions")
+@router.get("/enterprise/capabilities/definitions")
 async def list_capability_definitions(
     current_user: User = Depends(get_current_user),
 ):
@@ -46,7 +49,7 @@ async def list_capability_definitions(
     return get_all_capabilities()
 
 
-@router.get("")
+@router.get("/enterprise/capabilities")
 async def list_capability_policies(
     agent_id: uuid.UUID | None = None,
     current_user: User = Depends(get_current_admin),
@@ -64,7 +67,7 @@ async def list_capability_policies(
     return [CapabilityPolicyOut.model_validate(p) for p in result.scalars().all()]
 
 
-@router.put("")
+@router.put("/enterprise/capabilities")
 async def upsert_capability_policy(
     data: CapabilityPolicyUpdate,
     current_user: User = Depends(get_current_admin),
@@ -128,7 +131,7 @@ async def upsert_capability_policy(
     return CapabilityPolicyOut.model_validate(policy)
 
 
-@router.delete("/{policy_id}")
+@router.delete("/enterprise/capabilities/{policy_id}")
 async def delete_capability_policy(
     policy_id: uuid.UUID,
     current_user: User = Depends(get_current_admin),
@@ -148,3 +151,29 @@ async def delete_capability_policy(
     await db.delete(policy)
     await db.commit()
     return {"status": "deleted"}
+
+
+@router.get("/agents/{agent_id}/capability-summary")
+async def get_agent_capability_summary(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Comprehensive capability summary: kernel tools, plugins, policies, pending approvals."""
+    await check_agent_access(db, current_user, agent_id)
+    return await get_capability_summary(db, agent_id)
+
+
+@router.get("/chat/sessions/{session_id}/runtime-summary")
+async def get_session_runtime(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Runtime summary for a chat session: activated tool groups, used tools, blocked capabilities."""
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await check_agent_access(db, current_user, session.agent_id)
+    return await get_session_runtime_summary(db, session_id)

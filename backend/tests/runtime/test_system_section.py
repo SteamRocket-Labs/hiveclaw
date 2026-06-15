@@ -76,6 +76,11 @@ class TestExecutionModel:
         assert "Parallel tool calls" in prompt_text
         assert "batch independent" in prompt_text.lower()
 
+    def test_side_effecting_calls_run_in_emit_order(self, prompt_text: str) -> None:
+        normalized = " ".join(prompt_text.split())
+        assert "side-effecting calls" in normalized
+        assert "in the order you emit" in normalized
+
     def test_memory_snapshot_frozen_rule(self, prompt_text: str) -> None:
         assert "memory snapshot is frozen" in prompt_text
 

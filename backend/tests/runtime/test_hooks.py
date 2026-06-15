@@ -244,6 +244,8 @@ class TestHookRegistry:
                 "has_matcher": True,
                 "matcher_spec": {
                     "tool_names": ["write_file"],
+                    "agent_ids": [],
+                    "tenant_ids": [],
                     "sources": ["websocket"],
                     "session_ids": [],
                     "metadata_equals": {},
@@ -424,6 +426,52 @@ class TestHookRegistry:
                 {"filtered": filtered},
                 matcher_profiles={"workspace_writes": {"tool_names": ["write_file"]}},
             )
+
+    @pytest.mark.asyncio
+    async def test_matcher_spec_scopes_by_agent_and_tenant(self, registry) -> None:
+        """Plugin hooks must be tenant/agent scoped before they can enter tool governance."""
+        calls: list[str] = []
+
+        def handler(ctx: HookContext):
+            calls.append(str(ctx.agent_id))
+
+        registry.register_spec(
+            HookEvent.PRE_TOOL_USE,
+            handler,
+            {
+                "tool_names": ["write_file"],
+                "agent_ids": ["agent-1"],
+                "tenant_ids": ["tenant-1"],
+            },
+            key="plugin.tenant-1.agent-1.write_file",
+        )
+
+        await registry.emit(
+            HookContext(
+                event=HookEvent.PRE_TOOL_USE,
+                agent_id="agent-2",
+                tool_name="write_file",
+                metadata={"tenant_id": "tenant-1"},
+            )
+        )
+        await registry.emit(
+            HookContext(
+                event=HookEvent.PRE_TOOL_USE,
+                agent_id="agent-1",
+                tool_name="write_file",
+                metadata={"tenant_id": "tenant-2"},
+            )
+        )
+        await registry.emit(
+            HookContext(
+                event=HookEvent.PRE_TOOL_USE,
+                agent_id="agent-1",
+                tool_name="write_file",
+                metadata={"tenant_id": "tenant-1"},
+            )
+        )
+
+        assert calls == ["agent-1"]
 
     @pytest.mark.asyncio
     async def test_no_handlers_returns_none(self, registry) -> None:

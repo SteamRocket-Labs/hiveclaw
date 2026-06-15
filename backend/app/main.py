@@ -51,7 +51,6 @@ from app.api.mcp_servers import router as mcp_servers_router
 from app.api.mcp_oauth import router as mcp_oauth_router
 from app.api.plugins import router as plugins_router
 from app.api.organization import router as org_router
-from app.api.packs import router as packs_router
 from app.api.plans import router as plans_router
 from app.api.plaza import router as plaza_router
 from app.api.relationships import router as relationships_router
@@ -414,6 +413,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Memory hooks registration failed: {e}")
 
+    try:
+        from app.services.plugin_hook_service import register_installed_plugin_hooks
+
+        await register_installed_plugin_hooks()
+    except Exception as e:
+        logger.warning(f"[startup] Plugin hooks registration failed: {e}")
+
     # Backfill reply_context for triggers created before the unified-delivery
     # refactor — those triggers have reply_context=NULL and cannot deliver
     # results back to TG/WeChat/Feishu channels.
@@ -587,7 +593,6 @@ _api_routers = [
     oidc_router,
     capabilities_router,
     onboarding_router,
-    packs_router,
     mcp_servers_router,
     mcp_oauth_router,
     plugins_router,

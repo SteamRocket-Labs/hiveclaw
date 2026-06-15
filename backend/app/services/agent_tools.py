@@ -26,7 +26,7 @@ from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.config import get_settings
 from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
-from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_enabled
+from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
 from app.tools import (
@@ -516,10 +516,30 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
     visible) and routes MCP discovery through the DB-aware
     ``list_agent_mcp_deferred_tools``.
     """
-    normalized = query.strip().lower()
+    raw_query = query.strip()
+    normalized = raw_query.lower()
+    select_target = ""
+    if normalized.startswith("select:"):
+        select_target = raw_query.split(":", 1)[1].strip()
+        normalized = select_target.lower()
     compact = normalize_tool_query(normalized)
+    pack_policies: dict[str, bool] | None = None
+    try:
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
+            pack_policies = await get_agent_pack_policies(db, tenant_id, agent_id)
+    except Exception:
+        pack_policies = None
+
+    def _pack_enabled(pack_name: str) -> bool:
+        if pack_policies is None:
+            return True
+        return is_pack_enabled(pack_policies, pack_name)
+
     if normalized:
         for pack in RUNTIME_TOOL_GROUPS:
+            if not _pack_enabled(pack.name):
+                continue
             for tool_name in pack.tools:
                 if (
                     tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact
@@ -528,17 +548,26 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
     requested: list[str] = []
     seen: set[str] = set()
     for pack in iter_runtime_tool_groups(query):
+        if not _pack_enabled(pack.name):
+            continue
         for tool_name in pack.tools:
             if tool_name in CORE_TOOL_NAMES or tool_name in seen:
                 continue
             requested.append(tool_name)
             seen.add(tool_name)
-    for mcp_name in await list_agent_mcp_deferred_tools(agent_id, query):
+    mcp_query = select_target or query
+    for mcp_name in await list_agent_mcp_deferred_tools(agent_id, mcp_query):
         if mcp_name in CORE_TOOL_NAMES or mcp_name in seen:
             continue
         requested.append(mcp_name)
         seen.add(mcp_name)
     return requested
+
+
+async def available_deferred_tool_names_for_agent(agent_id: uuid.UUID, *, limit: int = 80) -> list[str]:
+    """Stable turn-1 list of deferred tool names the agent may select/load."""
+    names = await discoverable_tool_names_for_query(agent_id, "")
+    return sorted(dict.fromkeys(names))[:limit]
 
 
 async def list_agent_mcp_deferred_tools(agent_id: uuid.UUID, query: str = "") -> list[str]:
@@ -660,7 +689,7 @@ async def get_agent_tools_for_llm(
                 )
                 + (_get_hr_tools() if hr_agent else [])
             )
-            pack_policies = await get_tenant_pack_policies(db, getattr(agent, "tenant_id", None))
+            pack_policies = await get_agent_pack_policies(db, getattr(agent, "tenant_id", None), agent_id)
 
             # Get globally enabled tools visible to this agent's tenant.
             all_tools_r = await db.execute(select(Tool).where(Tool.enabled, _tool_tenant_predicate(Tool, agent)))

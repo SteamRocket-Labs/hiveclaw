@@ -1,21 +1,29 @@
 # Compact Snapshot
-*Generated: 2026-06-09 04:16:57 UTC*
+*Generated: 2026-06-14 11:49:18 UTC*
 *Working dir: /Users/rocky243/vc-saas/hiveclaw-main/backend (pyproject.toml)*
 
 ## Git State
 Branch: `main`
 
 Recent commits:
-  9b9c5439 refactor(plan-mode): rename intent long_task -> in_session_execution (exec-align #2)
-  240aa239 refactor(plan-mode): drop orphan intents external_action / state_change (exec-align #1)
-  cd50356d docs(exec-alignment): CC-baseline audit for execution/automation (v1)
-  00ab30af fix session loop review findings
-  d25d088e docs(session-loop): all 6 stations landed (3556 passed)
+  5287f362 feat(plugin): Step 5 租户插件安装层 + web_search 进 CORE + runtime 接通
+  6bf7d663 feat(plugin): Step 4 pack.yaml 升为 install/composition 真相源 + fail-closed validator
+  38239349 feat(tools): Step 2 typed 多模态 tool result — 消除 adapt_and_call str 强制(L1 违例)
+  63c77ed0 feat(tools): Step 1 单源工具分类 + destructive 标志 + per-tool 落盘预算
+  921f253c refactor(tools): Step 0 退役 CORE-only pack + 清脚踏两船工具 + CORE∩pack 不变量
 
 Modified files:
-  M ../.ultra/compact-snapshot.md
-   M ../.ultra/debug/subagent-log.jsonl
+  M ../.ultra/debug/subagent-log.jsonl
    M ../.ultra/sessions/orphan-trail.md
+   M app/runtime/invoker.py
+   M app/runtime/prompt_sections/executing_actions.py
+   M app/runtime/prompt_sections/system.py
+   M app/runtime/prompt_sections/tasks.py
+   M app/runtime/prompt_sections/tone_style.py
+   M app/services/agent_tool_domains/workspace.py
+   M app/services/agent_tools.py
+   M tests/runtime/test_prompt_sections.py
+   M tests/runtime/test_system_section.py
 
 ## Recovery Instructions
 After compact, read this file to restore context:

@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-10 已实施落地**（2026-06-15，证据见 §8 实施日志）。Step 11(docs/前端) 待实施。
+> 状态：v1.4 设计定稿 + **Step 0-11 已实施落地**（2026-06-15，证据见 §8 实施日志）。review 补齐 pass 已覆盖 hooks/dependencies/per-agent plugin/product surface/legacy packs retirement。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -120,7 +120,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **8** ✅ | subagent | schema 暴露 `run_in_background`(此前后端通但 LLM 不可达)；background spawn 落 `RuntimeTask(task_type="subagent")` durable record(非 resumable→startup `reconcile_orphaned_runtime_tasks` 把崩溃的 run 标 failed,parent poll 不再永久 running)；加 `check_subagent`(run_id 查/列表,ownership-scoped)；governance 按 type 分级**已存在**(`_TYPE_PRESETS` 给 explorer/critic 只读工具集,worker 才能编辑);completion wake/signal/tenant/recursion guard 沿用现有。**已实施，证据见 §8。** | 0 |
 | **9** ✅ | skill | catalog 移出 frozen prefix→动态 suffix(修 cache 击穿，owner 选项 A 保留兼容参数)；删 11 死字段(`declared_packs` 核实为活字段，保留)；distiller 晋升硬门**已是** `evolution_ledger` 外部 eval(核实 + 钉不变量，非重写)；`allowed_tools` 接 scoped 治理引导(load_skill registry 路径)。**已实施，证据见 §8。** | 4 |
 | **10** ✅ | workflow | preview/start_workflow 确认仅留 CORE；`office_workflow_examples` 核实=测试语料**保留+文档化**(不 seed=scope creep)；删 `phase` 死列(+drop-column migration)；修 5 处 `runtime_task` 过时注释(`tenant_id` 列已存在，只修注释零行为变更)；文档化"结构化数据 over 脚本"为显式防御决策。**已实施，证据见 §8。** | 0,5 |
-| **11** | docs | 修 CLAUDE.md 文档漂移(packs.py→runtime_tool_groups.py+pack.yaml)；记录插件安装生命周期 | 4,5,6,7 |
+| **11** ✅ | closure | 全面 review 补齐：plugin hooks runtime loader + allowlist platform handlers + startup/install/uninstall refresh；dependency resolver/lockfile/content hash/tenant graph/uninstall protection；`AgentPluginAssignment` 接入 runtime resolver/API/Agent UI；`select:` 直选 + turn-1 deferred list + session metadata；Workspace/Agent plugin UI+i18n；summary routes 迁 `capabilities.py`，`packs_router` 不再挂载。 | 3,5 |
 
 ---
 
@@ -157,8 +157,7 @@ Step 0/§2③ 的 cut_invented "死代码"列表**不可盲信**，Step 0 执行
 - **`fanout_subagents` 不是幻影死常量**——核实：它是 `_SUBAGENT_BASE_EXCLUDED_TOOLS` 的成员(`agents/subagent.py:113`)，
   在 `:434` 构建 subagent 排除集 `excluded = (*_SUBAGENT_BASE_EXCLUDED_TOOLS, *spec.excluded_tools)`。
   它是**防御性排除**(禁 subagent 递归 fan-out)。删它移除递归爆炸防御 → **保留**(或与 fan-out 决断一并定，见 §6.1)。
-- **`FALLBACK_EXECUTOR_NAME` 不是死常量**——核实：`runtime.py:15` 定义，`runtime.py:51` `try_execute` 真实引用
-  `executor = self._executors.get(FALLBACK_EXECUTOR_NAME)`。是**活兜底路径** → 删前必须确认无任何地方注册 fallback executor。
+- **`FALLBACK_EXECUTOR_NAME` 必须先核实再删**——早期 critic 把"MCP 兜底是活的"和"`FALLBACK_EXECUTOR_NAME` registry 分支是活的"混在一起。Step 6 复核结论：活兜底是 `ToolRuntimeService.fallback_executor` kwarg，registry 里无人注册 `__mcp_fallback__`，故 `FALLBACK_EXECUTOR_NAME` 分支可删且已删。
 
 同理 critic 2 标记 `SubagentJob`/`SubagentBudget`/`office_workflow_examples` 的"死/孤儿"判定与代码不符——
 **Step 0/10 删除前逐一核实引用，否则编译断裂或删活路径。**
@@ -173,7 +172,7 @@ Step 0/§2③ 的 cut_invented "死代码"列表**不可盲信**，Step 0 执行
 5. **Dependency/source 解析链**：dependencies 和 source 必须同补 resolver、pinned lockfile、cycle/source/allowlist 校验、content hash/provenance、uninstall protection、路径遍历校验；内置/本地 source v1 完整可用。远程 source 必须先被 policy/validator 结构化拒绝，直到 signature verification + sandbox materialization 达标；漏 resolver/lock/source policy = 一个插件安装可扩散成未审计代码安装。
 
 **structural/cosmetic 十条：** 前端插件安装/管理 UI(`WorkspaceToolsSection.tsx` 加第四视图，否则=`feedback_surface_not_plumbing` 病) ·
-遗留 `app/api/packs.py` 仍 wired 在 `main.py:580` 全程未提 · `pack_policy_service` 级联消费者 · `skill_seeder` pack→skill 落地 ·
+遗留 `app/api/packs.py` 曾仍 wired 在 `main.py`（Step 11 已迁 summary routes 到 `capabilities.py` 并移除 `packs_router` 挂载） · `pack_policy_service` 级联消费者 · `skill_seeder` pack→skill 落地 ·
 deep_research 还有 `routing_reminder` 硬编码(不止 leaf_presets) · i18n 双语键(en+zh) · 前端 extensions API 关系 ·
 **`ToolResultEnvelope` 命名碰撞**(`result_envelope.py` 已有内容，Step 2 改名或扩展现有) ·
 lazy-loaded tool state 的 compaction/replay/prompt-cache 保持 · 7+ 个 pack 测试会断需迁移。
@@ -336,12 +335,19 @@ $ ruff check <核心文件>     # All checks passed!
 - `alembic/versions/add_installed_plugin_tables_0614.py`：3 表 migration，RLS **ENABLE + FORCE** + tenant policy（P0 gap B：owner 连接也受约束）。`db_bootstrap.py` RLS_FORCED + `entrypoint.sh` import + `import_all_models`(pkgutil 自动) 三处 create_all 地基齐补（critic §5.2#1 防 Railway 漏表/漏 RLS）。
 - `app/services/plugin_install_service.py`：install/list/uninstall/backfill，全程 `tenant_scoped_session`（RLS-bound）+ manifest validate + source policy fail-closed（builtin/local 可装，远程拒）+ pinned lockfile + hook allowlist 校验。
 - `app/api/plugins.py` + `main.py`：`/enterprise/plugins/install|list|uninstall|backfill`（admin），router 挂载。
-- `app/services/pack_policy_service.py`：`get_tenant_pack_policies` 融合 installed plugin（用独立 session 不扰乱 caller，mock 测试自动 fallback）。
+- `app/services/pack_policy_service.py`：保留 `get_tenant_pack_policies` 兼容 tenant catalog；runtime 新增 `get_agent_pack_policies`，只融合该 agent enabled 的 `AgentPluginAssignment`（用独立 session 不扰乱 caller，mock 测试自动 fallback）。
 - 测试：新建 `tests/services/test_plugin_install_service.py`（8）；修复 16 个 pin 了"web_search 非 CORE / 旧 alembic head / get_tenant_pack_policies 调用序列"的测试。
 
-**完成判据（非 built-but-unwired）：** TenantInstalledPlugin 安装记录经 `get_tenant_pack_policies` → `is_pack_enabled`（agent_tools runtime 路径）**真改变 turn-1 工具集**——装 `mcp_admin_pack`（default inactive）→ 其工具 turn-1 可见，测试 `test_installed_plugin_enables_pack_in_policies` 钉死。
+**完成判据（非 built-but-unwired）：** TenantInstalledPlugin 安装记录 + AgentPluginAssignment 经 `get_agent_pack_policies` → `is_pack_enabled`（agent_tools runtime 路径）**真改变 agent tool surface**；tenant install 只代表租户可用，agent assignment 才代表该 agent 可见。测试 `test_agent_plugin_assignment_controls_pack_visibility` / `test_unassigned_installed_plugin_is_not_visible_to_agent` 钉死。
 
-**不灰度断（critic §5.3）：** is_pack_enabled 语义未硬翻——installed → enabled（覆盖 manifest default），未 installed → fallback manifest default + explicit policy（现有租户无记录时保持现状）；`backfill` 同步安装记录；explicit policy False 最高优（租户 opt-out）。
+**2026-06-15 closure pass 补齐（review 后修正）：**
+- `app/services/plugin_install_service.py`：`resolve_plugin_dependency_closure` 递归解析 builtin/local dependency，精确版本匹配、cycle/source 校验、content SHA256/provenance lockfile、install order；新增 `PluginDependencyEdge` tenant graph + uninstall protection。
+- `app/services/plugin_hook_service.py`：DB `PluginHookRegistration` 启动/安装/卸载后编译进 `HookRegistry`；handler 只来自 `plugin.audit`/`plugin.block`/`plugin.args_overlay` 平台 allowlist；`PRE_TOOL_USE enforce` 必须由 install config `approved_enforce_hooks` 显式批准；runtime matcher 自动叠加 tenant/agent scope，未分配 agent fail-closed。
+- `app/services/pack_policy_service.py` + `agent_tools.py`：runtime 改用 `get_agent_pack_policies`，plugin tool 可见性由 `AgentPluginAssignment` 决定；tenant install 不再自动让所有 agent 获得 plugin tools。
+- `app/api/plugins.py` + frontend：`/agents/{agent_id}/plugins/{plugin_key}` per-agent enable/disable；Workspace plugin install/backfill/uninstall UI；Agent Tools extension 面展示 assigned plugins 并可切换。
+- `app/api/capabilities.py` + `main.py`：capability/runtime summary routes 迁出 `packs.py`，`packs_router` 不再挂载。
+
+**不灰度断（critic §5.3）：** `is_pack_enabled` 的 manifest default 语义保留给未迁移/静态 runtime groups；plugin runtime 可见性改由 agent assignment 决定；`backfill` 安装 default-active plugins 并补 assignment；explicit policy False 仍作为 legacy opt-out 兼容。
 
 **验证证据：**
 ```
@@ -378,7 +384,7 @@ $ pytest tests -q
 4434 passed, 7 skipped, 4 warnings   # 0 failed
 ```
 
-**Step 3 范围说明（未在本 step 内做、归后续）：** token-阈值 auto 模式、`select:` 直选语法、loaded-tool state 进 compaction/replay/prompt-cache 稳定排序——这些 deferred-loading 增强在 §4 Step 3 行列为目标，但属于运行时加载策略的独立增量，与 "单源不漂移" 这一核心正确性修复解耦；本 step 先夯实单源（消除 §4.1 面#2 Visibility truth 的漂移根因），增强项随 §4 Step 6（MCP naming/执行路径统一）一并推进。
+**2026-06-15 closure pass 补齐：** `select:<tool_name>` 直选进入 `discoverable_tool_names_for_query`；kernel 首轮动态 suffix 枚举 `Available Deferred Tools` 并给出 `select:` 路径；`available_deferred_tools` 写入 session metadata，和已存在的 `discovered_tools` reinjection 一起覆盖 compaction/replay 后的 loaded-tool state；static deferred discovery 读取 agent-scoped plugin policy，避免 tenant 安装把未分配 agent 的 plugin tool 暴露给模型。
 
 ---
 

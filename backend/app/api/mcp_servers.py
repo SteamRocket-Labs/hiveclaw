@@ -7,8 +7,8 @@ server identity. Built on the Part 1 MCP tables — no DTO here exposes a
 ``pack`` / ``pack_name`` field. See docs/agent-extension-surface-skill-mcp.md
 §7.2–7.4, §8.2.
 
-This is purely additive: the legacy pack routes in ``app/api/packs.py`` are
-removed in Part 6 once the frontend switches to these endpoints.
+The legacy pack-derived extension routes in ``app/api/packs.py`` have been
+retired; this router is the active extension management surface.
 """
 
 import uuid

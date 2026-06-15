@@ -16,7 +16,7 @@ from app.packs.catalog_reader import PackCatalogReader, PackManifest, find_pack_
 from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
 from app.services.capability_gate import CAPABILITY_MAP
 from app.services.llm_client import get_provider_spec
-from app.services.pack_policy_service import get_tenant_pack_policies, is_pack_enabled
+from app.services.pack_policy_service import get_agent_pack_policies, get_tenant_pack_policies, is_pack_enabled
 from app.services.token_tracker import estimate_tokens_from_text
 from app.skills.types import ParsedSkill
 from app.tools import ensure_workspace
@@ -414,7 +414,7 @@ async def get_agent_packs(db: AsyncSession, agent_id: uuid.UUID) -> dict:
             "skill_declared_packs": [],
         }
 
-    pack_policies = await get_tenant_pack_policies(db, agent.tenant_id)
+    pack_policies = await get_agent_pack_policies(db, agent.tenant_id, agent_id)
 
     # Check which channels are configured for this agent
     channel_result = await db.execute(

@@ -23,6 +23,7 @@ from app.models.mcp_server import (
     MCPServer,
     MCPServerTool,
 )
+from app.models.installed_plugin import AgentPluginAssignment, TenantInstalledPlugin
 from app.models.tool import AgentTool, Tool
 from app.services.mcp_backfill import (
     AgentToolState,
@@ -209,12 +210,46 @@ def _dedupe_skill_extensions(skills: list[dict]) -> list[dict]:
 
 
 async def get_agent_extensions(db: AsyncSession, agent_id: uuid.UUID) -> dict:
-    """Single source of truth for an agent's extension state: skills + MCP servers."""
+    """Single source of truth for an agent's extension state: skills + MCP + plugins."""
+    agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+    plugins: list[dict] = []
+    if agent and agent.tenant_id:
+        rows = (
+            (
+                await db.execute(
+                    select(TenantInstalledPlugin, AgentPluginAssignment)
+                    .join(
+                        AgentPluginAssignment,
+                        AgentPluginAssignment.installed_plugin_id == TenantInstalledPlugin.id,
+                    )
+                    .where(
+                        TenantInstalledPlugin.tenant_id == agent.tenant_id,
+                        TenantInstalledPlugin.status == "enabled",
+                        AgentPluginAssignment.tenant_id == agent.tenant_id,
+                        AgentPluginAssignment.agent_id == agent_id,
+                    )
+                    .order_by(TenantInstalledPlugin.plugin_key)
+                )
+            )
+            .all()
+        )
+        plugins = [
+            {
+                "id": str(plugin.id),
+                "plugin_key": plugin.plugin_key,
+                "version": plugin.version,
+                "status": plugin.status,
+                "source_kind": plugin.source_kind,
+                "enabled": bool(assignment.enabled),
+            }
+            for plugin, assignment in rows
+        ]
     return {
         "skills": _dedupe_skill_extensions(
             [*(await _list_agent_workspace_skills(agent_id)), *(await _list_installed_skill_extensions(db, agent_id))]
         ),
         "mcp_servers": await get_agent_mcp_servers(db, agent_id),
+        "plugins": plugins,
     }
 
 

@@ -84,6 +84,58 @@ def test_assert_installable_accepts_builtin():
     svc._assert_installable(PackManifest(name="ok", source={"kind": "builtin"}))  # no raise
 
 
+def test_dependency_closure_orders_dependencies_and_pins_provenance(monkeypatch, tmp_path):
+    """Install truth requires a real dependency closure, not a direct manifest echo."""
+    dep_path = tmp_path / "dep_pack.yaml"
+    dep_path.write_text("name: dep_pack\nversion: 1.0.0\n", encoding="utf-8")
+    parent_path = tmp_path / "parent_pack.yaml"
+    parent_path.write_text("name: parent_pack\nversion: 2.0.0\n", encoding="utf-8")
+    manifests = {
+        "dep_pack": PackManifest(name="dep_pack", version="1.0.0", manifest_path=dep_path),
+        "parent_pack": PackManifest(
+            name="parent_pack",
+            version="2.0.0",
+            dependencies=({"name": "dep_pack", "version": "1.0.0"},),
+            manifest_path=parent_path,
+        ),
+    }
+    monkeypatch.setattr(svc, "load_manifest", lambda key: manifests.get(key))
+
+    closure = svc.resolve_plugin_dependency_closure("parent_pack")
+
+    assert [item.manifest.name for item in closure] == ["dep_pack", "parent_pack"]
+    parent_lock = closure[-1].lockfile
+    assert parent_lock["plugin_key"] == "parent_pack"
+    assert parent_lock["dependencies"][0]["plugin_key"] == "dep_pack"
+    assert parent_lock["dependencies"][0]["content_sha256"]
+
+
+def test_dependency_closure_rejects_cycles(monkeypatch):
+    manifests = {
+        "a": PackManifest(name="a", version="1.0.0", dependencies=({"name": "b", "version": "1.0.0"},)),
+        "b": PackManifest(name="b", version="1.0.0", dependencies=({"name": "a", "version": "1.0.0"},)),
+    }
+    monkeypatch.setattr(svc, "load_manifest", lambda key: manifests.get(key))
+
+    with pytest.raises(PluginInstallError, match="cycle"):
+        svc.resolve_plugin_dependency_closure("a")
+
+
+def test_pre_tool_enforce_hook_requires_explicit_admin_approval():
+    manifest = PackManifest(
+        name="guard_pack",
+        hooks=({"event": "pre_tool_use", "handler": "plugin.block", "mode": "enforce"},),
+    )
+
+    with pytest.raises(PluginInstallError, match="approved_enforce_hooks"):
+        svc.validate_hook_install_approval(manifest, config={})
+
+    svc.validate_hook_install_approval(
+        manifest,
+        config={"approved_enforce_hooks": ["guard_pack:pre_tool_use:plugin.block"]},
+    )
+
+
 # ── install (spy session) ───────────────────────────────────────────
 
 
@@ -102,6 +154,60 @@ async def test_install_plugin_persists_record(monkeypatch):
 async def test_install_plugin_unknown_key_raises(monkeypatch):
     with pytest.raises(PluginInstallError, match="no manifest"):
         await svc.install_plugin(uuid4(), "ghost_pack")
+
+
+@pytest.mark.asyncio
+async def test_dependency_install_inherits_agent_assignment_scope(monkeypatch):
+    agent_id = uuid4()
+    manifests = {
+        "dep_pack": PackManifest(name="dep_pack", version="1.0.0"),
+        "parent_pack": PackManifest(
+            name="parent_pack",
+            version="2.0.0",
+            dependencies=({"name": "dep_pack", "version": "1.0.0"},),
+        ),
+    }
+    monkeypatch.setattr(svc, "load_manifest", lambda key: manifests.get(key))
+    spy = _SpyDB([_Result(scalar=None), _Result(scalar=None)])
+    _patch_session(monkeypatch, spy)
+    calls: list[tuple[str, list[str] | None]] = []
+
+    async def capture_assignment(_db, _tenant_id, plugin, *, agent_ids):
+        calls.append((plugin.plugin_key, [str(item) for item in agent_ids] if agent_ids is not None else None))
+
+    monkeypatch.setattr(svc, "_sync_agent_assignments", capture_assignment)
+
+    await svc.install_plugin(uuid4(), "parent_pack", agent_ids=[agent_id])
+
+    assert calls == [
+        ("dep_pack", [str(agent_id)]),
+        ("parent_pack", [str(agent_id)]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dependency_enforce_hook_uses_install_approval_closure(monkeypatch):
+    manifests = {
+        "dep_pack": PackManifest(
+            name="dep_pack",
+            version="1.0.0",
+            hooks=({"event": "pre_tool_use", "handler": "plugin.block", "mode": "enforce"},),
+        ),
+        "parent_pack": PackManifest(
+            name="parent_pack",
+            version="2.0.0",
+            dependencies=({"name": "dep_pack", "version": "1.0.0"},),
+        ),
+    }
+    monkeypatch.setattr(svc, "load_manifest", lambda key: manifests.get(key))
+    spy = _SpyDB([_Result(scalar=None), _Result(scalar=None)])
+    _patch_session(monkeypatch, spy)
+
+    await svc.install_plugin(
+        uuid4(),
+        "parent_pack",
+        config={"approved_enforce_hooks": ["dep_pack:pre_tool_use:plugin.block"]},
+    )
 
 
 # ── runtime wiring: install changes pack enablement (completion criterion) ──
@@ -140,3 +246,40 @@ async def test_explicit_policy_overrides_installed(monkeypatch):
     _patch_plugin_session(monkeypatch, _SpyDB([_Result(scalars=["mcp_admin_pack"])]))
     policies = await pp.get_tenant_pack_policies(caller_db, uuid4())
     assert policies.get("mcp_admin_pack") is False
+
+
+@pytest.mark.asyncio
+async def test_agent_plugin_assignment_controls_pack_visibility(monkeypatch):
+    """Runtime tool visibility must be agent-scoped; tenant install alone is not enough."""
+    from app.services import pack_policy_service as pp
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    caller_db = _SpyDB(
+        [
+            _Result(scalar=SimpleNamespace(value={"packs": {"web_pack": True}})),
+        ]
+    )
+    _patch_plugin_session(monkeypatch, _SpyDB([_Result(scalars=["web_pack"])]))
+
+    policies = await pp.get_agent_pack_policies(caller_db, tenant_id, agent_id)
+
+    assert policies["web_pack"] is True
+
+
+@pytest.mark.asyncio
+async def test_unassigned_installed_plugin_is_not_visible_to_agent(monkeypatch):
+    from app.services import pack_policy_service as pp
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    caller_db = _SpyDB(
+        [
+            _Result(scalar=None),
+        ]
+    )
+    _patch_plugin_session(monkeypatch, _SpyDB([_Result(scalars=[])]))
+
+    policies = await pp.get_agent_pack_policies(caller_db, tenant_id, agent_id)
+
+    assert "mcp_admin_pack" not in policies

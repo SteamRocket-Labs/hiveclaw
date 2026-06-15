@@ -3,7 +3,9 @@ from pathlib import Path
 
 def test_pack_policy_and_legacy_mcp_routes_removed_from_packs_module():
     project_root = Path(__file__).resolve().parents[3]
-    packs_source = (project_root / "backend/app/api/packs.py").read_text()
+    packs_path = project_root / "backend/app/api/packs.py"
+    packs_source = packs_path.read_text() if packs_path.exists() else ""
+    main_source = (project_root / "backend/app/main.py").read_text()
 
     # Pack catalog/policy routes are removed from the user surface (skill+MCP cutover, Part 7).
     assert '@router.get("/packs")' not in packs_source
@@ -17,9 +19,17 @@ def test_pack_policy_and_legacy_mcp_routes_removed_from_packs_module():
     assert '@router.post("/enterprise/mcp-servers/import")' not in packs_source
     assert '@router.delete("/enterprise/mcp-servers/{server_key}")' not in packs_source
 
-    # Surviving governance/runtime summary routes stay.
-    assert '@router.get("/agents/{agent_id}/capability-summary")' in packs_source
-    assert '@router.get("/chat/sessions/{session_id}/runtime-summary")' in packs_source
+    # Surviving governance/runtime summary routes moved to the capabilities router;
+    # main.py must not mount a legacy packs router at all.
+    assert "packs_router" not in main_source
+
+
+def test_runtime_summary_routes_live_in_capabilities_module():
+    project_root = Path(__file__).resolve().parents[3]
+    capabilities_source = (project_root / "backend/app/api/capabilities.py").read_text()
+
+    assert '@router.get("/agents/{agent_id}/capability-summary")' in capabilities_source
+    assert '@router.get("/chat/sessions/{session_id}/runtime-summary")' in capabilities_source
 
 
 def test_canonical_mcp_server_routes_live_in_mcp_servers_module():

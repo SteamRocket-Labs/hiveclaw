@@ -99,3 +99,38 @@ class PluginHookRegistration(Base):
     mode: Mapped[str] = mapped_column(String(20), nullable=False, default="observe")  # observe|enforce
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class PluginDependencyEdge(Base):
+    """Resolved tenant plugin dependency graph.
+
+    Each row says ``installed_plugin_id`` directly depends on
+    ``dependency_plugin_id``. The lockfile on ``TenantInstalledPlugin`` keeps the
+    full pinned closure; this table makes uninstall protection and graph
+    inspection enforceable in SQL instead of buried inside JSON.
+    """
+
+    __tablename__ = "plugin_dependency_edges"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "installed_plugin_id",
+            "dependency_plugin_id",
+            name="uq_plugin_dependency_edge",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    installed_plugin_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenant_installed_plugins.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dependency_plugin_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenant_installed_plugins.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    dependency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    dependency_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(40), nullable=False, default="builtin")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -162,6 +162,7 @@ async def test_get_agent_extensions_has_both_keys(monkeypatch):
     monkeypatch.setattr(mcp_server_service, "_list_agent_workspace_skills", fake_skills)
     db = _SpyDB(
         [
+            _Result(scalar=None),  # agent lookup → no plugin query
             _Result(scalars=[]),  # installed skill records
             _Result(rows=[]),  # get_agent_mcp_servers → no assignments
         ]
@@ -169,9 +170,10 @@ async def test_get_agent_extensions_has_both_keys(monkeypatch):
 
     result = await mcp_server_service.get_agent_extensions(db, agent_id)
 
-    assert set(result.keys()) == {"skills", "mcp_servers"}
+    assert set(result.keys()) == {"skills", "mcp_servers", "plugins"}
     assert result["skills"][0]["source"] == "workspace"
     assert result["mcp_servers"] == []
+    assert result["plugins"] == []
     assert "pack_name" not in result
 
 
@@ -185,6 +187,7 @@ async def test_get_agent_extensions_includes_installed_skill_records(monkeypatch
     monkeypatch.setattr(mcp_server_service, "_list_agent_workspace_skills", fake_skills)
     db = _SpyDB(
         [
+            _Result(scalar=None),  # agent lookup → no plugin query
             _Result(
                 scalars=[
                     SimpleNamespace(
@@ -219,6 +222,47 @@ async def test_get_agent_extensions_includes_installed_skill_records(monkeypatch
     sources = {skill["source"] for skill in result["skills"]}
     assert {"workspace", "platform_skill", "clawhub_skill", "external_skill_url"} <= sources
     assert "pack_name" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_agent_extensions_includes_agent_plugin_assignments(monkeypatch):
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    plugin_id = uuid4()
+
+    async def fake_skills(_agent_id):
+        return []
+
+    monkeypatch.setattr(mcp_server_service, "_list_agent_workspace_skills", fake_skills)
+    plugin = SimpleNamespace(
+        id=plugin_id,
+        plugin_key="mcp_admin_pack",
+        version="1.2.3",
+        status="enabled",
+        source_kind="builtin",
+    )
+    assignment = SimpleNamespace(enabled=True)
+    db = _SpyDB(
+        [
+            _Result(scalar=SimpleNamespace(id=agent_id, tenant_id=tenant_id)),  # agent lookup
+            _Result(rows=[(plugin, assignment)]),  # plugin assignments
+            _Result(scalars=[]),  # installed skill records
+            _Result(rows=[]),  # get_agent_mcp_servers → no assignments
+        ]
+    )
+
+    result = await mcp_server_service.get_agent_extensions(db, agent_id)
+
+    assert result["plugins"] == [
+        {
+            "id": str(plugin_id),
+            "plugin_key": "mcp_admin_pack",
+            "version": "1.2.3",
+            "status": "enabled",
+            "source_kind": "builtin",
+            "enabled": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio

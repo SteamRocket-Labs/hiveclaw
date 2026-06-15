@@ -5,11 +5,13 @@ from __future__ import annotations
 from app.runtime.prompt_builder import build_dynamic_prompt_suffix, build_frozen_prompt_prefix
 from app.runtime.prompt_sections import (
     build_environment_section,
+    build_executing_actions_section,
     build_knowledge_section,
     build_memory_section,
     build_scenario_section,
     build_system_section,
     build_tasks_section,
+    build_tone_style_section,
     build_triggers_section,
     build_tools_section,
 )
@@ -67,6 +69,62 @@ class TestTasksSection:
         assert "Use the three-strike rule" in section
         assert "same fix fails three times" not in section
         assert "3 attempts with" not in section
+
+    def test_question_discipline_prefers_inference(self) -> None:
+        section = build_tasks_section()
+        assert "Don't ask for what you can infer" in section
+        assert "one focused question" in section
+
+    def test_resource_existence_self_check(self) -> None:
+        assert "doesn't make it so" in build_tasks_section()
+
+    def test_no_fabricated_urls_or_ids(self) -> None:
+        assert "Never invent or guess URLs" in build_tasks_section()
+
+    def test_evenhandedness_on_contested_positions(self) -> None:
+        assert "strongest case its proponents would make" in build_tasks_section()
+
+    def test_no_psychoanalyzing_others(self) -> None:
+        section = build_tasks_section()
+        assert "psychoanalyze" in section
+        assert "can't verify it" in section
+
+
+class TestToneStyleSection:
+    def test_has_header(self) -> None:
+        assert "## Tone and Style" in build_tone_style_section()
+
+    def test_prose_over_bullets_discipline(self) -> None:
+        section = build_tone_style_section()
+        assert "Default to prose" in section
+        assert "Never use bullets when declining" in section
+
+    def test_warm_but_honest(self) -> None:
+        section = build_tone_style_section()
+        assert "Warm but honest" in section
+        assert "never means flattery" in section
+
+    def test_no_dangling_colon_before_tool_call(self) -> None:
+        assert "dangling colon" in build_tone_style_section()
+
+    def test_emoji_only_on_request(self) -> None:
+        assert "Only use emojis if the user explicitly requests it" in build_tone_style_section()
+
+
+class TestExecutingActionsContract:
+    def test_owns_mistakes_without_self_abasement(self) -> None:
+        section = build_executing_actions_section()
+        assert "own it and fix it" in section
+        assert "self-abasement" in section
+
+    def test_authorized_security_work_in_scope(self) -> None:
+        section = build_executing_actions_section()
+        assert "Authorized security work is in scope" in section
+        assert "primary purpose is malicious" in section
+
+    def test_autonomous_scope_skips_confirmation_gate(self) -> None:
+        section = build_executing_actions_section(invocation_scope="task")
+        assert "proceed without asking for confirmation" in section
 
 
 class TestToolsSection:

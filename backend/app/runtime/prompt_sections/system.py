@@ -16,7 +16,10 @@ runtime. Treat them as facts about your environment, not suggestions.
   entry and does not change within the session.
 - You can call tools in each round. The kernel runs up to the configured tool-round limit per invocation, and warning reminders will state the exact remaining budget.
 - Parallel tool calls in one round execute concurrently — batch independent
-  calls instead of serializing them.
+  calls instead of serializing them. Read-only calls run in parallel;
+  side-effecting calls (writes, sends, deletes) run in the order you emit
+  them, after earlier calls settle — so batching reads is safe and writes
+  stay ordered.
 - When context reaches ~75% capacity, older messages are automatically
   compressed. Important information is extracted before compression.
 </execution_model>

@@ -4,6 +4,12 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-15T04:33Z [sid:6fd6f665]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: bebe8ddd refactor(workflow): Step 10 清理 — 退役 phase 死列 + 修 5 
+- 2026-06-15T03:28Z [sid:8a6e0d98]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: 955d365c feat(skill): Step 9 catalog 移出 frozen 修 cache 击穿 + 
+- 2026-06-15T02:44Z [sid:74a4190f]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: da38c304 feat(subagent): Step 8 run_in_background 进 schema +
+- 2026-06-14T08:51Z [sid:5247cf90]; branch:main; 7 files (orphan-trail.md, executing_actions.py, system.py, +4); last commit: a1fc2606 fix(chat): hide compaction details and collapse tod
+- 2026-06-14T05:37Z [sid:f55640fa]; branch:main; 7 files (orphan-trail.md, executing_actions.py, system.py, +4); last commit: a1fc2606 fix(chat): hide compaction details and collapse tod
+- 2026-06-14T05:32Z [sid:5247cf90]; branch:main; 4 files (executing_actions.py, system.py, tasks.py, +1); last commit: a1fc2606 fix(chat): hide compaction details and collapse tod
 - 2026-06-14T04:22Z [sid:ffc0ad0e]; branch:main; 1 files (orphan-trail.md); last commit: e0c95b2d feat(llm): refresh ProviderSpec to latest model spe
 - 2026-06-13T10:01Z [sid:5d6cd3f6]; branch:feat/external-behavior-eval-ci; 117 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +114); last commit: 07f92521 feat(eval-ci): E10 per-scenario cost/latency budget
 - 2026-06-13T08:52Z [sid:f4214f60]; branch:main; 50 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +47); last commit: 6d7e0925 docs(round2): bwrap production finding + vercel san
@@ -98,9 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-03T02:24Z [sid:8b13322e]; branch:main; 1 files (orphan-trail.md); last commit: 40aeccd fix(mcp): 修复 Skill+MCP cutover 的扩展面遗留
 - 2026-06-03T01:09Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 4d4fb4f docs(subagent): subagent 源能力设计 v2
 - 2026-06-03T01:08Z [sid:8b13322e]; branch:main; 1 files (orphan-trail.md); last commit: 4d4fb4f docs(subagent): subagent 源能力设计 v2
-- 2026-06-03T00:38Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: ee2f7cc fix(mcp): enforce MCP assignment/override policy on 
-- 2026-06-02T23:51Z [sid:8b13322e]; branch:main; 1 files (orphan-trail.md); last commit: 082262d refactor(mcp): reconcile legacy mcp-servers endpoint
-- 2026-06-02T23:45Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 082262d refactor(mcp): reconcile legacy mcp-servers endpoint
-- 2026-06-02T23:42Z [sid:8b13322e]; branch:main; 12 files (orphan-trail.md, mcp_servers.py, packs.py, +9); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
-- 2026-06-02T23:33Z [sid:98e36c4c]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali
-- 2026-06-02T23:15Z [sid:2f14fc95]; branch:main; 1 files (orphan-trail.md); last commit: 10dce79 chore(cutover): remove orphaned pack routes + finali

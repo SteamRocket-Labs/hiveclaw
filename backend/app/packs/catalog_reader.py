@@ -35,9 +35,15 @@ _TOOL_ROLES = frozenset({"owns", "requires_core", "optional_provider"})
 
 # Platform allowlist for declarative hook handlers (governed inclusion §6.7). A
 # manifest may only bind a hook to one of these platform-owned handler names —
-# never raw Python / shell / import paths or webhooks. Empty until the platform
-# exposes hook handlers; any hook referencing an unknown handler fails closed.
-HOOK_HANDLER_ALLOWLIST: frozenset[str] = frozenset()
+# never raw Python / shell / import paths or webhooks. These names are resolved
+# by app.services.plugin_hook_service; manifests only choose from this catalog.
+HOOK_HANDLER_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "plugin.audit",
+        "plugin.block",
+        "plugin.args_overlay",
+    }
+)
 
 # Source kinds. builtin/local are installable in v1; remote kinds are recognized
 # but fail closed until content-hash/signature verification + sandbox
@@ -180,6 +186,9 @@ def validate_manifest(data: dict[str, Any]) -> tuple[str, ...]:
         if not handler:
             errors.append("hook entry is missing a 'handler'")
             continue
+        mode = _string(hook.get("mode") or "observe").lower()
+        if mode not in {"observe", "enforce"}:
+            errors.append(f"hook handler {handler!r} has invalid mode {mode!r} (allowed: observe/enforce)")
         if any(token in handler for token in ("/", "\\", ".py", "import ", "http://", "https://", "$(", "`")):
             errors.append(f"hook handler {handler!r} looks like raw code/shell/webhook — forbidden")
         elif handler not in HOOK_HANDLER_ALLOWLIST:

@@ -38,6 +38,12 @@ def test_explicit_plan_mode_does_not_seed_retired_manage_tasks_tool():
     assert decision.tool_name == "continue_current_session"
 
 
+def test_retired_manage_tasks_is_not_a_plan_mode_display_label():
+    from app.services.plan_mode_core import ACTION_DISPLAY_LABELS
+
+    assert "manage_tasks" not in ACTION_DISPLAY_LABELS
+
+
 def test_extract_plan_confirmation_request_matches_explicit_plan_id_and_latest():
     from app.services.plan_mode_core import extract_plan_confirmation_request
 

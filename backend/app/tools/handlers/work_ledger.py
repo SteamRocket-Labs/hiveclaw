@@ -8,8 +8,8 @@ Work Ledger. They are **cognitive** actions, not governance actions:
 
 * never ``governance="sensitive"`` and never tagged ``plan_gate_action_kind`` —
   writing a todo is a thought, not a request to act (the defining difference
-  from ``manage_tasks``, which is sensitive + ``start_long_task`` + create-即-
-  execute);
+  from DB Task / ``_manage_tasks`` REST helpers, which belong to the
+  control-plane task record and execution boundary);
 * writing the ledger **never triggers execution** (§5.4 Delta-3, §8 invariant 1);
 * untrusted text in ``title`` / ``summary`` is stored as ledger *data*, never
   interpreted as instruction (§8 invariant 3) — the service persists them as

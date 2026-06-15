@@ -898,6 +898,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('>Restricted<');
     expect(markup).toContain('Run Shell Commands');
     expect(markup).toContain('Secret/Environment Reads');
+    expect(markup).not.toContain('Manage Tasks');
+    expect(markup).not.toContain('Create, update, or complete tasks');
     expect(markup).toContain('unknown.future.capability');
     expect(markup).toContain('future_tool');
     expect(markup).toContain('value="approval" selected=""');

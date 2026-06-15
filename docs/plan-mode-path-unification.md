@@ -119,11 +119,11 @@ trigger/heartbeat run 里调 gated tool → #4 tool 拦截进 Path B。
 
 - 删除 `web_chat_runtime.py:499` / `feishu.py:55` 的 regex auto-sync 旁路。
 - 删除 `feishu.py:2291` 的 classification 直造 plan 旁路。
-- 改为:这些渠道的用户消息正常进 agent 主循环;agent 若判断要创建任务/触发器,**自己调 `manage_tasks`/
-  `set_trigger`** → tool gate(`service.py:646`)拦截 → 因为是 live chat,`defer_to_interactive` 为真
+- 改为:这些渠道的用户消息正常进 agent 主循环;agent 若判断要启动自主执行/触发器,**自己调
+  `delegate_to_agent` / `start_workflow` / `deep_research_start` / `set_trigger`** → tool gate(`service.py:646`)拦截 → 因为是 live chat,`defer_to_interactive` 为真
   → 翻转进 interactive plan mode(Path A)。
 - **安全等价**:原 regex 路径的价值是"拦住'创建任务'文字 → 不静默后台执行"。统一后这个语义由
-  **tool gate** 保证(agent 调 manage_tasks 必过 gate),不依赖 regex。
+  **tool gate** 保证(agent 调真正启动自主执行的工具必过 gate),不依赖 regex。
 - **风险(§9 详述)**:regex 是"agent 没调工具、但回复文字里提了创建任务"的兜底。拆掉后若 agent 只
   "说"不"调工具",不会触发 plan。缓解:prompt 引导 + 真实意图本就该由 agent 调工具表达,而非文字。
 

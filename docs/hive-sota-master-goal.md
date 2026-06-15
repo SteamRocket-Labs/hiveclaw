@@ -107,7 +107,7 @@ Hive 的总目标只有两个，所有路线都服务这两个目标：
 | G8 | Agent TodoList / Work Ledger / Progress Ledger | agent-authored todo board：`track_todo`、`record_finding`、`read_ledger`、todo owner/dependencies、Progress Ledger review、needs_replan reminder | UI/agent 默认可见性；复杂任务 completion/replan 质量；compaction reboot 后 ledger 恢复证据；避免把 todo 写入误当执行触发 | work-ledger tests + runtime reminder tests + chat UX evidence |
 | G9 | 企业身份与控制面 | agent sponsor、participant、soft-delete lifecycle、RLS、access guards | external directory CA、access packages、A2A agent-to-agent audit | migration + RLS tests + lifecycle tests + audit spans |
 | G10 | 权限感知数据面 | runtime memory/knowledge principal prefilter、connector ACL mirror choke point | Feishu/Drive/Office 全 source ACL ingest；生成后复检 | connector ACL tests + source ACL fixtures + production access denial evidence |
-| G11 | 安全执行隔离 | `services/code_execution/` provider selector、local OS sandbox、`vercel_sandbox` provider、MCP authz | production microVM uname/network-denied evidence入库；credential egress proxy | sandbox tests + Railway/Vercel deploy evidence |
+| G11 | 安全执行隔离 | `services/code_execution/` provider selector、local OS sandbox、`vercel_sandbox` provider、sandbox probe latest evidence、MCP authz | 定期生产 probe artifact / score trend；credential egress proxy | sandbox tests + probe JSON / `system_settings` latest evidence + Railway/Vercel deploy evidence |
 | G12 | Context/cache 经济 | CJK-aware token estimate、canonical last-assistant cache anchor、provider cache hints | tool surface 爆炸时引入 Code-Execution-over-MCP 模块树 | prompt budget tests + provider payload tests + usage metrics |
 | G13 | 多 agent 编排 | team context、teammate mailbox、Progress Ledger、coordination signals | live multi-agent eval 证明复杂任务收益；mutating subagent durable replay | prompt contract tests + behavior eval + trace tree |
 | G14 | Eval/观测闭环 | invocation_spans PG canonical surface、Prometheus metrics、behavior eval evidence | Decagon 式 100% QA、live score trend、self-evolution promotion 强绑定 live report | trace API + metrics + CI artifacts + score trend |
@@ -123,7 +123,7 @@ Hive 的总目标只有两个，所有路线都服务这两个目标：
 4. Subagent / delegation 已是原子能力，但 mutating delegation/subagent 还不是 Temporal 式全链路 journal replay，当前只对 replay-safe lane 更接近可恢复。
 5. Agent TodoList / Work Ledger 是 agent 自己写的 todo/task board，不是另一套执行器；`track_todo(add)` 只记录“我要做什么”，不会启动后台任务。Progress Ledger 是基于这个 board 派生的进度 review，不是第二套 todo。它必须可见、可恢复、可触发 replan，但不能被 workflow engine 当控制流。
 6. Feishu、Drive、Office 等 source connector 尚未全部达到 Glean 式 source ACL ingest + prompt 前预过滤 + 生成后复检。
-7. Vercel Sandbox provider 已接主路径，但真实生产 microVM uname、network-denied、workspace round-trip 证据需要持续入库。
+7. Vercel Sandbox provider 已接主路径，且已有 `python -m app.scripts.probe_code_execution_sandbox --persist --confirm` 采集 microVM uname、deny-all network、workspace round-trip 并写入 latest system setting；真实 Railway/Vercel 生产样本仍需按部署节奏持续执行并保留 artifact。
 8. 长期记忆工程纯净度已改善，但 Letta/Zep 级矛盾对账、双时态 multi-hop、TTL/引用校验还没有完整行为级证明。
 9. A2A/MCP 描述已诚实暴露能力，但完整 OAuth delegation 和 MCP resource-server flow 尚未实现。
 10. “整体超越”必须等外部行为 eval 和生产反馈时序支撑；当前最多按单维度说“机制接近 / 已接主链 / 仍需 live 验证”。
@@ -137,6 +137,8 @@ Hive 的总目标只有两个，所有路线都服务这两个目标：
 | 2026-06-15 | 总目标文档整理 | 全部 | `round2-sota-benchmark-2026.md`、`docs/README.md`、`AGENTS.md`、`CLAUDE.md` | 新增 canonical 总入口；round2 保留为详细 benchmark/evidence；Claude Code 入口同步 | 本文；`docs/README.md`；`docs/round2-sota-benchmark-2026.md` 顶部定位；`CLAUDE.md` |
 | 2026-06-15 | Workflow 目标补显 | Workflow / Durable execution / Multi-Agent | `docs/workflow-source-capability.md`、`docs/workflow-ops-runbook.md`、workflow runtime/API/model/test 路径 | Workflow 是独立确定性编排底座，Multi-Agent 是可选 leaf/fanout 执行器；总目标矩阵显式拆出 G5 | 本文 G5；`docs/workflow-source-capability.md`；`docs/workflow-ops-runbook.md` |
 | 2026-06-15 | Agent 原子能力版图 | Plan Mode / Workflow / Subagent / Work Ledger / Extension / Trigger / Office / Remote Workstation / Control Plane | `docs/*.md` 当前设计入口、agent-framework atomic audit、memory quick-pass | 总目标新增原子能力层；Plan Mode、Workflow、Subagent、Work Ledger 明确为 agent 基础能力；Deep Research/Office/Trigger 作为组合或调用方归位 | 本文 §3；`docs/README.md` 原子能力索引 |
+| 2026-06-15 | code execution sandbox probe | 执行隔离 / G11 | `backend/app/services/code_execution/*`、`backend/app/scripts/probe_code_execution_sandbox.py`、`backend/tests/services/test_code_execution_probe.py`、Vercel provider tests | 新增可重复生产探针：`microvm_uname`、`network_denied`、`workspace_round_trip` 三项聚合，支持 JSON artifact 和 latest `system_settings` 写入；仍需在真实 Railway/Vercel 环境持续跑样本 | `python -m app.scripts.probe_code_execution_sandbox --persist --confirm`；`pytest tests/services/test_code_execution_probe.py tests/services/test_vercel_code_execution.py -q` |
+| 2026-06-15 | 全系统 SOTA 原子化审计 | G1-G15 全部 | `hive-sota-master-goal.md`、当前代码/提示词/tool/runtime/eval 路径、本地 CC/Hermes/Codex、外部 GitHub/官方 SOTA 项目、目标测试 | 95% 置信度：Hive 尚未整体达成 SOTA；机制层大量接主链，但 live behavior baseline 仍 provisional，缺 Hermes live delta、生产 microVM trend、全 connector ACL、mutating subagent replay、Letta/Zep 级 memory proof | `docs/sota-atomic-system-audit-2026-06-15.md` |
 
 追加新行时必须写清楚：
 

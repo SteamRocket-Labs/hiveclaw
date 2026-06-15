@@ -1169,6 +1169,122 @@ async def test_invoke_agent_passes_execution_mode_to_kernel(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_records_skill_runtime_usage_and_preserves_tool_callback(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    agent_id = uuid4()
+    session_context = SessionContext(session_id="task-session-1", source="task", channel="task")
+    forwarded_events: list[dict] = []
+    telemetry_calls: list[dict] = []
+
+    async def record_forwarded_event(data: dict) -> None:
+        forwarded_events.append(data)
+
+    class _FakeKernel:
+        async def handle(self, request):
+            await request.on_tool_call({"name": "load_skill", "args": {"name": "Incident Response"}, "status": "done"})
+            await request.on_tool_call({"name": "read_file", "args": {"path": "workspace/runbook.md"}, "status": "done"})
+            return SimpleNamespace(
+                content="[OUTCOME:action_taken] Updated the runbook.",
+                tokens_used=7,
+                final_tools=None,
+                parts=[],
+            )
+
+    def fake_record_skill_runtime_usage_for_invocation(**kwargs):
+        telemetry_calls.append(kwargs)
+        return {"decision": "candidate"}
+
+    async def fake_emit_hook(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    monkeypatch.setattr(
+        "app.runtime.invoker.record_skill_runtime_usage_for_invocation",
+        fake_record_skill_runtime_usage_for_invocation,
+        raising=False,
+    )
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "use the incident skill"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            session_context=session_context,
+            on_tool_call=record_forwarded_event,
+        )
+    )
+
+    assert result.content == "[OUTCOME:action_taken] Updated the runbook."
+    assert [event["name"] for event in forwarded_events] == ["load_skill", "read_file"]
+    assert len(telemetry_calls) == 1
+    assert telemetry_calls[0]["agent_id"] == agent_id
+    assert telemetry_calls[0]["session_context"] is session_context
+    assert telemetry_calls[0]["terminal_status"] == "completed"
+    assert telemetry_calls[0]["assistant_text"] == "[OUTCOME:action_taken] Updated the runbook."
+    assert telemetry_calls[0]["tool_events"] == [
+        {"name": "load_skill", "args": {"name": "Incident Response"}, "status": "done"},
+        {"name": "read_file", "args": {"path": "workspace/runbook.md"}, "status": "done"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_records_failed_skill_runtime_usage_when_kernel_raises(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    agent_id = uuid4()
+    session_context = SessionContext(session_id="task-session-failure", source="task", channel="task")
+    telemetry_calls: list[dict] = []
+
+    class _FakeKernel:
+        async def handle(self, request):
+            assert request.on_tool_call is not None
+            await request.on_tool_call({"name": "load_skill", "args": {"name": "Incident Response"}, "status": "done"})
+            raise RuntimeError("provider exploded")
+
+    def fake_record_skill_runtime_usage_for_invocation(**kwargs):
+        telemetry_calls.append(kwargs)
+        return {"decision": "candidate"}
+
+    async def fake_emit_hook(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    monkeypatch.setattr(
+        "app.runtime.invoker.record_skill_runtime_usage_for_invocation",
+        fake_record_skill_runtime_usage_for_invocation,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        await invoke_agent(
+            AgentInvocationRequest(
+                model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+                messages=[{"role": "user", "content": "use the incident skill"}],
+                agent_name="Agent",
+                role_description="desc",
+                agent_id=agent_id,
+                user_id=uuid4(),
+                session_context=session_context,
+            )
+        )
+
+    assert len(telemetry_calls) == 1
+    assert telemetry_calls[0]["agent_id"] == agent_id
+    assert telemetry_calls[0]["session_context"] is session_context
+    assert telemetry_calls[0]["terminal_status"] == "failed"
+    assert "provider exploded" in telemetry_calls[0]["assistant_text"]
+    assert telemetry_calls[0]["tool_events"] == [
+        {"name": "load_skill", "args": {"name": "Incident Response"}, "status": "done"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_invoke_agent_without_agent_id_uses_collected_initial_tools(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 

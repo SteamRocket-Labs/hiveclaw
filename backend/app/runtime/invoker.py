@@ -66,6 +66,7 @@ from app.services.memory_service import (
     persist_runtime_memory,
 )
 from app.services.quota_guard import QuotaExceeded, check_user_token_quota
+from app.services.skill_runtime_telemetry import record_skill_runtime_usage_for_invocation
 from app.services.token_tracker import (
     estimate_tokens_from_chars,
     extract_usage_tokens,
@@ -1067,6 +1068,40 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     if quota_result is not None:
         return quota_result
 
+    skill_runtime_tool_events: list[dict[str, Any]] = []
+
+    async def _on_tool_call_with_skill_runtime_usage(data: dict) -> None:
+        if isinstance(data, dict) and data.get("status") == "done":
+            skill_runtime_tool_events.append(
+                {
+                    "name": data.get("name"),
+                    "args": data.get("args"),
+                    "status": data.get("status"),
+                }
+            )
+        if request.on_tool_call is not None:
+            await _maybe_await(request.on_tool_call(data))
+
+    def _record_skill_runtime_usage(terminal_status: str, assistant_text: str) -> None:
+        if request.agent_id is None or not skill_runtime_tool_events:
+            return
+        try:
+            record_skill_runtime_usage_for_invocation(
+                agent_id=request.agent_id,
+                session_context=request.session_context,
+                tool_events=skill_runtime_tool_events,
+                terminal_status=terminal_status,
+                assistant_text=assistant_text,
+                note=assistant_text[:500],
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry cannot fail the user-facing invocation
+            logger.warning(
+                "[Invoker] skill runtime usage telemetry failed: agent_id=%s session_id=%s error=%s",
+                request.agent_id,
+                request.session_context.session_id if request.session_context else None,
+                exc,
+            )
+
     routing_config = request.smart_model_routing
     if routing_config is None and request.agent_id is not None and request.fallback_model is not None:
         routing_config = await _resolve_agent_smart_model_routing(request.agent_id)
@@ -1112,7 +1147,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         user_id=request.user_id,
         execution_identity=execution_identity,
         on_chunk=request.on_chunk,
-        on_tool_call=request.on_tool_call,
+        on_tool_call=_on_tool_call_with_skill_runtime_usage,
         on_thinking=request.on_thinking,
         on_event=request.on_event,
         supports_vision=effective_supports_vision,
@@ -1160,7 +1195,13 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
     except Exception as _start_err:
         logging.getLogger(__name__).debug("[Invoker] SESSION_START hook failed (non-fatal): %s", _start_err)
 
-    result = await _resolve_kernel_for_request(request).handle(kernel_request)
+    try:
+        result = await _resolve_kernel_for_request(request).handle(kernel_request)
+    except Exception as exc:
+        _record_skill_runtime_usage("failed", f"{type(exc).__name__}: {exc}")
+        raise
+
+    _record_skill_runtime_usage("completed", str(result.content or ""))
     completed_messages = [*request.messages, {"role": "assistant", "content": result.content}]
     try:
         from app.runtime.hooks import HookEvent, emit_hook

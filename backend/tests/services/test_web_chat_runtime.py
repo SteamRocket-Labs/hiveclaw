@@ -59,28 +59,30 @@ def test_clear_interactive_plan_mode_clears_typed_state_and_metadata_mirror():
     assert "plan_mode" not in context.metadata
 
 
-def test_record_web_chat_skill_runtime_usage_collects_loaded_skill(monkeypatch, tmp_path):
-    import app.services.web_chat_runtime as runtime
+def test_record_skill_runtime_usage_for_invocation_collects_web_chat_loaded_skill(monkeypatch, tmp_path):
+    import app.services.skill_runtime_telemetry as telemetry
+    from app.runtime.session import SessionContext
 
     agent_id = uuid4()
     calls = []
 
-    monkeypatch.setattr(runtime, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(telemetry, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     def fake_record_skill_runtime_usage(workspace, **kwargs):
         calls.append((workspace, kwargs))
         return {"decision": "promote_candidate", "workflow_signature": "load_skill -> web_search"}
 
-    monkeypatch.setattr(runtime, "record_skill_runtime_usage", fake_record_skill_runtime_usage)
+    monkeypatch.setattr(telemetry, "record_skill_runtime_usage", fake_record_skill_runtime_usage)
 
-    result = runtime._record_web_chat_skill_runtime_usage(
+    result = telemetry.record_skill_runtime_usage_for_invocation(
         agent_id=agent_id,
-        session_id="session-1",
+        session_context=SessionContext(session_id="session-1", source="web_chat", channel="web"),
         tool_events=[
             {"name": "load_skill", "args": {"name": "Deployment Review"}, "status": "done"},
             {"name": "web_search", "args": {"query": "railway logs"}, "status": "done"},
         ],
-        status="completed",
+        terminal_status="completed",
+        assistant_text="Finished production deployment review.",
         note="Finished production deployment review.",
     )
 
@@ -96,6 +98,8 @@ def test_record_web_chat_skill_runtime_usage_collects_loaded_skill(monkeypatch, 
                 "note": "Finished production deployment review.",
                 "source": "web_chat",
                 "session_id": "session-1",
+                "runtime_task_id": None,
+                "trace_id": None,
                 "blocker": None,
             },
         )

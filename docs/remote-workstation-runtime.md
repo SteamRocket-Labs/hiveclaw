@@ -25,7 +25,8 @@
 - 行为：每次 `execute_agent_command()` 创建一个 Vercel Sandbox，上传 workspace tar，执行一个命令，回写 workspace tar，然后 `sandbox.stop()`。
 - 默认网络：`HIVE_CODE_EXEC_NETWORK_POLICY=deny-all`。
 - secrets 边界：`subprocess_env.py` 只允许白名单环境变量；backend host secrets 不上传 sandbox。
-- 测试：`backend/tests/services/test_vercel_code_execution.py` 锁定了 fail-closed、workspace sync、network policy threaded-through、执行后 stop 的 contract。
+- 生产探针：`python -m app.scripts.probe_code_execution_sandbox --persist --confirm` 通过同一 `execute_agent_command()` provider selector 采集 `microvm_uname`、`network_denied`、`workspace_round_trip`，可输出 JSON artifact，并把 latest evidence 写入 `system_settings`。
+- 测试：`backend/tests/services/test_vercel_code_execution.py` 锁定了 fail-closed、workspace sync、network policy threaded-through、执行后 stop 的 contract；`backend/tests/services/test_code_execution_probe.py` 锁定生产探针三项证据与 latest setting 写入。
 - **浏览器能力：无。** agent 工具面没有任何 browser/CDP/noVNC 工具。
 
 这个模型适合短命令和无状态代码执行，不适合持久浏览器 session，也不能直接改成长生命周期。

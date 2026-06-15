@@ -343,7 +343,7 @@ _GENERIC_EXTERNAL_EFFECT_LABELS: frozenset[str] = frozenset(
     }
 )
 
-_CAPABILITY_LABELS: dict[str, str] = {
+ACTION_DISPLAY_LABELS: dict[str, str] = {
     "web_search": "Web 来源核验",
     "web_fetch": "Web 来源核验",
     "firecrawl_fetch": "Web 来源核验",
@@ -367,7 +367,6 @@ _CAPABILITY_LABELS: dict[str, str] = {
     "deep_research_export": "Deep Research",
     "office_document_create": "Office 交付物生成",
     "continue_current_session": "当前会话继续执行",
-    "manage_tasks": "任务跟踪",
     "set_trigger": "定时自动化",
     "update_trigger": "定时自动化",
     "delegate_to_agent": "Agent 协作",
@@ -753,7 +752,7 @@ def _normalize_capability_list(value: object) -> object:
     normalized: list[str] = []
     seen: set[str] = set()
     for item in raw_items:
-        label = _CAPABILITY_LABELS.get(str(item).strip(), str(item).strip())
+        label = ACTION_DISPLAY_LABELS.get(str(item).strip(), str(item).strip())
         if not label or label in seen:
             continue
         seen.add(label)

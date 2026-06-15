@@ -147,7 +147,7 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 | Plaza | `plaza_get_new_posts`,`plaza_create_post`,`plaza_add_comment` | 社交 feed 场景化,不该常驻 |
 | MCP admin/外部 MCP | `discover_resources`,`import_mcp_server`,`list_mcp_resources`,`read_mcp_resource`,`call_mcp_tool`,以及动态 MCP tools | 平台扩展/外部能力安装,默认 deferred;单工具可 `always_load` |
 | Deep Research | `deep_research_run/start/check/cancel/export` | 专属长任务链路,通过 skill/意图发现后加载 |
-| DB 任务管理 | `list_tasks`,`get_task`,`manage_tasks` | 与 work ledger 分层:ledger 是认知 scaffold 常驻;DB task 是执行/监督对象,按需加载 |
+| DB 任务记录 | REST/API `tasks` helpers | 与 Work Ledger 分层:ledger 是 agent-facing 认知 scaffold 常驻;DB task 是控制中台执行/监督对象,不作为 LLM tool face 按需加载 |
 | 维护/边缘工具 | `delete_file`,`read_document`,`pin_skill`,`upload_image`,`send_web_message` | 已被 core facade/当前通道工具覆盖,或属于低频维护/外部联系场景 |
 
 **实现路径(v0.5 定):客户端 dynamic loading,对齐 CC 实质机制而非其 API 协议层。**

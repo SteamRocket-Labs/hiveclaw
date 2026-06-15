@@ -1122,6 +1122,26 @@ class TestBuildConversationTextCaps:
         out = _build_conversation_text(msgs)
         assert "tool(" not in out  # low-signal tool dropped entirely
 
+    def test_retired_db_task_tool_transcripts_are_not_silently_filtered(self) -> None:
+        """Retired DB-task tool names must not survive as special extractor policy.
+
+        Old transcripts can still contain list_tasks/get_task/manage_tasks, but
+        those names are no longer low-signal current tool primitives. Keeping them
+        visible makes stale tool-surface evidence auditable instead of erasing it.
+        """
+        msgs = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "c1", "function": {"name": "list_tasks", "arguments": "{}"}}],
+                "content": "",
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "legacy task record"},
+        ]
+
+        out = _build_conversation_text(msgs)
+
+        assert "tool(list_tasks): legacy task record" in out
+
 
 @pytest.mark.asyncio
 async def test_llm_extract_truncates_conversation_to_window_hint(monkeypatch):

@@ -41,6 +41,8 @@ from app.memory.types import CONTAINER_CANDIDATES
 
 logger = logging.getLogger(__name__)
 
+_LOW_SIGNAL_TOOL_NAMES = frozenset({"list_files", "get_current_time", "list_triggers", "tool_search"})
+
 
 # ── Extraction prompt (aligned with Claude Code extractMemories) ──
 
@@ -454,7 +456,7 @@ def _build_conversation_text(messages: list[dict], max_messages: int = 120) -> s
             tc_id = msg.get("tool_call_id", "")
             tool_name = tool_names.get(tc_id, "unknown")
             # Skip low-value tools
-            if tool_name not in ("list_files", "get_current_time", "list_triggers", "list_tasks", "tool_search"):
+            if tool_name not in _LOW_SIGNAL_TOOL_NAMES:
                 parts.append(f"tool({tool_name}): {content[:2000]}")
 
     return "\n".join(parts)

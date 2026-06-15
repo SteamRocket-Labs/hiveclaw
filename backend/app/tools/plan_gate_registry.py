@@ -17,7 +17,7 @@ Two flavours of tag exist (§9.2):
 * A real :data:`~app.services.plan_mode_core.ACTION_KINDS` value — the tool is
   *hard-gated*: the service calls ``PlanModeGate.check`` and refuses to execute
   it without a confirmed plan (``set_trigger``, ``update_trigger``,
-  ``delegate_to_agent``, and the auto-executing ``manage_tasks`` create path).
+  ``delegate_to_agent``, and ``start_workflow``).
 * :data:`BRIDGE_SELF` — the tool is *registered* as plan-governed (visible,
   auditable, future-proof) but keeps its **own** confirmation gate; the service
   must not double-block it. The sole MVP case is ``deep_research_start`` whose

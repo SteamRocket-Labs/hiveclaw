@@ -426,7 +426,7 @@ Plan Mode 的安全保证**不是单点锚**(早期草案一度以为是"工具�
 | objective REST(写 wake_policy/active) | 否 | 间接自动 wake |
 | HR `create_digital_employee`(内部直写 first mission/boot trigger) | 半 | 走 HR blueprint 确认;产物带 `confirmed_hr_blueprint` 豁免,不进 Plan Mode hard gate |
 | web/Feishu task auto-sync(regex → `execute_task`) | 否 | 聊天命中即后台执行 |
-| tasks tool/REST `todo` | 否/是 | 后台 `execute_task` |
+| REST `tasks` / control-plane task execution | 是 | confirmed REST path 显式启动 `execute_task`；agent-facing DB Task tools 已退役 |
 | REST `/collaborate/delegate` | 否 | 直接 async delegation |
 | existing enabled triggers / webhook / on_message | 否 | cutover 遗留,daemon 直跑 |
 
@@ -434,7 +434,7 @@ Plan Mode 的安全保证**不是单点锚**(早期草案一度以为是"工具�
 
 ```text
 早拦层(体验:尽早提示用户去确认计划)
-  tool(tagged):set_trigger / update_trigger / delegate_to_agent / manage_tasks(todo create) / deep_research_start
+  tool(tagged):set_trigger / update_trigger / delegate_to_agent / start_workflow / deep_research_start
   REST:triggers / schedules / objectives 激活 / collaborate-delegate / tasks 自动执行
   hook:objective intake 不再把 wake_policy 意图直接判 active
 
@@ -492,7 +492,7 @@ planning 期"只读取、不落地"的约束由上面的 allow/exclude 列表 + 
 set_trigger                       # 启用未来自主 wake;用户拒绝推荐后仅可由 runtime 注入 trusted opt-out,不能信 LLM 参数
 update_trigger                    # 只有显式替换为 autonomous wake config 时 hard gate;改 reason/name 等不 gate
 delegate_to_agent                 # 交出执行权,异步推进
-manage_tasks (action=create→run)  # 会后台 execute_task
+start_workflow                     # 确定性长任务/编排启动
 deep_research_start               # 已有 plan_confirmed(RC11-RC15 刚修好);MVP 只桥接登记 PlanRequest,不重构
 ```
 
@@ -873,7 +873,7 @@ Plan Mode 视为完成,当且仅当:
 
 1. `agent_plan_requests` + `PlanModeService` + `PlanModeGate`。
 2. **早拦层**:
-   - tool gate(代码级 ToolMeta 打标):`set_trigger`/`update_trigger`/`delegate_to_agent`/`manage_tasks(todo create)`/`deep_research_start`,在 `execute`/`execute_direct`/`execute_approved` 全入口生效。
+   - tool gate(代码级 ToolMeta 打标):`set_trigger`/`update_trigger`/`delegate_to_agent`/`start_workflow`/`deep_research_start`,在 `execute`/`execute_direct`/`execute_approved` 全入口生效。
    - REST gate:`triggers` + legacy `schedules` + `objectives` 激活/wake_policy + `collaborate/delegate` + `tasks` 自动执行。
 3. **兜底层(安全保证)**:
    - `wake_reconciler`:只为 confirmed plan / 豁免 objective 建 enabled trigger。

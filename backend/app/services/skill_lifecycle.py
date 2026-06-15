@@ -299,6 +299,8 @@ def record_skill_runtime_usage(
     note: str,
     source: str,
     session_id: str | None = None,
+    runtime_task_id: str | None = None,
+    trace_id: str | None = None,
     blocker: str | None = None,
     occurred_at: str | None = None,
 ) -> dict[str, Any]:
@@ -323,6 +325,8 @@ def record_skill_runtime_usage(
         "occurred_at": stamp,
         "source": str(source or "").strip() or "unknown",
         "session_id": str(session_id or "").strip() or None,
+        "runtime_task_id": str(runtime_task_id or "").strip() or None,
+        "trace_id": str(trace_id or "").strip() or None,
         "skill_name": primary_skill,
         "loaded_skill_names": normalized_loaded,
         "tool_names": normalized_tools,

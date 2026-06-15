@@ -18,19 +18,22 @@
 > 让 agent 能像 CC 那样在**任意会话**、**零摩擦**地主动维护它。治理与执行**包裹**这层认知，而非**取代**它。
 
 **为什么现在做**：北极星 Goal 1 要求 per-agent 智能 ≥ hermes / ≥ CC。CC 的 task 系统是现代 agent
-处理复杂多步任务、保持条理、不丢步骤、不跑飞的核心机制。Hive 当前**两套 task 机制都不是这个东西**：
+处理复杂多步任务、保持条理、不丢步骤、不跑飞的核心机制。Hive 曾经把 agent 认知看板和控制中台
+DB Task 混在一起；当前主线已经收敛为 **Work Ledger 是唯一 agent-facing 认知看板**，DB Task 仅保留为
+REST/control-plane 记录与执行对象：
 
-| | `manage_tasks` | Work Ledger | **CC V2 Task（基线）** |
+| | DB Task REST/helper | Work Ledger | **CC V2 Task（基线）** |
 |---|---|---|---|
-| agent 主动工具入口 | ✅ 有 | ❌ **无** | ✅ 有 |
-| 创建 ≠ 执行 | ❌ 一写就 `execute_task` | —（agent 写不了） | ✅ 创建只声明 |
-| 全会话可用 | ⚠️ 要过 plan gate（`sensitive`） | ❌ 仅 long_task / plan planner | ✅ 任意会话 |
+| agent 主动工具入口 | ❌ 无（LLM tool face 已退役） | ✅ `track_todo` / `record_finding` / `read_ledger` | ✅ 有 |
+| 创建 ≠ 执行 | ✅ helper 纯 CRUD；执行由 REST/任务执行器显式触发 | ✅ 写 ledger 只记认知状态 | ✅ 创建只声明 |
+| 全会话可用 | ❌ 非 agent 认知工具 | ✅ 复杂普通会话按阈值启用 | ✅ 任意会话 |
 | 数据结构 | 弱（title/status/priority） | ✅ 强（phase/todo/findings/failures/verification） | 中（+owner/blocks/blockedBy） |
 | 治理 / 恢复 / 审计 | 部分 | ✅ **强（护城河）** | 弱 |
-| 多 agent 派发 | ❌ | ❌ | ✅ owner + swarm |
+| 多 agent 派发 | ❌ | ✅ owner + delegated status writeback | ✅ owner + swarm |
 
-**结论**：缺的不是"又一套 task 系统"，而是把 **Work Ledger 升级为 agent-authored 认知脚手架**——
-给它装上 agent 工具入口、扩到全会话、解开"创建即执行"耦合，并为 multi-agent 预留 owner/依赖。
+**结论**：缺的不是"又一套 task 系统"，而是把 **Work Ledger 作为 agent-authored 认知脚手架守住**——
+agent 写 todo 不触发执行，真正启动执行走 `delegate_to_agent` / `spawn_subagent` / `start_workflow` /
+confirmed REST task 等受治理入口。
 
 ---
 
@@ -53,15 +56,15 @@ plan-mode 文档群已经把**规划期**讲透：
 | `plan-mode-agent-authored-planning.md` | 计划内容由 agent 撰写而非 skeleton 填表 | 否，引用其原则 |
 | `plan-mode-agent-work-ledger.md` | **执行期** Work Ledger 的数据模型、治理边界、恢复、completion check | 否，**本文是它的延续** |
 
-**本文聚焦它们都没覆盖的空白**：Work Ledger 当前是 runtime 自动填的，agent 没有主动入口、且只在
-长任务/规划场景启用。本文设计如何让它成为 agent 在**任意会话**主动用的认知工具。
+**本文聚焦的空白已在当前主线收口**：Work Ledger 从 runtime-only 执行日志升级为 agent 在复杂普通会话里
+也能主动使用的认知工具。本文保留历史设计脉络，但当前事实以本节和 §7 实装记录为准。
 
 ### 1.3 一条贯穿原则（呼应 `feedback_plan_from_agent_system_governs`）
 
 > **轻量认知动作（想、规划、记进度）归 agent；治理、持久化、确认、审计归系统。
 > 治理要包裹 agent 的认知脚手架，不能挤掉它。**
 
-Plan 填表反模式、task "创建即执行"耦合、Work Ledger 无 agent 入口——是同一个病的三个症状：
+Plan 填表反模式、task "创建即执行"耦合、Work Ledger 无 agent 入口曾经是同一个病的三个症状：
 本属 agent 认知层的轻量自主动作，被做成了重的系统流程，结果 agent 失去了"自己组织工作"的脚手架。
 
 ---
@@ -90,51 +93,37 @@ CC 早期的 `TodoWrite`（V1，纯内存认知清单）已淘汰，交互式默
 
 ---
 
-## 3. Hive 现状核实：两套机制都不是认知脚手架
+## 3. Hive 现状核实：旧缺口与当前收口
 
-### 3.1 `manage_tasks` = 重治理作业（创建即执行）
+### 3.1 DB Task / `_manage_tasks` = 控制中台记录与 REST helper，不是 agent 看板
 
-- `backend/app/tools/handlers/tasks.py:142-196`：`manage_tasks` 是 LLM 工具，但
-  `governance="sensitive"` + `plan_gate_action_kind="start_long_task"`（:183-184）——创建 task 被当作
-  "启动长任务"，要过 plan gate 确认。
-- `backend/app/services/agent_tool_domains/tasks.py:52-57`：创建 `todo` 类型 task 立即
-  `asyncio.create_task(execute_task(task.id, agent_id))`，返回 *"auto-execution started"*。
-- `backend/app/runtime/prompt_sections/tasks.py`：prompt 只有通用工作原则，**不鼓励**主动建 task 追踪进度。
+- `backend/app/tools/handlers/tasks.py` 明确声明 `manage_tasks` / `list_tasks` / `get_task` 不再注册为
+  LLM-callable tools；agent-facing DB Task 工具面已退役。
+- `backend/app/services/agent_tool_domains/tasks.py::_manage_tasks` 保留为 REST/control-plane 复用的纯 CRUD helper，
+  不承担 agent 认知追踪。
+- 当前 agent 启动异步/长任务的入口是 `delegate_to_agent`、`spawn_subagent`、`start_workflow`、Deep Research
+  或 confirmed REST task；DB Task helper 不应重新接回 LLM 工具面。
 
-> **后果**：agent 不能用 `manage_tasks` 来"规划/记进度"，因为**一写就开火执行**。它是作业实体，不是草稿。
+> **边界**：DB Task 可以继续服务控制中台和人类派活；agent 自己的 todo/task board 只走 Work Ledger。
 
-### 3.2 Work Ledger = runtime 自动填的执行日志（无 agent 入口、限场景）
+### 3.2 Work Ledger = 当前唯一 agent-authored 认知脚手架
 
-（核实证据，2026-06-03）
-
-- **无 agent 工具入口**：`grep "work_ledger\|add_todo\|update_todo\|record_finding" app/tools/` → **零匹配**。
-  agent 工具表里没有任何写 ledger 的工具。
-- **方法全是系统层**：`backend/app/services/agent_work_ledger.py` 暴露的是
-  `initialize_agent_work_ledger_artifact` / `append_agent_work_ledger_progress` /
-  `load_agent_work_ledger` / `validate_agent_work_ledger_completion` 等——由 runtime 调用，
-  无 "agent 主动 add todo" 语义。
-- **仅 3 处启用**：`long_task_runtime.py`（长任务自动建 + progress 同步）、
-  `long_task_validation.py`（terminal check）、`plan_mode_service.py`（planner 阶段）。
-  **普通 web chat 会话不接 ledger**（`invoker.py` / `engine.py` 无 ledger 接线）。
-- **数据结构其实很好**：`agent_work_ledgers` 表有
-  `current_phase / todo_items_json / findings_json / progress_json / failures_json /
-  verification_json / open_questions_json / evidence_refs_json`；service 里已有 `_task_active_form`、
-  `_normalize_task_status`——**早就借鉴了 CC 的 activeForm/status 字段**。
-
-> **后果**：在 Work Ledger 这层，"todo 是系统生成、非 agent 自主"完全成立。agent 是被 runtime
-> 记录的对象，不是执笔者；且只在长任务/规划场景存在，日常会话裸奔。
+- `track_todo` / `record_finding` / `read_ledger` 是当前 agent-facing 看板工具。
+- 写 ledger 是认知动作，不触发执行、不扩大 confirmed plan 边界。
+- 普通复杂会话按阈值启用 reminder；compaction 后可从持久 ledger 注入恢复块。
+- ledger todo 支持 owner / dependencies，并能被 delegation/subagent completion 回写。
 
 ### 3.3 合起来的 gap
 
-Hive 把"task"这件事劈成了两半，每半都缺一块：
+当前要守住的是分层，不是再造一套 task：
 
 ```
-manage_tasks   = [agent 工具] + [重治理] + [创建即执行]   ← 有手，但一动就开火
-Work Ledger    = [丰富结构]   + [强治理] + [系统自动填]   ← 有台账，但 agent 没笔
-CC V2 Task     = [agent 工具] + [轻治理] + [创建≠执行] + [全会话] + [owner/依赖]  ← 完整
+DB Task REST/helper = [控制中台记录/派活] + [REST/API治理]             ← 不是 agent 看板
+Work Ledger         = [agent 工具] + [创建≠执行] + [全会话] + [owner/依赖] ← agent 认知脚手架
+CC V2 Task          = [agent 工具] + [创建≠执行] + [全会话] + [owner/依赖] ← 对标基线
 ```
 
-**没有任何一套 = "agent 在任意会话零摩擦主动维护的认知脚手架"。** 这就是要补的 delta。
+剩余工程风险是未来误把 DB Task helper 重新暴露给 LLM tool face，或在文档/提示词里把它写成 agent 启动路径。
 
 ---
 
@@ -142,8 +131,8 @@ CC V2 Task     = [agent 工具] + [轻治理] + [创建≠执行] + [全会话] 
 
 1. **直接损害 Goal 1**：缺认知脚手架的 agent，在复杂多步任务里更容易丢步骤、重复失败、跑飞、
    提前宣称完成。这是 per-agent 智能落后 CC/hermes 的直接来源之一。
-2. **精确化了用户的原始担忧**：不是"系统强行塞了 todo"，而是"**该属于 agent 的笔，系统拿走了
-   （Work Ledger）或做得太重 agent 不敢拿（manage_tasks）**"。
+2. **精确化了用户的原始担忧**：不是"系统强行塞了 todo"，而是历史上"**该属于 agent 的笔，系统拿走了
+   （Work Ledger）或被做成太重的 DB Task 工具，agent 不敢拿**"。
 3. **挡住了 multi-agent 演进**：CC V2 的 owner/依赖是 subagent fan-out 的作业层底座
    （见 `subagent-source-capability.md`）。Hive 两套都没有 owner/依赖，subagent 协作缺作业层。
 
@@ -160,7 +149,7 @@ CC V2 Task     = [agent 工具] + [轻治理] + [创建≠执行] + [全会话] 
 
 ### 5.2 Delta-1：给 agent 装主动工具入口（对标 `TaskCreate`/`TaskUpdate`）
 
-新增一组**轻量 agent 工具**，写入**已有的** governed work ledger：
+当前已经新增一组**轻量 agent 工具**，写入**已有的** governed work ledger：
 
 | 工具（建议名） | 对标 CC | 行为 | 治理 |
 |---|---|---|---|
@@ -184,9 +173,8 @@ CC V2 Task     = [agent 工具] + [轻治理] + [创建≠执行] + [全会话] 
 ### 5.4 Delta-3：解开"创建即执行"耦合
 
 - `track_todo` **只写认知状态，绝不触发执行**。这是它能当思考草稿的前提。
-- `manage_tasks` 的"创建 todo 即 `execute_task`"语义**保留但收窄**：它继续作为"启动一个受治理的
-  自主作业"的重动作（过 plan gate 合理）。**认知追踪走 `track_todo`，启动作业走 `manage_tasks`——
-  两个动作彻底分开。**
+- 启动受治理执行走 `delegate_to_agent`、`spawn_subagent`、`start_workflow`、Deep Research 或 confirmed REST
+  task；认知追踪走 `track_todo`。DB Task helper 不再作为 agent-facing 启动工具。
 - prompt（`prompt_sections/tasks.py` 或 executing_actions）补一段对标 CC 的引导：
   *复杂多步任务主动用 `track_todo` 拆解+追踪进度；开始一步前标 in_progress、做完标 complete。*
 
@@ -202,7 +190,7 @@ CC V2 Task     = [agent 工具] + [轻治理] + [创建≠执行] + [全会话] 
 | 动作 | 过 plan gate? | 理由 |
 |---|---|---|
 | `track_todo` / `record_finding` / `read_ledger` | ❌ 否 | 纯认知，无外部副作用 |
-| `manage_tasks`（启动受治理作业） | ✅ 是 | 启动自主执行，是治理动作 |
+| `delegate_to_agent` / `spawn_subagent` / `start_workflow` / confirmed REST task | ✅ 是 | 启动自主执行，是治理动作 |
 | 外部可见 / 不可逆 / 敏感动作 | ✅ 是 | 走既有 `action_preflight` / plan gate |
 
 **不变量**：写 ledger 永远不放大 confirmed plan 边界（`plan-mode-agent-work-ledger.md §10.1` 不变量沿用）；
@@ -217,7 +205,7 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
 | `agent_plan_requests`（规划确认契约） | Plan Mode | 不动；ledger todo 可记 `source_plan_id` 做审计回链 |
 | Plan artifact（规划期产物） | `plan-mode-runtime-paradigm.md` | 不动；与执行期 ledger 分离原则沿用其 §10 |
 | `agent_work_ledgers`（执行认知账本） | `plan-mode-agent-work-ledger.md` | **本文延续**：补 agent 工具入口 + 全会话 + 解耦 |
-| `manage_tasks` / `Task` 表（受治理作业） | `tools/handlers/tasks.py` | 收窄为"启动作业"，认知追踪剥离到 ledger |
+| DB Task / `_manage_tasks` helper | `api/tasks.py` + `services/agent_tool_domains/tasks.py` | REST/control-plane 记录与派活；不在 agent LLM tool face |
 | Memory Control Plane | memory/* | 不动；ledger → 长期 memory 仍过 write gate |
 
 ---
@@ -274,7 +262,7 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
    - **§8 不变量核对**：①认知≠治理（无 gate/sensitive，写不触发执行，实测 `create_task` 未被调用）；
      ②写 ledger 不放大/不覆盖 confirmed plan（仅改 todo/findings 列，不碰 plan 边界）；
      ③untrusted summary/title 以 JSON 字符串值落库=data 非 instruction（service 从不解释其内容）；
-     ⑤多租户 scope 见上；`manage_tasks` 一行未动。
+     ⑤多租户 scope 见上；DB Task REST/helper 语义未动。
 2. **切口② ✅ 已实装**：通用 invocation 路径（invoker/engine）按阈值启用 ledger 认知脚手架 + 每轮
    reminder 注入 + compaction 保活（复用规划期机制）。→ 验收：复杂 web chat 会话 compaction 后 agent
    能从 ledger 恢复。
@@ -316,7 +304,7 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
      登记进 `CAPABILITY_MAP`**，而 `STRICT_CAPABILITY_MAPPING` 默认 True → 三工具在有 tenant 的真实
      invocation 里被 capability gate **拒绝**（切口①/切口② 在生产其实都跑不动）。本切口补：
      `track_todo`/`record_finding` → 新 capability `agent.task.track`（认知记账，区别于
-     `manage_tasks` 的 `agent.task.modify` 作业执行，呼应 §5.6"认知≠治理"）；`read_ledger` →
+     DB Task 的 `agent.task.modify` 作业执行，呼应 §5.6"认知≠治理"）；`read_ledger` →
      `agent.task.read` + 进 `_CAPABILITY_GATE_EXEMPT_TOOLS` + `_STATIC_SAFE_TOOLS`（只读自有 ledger，
      与其它只读 context 工具一致、public 区可读）。**未改切口① 三工具/service 写原语一行**——只补登记。
    - **测试证据**：新增/扩展 3 文件 17 用例全绿（engine `test_work_ledger_scaffold.py` 7 +
@@ -432,7 +420,7 @@ ledger 的 `findings` 不能覆盖 confirmed plan；untrusted 内容注入仍按
 1. agent 在**普通 web chat 复杂会话**里能用 `track_todo` 主动维护 todo，**写 todo 不触发执行**。
 2. ledger 在通用 invocation 路径按阈值启用，简单问答不启用。
 3. context compaction / resume 后，agent 能从 ledger 判断下一步（5-question reboot），不重复失败动作。
-4. `track_todo` 不过 plan gate；`manage_tasks` 启动作业仍过 gate——治理边界清晰可测。
+4. `track_todo` 不过 plan gate；真正启动执行的 delegation/workflow/REST task 仍过对应 gate——治理边界清晰可测。
 5. ledger todo 支持 `owner`/依赖字段，delegation 场景可派发 + 回写。
 6. 全程多租户 scope + RLS；ledger → memory 过 write gate。
 7. 对照 CC：同一个"3+ 步复杂任务"，Hive agent 的条理性 / 不丢步 / 失败去重能力 ≥ CC（Goal 1 bar）。

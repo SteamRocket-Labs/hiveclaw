@@ -111,16 +111,16 @@ const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
     capability: 'agent.task.read',
     labelKey: 'readTasks',
     descKey: 'readTasksDesc',
-    fallbackLabel: 'Read Tasks',
-    fallbackDesc: 'View task records',
+    fallbackLabel: 'Read Task Records',
+    fallbackDesc: 'View control-plane task records',
   },
   {
     key: 'manage_tasks',
     capability: 'agent.task.modify',
     labelKey: 'manageTasks',
     descKey: 'manageTasksDesc',
-    fallbackLabel: 'Manage Tasks',
-    fallbackDesc: 'Create, update, or complete tasks',
+    fallbackLabel: 'Manage Task Records',
+    fallbackDesc: 'Create or update control-plane task records',
   },
   {
     key: 'read_memory',
@@ -529,12 +529,14 @@ export default function AgentSettingsSection({
   );
   const capabilityActions = React.useMemo<CapabilityAction[]>(() => {
     const knownCapabilities = new Set(KNOWN_CAPABILITY_ACTIONS.map((item) => item.capability));
-    const knownActions = KNOWN_CAPABILITY_ACTIONS.map((item) => ({
-      key: item.key,
-      capability: item.capability,
-      label: t(`agent.settings.autonomy.${item.labelKey}`, item.fallbackLabel),
-      desc: t(`agent.settings.autonomy.${item.descKey}`, item.fallbackDesc),
-    }));
+    const knownActions = KNOWN_CAPABILITY_ACTIONS
+      .filter((item) => capabilityDefinitionSet.has(item.capability) || capabilityPolicyByCapability.has(item.capability))
+      .map((item) => ({
+        key: item.key,
+        capability: item.capability,
+        label: t(`agent.settings.autonomy.${item.labelKey}`, item.fallbackLabel),
+        desc: t(`agent.settings.autonomy.${item.descKey}`, item.fallbackDesc),
+      }));
     const dynamicActions = capabilityDefinitions
       .filter((item) => !knownCapabilities.has(item.capability))
       .map((item) => ({
@@ -547,7 +549,7 @@ export default function AgentSettingsSection({
             : t('agent.settings.autonomy.dynamicNoTools', 'No mapped tools reported by backend'),
     }));
     return [...knownActions, ...dynamicActions];
-  }, [capabilityDefinitions, t]);
+  }, [capabilityDefinitionSet, capabilityDefinitions, capabilityPolicyByCapability, t]);
   const patrolCapabilityActions = React.useMemo(
     () => capabilityActions.filter((action) => PATROL_CAPABILITY_KEYS.has(action.key)),
     [capabilityActions],

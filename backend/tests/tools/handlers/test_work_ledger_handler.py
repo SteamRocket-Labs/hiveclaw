@@ -372,6 +372,44 @@ def test_track_todo_schema_exposes_blocks_and_blocked_by():
     assert properties["blockedBy"]["type"] == "array"
 
 
+def test_record_finding_schema_exposes_replan_type():
+    from app.services.agent_tools import get_combined_openai_tools
+
+    schema = next(
+        t["function"]["parameters"] for t in get_combined_openai_tools() if t["function"]["name"] == "record_finding"
+    )
+    assert "replan" in schema["properties"]["type"]["enum"]
+
+
+@pytest.mark.asyncio
+async def test_record_finding_replan_writes_replan_event(tmp_path, monkeypatch):
+    from app.services.agent_work_ledger import load_agent_work_ledger
+    from app.tools.handlers.work_ledger import record_finding
+
+    agent_id = uuid.uuid4()
+    _settings_patch(monkeypatch, tmp_path)
+
+    payload = json.loads(
+        await record_finding(
+            _request(
+                tmp_path,
+                {
+                    "type": "replan",
+                    "summary": "Switch to source index before another delegation attempt.",
+                    "next_strategy": "Use cached source index and only ask for missing citations.",
+                },
+                agent_id=agent_id,
+            )
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["type"] == "replan"
+    ledger = load_agent_work_ledger(agent_id=agent_id, session_id="sess-1", data_root=tmp_path)
+    assert ledger["replans"][0]["summary"].startswith("Switch to source index")
+    assert ledger["replans"][0]["changed_strategy"].startswith("Use cached source index")
+
+
 @pytest.mark.asyncio
 async def test_track_todo_persists_blocks_and_blocked_by(tmp_path, monkeypatch):
     """Handler → real service → ledger round-trip for the dependency DAG."""

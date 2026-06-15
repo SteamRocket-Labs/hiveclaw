@@ -13,9 +13,11 @@ better results:
 per-action tools via a `mode` parameter; pick whichever surface keeps the \
 intent clearest.
 - Discovering capabilities: when you need a tool that is not already callable, use `tool_search` to \
-discover and load it. This covers integration packs (web, feishu, email), `web_search` for internet \
-lookup, AND this agent's imported MCP server tools — matching deferred schemas become callable in \
-the current session (a denied or disabled MCP tool will not be listed). Use `load_skill` only for a \
+discover and load it. This covers integration packs (advanced web search/crawling, feishu, email) \
+AND this agent's imported MCP server tools — matching deferred schemas become callable in the current \
+session (a denied or disabled MCP tool will not be listed). Use CORE `web_search` first for basic \
+internet lookup; if those results are insufficient, use `tool_search` to discover advanced tools such \
+as `exa_search`, `tavily_search`, `firecrawl_fetch`, or `xcrawl_scrape`. Use `load_skill` only for a \
 skill's method guide, not to unlock tools. Use `web_fetch` when you already have a specific URL.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.
 - Break complex tasks into focused tool calls. Verify outcomes before proceeding.

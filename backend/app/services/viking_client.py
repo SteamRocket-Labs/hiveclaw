@@ -80,17 +80,25 @@ async def add_resource(
     *,
     tenant_id: str,
     agent_id: str | None = None,
+    user_id: str | None = None,
     reason: str = "",
+    acl: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Add a resource to the knowledge base."""
     client = _get_client()
     if not client:
         return {"error": "OpenViking not configured"}
     try:
+        payload: dict[str, Any] = {"content": content, "to": to, "reason": reason}
+        if acl:
+            payload["acl"] = acl
+        if metadata:
+            payload["metadata"] = metadata
         resp = await client.post(
             "/api/v1/resources",
-            json={"content": content, "to": to, "reason": reason},
-            headers=_identity_headers(tenant_id, agent_id=agent_id),
+            json=payload,
+            headers=_identity_headers(tenant_id, user_id=user_id, agent_id=agent_id),
         )
         resp.raise_for_status()
         return resp.json()

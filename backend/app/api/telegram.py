@@ -253,7 +253,9 @@ async def _extract_telegram_message_content(
         media = message.get(key) or {}
         if media.get("file_id"):
             hint_name = media.get("file_name") or f"telegram_{key}_{media['file_id']}{fallback_ext}"
-            saved_files.append(await _download_telegram_attachment(bot_token, agent_id, media["file_id"], filename_hint=hint_name))
+            saved_files.append(
+                await _download_telegram_attachment(bot_token, agent_id, media["file_id"], filename_hint=hint_name)
+            )
 
     if saved_files:
         hints = "\n".join(
@@ -572,7 +574,7 @@ async def telegram_webhook(
     history = [{"role": m.role, "content": m.content} for m in reversed(hist_r.scalars().all())]
 
     # Call agent LLM (same function used by Feishu/Slack/DingTalk channels)
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
     from app.services.agent_tools import channel_file_sender as _cfs_t
     from app.services.channel_delivery_service import channel_delivery_target as _cdt_t
 
@@ -583,7 +585,7 @@ async def telegram_webhook(
     _cdt_token = _cdt_t.set(delivery_target)
 
     try:
-        reply = await _call_agent_llm(
+        reply = await call_agent_llm(
             db,
             agent_id,
             user_text,

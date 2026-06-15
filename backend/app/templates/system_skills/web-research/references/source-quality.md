@@ -12,10 +12,12 @@ to a user decision.
 
 ## Fetch Escalation
 
-1. `web_search` to discover current candidate sources.
-2. `web_fetch` for known URLs or top results.
-3. `firecrawl_fetch` when pages are JS-heavy, PDF-like, or incomplete.
-4. `xcrawl_scrape` for difficult pages when available.
+1. `web_search` to discover current candidate sources with built-in basic search.
+2. `tool_search` for `exa_search` / `tavily_search` when basic results are weak, sparse, or stale.
+3. `web_fetch` for known URLs or top results.
+4. `tool_search` for crawler tools when direct fetch is incomplete.
+5. `firecrawl_fetch` when pages are JS-heavy, PDF-like, or incomplete.
+6. `xcrawl_scrape` for difficult pages when available.
 
 ## Citation Rules
 

@@ -17,6 +17,7 @@
 - Workflow / runtime: `workflow-source-capability.md`、`workflow-ops-runbook.md`、`execution-mode-spectrum.md`。
 - Memory / knowledge: `agent-memory-md-first-spec.md`、`knowledge-container-boundaries.md`。
 - Agent assets / control plane: `org-agent-asset-rights-model.md`、`SKILLS_AND_PACKS_V2.md`、`agent-extension-surface-skill-mcp.md`。
+- Multimodal / document conversion: `document-conversion-multimodal-design.md`。
 - Subagents: `subagent-source-capability.md`、`subagent-evolution-loop.md`。
 - RLS: `rls-stage0-findings.md`、`rls-enforcement-migration-plan.md`、`rls-stage3-cutover.md`。
 
@@ -29,4 +30,3 @@ Archive path:
 ```text
 docs/archive/legacy-docs/
 ```
-

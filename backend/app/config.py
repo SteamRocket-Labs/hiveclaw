@@ -184,6 +184,9 @@ class Settings(BaseSettings):
     # Exa Search API
     EXA_API_KEY: str = ""
 
+    # Optional platform-hosted SearXNG instance for no-key basic web search.
+    SEARXNG_URL: str = ""
+
     # Firecrawl / XCrawl scraping APIs
     FIRECRAWL_API_KEY: str = ""
     XCRAWL_API_KEY: str = ""

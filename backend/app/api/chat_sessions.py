@@ -86,6 +86,7 @@ class RecordSessionFeedbackIn(BaseModel):
     label: Literal["useful", "misleading"]
     reason: str = ""
     message_id: Optional[uuid.UUID] = None
+    decision_id: Optional[str] = None
 
 
 async def _get_run_session_and_agent(
@@ -328,6 +329,7 @@ async def record_feedback_for_session(
         label=body.label,
         reason=body.reason,
         message_id=body.message_id,
+        decision_id=body.decision_id,
     )
     await db.commit()
     return result

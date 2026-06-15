@@ -18,7 +18,11 @@ from app.database import get_db
 from app.models.agent import Agent
 from app.models.user import User
 from app.schemas.schemas import SmartModelRoutingConfig
-from app.services.agent_identity_lifecycle import ensure_agent_identity
+from app.services.agent_identity_lifecycle import (
+    ensure_agent_identity,
+    get_agent_lifecycle_block_reason,
+    soft_delete_agent,
+)
 from app.services.auto_provision import ensure_main_agent
 from app.services.sync_service import bump_sync_version
 
@@ -72,6 +76,8 @@ async def _get_owned_sub_agent(db: AsyncSession, user: User, agent_id: uuid.UUID
     """Get an owned sub-agent. Root agents are not editable through Desktop."""
     agent = await db.get(Agent, agent_id)
     if not agent:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if get_agent_lifecycle_block_reason(agent):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     if agent.owner_user_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your agent")
@@ -151,7 +157,7 @@ async def delete_sub_agent(
     """Delete a Sub-Agent owned by the current user."""
     agent = await _get_owned_sub_agent(db, current_user, agent_id)
 
-    await db.delete(agent)
+    await soft_delete_agent(db, agent, actor_id=current_user.id, reason="desktop_delete_sub_agent")
     await db.flush()
 
     if current_user.tenant_id:

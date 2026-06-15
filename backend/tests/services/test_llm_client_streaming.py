@@ -234,6 +234,20 @@ def test_anthropic_format_preserves_cache_control_content_blocks():
     }
 
 
+def test_anthropic_format_preserves_single_cache_control_block_without_thinking():
+    message = LLMMessage(
+        role="assistant",
+        content=[{"type": "text", "text": "done", "cache_control": {"type": "ephemeral"}}],
+    )
+
+    payload = message.to_anthropic_format()
+
+    assert payload == {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "done", "cache_control": {"type": "ephemeral"}}],
+    }
+
+
 @pytest.mark.asyncio
 async def test_openai_compatible_streaming_retries_http_status_errors(monkeypatch):
     retry_client = _RetryStatusClient()

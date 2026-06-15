@@ -22,8 +22,8 @@ from app.models.audit import ChatMessage
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
+from app.services.channel_agent_runtime import call_agent_llm
 from app.services.channel_session import find_or_create_channel_session
-from app.api.feishu import _call_agent_llm
 from app.services.agent_tools import channel_file_sender as _cfs_s
 from app.core.security import hash_password as _hp
 from pathlib import Path as _Path
@@ -40,7 +40,7 @@ _teams_tokens: dict[str, dict] = {}  # agent_id -> {access_token, expires_at}
 
 async def _get_teams_access_token(config: ChannelConfig) -> str | None:
     """Get or refresh Microsoft Teams access token.
-    
+
     Supports:
     - Client credentials (app_id + app_secret) - default
     - Managed Identity (when use_managed_identity is True in extra_config)
@@ -53,33 +53,37 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
 
     # Check if managed identity should be used
     use_managed_identity = config.extra_config.get("use_managed_identity", False)
-    
+
     if use_managed_identity:
         # Use Azure Managed Identity
         try:
             from azure.identity.aio import DefaultAzureCredential
             from azure.core.credentials import AccessToken
-            
+
             credential = DefaultAzureCredential()
             # For Bot Framework, we need the token for the Bot Framework API
             # Managed identity needs to be granted permissions to the Bot Framework API
             scope = "https://api.botframework.com/.default"
             token: AccessToken = await credential.get_token(scope)
-            
+
             _teams_tokens[agent_id] = {
                 "access_token": token.token,
                 "expires_at": token.expires_on,
             }
-            logger.info(f"Teams: Successfully obtained access token via managed identity for agent {agent_id}, expires at {token.expires_on}")
+            logger.info(
+                f"Teams: Successfully obtained access token via managed identity for agent {agent_id}, expires at {token.expires_on}"
+            )
             await credential.close()
             return token.token
         except ImportError:
             logger.error("Teams: azure-identity package not installed. Install it with: pip install azure-identity")
             return None
         except Exception as e:
-            logger.error(f"Teams: Failed to get access token via managed identity for agent {agent_id}: {e}", exc_info=True)
+            logger.error(
+                f"Teams: Failed to get access token via managed identity for agent {agent_id}: {e}", exc_info=True
+            )
             return None
-    
+
     # Use client credentials (app_id + app_secret)
     app_id = config.app_id
     app_secret = config.app_secret
@@ -105,9 +109,13 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
                     error_json = resp.json()
                     error_description = error_json.get("error_description", "No description")
                     error_code = error_json.get("error", "unknown")
-                    logger.error(f"Teams: OAuth token request failed for agent {agent_id}: status={resp.status_code}, error={error_code}, description={error_description}")
+                    logger.error(
+                        f"Teams: OAuth token request failed for agent {agent_id}: status={resp.status_code}, error={error_code}, description={error_description}"
+                    )
                 except Exception:
-                    logger.error(f"Teams: OAuth token request failed for agent {agent_id}: status={resp.status_code}, response={error_body[:500]}")
+                    logger.error(
+                        f"Teams: OAuth token request failed for agent {agent_id}: status={resp.status_code}, response={error_body[:500]}"
+                    )
                 logger.error(f"Teams: Token URL={token_url}, tenant_id={tenant_id}, client_id={app_id[:20]}...")
                 return None
             token_data = resp.json()
@@ -121,15 +129,19 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
             logger.info(f"Teams: Successfully obtained access token for agent {agent_id}, expires in {expires_in}s")
             return access_token
     except httpx.HTTPStatusError as e:
-        error_body = e.response.text if hasattr(e, 'response') and e.response else "No response body"
+        error_body = e.response.text if hasattr(e, "response") and e.response else "No response body"
         try:
-            if hasattr(e, 'response') and e.response:
+            if hasattr(e, "response") and e.response:
                 error_json = e.response.json()
                 error_description = error_json.get("error_description", "No description")
                 error_code = error_json.get("error", "unknown")
-                logger.error(f"Teams: OAuth token HTTP error for agent {agent_id}: status={e.response.status_code}, error={error_code}, description={error_description}")
+                logger.error(
+                    f"Teams: OAuth token HTTP error for agent {agent_id}: status={e.response.status_code}, error={error_code}, description={error_description}"
+                )
         except Exception:
-            logger.error(f"Teams: OAuth token HTTP error for agent {agent_id}: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body[:500]}")
+            logger.error(
+                f"Teams: OAuth token HTTP error for agent {agent_id}: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body[:500]}"
+            )
         logger.error(f"Teams: Token URL={token_url}, tenant_id={tenant_id}, client_id={app_id[:20]}...")
         return None
     except Exception as e:
@@ -163,7 +175,7 @@ async def _send_teams_message(config: ChannelConfig, conversation_id: str, activ
     # Teams has a 28KB limit for message activities. Chunk if needed.
     text_content = activity.get("text", "")
     if len(text_content.encode("utf-8")) > TEAMS_MSG_LIMIT:
-        chunks = [text_content[i:i + TEAMS_MSG_LIMIT] for i in range(0, len(text_content), TEAMS_MSG_LIMIT)]
+        chunks = [text_content[i : i + TEAMS_MSG_LIMIT] for i in range(0, len(text_content), TEAMS_MSG_LIMIT)]
         for i, chunk in enumerate(chunks):
             chunk_activity = {**activity, "text": chunk}
             if i > 0:  # Only the first chunk is a direct reply, subsequent are new messages
@@ -173,7 +185,9 @@ async def _send_teams_message(config: ChannelConfig, conversation_id: str, activ
         await _send_teams_message_single_chunk(access_token, service_url, conversation_id, activity)
 
 
-async def _send_teams_message_single_chunk(access_token: str, service_url: str, conversation_id: str, activity: dict) -> None:
+async def _send_teams_message_single_chunk(
+    access_token: str, service_url: str, conversation_id: str, activity: dict
+) -> None:
     """Send a single chunked message to Microsoft Teams."""
     # Ensure service_url doesn't have trailing slash to avoid double slashes
     service_url_clean = service_url.rstrip("/")
@@ -189,29 +203,44 @@ async def _send_teams_message_single_chunk(access_token: str, service_url: str, 
                 error_body = resp.text
                 try:
                     error_json = resp.json()
-                    error_description = error_json.get("error", {}).get("message", error_json.get("message", "No description"))
+                    error_description = error_json.get("error", {}).get(
+                        "message", error_json.get("message", "No description")
+                    )
                     error_code = error_json.get("error", {}).get("code", "unknown")
-                    logger.error(f"Teams: Failed to send message: status={resp.status_code}, error={error_code}, description={error_description}")
+                    logger.error(
+                        f"Teams: Failed to send message: status={resp.status_code}, error={error_code}, description={error_description}"
+                    )
                 except Exception:
-                    logger.error(f"Teams: Failed to send message: status={resp.status_code}, response={error_body[:500]}")
-                logger.error(f"Teams: POST URL={post_url}, conversation_id={conversation_id}, service_url={service_url}")
+                    logger.error(
+                        f"Teams: Failed to send message: status={resp.status_code}, response={error_body[:500]}"
+                    )
+                logger.error(
+                    f"Teams: POST URL={post_url}, conversation_id={conversation_id}, service_url={service_url}"
+                )
             resp.raise_for_status()
             logger.info(f"Teams: Sent message to conversation {conversation_id}")
     except httpx.HTTPStatusError as e:
-        error_body = e.response.text if hasattr(e, 'response') and e.response else "No response body"
+        error_body = e.response.text if hasattr(e, "response") and e.response else "No response body"
         try:
-            if hasattr(e, 'response') and e.response:
+            if hasattr(e, "response") and e.response:
                 error_json = e.response.json()
-                error_description = error_json.get("error", {}).get("message", error_json.get("message", "No description"))
+                error_description = error_json.get("error", {}).get(
+                    "message", error_json.get("message", "No description")
+                )
                 error_code = error_json.get("error", {}).get("code", "unknown")
-                logger.error(f"Teams: HTTP error sending message: status={e.response.status_code}, error={error_code}, description={error_description}")
+                logger.error(
+                    f"Teams: HTTP error sending message: status={e.response.status_code}, error={error_code}, description={error_description}"
+                )
         except Exception:
-            logger.error(f"Teams: HTTP error sending message: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body[:500]}")
+            logger.error(
+                f"Teams: HTTP error sending message: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body[:500]}"
+            )
         logger.error(f"Teams: POST URL={post_url}, conversation_id={conversation_id}, service_url={service_url}")
         raise
 
 
 # ─── Config CRUD ────────────────────────────────────────
+
 
 @router.post("/agents/{agent_id}/teams-channel", response_model=ChannelConfigOut, status_code=201)
 async def configure_teams_channel(
@@ -239,7 +268,9 @@ async def configure_teams_channel(
 
     # Validate: either managed identity OR app_id + app_secret required
     if not use_managed_identity and (not app_id or not app_secret):
-        raise HTTPException(status_code=422, detail="Either use_managed_identity must be enabled, or app_id and app_secret are required")
+        raise HTTPException(
+            status_code=422, detail="Either use_managed_identity must be enabled, or app_id and app_secret are required"
+        )
     if existing:
         existing.app_id = app_id if not use_managed_identity else existing.app_id
         existing.app_secret = app_secret if not use_managed_identity else existing.app_secret
@@ -261,7 +292,7 @@ async def configure_teams_channel(
         extra_config["tenant_id"] = tenant_id
     if use_managed_identity:
         extra_config["use_managed_identity"] = True
-    
+
     config = ChannelConfig(
         agent_id=agent_id,
         channel_type="microsoft_teams",
@@ -306,6 +337,7 @@ async def get_teams_webhook_url(
     await check_agent_access(db, current_user, agent_id)
     import os
     from app.models.system_settings import SystemSetting
+
     public_base = ""
     result = await db.execute(select(SystemSetting).where(SystemSetting.key == "platform"))
     setting = result.scalar_one_or_none()
@@ -317,8 +349,9 @@ async def get_teams_webhook_url(
         # Use request.base_url
         base_url = str(request.base_url).rstrip("/")
         from urllib.parse import urlparse
+
         parsed = urlparse(base_url)
-        
+
         # Only adjust port for localhost/127.0.0.1 (local development)
         # In production with reverse proxy, trust the request.base_url (port 80/443)
         if parsed.hostname in ("localhost", "127.0.0.1"):
@@ -376,7 +409,7 @@ async def teams_event_webhook(
         except json.JSONDecodeError as e:
             logger.error(f"Teams: Failed to parse JSON body: {e}, body={body_bytes[:200]}")
             return Response(status_code=400, content="Invalid JSON")
-        
+
         # Microsoft Teams Bot Framework sends the activity directly in the body (not wrapped in "activity" key)
         # Check if body itself is the activity (has "type" field) or if it's wrapped
         if isinstance(body, dict) and "type" in body:
@@ -384,10 +417,14 @@ async def teams_event_webhook(
         elif isinstance(body, dict) and "activity" in body:
             activity = body["activity"]
         else:
-            logger.warning(f"Teams: Unexpected body structure for agent {agent_id}: {list(body.keys()) if isinstance(body, dict) else type(body)}")
+            logger.warning(
+                f"Teams: Unexpected body structure for agent {agent_id}: {list(body.keys()) if isinstance(body, dict) else type(body)}"
+            )
             activity = body if isinstance(body, dict) else {}
-        
-        logger.info(f"Teams: Webhook received for agent {agent_id}, activity type={activity.get('type')}, from={activity.get('from', {}).get('id', 'unknown')}, text={activity.get('text', '')[:50] if activity.get('text') else 'no text'}")
+
+        logger.info(
+            f"Teams: Webhook received for agent {agent_id}, activity type={activity.get('type')}, from={activity.get('from', {}).get('id', 'unknown')}, text={activity.get('text', '')[:50] if activity.get('text') else 'no text'}"
+        )
 
         # Teams Bot Framework uses a simple token for authentication, not HMAC for incoming webhooks
         # For now, we rely on the unguessable URL token.
@@ -455,6 +492,7 @@ async def teams_event_webhook(
 
         # Find-or-create platform user for this Teams sender
         from app.models.user import User as _User
+
         _teams_username = f"teams_{sender_id}"
         _u_r = await db.execute(select(_User).where(_User.username == _teams_username))
         _platform_user = _u_r.scalar_one_or_none()
@@ -505,6 +543,7 @@ async def teams_event_webhook(
 
         # Load history
         from app.services.memory_service import compute_history_limit_for_agent
+
         _hist_limit = await compute_history_limit_for_agent(agent_id)
 
         history_r = await db.execute(
@@ -516,7 +555,15 @@ async def teams_event_webhook(
         history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
 
         # Save user message
-        db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id))
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                user_id=platform_user_id,
+                role="user",
+                content=user_text,
+                conversation_id=session_conv_id,
+            )
+        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
@@ -543,7 +590,7 @@ async def teams_event_webhook(
 
         # Call LLM
         try:
-            reply_text = await _call_agent_llm(
+            reply_text = await call_agent_llm(
                 db,
                 agent_id,
                 user_text,
@@ -567,7 +614,15 @@ async def teams_event_webhook(
 
         # Save reply
         try:
-            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant", content=reply_text, conversation_id=session_conv_id))
+            db.add(
+                ChatMessage(
+                    agent_id=agent_id,
+                    user_id=platform_user_id,
+                    role="assistant",
+                    content=reply_text,
+                    conversation_id=session_conv_id,
+                )
+            )
             sess.last_message_at = datetime.now(timezone.utc)
             await db.commit()
             logger.info(f"Teams: Saved reply to database for conversation {conversation_id}")
@@ -588,14 +643,18 @@ async def teams_event_webhook(
                     "replyToId": reply_to_id,  # Reply to the specific incoming message
                     "text": reply_text,
                 }
-                logger.info(f"Teams: Attempting to send reply to conversation {conversation_id}, from={bot_channel_account.get('id')}, recipient={user_account.get('id')}")
+                logger.info(
+                    f"Teams: Attempting to send reply to conversation {conversation_id}, from={bot_channel_account.get('id')}, recipient={user_account.get('id')}"
+                )
                 await _send_teams_message(config, conversation_id, reply_activity)
                 logger.info("Teams: Successfully sent reply to Teams")
             except Exception as e:
                 logger.error(f"Teams: Failed to send message to Teams: {e}", exc_info=True)
         else:
             use_mi = config.extra_config.get("use_managed_identity", False)
-            logger.warning(f"Teams: Cannot send reply - missing credentials (managed_identity={use_mi}, app_id={bool(config.app_id)}, app_secret={bool(config.app_secret)}), conversation_id={bool(conversation_id)}")
+            logger.warning(
+                f"Teams: Cannot send reply - missing credentials (managed_identity={use_mi}, app_id={bool(config.app_id)}, app_secret={bool(config.app_secret)}), conversation_id={bool(conversation_id)}"
+            )
 
         return {"ok": True}
     except Exception as e:

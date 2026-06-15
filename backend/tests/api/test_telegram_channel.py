@@ -619,9 +619,9 @@ class TestTelegramChannelFileSender:
         db = _SequenceDB(
             [
                 _ScalarResult(config),  # ChannelConfig
-                _ScalarResult(None),    # User lookup by tg username
-                _ScalarResult(agent),   # Agent lookup for user creation
-                _RowsResult([]),        # History lookup
+                _ScalarResult(None),  # User lookup by tg username
+                _ScalarResult(agent),  # Agent lookup for user creation
+                _RowsResult([]),  # History lookup
             ]
         )
         request = _build_request(
@@ -673,9 +673,13 @@ class TestTelegramChannelFileSender:
             captured["reply_sent"] = True
 
         monkeypatch.setattr(tg_mod, "get_redis", fake_get_redis)
-        monkeypatch.setattr("app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session)
-        monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent)
-        monkeypatch.setattr("app.api.feishu._call_agent_llm", fake_call_llm)
+        monkeypatch.setattr(
+            "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
+        )
+        monkeypatch.setattr(
+            "app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent
+        )
+        monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_llm)
         monkeypatch.setattr(tg_mod, "_send_telegram_file", fake_send_telegram_file)
         monkeypatch.setattr(tg_mod, "_send_telegram_message", fake_send_telegram_message)
 

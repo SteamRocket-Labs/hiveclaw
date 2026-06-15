@@ -153,9 +153,21 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
     ),
 }
 
+_RESTART_REPLAY_SAFE_TOOL_PROFILES: frozenset[str] = frozenset(
+    {
+        "review_readonly",
+        "research_readonly",
+    }
+)
+
 
 def _resolve_delegation_tool_profile(name: str | None) -> DelegationToolProfile:
     return _DELEGATION_TOOL_PROFILES.get(name or "worker_safe", _DELEGATION_TOOL_PROFILES["worker_safe"])
+
+
+def _delegation_profile_restart_replay_safe(profile_name: str | None) -> bool:
+    profile = _resolve_delegation_tool_profile(profile_name)
+    return profile.name in _RESTART_REPLAY_SAFE_TOOL_PROFILES
 
 
 def _delegation_profile_tool_names(profile: DelegationToolProfile) -> set[str]:
@@ -486,7 +498,8 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
     execution_identity = _execution_identity_to_metadata(request.execution_identity)
     if execution_identity:
         metadata["execution_identity"] = execution_identity
-    resumable = request.tool_executor is None
+    replay_safe = _delegation_profile_restart_replay_safe(request.policy.tool_profile)
+    resumable = request.tool_executor is None and replay_safe
     if resumable:
         try:
             json.dumps(request.conversation_messages)
@@ -495,6 +508,8 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
 
     metadata["resumable_delegation"] = resumable
     metadata["resume_after_restart"] = resumable
+    if not replay_safe:
+        metadata["restart_resume_blocker"] = "non_idempotent_tool_profile"
     if resumable:
         metadata.update(
             {
@@ -1377,6 +1392,23 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
 
         metadata = record.get("metadata") or {}
         if not metadata.get("resumable_delegation") or not metadata.get("resume_after_restart"):
+            continue
+        if not _delegation_profile_restart_replay_safe(metadata.get("tool_profile")):
+            try:
+                await update_runtime_task_record(
+                    task_id,
+                    status="failed",
+                    result_summary=(
+                        "Task was not resumed after restart because its delegation tool profile is not "
+                        "safe to replay without duplicating side effects."
+                    ),
+                    metadata_json={
+                        "resume_failed": True,
+                        "restart_resume_blocker": "non_idempotent_tool_profile",
+                    },
+                )
+            except Exception as exc:
+                logger.warning("[Orchestrator] Failed to persist non-replay-safe resume failure for %s: %s", task_id, exc)
             continue
 
         target_agent_id = _maybe_uuid(metadata.get("target_agent_id") or record.get("child_agent_id"))

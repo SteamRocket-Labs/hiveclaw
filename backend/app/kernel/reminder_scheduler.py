@@ -91,6 +91,13 @@ _WORK_LEDGER_REMINDER = (
     "ends to avoid; call read_ledger when you need full detail before deciding the next step. "
     "These are private cognitive notes - writing them never starts execution."
 )
+_PROGRESS_REPLAN_POLICY = (
+    "Progress Ledger runtime policy: needs_replan=true. "
+    f"{_INTERNAL_REMINDER_GUARD} "
+    "The current tactic is stalled or has unresolved failures. Before continuing with non-ledger work, "
+    "read the ledger if needed, then use record_finding with type='replan' to record the changed strategy "
+    "and update todos/owners with track_todo. Do not repeat the latest progress unchanged."
+)
 
 _WORK_LEDGER_TOOLS = frozenset({"track_todo", "record_finding", "read_ledger"})
 
@@ -283,6 +290,37 @@ def _ledger_content(_session_context: Any, round_state: RoundState) -> str | Non
     return text
 
 
+def _progress_replan_content(_session_context: Any, round_state: RoundState) -> str | None:
+    review = round_state.get("work_ledger_progress_review")
+    provider = round_state.get("work_ledger_progress_review_provider")
+    try:
+        if callable(provider):
+            review = provider()
+    except Exception:
+        review = None
+    if not isinstance(review, dict) or not review.get("needs_replan"):
+        return None
+
+    parts = [
+        _PROGRESS_REPLAN_POLICY,
+        f"stall_count={int(review.get('stall_count') or 0)}",
+        "needs_replan=true",
+    ]
+    next_action = str(review.get("next_action") or "").strip()
+    if next_action:
+        parts.append(f"next_action={next_action}")
+    next_owner = str(review.get("next_owner") or "").strip()
+    if next_owner:
+        parts.append(f"next_owner={next_owner}")
+    latest = str(review.get("latest_progress") or "").strip()
+    if latest:
+        parts.append(f"latest_progress={latest}")
+    failures = [str(item).strip() for item in (review.get("open_failures") or []) if str(item).strip()]
+    if failures:
+        parts.append("open_failures=" + "; ".join(failures[:3]))
+    return "\n".join(parts)
+
+
 def _round_pressure_content(_session_context: Any, round_state: RoundState) -> str | None:
     round_i = int(round_state.get("round_i", 0))
     max_rounds = int(round_state.get("max_rounds", 0))
@@ -319,6 +357,12 @@ def build_default_reminder_specs() -> tuple[ReminderSpec, ...]:
             eligible=_plan_active,
             cooldown_rounds=_PLAN_SPARSE_COOLDOWN_ROUNDS,
             mutex_group="plan_mode",
+        ),
+        ReminderSpec(
+            name="progress_ledger_replan",
+            content=_progress_replan_content,
+            eligible=_ledger_eligible,
+            cooldown_rounds=2,
         ),
         ReminderSpec(
             name="work_ledger",

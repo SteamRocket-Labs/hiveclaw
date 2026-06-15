@@ -355,7 +355,7 @@ Plan would be:
     },
     {
         "name": "Web Research",
-        "description": "Web search and page reading tool guide — activates web_search / web_fetch / firecrawl_fetch / xcrawl_scrape",
+        "description": "Web research guide — use core web_search/web_fetch first, then tool_search for advanced search/crawl tools",
         "category": "system",
         "icon": "🌐",
         "folder_name": "web-research",

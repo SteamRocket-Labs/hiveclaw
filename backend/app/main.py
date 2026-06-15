@@ -325,11 +325,13 @@ async def lifespan(app: FastAPI):
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+        from app.services.subagent_run_service import resume_persisted_subagent_runs
         from app.services.web_chat_runtime import resume_persisted_web_chat_runs
 
         resumed_task_ids = await resume_persisted_async_delegations(limit=50)
+        resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
         resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
-        resumed_task_ids = [*resumed_task_ids, *resumed_web_chat_ids]
+        resumed_task_ids = [*resumed_task_ids, *resumed_subagent_ids, *resumed_web_chat_ids]
         if resumed_task_ids:
             logger.info("[startup] Resumed %d persisted async runtime task(s)", len(resumed_task_ids))
         reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))

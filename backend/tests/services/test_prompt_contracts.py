@@ -130,9 +130,12 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Do NOT use this for long-running delegated work" in tools["send_message_to_agent"]
     assert "check back later with `check_async_task`" in tools["delegate_to_agent"]
     assert "follow up with `web_fetch`" in tools["web_search"]
-    assert "Prefer Exa" in tools["web_search"]
+    assert "built-in no-key providers" in tools["web_search"]
+    assert "use `tool_search` to discover advanced search tools" in tools["web_search"]
+    assert "provider-backed escalation tool discovered through `tool_search`" in tools["exa_search"]
+    assert "provider-backed escalation tool discovered through `tool_search`" in tools["tavily_search"]
     assert "Prefer this after `web_search` identifies the right page" in tools["web_fetch"]
-    assert "Use this after `web_search`" in tools["firecrawl_fetch"]
+    assert "provider-backed escalation tool discovered through `tool_search`" in tools["firecrawl_fetch"]
     assert "JS-rendered" in tools["xcrawl_scrape"]
     assert (
         "If you need to wait for a reply later, pair the message with an `on_message` trigger"
@@ -149,7 +152,11 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Do NOT load a skill speculatively" in tools["load_skill"]
     assert "Do NOT use `run_command` to inspect platform or channel credential env vars" in tools["load_skill"]
     # T2: "workflow" is the engine's proper noun now — save_skill speaks of an
-    # "approach" and carries the §7 skill-vs-workflow-promotion boundary.
+    # "approach" and carries the §7 skill-vs-workflow-promotion boundary. It
+    # submits a candidate only; activation remains externally verified.
+    assert "Submit a reusable approach as a skill activation candidate" in tools["save_skill"]
+    assert "does not create an active skill directly" in tools["save_skill"]
+    assert "evolution/skill_activation_candidates.md" in tools["save_skill"]
     assert "Only use this after an approach has succeeded repeatedly" in tools["save_skill"]
     assert "never self-approved" in tools["save_skill"]
     assert "Do NOT save one-off notes, transient state, or raw transcripts as skills" in tools["save_skill"]
@@ -172,11 +179,26 @@ def test_web_search_config_schema_only_exposes_supported_search_providers() -> N
     option_values = {option["value"] for option in search_engine_field["options"]}
     field_keys = {field["key"] for field in fields}
 
-    assert option_values == {"auto", "exa", "tavily", "duckduckgo"}
+    assert option_values == {"auto", "searxng", "duckduckgo"}
     assert "google" not in option_values
     assert "bing" not in option_values
+    assert "exa" not in option_values
+    assert "tavily" not in option_values
     assert "google_api_key" not in field_keys
     assert "bing_api_key" not in field_keys
+    assert "exa_api_key" not in field_keys
+    assert "tavily_api_key" not in field_keys
+
+
+def test_advanced_search_tools_are_deferred_provider_tools() -> None:
+    from app.tools.handlers.search import exa_search, tavily_search
+
+    assert exa_search.meta.pack == "web_pack"
+    assert tavily_search.meta.pack == "web_pack"
+    assert "tool_search" in exa_search.meta.description
+    assert "tool_search" in tavily_search.meta.description
+    assert exa_search.meta.config_schema["fields"][0]["key"] == "api_key"
+    assert tavily_search.meta.config_schema["fields"][0]["key"] == "api_key"
 
 
 def test_skill_catalog_footer_discourages_speculative_loading() -> None:
@@ -335,9 +357,9 @@ def test_hr_templates_do_not_reference_retired_objective_ledger() -> None:
     hr_create_employee = (project_root / "backend" / "hr_agent_template" / "skills" / "CREATE_EMPLOYEE.md").read_text(
         encoding="utf-8"
     )
-    hr_guide = (
-        project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide" / "SKILL.md"
-    ).read_text(encoding="utf-8")
+    hr_guide = (project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
 
     combined = "\n".join([hr_create_employee, hr_guide, hr_soul])
@@ -397,7 +419,7 @@ def test_agent_autonomy_prompt_surfaces_do_not_reference_retired_objective_contr
         "manage your focus list",
         "autonomous actions — those are handled by triggers",
         "handled by triggers or explicit runtime permissions",
-        "set_trigger(type=\"once\", at=",
+        'set_trigger(type="once", at=',
         "first mission",
         "focus item",
         "Before creating a task trigger",

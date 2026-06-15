@@ -11,6 +11,7 @@ import logging
 import uuid
 
 from app.services import viking_client
+from app.services.connector_acl import filter_connector_results_for_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,15 @@ async def fetch_relevant_knowledge(
         return ""
 
     if not results:
+        return ""
+    results = filter_connector_results_for_prompt(
+        [item for item in results if isinstance(item, dict)],
+        tenant_id=tid,
+        agent_id=agent_identity,
+        current_user_id=user_identity,
+    )
+    if not results:
+        logger.debug("OpenViking knowledge search returned no ACL-visible results")
         return ""
 
     # Format results into a compact context block

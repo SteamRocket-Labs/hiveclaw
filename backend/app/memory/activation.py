@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
-from app.memory.types import MemoryItem
+from app.memory.types import MemoryItem, parse_utc_timestamp
 from app.services.principal_context import PrincipalStack
 
 
@@ -26,6 +27,7 @@ class ActivationPolicy:
     open_loop_weight: float = 0.2
     retention_weight: float = 0.2
     confidence_weight: float = 0.05
+    usage_heat_weight: float = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +72,10 @@ class ActivationScorer:
         if _float_meta_any(item, ("confidence", "conf"), default=0.0) >= 0.8:
             score += policy.confidence_weight
             reasons.append("confidence_weight")
+        usage_heat = _usage_heat(item)
+        if usage_heat > 0:
+            score += usage_heat * policy.usage_heat_weight
+            reasons.append("usage_heat")
 
         return ActivationDecision(item=item, score=round(min(score, 1.0), 4), reasons=reasons)
 
@@ -107,3 +113,28 @@ def _bool_meta(item: MemoryItem, key: str) -> bool:
         return False
     normalized = str(value).strip().lower()
     return normalized in {"1", "true", "yes", "y", "on"}
+
+
+def _usage_heat(item: MemoryItem) -> float:
+    """Bounded recall heat from sidecar telemetry.
+
+    The signal is intentionally small: access telemetry can break ties and keep
+    useful memories alive, but cannot replace literal relevance, owner/company
+    pressure, or explicit retention policy.
+    """
+    access_count = max(0.0, _float_meta(item, "access_count"))
+    count_score = min(access_count, 10.0) / 10.0
+
+    recency_score = 0.0
+    raw_last_accessed = str(item.metadata.get("last_accessed") or "").strip()
+    if raw_last_accessed and raw_last_accessed.lower() != "never":
+        accessed_at = parse_utc_timestamp(raw_last_accessed)
+        if accessed_at is not None:
+            age_days = max(0.0, (datetime.now(UTC) - accessed_at).total_seconds() / 86400)
+            if age_days <= 7:
+                recency_score = 1.0
+            elif age_days <= 30:
+                recency_score = 0.5
+
+    heat = (0.7 * count_score) + (0.3 * recency_score)
+    return round(min(1.0, max(0.0, heat)), 4)

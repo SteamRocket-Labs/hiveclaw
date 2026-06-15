@@ -187,21 +187,23 @@ async def track_todo(request: ToolExecutionRequest) -> str:
     ToolMeta(
         name="record_finding",
         description=(
-            "Record a finding, an open question, or a failed attempt in your work ledger — "
+            "Record a finding, an open question, a failed attempt, or a replan in your work ledger — "
             "a durable note to yourself so you don't lose what you learned or repeat a dead "
             "end after a context reset. Cognitive only: recording a note never starts any "
             "execution or external action.\n\n"
             "Usage:\n"
             "- type='finding': something you verified or concluded (use `trust` and `source_refs`).\n"
             "- type='open_question': an unresolved question to come back to.\n"
-            "- type='failure': an attempt that failed (use `next_strategy` for what to try instead)."
+            "- type='failure': an attempt that failed (use `next_strategy` for what to try instead).\n"
+            "- type='replan': a deliberate strategy change after stall/failure "
+            "(use `next_strategy` for the changed approach)."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "type": {
                     "type": "string",
-                    "enum": ["finding", "open_question", "failure"],
+                    "enum": ["finding", "open_question", "failure", "replan"],
                     "description": "Which kind of note this is.",
                 },
                 "summary": {"type": "string", "description": "The finding / question / failure, in one line."},
@@ -216,7 +218,7 @@ async def track_todo(request: ToolExecutionRequest) -> str:
                 },
                 "next_strategy": {
                     "type": "string",
-                    "description": "For a failure: what to try differently next time.",
+                    "description": "For a failure or replan: what to try differently next time.",
                 },
             },
             "required": ["type", "summary"],
@@ -233,8 +235,8 @@ async def record_finding(request: ToolExecutionRequest) -> str:
     summary = str(args.get("summary") or "").strip()
     plan_id, runtime_task_id, session_id = _scope(request)
 
-    if finding_type not in {"finding", "open_question", "failure"}:
-        return _json({"ok": False, "error": "`type` must be 'finding', 'open_question', or 'failure'."})
+    if finding_type not in {"finding", "open_question", "failure", "replan"}:
+        return _json({"ok": False, "error": "`type` must be 'finding', 'open_question', 'failure', or 'replan'."})
     if not summary:
         return _json({"ok": False, "error": "`summary` is required."})
 

@@ -237,7 +237,7 @@ async def test_check_declared_packs_authorized_denied_tool_still_allows_skill_sa
 
 @pytest.mark.asyncio
 async def test_save_skill_handler_keeps_denied_pack_as_discovery_hint(monkeypatch, tmp_path):
-    """End-to-end: save_skill persists pack hints; call-time governance still owns access."""
+    """End-to-end: save_skill records a candidate; promotion remains externally gated."""
     from app.core.execution_context import set_tool_tenant_id
     from app.services.capability_gate import CapabilityCheckResult
     from app.tools.handlers.skills import save_skill
@@ -280,9 +280,14 @@ async def test_save_skill_handler_keeps_denied_pack_as_discovery_hint(monkeypatc
     finally:
         set_tool_tenant_id(None)
 
-    assert "✅ Saved skill" in result
+    assert "submitted for review" in result
+    assert "active_skill_created: false" in result
     assert "web_pack" in result
     saved = tmp_path / "skills" / "zombie-skill" / "SKILL.md"
-    assert saved.exists()
-    assert "packs:" in saved.read_text(encoding="utf-8")
-    assert "web_pack" in saved.read_text(encoding="utf-8")
+    assert not saved.exists()
+    candidate = tmp_path / "evolution" / "skill_activation_candidates.md"
+    assert candidate.exists()
+    candidate_text = candidate.read_text(encoding="utf-8")
+    assert "target: skills/zombie-skill/SKILL.md" in candidate_text
+    assert "status: pending_behavior_verification" in candidate_text
+    assert "web_pack" in candidate_text

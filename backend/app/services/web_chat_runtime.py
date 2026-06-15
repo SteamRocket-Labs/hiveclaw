@@ -658,8 +658,10 @@ async def _persist_tool_call(
     raw_str = str(raw_result)
     if len(raw_str) > 50000:
         raw_str = raw_str[:50000] + "\n\n[... truncated]"
+    from app.services.decision_trace import extract_decision_id_from_text
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
+    decision_trace_id = extract_decision_id_from_text(raw_str)
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
         db.add(
@@ -679,6 +681,7 @@ async def _persist_tool_call(
                     },
                     ensure_ascii=False,
                 ),
+                decision_trace_id=decision_trace_id,
                 conversation_id=session_id,
             )
         )

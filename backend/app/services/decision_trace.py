@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+_DECISION_REF_RE = re.compile(r"\bdecision/(?P<id>[A-Za-z0-9_.:-]+)\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +24,13 @@ class DecisionTrace:
     charter_zone: str
     preflight: dict[str, str]
     sensitivity: str
+    tenant_id: str | None = None
+    agent_id: str | None = None
+    user_id: str | None = None
+    session_id: str | None = None
+    message_id: str | None = None
+    tool_name: str | None = None
+    checkpoint_id: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -85,6 +95,13 @@ class DecisionTraceStore:
                         charter_zone=str(data["charter_zone"]),
                         preflight={str(k): str(v) for k, v in (data.get("preflight") or {}).items()},
                         sensitivity=str(data["sensitivity"]),
+                        tenant_id=_optional_str(data.get("tenant_id")),
+                        agent_id=_optional_str(data.get("agent_id")),
+                        user_id=_optional_str(data.get("user_id")),
+                        session_id=_optional_str(data.get("session_id")),
+                        message_id=_optional_str(data.get("message_id")),
+                        tool_name=_optional_str(data.get("tool_name")),
+                        checkpoint_id=_optional_str(data.get("checkpoint_id")),
                         created_at=datetime.fromisoformat(str(data["created_at"])),
                     )
                 except (KeyError, ValueError, TypeError):
@@ -117,6 +134,13 @@ class DecisionTraceStore:
             "charter_zone": decision.charter_zone,
             "preflight": decision.preflight,
             "sensitivity": decision.sensitivity,
+            "tenant_id": decision.tenant_id,
+            "agent_id": decision.agent_id,
+            "user_id": decision.user_id,
+            "session_id": decision.session_id,
+            "message_id": decision.message_id,
+            "tool_name": decision.tool_name,
+            "checkpoint_id": decision.checkpoint_id,
             "created_at": decision.created_at.isoformat(),
         }
 
@@ -142,6 +166,13 @@ class DecisionTraceStore:
         charter_zone: str,
         preflight: dict[str, str],
         sensitivity: str,
+        tenant_id: str | None = None,
+        agent_id: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+        message_id: str | None = None,
+        tool_name: str | None = None,
+        checkpoint_id: str | None = None,
     ) -> DecisionTrace:
         decision = DecisionTrace(
             id=str(uuid.uuid4()),
@@ -153,6 +184,13 @@ class DecisionTraceStore:
             charter_zone=charter_zone,
             preflight=preflight,
             sensitivity=sensitivity,
+            tenant_id=_optional_str(tenant_id),
+            agent_id=_optional_str(agent_id),
+            user_id=_optional_str(user_id),
+            session_id=_optional_str(session_id),
+            message_id=_optional_str(message_id),
+            tool_name=_optional_str(tool_name),
+            checkpoint_id=_optional_str(checkpoint_id),
         )
         self._decisions[decision.id] = decision
         self._append({"schema": "decision_trace_event.v1", "event": "decision", "decision": self._decision_to_dict(decision)})
@@ -167,11 +205,12 @@ class DecisionTraceStore:
         source: str,
         rationale_from_owner: str = "",
     ) -> FeedbackSignal:
-        if decision_id not in self._decisions:
-            raise KeyError(decision_id)
+        normalized_id = decision_id_from_ref(decision_id)
+        if normalized_id not in self._decisions:
+            raise KeyError(normalized_id)
         feedback = FeedbackSignal(
             id=str(uuid.uuid4()),
-            refs=f"decision/{decision_id}",
+            refs=normalize_decision_ref(normalized_id),
             reaction=reaction,
             polarity=polarity,
             source=source,
@@ -182,11 +221,24 @@ class DecisionTraceStore:
         return feedback
 
     def feedback_for_decision(self, decision_id: str) -> list[FeedbackSignal]:
-        ref = f"decision/{decision_id}"
+        ref = normalize_decision_ref(decision_id)
         return [feedback for feedback in self._feedback if feedback.refs == ref]
+
+    def get_decision(self, decision_id: str) -> DecisionTrace:
+        return self._decisions[decision_id_from_ref(decision_id)]
 
     def decisions(self) -> list[DecisionTrace]:
         return list(self._decisions.values())
+
+    def decisions_for_session(self, session_id: str, *, tenant_id: str | None = None) -> list[DecisionTrace]:
+        normalized_session = str(session_id or "").strip()
+        normalized_tenant = str(tenant_id or "").strip()
+        return [
+            decision
+            for decision in self._decisions.values()
+            if decision.session_id == normalized_session
+            and (not normalized_tenant or decision.tenant_id in (None, normalized_tenant))
+        ]
 
     def calibration_candidates(self) -> list[dict[str, str]]:
         candidates: list[dict[str, str]] = []
@@ -206,3 +258,33 @@ class DecisionTraceStore:
                 }
             )
         return candidates
+
+
+def normalize_decision_ref(value: str) -> str:
+    decision_id = decision_id_from_ref(value)
+    if not decision_id:
+        raise ValueError("decision id is required")
+    return f"decision/{decision_id}"
+
+
+def decision_id_from_ref(value: str) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith("decision/"):
+        raw = raw.removeprefix("decision/").strip()
+    if not raw or "/" in raw:
+        raise ValueError("invalid decision id")
+    return raw
+
+
+def extract_decision_id_from_text(text: str) -> str | None:
+    match = _DECISION_REF_RE.search(str(text or ""))
+    if not match:
+        return None
+    return decision_id_from_ref(match.group("id"))
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

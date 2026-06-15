@@ -217,13 +217,15 @@ def _usage_record(
     last_used_at: datetime | None = None,
     state: str = "active",
     pinned: bool = False,
+    use_count: int = 0,
+    view_count: int = 0,
 ) -> dict:
     return {
         "created_by": created_by,
         "created_at": _iso(created_at),
         "last_used_at": _iso(last_used_at) if last_used_at else None,
-        "use_count": 0,
-        "view_count": 0,
+        "use_count": use_count,
+        "view_count": view_count,
         "state": state,
         "pinned": pinned,
         "archived_at": None,
@@ -266,6 +268,39 @@ def test_auto_transition_to_archived_after_90_days(tmp_path: Path) -> None:
 
     assert len(transitions) == 1
     assert transitions[0]["to"] == "archived"
+
+
+def test_auto_transition_use_counters_delay_stale_transition(tmp_path: Path) -> None:
+    from app.services.skill_curator import apply_skill_auto_transitions
+
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    usage = {
+        "deploy": _usage_record(
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            last_used_at=now - timedelta(days=45),
+            state="active",
+            use_count=10,
+        )
+    }
+
+    assert apply_skill_auto_transitions(usage, now=now) == []
+
+
+def test_auto_transition_high_use_stale_skill_is_not_archived_by_recency_alone(tmp_path: Path) -> None:
+    from app.services.skill_curator import apply_skill_auto_transitions
+
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    usage = {
+        "deploy": _usage_record(
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            last_used_at=now - timedelta(days=100),
+            state="stale",
+            use_count=20,
+            view_count=4,
+        )
+    }
+
+    assert apply_skill_auto_transitions(usage, now=now) == []
 
 
 def test_auto_transition_uses_created_at_when_never_used(tmp_path: Path) -> None:

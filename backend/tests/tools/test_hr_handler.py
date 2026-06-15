@@ -46,15 +46,18 @@ def test_hr_tool_included_in_hr_tools_set():
 
     hr_tools = _get_hr_tools()
     names = [t["function"]["name"] for t in hr_tools]
-    assert "create_digital_employee" in names
-    assert "preview_agent_blueprint" in names
-    assert "web_search" in names
-    assert "firecrawl_fetch" in names
-    assert "xcrawl_scrape" in names
-    assert "execute_code" in names
-    assert "discover_resources" in names
-    assert "search_clawhub" in names
-    assert len(hr_tools) == 8
+    assert set(names) == {
+        "create_digital_employee",
+        "preview_agent_blueprint",
+        "web_search",
+        "exa_search",
+        "tavily_search",
+        "firecrawl_fetch",
+        "xcrawl_scrape",
+        "execute_code",
+        "discover_resources",
+        "search_clawhub",
+    }
 
 
 def test_hr_tool_meta_has_correct_attributes():

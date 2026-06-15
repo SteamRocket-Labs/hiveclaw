@@ -134,7 +134,7 @@ async def test_process_wecom_text_sets_delivery_target_session_and_execution_ide
     monkeypatch.setattr(
         "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
     )
-    monkeypatch.setattr("app.api.feishu._call_agent_llm", fake_call_agent_llm)
+    monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
     monkeypatch.setattr(wecom_api, "_send_wecom_text_message", fake_send_wecom_text_message)
     monkeypatch.setattr("httpx.AsyncClient", lambda timeout=5: _FakeHttpClient())
 

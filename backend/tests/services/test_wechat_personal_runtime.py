@@ -267,7 +267,7 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
     monkeypatch.setattr(
         "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
     )
-    monkeypatch.setattr("app.api.feishu._call_agent_llm", fake_call_agent_llm)
+    monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
 
     clear_execution_identity()
     token = channel_delivery_target.set(

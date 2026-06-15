@@ -74,7 +74,9 @@ async def test_process_feishu_event_text_approval_resolves_latest_pending_withou
         approval.status = "approved"
         return approval
 
-    async def fake_send_message(app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs):
+    async def fake_send_message(
+        app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs
+    ):
         sent_messages.append(
             {
                 "app_id": app_id,
@@ -97,7 +99,7 @@ async def test_process_feishu_event_text_approval_resolves_latest_pending_withou
     )
     monkeypatch.setattr(feishu_api.approval_service, "resolve_approval", fake_resolve_approval)
     monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
-    monkeypatch.setattr(feishu_api, "_call_agent_llm", fail_call_agent_llm)
+    monkeypatch.setattr(feishu_api, "call_agent_llm", fail_call_agent_llm)
 
     result = await feishu_api.process_feishu_event(
         agent_id,
@@ -137,11 +139,13 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     resolved_user = SimpleNamespace(id=platform_user_id, display_name="张三")
     captured: dict[str, object] = {}
 
-    db = _SequenceDB([
-        agent,
-        [],
-        [],
-    ])
+    db = _SequenceDB(
+        [
+            agent,
+            [],
+            [],
+        ]
+    )
 
     async def fake_compute_history_limit_for_agent(_agent_id):
         return 10
@@ -149,7 +153,9 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     async def fake_find_or_create_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
         captured["session_delivery_target"] = dict(delivery_target or {})
-        return SimpleNamespace(id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="Session")
+        return SimpleNamespace(
+            id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="Session"
+        )
 
     async def fake_call_agent_llm(_db, _agent_id, _user_text, **kwargs):
         from app.core.execution_context import get_execution_identity
@@ -179,9 +185,13 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
         "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
         fake_resolve_feishu_user,
     )
-    monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent)
-    monkeypatch.setattr("app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session)
-    monkeypatch.setattr(feishu_api, "_call_agent_llm", fake_call_agent_llm)
+    monkeypatch.setattr(
+        "app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent
+    )
+    monkeypatch.setattr(
+        "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
+    )
+    monkeypatch.setattr(feishu_api, "call_agent_llm", fake_call_agent_llm)
     monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
     monkeypatch.setattr(feishu_api.feishu_service, "patch_message", fake_patch_message)
     monkeypatch.setattr(feishu_api.feishu_service, "create_card_entity", fake_create_card_entity)
@@ -244,9 +254,13 @@ async def test_process_feishu_event_new_command_starts_fresh_session_without_llm
     async def fake_start_new_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
         captured["delivery_target"] = dict(delivery_target or {})
-        return SimpleNamespace(id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="New Session")
+        return SimpleNamespace(
+            id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="New Session"
+        )
 
-    async def fake_send_message(app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs):
+    async def fake_send_message(
+        app_id, app_secret, receive_id, msg_type, content, receive_id_type="open_id", **_kwargs
+    ):
         sent_messages.append(
             {
                 "app_id": app_id,
@@ -275,8 +289,10 @@ async def test_process_feishu_event_new_command_starts_fresh_session_without_llm
         fake_start_new_channel_session,
         raising=False,
     )
-    monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fail_compute_history_limit_for_agent)
-    monkeypatch.setattr(feishu_api, "_call_agent_llm", fail_call_agent_llm)
+    monkeypatch.setattr(
+        "app.services.memory_service.compute_history_limit_for_agent", fail_compute_history_limit_for_agent
+    )
+    monkeypatch.setattr(feishu_api, "call_agent_llm", fail_call_agent_llm)
     monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
 
     result = await feishu_api.process_feishu_event(

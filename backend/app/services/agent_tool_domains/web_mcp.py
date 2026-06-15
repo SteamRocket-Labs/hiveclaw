@@ -227,53 +227,22 @@ async def _web_search(arguments: dict) -> str:
 
     config = await _get_tool_config("web_search")
 
-    configured_engine = config.get("search_engine") or "auto"
-    engine = configured_engine
+    configured_engine = str(config.get("search_engine") or "auto").strip().lower()
+    engine = configured_engine if configured_engine in {"auto", "searxng", "duckduckgo"} else "auto"
     max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 10)
     language = config.get("language", "zh-CN")
     fallback_note = None
-    exa_api_key = config.get("exa_api_key") or config.get("api_key", "") or await _get_exa_api_key()
-    tavily_api_key = config.get("tavily_api_key") or config.get("api_key", "") or await _get_tavily_api_key()
-    google_api_key = config.get("google_api_key") or config.get("api_key", "")
-    bing_api_key = config.get("bing_api_key") or config.get("api_key", "")
+    searxng_url = (config.get("searxng_url") or await _get_searxng_url()).strip().rstrip("/")
 
     if engine == "auto":
-        if exa_api_key:
-            engine = "exa"
-        elif tavily_api_key:
-            engine = "tavily"
-        else:
-            engine = "duckduckgo"
-    elif engine == "duckduckgo" and exa_api_key:
-        # Backward compatibility for legacy seeded configs that still default to DuckDuckGo.
-        engine = "exa"
-
-    api_key = ""
-    if engine == "exa":
-        api_key = exa_api_key
-    elif engine == "tavily":
-        api_key = tavily_api_key
-    elif engine == "google":
-        api_key = google_api_key
-    elif engine == "bing":
-        api_key = bing_api_key
-
-    if engine in {"exa", "tavily", "google", "bing"} and not api_key:
-        fallback_note = f"{engine} is configured but no API key is available, so web_search fell back to DuckDuckGo."
-        engine = "duckduckgo"
-    if engine == "google" and api_key and ":" not in api_key:
-        fallback_note = "Google search configuration is invalid, so web_search fell back to DuckDuckGo."
+        engine = "searxng" if searxng_url else "duckduckgo"
+    if engine == "searxng" and not searxng_url:
+        fallback_note = "SearXNG is selected but SEARXNG_URL is not configured, so web_search fell back to DuckDuckGo."
         engine = "duckduckgo"
 
     try:
-        if engine == "exa" and api_key:
-            result = await _search_exa(query, api_key, max_results)
-        elif engine == "tavily" and api_key:
-            result = await _search_tavily(query, api_key, max_results)
-        elif engine == "google" and api_key:
-            result = await _search_google(query, api_key, max_results, language)
-        elif engine == "bing" and api_key:
-            result = await _search_bing(query, api_key, max_results, language)
+        if engine == "searxng":
+            result = await _search_searxng(query, searxng_url, max_results, language)
         else:
             result = await _search_duckduckgo(query, max_results)
         if engine != "duckduckgo" and _provider_result_failed(result):
@@ -337,6 +306,50 @@ async def _web_search(arguments: dict) -> str:
         )
 
 
+async def _get_searxng_url() -> str:
+    return (get_settings().SEARXNG_URL or "").strip().rstrip("/")
+
+
+async def _search_searxng(query: str, searxng_url: str, max_results: int, language: str) -> str:
+    base_url = searxng_url.rstrip("/")
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(
+            f"{base_url}/search",
+            params={
+                "q": query,
+                "format": "json",
+                "language": language,
+                "categories": "general",
+            },
+            headers={"User-Agent": "Hive WebSearch/1.0"},
+            timeout=12,
+        )
+
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+    if resp.status_code != 200:
+        return f"❌ SearXNG search failed: HTTP {resp.status_code}: {resp.text[:200]}"
+    if not isinstance(data, dict):
+        return f"❌ SearXNG search failed: unexpected response {str(data)[:200]}"
+
+    results = []
+    for item in data.get("results", [])[:max_results]:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title") or ""
+        url = item.get("url") or ""
+        snippet = item.get("content") or item.get("snippet") or ""
+        if not (title or url or snippet):
+            continue
+        results.append(f"**{title}**\n{url}\n{snippet[:300]}")
+
+    if not results:
+        return f'🔍 No results found for "{query}"'
+    return f'🔍 SearXNG results for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+
+
 async def _search_duckduckgo(query: str, max_results: int) -> str:
     import re
 
@@ -386,6 +399,70 @@ async def _get_tavily_api_key() -> str:
     except Exception as e:
         logger.debug("Suppressed: %s", e)
     return get_settings().TAVILY_API_KEY
+
+
+async def _exa_search(arguments: dict) -> str:
+    query = arguments.get("query", "")
+    if not query:
+        return _invalid_argument_error(
+            "exa_search",
+            "exa_search requires a non-empty query.",
+            provider="exa",
+            hint="Pass concise semantic search keywords. If you only need basic lookup, use web_search.",
+        )
+    if _looks_like_url(query):
+        return _invalid_argument_error(
+            "exa_search",
+            "exa_search expects search keywords, not a URL.",
+            provider="exa",
+            hint="Use web_fetch when you already have a specific URL.",
+        )
+
+    config = await _get_tool_config("exa_search")
+    api_key = config.get("api_key") or config.get("exa_api_key") or await _get_exa_api_key()
+    if not api_key:
+        return render_tool_error(
+            tool_name="exa_search",
+            error_class="provider_not_configured",
+            message="Exa API key is not configured.",
+            provider="exa",
+            retryable=False,
+            actionable_hint="Use web_search for basic no-key lookup, or configure Exa before using exa_search.",
+        )
+    max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 10)
+    return await _search_exa(query, api_key, max_results)
+
+
+async def _tavily_search(arguments: dict) -> str:
+    query = arguments.get("query", "")
+    if not query:
+        return _invalid_argument_error(
+            "tavily_search",
+            "tavily_search requires a non-empty query.",
+            provider="tavily",
+            hint="Pass concise search keywords. If you only need basic lookup, use web_search.",
+        )
+    if _looks_like_url(query):
+        return _invalid_argument_error(
+            "tavily_search",
+            "tavily_search expects search keywords, not a URL.",
+            provider="tavily",
+            hint="Use web_fetch when you already have a specific URL.",
+        )
+
+    config = await _get_tool_config("tavily_search")
+    api_key = config.get("api_key") or config.get("tavily_api_key") or await _get_tavily_api_key()
+    if not api_key:
+        return render_tool_error(
+            tool_name="tavily_search",
+            error_class="provider_not_configured",
+            message="Tavily API key is not configured.",
+            provider="tavily",
+            retryable=False,
+            actionable_hint="Use web_search for basic no-key lookup, or configure Tavily before using tavily_search.",
+        )
+    max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 10)
+    return await _search_tavily(query, api_key, max_results)
 
 
 async def _try_crawler_fetch_fallback(normalized_url: str, max_chars: int) -> tuple[str, str] | None:
@@ -1006,7 +1083,9 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 # mcp_tool_name). Makes the canonical name a durable identity, so
                 # canonical generation can deploy before the rename backfill runs.
                 all_mcp = (await db.execute(select(Tool).where(Tool.type == "mcp"))).scalars().all()
-                candidates = [t for t in all_mcp if build_mcp_tool_name(t.mcp_server_name, t.mcp_tool_name) == tool_name]
+                candidates = [
+                    t for t in all_mcp if build_mcp_tool_name(t.mcp_server_name, t.mcp_tool_name) == tool_name
+                ]
             agent = None
             if agent_id and any(getattr(t, "tenant_id", None) is not None for t in candidates):
                 agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))

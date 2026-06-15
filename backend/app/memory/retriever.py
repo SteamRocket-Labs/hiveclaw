@@ -261,7 +261,16 @@ class MemoryRetriever:
             )
             or []
         )
-        items.extend(await self._retrieve_external(agent_id, query, tenant_id, limit=external_limit) or [])
+        items.extend(
+            await self._retrieve_external(
+                agent_id,
+                query,
+                tenant_id,
+                limit=external_limit,
+                activation_context=activation_context,
+            )
+            or []
+        )
 
         # A3 (docs/agent-lifecycle-cc-alignment.md 主题 A): semantic activation
         # gets an LLM pass. Keyword + fixed-weight scoring never reads content
@@ -825,21 +834,31 @@ class MemoryRetriever:
         tenant_id: str | None,
         *,
         limit: int = 5,
+        activation_context: ActivationContext | None = None,
     ) -> list[MemoryItem]:
         if not query or not tenant_id:
             return []
 
         try:
             from app.services import viking_client
+            from app.services.connector_acl import filter_connector_results_for_prompt
 
             if not viking_client.is_configured():
                 return []
 
+            current_user_id = _activation_current_user_id(activation_context)
             results = await viking_client.find(
                 query,
                 tenant_id=tenant_id,
                 agent_id=str(agent_id),
+                user_id=current_user_id,
                 limit=limit,
+            )
+            results = filter_connector_results_for_prompt(
+                [item for item in results if isinstance(item, dict)],
+                tenant_id=tenant_id,
+                agent_id=str(agent_id),
+                current_user_id=current_user_id,
             )
 
             items: list[MemoryItem] = []
@@ -853,7 +872,11 @@ class MemoryRetriever:
                         content=content,
                         score=result.get("score", 0.5),
                         source="openviking",
-                        metadata={"uri": result.get("uri", "")},
+                        metadata={
+                            "uri": result.get("uri", ""),
+                            "source_ref": result.get("source", "") or result.get("path", ""),
+                            "source_type": "connector",
+                        },
                     )
                 )
             return items
@@ -871,3 +894,14 @@ def _parse_session_uuid(session_id: str | None) -> uuid.UUID | None:
     except (ValueError, TypeError) as exc:
         logger.debug("Invalid session UUID %s: %s", session_id, exc)
         return None
+
+
+def _activation_current_user_id(activation_context: ActivationContext | None) -> str | None:
+    if activation_context is None:
+        return None
+    principal = getattr(activation_context.principal_stack, "current_user", None)
+    principal_id = getattr(principal, "id", None)
+    if principal_id is None:
+        return None
+    value = str(principal_id).strip()
+    return value or None

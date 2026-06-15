@@ -275,7 +275,7 @@ async def _process_wecom_stream_message(
     from app.core.security import hash_password
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_delivery_service import channel_delivery_target as _cdt
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
     import uuid as _uuid
 
     tid = await resolve_tenant_for_agent(agent_id)
@@ -366,7 +366,7 @@ async def _process_wecom_stream_message(
         # Call LLM
         _cdt_token = _cdt.set(delivery_target)
         try:
-            reply_text = await _call_agent_llm(
+            reply_text = await call_agent_llm(
                 db,
                 agent_id,
                 user_text,

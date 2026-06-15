@@ -85,12 +85,10 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     "tasks",
 )
 
-# Tables that additionally get FORCE ROW LEVEL SECURITY: the production
-# connection IS the table owner (P0 gap B), so ENABLE alone is inert there.
-# New table families start here; legacy tables move over only after every
-# accessor is wired through tenant_scoped_session. Mirrors
-# alembic/versions/add_workflow_tables_0604.py.
-RLS_FORCED_TENANT_TABLES: tuple[str, ...] = (
+# Additional table families that also need FORCE ROW LEVEL SECURITY. The
+# production connection is the table owner, so ENABLE alone is inert for app
+# reads; all RLS_TENANT_TABLES are included in RLS_FORCED_TENANT_TABLES below.
+_ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "workflow_definitions",
     "workflow_steps",
     "workflow_leaf_calls",
@@ -107,6 +105,10 @@ RLS_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "agent_plugin_assignments",
     "plugin_hook_registrations",
     "plugin_dependency_edges",
+)
+
+RLS_FORCED_TENANT_TABLES: tuple[str, ...] = tuple(
+    dict.fromkeys((*RLS_TENANT_TABLES, *_ADDITIONAL_FORCED_TENANT_TABLES))
 )
 
 
@@ -129,9 +131,11 @@ def apply_rls_policies(
         return
     existing = set(inspect(connection).get_table_names())
     connection.execute(text("SELECT set_config('app.current_tenant_id', '', false)"))
-    for table, forced in [(t, False) for t in tables] + [(t, True) for t in forced_tables]:
+    forced_table_set = set(forced_tables)
+    for table in dict.fromkeys((*tables, *forced_tables)):
         if table not in existing:
             continue
+        forced = table in forced_table_set
         connection.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
         if forced:
             connection.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))

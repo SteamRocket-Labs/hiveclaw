@@ -55,12 +55,12 @@ async def test_channel_does_not_pre_empt_turn_for_schedule_intent():
     that answers with a canned template. The turn falls through to normal agent
     execution; the agent decides whether to suggest Plan Mode in its own reply
     (plan_mode_guidance prompt)."""
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     agent = _agent()
     db = _QueuedDB([agent])
 
-    reply = await _call_agent_llm(db, agent.id, "每天 9 点提醒我看 X 上的帖子")
+    reply = await call_agent_llm(db, agent.id, "每天 9 点提醒我看 X 上的帖子")
 
     assert "建议先进入计划模式" not in reply  # no canned pre-LLM hijack
     assert "已进入计划模式" not in reply  # not auto-entered either
@@ -73,7 +73,7 @@ async def test_channel_llm_does_not_auto_enter_plan_mode_for_long_task(monkeypat
     a channel either. The agent's judgment never triggers entry — the turn falls
     through to normal execution (here the no-model notice, since the test agent has
     no LLM configured) and no plan is auto-authored."""
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     launched: list = []
 
@@ -86,7 +86,7 @@ async def test_channel_llm_does_not_auto_enter_plan_mode_for_long_task(monkeypat
     agent = _agent()
     db = _QueuedDB([agent])
 
-    reply = await _call_agent_llm(db, agent.id, "完整调研这个行业并出报告")
+    reply = await call_agent_llm(db, agent.id, "完整调研这个行业并出报告")
 
     assert "已进入计划模式" not in reply  # long-task text no longer auto-enters
     assert launched == []  # no plan auto-authored
@@ -95,7 +95,7 @@ async def test_channel_llm_does_not_auto_enter_plan_mode_for_long_task(monkeypat
 
 @pytest.mark.asyncio
 async def test_channel_llm_accepts_latest_recommendation_instead_of_reclassifying(monkeypatch):
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     draft = SimpleNamespace(id=uuid4())
     launched: list = []
@@ -134,7 +134,7 @@ async def test_channel_llm_accepts_latest_recommendation_instead_of_reclassifyin
     )
     db = _QueuedDB([agent, recommendation])
 
-    reply = await _call_agent_llm(
+    reply = await call_agent_llm(
         db,
         agent.id,
         "进入计划模式",
@@ -158,7 +158,7 @@ async def test_channel_llm_accepts_latest_recommendation_instead_of_reclassifyin
 
 @pytest.mark.asyncio
 async def test_channel_llm_confirms_latest_awaiting_plan_from_text_and_handoffs(monkeypatch):
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     user_id = uuid4()
     plan = SimpleNamespace(
@@ -204,7 +204,7 @@ async def test_channel_llm_confirms_latest_awaiting_plan_from_text_and_handoffs(
     agent = _agent(id=plan.agent_id)
     db = _QueuedDB([agent])
 
-    reply = await _call_agent_llm(
+    reply = await call_agent_llm(
         db,
         agent.id,
         "确认上一个计划",
@@ -231,7 +231,7 @@ async def test_channel_llm_confirms_latest_awaiting_plan_from_text_and_handoffs(
 
 @pytest.mark.asyncio
 async def test_channel_llm_confirms_bare_wechat_ack_when_session_bound_and_enabled(monkeypatch):
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     user_id = uuid4()
     plan = SimpleNamespace(
@@ -276,7 +276,7 @@ async def test_channel_llm_confirms_bare_wechat_ack_when_session_bound_and_enabl
     agent = _agent(id=plan.agent_id)
     db = _QueuedDB([agent])
 
-    reply = await _call_agent_llm(
+    reply = await call_agent_llm(
         db,
         agent.id,
         "确认",
@@ -304,7 +304,7 @@ async def test_channel_llm_confirms_bare_wechat_ack_when_session_bound_and_enabl
 
 @pytest.mark.asyncio
 async def test_channel_llm_decline_without_prior_recommendation_does_not_set_trusted_opt_out(monkeypatch):
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     captured = {}
 
@@ -319,7 +319,7 @@ async def test_channel_llm_decline_without_prior_recommendation_does_not_set_tru
     model = SimpleNamespace(id=model_id, provider="openai", model="test", supports_vision=False)
     db = _QueuedDB([agent, model])
 
-    reply = await _call_agent_llm(db, agent.id, "不用计划模式，直接创建这个每天 9 点运行的任务")
+    reply = await call_agent_llm(db, agent.id, "不用计划模式，直接创建这个每天 9 点运行的任务")
 
     assert reply == "OK"
     assert "runtime verified" not in captured["system_prompt_suffix"]
@@ -328,7 +328,7 @@ async def test_channel_llm_decline_without_prior_recommendation_does_not_set_tru
 
 @pytest.mark.asyncio
 async def test_channel_llm_decline_after_recommendation_sets_trusted_runtime_opt_out(monkeypatch):
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     captured = {}
 
@@ -361,7 +361,7 @@ async def test_channel_llm_decline_after_recommendation_sets_trusted_runtime_opt
         }
     ]
 
-    reply = await _call_agent_llm(
+    reply = await call_agent_llm(
         db,
         agent.id,
         "不用计划模式，直接创建这个每天 9 点运行的任务",
@@ -386,7 +386,7 @@ async def test_channel_bare_ack_with_no_awaiting_plan_falls_through(monkeypatch)
     """P0-6: a bare '可以' with no awaiting plan must NOT be swallowed by the
     '没有找到当前会话待确认的计划' template — it falls through so the agent sees and
     answers the message (here the no-model notice, since the test agent has none)."""
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     class _NoPlanService:
         async def find_latest_awaiting_plan_for_session(self, **kwargs):
@@ -397,7 +397,7 @@ async def test_channel_bare_ack_with_no_awaiting_plan_falls_through(monkeypatch)
     agent = _agent()
     db = _QueuedDB([agent])
 
-    reply = await _call_agent_llm(
+    reply = await call_agent_llm(
         db,
         agent.id,
         "可以",
@@ -416,7 +416,7 @@ async def test_channel_bare_ack_with_no_awaiting_plan_falls_through(monkeypatch)
 async def test_channel_explicit_latest_confirmation_with_no_plan_keeps_notice(monkeypatch):
     """An explicit '确认这个计划' (not a bare ack) with no awaiting plan keeps the
     helpful notice — only bare acknowledgements fall through (P0-6)."""
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
 
     class _NoPlanService:
         async def find_latest_awaiting_plan_for_session(self, **kwargs):
@@ -427,7 +427,7 @@ async def test_channel_explicit_latest_confirmation_with_no_plan_keeps_notice(mo
     agent = _agent()
     db = _QueuedDB([agent])
 
-    reply = await _call_agent_llm(
+    reply = await call_agent_llm(
         db,
         agent.id,
         "确认这个计划",

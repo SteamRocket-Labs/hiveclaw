@@ -9,6 +9,14 @@ tools:
     role: requires_core
     governance:
       security_zone: public
+  - name: exa_search
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: tavily_search
+    role: optional_provider
+    governance:
+      security_zone: public
   - name: firecrawl_fetch
     role: optional_provider
     governance:
@@ -19,6 +27,16 @@ tools:
       security_zone: public
 
 credential_requirements:
+  - key: exa_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    used_by:
+      - exa_search
+  - key: tavily_api_key
+    scope: tenant
+    storage: encrypted_tool_config
+    used_by:
+      - tavily_search
   - key: firecrawl_api_key
     scope: tenant
     storage: encrypted_tool_config

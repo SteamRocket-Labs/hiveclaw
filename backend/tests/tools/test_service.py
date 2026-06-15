@@ -14,8 +14,8 @@ class _FakeRuntimeResolver:
         self.context = context
         self.calls = []
 
-    async def resolve(self, *, agent_id, user_id):
-        self.calls.append((agent_id, user_id))
+    async def resolve(self, *, agent_id, user_id, session_id=None):
+        self.calls.append((agent_id, user_id, session_id))
         return self.context
 
 
@@ -96,7 +96,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
     )
 
     assert result == "OK"
-    assert runtime_resolver.calls == [(context.agent_id, context.user_id)]
+    assert runtime_resolver.calls == [(context.agent_id, context.user_id, None)]
     assert governance_resolver.deps_calls == 1
     assert governance_resolver.context_calls[0][3] == "delegation-token-1"
     assert ensured == [True]
@@ -242,7 +242,7 @@ async def test_tool_runtime_service_execute_direct_uses_direct_fallback():
     )
 
     assert result == "DIRECT"
-    assert runtime_resolver.calls == [(context.agent_id, context.agent_id)]
+    assert runtime_resolver.calls == [(context.agent_id, context.agent_id, None)]
     assert captured["tool_name"] == "execute_code"
     assert captured["context"] == context
 
@@ -286,7 +286,7 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
     )
 
     assert result == "APPROVED"
-    assert service.runtime_resolver.calls == [(agent_id, approved_by)]
+    assert service.runtime_resolver.calls == [(agent_id, approved_by, None)]
     assert logged[0][0][1] == "tool_call_approved"
     assert logged[0][1]["detail"]["approved"] is True
     assert logged[0][1]["detail"]["approved_by_user_id"] == str(approved_by)
@@ -355,6 +355,7 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
         user_id=uuid4(),
         tenant_id="tenant-1",
         workspace=Path("/tmp/ws"),
+        session_id="session-1",
     )
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     traces = DecisionTraceStore()
@@ -381,10 +382,16 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     assert result.startswith("[Preflight:ask]")
     assert "send_feishu_message" in result
     assert "checkpoint=" in result
+    assert "decision=decision/" in result
     assert registry.calls == []
     decisions = traces.decisions()
     assert len(decisions) == 1
     assert decisions[0].chosen == "ask"
+    assert decisions[0].tenant_id == "tenant-1"
+    assert decisions[0].agent_id == str(context.agent_id)
+    assert decisions[0].user_id == str(context.user_id)
+    assert decisions[0].session_id == "session-1"
+    assert decisions[0].tool_name == "send_feishu_message"
     assert decisions[0].preflight["decision"] == "ask"
     assert decisions[0].preflight["checkpoint_id"]
 

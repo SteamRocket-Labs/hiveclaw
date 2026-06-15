@@ -422,9 +422,9 @@ async def _process_wecom_text(
     from app.models.audit import ChatMessage
     from app.models.user import User as UserModel
     from app.core.security import hash_password
+    from app.services.channel_agent_runtime import call_agent_llm
     from app.services.channel_session import find_or_create_channel_session
     from app.services.channel_delivery_service import channel_delivery_target as _cdt
-    from app.api.feishu import _call_agent_llm
 
     # Webhook bg path has no TenantMiddleware GUC. Resolve the tenant from the
     # path agent_id (narrow audited bypass single-row read) and pin the session.
@@ -532,7 +532,7 @@ async def _process_wecom_text(
         # Call LLM
         _cdt_token = _cdt.set(delivery_target)
         try:
-            reply_text = await _call_agent_llm(
+            reply_text = await call_agent_llm(
                 db,
                 agent_id,
                 user_text,

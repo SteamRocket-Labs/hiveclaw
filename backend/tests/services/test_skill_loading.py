@@ -46,6 +46,22 @@ def test_load_skill_sanitizes_managed_channel_env_guidance(tmp_path):
     assert "env | grep" not in content
 
 
+def test_load_skill_explicit_path_preserves_full_instruction_body(tmp_path):
+    from app.services.agent_tools import _load_skill
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "skills" / "long-skill"
+    skill_dir.mkdir(parents=True)
+    sentinel = "FINAL_SENTINEL_FULL_BODY_VISIBLE"
+    body = "# Long Skill\n" + ("A" * 17000) + f"\n{sentinel}\n"
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+
+    content = _load_skill(workspace, "skills/long-skill/SKILL.md")
+
+    assert sentinel in content
+    assert "[truncated" not in content
+
+
 def test_read_file_sanitizes_skill_managed_channel_env_guidance(tmp_path):
     from app.services.agent_tool_domains.workspace import _read_file
 

@@ -4,6 +4,8 @@ description: "Use when you need current web research, source retrieval, citation
 tools:
   - web_search
   - web_fetch
+  - exa_search
+  - tavily_search
   - firecrawl_fetch
   - xcrawl_scrape
 is_system: true
@@ -47,10 +49,12 @@ releases, prices, people, current stats, APIs that evolved).
 
 | Tool | Use Case | Escalation level |
 |------|----------|------------------|
-| `web_search` | Search the internet for public information. Provider order: Exa → Tavily → DuckDuckGo. **This is your primary search tool.** | Level 1 |
+| `web_search` | Basic public web search using built-in no-key providers: SearXNG when configured, DuckDuckGo fallback. **Start here for normal lookup.** | Level 1 |
 | `web_fetch` | Read full content from a specific URL. Use this first when you already have the link. | Level 1 |
-| `firecrawl_fetch` | Provider-backed fetch for heavier pages, PDFs, or pages where `web_fetch` misses the main content (JS-rendered). | Level 2 |
-| `xcrawl_scrape` | Escalation path for JS-heavy or anti-bot pages when lighter fetch tools fail. | Level 3 |
+| `exa_search` | Advanced semantic/provider-backed search. Discover with `tool_search` when `web_search` is too shallow, sparse, or keyword-mismatched. | Level 2 |
+| `tavily_search` | Advanced research/news-oriented provider search. Discover with `tool_search` when current-event or research snippets need a stronger provider. | Level 2 |
+| `firecrawl_fetch` | Provider-backed fetch for heavier pages, PDFs, or pages where `web_fetch` misses the main content (JS-rendered). Discover with `tool_search` if not visible. | Level 2 |
+| `xcrawl_scrape` | Escalation path for JS-heavy or anti-bot pages when lighter fetch tools fail. Discover with `tool_search` if not visible. | Level 3 |
 
 </tool_reference>
 
@@ -61,11 +65,16 @@ releases, prices, people, current stats, APIs that evolved).
 ### 1. Search-first for factual questions
 When the user asks for specific entities (people, companies, KOLs, prices, news), call `web_search` to get current data. Training data is stale for fast-moving domains.
 
+If `web_search` returns weak, sparse, contradictory, or obviously stale results, use:
+1. `tool_search(query="advanced web search")` to discover `exa_search` / `tavily_search`.
+2. `exa_search` for semantic/source discovery or competitor/research breadth.
+3. `tavily_search` for current-event or research-oriented snippets.
+
 ### 2. Fetch-first for known URLs
 If the user already provides a URL:
 1. Try `web_fetch(url="...")` first (lightest).
-2. If returns empty/incomplete or looks JS-blocked → escalate to `firecrawl_fetch`.
-3. If still blocked → `xcrawl_scrape`.
+2. If returns empty/incomplete or looks JS-blocked → use `tool_search(query="web crawl")` if needed, then escalate to `firecrawl_fetch`.
+3. If still blocked → use `xcrawl_scrape`.
 4. If all three fail → report the specific failure mode (paywall, 403, JS-only SPA, etc.) to the user.
 
 ### 3. Cite every claim
@@ -91,6 +100,9 @@ Correct flow:
 ```
 web_search(query="<company name> latest funding round 2026 amount lead investor")
   → returns top 3 results with dates and URLs
+if results are sparse or low quality:
+tool_search(query="advanced web search")
+exa_search(query="<company name> latest funding round 2026 amount lead investor")
 web_fetch(url="<most authoritative link, e.g. the company's own announcement>")
   → reads the actual funding announcement
 ```
@@ -129,7 +141,7 @@ Wrong response: 编一个数字。
 - ❌ **Return search results without citing source URL and date** → user can't verify. Every factual claim backed by search should include the link and retrieval date.
 - ❌ **Stop at `web_fetch` when it returns empty on a JS-heavy page** → escalate to `firecrawl_fetch`, then `xcrawl_scrape`. Don't conclude "page is broken" until all three fail.
 - ❌ **Fabricate data when search returns nothing** → hallucination. Say "搜不到" or "public sources don't cover this yet" and offer alternatives (wait, check SEC filings, ask user for access).
-- ❌ **Claim "cannot access the web"** → you have `web_search`, `web_fetch`, `firecrawl_fetch`, `xcrawl_scrape`. Use them. There is no "no internet" excuse.
+- ❌ **Claim "cannot access the web"** → you have `web_search`, `web_fetch`, and deferred advanced tools (`exa_search`, `tavily_search`, `firecrawl_fetch`, `xcrawl_scrape`) discoverable through `tool_search`. Use them. There is no "no internet" excuse.
 - ❌ **Mix tools for the wrong job**: using `xcrawl_scrape` for a simple static page (overkill/slow), or `web_fetch` for a paywalled SPA (won't work). Match tool to page complexity.
 
 </anti_patterns>
@@ -139,6 +151,7 @@ Wrong response: 编一个数字。
 <success_criteria>
 - Every factual claim from the web is paired with a source URL and fetch date.
 - Any empty/incomplete `web_fetch` result triggers escalation to `firecrawl_fetch` before the page is reported as inaccessible.
+- Weak basic search results trigger `tool_search` discovery of advanced search providers before you conclude no public information exists.
 - When search returns nothing, the response explicitly says so and offers a path forward (different search, waiting, alternative source).
 - No fabricated statistics, names, URLs, or dates.
 </success_criteria>

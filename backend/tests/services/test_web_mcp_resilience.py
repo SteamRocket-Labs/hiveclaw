@@ -265,38 +265,41 @@ async def test_web_fetch_rejects_feishu_open_api_urls_before_http(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_web_search_falls_back_to_duckduckgo_when_provider_returns_error_string(monkeypatch):
+async def test_web_search_falls_back_to_duckduckgo_when_searxng_returns_error_string(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
-    tool = SimpleNamespace(
-        config={"search_engine": "tavily", "api_key": "tvly-key", "max_results": 5, "language": "en"}
-    )
+    tool = SimpleNamespace(config={"search_engine": "auto", "max_results": 5, "language": "en"})
     monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
 
-    async def fake_tavily(query: str, api_key: str, max_results: int) -> str:
+    async def fake_get_searxng_url() -> str:
+        return "https://search.example.com"
+
+    async def fake_searxng(query: str, searxng_url: str, max_results: int, language: str) -> str:
         assert query == "openai sdk"
-        assert api_key == "tvly-key"
+        assert searxng_url == "https://search.example.com"
         assert max_results == 5
-        return "❌ Tavily search failed: upstream 400"
+        assert language == "en"
+        return "❌ SearXNG search failed: upstream 400"
 
     async def fake_duckduckgo(query: str, max_results: int) -> str:
         assert query == "openai sdk"
         assert max_results == 5
         return "duckduckgo fallback results"
 
-    monkeypatch.setattr(web_mcp, "_search_tavily", fake_tavily)
+    monkeypatch.setattr(web_mcp, "_get_searxng_url", fake_get_searxng_url)
+    monkeypatch.setattr(web_mcp, "_search_searxng", fake_searxng)
     monkeypatch.setattr(web_mcp, "_search_duckduckgo", fake_duckduckgo)
 
     result = await web_mcp._web_search({"query": "openai sdk"})
 
     assert "duckduckgo fallback results" in result
     payload = _extract_tool_error_payload(result)
-    assert payload["provider"] == "tavily"
+    assert payload["provider"] == "searxng"
     assert payload["fallback_tool"] == "web_search:duckduckgo"
 
 
 @pytest.mark.asyncio
-async def test_web_search_prefers_exa_when_key_available_without_explicit_provider(monkeypatch):
+async def test_web_search_auto_uses_basic_search_even_when_exa_key_is_available(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(config={"search_engine": "auto", "max_results": 5, "language": "en"})
@@ -305,19 +308,66 @@ async def test_web_search_prefers_exa_when_key_available_without_explicit_provid
     async def fake_get_exa_api_key() -> str:
         return "exa-key"
 
+    async def fake_get_searxng_url() -> str:
+        return ""
+
     async def fake_exa(query: str, api_key: str, max_results: int) -> str:
+        raise AssertionError("web_search must not auto-route to Exa; use exa_search via tool_search instead")
+
+    async def fake_duckduckgo(query: str, max_results: int) -> str:
         assert query == "python asyncio"
-        assert api_key == "exa-key"
         assert max_results == 5
-        return "exa search results"
+        return "duckduckgo basic results"
 
     monkeypatch.setattr(web_mcp, "_get_exa_api_key", fake_get_exa_api_key)
+    monkeypatch.setattr(web_mcp, "_get_searxng_url", fake_get_searxng_url)
     monkeypatch.setattr(web_mcp, "_search_exa", fake_exa)
+    monkeypatch.setattr(web_mcp, "_search_duckduckgo", fake_duckduckgo)
 
     result = await web_mcp._web_search({"query": "python asyncio", "max_results": 5})
 
-    assert "exa search results" in result
+    assert "duckduckgo basic results" in result
     assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_exa_search_uses_provider_config(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    tool = SimpleNamespace(config={"api_key": "exa-key", "max_results": 5})
+    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+
+    async def fake_exa(query: str, api_key: str, max_results: int) -> str:
+        assert query == "semantic competitors"
+        assert api_key == "exa-key"
+        assert max_results == 5
+        return "exa advanced results"
+
+    monkeypatch.setattr(web_mcp, "_search_exa", fake_exa)
+
+    result = await web_mcp._exa_search({"query": "semantic competitors"})
+
+    assert "exa advanced results" in result
+    assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_tavily_search_reports_missing_provider_key(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    tool = SimpleNamespace(config={"api_key": "", "max_results": 5})
+    monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
+
+    async def fake_get_tavily_api_key() -> str:
+        return ""
+
+    monkeypatch.setattr(web_mcp, "_get_tavily_api_key", fake_get_tavily_api_key)
+
+    result = await web_mcp._tavily_search({"query": "latest ai news"})
+
+    payload = _extract_tool_error_payload(result)
+    assert payload["tool_name"] == "tavily_search"
+    assert payload["error_class"] == "provider_not_configured"
 
 
 @pytest.mark.asyncio
@@ -347,30 +397,27 @@ async def test_web_search_returns_provider_error_when_duckduckgo_fails_without_p
 
 
 @pytest.mark.asyncio
-async def test_web_search_falls_back_when_google_returns_auth_error(monkeypatch):
+async def test_web_search_treats_legacy_google_config_as_basic_search(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(config={"search_engine": "google", "api_key": "key:cx", "max_results": 5, "language": "en"})
     monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
 
+    async def fake_get_searxng_url() -> str:
+        return ""
+
     async def fake_duckduckgo(query: str, max_results: int) -> str:
         assert query == "cloud deploy"
-        return "duckduckgo fallback results"
+        assert max_results == 5
+        return "duckduckgo basic results"
 
+    monkeypatch.setattr(web_mcp, "_get_searxng_url", fake_get_searxng_url)
     monkeypatch.setattr(web_mcp, "_search_duckduckgo", fake_duckduckgo)
-    monkeypatch.setattr(
-        "httpx.AsyncClient",
-        lambda *args, **kwargs: _FakeAsyncClient(
-            _FakeResponse(status_code=403, json_data={"error": {"message": "bad key"}}),
-        ),
-    )
 
     result = await web_mcp._web_search({"query": "cloud deploy"})
 
-    assert "duckduckgo fallback results" in result
-    payload = _extract_tool_error_payload(result)
-    assert payload["provider"] == "google"
-    assert payload["fallback_tool"] == "web_search:duckduckgo"
+    assert "duckduckgo basic results" in result
+    assert "<tool_error>" not in result
 
 
 @pytest.mark.asyncio

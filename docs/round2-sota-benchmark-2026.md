@@ -442,7 +442,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 - **反方（关键）= Cognition "Don't Build Multi-Agents"**：两原则 "**Share context, and share full agent traces**" + "**Actions carry implicit decisions, conflicting decisions carry bad results**"；并行 subagent 分裂上下文 → 隐式决策冲突；**主张单线程 + 专门压缩模型**。URL：cognition.ai/blog/dont-build-multi-agents
 - **正方 = Anthropic 多 agent 研究系统**：Opus lead + Sonnet subagents **比单 agent Opus 高 90.2%**，但**用 ~15× token**；BrowseComp 里 token 用量单独解释 80% 方差。URL：anthropic.com/engineering/multi-agent-research-system
 - **共识裁决**：**并行化信息收集、串行化决策**——多 agent 适合读密集可并行探索（subagent 返 1-2K 蒸馏、不做相互依赖的构建决策）；写密集/构建型危险，应单线程 + 压缩。
-- **→ Hive**：已有 subagent/workflow/plan/trigger 原语（审计评"原语齐全"）；**delta = ① orchestrator 补 task/progress-ledger 式重规划回路；② D2 信号死线（workflow_completed 零消费方）修通**。
+- **→ Hive**：已有 subagent/workflow/plan/trigger 原语（审计评"原语齐全"）；2026-06-15 已补 prompt-facing `team_context` / `teammate_mailbox` 与 Work Ledger 派生 `Progress Ledger`，让 RuntimeTask / CoordinationSignal / ledger stalled 信号进入模型回合。剩余诚实边界：还未用 live multi-agent behavior eval 证明达到 Magentic-One 式复杂任务收益。
 
 ### 7.3 上下文管理 + 工具/MCP
 
@@ -500,12 +500,12 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 4 | 长期记忆架构 | Letta(sleep-time)+Zep(双时态) | 后台空闲重写记忆；时间感知 multi-hop；矛盾对账 | 🟡 金字塔形态接近 ACE/Letta，缺对账/时间/校验 | sleep-time 后台编辑分离；ACE 计数器+增量 delta |
 | 5 | 记忆企业治理（独有轴） | 无人做全 | per-tenant 隔离+脱密+拒不可信源+溯源+审计 | 🟡 write-gate 有分级，缺用前校验/TTL/会话归因 | 缝 Devin(Useful/Misleading)+Copilot(引用校验/TTL)+decision_trace |
 | 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🔴 仅 workflow 一条线；subagent/delegation 裸奔 | journal 升"completion 去重边界"+withRetry+输出cap续写 |
-| 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡 原语齐全，缺重规划；D2 信号死线 | 补 task/progress-ledger；修 workflow_completed 零消费 |
+| 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡+ RuntimeTask/CoordinationSignal 已进 prompt-facing team context/mailbox；Work Ledger 已派生 Progress Ledger 并标记 stalled/needs_replan | 用 live multi-agent eval 压测复杂任务收益；继续把 workflow/subagent completion 扩成更强 orchestration policy |
 | 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算；✅ canonical last-assistant cache anchor + Anthropic block 透传；✅ MCP authz passthrough hard gate | 后续只在工具数爆炸时再引入 Code-Exec-over-MCP 模块树 |
 | 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟢 Railway bwrap 不可行已实测；G1 env/sandbox 已收口；`vercel_sandbox` microVM provider 已接主路径；出口代理/allowlist 凭据 brokering 后续增强 | 生产启用 Vercel Sandbox；后续补凭据出口代理与更细 network allowlist |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
-| 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡 runtime memory/knowledge 已按 principal 预过滤；connector ACL 镜像仍待扩展 | 把同一 choke point 扩到 Feishu/Drive/Office 等 connector read model |
-| 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🟡 trace/feedback 生产地基已接：invocation_spans 落库+reader+Prometheus、Session Useful/Misleading；仍缺外部行为 eval CI | 在 §12.13 基础上建外部行为 eval CI |
+| 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡+ runtime memory/knowledge 已按 principal 预过滤；OpenViking connector 结果带 ACL 时进入 prompt 前 fail-closed 过滤 | 把同一 ACL mirror choke point 扩到 Feishu/Drive/Office 等 connector read model，并补 source ACL ingest |
+| 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🟡+ trace/feedback 生产地基已接；nightly behavior eval CI 缺 secrets 时写 `behavior_eval_evidence.v1` 并 fail-closed，不再静默 skip | 配置 live eval secrets、沉淀分数时序与 100% 会话 QA 抽检 |
 | 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 MCP authz passthrough hard gate + A2A Agent Card/profile 已接；OAuth delegation 仍明确 not_exposed | 原生说开放标准=中立平面具体化，下一步只补真实 OAuth delegation，不伪装已支持 |
 
 ---
@@ -521,10 +521,10 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 
 **结构性落后（要打的硬仗）**：
 1. **验证门**（假门——研究铁律最忌的自评，**最高优先**，§2.3/§9）。
-2. **持久执行**（只 workflow 一条线，subagent/delegation 裸奔，§7.1）。
+2. **持久执行**（workflow/web-chat RuntimeTask 已有；subagent 同进程 asyncio worker 不跨重启仍是硬缺口，§7.1）。
 3. **agent 身份控制面**（基础 per-agent sponsor/participant + soft-delete 生命周期已在 §12.11 关闭，A2A Agent Card/profile 已在 §12.17 关闭；剩 Entra 式目录级 CA/OAuth delegation/A2A 审计，§6）。
-4. **可观测**（trace/反馈地基已在 §12.5/§12.13 关闭；无外部行为 eval CI 仍是下一仗硬缺口，§9 + 审计 O1/O2）。
-5. **隔离部署**（bwrap 生产可行性未验证，§8）。
+4. **可观测/eval**（trace/反馈地基已在 §12.5/§12.13 关闭；外部 behavior eval CI 入口已 fail-closed，有 evidence artifact，但 live secrets、分数时序、100% QA 仍要运营化，§9 + 审计 O1/O2）。
+5. **隔离部署**（Railway bwrap 不可行已实测；Vercel Sandbox provider 已接主路径；凭据出口代理/细粒度 egress allowlist 仍是下一层，§8）。
 
 **独有可占的真空（护城河，无人发货）**：
 1. **治理化的运行时自进化**（Letta 级自主 + 公司级治理审计）。
@@ -1239,6 +1239,71 @@ cd backend && source .venv/bin/activate && pytest tests -q
 ```
 
 **非 MVP 收口**：不是只补一条更强单测。旧存量 prose、sidecar telemetry、startup migration、ops CLI、retired artifact quarantine、dead stub quarantine、文档诚实口径同时闭环。剩余不是 D1 断点，而是 §3 已标明的 SOTA 质量差距：矛盾对账、双时态 multi-hop、TTL/引用校验。
+
+### 12.19 Round2 五项即刻动作已收口：team context / Progress Ledger / eval evidence / connector ACL / truth docs（2026-06-15）
+
+**完成范围**：
+
+1. **Prompt-facing team context + teammate mailbox**：新增 `backend/app/services/agent_team_context.py`，从 `RuntimeTask` 与 `CoordinationSignal` 渲染 `## Team Context` / `## Teammate Mailbox`，并通过 `build_agent_runtime_context(... tenant_id, session_id)` 注入 runtime metadata。`runtime_guidance_catalog.py` 中 `team_context`、`teammate_mailbox`、`teammate_shutdown_batch` 已从 `planned` 改为 `have`，truth surface 指向同一 renderer。
+2. **Magentic-One 式 Progress Ledger 重规划信号**：`backend/app/services/agent_work_ledger.py` 新增 `agent_progress_ledger.v1` 派生 review，判断 `request_satisfied`、`stalled`、`stall_count`、`needs_replan`、`next_owner`、`next_action`，并把结果并入 Work Ledger reminder snapshot。它不另造状态源，避免 ledger 分叉。
+3. **Behavior eval evidence / release gate fail-closed**：新增 `backend/app/evals/behavior_eval_evidence.py`。`.github/workflows/harness-ci.yml` 在缺 `HIVE_EVAL_API_URL` / `HIVE_EVAL_CI_TOKEN` 时写 `behavior_eval_evidence.v1` 到 report artifact 并 exit non-zero；不再把 live eval 未配置写成“skipped but green”。
+4. **Connector ACL mirror 第一链**：新增 `backend/app/services/connector_acl.py`，`knowledge_inject.py` 对 OpenViking 返回项携带的 `acl/access/permissions/visibility` 做 prompt 前 fail-closed 过滤。无 ACL 的 legacy item 保持兼容；一旦带 ACL，tenant/principal 不匹配则模型收不到。
+5. **Round2 truth docs**：本节与 §7/§10/§11 已把五项写成当前状态，同时保留诚实边界：live multi-agent eval 分数、Feishu/Drive/Office 全 read model ACL ingest、100% QA 时序仍未完成。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team_context.py tests/services/test_progress_ledger.py tests/evals/test_behavior_eval_evidence.py tests/services/test_connector_acl.py tests/kernel/test_runtime_guidance_catalog.py -q
+# initial red: 8 failed, 5 passed; catalog truth assertion was added during green hardening
+```
+
+失败点覆盖真实缺口：缺 `agent_team_context` / `build_prompt_facing_team_context`；缺 `agent_progress_ledger.v1`；缺 `behavior_eval_evidence` 且 CI 会静默 skip；缺 connector ACL mirror；runtime guidance catalog 仍把 team coordination 三项标为 planned。
+
+**Green 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team_context.py tests/services/test_progress_ledger.py tests/evals/test_behavior_eval_evidence.py tests/services/test_connector_acl.py tests/kernel/test_runtime_guidance_catalog.py -q
+# 14 passed, 3 warnings
+```
+
+**非 MVP 收口**：不是只改文档或只加一个 reminder。五项都接到真实链路：runtime metadata、Work Ledger reminder、CI workflow、knowledge injection prompt prefilter、catalog truth source。剩余项被明确标成 SOTA/运营化边界，而不是半接线：远程 live eval 需要真实 secrets 和分数时序；Glean 级全 connector ACL 需要每个 source 的 ACL ingest；subagent worker 跨重启仍要 durable worker 化。
+
+### 12.20 Agent-framework audit P0/P1 修复收口（2026-06-15）
+
+本节对齐 `docs/agent-framework-cc-sota-atomic-audit-2026-06-15.md` 的 P0/P1 active blocker。目标不是提前规划 P2，而是先把会破坏 CC/SOTA 基线的安全与 truth-surface 债务全部关掉。
+
+**P0 已关闭**：
+
+1. **`save_skill` 自授权晋升旁路关闭**：LLM-facing `save_skill` 不再写 `skills/<slug>/SKILL.md` active skill，而是写 `evolution/skill_activation_candidates.md`，返回 `active_skill_created: false`。`_save_skill()` 保留给平台晋升/distiller 等外部门控路径。
+2. **behavior eval report 接入 promotion gate**：`RuntimeConfig.skill_distiller_behavior_report` 从 tenant latest trusted behavior report 加载，distiller 把 report 交给 `decide_behavior_gated_promotion()`；无 trusted live report 时仍 hold。CI 缺 live eval secrets 时写 `behavior_eval_evidence.v1` 并 fail-closed，不再 green skip。
+3. **runtime DB RLS FORCE 兜底补齐**：`RLS_FORCED_TENANT_TABLES` 覆盖全部 `RLS_TENANT_TABLES`，migration `force_all_tenant_rls_0615` 对 tenant runtime tables ENABLE+FORCE，fresh bootstrap 与 alembic 路径一致。
+4. **subagent/delegation restart resume 改为 replay-safe governed lane**：仅 `review_readonly` / `research_readonly` delegation 与 `explorer` / `critic` subagent 写 `resume_after_restart`，orphan reconcile 保留这些 records；mutating/unsafe lane fail-closed。
+5. **desktop sub-agent 删除改软删**：`delete_sub_agent` 调 `soft_delete_agent()`，保留 Participant/Chat/Audit 历史并禁用执行入口，不再 `db.delete(agent)`。
+
+**P1 已关闭**：
+
+6. **memory/skill counter 读侧闭环**：memory activation 使用 sidecar `access_count/last_accessed` 形成 bounded `usage_heat`；skill curator 用 `use_count/view_count` 给 stale/archive grace。
+7. **decision trace linkback 接通**：DecisionTrace 增 tenant/agent/user/session/message/tool/checkpoint join keys；`chat_messages` 与 `session_feedback_events` 有 `decision_trace_id`；session feedback 校验 decision 同属当前 tenant/agent/session 并写 `decision/<id>` source ref。
+8. **Progress Ledger runtime replan 落地**：Work Ledger 支持 `type='replan'`，Progress Ledger 以 latest replan 为边界重算 stall；kernel reminder 在 `needs_replan=true` 时立即提示记录 replan 并更新 todo/owner。
+9. **connector ACL mirror 双入口**：`knowledge_inject.py` 与 `memory/retriever.py` external layer 都走 `filter_connector_results_for_prompt()`；OpenViking add_resource 可写 ACL/metadata/identity headers。
+10. **code execution sandbox evidence + credential egress**：新增 provider 级 env allowlist，local/vercel provider 即使收到 unsafe caller env 也二次净化；`CodeExecutionResult.evidence` 记录 provider/isolation/network_policy/env_policy；artifact gate 返回 `sandbox_evidence`。
+
+**当前诚实边界（留给 P2 规划，不在 P0/P1 假装完成）**：live behavior eval 仍未跑出真实分数；mutating delegation/subagent 还不是 Temporal 式 journal replay；真实 Railway/Vercel microVM uname/network-denied trace 仍未入库；Feishu/Drive/Office 全 source ACL ingest 与生成后复检未完成；DecisionTrace 仍是 JSONL，不是 PG RLS trace table。
+
+**已跑过的关键 focused evidence**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/tools/test_workspace.py tests/services/test_skill_loading.py tests/services/test_skill_distiller.py tests/services/test_promotion_hard_gate.py tests/evals/test_behavior_eval_baseline.py tests/evals/test_behavior_eval_evidence.py tests/evals/test_ci_gate.py tests/evals/test_eval_ci_service.py tests/evals/test_hive_live_runner.py tests/evals/test_harness_ci_workflow.py tests/services/test_audit_rls_coverage.py tests/test_alembic_bootstrap.py tests/agents/test_orchestrator.py tests/services/test_runtime_task_service.py tests/services/test_subagent_run_service.py tests/api/test_desktop_agents.py tests/memory/test_activation_scoring.py tests/memory/test_retrieval_pipeline.py tests/memory/test_navigation_telemetry.py tests/services/test_skill_curator.py tests/services/test_decision_trace.py tests/services/test_session_feedback.py tests/api/test_chat_session_feedback.py tests/services/test_progress_ledger.py tests/tools/handlers/test_work_ledger_handler.py tests/kernel/test_runtime_reminder_scheduler.py tests/services/test_connector_acl.py tests/services/test_knowledge_inject.py tests/services/test_command_tooling.py tests/services/test_vercel_code_execution.py tests/evals/test_artifact_gate.py tests/tools/test_hr_handler.py tests/services/test_prompt_contracts.py -q
+# 355 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/tools/test_workspace.py tests/services/test_skill_loading.py tests/services/test_skill_distiller.py tests/services/test_promotion_hard_gate.py tests/services/test_prompt_contracts.py -q
+# 75 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_command_tooling.py tests/services/test_vercel_code_execution.py tests/evals/test_artifact_gate.py tests/tools/test_hr_handler.py -q
+# 38 passed, 3 warnings
+```
+
+**非 MVP 收口**：P0/P1 不是 doc-only，也不是只加 unit tests。每项都落到 live choke point 或 truth surface：LLM tool handler、RuntimeConfig、db bootstrap + migration、startup resume/orphan reconcile、desktop API delete path、memory activation/retriever、session feedback/chat message model、kernel reminder、connector ACL filter、code execution providers。P2 只能在这个基线上继续规划 live eval、durable mutating replay、full connector ACL 和 production sandbox evidence。
 
 **第五仗 — cache + 互操作 + 诚实债收尾**
 - C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate、A2A Agent Card/profile、D1 memory hygiene startup apply 与 §3 诚实降级均已关闭。

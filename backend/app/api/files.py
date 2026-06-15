@@ -531,6 +531,9 @@ async def upload_enterprise_kb_file(
                         content=text_content[:50000],
                         to=uri,
                         tenant_id=str(current_user.tenant_id),
+                        user_id=str(current_user.id),
+                        acl={"tenant_ids": [str(current_user.tenant_id)], "scope": "tenant"},
+                        metadata={"source_type": "enterprise_knowledge_base", "path": f"{sub_path}/{filename}" if sub_path else filename},
                         reason=f"Enterprise KB upload: {filename}",
                     )
                 )

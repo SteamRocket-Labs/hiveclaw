@@ -51,3 +51,28 @@ def test_mixed_fleet_is_bucketed_and_sorted() -> None:
     assert report.unprotected == ["chat_sessions", "tasks"]  # sorted
     assert report.inert == ["agents"]
     assert report.enforced == ["coordination_leases"]
+
+
+def test_bootstrap_tenant_tables_are_all_forced_for_owner_runtime() -> None:
+    from app.db_bootstrap import RLS_FORCED_TENANT_TABLES, RLS_TENANT_TABLES
+
+    missing = sorted(set(RLS_TENANT_TABLES) - set(RLS_FORCED_TENANT_TABLES))
+
+    assert missing == []
+
+
+def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    from app.db_bootstrap import RLS_FORCED_TENANT_TABLES
+
+    path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "force_all_tenant_rls_0615.py"
+    spec = importlib.util.spec_from_file_location("force_all_tenant_rls_0615", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    missing = sorted(set(RLS_FORCED_TENANT_TABLES) - set(module._FORCE_TABLES))
+
+    assert missing == []

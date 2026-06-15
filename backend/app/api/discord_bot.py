@@ -272,7 +272,7 @@ async def discord_interaction_webhook(
         async def handle_in_background():
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
-            from app.api.feishu import _call_agent_llm
+            from app.services.channel_agent_runtime import call_agent_llm
             from app.services.channel_session import find_or_create_channel_session
             from app.database import tenant_scoped_session
             from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -362,7 +362,7 @@ async def discord_interaction_webhook(
 
                 _cdt_token = _cdt.set(delivery_target)
                 try:
-                    reply_text = await _call_agent_llm(
+                    reply_text = await call_agent_llm(
                         bg_db,
                         agent_id,
                         user_text,

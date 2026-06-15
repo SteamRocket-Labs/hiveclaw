@@ -49,11 +49,13 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
 @tool(ToolMeta(
     name="save_skill",
     description=(
-        "Save a reusable approach as a skill inside the workspace skills/ directory.\n\n"
+        "Submit a reusable approach as a skill activation candidate for external verification.\n\n"
         "A skill is your own notebook: HOW-knowledge you read and may adapt while executing. "
         "A process whose step order must NEVER drift is not a skill — run it as a workflow and "
         "propose it for promotion to the company library (promotion is reviewed, never "
-        "self-approved). A one-off task needs neither: track_todo is enough.\n\n"
+        "self-approved). A one-off task needs neither: track_todo is enough. This tool does "
+        "not create an active skill directly; it writes a candidate under "
+        "`evolution/skill_activation_candidates.md` for SkillGuard + behavior eval + regression review.\n\n"
         "Usage:\n"
         "- Only use this after an approach has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
         "- Save durable, reusable instructions that will help future runs of a similar task.\n"
@@ -92,7 +94,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             },
             "overwrite": {
                 "type": "boolean",
-                "description": "When true, update an existing skill with the same name/path instead of failing.",
+                "description": "When true, request replacement of an existing skill at the same target path.",
             },
         },
         "required": ["name", "description", "instructions"],
@@ -105,7 +107,11 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
 ))
 async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
     from app.core.execution_context import get_tool_tenant_id
-    from app.services.agent_tool_domains.workspace import _save_skill, _workspace_error, check_declared_packs_authorized
+    from app.services.agent_tool_domains.workspace import (
+        _submit_skill_activation_candidate,
+        _workspace_error,
+        check_declared_packs_authorized,
+    )
     from app.services.skill_guard import scan_skill_files
 
     declared_packs = tuple(arguments.get("packs", []) or ())
@@ -141,8 +147,9 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
             actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
         )
 
-    return _save_skill(
+    return _submit_skill_activation_candidate(
         workspace,
+        agent_id=agent_id,
         name=arguments.get("name", ""),
         description=arguments.get("description", ""),
         instructions=arguments.get("instructions", ""),

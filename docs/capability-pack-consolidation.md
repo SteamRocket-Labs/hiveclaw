@@ -73,7 +73,7 @@ Plan/交互 `request_plan_mode` `exit_plan_mode` `ask_user_question` ·
 增强"语义——读文件不是办公领域能力，是所有 agent 的底座，已在 CORE。
 
 **P4 — 凭据耦合（需区分真假病）。**
-- **真病**：`web_search` 把 Exa/Tavily key 挂在 **per-agent 工具 config**(`search.py:45` 的 `config_schema`
+- **已修正的真病**：旧 `web_search` 把 Exa/Tavily key 挂在 **per-agent 工具 config**(`search.py:45` 的旧 `config_schema`
   password 表单)。它本该是 CORE 联网底座(无 key 也能跑，见 §3)，却被 per-agent 凭据拖住进不了 CORE。
 - **非病**：`feishu_pack`(app_id/secret)、`email_pack`(SMTP/IMAP)、`firecrawl/xcrawl`(API key)的凭据是
   **渠道/provider 配置**，本就该 per-agent 或 per-tenant 配、本就该 pack 化。保留。
@@ -93,14 +93,9 @@ Plan/交互 `request_plan_mode` `exit_plan_mode` `ask_user_question` ·
 
 ### 3.1 复杂度定位（已验证）
 
-`web_search` 的 handler 仅 3 行(`search.py:104` 转发到 `web_mcp.py:_web_search`)。它和已在 CORE 的
-`web_fetch` 是孪生(同 `pack="web_pack"`、`is_default=True`、`governance="safe"`、`read_only`、`parallel_safe`)。
-**唯一差别**：`web_search` 绑了 provider 凭据 config，`web_fetch` 没有 → 所以 fetch 干净进了 CORE，search 被
-凭据拖住。
-
-且 `web_search` **无 key 已能运行**(`web_mcp.py:211` `_web_search`)：`auto → 有 Exa 用 Exa / 有 Tavily 用
-Tavily / 都没有走 DuckDuckGo`；指定 provider 缺 key 也**自动 fallback DuckDuckGo + note**(`web_mcp.py:261`)，
-**无任何硬拒 raise**(旧 "Tier2 硬拒" 已移除)。→ 功能上提进 CORE 零阻塞，只差把凭据归位。
+`web_search` 的 handler 转发到 `web_mcp.py:_web_search`，现在是与 `web_fetch` 同层的 CORE 基础能力：
+只走无 key 基础搜索链（SearXNG 平台配置优先，DuckDuckGo fallback），不再承载 Exa/Tavily provider key 或自动升级。
+Exa/Tavily 已拆成 `exa_search` / `tavily_search` deferred provider 工具，由模型在基础搜索不足时通过 `tool_search` 发现并调用。
 
 ### 3.2 兜底生态现状（2026.6 已联网核实）
 
@@ -123,8 +118,8 @@ Tavily / 都没有走 DuckDuckGo`；指定 provider 缺 key 也**自动 fallback
 - **自托管可控 + 隐私**——查询不出平台，多租户共享一个平台实例。
 - **Railway 原生**——有一键部署模板，Hive 生产即在 Railway。
 
-**最终兜底链**：`SearXNG(平台默认，自托管)` → `Exa/Tavily(租户配 key 的语义增强)` →
-`DuckDuckGo(SearXNG 实例不可用时的最后兜底)`。
+**基础兜底链**：`SearXNG(平台默认，自托管)` → `DuckDuckGo(SearXNG 实例不可用时的最后兜底)`。
+**高级搜索链**：`exa_search` / `tavily_search` 作为 `tool_search` 可发现的 provider-backed escalation，不再由 `web_search` 自动路由。
 
 实现：在 `web_mcp.py` 新增 `_search_searxng(query, max_results)` provider；`_web_search` 的 `auto` 分支
 优先 SearXNG(读平台级 `SEARXNG_URL` 配置)，缺失才退 DDG。`SEARXNG_URL` 走环境变量/平台配置，非 per-agent。
@@ -158,7 +153,7 @@ CORE 同时有细分版(`read_file`/`write_file`/`list_files`/`glob_search`/`gre
 |------|------|------|
 | `coordination_pack` | **删除（死 pack）** | 8 工具已在 CORE；删 pack 定义，工具不动 |
 | `plan_mode_pack` | **删除（死 pack）** | 3 工具已在 CORE；删 pack 定义，工具不动 |
-| `web_pack` | **重构** | `web_search`+`web_fetch` 出 pack 进 CORE；pack 改名 `web_provider_pack`，仅留 `firecrawl_fetch`/`xcrawl_scrape`；Exa/Tavily key 移 tenant 级（§3.4） |
+| `web_pack` | **重构** | `web_search`+`web_fetch` 出 pack 进 CORE；`web_pack` 保留 deferred provider 工具：`exa_search`/`tavily_search`/`firecrawl_fetch`/`xcrawl_scrape`；Exa/Tavily key 移 tenant 级（§3.4） |
 | `office_pack` | **提纯** | 移出 `read_file`/`list_files`/`send_channel_file`（已在 CORE）；保留 `read_document`+`office_document_*` 专属工具 |
 | `feishu_pack` | 保留（健康） | 无 |
 | `email_pack` | 保留（健康） | 无 |

@@ -39,7 +39,7 @@ async def test_serial_patch_queue_preserves_enqueue_order():
 
 @pytest.mark.asyncio
 async def test_call_agent_llm_forwards_tool_callback(monkeypatch):
-    import app.api.feishu as feishu_api
+    from app.services.channel_agent_runtime import call_agent_llm
 
     captured = {}
 
@@ -74,7 +74,7 @@ async def test_call_agent_llm_forwards_tool_callback(monkeypatch):
     def tool_callback(evt):
         return evt
 
-    result = await feishu_api._call_agent_llm(
+    result = await call_agent_llm(
         db,
         uuid4(),
         "hello",

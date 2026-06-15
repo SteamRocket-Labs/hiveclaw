@@ -51,6 +51,8 @@ def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_to
         "send_feishu_message": "channel.feishu.message",
         "web_search": "external.web.search",
         "bing_search": "external.web.search",
+        "exa_search": "external.web.search",
+        "tavily_search": "external.web.search",
         "get_current_time": "system.time.read",
         "feishu_task_create": "channel.feishu.task",
         "feishu_task_complete": "channel.feishu.task",

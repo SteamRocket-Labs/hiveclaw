@@ -66,7 +66,12 @@ def test_record_session_feedback_api_calls_persistent_service(monkeypatch) -> No
 
     response = client.post(
         f"/agents/{agent_id}/sessions/{session_id}/feedback",
-        json={"label": "useful", "reason": "Good synthesis", "message_id": str(uuid.uuid4())},
+        json={
+            "label": "useful",
+            "reason": "Good synthesis",
+            "message_id": str(uuid.uuid4()),
+            "decision_id": "decision/dec-1",
+        },
     )
 
     assert response.status_code == 200
@@ -75,3 +80,4 @@ def test_record_session_feedback_api_calls_persistent_service(monkeypatch) -> No
     assert seen["current_user"] is current_user
     assert seen["label"] == "useful"
     assert seen["reason"] == "Good synthesis"
+    assert seen["decision_id"] == "decision/dec-1"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -361,6 +362,59 @@ async def test_activation_context_adds_reasons_and_updates_score(
     ]
     assert item.metadata["activation_score"] == item.score
     assert item.score > 0.8
+
+
+@pytest.mark.asyncio
+async def test_activation_context_joins_sidecar_access_telemetry_into_usage_heat(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    from app.memory.lifecycle_store import record_active_memory_lifecycle
+
+    _setup_t3_file(
+        data_root,
+        agent_id,
+        "knowledge.md",
+        "# Knowledge\n"
+        "- [2026-05-22][entry_id=mem_hot] Legacy proxy timeout limit is still relevant\n"
+        "- [2026-05-22][entry_id=mem_cold] Legacy proxy timeout limit is still relevant\n",
+    )
+    record_active_memory_lifecycle(
+        data_root,
+        agent_id,
+        content="Legacy proxy timeout limit is still relevant",
+        metadata={
+            "entry_id": "mem_hot",
+            "sensitivity": "PL1_public",
+            "access_count": "12",
+            "last_accessed": datetime.now(UTC).isoformat(),
+        },
+    )
+    record_active_memory_lifecycle(
+        data_root,
+        agent_id,
+        content="Legacy proxy timeout limit is still relevant",
+        metadata={
+            "entry_id": "mem_cold",
+            "sensitivity": "PL1_public",
+            "access_count": "0",
+            "last_accessed": "never",
+        },
+    )
+
+    items = await retriever.retrieve(
+        agent_id,
+        "unrelated",
+        session_id=None,
+        tenant_id=None,
+        activation_context=_activation_context(),
+    )
+
+    by_id = {item.metadata.get("entry_id"): item for item in items}
+    assert by_id["mem_hot"].score > by_id["mem_cold"].score
+    assert "usage_heat" in by_id["mem_hot"].metadata["activation_reasons"]
+    assert "usage_heat" not in by_id["mem_cold"].metadata["activation_reasons"]
 
 
 @pytest.mark.asyncio

@@ -183,6 +183,43 @@ async def test_network_policy_is_threaded_through_service(tmp_path, monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_vercel_provider_sanitizes_caller_env_and_records_evidence(tmp_path, monkeypatch, fake_vercel):
+    from app.services.code_execution.vercel_provider import execute_vercel_sandbox_command
+
+    _set_vercel_env(monkeypatch)
+    work_dir = tmp_path / "work"
+    home = tmp_path / "home"
+    work_dir.mkdir()
+    home.mkdir()
+
+    result = await execute_vercel_sandbox_command(
+        ["bash", "-lc", "printf hi"],
+        work_dir=work_dir,
+        env={
+            "HOME": str(home),
+            "PATH": "/usr/bin",
+            "OPENAI_API_KEY": "sk-test",
+            "DATABASE_URL": "postgresql://owner-secret",
+            "PIP_INDEX_URL": "https://user:token@example.com/simple",
+        },
+        timeout=10,
+    )
+
+    user_command = next(item for item in fake_vercel.instances[0].commands if item["cmd"] == "bash")
+    exec_env = user_command["env"]
+    assert result.error is None
+    assert "OPENAI_API_KEY" not in exec_env
+    assert "DATABASE_URL" not in exec_env
+    assert exec_env["PIP_INDEX_URL"] == "https://example.com/simple"
+    assert exec_env["HOME"] == "/vercel/sandbox/agent-home"
+    assert result.evidence["provider"] == "vercel_sandbox"
+    assert result.evidence["isolation"] == "vercel_microvm"
+    assert result.evidence["network_policy"] == "deny-all"
+    assert result.evidence["credential_egress"] == "blocked_by_env_allowlist"
+    assert result.evidence["env_policy"]["credential_keys_blocked"] == ["DATABASE_URL", "OPENAI_API_KEY"]
+
+
+@pytest.mark.asyncio
 async def test_vercel_provider_missing_credentials_fails_closed_without_local_fallback(tmp_path, monkeypatch):
     from app.services.agent_tool_domains.code_exec import _run_command
 

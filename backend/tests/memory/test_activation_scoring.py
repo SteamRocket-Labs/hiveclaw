@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from app.memory.activation import ActivationContext, ActivationScorer
 from app.memory.types import MemoryItem, MemoryKind
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
@@ -47,6 +49,31 @@ def test_activation_accepts_conf_alias_for_confidence_weight() -> None:
     decision = ActivationScorer().score(item, context)
 
     assert "confidence_weight" in decision.reasons
+
+
+def test_activation_uses_access_telemetry_as_bounded_heat_signal() -> None:
+    hot = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content="Legacy proxy timeout limit is still relevant.",
+        score=0.35,
+        source="test",
+        metadata={"access_count": "12", "last_accessed": datetime.now(UTC).isoformat()},
+    )
+    cold = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content=hot.content,
+        score=hot.score,
+        source="test",
+        metadata={"access_count": "0", "last_accessed": "never"},
+    )
+    context = ActivationContext(query="unrelated", principal_stack=_stack())
+
+    hot_decision = ActivationScorer().score(hot, context)
+    cold_decision = ActivationScorer().score(cold, context)
+
+    assert hot_decision.score > cold_decision.score
+    assert "usage_heat" in hot_decision.reasons
+    assert "usage_heat" not in cold_decision.reasons
 
 
 def test_activation_open_loop_false_string_does_not_score() -> None:

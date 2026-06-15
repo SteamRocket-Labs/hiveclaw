@@ -100,7 +100,28 @@ def _context_engine() -> DefaultContextEngine:
 
 def _derive_turn_token_budget(max_tool_rounds: int | None) -> int:
     rounds = max(1, int(max_tool_rounds or 200))
-    return min(_MAX_DERIVED_TURN_TOKEN_BUDGET, max(_DEFAULT_TURN_TOKENS_PER_ROUND, rounds * _DEFAULT_TURN_TOKENS_PER_ROUND))
+    return min(
+        _MAX_DERIVED_TURN_TOKEN_BUDGET, max(_DEFAULT_TURN_TOKENS_PER_ROUND, rounds * _DEFAULT_TURN_TOKENS_PER_ROUND)
+    )
+
+
+async def _load_latest_skill_distiller_behavior_report(db, *, tenant_id: uuid.UUID) -> dict[str, Any] | None:
+    from app.evals.hive_live_runner import BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY, behavior_eval_passed
+    from app.models.tenant_setting import TenantSetting
+
+    result = await db.execute(
+        select(TenantSetting.value).where(
+            TenantSetting.tenant_id == tenant_id,
+            TenantSetting.key == BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY,
+        )
+    )
+    value = result.scalar_one_or_none()
+    if not isinstance(value, dict):
+        return None
+    report = value.get("report")
+    if isinstance(report, dict) and behavior_eval_passed(report):
+        return report
+    return None
 
 
 def _normalize_invocation_session_context(request: AgentInvocationRequest) -> None:
@@ -251,14 +272,23 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
                     return _RUNTIME_FLAG_DEFAULTS.get(flag_key, local_default)
                 return await is_feature_enabled(db, flag_key, tenant_id=agent.tenant_id)
 
+            runtime_continuity_enabled = await _resolve_flag("runtime_continuity_v1")
+            skill_candidate_loop_enabled = await _resolve_flag("skill_candidate_loop_v1")
+            skill_distiller_behavior_report = (
+                await _load_latest_skill_distiller_behavior_report(db, tenant_id=agent.tenant_id)
+                if skill_candidate_loop_enabled
+                else None
+            )
+
             return RuntimeConfig(
                 tenant_id=agent.tenant_id,
                 max_tool_rounds=agent.max_tool_rounds or 200,
                 quota_message=quota_message,
                 turn_token_budget=_derive_turn_token_budget(agent.max_tool_rounds or 200),
                 execution_mode=getattr(agent, "execution_mode", None),
-                runtime_continuity_enabled=await _resolve_flag("runtime_continuity_v1"),
-                skill_candidate_loop_enabled=await _resolve_flag("skill_candidate_loop_v1"),
+                runtime_continuity_enabled=runtime_continuity_enabled,
+                skill_candidate_loop_enabled=skill_candidate_loop_enabled,
+                skill_distiller_behavior_report=skill_distiller_behavior_report,
             )
     except Exception as exc:
         # Log full exception detail server-side for ops; surface only the
@@ -532,7 +562,6 @@ async def _resolve_runtime_metadata_context(
     request: AgentInvocationRequest,
     tenant_id: uuid.UUID | None,
 ) -> str:
-    del tenant_id
     if (request.standalone_system_prompt or "").strip():
         return ""  # CC subagent semantics: no host runtime metadata
     if not request.agent_id:
@@ -544,6 +573,10 @@ async def _resolve_runtime_metadata_context(
     _runtime_sig = inspect.signature(build_agent_runtime_context).parameters
     if "budget_profile" in _runtime_sig:
         _runtime_kwargs["budget_profile"] = budget_profile
+    if "tenant_id" in _runtime_sig:
+        _runtime_kwargs["tenant_id"] = tenant_id
+    if "session_id" in _runtime_sig and request.session_context is not None:
+        _runtime_kwargs["session_id"] = request.session_context.session_id
     runtime_context = await build_agent_runtime_context(request.agent_id, **_runtime_kwargs)
     if not runtime_context:
         return ""
@@ -920,9 +953,12 @@ async def _resolve_quota_user_id(request: AgentInvocationRequest) -> uuid.UUID |
     if request.agent_id is None:
         return None
 
-    async with async_session() as db, enter_rls_bypass(
-        db,
-        reason=f"quota user resolution for agent {request.agent_id}",
+    async with (
+        async_session() as db,
+        enter_rls_bypass(
+            db,
+            reason=f"quota user resolution for agent {request.agent_id}",
+        ),
     ):
         result = await db.execute(select(Agent).where(Agent.id == request.agent_id))
         agent = result.scalar_one_or_none()

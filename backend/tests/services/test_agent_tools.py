@@ -350,6 +350,9 @@ async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monk
     async def no_exa_key() -> str:
         return ""
 
+    async def no_tavily_key() -> str:
+        return ""
+
     async def no_firecrawl_key() -> str:
         return ""
 
@@ -364,6 +367,7 @@ async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monk
 
     _patch_broken_tenant_session(monkeypatch)
     monkeypatch.setattr(agent_tools_module, "_get_exa_api_key", no_exa_key)
+    monkeypatch.setattr(agent_tools_module, "_get_tavily_api_key", no_tavily_key)
     monkeypatch.setattr(agent_tools_module, "_get_firecrawl_api_key", no_firecrawl_key)
     monkeypatch.setattr(agent_tools_module, "_get_xcrawl_api_key", no_xcrawl_key)
     monkeypatch.setattr("app.services.resource_discovery._get_smithery_api_key", no_smithery_key)
@@ -373,6 +377,9 @@ async def test_get_agent_tools_for_llm_hides_unavailable_external_providers(monk
     names = {tool["function"]["name"] for tool in tools}
 
     assert "web_fetch" in names
+    assert "web_search" in names
+    assert "exa_search" not in names
+    assert "tavily_search" not in names
     assert "firecrawl_fetch" not in names
     assert "xcrawl_scrape" not in names
     assert "discover_resources" not in names

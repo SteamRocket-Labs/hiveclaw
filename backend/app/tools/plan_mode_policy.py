@@ -31,6 +31,8 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
         "fs_list",
         "fs_read",
         "web_search",
+        "exa_search",
+        "tavily_search",
         "web_fetch",
         "firecrawl_fetch",
         "xcrawl_scrape",

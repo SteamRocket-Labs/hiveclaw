@@ -12,6 +12,7 @@ from loguru import logger
 
 from app.config import get_settings
 from app.runtime.context_budget import ContextBudget
+from app.services.agent_team_context import build_prompt_facing_team_context
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 
 settings = get_settings()
@@ -222,16 +223,27 @@ async def build_agent_runtime_context(
     *,
     current_user_name: str | None = None,
     budget_profile: ContextBudget | None = None,
+    tenant_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
 ) -> str:
     """Build volatile runtime context that should be refreshed every round."""
     triggers_budget = budget_profile.runtime_triggers_budget_chars if budget_profile else 3000
-    return "\n".join(
-        await _build_runtime_metadata_sections(
-            agent_id,
-            current_user_name=current_user_name,
-            triggers_budget_chars=triggers_budget,
-        )
+    sections = await _build_runtime_metadata_sections(
+        agent_id,
+        current_user_name=current_user_name,
+        triggers_budget_chars=triggers_budget,
     )
+    try:
+        team_context = await build_prompt_facing_team_context(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+        )
+        if team_context:
+            sections.append("\n" + team_context)
+    except Exception as exc:
+        logger.debug("Failed to build team context for agent {}: {}", agent_id, exc)
+    return "\n".join(sections)
 
 
 async def build_agent_context(
@@ -404,9 +416,7 @@ async def build_agent_context(
     # Step 9: catalog defaults to the dynamic suffix (invoker passes
     # include_skill_catalog=False); only inline-context callers render it here.
     skills_section = (
-        build_skill_catalog_section_for_agent(agent_id, budget_profile=budget_profile)
-        if include_skill_catalog
-        else ""
+        build_skill_catalog_section_for_agent(agent_id, budget_profile=budget_profile) if include_skill_catalog else ""
     )
     relationships_section = build_relationships_section(
         relationships_text=relationships,

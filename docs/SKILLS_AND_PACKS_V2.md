@@ -644,7 +644,7 @@ Stage 6 单独立项是因为：collector / pack_service / runtime/invoker / cap
 
 | 类目 | 工具 | 后端实现 | 状态 |
 |------|------|---------|------|
-| Search | `web_search` | Tavily / Exa（已集成）| ✓ 已有 |
+| Search | `web_search` | SearXNG / DuckDuckGo 基础搜索；Exa/Tavily 走 `exa_search` / `tavily_search` deferred provider | ✓ 已有 |
 | Search | `academic_search` | Semantic Scholar API + arXiv API | 🆕 新建 |
 | Search | `news_search` | Tavily news mode | 🆕 新建 |
 | Fetch | `web_fetch` | Firecrawl scrape | ✓ 已有 |

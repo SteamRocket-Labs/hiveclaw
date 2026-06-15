@@ -36,6 +36,8 @@ _STATIC_SAFE_TOOLS = {
     "load_skill",
     "web_fetch",
     "web_search",
+    "exa_search",
+    "tavily_search",
     "firecrawl_fetch",
     "xcrawl_scrape",
     "read_document",
@@ -375,9 +377,7 @@ async def _run_governance_inner(
                 }
                 if context.session_id:
                     approval_kwargs["session_id"] = context.session_id
-                result_check = await _maybe_await(
-                    deps.request_approval(**approval_kwargs)
-                )
+                result_check = await _maybe_await(deps.request_approval(**approval_kwargs))
                 message = (
                     f"⏳ Tool '{context.tool_name}' requires approval"
                     f" [MCP server policy]. An approval request has been sent"
@@ -688,9 +688,7 @@ async def _run_governance_inner(
             }
             if context.session_id:
                 approval_kwargs["session_id"] = context.session_id
-            result_check = await _maybe_await(
-                deps.request_approval(**approval_kwargs)
-            )
+            result_check = await _maybe_await(deps.request_approval(**approval_kwargs))
             message = (
                 f"⏳ Tool '{context.tool_name}' requires approval"
                 f" [capability: {_escalated_capability}]. An approval request has been sent"

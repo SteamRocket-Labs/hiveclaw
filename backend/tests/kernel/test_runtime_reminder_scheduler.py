@@ -142,6 +142,30 @@ def test_ledger_reminder_is_gentle_and_includes_current_snapshot():
     assert "#todo-1 [in_progress] Collect Q3 revenue figures" in text
 
 
+def test_progress_ledger_replan_policy_fires_immediately() -> None:
+    scheduler = _scheduler()
+    ctx = _ledger_ctx()
+    review = {
+        "schema": "agent_progress_ledger.v1",
+        "present": True,
+        "request_satisfied": False,
+        "stalled": True,
+        "stall_count": 3,
+        "needs_replan": True,
+        "next_owner": "lead",
+        "next_action": "Choose a different source strategy",
+        "latest_progress": "Waiting for source evidence",
+    }
+
+    texts = scheduler.collect(ctx, _round_state(round_i=0, work_ledger_progress_review=review))
+
+    joined = "\n".join(texts)
+    assert "Progress Ledger runtime policy" in joined
+    assert "needs_replan=true" in joined
+    assert "record_finding" in joined
+    assert "type='replan'" in joined
+
+
 def test_ledger_eligibility_gate_is_hard():
     """M7: without the work_ledger_enabled flag the reminder NEVER fires —
     eligibility is the gate, behaviour only governs frequency."""

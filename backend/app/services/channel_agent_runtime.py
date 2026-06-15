@@ -1,0 +1,403 @@
+"""Shared inbound channel runtime for IM-style agent turns."""
+
+from __future__ import annotations
+
+import traceback
+import uuid
+from types import SimpleNamespace
+from typing import Any
+
+from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core.permissions import is_agent_expired
+
+
+async def try_confirm_channel_plan_from_text(
+    *,
+    agent_id: uuid.UUID,
+    user_id: Any,
+    user_text: str,
+    session_id: str | None,
+    session_source: str,
+    allow_bare_latest: bool = False,
+) -> str | None:
+    """Confirm and hand off a Plan Mode plan from trusted channel text."""
+    from app.services import plan_mode_core, plan_mode_service
+    from app.services.plan_mode_service import PlanConflictError
+
+    confirmation = plan_mode_core.extract_plan_confirmation_request(user_text)
+    is_bare_confirmation = False
+    if (
+        confirmation is None
+        and allow_bare_latest
+        and session_id
+        and plan_mode_core.is_bare_plan_confirmation_reply(user_text)
+    ):
+        confirmation = plan_mode_core.PlanConfirmationRequest(latest=True)
+        is_bare_confirmation = True
+    if confirmation is None:
+        return None
+    if user_id is None:
+        return "计划确认需要可审计的用户身份。请先绑定账号，或到 Web 端计划卡片确认。"
+
+    service = plan_mode_service.get_plan_mode_service()
+    plan = None
+    if confirmation.plan_id:
+        try:
+            plan = await service.get_plan(uuid.UUID(confirmation.plan_id))
+        except ValueError:
+            return "计划确认失败：plan_id 格式不正确。"
+        if plan is not None and str(getattr(plan, "agent_id", "")) != str(agent_id):
+            plan = None
+        if (
+            plan is not None
+            and session_id
+            and getattr(plan, "session_id", None)
+            and str(getattr(plan, "session_id", "")) != str(session_id)
+        ):
+            return "计划确认失败：该 plan_id 不属于当前会话。请确认当前会话中的计划。"
+    elif confirmation.latest and session_id:
+        plan = await service.find_latest_awaiting_plan_for_session(agent_id=agent_id, session_id=session_id)
+
+    if plan is None:
+        if is_bare_confirmation:
+            # A bare "可以/开始/go" with no awaiting plan is usually a normal
+            # acknowledgement. Let the agent see the turn instead of swallowing it.
+            return None
+        return "没有找到当前会话待确认的计划。请带上 plan_id，或到 Web 端计划卡片确认。"
+    if getattr(plan, "status", None) != "awaiting_confirmation":
+        return f"计划无需重复确认：当前状态为 {getattr(plan, 'status', 'unknown')}。"
+    if not getattr(plan, "plan_hash", None):
+        return "计划还没有生成完成，暂时不能确认。请稍后重试或到 Web 端计划卡片查看。"
+
+    try:
+        confirmed = await service.confirm_plan(
+            plan_id=plan.id,
+            confirming_user_id=user_id,
+            plan_version=plan.plan_version,
+            plan_hash=plan.plan_hash,
+            reason=f"confirmed via {session_source} text",
+        )
+        handed_off = await service.handoff_confirmed_plan(plan_id=confirmed.id)
+    except PermissionError as exc:
+        return f"计划确认失败：{exc}"
+    except PlanConflictError as exc:
+        return f"计划确认失败：{exc.message}"
+
+    handoff_status = getattr(handed_off, "handoff_status", None) or "not_started"
+    if handoff_status == "completed":
+        return f"已确认计划（plan_id={confirmed.id}），并已启动执行。"
+    if handoff_status == "skipped":
+        return f"已确认计划（plan_id={confirmed.id}），但当前计划没有可自动启动的 handoff。"
+    if handoff_status == "failed":
+        payload = getattr(handed_off, "handoff_payload", None) or {}
+        return f"已确认计划（plan_id={confirmed.id}），但启动执行失败：{payload.get('error', 'unknown error')}"
+    return f"已确认计划（plan_id={confirmed.id}），handoff 状态：{handoff_status}。"
+
+
+async def call_agent_llm(
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    user_text: str,
+    history: list[dict] | None = None,
+    user_id: Any = None,
+    on_chunk: Any = None,
+    on_tool_call: Any = None,
+    on_thinking: Any = None,
+    session_id: str | None = None,
+    session_source: str = "feishu",
+    session_channel: str = "feishu",
+    allow_bare_plan_confirmation: bool = False,
+    durable_run: bool = False,
+    durable_session: Any = None,
+    durable_user: Any = None,
+) -> str:
+    """Call the agent runtime from an external channel turn."""
+    from app.api.websocket import call_llm
+    from app.models.agent import Agent
+    from app.models.llm import LLMModel
+
+    agent_result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
+        return "⚠️ 数字员工未找到"
+
+    if is_agent_expired(agent):
+        return "This Agent has expired and is off duty. Please contact your admin to extend its service."
+
+    effective_user_id = user_id or agent_id
+    if durable_run:
+        from app.services.web_chat_runtime import start_channel_chat_run_from_saved_turn
+
+        if durable_session is None:
+            return "⚠️ 无法启动后台任务: missing channel session"
+        durable_user = durable_user or SimpleNamespace(
+            id=effective_user_id,
+            username=str(effective_user_id),
+            display_name="",
+        )
+        try:
+            run = await start_channel_chat_run_from_saved_turn(
+                db=db,
+                agent=agent,
+                user=durable_user,
+                session=durable_session,
+                content=user_text,
+                source_channel=session_channel or session_source or "channel",
+            )
+        except Exception as exc:
+            logger.error("[ChannelRuntime] Failed to start durable channel run: %s", exc, exc_info=True)
+            return f"⚠️ 后台任务启动失败: {type(exc).__name__}"
+        if run.get("queued_user_message"):
+            return f"已接收补充消息，并排队到当前任务（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
+        return f"已接收，正在后台处理（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
+
+    plan_confirmation_reply = await try_confirm_channel_plan_from_text(
+        agent_id=agent_id,
+        user_id=user_id,
+        user_text=user_text,
+        session_id=session_id,
+        session_source=session_source,
+        allow_bare_latest=allow_bare_plan_confirmation,
+    )
+    if plan_confirmation_reply is not None:
+        return plan_confirmation_reply
+
+    from app.services import plan_mode_core
+
+    plan_entry_decision = plan_mode_core.classify_plan_mode_entry(user_text)
+    accepted_recommendation = None
+    if (
+        plan_entry_decision.mode == "explicit"
+        and plan_mode_core.is_plan_mode_acceptance_reply(user_text)
+        and user_id is not None
+        and session_id
+    ):
+        from app.services.plan_mode_recommendation_service import accept_latest_recommendation_for_user
+
+        try:
+            accepted_recommendation = await accept_latest_recommendation_for_user(
+                db,
+                agent_id=agent_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if accepted_recommendation is not None and hasattr(db, "commit"):
+                await db.commit()
+        except Exception as exc:
+            logger.warning(f"[ChannelRuntime] Plan recommendation accept binding failed (non-fatal): {exc}")
+            accepted_recommendation = None
+
+    if accepted_recommendation is not None:
+        plan_entry_decision = plan_mode_core.PlanModeEntryDecision(
+            mode="explicit",
+            intent_type=getattr(accepted_recommendation, "intent_type", None) or "autonomous_wake",
+            action_kind=getattr(accepted_recommendation, "action_kind", None) or "create_enabled_trigger",
+            tool_name=getattr(accepted_recommendation, "tool_name", None) or "set_trigger",
+            title=getattr(accepted_recommendation, "title", None)
+            or getattr(accepted_recommendation, "original_request", "")[:120],
+            reason="accepted_plan_mode_recommendation",
+        )
+        user_text = getattr(accepted_recommendation, "original_request", None) or user_text
+
+    if plan_entry_decision.mode == "explicit" and plan_entry_decision.action_kind and plan_entry_decision.tool_name:
+        from app.services import plan_mode_core
+        from app.services.plan_mode_service import get_plan_mode_service
+        from app.services.plan_mode_system_run import launch_system_plan_run
+
+        title = plan_entry_decision.title or user_text[:120] or "Plan Mode request"
+        if plan_entry_decision.action_kind == "create_enabled_trigger":
+            plan_arguments = {"name": title[:80], "type": "cron", "config": {}, "reason": user_text}
+        else:
+            plan_arguments = {
+                "title": title,
+                "description": user_text,
+                "handoff_target": "continue_current_session",
+            }
+        plan_service = get_plan_mode_service()
+        intent_type, _signature = plan_mode_core.action_kind_to_intent_signature(
+            action_kind=plan_entry_decision.action_kind,
+            tool_name=plan_entry_decision.tool_name,
+            arguments=plan_arguments,
+        )
+        draft = await plan_service.create_plan_request(
+            agent_id=agent_id,
+            requested_by_user_id=effective_user_id,
+            original_request=user_text,
+            intent_type=intent_type,
+            source=session_source,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session_id,
+            runtime_task_id=None,
+            metadata_json={
+                "intercept_action_kind": plan_entry_decision.action_kind,
+                "intercept_tool": plan_entry_decision.tool_name,
+                "intercept_source": session_source,
+            },
+        )
+        await launch_system_plan_run(
+            draft,
+            seed_context={
+                "tool_name": plan_entry_decision.tool_name,
+                "action_kind": plan_entry_decision.action_kind,
+                "arguments": plan_arguments,
+            },
+        )
+        plan = await plan_service.get_plan(draft.id) or draft
+        return f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。请确认、修改或拒绝；确认后我再开始执行。"
+
+    model = None
+    if agent.primary_model_id:
+        model_result = await db.execute(
+            select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
+        )
+        model = model_result.scalar_one_or_none()
+
+    fallback_model = None
+    if agent.fallback_model_id:
+        fb_result = await db.execute(
+            select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
+        )
+        fallback_model = fb_result.scalar_one_or_none()
+
+    from app.services.model_resolution import primary_model_unavailable
+
+    if primary_model_unavailable(agent, model):
+        logger.error(
+            f"[Channel] Primary model {agent.primary_model_id} unavailable for agent "
+            f"{getattr(agent, 'id', None)} (deleted/disabled/cross-tenant) - failing loud instead of silent fallback"
+        )
+        return (
+            "你为该数字员工配置的主模型当前不可用(可能已删除、被禁用,或不属于本公司),"
+            "请在「设置 → 模型」中重新选择一个本公司可用的模型。"
+        )
+
+    if not model and fallback_model:
+        model = fallback_model
+        fallback_model = None
+        logger.warning(f"[Channel] Primary model unavailable, using fallback: {model.model}")
+
+    if model and agent.tenant_id:
+        from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
+
+        default_runtime_model = await resolve_default_model_for_tenant(
+            db,
+            agent.tenant_id,
+            exclude_model_id=model.id,
+        )
+        previous_fallback = fallback_model
+        model, fallback_model = choose_runtime_model_pair(model, fallback_model, default_runtime_model)
+        if fallback_model and fallback_model is not previous_fallback:
+            logger.info(f"[Channel] Tenant default fallback loaded: {fallback_model.model}")
+
+    if not model:
+        return f"⚠️ {agent.name} 未配置 LLM 模型，请在管理后台设置。"
+
+    messages: list[dict] = []
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_text})
+
+    pending_reply_suffix = ""
+    try:
+        from app.services.pending_reply_service import (
+            claim_and_fulfill_pending_replies,
+            format_pending_reply_context,
+            sender_identity_from_external_conv_id,
+        )
+
+        sender_identity = ""
+        if session_id:
+            from app.models.chat_session import ChatSession
+
+            sess_r = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+            sess_obj = sess_r.scalar_one_or_none()
+            if sess_obj:
+                sender_identity = sender_identity_from_external_conv_id(sess_obj.external_conv_id or "")
+                if not sender_identity and getattr(sess_obj, "delivery_target_json", None):
+                    from app.services.channel_delivery_service import ChannelDeliveryService
+
+                    sender_identity = ChannelDeliveryService.identity_from_delivery_target(
+                        sess_obj.delivery_target_json
+                    )
+
+        if sender_identity:
+            claimed = await claim_and_fulfill_pending_replies(db, agent_id=agent_id, sender_identity=sender_identity)
+            if claimed:
+                pending_reply_suffix = format_pending_reply_context(claimed)
+                logger.info(
+                    "[PendingReply] Injecting %d context(s) for agent %s, sender %s",
+                    len(claimed),
+                    agent_id,
+                    sender_identity,
+                )
+                await db.commit()
+    except Exception as exc:
+        logger.warning("[PendingReply] Injection failed (non-fatal): %s", exc)
+
+    from app.runtime.session import SessionContext
+
+    session_context = SessionContext(
+        session_id=session_id,
+        source=session_source,
+        channel=session_channel,
+    )
+    trusted_decline = plan_mode_core.trusted_decline_metadata(
+        content=user_text,
+        messages=history,
+    )
+    if trusted_decline:
+        from app.services.plan_mode_recommendation_service import decline_latest_recommendation_for_user
+
+        recommendation = await decline_latest_recommendation_for_user(
+            db,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        if recommendation is None:
+            trusted_decline = None
+        else:
+            trusted_decline["recommendation_id"] = str(recommendation.id)
+            if hasattr(db, "commit"):
+                await db.commit()
+    if trusted_decline:
+        session_context.metadata[plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY] = trusted_decline
+        plan_decline_suffix = (
+            "Plan Mode governance: the runtime verified that the user declined the immediately preceding "
+            "Plan Mode recommendation. If you create or update a scheduled/monitoring trigger as a direct "
+            "follow-up, call the trigger tool normally. Do not add opt-out fields to tool arguments, and do "
+            "not use this opt-out for long tasks, delegation, or other high-risk actions."
+        )
+        pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, plan_decline_suffix) if part)
+
+    try:
+        reply = await call_llm(
+            model,
+            messages,
+            agent.name,
+            agent.role_description or "",
+            fallback_model=fallback_model,
+            agent_id=agent_id,
+            user_id=effective_user_id,
+            supports_vision=getattr(model, "supports_vision", False),
+            on_chunk=on_chunk,
+            on_tool_call=on_tool_call,
+            on_thinking=on_thinking,
+            session_id=session_id,
+            memory_messages=messages,
+            session_context=session_context,
+            auto_close_session=True,
+            session_source=session_source,
+            session_channel=session_channel,
+            system_prompt_suffix=pending_reply_suffix,
+        )
+        return reply
+    except Exception as exc:
+        traceback.print_exc()
+        error_msg = str(exc) or repr(exc)
+        logger.error(f"[LLM] Primary model error: {error_msg}")
+        return f"⚠️ 调用模型出错: {error_msg[:150]}"

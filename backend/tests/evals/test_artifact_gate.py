@@ -143,3 +143,28 @@ async def test_artifact_gate_passes_safe_home_env_to_executor() -> None:
     assert result["passed"] is True
     assert seen["home"]
     assert seen["tmpdir"]
+
+
+async def test_artifact_gate_returns_provider_sandbox_evidence() -> None:
+    async def _execute(command, *, work_dir, env, timeout, runtime=None, network_policy=None):
+        return CodeExecutionResult(
+            stdout="VERIFIED-OK",
+            exit_code=0,
+            evidence={
+                "provider": "vercel_sandbox",
+                "isolation": "vercel_microvm",
+                "network_policy": "deny-all",
+                "credential_egress": "blocked_by_env_allowlist",
+            },
+        )
+
+    result = await run_artifact_execution_gate(
+        candidate_files={"skill_check.py": "print('VERIFIED-OK')"},
+        verification_command=["python3", "skill_check.py"],
+        expected_stdout="VERIFIED-OK",
+        execute=_execute,
+    )
+
+    assert result["passed"] is True
+    assert result["sandbox_evidence"]["provider"] == "vercel_sandbox"
+    assert result["sandbox_evidence"]["credential_egress"] == "blocked_by_env_allowlist"

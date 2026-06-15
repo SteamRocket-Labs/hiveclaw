@@ -29,6 +29,26 @@ async def test_start_subagent_run_records_running_subagent_task(monkeypatch):
     assert captured["parent_agent_id"] == parent
     assert captured["child_agent_name"] == "scout"
     assert captured["metadata_json"]["subagent_type"] == SUBAGENT_TYPE_WORKER
+    assert captured["metadata_json"]["resumable_subagent"] is False
+    assert captured["metadata_json"]["restart_resume_blocker"] == "non_idempotent_subagent_type"
+
+
+@pytest.mark.asyncio
+async def test_start_subagent_run_marks_readonly_types_restart_resumable(monkeypatch):
+    captured: dict = {}
+
+    async def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return kwargs["task_id"]
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    parent = uuid.uuid4()
+    await svc.start_subagent_run(parent_agent_id=parent, spec_name="scout", spec_type="explorer", task="read x")
+
+    assert captured["metadata_json"]["subagent_type"] == "explorer"
+    assert captured["metadata_json"]["resumable_subagent"] is True
+    assert captured["metadata_json"]["resume_after_restart"] is True
+    assert captured["metadata_json"]["subagent_name"] == "scout"
 
 
 @pytest.mark.asyncio
@@ -96,9 +116,84 @@ def test_spawn_schema_exposes_run_in_background_and_check_tool_registered():
     assert callable(check_subagent)
 
 
-def test_subagent_task_type_is_non_resumable():
-    # A crashed background subagent must be reconciled to failed on restart, not
-    # treated as restart-resumable (which would leave the parent's poll hanging).
-    from app.services.runtime_task_service import _RESTART_RESUMABLE_TASK_TYPES
+def test_subagent_task_type_uses_metadata_resumability():
+    # Only read-only subagent records are restart-resumable; worker records stay
+    # fail-closed so replay cannot duplicate workspace writes.
+    from app.services.runtime_task_service import _is_restart_resumable_runtime_task
 
-    assert svc.SUBAGENT_RUN_TASK_TYPE not in _RESTART_RESUMABLE_TASK_TYPES
+    resumable = type(
+        "RuntimeTaskStub",
+        (),
+        {"task_type": svc.SUBAGENT_RUN_TASK_TYPE, "metadata_json": {"resume_after_restart": True, "resumable_subagent": True}},
+    )()
+    unsafe = type(
+        "RuntimeTaskStub",
+        (),
+        {"task_type": svc.SUBAGENT_RUN_TASK_TYPE, "metadata_json": {"resume_after_restart": False, "resumable_subagent": False}},
+    )()
+
+    assert _is_restart_resumable_runtime_task(resumable) is True
+    assert _is_restart_resumable_runtime_task(unsafe) is False
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    calls: dict[str, object] = {}
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(parent),
+                "child_agent_name": "scout",
+                "prompt": "read x",
+                "trace_id": "trace-subagent",
+                "parent_session_id": "parent-session",
+                "metadata": {
+                    "subagent_type": "explorer",
+                    "subagent_name": "scout",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                },
+            }
+        ]
+
+    async def fake_resolve_parent_runtime(parent_agent_id):
+        calls["resolved_parent"] = parent_agent_id
+        return {
+            "ctx_kwargs": {
+                "parent_agent_id": parent,
+                "parent_user_id": uuid.uuid4(),
+                "model": object(),
+                "parent_agent_name": "Parent",
+                "tenant_id": uuid.uuid4(),
+            }
+        }
+
+    async def fake_spawn_subagent(ctx, spec, task, **kwargs):
+        calls["ctx"] = ctx
+        calls["spec"] = spec
+        calls["task"] = task
+        calls["kwargs"] = kwargs
+        return object()
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == [run_id]
+    assert calls["resolved_parent"] == parent
+    assert calls["spec"].type == "explorer"
+    assert calls["task"] == "read x"
+    assert calls["kwargs"]["run_in_background"] is True
+    assert callable(calls["kwargs"]["on_complete"])

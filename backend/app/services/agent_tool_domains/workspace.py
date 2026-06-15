@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import get_settings
@@ -53,7 +54,7 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        sub = rel_path[len("enterprise_info") :].lstrip("/")
         target = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(target).startswith(str(enterprise_root)):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
@@ -92,7 +93,7 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name
         elif p.is_file():
             file_count += 1
             size_bytes = p.stat().st_size
-            size_str = f"{size_bytes}B" if size_bytes < 1024 else f"{size_bytes/1024:.1f}KB"
+            size_str = f"{size_bytes}B" if size_bytes < 1024 else f"{size_bytes / 1024:.1f}KB"
             items.append(f"  📄 {p.name} ({size_str})")
 
     if not items:
@@ -110,7 +111,7 @@ def _read_file(
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        sub = rel_path[len("enterprise_info") :].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(file_path).startswith(str(enterprise_root)):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
@@ -201,14 +202,15 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
     def _read_skill_file(path: Path) -> str:
         if not str(path).startswith(str(skills_dir)):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
-        rel_path = path.relative_to(ws).as_posix()
-        skill_text = _read_file(ws, rel_path, tool_name=tool_name)
-        # Skill files are always text; collapse to str for the str-typed caller.
-        return skill_text if isinstance(skill_text, str) else str(skill_text)
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            return sanitize_managed_credential_guidance(content)
+        except Exception as e:
+            return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
 
     requested_path = requested
     if requested_path.startswith("skills/"):
-        requested_path = requested_path[len("skills/"):]
+        requested_path = requested_path[len("skills/") :]
     explicit_path = (skills_dir / requested_path).resolve()
     if explicit_path.is_file():
         body = _read_skill_file(explicit_path)
@@ -240,6 +242,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
 
     # Fallback: check if the name matches a tool pack (e.g. "plaza_pack", "web_pack")
     from app.tools.runtime_tool_groups import runtime_tool_group_for_name
+
     pack = runtime_tool_group_for_name(requested)
     if pack:
         return (
@@ -412,7 +415,9 @@ def _save_skill(
     if requested_folder:
         slug = _normalize_skill_folder_name(requested_folder)
         if not slug:
-            return _workspace_error(tool_name, "bad_arguments", "folder_name must contain at least one valid character.")
+            return _workspace_error(
+                tool_name, "bad_arguments", "folder_name must contain at least one valid character."
+            )
         target = (skills_dir / slug / "SKILL.md").resolve()
     else:
         try:
@@ -425,7 +430,9 @@ def _save_skill(
         else:
             slug = _normalize_skill_folder_name(skill_name)
             if not slug:
-                return _workspace_error(tool_name, "bad_arguments", "Skill name must contain at least one valid character.")
+                return _workspace_error(
+                    tool_name, "bad_arguments", "Skill name must contain at least one valid character."
+                )
             target = (skills_dir / slug / "SKILL.md").resolve()
 
     if not str(target).startswith(str(skills_dir)):
@@ -514,6 +521,118 @@ def _save_skill(
         return _workspace_error(tool_name, "operation_failed", f"Skill save failed: {exc}")
 
 
+def _submit_skill_activation_candidate(
+    ws: Path,
+    *,
+    agent_id: uuid.UUID | None,
+    name: str,
+    description: str,
+    instructions: str,
+    declared_tools: tuple[str, ...] = (),
+    declared_packs: tuple[str, ...] = (),
+    folder_name: str | None = None,
+    overwrite: bool = False,
+    tool_name: str = "save_skill",
+) -> str:
+    """Record an LLM-authored skill draft without activating it.
+
+    Active skill writes are promotion decisions. They must go through platform
+    verification (SkillGuard + behavior eval + regression gate), not through a
+    model-supplied tool call.
+    """
+
+    skill_name = (name or "").strip()
+    skill_description = (description or "").strip()
+    skill_instructions = (instructions or "").strip()
+    if not skill_name:
+        return _workspace_error(tool_name, "bad_arguments", "Skill name cannot be empty.")
+    if not skill_description:
+        return _workspace_error(tool_name, "bad_arguments", "Skill description cannot be empty.")
+    if not skill_instructions:
+        return _workspace_error(tool_name, "bad_arguments", "Skill instructions cannot be empty.")
+
+    requested_folder = (folder_name or "").strip()
+    slug = _normalize_skill_folder_name(requested_folder or skill_name)
+    if not slug:
+        return _workspace_error(
+            tool_name, "bad_arguments", "Skill name/folder_name must contain at least one valid character."
+        )
+
+    rendered = _render_skill_markdown(
+        name=skill_name,
+        description=skill_description,
+        instructions=skill_instructions,
+        declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
+        declared_packs=tuple(dict.fromkeys(pack.strip() for pack in declared_packs if pack.strip())),
+    )
+    from app.services.skill_guard import scan_skill_files
+
+    guard_report = scan_skill_files([{"path": "SKILL.md", "content": rendered}], source="save_skill_candidate")
+    if not guard_report.allowed:
+        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
+        return _workspace_error(
+            tool_name,
+            "skill_guard_blocked",
+            f"SkillGuard blocked this skill before activation: {categories}",
+            actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
+        )
+
+    evolution_dir = ws / "evolution"
+    evolution_dir.mkdir(parents=True, exist_ok=True)
+    candidate_path = evolution_dir / "skill_activation_candidates.md"
+    if not candidate_path.exists():
+        candidate_path.write_text("# Skill Activation Candidates\n\n", encoding="utf-8")
+
+    stamp = datetime.now(timezone.utc).isoformat()
+    candidate_id = f"skill_activation_candidate:{uuid.uuid4()}"
+    target_rel = f"skills/{slug}/SKILL.md"
+    with candidate_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n".join(
+                [
+                    f"## {stamp} {skill_name}",
+                    f"- candidate_id: {candidate_id}",
+                    "- status: pending_behavior_verification",
+                    f"- agent_id: {agent_id or ''}",
+                    f"- target: {target_rel}",
+                    f"- overwrite: {str(bool(overwrite)).lower()}",
+                    f"- declared_tools: {', '.join(declared_tools) or '(none)'}",
+                    f"- declared_packs: {', '.join(declared_packs) or '(none)'}",
+                    "",
+                    "```markdown",
+                    rendered.rstrip(),
+                    "```",
+                    "",
+                ]
+            )
+        )
+
+    try:
+        from app.services.skill_lifecycle import record_skill_lifecycle_event
+
+        record_skill_lifecycle_event(
+            ws,
+            skill_name=skill_name,
+            status="candidate",
+            note=(
+                f"Submitted via save_skill for external behavior verification at "
+                f"{candidate_path.relative_to(ws).as_posix()}; target={target_rel}"
+            ),
+        )
+    except Exception as exc:
+        logger.warning("[workspace] Failed to record skill activation candidate for %s: %s", skill_name, exc)
+
+    return (
+        f"🟡 save_skill submitted for review at {candidate_path.relative_to(ws).as_posix()}\n"
+        f"- candidate_id: {candidate_id}\n"
+        f"- target: {target_rel}\n"
+        f"- declared_tools: {', '.join(declared_tools) or '(none)'}\n"
+        f"- declared_packs: {', '.join(declared_packs) or '(none)'}\n"
+        "- active_skill_created: false\n"
+        "- promotion gate: external behavior eval + SkillGuard + regression check must pass before activation."
+    )
+
+
 async def _read_document(
     ws: Path,
     rel_path: str,
@@ -526,7 +645,7 @@ async def _read_document(
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        sub = rel_path[len("enterprise_info") :].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(file_path).startswith(str(enterprise_root)):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
@@ -542,16 +661,18 @@ async def _read_document(
     try:
         if ext == ".pdf":
             import pdfplumber
+
             text_parts = []
             with pdfplumber.open(str(file_path)) as pdf:
                 for i, page in enumerate(pdf.pages[:50]):
                     page_text = page.extract_text() or ""
                     if page_text:
-                        text_parts.append(f"--- Page {i+1} ---\n{page_text}")
+                        text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
             content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
         elif ext == ".docx":
             from docx import Document
             from docx.oxml.ns import qn
+
             doc = Document(str(file_path))
             lines: list[str] = []
 
@@ -587,6 +708,7 @@ async def _read_document(
             content = "\n".join(lines) if lines else "(Document is empty or uses unsupported formatting)"
         elif ext == ".xlsx":
             from openpyxl import load_workbook
+
             wb = load_workbook(str(file_path), read_only=True, data_only=True)
             sheets = []
             for ws_name in wb.sheetnames[:10]:
@@ -602,6 +724,7 @@ async def _read_document(
             content = "\n\n".join(sheets) if sheets else "(Excel is empty)"
         elif ext == ".pptx":
             from pptx import Presentation
+
             prs = Presentation(str(file_path))
             slides = []
             for i, slide in enumerate(prs.slides[:50]):
@@ -610,7 +733,7 @@ async def _read_document(
                     if hasattr(shape, "text") and shape.text.strip():
                         texts.append(shape.text)
                 if texts:
-                    slides.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
+                    slides.append(f"--- Slide {i + 1} ---\n" + "\n".join(texts))
             content = "\n\n".join(slides) if slides else "(PPT is empty)"
         elif ext in (".txt", ".md", ".json", ".csv", ".log"):
             content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -697,8 +820,13 @@ def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_f
                     identity, _, evo_notes = existing.partition(separator.rstrip())
                     # Split by entry boundaries (### HB-) and drop oldest entries
                     import re as _re
+
                     entries = _re.split(r"(?=### HB-)", evo_notes)
-                    while entries and len(identity) + len(separator) + sum(len(e) for e in entries) + len(content) > _APPEND_ONLY_MAX_CHARS:
+                    while (
+                        entries
+                        and len(identity) + len(separator) + sum(len(e) for e in entries) + len(content)
+                        > _APPEND_ONLY_MAX_CHARS
+                    ):
                         entries.pop(0)  # drop oldest entry
                     existing = identity + separator.rstrip() + "".join(entries)
             separator = "\n\n---\n## Evolution Notes (heartbeat-appended)\n\n"
@@ -907,10 +1035,10 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
         lines.append("")
         lines.append("Matching skills:")
         for skill in matching_skills[:20]:
-            declared = ", ".join(skill.metadata.declared_tools) if skill.metadata.declared_tools else "no declared tools"
-            lines.append(
-                f"- {skill.metadata.name}: {skill.metadata.description} | declared tools: {declared}"
+            declared = (
+                ", ".join(skill.metadata.declared_tools) if skill.metadata.declared_tools else "no declared tools"
             )
+            lines.append(f"- {skill.metadata.name}: {skill.metadata.description} | declared tools: {declared}")
     if len(lines) == 1:
         return f"🔎 No delayed tools or skills matched '{query}'"
     return "\n".join(lines)

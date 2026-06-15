@@ -19,10 +19,10 @@ class RuntimeToolGroupSpec:
 RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
     RuntimeToolGroupSpec(
         name="web_pack",
-        summary="网页搜索与抓取能力，用于公开信息检索与网页内容提取。",
+        summary="高级网页搜索与抓取能力，用于在基础 web_search/web_fetch 不足时升级到 provider-backed 检索和页面提取。",
         source="system",
-        activation_mode="通过 tool_search 发现 schema；需要方法时另读 web research skill",
-        tools=("firecrawl_fetch", "xcrawl_scrape"),
+        activation_mode="通过 tool_search 发现 schema；先用 CORE 的 web_search/web_fetch，结果不足时再升级。",
+        tools=("exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"),
     ),
     RuntimeToolGroupSpec(
         name="feishu_pack",

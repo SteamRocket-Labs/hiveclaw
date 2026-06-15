@@ -19,6 +19,7 @@ from __future__ import annotations
 
 SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "preview_workflow", "start_workflow"}
 WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
+ADVANCED_WEB_TOOLS = {"exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"}
 
 
 # ── Red test #1 — turn-1 visibility ─────────────────────────────────
@@ -113,3 +114,18 @@ def test_coordination_pack_retired_source_capabilities_stay_core():
 
     assert runtime_tool_group_for_name("coordination_pack") is None
     assert SOURCE_CAPABILITY_TOOLS <= CORE_TOOL_NAMES
+
+
+def test_web_search_core_but_advanced_web_tools_deferred():
+    """Basic web search is turn-1 core; provider-backed search/crawlers are
+    discovered through tool_search so the model chooses when to escalate."""
+    from app.services.agent_tools import CORE_TOOL_NAMES
+    from app.tools.runtime_tool_groups import runtime_tool_group_for_name
+
+    web_pack = runtime_tool_group_for_name("web_pack")
+
+    assert "web_search" in CORE_TOOL_NAMES
+    assert web_pack is not None
+    assert ADVANCED_WEB_TOOLS <= set(web_pack.tools)
+    assert "web_search" not in set(web_pack.tools)
+    assert not (ADVANCED_WEB_TOOLS & CORE_TOOL_NAMES)

@@ -38,9 +38,9 @@
 第二轮 owner/Codex 核对（命令 §8，已复跑确认：manifest pack 仅 2 个、coordination 8/8 + plan_mode 3/3 全 overlap CORE）逼出 7 条修正：
 
 1. **CORE 判据不以"是否治理"为准** — 治理是 call-time boundary。`write_file`/`run_command`/`start_workflow` 都是 CORE 却都需治理/plan gate。CORE/Plugin/Governance 三者正交（见 §0 北极星表）。
-2. **仅 `web_search` 进 CORE；`firecrawl_fetch`/`xcrawl_scrape` 保持 provider plugin** — 后两者需 provider key、无 key 不可用，不进 CORE（web_search 有 SearXNG/DDG 无 key 兜底，可进）。
+2. **仅基础 `web_search` 进 CORE；`exa_search`/`tavily_search`/`firecrawl_fetch`/`xcrawl_scrape` 保持 provider plugin** — 后四者需 provider key 或 provider runtime、无 key 不可用，不进 CORE（web_search 有 SearXNG/DDG 无 key兜底，可进）。
 3. **`pack.yaml` = install/composition/credential/governance/distribution 真相源；`@tool` decorator 仍是 executable schema 真相源** — runtime 用 `TenantInstalledPlugin`/`AgentPluginAssignment` 决定哪些 manifest-declared tools **可见**。**绝不让 manifest 变成第二套工具 schema。**
-4. **plugin manifest 的 tools 拆三字段** `owns`(本包定义) / `requires_core`(依赖的 CORE 工具，如 DR 依赖 web_search/web_fetch) / `optional_providers`(有 key 才解锁，如 firecrawl/xcrawl)。**`CORE∩pack.tools=∅` 断言只对 `owns`**，`requires_core` 允许引用 CORE。
+4. **plugin manifest 的 tools 拆三字段** `owns`(本包定义) / `requires_core`(依赖的 CORE 工具，如 DR 依赖 web_search/web_fetch) / `optional_providers`(有 key 才解锁，如 exa/tavily/firecrawl/xcrawl)。**`CORE∩pack.tools=∅` 断言只对 `owns`**，`requires_core` 允许引用 CORE。
 5. **ToolSearch 对齐 CC 机制但实现必须 provider-neutral** — 写成"provider-neutral deferred schema delta"；`tool_reference` 只是 Anthropic fast path，其他 provider 走 Hive 自己的 schema expansion/event path（守 L3 模型平等）。
 6. **MCP `mcp__server__tool` 迁移必须带 alias/backfill/collision audit** — 旧 `Tool.name`、历史 transcripts、skills 里的 declared tools、`AgentTool` rows 都要 alias/backfill，**不能直接 rename**。
 7. **fan-out 选 B（修正版，owner 已定）** — **不新增/不暴露 `fanout_subagents` 这个可执行工具**；现有 `fanout_subagents` 字符串仅作 `_SUBAGENT_BASE_EXCLUDED_TOOLS` recursion guard(`subagent.py:109`)，**必须保留**直到有等价 guard + 测试替代；同样**不删** `SubagentJob`/`SubagentBudget`(`workflow_launch.py` 活机件)。fan-out 收敛为 workflow `fanout_step`(确定性，DR 已走)+ 并行 `spawn_subagent`(临时，接 `run_in_background`)，对齐 CC 两条路径。
@@ -114,7 +114,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **2** ✅ | tool-contract | 修 critical：扩展现有 `result_envelope.py` 或新建 `ToolContentEnvelope(text+blocks)`（避免与 error/fallback envelope 命名碰撞），`adapt_and_call` 透传 typed content block(image/pdf)；`read_document`(PDF)/`read_file`(图)首接；保留纯字符串默认 | 1 |
 | **3** ✅ | lazy-loading | 文本端(`workspace.py`)与 schema 端(`invoker.py`)统一单一"query→可发现工具名"函数 `discoverable_tool_names_for_query`(agent_tools.py，单源)；MCP 发现共用 `list_agent_mcp_deferred_tools`，CORE 全程排除，dedup；invoker/workspace 退化为薄包装。顺手补 Step 2 envelope 类型契约(engine `ExecuteTool`/invoker 两处返回类型补 `ToolContentEnvelope`)。**已实施，证据见 §8。** | 0,4 |
 | **4** ✅ | plugin-system | 删 `catalog_reader.py:1-5` severance 注释；`PackManifest` 加 `agents`/`hooks`/`dependencies` 字段；manifest validator fail-closed 校验：hook handler 必须来自平台 allowlist、dependency 必须 pinned、dependency source ref 必须 admin-allowed，远程 source ref 在 signature/sandbox 基础设施未达标时结构化拒绝，禁止 raw shell/import/webhook handler；工具收集从清单读；`RUNTIME_TOOL_GROUPS` 退化 fallback；`audit.py` startup 分歧 fail | 0,1 |
-| **5** ✅ | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key，进 `optional_providers`) | 4 |
+| **5** ✅ | plugin-system | 新建 `TenantInstalledPlugin`+`AgentPluginAssignment`(镜像 MCPServer RLS)+`PluginHookRegistration`+dependency lock/install graph+source policy/provenance；`POST /enterprise/plugins/install\|list\|uninstall`；安装时先 resolver/validate/lock，再落安装记录；内置/本地 source v1 可安装，远程 source v1 只可被 policy 识别并 fail-closed；`pack_policy` 迁安装记录；**仅基础 `web_search` 进 CORE**(有 SearXNG/DDG 无 key 兜底)；**`exa_search`/`tavily_search`/`firecrawl_fetch`/`xcrawl_scrape` 留 provider plugin**(需 key/provider runtime，进 `optional_providers`) | 4 |
 | **6** ✅ | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解+slug+长度/碰撞,单源)；canonical 名进 `resource_discovery` 5 个生成点；canonical 别名在 `_execute_mcp_tool`(canonical 名对未 backfill 的 legacy 行也可解析→生成可先于 backfill 部署)；dry-run+apply backfill 脚本(纯 planner 已测,旧名→新名报告即回滚记录)；**核实**=`FALLBACK_EXECUTOR_NAME` registry 分支实为死代码(无人注册`__mcp_fallback__`,活兜底是 service `fallback_executor` kwarg)→删死分支统一单路径；`mcp_server:*` 伪 pack 实为 no-op(从不写该 policy+未知 pack 默认 True)→退役两处 gate+删 `make_mcp_server_pack_name`,MCP 可见性归 assignment 单一治理。**已实施，证据见 §8。** | 0,5 |
 | **7** ✅ | mcp | `MCPClient.list_resources/read_resource`(blob 走现有 >8KB artifact 溢出)+协议工具 `mcp_list_resources/mcp_read_resource`；DB 自省工具更名 `list_mcp_resources→list_mcp_tools`/`read_mcp_resource→inspect_mcp_tool`(旧名 alias 不破 transcript)；新建 `mcp_oauth.py` 标准 OAuth2 PKCE(加密存 token/守 mcp_authz/fail-closed)+`/enterprise/mcp/oauth/start\|callback` API+`resolve_mcp_oauth_bearer` 接入执行路径+`auth_status` 生命周期。**已实施，证据见 §8(含 OAuth live 验证诚实边界)。** | 6 |
 | **8** ✅ | subagent | schema 暴露 `run_in_background`(此前后端通但 LLM 不可达)；background spawn 落 `RuntimeTask(task_type="subagent")` durable record(非 resumable→startup `reconcile_orphaned_runtime_tasks` 把崩溃的 run 标 failed,parent poll 不再永久 running)；加 `check_subagent`(run_id 查/列表,ownership-scoped)；governance 按 type 分级**已存在**(`_TYPE_PRESETS` 给 explorer/critic 只读工具集,worker 才能编辑);completion wake/signal/tenant/recursion guard 沿用现有。**已实施，证据见 §8。** | 0 |
@@ -188,8 +188,8 @@ Step 5 把 `is_pack_enabled` 的**"缺省=启用"静默翻成"未安装=禁用"*
 ## 6. 决策已定（owner 拍板归档，呼应 critic 2：不悬置成分期）
 
 1. **fan-out = B(修正版)**：**不新增/不暴露 `fanout_subagents` 可执行工具**；现有 `fanout_subagents` 字符串仅作 `_SUBAGENT_BASE_EXCLUDED_TOOLS` recursion guard(`subagent.py:109`)，**保留**直到有等价 guard+测试替代；**不删** `SubagentJob`/`SubagentBudget`(`workflow_launch.py` 活机件)。fan-out 收敛为 workflow `fanout_step`(确定性，DR 已走)+ 并行 `spawn_subagent`(临时，接 `run_in_background`)，对齐 CC 两条路径；worker 本身的跨重启恢复在 Step 8 作为 durable run recovery 完成项。
-2. **web_search 进 CORE**：与 web_fetch 同层，无 key 走 SearXNG/DDG 兜底；`firecrawl`/`xcrawl` 不随之进 CORE(留 provider plugin 的 `optional_providers`)。
-3. **插件远程源体量决策**：v1 纳入 source model，但拆成两层：①零债必做的框架层：source policy/provenance schema、validator、lockfile、allowlist/blocklist、路径校验、结构化 fail-closed 错误，内置/本地 source v1 完整可用；②远程 git/url/npm/pip 的实际启用层：必须等 content hash/signature verification + sandbox materialization 基础设施达标，install-time binary/script 走 code_execution provider 沙箱。v1 不声称远程源可用；远程源在安全门达标前一律 fail-closed。
+2. **web_search 进 CORE**：与 web_fetch 同层，无 key 走 SearXNG/DDG 兜底；`exa`/`tavily` 高级搜索与 `firecrawl`/`xcrawl` 抓取不随之进 CORE(留 provider plugin 的 `optional_providers`，由 `tool_search` 激活)。
+3. **插件远程源体量决策（后续安全门，已显式标记）**：v1 纳入 source model，但拆成两层：①零债必做的框架层：source policy/provenance schema、validator、lockfile、allowlist/blocklist、路径校验、结构化 fail-closed 错误，内置/本地 source v1 完整可用；②远程 git/url/npm/pip 的实际启用层：必须等 content hash/signature verification + sandbox materialization 基础设施达标，install-time binary/script 走 code_execution provider 沙箱。v1 不声称远程源可用；远程源在安全门达标前一律 fail-closed。**当前标记**：已有 `code_execution`/Vercel Sandbox 是 runtime command executor，可复用为 materializer 后端，但不是远程插件供应链安装层；缺口是 fetch → verify signature/integrity → sandbox materialize → bundle/cache → lockfile provenance → install 的完整流水线。
 4. **subagent governance 分级**：read-only explorer/critic 降轻 zone(对齐 CC frictionless 侦察)，仅 edit-capable worker 保 sensitive。
 5. **`ToolMeta.governance` 细化**：先拆 `destructive` 观察，过度拆分前等真实治理需求。
 6. **插件 vs MCP 安装入口**：MCP 单 server 直装 + 插件批量安装两入口并存，文档化两入口关系防再分叉。
@@ -329,8 +329,8 @@ $ ruff check <核心文件>     # All checks passed!
 ### Step 5 — plugin-system 安装层 + web_search 进 CORE（✅ 2026-06-14）
 
 **改动文件：**
-- `app/services/agent_tools.py`：`web_search` 进 `CORE_TOOL_NAMES`（turn-1 base，有 SearXNG/DDG 无 key 兜底）+ 全链 tool-result 返回类型补 `ToolContentEnvelope`（Step 2 延伸）。
-- `app/tools/runtime_tool_groups.py` + `packs/web_pack/pack.yaml`(×2)：`web_pack` 清出 `web_search`（进 CORE，避免 CORE∩pack）；manifest 中 `web_search` 改 `requires_core`。
+- `app/services/agent_tools.py`：`web_search` 进 `CORE_TOOL_NAMES`（turn-1 base，有 SearXNG/DDG 无 key 兜底）+ 全链 tool-result 返回类型补 `ToolContentEnvelope`（Step 2 延伸）；`exa_search`/`tavily_search` 保持 provider-backed deferred。
+- `app/tools/runtime_tool_groups.py` + `packs/web_pack/pack.yaml`(×2)：`web_pack` 清出 `web_search`（进 CORE，避免 CORE∩pack）；manifest 中 `web_search` 改 `requires_core`，`exa_search`/`tavily_search`/`firecrawl_fetch`/`xcrawl_scrape` 为 `optional_provider`。
 - `app/models/installed_plugin.py`：新建 `TenantInstalledPlugin` + `AgentPluginAssignment` + `PluginHookRegistration`（镜像 MCPServer：tenant_id 强制 + FK CASCADE + UniqueConstraint）。
 - `alembic/versions/add_installed_plugin_tables_0614.py`：3 表 migration，RLS **ENABLE + FORCE** + tenant policy（P0 gap B：owner 连接也受约束）。`db_bootstrap.py` RLS_FORCED + `entrypoint.sh` import + `import_all_models`(pkgutil 自动) 三处 create_all 地基齐补（critic §5.2#1 防 Railway 漏表/漏 RLS）。
 - `app/services/plugin_install_service.py`：install/list/uninstall/backfill，全程 `tenant_scoped_session`（RLS-bound）+ manifest validate + source policy fail-closed（builtin/local 可装，远程拒）+ pinned lockfile + hook allowlist 校验。
@@ -540,3 +540,69 @@ $ pytest tests -q
 4477 passed, 7 skipped, 4 warnings   # 0 failed (= Step 9 的 4475 + 2 新 phase-not-exists 双路径测试)
 ```
 注：受保护文件全程未触碰；改动 7 代码文件(model 1 + migration 1 新 + 测试 1 + 注释 4) + doc 1，逐文件显式 stage。删 phase 后 4475→4477(+2 新测试，零现有测试失败 = 死列再证)。
+
+---
+
+### Step 11 — closure review 补齐（✅ 2026-06-15，plugin/runtime/product surface 全闭环）
+
+**触发原因：** Step 0-10 完成后做全面 review，发现三类"已设计但未完全接线"的真实遗漏：① manifest 支持 `hooks`/`dependencies`，但 runtime install/execute 链没有把它们变成治理对象；② plugin install 是 tenant 级记录，但 runtime resolver/API/Agent UI 没有完整 per-agent assignment 闭环；③ lazy loading 已单源化，但缺 CC 的 `select:<tool>` 直选、turn-1 deferred list、compaction/replay 可见 state。
+
+**11.1 Plugin hooks 治理化（不是自由执行面）：**
+- `app/services/plugin_hook_service.py`：新增 DB → runtime loader，把 `PluginHookRegistration` 编译为 `HookRegistrationSpec`，并在 startup/install/uninstall/assignment 后刷新。
+- allowlist handler 只允许平台拥有的 `plugin.audit` / `plugin.block` / `plugin.args_overlay`，manifest 不允许 Python import path、shell、webhook、任意 URL handler。
+- `app/runtime/hooks.py`：`HookMatcherSpec` 增 `tenant_ids`/`agent_ids`，`HookRegistry.unregister_key_prefix` 支持按 plugin/tenant 清理重载；matcher 支持 `agent=`/`tenant=` 条件。
+- `app/kernel/engine.py`：PRE/POST/FAILURE hook metadata 注入 `tenant_id`/source；PRE hook 若 block 或 args overlay，仍留在既有 tool schema/capability/preflight/approval 管线内，hook 只能收窄或阻断，不能绕过治理。
+- fail-closed 规则：plugin hook 必须有 enabled `AgentPluginAssignment` 才注册到对应 agent；未分配 agent 不进入治理关键路径。
+
+**11.2 Dependency/source 闭包补齐（远程源标记为后续安全门）：**
+- `app/models/installed_plugin.py` + `alembic/versions/add_plugin_dependency_edges_0615.py`：新增 `PluginDependencyEdge` tenant graph，RLS ENABLE/FORCE + bootstrap 清单同步。
+- `app/services/plugin_install_service.py`：`resolve_plugin_dependency_closure` 递归解析 builtin/local dependency；校验 exact version、cycle、source kind、local path traversal；生成 lockfile provenance（source kind/ref、manifest content SHA256、dependency closure）。
+- uninstall protection：被其他 installed plugin 依赖时拒绝卸载，避免 dependency graph 被拆断。
+- install approval closure：dependency 内的 `PRE_TOOL_USE enforce` hook 也用同一次 admin `approved_enforce_hooks` 校验；dependency assignment 继承本次 install 的 `agent_ids`，不会把依赖插件过宽暴露给所有 agent。
+- **显式未开放项**：远程 `git/url/npm/pip` source 仍只被 validator/source policy 识别并 fail-closed。已有 `code_execution`/Vercel Sandbox 是运行时命令沙箱，可作为未来 materializer 后端；但 remote plugin install 还需要 fetch、signature/integrity verification、sandbox materialization、bundle/cache、lockfile provenance 这一条供应链流水线，未达标前不得声称可用。
+
+**11.3 Runtime resolver + lazy loading 对齐 CC：**
+- `app/services/pack_policy_service.py`：新增 `get_agent_pack_policies(db, tenant_id, agent_id)`，runtime 工具可见性由 enabled `AgentPluginAssignment` 决定；tenant install 只代表 tenant 可用，不自动暴露给所有 agent。
+- `app/services/agent_tools.py`：`discoverable_tool_names_for_query` 支持 `select:<tool_name>` 直选；static deferred discovery 读取 agent-scoped plugin policy，避免未分配 agent 看到 plugin tool。
+- `app/runtime/prompt_builder.py` + `app/kernel/engine.py`：turn-1 dynamic suffix 枚举 `Available Deferred Tools` 并给出 `select:` 调用方式；`available_deferred_tools` 写入 session metadata，和 `discovered_tools` 一起覆盖 compaction/replay 后的 loaded-tool state。
+
+**11.4 Product/API surface 闭环：**
+- `app/api/plugins.py`：install request 支持 `agent_ids`；新增 `/agents/{agent_id}/plugins/{plugin_key}` per-agent enable/disable。
+- `app/services/mcp_server_service.py`：`get_agent_extensions` 返回 assigned `plugins`，与 skills/MCP servers 一起成为 Agent extension truth surface。
+- `app/api/capabilities.py` + `app/main.py`：capability/runtime summary routes 迁出 legacy `packs.py`，`packs_router` 不再挂载；`tests/api/test_pack_api_surface.py` 钉死。
+- Frontend `extensions.ts`/`WorkspaceToolsSection.tsx`/`ToolsManager.tsx`：Workspace 插件 install/backfill/uninstall；Agent Tools 展示 assigned plugins 并可切换 enabled；`en.json`/`zh.json` 双语补齐。
+- 注释 truth surface：`app/api/mcp_servers.py` 改为当前 active extension surface，不再说 legacy pack routes 未来才移除。
+
+**与远程 sandbox 讨论的最终边界：**
+已有 `services/code_execution/*` 解决的是 agent command runtime isolation；Step 11 不把它误写成 remote plugin supply-chain materializer。远程 source 后续必须以独立安全门进入：registry/source fetcher、signature/integrity verifier、sandbox materializer、immutable bundle cache、lockfile provenance、tenant audit/backfill/rollback。当前实现保持 fail-closed，是显式安全边界，不是隐藏债务。
+
+**验证证据：**
+```
+$ pytest tests/services/test_plugin_install_service.py -q
+15 passed
+
+$ pytest tests/services/test_mcp_server_service.py -q
+20 passed
+
+$ pytest tests/api/test_pack_api_surface.py tests/services/test_mcp_server_service.py -q
+23 passed
+
+$ pytest tests/runtime/test_hooks.py tests/services/test_plugin_install_service.py \
+         tests/services/test_mcp_tool_discovery.py tests/runtime/test_prompt_builder.py \
+         tests/api/test_pack_api_surface.py -q
+109 passed
+
+$ pytest tests -q
+4489 passed, 7 skipped, 4 warnings
+
+$ npm test -- --run src/api/domains/extensions.test.ts \
+         src/pages/workspace/WorkspaceRemainingSections.test.tsx \
+         src/pages/agent-detail/AgentDetailSections.test.tsx
+3 files passed, 41 tests passed
+
+$ npm run build
+passed
+
+$ alembic heads
+add_plugin_dependency_edges_0615 (head)
+```

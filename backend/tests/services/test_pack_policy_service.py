@@ -22,4 +22,7 @@ def test_policy_pack_names_include_dedicated_deep_research_tools_only():
 
     assert "deep_research_pack" in policy_pack_names_for_tool("deep_research_run")
     assert "deep_research_pack" not in policy_pack_names_for_tool("web_search")
-    assert "web_pack" in policy_pack_names_for_tool("web_search")
+    assert "web_pack" not in policy_pack_names_for_tool("web_search")
+    assert "web_pack" in policy_pack_names_for_tool("exa_search")
+    assert "web_pack" in policy_pack_names_for_tool("tavily_search")
+    assert "web_pack" in policy_pack_names_for_tool("firecrawl_fetch")

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -12,6 +13,7 @@ class CodeExecutionResult:
     exit_code: int = 0
     error: str | None = None
     timed_out: bool = False
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def render_command_result(command_label: str | None, result: CodeExecutionResult) -> str:

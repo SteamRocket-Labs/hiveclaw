@@ -59,6 +59,8 @@ TOOL_TIMEOUTS: dict[str, float] = {
     "send_message_to_agent": 180.0,
     "web_fetch": 60.0,
     "web_search": 60.0,
+    "exa_search": 60.0,
+    "tavily_search": 60.0,
     "firecrawl_fetch": 60.0,
     "xcrawl_scrape": 60.0,
     "read_document": 60.0,
@@ -724,11 +726,12 @@ class ToolRuntimeService:
                 )
             checkpoint_id = checkpoint.id
 
+        decision_ref = ""
         if self.decision_trace_store is not None:
             preflight_trace = preflight.as_decision_trace_preflight()
             if checkpoint_id:
                 preflight_trace["checkpoint_id"] = checkpoint_id
-            self.decision_trace_store.record_decision(
+            decision = self.decision_trace_store.record_decision(
                 action=preflight_input.action,
                 chosen=preflight.decision.value,
                 reasoning="Tool runtime preflight blocked execution before registry/backend invocation.",
@@ -737,10 +740,17 @@ class ToolRuntimeService:
                 charter_zone=preflight_input.charter_zone.value,
                 preflight=preflight_trace,
                 sensitivity=preflight_input.sensitivity.value,
+                tenant_id=str(runtime_context.tenant_id) if runtime_context.tenant_id else None,
+                agent_id=str(runtime_context.agent_id),
+                user_id=str(runtime_context.user_id),
+                session_id=runtime_context.session_id,
+                tool_name=tool_name,
+                checkpoint_id=checkpoint_id or None,
             )
+            decision_ref = f"decision/{decision.id}"
 
         await self._log_preflight_decision(tool_name, runtime_context, preflight)
-        return _render_preflight_block(tool_name, preflight, checkpoint_id=checkpoint_id)
+        return _render_preflight_block(tool_name, preflight, checkpoint_id=checkpoint_id, decision_ref=decision_ref)
 
     async def _log_preflight_decision(
         self,
@@ -812,11 +822,19 @@ def _build_tool_preflight_input(
     )
 
 
-def _render_preflight_block(tool_name: str, preflight: ActionPreflightResult, *, checkpoint_id: str = "") -> str:
+def _render_preflight_block(
+    tool_name: str,
+    preflight: ActionPreflightResult,
+    *,
+    checkpoint_id: str = "",
+    decision_ref: str = "",
+) -> str:
     reason_text = ",".join(preflight.reasons) if preflight.reasons else "unspecified"
     suffix = ""
     if preflight.escalation_target:
         suffix = f" escalation_target={preflight.escalation_target}"
     if checkpoint_id:
         suffix += f" checkpoint={checkpoint_id}"
+    if decision_ref:
+        suffix += f" decision={decision_ref}"
     return f"[Preflight:{preflight.decision.value}] {tool_name} was not executed. reasons={reason_text}{suffix}"

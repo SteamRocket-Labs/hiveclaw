@@ -282,6 +282,51 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_reco
 
 
 @pytest.mark.asyncio
+async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_subagent_records(monkeypatch):
+    from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+
+    resumable_subagent = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "subagent",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+            },
+        },
+    )()
+    unsafe_subagent = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "subagent",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {
+                "resume_after_restart": False,
+                "resumable_subagent": False,
+            },
+        },
+    )()
+    fake_session = _ReconcileSession([resumable_subagent, unsafe_subagent])
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+
+    updated = await reconcile_orphaned_runtime_tasks()
+
+    assert updated == 1
+    assert resumable_subagent.status == "running"
+    assert unsafe_subagent.status == "failed"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_reconcile_orphaned_runtime_tasks_skips_excluded_ids(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 

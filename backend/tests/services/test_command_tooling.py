@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -117,3 +119,41 @@ def test_execution_environment_strips_registry_url_credentials(tmp_path: Path, m
     assert env["NPM_CONFIG_REGISTRY"] == "https://registry.example/npm/"
     assert "token" not in " ".join(env.values())
     assert "secret" not in " ".join(env.values())
+
+
+@pytest.mark.asyncio
+async def test_local_provider_sanitizes_caller_env_and_records_evidence(tmp_path: Path, monkeypatch):
+    from app.services.code_execution.local_provider import execute_local_sandboxed_command
+
+    monkeypatch.setenv("HIVE_CODE_SANDBOX_MODE", "none")
+    monkeypatch.setenv("HIVE_ALLOW_UNSANDBOXED_CODE_EXEC", "1")
+
+    home = tmp_path / "home"
+    work_dir = tmp_path / "work"
+    home.mkdir()
+    work_dir.mkdir()
+    result = await execute_local_sandboxed_command(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ.get('OPENAI_API_KEY', 'missing')); "
+            "print(os.environ.get('DATABASE_URL', 'missing'))",
+        ],
+        work_dir=work_dir,
+        env={
+            "HOME": str(home),
+            "PATH": os.environ.get("PATH", "/usr/bin"),
+            "OPENAI_API_KEY": "sk-test",
+            "DATABASE_URL": "postgresql://owner-secret",
+        },
+        timeout=5,
+    )
+
+    assert result.error is None
+    assert "sk-test" not in result.stdout
+    assert "postgresql://owner-secret" not in result.stdout
+    assert result.stdout.count("missing") == 2
+    assert result.evidence["provider"] == "local_os_sandbox"
+    assert result.evidence["isolation"] == "unsandboxed_dev_bypass"
+    assert result.evidence["credential_egress"] == "blocked_by_env_allowlist"
+    assert result.evidence["env_policy"]["credential_keys_blocked"] == ["DATABASE_URL", "OPENAI_API_KEY"]

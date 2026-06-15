@@ -12,6 +12,7 @@ from pathlib import Path
 from vercel.sandbox import AsyncSandbox, WriteFile
 
 from app.services.code_execution.contracts import CodeExecutionResult
+from app.services.code_execution.env_policy import sanitize_agent_execution_env
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,31 @@ def _missing_vercel_config() -> list[str]:
 def _vercel_env(env: dict[str, str]) -> dict[str, str]:
     # Do not force local HOME/PATH/TMPDIR into the microVM. Capability-specific
     # credentials must be brokered explicitly, not inherited from backend env.
-    return {key: value for key, value in env.items() if key not in {"HOME", "PATH", "TMPDIR"} and value is not None}
+    return {
+        key: value
+        for key, value in env.items()
+        if key not in {"HOME", "PATH", "TMPDIR", "TMP", "TEMP"} and value is not None
+    }
+
+
+def _vercel_evidence(
+    *,
+    network_policy: str,
+    env_policy: dict,
+    remote_env_keys: list[str] | None = None,
+    configured: bool = True,
+) -> dict:
+    return {
+        "provider": "vercel_sandbox",
+        "configured": configured,
+        "isolation": "vercel_microvm",
+        "network_policy": network_policy,
+        "credential_egress": "blocked_by_env_allowlist",
+        "provider_credentials_exposed_to_sandbox": False,
+        "workspace_materialization": "tar_upload_sync_back",
+        "remote_env_keys": sorted(remote_env_keys or []),
+        "env_policy": env_policy,
+    }
 
 
 def _create_workspace_archive(work_dir: Path) -> bytes:
@@ -78,6 +103,8 @@ async def execute_vercel_sandbox_command(
     runtime: str | None = None,
     network_policy: str | None = None,
 ) -> CodeExecutionResult:
+    policy = (network_policy or os.environ.get("HIVE_CODE_EXEC_NETWORK_POLICY", "deny-all")).strip() or "deny-all"
+    safe_env, env_policy = sanitize_agent_execution_env(env, require_home=False)
     missing = _missing_vercel_config()
     if missing:
         return CodeExecutionResult(
@@ -85,14 +112,15 @@ async def execute_vercel_sandbox_command(
                 "❌ Vercel Sandbox unavailable: missing "
                 + ", ".join(missing)
                 + ". Configure Railway backend env before enabling HIVE_CODE_EXEC_PROVIDER=vercel_sandbox."
-            )
+            ),
+            evidence=_vercel_evidence(network_policy=policy, env_policy=env_policy, configured=False),
         )
 
-    policy = (network_policy or os.environ.get("HIVE_CODE_EXEC_NETWORK_POLICY", "deny-all")).strip() or "deny-all"
     # Vercel SDK create()/extend_timeout() take MILLISECONDS; `timeout` here is seconds.
     sandbox_timeout_ms = max(timeout + 30, 60) * 1000
-    local_home = env.get("HOME")
+    local_home = safe_env.get("HOME")
     sandbox = None
+    exec_env: dict[str, str] = {}
     try:
         sandbox = await AsyncSandbox.create(
             team_id=os.environ["VERCEL_TEAM_ID"],
@@ -102,7 +130,7 @@ async def execute_vercel_sandbox_command(
             timeout=sandbox_timeout_ms,
             network_policy=policy,
         )
-        exec_env = _vercel_env(env)
+        exec_env = _vercel_env(safe_env)
         exec_env["HOME"] = _REMOTE_HOME
         await sandbox.run_command("mkdir", ["-p", _REMOTE_WORKSPACE, _REMOTE_HOME])
         await sandbox.write_files([WriteFile(path=_INPUT_ARCHIVE, content=_create_workspace_archive(work_dir))])
@@ -128,11 +156,35 @@ async def execute_vercel_sandbox_command(
             home_bytes = await sandbox.read_file(_HOME_ARCHIVE)
             if home_bytes:
                 _safe_extract_workspace_archive(home_bytes, Path(local_home))
-        return CodeExecutionResult(stdout=stdout, stderr=stderr, exit_code=finished.exit_code)
+        return CodeExecutionResult(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=finished.exit_code,
+            evidence=_vercel_evidence(
+                network_policy=policy,
+                env_policy=env_policy,
+                remote_env_keys=sorted(exec_env),
+            ),
+        )
     except asyncio.TimeoutError:
-        return CodeExecutionResult(error=f"❌ Command timed out after {timeout}s", timed_out=True)
+        return CodeExecutionResult(
+            error=f"❌ Command timed out after {timeout}s",
+            timed_out=True,
+            evidence=_vercel_evidence(
+                network_policy=policy,
+                env_policy=env_policy,
+                remote_env_keys=sorted(exec_env),
+            ),
+        )
     except Exception as e:
-        return CodeExecutionResult(error=f"❌ Vercel Sandbox execution error: {str(e)[:300]}")
+        return CodeExecutionResult(
+            error=f"❌ Vercel Sandbox execution error: {str(e)[:300]}",
+            evidence=_vercel_evidence(
+                network_policy=policy,
+                env_policy=env_policy,
+                remote_env_keys=sorted(exec_env),
+            ),
+        )
     finally:
         if sandbox is not None:
             try:

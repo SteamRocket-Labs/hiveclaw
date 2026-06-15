@@ -48,6 +48,9 @@ _UNKNOWN_PROVENANCE = "unknown"
 
 _STALE_AFTER_DAYS = 30
 _ARCHIVE_AFTER_DAYS = 90
+_USE_COUNT_GRACE_DAYS = 2.0
+_VIEW_COUNT_GRACE_DAYS = 0.5
+_MAX_COUNTER_GRACE_DAYS = 60.0
 
 _USAGE_FILENAME = ".usage.json"
 _ARCHIVE_DIRNAME = ".archive"
@@ -246,9 +249,6 @@ def apply_skill_auto_transitions(
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    stale_cutoff = now - timedelta(days=stale_after_days)
-    archive_cutoff = now - timedelta(days=archive_after_days)
-
     transitions: list[dict[str, str]] = []
     for slug, rec in usage.items():
         if not isinstance(rec, dict):
@@ -263,6 +263,10 @@ def apply_skill_auto_transitions(
             continue
 
         anchor = _parse_iso(rec.get("last_used_at")) or _parse_iso(rec.get("created_at")) or now
+        counter_grace_days = _counter_grace_days(rec)
+        stale_cutoff = now - timedelta(days=stale_after_days + counter_grace_days)
+        archive_cutoff = now - timedelta(days=archive_after_days + counter_grace_days)
+        reason_suffix = _counter_grace_reason(counter_grace_days)
 
         if anchor <= archive_cutoff:
             transitions.append(
@@ -270,7 +274,7 @@ def apply_skill_auto_transitions(
                     "slug": slug,
                     "from": current,
                     "to": STATE_ARCHIVED,
-                    "reason": f"unused since {anchor.date()} (> {archive_after_days}d)",
+                    "reason": f"unused since {anchor.date()} (> {archive_after_days}d{reason_suffix})",
                 }
             )
         elif anchor <= stale_cutoff and current == STATE_ACTIVE:
@@ -279,11 +283,31 @@ def apply_skill_auto_transitions(
                     "slug": slug,
                     "from": current,
                     "to": STATE_STALE,
-                    "reason": f"unused since {anchor.date()} (> {stale_after_days}d)",
+                    "reason": f"unused since {anchor.date()} (> {stale_after_days}d{reason_suffix})",
                 }
             )
 
     return transitions
+
+
+def _counter_grace_days(rec: dict[str, Any]) -> float:
+    use_count = _non_negative_float(rec.get("use_count"))
+    view_count = _non_negative_float(rec.get("view_count"))
+    grace = (use_count * _USE_COUNT_GRACE_DAYS) + (view_count * _VIEW_COUNT_GRACE_DAYS)
+    return min(_MAX_COUNTER_GRACE_DAYS, grace)
+
+
+def _non_negative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _counter_grace_reason(counter_grace_days: float) -> str:
+    if counter_grace_days <= 0:
+        return ""
+    return f" + {counter_grace_days:g}d counter grace"
 
 
 # ---------------------------------------------------------------------------

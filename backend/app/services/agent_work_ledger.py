@@ -24,6 +24,7 @@ from app.models.runtime_task import RuntimeTask
 LEDGER_SCHEMA = "agent_work_ledger.v1"
 LEDGER_RESUME_SCHEMA = "agent_work_ledger_resume.v1"
 LEDGER_VIEW_SCHEMA = "agent_work_ledger_view.v1"
+PROGRESS_LEDGER_SCHEMA = "agent_progress_ledger.v1"
 
 TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
 OPEN_ITEM_STATUSES = {"pending", "in_progress"}
@@ -186,6 +187,16 @@ def _normalize_progress(item: dict[str, Any], *, fallback_id: str) -> dict[str, 
     }
 
 
+def _normalize_replan(item: dict[str, Any], *, fallback_id: str) -> dict[str, Any]:
+    return {
+        "id": _clean_text(item.get("id")) or fallback_id,
+        "summary": _clean_text(item.get("summary") or item.get("reason")),
+        "changed_strategy": _clean_text(item.get("changed_strategy") or item.get("next_strategy")),
+        "source_refs": [str(ref) for ref in item.get("source_refs", []) if str(ref).strip()],
+        "created_at": item.get("created_at") or _now_iso(),
+    }
+
+
 def _write_ledger(
     *,
     agent_id: uuid.UUID,
@@ -216,6 +227,7 @@ def initialize_agent_work_ledger_artifact(
     findings: list[dict[str, Any]] | None = None,
     progress: list[dict[str, Any]] | None = None,
     failures: list[dict[str, Any]] | None = None,
+    replans: list[dict[str, Any]] | None = None,
     verification: list[dict[str, Any]] | None = None,
     open_questions: list[Any] | None = None,
     evidence_refs: list[Any] | None = None,
@@ -255,6 +267,9 @@ def initialize_agent_work_ledger_artifact(
         "failures": [
             _normalize_failure(item, fallback_id=f"failure-{index}")
             for index, item in enumerate(failures or [], start=1)
+        ],
+        "replans": [
+            _normalize_replan(item, fallback_id=f"replan-{index}") for index, item in enumerate(replans or [], start=1)
         ],
         "verification": [
             _normalize_verification(item, fallback_id=f"verify-{index}")
@@ -654,15 +669,16 @@ def append_agent_work_ledger_finding(
     source: str = "agent_authored",
     data_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Append a finding / open_question / failure — a pure cognitive write.
+    """Append a finding / open_question / failure / replan — a pure cognitive write.
 
     Service primitive behind the ``record_finding`` tool. Routes ``summary`` to
-    the right scoped list (``findings`` / ``open_questions`` / ``failures``)
-    without disturbing the rest of the ledger and without triggering execution.
+    the right scoped list (``findings`` / ``open_questions`` / ``failures`` /
+    ``replans``) without disturbing the rest of the ledger and without
+    triggering execution.
     """
 
     kind = _clean_text(finding_type).lower()
-    if kind not in {"finding", "open_question", "failure"}:
+    if kind not in {"finding", "open_question", "failure", "replan"}:
         raise ValueError(finding_type)
     clean_summary = _clean_text(summary)
     if not clean_summary:
@@ -702,7 +718,7 @@ def append_agent_work_ledger_finding(
         questions.append(clean_summary)
         ledger["open_questions"] = questions
         recorded = {"summary": clean_summary}
-    else:  # failure
+    elif kind == "failure":
         failures = list(ledger.get("failures") or [])
         entry = _normalize_failure(
             {
@@ -716,6 +732,19 @@ def append_agent_work_ledger_finding(
         failures.append(entry)
         ledger["failures"] = failures
         recorded = _display_failure(entry)
+    else:  # replan
+        replans = list(ledger.get("replans") or [])
+        entry = _normalize_replan(
+            {
+                "summary": clean_summary,
+                "changed_strategy": next_strategy or "",
+                "source_refs": source_refs or [],
+            },
+            fallback_id=f"replan-{len(replans) + 1}",
+        )
+        replans.append(entry)
+        ledger["replans"] = replans
+        recorded = _display_replan(entry)
 
     _write_ledger(agent_id=agent_id, payload=ledger, path=path, data_root=data_root)
     return {"type": kind, "recorded": recorded}
@@ -767,6 +796,174 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
         ],
         "progress_count": len(ledger.get("progress") or []),
     }
+
+
+def _open_required_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in items
+        if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) != "completed"
+    ]
+
+
+def _first_open_item(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    in_progress = [item for item in items if _normalize_task_status(item.get("status")) == "in_progress"]
+    if in_progress:
+        return in_progress[0]
+    return items[0] if items else None
+
+
+def _progress_delta(item: dict[str, Any]) -> str:
+    return _clean_text(item.get("delta") or item.get("summary") or item.get("status"))
+
+
+def _stall_count(progress: list[dict[str, Any]]) -> int:
+    if not progress:
+        return 0
+    latest = _progress_delta(progress[-1])
+    if not latest:
+        return 0
+    count = 0
+    for item in reversed(progress):
+        if _progress_delta(item) != latest:
+            break
+        count += 1
+    return count
+
+
+def _parse_ledger_timestamp(value: Any) -> datetime | None:
+    raw = _clean_text(value)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_by_created_at(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates: list[tuple[datetime, int, dict[str, Any]]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        created_at = _parse_ledger_timestamp(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)
+        candidates.append((created_at, index, item))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
+    return candidates[-1][2]
+
+
+def _items_after(items: list[dict[str, Any]], boundary: datetime | None) -> list[dict[str, Any]]:
+    if boundary is None:
+        return items
+    return [
+        item
+        for item in items
+        if (_parse_ledger_timestamp(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) > boundary
+    ]
+
+
+def build_agent_progress_ledger_review(
+    ledger: dict[str, Any] | None,
+    *,
+    stall_threshold: int = 3,
+) -> dict[str, Any]:
+    """Build a Magentic-One style progress review from the Work Ledger.
+
+    The review is intentionally derived, not separately authored. It answers the
+    orchestration questions the model needs each round: is the request satisfied,
+    are we looping, who owns the next action, and should the plan be revised?
+    """
+
+    if not ledger:
+        return {
+            "schema": PROGRESS_LEDGER_SCHEMA,
+            "present": False,
+            "request_satisfied": False,
+            "stalled": False,
+            "stall_count": 0,
+            "needs_replan": False,
+            "next_owner": "",
+            "next_action": "",
+            "open_required_todos": [],
+            "open_verification": [],
+            "open_failures": [],
+        }
+
+    todos = _open_required_items(list(ledger.get("todo_items") or []))
+    verification = _open_required_items(list(ledger.get("verification") or []))
+    replans = [item for item in list(ledger.get("replans") or []) if isinstance(item, dict)]
+    latest_replan = _latest_by_created_at(replans)
+    latest_replan_at = _parse_ledger_timestamp(latest_replan.get("created_at")) if latest_replan else None
+    progress = [item for item in list(ledger.get("progress") or []) if isinstance(item, dict)]
+    progress_since_replan = _items_after(progress, latest_replan_at)
+    failures = [
+        item
+        for item in list(ledger.get("failures") or [])
+        if not bool(item.get("resolved", False)) and _clean_text(item.get("error"))
+    ]
+    failures_since_replan = _items_after(failures, latest_replan_at)
+    stall_count = _stall_count(progress_since_replan)
+    blocked = any(_clean_text(item.get("blocked_reason")) for item in progress_since_replan[-max(1, stall_threshold) :])
+    stalled = stall_count >= max(1, stall_threshold) or blocked
+    request_satisfied = (
+        _normalize_status(ledger.get("status"), default="running") in {"completed", "skipped"}
+        and not todos
+        and not verification
+        and not failures_since_replan
+    )
+    next_item = _first_open_item(todos) or _first_open_item(verification)
+    next_action = _clean_text((next_item or {}).get("title") or (next_item or {}).get("content"))
+    next_owner = _clean_text((next_item or {}).get("owner"))
+    needs_replan = bool((stalled and not request_satisfied) or failures_since_replan)
+
+    return {
+        "schema": PROGRESS_LEDGER_SCHEMA,
+        "present": True,
+        "request_satisfied": request_satisfied,
+        "stalled": stalled,
+        "stall_count": stall_count,
+        "needs_replan": needs_replan,
+        "next_owner": next_owner,
+        "next_action": next_action,
+        "open_required_todos": [_clean_text(item.get("title") or item.get("content")) for item in todos],
+        "open_verification": [_clean_text(item.get("title") or item.get("content")) for item in verification],
+        "open_failures": [_clean_text(item.get("error")) for item in failures_since_replan[-3:]],
+        "latest_progress": _progress_delta(progress[-1]) if progress else "",
+        "latest_replan": _clean_text((latest_replan or {}).get("summary")),
+    }
+
+
+def render_progress_ledger_block(review: dict[str, Any] | None) -> str:
+    if not review or not review.get("present"):
+        return ""
+    lines = [
+        "## Progress Ledger",
+        f"- request_satisfied={str(bool(review.get('request_satisfied'))).lower()}",
+        f"- stalled={str(bool(review.get('stalled'))).lower()} stall_count={int(review.get('stall_count') or 0)}",
+        f"- needs_replan={str(bool(review.get('needs_replan'))).lower()}",
+    ]
+    next_action = _clean_text(review.get("next_action"))
+    next_owner = _clean_text(review.get("next_owner"))
+    if next_action:
+        owner_suffix = f" owner={next_owner}" if next_owner else ""
+        lines.append(f"- next_action={next_action}{owner_suffix}")
+    latest = _clean_text(review.get("latest_progress"))
+    if latest:
+        lines.append(f"- latest_progress={latest}")
+    latest_replan = _clean_text(review.get("latest_replan"))
+    if latest_replan:
+        lines.append(f"- latest_replan={latest_replan}")
+    failures = [item for item in review.get("open_failures") or [] if _clean_text(item)]
+    if failures:
+        lines.append("- open_failures=" + "; ".join(failures))
+    if review.get("needs_replan"):
+        lines.append("If stalled or failures repeat, revise the task/progress ledger before continuing.")
+    return "\n".join(lines)
 
 
 def should_enable_work_ledger(
@@ -897,6 +1094,9 @@ def render_work_ledger_reminder_snapshot(view: dict[str, Any] | None, *, limit: 
     remaining = len(todos) - len(display_items)
     if remaining > 0:
         lines.append(f"- ... {remaining} more todo(s); call read_ledger for full detail.")
+    review_block = render_progress_ledger_block(view.get("progress_ledger") if isinstance(view, dict) else None)
+    if review_block:
+        lines.append(review_block)
     return "\n".join(lines)
 
 
@@ -965,6 +1165,16 @@ def _display_finding(item: dict[str, Any]) -> dict[str, Any]:
         "summary": _clean_text(item.get("summary")),
         "source_refs": [str(ref) for ref in item.get("source_refs", []) if str(ref).strip()],
         "trust": _clean_text(item.get("trust")) or "unverified",
+        "created_at": item.get("created_at"),
+    }
+
+
+def _display_replan(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _clean_text(item.get("id")),
+        "summary": _clean_text(item.get("summary")),
+        "changed_strategy": _clean_text(item.get("changed_strategy")),
+        "source_refs": [str(ref) for ref in item.get("source_refs", []) if str(ref).strip()],
         "created_at": item.get("created_at"),
     }
 
@@ -1124,6 +1334,11 @@ def build_agent_work_ledger_display_view(
         for item in ledger.get("failures", [])[-10:]
         if isinstance(item, dict) and _clean_text(item.get("error"))
     ]
+    replans = [
+        _display_replan(item)
+        for item in ledger.get("replans", [])[-10:]
+        if isinstance(item, dict) and _clean_text(item.get("summary"))
+    ]
     findings = [
         _display_finding(item)
         for item in ledger.get("findings", [])[-10:]
@@ -1142,6 +1357,7 @@ def build_agent_work_ledger_display_view(
         if bool(item.get("required", True)) and _normalize_task_status(item.get("status")) in OPEN_ITEM_STATUSES
     )
     failures_open = sum(1 for item in failures if not bool(item.get("resolved", False)))
+    progress_ledger = build_agent_progress_ledger_review(ledger)
 
     return {
         "schema": LEDGER_VIEW_SCHEMA,
@@ -1155,7 +1371,9 @@ def build_agent_work_ledger_display_view(
         "todo_items": todos,
         "verification": verification,
         "progress": progress,
+        "progress_ledger": progress_ledger,
         "failures": failures,
+        "replans": replans,
         "findings": findings,
         "open_questions": [str(item).strip() for item in ledger.get("open_questions", []) if str(item).strip()],
         "evidence_refs": [str(item).strip() for item in ledger.get("evidence_refs", []) if str(item).strip()],
@@ -1166,6 +1384,7 @@ def build_agent_work_ledger_display_view(
             "verification_pending": verification_pending,
             "progress_count": len(ledger.get("progress") or []),
             "failures_open": failures_open,
+            "replan_count": len(ledger.get("replans") or []),
         },
         "created_at": ledger.get("created_at"),
         "updated_at": ledger.get("updated_at"),
@@ -1363,9 +1582,11 @@ __all__ = [
     "LEDGER_RESUME_SCHEMA",
     "LEDGER_SCHEMA",
     "LEDGER_VIEW_SCHEMA",
+    "PROGRESS_LEDGER_SCHEMA",
     "append_agent_work_ledger_finding",
     "append_agent_work_ledger_progress",
     "assign_todo_owner",
+    "build_agent_progress_ledger_review",
     "build_agent_work_ledger_display_view",
     "build_agent_work_ledger_resume_summary",
     "initialize_agent_work_ledger_artifact",
@@ -1373,6 +1594,7 @@ __all__ = [
     "read_latest_session_work_ledger_view",
     "read_agent_work_ledger_view",
     "record_delegated_todo_status",
+    "render_progress_ledger_block",
     "render_work_ledger_reminder_snapshot",
     "render_work_ledger_resume_block",
     "should_enable_work_ledger",

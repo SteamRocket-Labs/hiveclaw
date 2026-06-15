@@ -89,6 +89,7 @@ def _flatten_tool_content_to_text(content: "str | list | None") -> str:
 # Data Models
 # ============================================================================
 
+
 @dataclass
 class LLMMessage:
     """Unified message format."""
@@ -106,9 +107,7 @@ class LLMMessage:
         msg: dict[str, Any] = {"role": self.role}
         if self.content is not None:
             # OpenAI's tool-result channel is text-only; flatten multimodal blocks.
-            msg["content"] = (
-                _flatten_tool_content_to_text(self.content) if self.role == "tool" else self.content
-            )
+            msg["content"] = _flatten_tool_content_to_text(self.content) if self.role == "tool" else self.content
         if self.tool_calls:
             msg["tool_calls"] = self.tool_calls
         if self.tool_call_id:
@@ -121,9 +120,9 @@ class LLMMessage:
         """Convert to Anthropic format (returns None for system messages)."""
         if self.role == "system":
             return None
-            
+
         role = self.role
-        
+
         # Tool response (from user to assistant)
         if role == "tool":
             return {
@@ -134,28 +133,30 @@ class LLMMessage:
                         "tool_use_id": self.tool_call_id,
                         "content": _anthropic_tool_result_content(self.content),
                     }
-                ]
+                ],
             }
-            
+
         content_blocks = []
-        
+
         # Anthropic thinking signatures are model-issued and model-bound. If
         # the signature is missing, omit the thinking block instead of
         # inventing one; a synthetic signature causes native Anthropic follow-up
         # calls to fail.
         if self.role == "assistant" and self.reasoning_content and self.reasoning_signature:
-            content_blocks.append({
-                "type": "thinking",
-                "thinking": self.reasoning_content,
-                "signature": self.reasoning_signature,
-            })
+            content_blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": self.reasoning_content,
+                    "signature": self.reasoning_signature,
+                }
+            )
 
         if self.content:
             if isinstance(self.content, list):
                 content_blocks.extend(dict(block) if isinstance(block, dict) else block for block in self.content)
             else:
                 content_blocks.append({"type": "text", "text": self.content})
-            
+
         # Tool requests (from assistant to user)
         if self.tool_calls:
             for tc in self.tool_calls:
@@ -166,16 +167,18 @@ class LLMMessage:
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {}
-                
-                content_blocks.append({
-                    "type": "tool_use",
-                    "id": tc.get("id", ""),
-                    "name": function_call.get("name", ""),
-                    "input": args
-                })
-                
+
+                content_blocks.append(
+                    {"type": "tool_use", "id": tc.get("id", ""), "name": function_call.get("name", ""), "input": args}
+                )
+
         # Handle the structure
-        if len(content_blocks) == 1 and content_blocks[0]["type"] == "text":
+        if (
+            len(content_blocks) == 1
+            and isinstance(content_blocks[0], dict)
+            and content_blocks[0].get("type") == "text"
+            and set(content_blocks[0].keys()) <= {"type", "text"}
+        ):
             content = content_blocks[0]["text"]
         else:
             content = content_blocks
@@ -233,6 +236,7 @@ ThinkingCallback = Callable[[str], Coroutine[Any, Any, None]]
 # ============================================================================
 # Base Client Interface
 # ============================================================================
+
 
 class LLMClient(ABC):
     """Abstract base class for LLM clients."""
@@ -393,9 +397,7 @@ def _is_output_cap_finish_reason(finish_reason: str | None) -> bool:
     return (finish_reason or "").strip().lower() in _OUTPUT_CAP_FINISH_REASONS
 
 
-def _record_output_cap_hit(
-    *, provider: str, model: str, finish_reason: str | None, mode: str, phase: str
-) -> None:
+def _record_output_cap_hit(*, provider: str, model: str, finish_reason: str | None, mode: str, phase: str) -> None:
     reason = (finish_reason or "unknown").strip().lower() or "unknown"
     try:
         from app.memory import metrics
@@ -593,6 +595,7 @@ class _CapAwareLLMClient(LLMClient):
 # OpenAI-Compatible Client
 # ============================================================================
 
+
 class OpenAICompatibleClient(LLMClient):
     """Client for OpenAI-compatible APIs (OpenAI, DeepSeek, Qwen, etc.)."""
 
@@ -760,9 +763,7 @@ class OpenAICompatibleClient(LLMClient):
         # Regular content with think tag filtering
         if delta.get("content"):
             text = delta["content"]
-            chunk.content, in_think, tag_buffer = self._filter_think_tags(
-                text, in_think, tag_buffer
-            )
+            chunk.content, in_think, tag_buffer = self._filter_think_tags(text, in_think, tag_buffer)
 
         # Tool calls
         if delta.get("tool_calls"):
@@ -772,9 +773,7 @@ class OpenAICompatibleClient(LLMClient):
 
         return chunk, in_think, tag_buffer
 
-    def _filter_think_tags(
-        self, text: str, in_think: bool, tag_buffer: str
-    ) -> tuple[str, bool, str]:
+    def _filter_think_tags(self, text: str, in_think: bool, tag_buffer: str) -> tuple[str, bool, str]:
         """Filter out <think>...</think> tags from content.
 
         Returns (filtered_content, new_in_think, new_tag_buffer).
@@ -879,7 +878,14 @@ class OpenAICompatibleClient(LLMClient):
         client = await self._get_client()
 
         async def reset_partial_stream_for_retry() -> None:
-            nonlocal full_content, full_reasoning, tool_calls_data, last_finish_reason, final_usage, in_think, tag_buffer
+            nonlocal \
+                full_content, \
+                full_reasoning, \
+                tool_calls_data, \
+                last_finish_reason, \
+                final_usage, \
+                in_think, \
+                tag_buffer
             had_partial = bool(full_content or full_reasoning or tool_calls_data or last_finish_reason or final_usage)
             full_content = ""
             full_reasoning = ""
@@ -913,9 +919,7 @@ class OpenAICompatibleClient(LLMClient):
                         raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
 
                     async for line in resp.aiter_lines():
-                        chunk, in_think, tag_buffer = self._parse_stream_line(
-                            line, in_think, tag_buffer
-                        )
+                        chunk, in_think, tag_buffer = self._parse_stream_line(line, in_think, tag_buffer)
 
                         if chunk.is_finished:
                             break
@@ -933,11 +937,13 @@ class OpenAICompatibleClient(LLMClient):
                         if chunk.tool_call:
                             idx = chunk.tool_call.get("index", 0)
                             while len(tool_calls_data) <= idx:
-                                tool_calls_data.append({
-                                    "id": "",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
-                                })
+                                tool_calls_data.append(
+                                    {
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                )
                             tc = tool_calls_data[idx]
                             if chunk.tool_call.get("id"):
                                 tc["id"] = chunk.tool_call["id"]
@@ -1007,6 +1013,7 @@ class OpenAICompatibleClient(LLMClient):
 # ============================================================================
 # OpenAI Responses API Client
 # ============================================================================
+
 
 class OpenAIResponsesClient(LLMClient):
     """Client for OpenAI Responses API (`/v1/responses`)."""
@@ -1082,19 +1089,23 @@ class OpenAIResponsesClient(LLMClient):
                     args = fn.get("arguments", "{}")
                     if isinstance(args, dict):
                         args = json.dumps(args, ensure_ascii=False)
-                    input_items.append({
-                        "type": "function_call",
-                        "call_id": tc.get("id", ""),
-                        "name": fn.get("name", ""),
-                        "arguments": str(args or "{}"),
-                    })
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tc.get("id", ""),
+                            "name": fn.get("name", ""),
+                            "arguments": str(args or "{}"),
+                        }
+                    )
 
             if msg.role == "tool":
-                input_items.append({
-                    "type": "function_call_output",
-                    "call_id": msg.tool_call_id or "",
-                    "output": _flatten_tool_content_to_text(msg.content),
-                })
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": msg.tool_call_id or "",
+                        "output": _flatten_tool_content_to_text(msg.content),
+                    }
+                )
 
         return input_items
 
@@ -1108,12 +1119,14 @@ class OpenAIResponsesClient(LLMClient):
             if tool.get("type") != "function":
                 continue
             fn = tool.get("function", {})
-            converted.append({
-                "type": "function",
-                "name": fn.get("name", ""),
-                "description": fn.get("description", ""),
-                "parameters": fn.get("parameters", {"type": "object"}),
-            })
+            converted.append(
+                {
+                    "type": "function",
+                    "name": fn.get("name", ""),
+                    "description": fn.get("description", ""),
+                    "parameters": fn.get("parameters", {"type": "object"}),
+                }
+            )
         return converted or None
 
     def _build_payload(
@@ -1166,14 +1179,16 @@ class OpenAIResponsesClient(LLMClient):
                 args = item.get("arguments", "{}")
                 if isinstance(args, dict):
                     args = json.dumps(args, ensure_ascii=False)
-                tool_calls.append({
-                    "id": item.get("call_id") or item.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": item.get("name", ""),
-                        "arguments": str(args or "{}"),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": item.get("call_id") or item.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": item.get("name", ""),
+                            "arguments": str(args or "{}"),
+                        },
+                    }
+                )
 
         # Some Responses payloads include a pre-aggregated output_text field.
         # Use it as a fallback when output blocks are empty.
@@ -1309,6 +1324,7 @@ class OpenAIResponsesClient(LLMClient):
 # Gemini Native Client
 # ============================================================================
 
+
 class GeminiClient(LLMClient):
     """Client for Gemini native API (`generateContent` / `streamGenerateContent`)."""
 
@@ -1367,7 +1383,7 @@ class GeminiClient(LLMClient):
         """Normalize model id for native Gemini endpoint path."""
         model = (self.model or "").strip()
         if model.startswith("models/"):
-            model = model[len("models/"):]
+            model = model[len("models/") :]
         return model
 
     def _parse_data_url_image(self, data_url: str) -> tuple[str, str] | None:
@@ -1401,12 +1417,14 @@ class GeminiClient(LLMClient):
                     parsed = self._parse_data_url_image(image_url)
                     if parsed:
                         mime_type, b64_data = parsed
-                        parts.append({
-                            "inlineData": {
-                                "mimeType": mime_type,
-                                "data": b64_data,
+                        parts.append(
+                            {
+                                "inlineData": {
+                                    "mimeType": mime_type,
+                                    "data": b64_data,
+                                }
                             }
-                        })
+                        )
                     elif image_url:
                         # Gemini native API requires uploaded files or inline data;
                         # preserve reference in text when URL cannot be inlined.
@@ -1498,12 +1516,14 @@ class GeminiClient(LLMClient):
                             parsed_args = args
                         else:
                             parsed_args = {}
-                        parts.append({
-                            "functionCall": {
-                                "name": fn.get("name", ""),
-                                "args": parsed_args,
+                        parts.append(
+                            {
+                                "functionCall": {
+                                    "name": fn.get("name", ""),
+                                    "args": parsed_args,
+                                }
                             }
-                        })
+                        )
                 if parts:
                     contents.append({"role": "model", "parts": parts})
                 continue
@@ -1525,15 +1545,19 @@ class GeminiClient(LLMClient):
                 else:
                     response_obj = {"result": str(response_content)}
 
-                contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": name,
-                            "response": response_obj,
-                        }
-                    }],
-                })
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "functionResponse": {
+                                    "name": name,
+                                    "response": response_obj,
+                                }
+                            }
+                        ],
+                    }
+                )
 
         payload: dict[str, Any] = {
             "contents": contents or [{"role": "user", "parts": [{"text": ""}]}],
@@ -1546,9 +1570,7 @@ class GeminiClient(LLMClient):
             payload["generationConfig"]["maxOutputTokens"] = max_tokens
 
         if system_blocks:
-            payload["systemInstruction"] = {
-                "parts": [{"text": "\n\n".join(system_blocks)}]
-            }
+            payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_blocks)}]}
 
         tools_payload, tool_config = self._convert_tools(tools)
         if tools_payload:
@@ -1615,14 +1637,16 @@ class GeminiClient(LLMClient):
                     if dedup_key in seen_tool_calls:
                         continue
                     seen_tool_calls.add(dedup_key)
-                    tool_calls.append({
-                        "id": f"call_{len(tool_calls) + 1}",
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": args_str,
-                        },
-                    })
+                    tool_calls.append(
+                        {
+                            "id": f"call_{len(tool_calls) + 1}",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": args_str,
+                            },
+                        }
+                    )
 
         usage = self._normalize_usage(data.get("usageMetadata"))
 
@@ -1682,7 +1706,9 @@ class GeminiClient(LLMClient):
     ) -> LLMResponse:
         """Streaming completion using Gemini SSE endpoint."""
         if self._is_openai_compatible_base():
-            logger.debug("[Gemini] Using OpenAI-compatible endpoint for model %s (base_url override detected)", self.model)
+            logger.debug(
+                "[Gemini] Using OpenAI-compatible endpoint for model %s (base_url override detected)", self.model
+            )
             fallback = await self._get_openai_fallback_client()
             return await fallback.stream(
                 messages=messages,
@@ -1741,7 +1767,7 @@ class GeminiClient(LLMClient):
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
                             continue
-                        data_str = line[len("data:"):].strip()
+                        data_str = line[len("data:") :].strip()
                         if not data_str or data_str == "[DONE]":
                             continue
 
@@ -1779,14 +1805,16 @@ class GeminiClient(LLMClient):
                                 if dedup_key in seen_tool_calls:
                                     continue
                                 seen_tool_calls.add(dedup_key)
-                                tool_calls.append({
-                                    "id": f"call_{len(tool_calls) + 1}",
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": args_str,
-                                    },
-                                })
+                                tool_calls.append(
+                                    {
+                                        "id": f"call_{len(tool_calls) + 1}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": name,
+                                            "arguments": args_str,
+                                        },
+                                    }
+                                )
                 break
 
             except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
@@ -1820,9 +1848,10 @@ class GeminiClient(LLMClient):
 # Anthropic Native Client
 # ============================================================================
 
+
 class AnthropicClient(LLMClient):
     """Client for Anthropic's native Messages API.
-    
+
     Supports Claude 3.x and Claude 3.7+ with extended thinking.
     """
 
@@ -1922,11 +1951,13 @@ class AnthropicClient(LLMClient):
             for tool in tools:
                 if tool.get("type") == "function":
                     func = tool["function"]
-                    anthropic_tools.append({
-                        "name": func["name"],
-                        "description": func.get("description", ""),
-                        "input_schema": func.get("parameters", {"type": "object"}),
-                    })
+                    anthropic_tools.append(
+                        {
+                            "name": func["name"],
+                            "description": func.get("description", ""),
+                            "input_schema": func.get("parameters", {"type": "object"}),
+                        }
+                    )
             payload["tools"] = anthropic_tools
 
         payload.update(kwargs)
@@ -1959,7 +1990,7 @@ class AnthropicClient(LLMClient):
         full_reasoning = ""
         full_signature = None
         tool_calls = []
-        
+
         for block in data.get("content", []):
             if block.get("type") == "text":
                 full_content += block.get("text", "")
@@ -1967,14 +1998,16 @@ class AnthropicClient(LLMClient):
                 full_reasoning += block.get("thinking", "")
                 full_signature = block.get("signature")
             elif block.get("type") == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id"),
-                    "type": "function",
-                    "function": {
-                        "name": block.get("name"),
-                        "arguments": json.dumps(block.get("input", {}), ensure_ascii=False)
+                tool_calls.append(
+                    {
+                        "id": block.get("id"),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name"),
+                            "arguments": json.dumps(block.get("input", {}), ensure_ascii=False),
+                        },
                     }
-                })
+                )
 
         usage = None
         if "usage" in data:
@@ -2055,13 +2088,13 @@ class AnthropicClient(LLMClient):
                             continue
 
                         if line.startswith("event:"):
-                            current_event = line[len("event:"):].strip()
+                            current_event = line[len("event:") :].strip()
                             continue
 
                         if not line.startswith("data:"):
                             continue
 
-                        data_str = line[len("data:"):].strip()
+                        data_str = line[len("data:") :].strip()
                         if data_str == "[DONE]":
                             break
 
@@ -2083,11 +2116,13 @@ class AnthropicClient(LLMClient):
                             idx = data.get("index", 0)
                             if block.get("type") == "tool_use":
                                 tool_call_index_map[idx] = len(tool_calls_data)
-                                tool_calls_data.append({
-                                    "id": block.get("id"),
-                                    "type": "function",
-                                    "function": {"name": block.get("name"), "arguments": ""}
-                                })
+                                tool_calls_data.append(
+                                    {
+                                        "id": block.get("id"),
+                                        "type": "function",
+                                        "function": {"name": block.get("name"), "arguments": ""},
+                                    }
+                                )
 
                         elif current_event == "content_block_delta":
                             idx = data.get("index", 0)
@@ -2124,7 +2159,9 @@ class AnthropicClient(LLMClient):
 
                         elif current_event == "error":
                             error_info = data.get("error", {})
-                            raise LLMError(f"Anthropic stream error ({error_info.get('type')}): {error_info.get('message')}")
+                            raise LLMError(
+                                f"Anthropic stream error ({error_info.get('type')}): {error_info.get('message')}"
+                            )
 
                         elif current_event == "message_stop":
                             break
@@ -2172,6 +2209,7 @@ class AnthropicClient(LLMClient):
 # ============================================================================
 # Factory and Utilities
 # ============================================================================
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
@@ -2268,6 +2306,7 @@ def get_llm_model_identifier_error(provider: str | None, model: str | None) -> s
         return None
     return f"{raw_model or normalized_model} is not an OpenAI API model ID. Use {suggested}."
 
+
 # Global absolute ceiling for output tokens — a final guard against runaway
 # per-provider configs/overrides (cost protection). No per-provider ceiling and
 # no DB override may exceed this, regardless of provider spec.
@@ -2310,9 +2349,19 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         supports_reasoning_budget=True,
         supports_reasoning_preservation=True,
         recommended_models=(
-            {"model": "claude-opus-4-8", "label": "Claude Opus 4.8", "supports_reasoning": True, "reasoning_mode": "adaptive"},
+            {
+                "model": "claude-opus-4-8",
+                "label": "Claude Opus 4.8",
+                "supports_reasoning": True,
+                "reasoning_mode": "adaptive",
+            },
             {"model": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5", "supports_reasoning": True},
-            {"model": "claude-opus-4-7", "label": "Claude Opus 4.7", "supports_reasoning": True, "reasoning_mode": "adaptive"},
+            {
+                "model": "claude-opus-4-7",
+                "label": "Claude Opus 4.7",
+                "supports_reasoning": True,
+                "reasoning_mode": "adaptive",
+            },
         ),
     ),
     "openai": ProviderSpec(
@@ -2380,8 +2429,18 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         supports_reasoning_preservation=True,
         supports_tools_with_reasoning=True,
         recommended_models=(
-            {"model": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "supports_reasoning": True, "supports_tools": True},
-            {"model": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "supports_reasoning": True, "supports_tools": True},
+            {
+                "model": "deepseek-v4-flash",
+                "label": "DeepSeek V4 Flash",
+                "supports_reasoning": True,
+                "supports_tools": True,
+            },
+            {
+                "model": "deepseek-v4-pro",
+                "label": "DeepSeek V4 Pro",
+                "supports_reasoning": True,
+                "supports_tools": True,
+            },
         ),
     ),
     "qwen": ProviderSpec(
@@ -2469,7 +2528,12 @@ PROVIDER_REGISTRY: dict[str, ProviderSpec] = {
         supported_reasoning_modes=("provider_default", "enabled", "disabled"),
         supports_reasoning_preservation=True,
         recommended_models=(
-            {"model": "kimi-k2-thinking", "label": "Kimi K2 Thinking", "supports_reasoning": True, "reasoning_mode": "enabled"},
+            {
+                "model": "kimi-k2-thinking",
+                "label": "Kimi K2 Thinking",
+                "supports_reasoning": True,
+                "reasoning_mode": "enabled",
+            },
             {"model": "kimi-k2.5", "label": "Kimi K2.5", "supports_reasoning": True},
         ),
     ),
@@ -2523,26 +2587,28 @@ def get_provider_manifest() -> list[dict[str, Any]]:
     """List supported providers and capabilities for UI/config discovery."""
     out: list[dict[str, Any]] = []
     for spec in PROVIDER_REGISTRY.values():
-        out.append({
-            "provider": spec.provider,
-            "display_name": spec.display_name,
-            "protocol": spec.protocol,
-            "default_base_url": spec.default_base_url,
-            "supports_tool_choice": spec.supports_tool_choice,
-            "default_max_tokens": spec.default_max_tokens,
-            "max_output_tokens": spec.max_output_tokens,
-            "max_input_tokens": spec.max_input_tokens,
-            "model_max_tokens": spec.model_max_tokens,
-            "reasoning_strategy": spec.reasoning_strategy,
-            "supported_reasoning_modes": list(spec.supported_reasoning_modes),
-            "supported_reasoning_efforts": list(spec.supported_reasoning_efforts),
-            "supports_reasoning_budget": spec.supports_reasoning_budget,
-            "supports_reasoning_preservation": spec.supports_reasoning_preservation,
-            "supports_text_verbosity": spec.supports_text_verbosity,
-            "supports_tools_with_reasoning": spec.supports_tools_with_reasoning,
-            "recommended_models": list(spec.recommended_models),
-            "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
-        })
+        out.append(
+            {
+                "provider": spec.provider,
+                "display_name": spec.display_name,
+                "protocol": spec.protocol,
+                "default_base_url": spec.default_base_url,
+                "supports_tool_choice": spec.supports_tool_choice,
+                "default_max_tokens": spec.default_max_tokens,
+                "max_output_tokens": spec.max_output_tokens,
+                "max_input_tokens": spec.max_input_tokens,
+                "model_max_tokens": spec.model_max_tokens,
+                "reasoning_strategy": spec.reasoning_strategy,
+                "supported_reasoning_modes": list(spec.supported_reasoning_modes),
+                "supported_reasoning_efforts": list(spec.supported_reasoning_efforts),
+                "supports_reasoning_budget": spec.supports_reasoning_budget,
+                "supports_reasoning_preservation": spec.supports_reasoning_preservation,
+                "supports_text_verbosity": spec.supports_text_verbosity,
+                "supports_tools_with_reasoning": spec.supports_tools_with_reasoning,
+                "recommended_models": list(spec.recommended_models),
+                "aliases": [k for k, v in PROVIDER_ALIASES.items() if v == spec.provider],
+            }
+        )
     return out
 
 
@@ -2560,27 +2626,20 @@ PROVIDER_CLIENTS: dict[str, type[LLMClient]] = {
     for spec in PROVIDER_REGISTRY.values()
 }
 
-PROVIDER_URLS: dict[str, str | None] = {
-    spec.provider: spec.default_base_url for spec in PROVIDER_REGISTRY.values()
-}
+PROVIDER_URLS: dict[str, str | None] = {spec.provider: spec.default_base_url for spec in PROVIDER_REGISTRY.values()}
 
-TOOL_CHOICE_PROVIDERS = {
-    spec.provider for spec in PROVIDER_REGISTRY.values() if spec.supports_tool_choice
-}
+TOOL_CHOICE_PROVIDERS = {spec.provider for spec in PROVIDER_REGISTRY.values() if spec.supports_tool_choice}
 
-MAX_TOKENS_BY_PROVIDER: dict[str, int] = {
-    spec.provider: spec.default_max_tokens for spec in PROVIDER_REGISTRY.values()
-}
+MAX_TOKENS_BY_PROVIDER: dict[str, int] = {spec.provider: spec.default_max_tokens for spec in PROVIDER_REGISTRY.values()}
 
 MAX_TOKENS_BY_MODEL: dict[str, int] = {
-    prefix: limit
-    for spec in PROVIDER_REGISTRY.values()
-    for prefix, limit in spec.model_max_tokens.items()
+    prefix: limit for spec in PROVIDER_REGISTRY.values() for prefix, limit in spec.model_max_tokens.items()
 }
 
 
 class LLMError(Exception):
     """Base exception for LLM client errors."""
+
     pass
 
 
@@ -2663,61 +2722,87 @@ def create_llm_client(
 
     # Create appropriate client
     if spec and spec.protocol == "anthropic":
-        return _with_output_cap_awareness(AnthropicClient(
-            api_key=api_key,
-            base_url=final_base_url,
+        return _with_output_cap_awareness(
+            AnthropicClient(
+                api_key=api_key,
+                base_url=final_base_url,
+                model=model,
+                timeout=timeout,
+            ),
+            provider=normalized_provider,
             model=model,
-            timeout=timeout,
-        ), provider=normalized_provider, model=model)
+        )
     elif spec and spec.protocol == "openai_responses":
-        return _with_output_cap_awareness(OpenAIResponsesClient(
-            api_key=api_key,
-            base_url=final_base_url,
+        return _with_output_cap_awareness(
+            OpenAIResponsesClient(
+                api_key=api_key,
+                base_url=final_base_url,
+                model=model,
+                timeout=timeout,
+                supports_tool_choice=spec.supports_tool_choice,
+            ),
+            provider=normalized_provider,
             model=model,
-            timeout=timeout,
-            supports_tool_choice=spec.supports_tool_choice,
-        ), provider=normalized_provider, model=model)
+        )
     elif _requires_openai_responses_api(normalized_provider, model):
-        return _with_output_cap_awareness(OpenAIResponsesClient(
-            api_key=api_key,
-            base_url=final_base_url,
+        return _with_output_cap_awareness(
+            OpenAIResponsesClient(
+                api_key=api_key,
+                base_url=final_base_url,
+                model=model,
+                timeout=timeout,
+                supports_tool_choice=spec.supports_tool_choice if spec else True,
+            ),
+            provider=normalized_provider,
             model=model,
-            timeout=timeout,
-            supports_tool_choice=spec.supports_tool_choice if spec else True,
-        ), provider=normalized_provider, model=model)
+        )
     elif spec and spec.protocol == "gemini":
-        return _with_output_cap_awareness(GeminiClient(
-            api_key=api_key,
-            base_url=final_base_url,
+        return _with_output_cap_awareness(
+            GeminiClient(
+                api_key=api_key,
+                base_url=final_base_url,
+                model=model,
+                timeout=timeout,
+                supports_tool_choice=spec.supports_tool_choice,
+            ),
+            provider=normalized_provider,
             model=model,
-            timeout=timeout,
-            supports_tool_choice=spec.supports_tool_choice,
-        ), provider=normalized_provider, model=model)
+        )
     elif normalized_provider in PROVIDER_CLIENTS:
         supports_tool_choice = normalized_provider in TOOL_CHOICE_PROVIDERS
-        return _with_output_cap_awareness(OpenAICompatibleClient(
-            api_key=api_key,
-            base_url=final_base_url,
-            model=model,
-            timeout=timeout,
-            supports_tool_choice=supports_tool_choice,
-            use_completion_tokens=spec.use_completion_tokens if spec else False,
+        return _with_output_cap_awareness(
+            OpenAICompatibleClient(
+                api_key=api_key,
+                base_url=final_base_url,
+                model=model,
+                timeout=timeout,
+                supports_tool_choice=supports_tool_choice,
+                use_completion_tokens=spec.use_completion_tokens if spec else False,
+                provider=normalized_provider,
+            ),
             provider=normalized_provider,
-        ), provider=normalized_provider, model=model)
+            model=model,
+        )
     else:
         # Default to OpenAI-compatible for unknown providers
-        return _with_output_cap_awareness(OpenAICompatibleClient(
-            api_key=api_key,
-            base_url=final_base_url or PROVIDER_URLS["openai"],
-            model=model,
-            timeout=timeout,
-            supports_tool_choice=True,
+        return _with_output_cap_awareness(
+            OpenAICompatibleClient(
+                api_key=api_key,
+                base_url=final_base_url or PROVIDER_URLS["openai"],
+                model=model,
+                timeout=timeout,
+                supports_tool_choice=True,
+                provider=normalized_provider,
+            ),
             provider=normalized_provider,
-        ), provider=normalized_provider, model=model)
+            model=model,
+        )
 
 
 # Parameters create_llm_client actually accepts — used by the config-dict factory.
 _CLIENT_FACTORY_PARAMS = frozenset({"provider", "api_key", "model", "base_url", "timeout"})
+
+
 def _usage_context_from_config(model_config: dict) -> _LLMUsageContext | None:
     source = str(model_config.get("_usage_source") or "").strip()
     if not source:
@@ -2779,6 +2864,7 @@ def create_llm_client_from_config(model_config: dict) -> LLMClient:
 # High-level Convenience Functions
 # ============================================================================
 
+
 async def chat_complete(
     provider: str,
     api_key: str,
@@ -2827,14 +2913,16 @@ async def chat_complete(
         )
 
         return {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": response.tool_calls or None,
-                },
-                "finish_reason": response.finish_reason or "stop",
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": response.content,
+                        "tool_calls": response.tool_calls or None,
+                    },
+                    "finish_reason": response.finish_reason or "stop",
+                }
+            ],
             "model": response.model or model,
             "usage": response.usage or {},
         }
@@ -2894,14 +2982,16 @@ async def chat_stream(
         )
 
         return {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": response.tool_calls or None,
-                },
-                "finish_reason": response.finish_reason or "stop",
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": response.content,
+                        "tool_calls": response.tool_calls or None,
+                    },
+                    "finish_reason": response.finish_reason or "stop",
+                }
+            ],
             "model": response.model or model,
             "usage": response.usage or {},
         }

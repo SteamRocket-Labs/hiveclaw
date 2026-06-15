@@ -143,6 +143,7 @@ def _resolve_eviction_threshold(tool_name: str) -> int | None:
         return None
     return limit
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -352,9 +353,7 @@ def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | Non
 
     sections: list[str] = []
     discovered_tools = [
-        str(name).strip()
-        for name in getattr(session_context, "discovered_tools", [])[-12:]
-        if str(name).strip()
+        str(name).strip() for name in getattr(session_context, "discovered_tools", [])[-12:] if str(name).strip()
     ]
     if discovered_tools:
         sections.append(
@@ -984,7 +983,15 @@ async def _execute_tool_with_hooks(
                 _session.track_tool_outcome(tool_name, "Wrote " + _path)
                 if _is_frozen_prompt_workspace_path(_path):
                     _invalidate_prompt_prefix_cache(_session, reason=f"{tool_name}:{_path}")
-        elif tool_name in ("web_search", "firecrawl_fetch", "xcrawl_scrape", "read_document", "read_mcp_resource"):
+        elif tool_name in (
+            "web_search",
+            "exa_search",
+            "tavily_search",
+            "firecrawl_fetch",
+            "xcrawl_scrape",
+            "read_document",
+            "read_mcp_resource",
+        ):
             _ref = _args_dict.get("url") or _args_dict.get("query") or _args_dict.get("path", "")
             if _ref:
                 _session.track_external_ref(str(_ref)[:200])
@@ -1403,7 +1410,9 @@ def _merge_continuation_response(base: LLMResponse, continuation: LLMResponse) -
     base.content = (getattr(base, "content", "") or "") + (getattr(continuation, "content", "") or "")
     continuation_reasoning = getattr(continuation, "reasoning_content", None)
     if continuation_reasoning:
-        base.reasoning_content = ((getattr(base, "reasoning_content", None) or "") + "\n" + continuation_reasoning).strip()
+        base.reasoning_content = (
+            (getattr(base, "reasoning_content", None) or "") + "\n" + continuation_reasoning
+        ).strip()
     continuation_signature = getattr(continuation, "reasoning_signature", None)
     if continuation_signature:
         base.reasoning_signature = continuation_signature
@@ -2250,32 +2259,43 @@ class AgentKernel:
             reminder_scheduler = ReminderScheduler(build_default_reminder_specs())
             _round_tool_names: list[str] = []
 
-            def _work_ledger_snapshot_provider() -> str:
+            def _work_ledger_view_provider() -> dict[str, Any] | None:
                 if not request.agent_id or request.session_context is None:
-                    return ""
+                    return None
                 _meta = getattr(request.session_context, "metadata", None)
                 if not isinstance(_meta, dict) or not _meta.get(_WORK_LEDGER_ENABLED_METADATA_KEY):
-                    return ""
+                    return None
                 try:
-                    from app.services.agent_work_ledger import (
-                        read_agent_work_ledger_view,
-                        render_work_ledger_reminder_snapshot,
-                    )
+                    from app.services.agent_work_ledger import read_agent_work_ledger_view
 
                     _plan_state = getattr(request.session_context, "plan_mode", None)
                     _plan_id = _meta.get("plan_id") or getattr(_plan_state, "plan_id", None)
                     _runtime_task_id = _meta.get("runtime_task_id") or _meta.get("task_id")
                     _session_id = request.memory_session_id or getattr(request.session_context, "session_id", None)
-                    _view = read_agent_work_ledger_view(
+                    return read_agent_work_ledger_view(
                         agent_id=request.agent_id,
                         plan_id=_plan_id,
                         runtime_task_id=_runtime_task_id,
                         session_id=None if _plan_id or _runtime_task_id else _session_id,
                     )
-                    return render_work_ledger_reminder_snapshot(_view)
                 except Exception as _ledger_err:
-                    logger.debug("[Kernel] Work Ledger reminder snapshot failed: %s", _ledger_err)
+                    logger.debug("[Kernel] Work Ledger reminder view failed: %s", _ledger_err)
+                    return None
+
+            def _work_ledger_snapshot_provider() -> str:
+                try:
+                    from app.services.agent_work_ledger import render_work_ledger_reminder_snapshot
+
+                    return render_work_ledger_reminder_snapshot(_work_ledger_view_provider())
+                except Exception as _ledger_err:
+                    logger.debug("[Kernel] Work Ledger reminder snapshot render failed: %s", _ledger_err)
                     return ""
+
+            def _work_ledger_progress_review_provider() -> dict[str, Any] | None:
+                view = _work_ledger_view_provider()
+                if isinstance(view, dict) and isinstance(view.get("progress_ledger"), dict):
+                    return view["progress_ledger"]
+                return None
 
             async def _emit_event(event: dict[str, Any]) -> None:
                 if request.on_event:
@@ -2471,9 +2491,7 @@ class AgentKernel:
             context_usage_anchor_tokens = 0
             if request.session_context is not None:
                 try:
-                    context_usage_anchor_tokens = int(
-                        request.session_context.metadata.get("usage_anchor_tokens") or 0
-                    )
+                    context_usage_anchor_tokens = int(request.session_context.metadata.get("usage_anchor_tokens") or 0)
                 except (TypeError, ValueError):
                     context_usage_anchor_tokens = 0
 
@@ -2585,6 +2603,7 @@ class AgentKernel:
                             "failed_tool_calls": loop_guard.failed_tool_calls,
                             "context_tokens": self._deps.estimate_tokens_from_chars(_ctx_chars),
                             "work_ledger_snapshot_provider": _work_ledger_snapshot_provider,
+                            "work_ledger_progress_review_provider": _work_ledger_progress_review_provider,
                         },
                     )
                     if _transient_reminders:
@@ -2765,16 +2784,16 @@ class AgentKernel:
                                             source=(getattr(session_ctx, "source", "") or "") if session_ctx else "",
                                             agent_name=request.agent_name,
                                         )
-                                        _ptl_prefix = (session_ctx.prompt_prefix if session_ctx else None) or prompt_prefix
+                                        _ptl_prefix = (
+                                            session_ctx.prompt_prefix if session_ctx else None
+                                        ) or prompt_prefix
                                         _ptl_combined = assemble_runtime_prompt(
                                             _ptl_prefix,
                                             _ptl_dynamic,
                                             context_window_tokens=_ctx_window,
                                             budget_profile=budget_profile,
                                         )
-                                        _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(
-                                            _ptl_combined
-                                        )
+                                        _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
                                         api_messages = [LLMMessage(role="system", content=_ptl_system)] + (
                                             _dicts_to_llm_messages(compressed)
                                         )
@@ -2854,9 +2873,7 @@ class AgentKernel:
                                             context_window_tokens=_ctx_window,
                                             budget_profile=budget_profile,
                                         )
-                                        _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(
-                                            _ptl_combined
-                                        )
+                                        _ptl_system, dynamic_prompt_suffix = _split_system_prompt_for_api(_ptl_combined)
                                         api_messages = [LLMMessage(role="system", content=_ptl_system)] + _truncated
                                         await _emit_event(
                                             {
@@ -3290,9 +3307,7 @@ class AgentKernel:
                             if not _is_concurrency_safe_tool(t_name)
                         ]
 
-                        async def _run_tool(
-                            index: int, t_name: str, t_args: dict
-                        ) -> tuple[str, dict[str, Any], bool]:
+                        async def _run_tool(index: int, t_name: str, t_args: dict) -> tuple[str, dict[str, Any], bool]:
                             try:
                                 if _is_concurrency_safe_tool(t_name):
                                     for prev_unsafe in unsafe_indices:
@@ -3851,9 +3866,7 @@ class AgentKernel:
                 if request.agent_id and accumulated_tokens > 0:
                     await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
                 round_limit_msg = _tool_round_limit_message(max_rounds)
-                await self._persist_before_exit(
-                    request, runtime_config, round_limit_msg, api_messages
-                )
+                await self._persist_before_exit(request, runtime_config, round_limit_msg, api_messages)
                 return _build_error_result(
                     round_limit_msg,
                     tokens_used=accumulated_tokens,

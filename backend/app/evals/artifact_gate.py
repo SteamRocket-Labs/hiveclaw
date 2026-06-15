@@ -34,6 +34,7 @@ def _artifact_gate_failure(reason: str) -> dict[str, Any]:
         "error": reason,
         "expected_satisfied": False,
         "stdout_tail": "",
+        "sandbox_evidence": {},
         "reason": reason,
     }
 
@@ -128,6 +129,7 @@ async def run_artifact_execution_gate(
         "error": result.error,
         "expected_satisfied": expected_satisfied,
         "stdout_tail": stdout[-2000:],
+        "sandbox_evidence": dict(result.evidence or {}),
         "reason": "artifact executed and satisfied its declared assertion"
         if passed
         else _failure_reason(result, expected_satisfied),

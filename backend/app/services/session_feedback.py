@@ -14,6 +14,7 @@ from app.models.audit import AuditLog
 from app.models.chat_session import ChatSession
 from app.models.session_feedback import SessionFeedbackEvent
 from app.models.user import User
+from app.services.decision_trace import DecisionTraceStore, decision_id_from_ref, normalize_decision_ref
 
 AppendMemory = Callable[..., Awaitable[T3AppendResult]]
 
@@ -51,6 +52,10 @@ def _feedback_evidence(label: str) -> str:
     return "misleading" if label == "misleading" else "user_stated"
 
 
+def _feedback_polarity(label: str) -> str:
+    return "negative" if label == "misleading" else "positive"
+
+
 def _result_payload(result: T3AppendResult) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "t3_status": result.status,
@@ -77,8 +82,10 @@ async def record_session_feedback(
     label: str,
     reason: str = "",
     message_id: uuid.UUID | None = None,
+    decision_id: str | None = None,
     data_root: Path | None = None,
     append_memory: AppendMemory = append_t3_memory_candidate,
+    decision_trace_store: DecisionTraceStore | None = None,
 ) -> dict[str, Any]:
     """Persist a Useful/Misleading event and route it to governed T3 calibration."""
 
@@ -91,6 +98,27 @@ async def record_session_feedback(
     source_refs = [f"session:{session.id}"]
     if message_id:
         source_refs.append(f"message:{message_id}")
+    decision_ref = ""
+    normalized_decision_id = ""
+    if decision_id:
+        normalized_decision_id = decision_id_from_ref(decision_id)
+        decision_ref = normalize_decision_ref(normalized_decision_id)
+        store = decision_trace_store or DecisionTraceStore.persistent_default()
+        decision = store.get_decision(normalized_decision_id)
+        if decision.tenant_id and str(decision.tenant_id) != str(agent.tenant_id):
+            raise ValueError("decision_id does not belong to this tenant")
+        if decision.agent_id and str(decision.agent_id) != str(agent.id):
+            raise ValueError("decision_id does not belong to this agent")
+        if decision.session_id and str(decision.session_id) != str(session.id):
+            raise ValueError("decision_id does not belong to this session")
+        store.record_feedback(
+            decision_id=normalized_decision_id,
+            reaction=normalized_label,
+            polarity=_feedback_polarity(normalized_label),
+            source="session_feedback",
+            rationale_from_owner=(reason or "").strip(),
+        )
+        source_refs.append(decision_ref)
     memory_result = await append_memory(
         agent.id,
         category="feedback",
@@ -109,12 +137,15 @@ async def record_session_feedback(
         "source_channel": getattr(session, "source_channel", "web"),
         "source_refs": source_refs,
     }
+    if decision_ref:
+        attribution["decision_ref"] = decision_ref
     row = SessionFeedbackEvent(
         id=uuid.uuid4(),
         tenant_id=agent.tenant_id,
         agent_id=agent.id,
         session_id=session.id,
         message_id=message_id,
+        decision_trace_id=normalized_decision_id or None,
         user_id=current_user.id,
         label=normalized_label,
         reason=(reason or "").strip(),
@@ -131,6 +162,7 @@ async def record_session_feedback(
             details={
                 "session_id": str(session.id),
                 "message_id": str(message_id) if message_id else "",
+                "decision_ref": decision_ref,
                 "label": normalized_label,
                 "calibration_result": calibration_result,
             },
@@ -142,6 +174,7 @@ async def record_session_feedback(
         "agent_id": str(row.agent_id),
         "session_id": str(row.session_id),
         "message_id": str(row.message_id) if row.message_id else None,
+        "decision_ref": decision_ref or None,
         "label": row.label,
         "reason": row.reason,
         "attribution": attribution,

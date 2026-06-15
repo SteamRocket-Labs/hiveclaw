@@ -221,20 +221,44 @@ def test_update_own_main_agent_forbidden():
 
 
 def test_delete_own_sub_agent():
-    """User can delete their own sub-agent."""
+    """User can soft-delete their own sub-agent without removing identity rows."""
     sub = SimpleNamespace(
         id=_SUB_AGENT_ID,
         name="要删的",
         agent_kind="sub",
         owner_user_id=_USER_ID,
         parent_agent_id=_MAIN_AGENT_ID,
+        deleted_at=None,
+        deactivated_at=None,
     )
     client, fake_db = _build_client(agents_by_id={_SUB_AGENT_ID: sub})
-    with patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=4):
+    with (
+        patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=4),
+        patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete,
+    ):
         resp = client.delete(f"/desktop/agents/{_SUB_AGENT_ID}")
 
     assert resp.status_code == 204
-    assert len(fake_db.deleted) == 1
+    assert fake_db.deleted == []
+    soft_delete.assert_awaited_once_with(fake_db, sub, actor_id=_USER_ID, reason="desktop_delete_sub_agent")
+
+
+def test_deleted_sub_agent_is_not_editable():
+    """Soft-deleted agents are hidden from Desktop mutation paths."""
+    sub = SimpleNamespace(
+        id=_SUB_AGENT_ID,
+        name="删过的",
+        agent_kind="sub",
+        owner_user_id=_USER_ID,
+        parent_agent_id=_MAIN_AGENT_ID,
+        deleted_at=object(),
+        deactivated_at=object(),
+    )
+    client, _ = _build_client(agents_by_id={_SUB_AGENT_ID: sub})
+
+    resp = client.patch(f"/desktop/agents/{_SUB_AGENT_ID}", json={"name": "复活"})
+
+    assert resp.status_code == 404
 
 
 def test_delete_nonexistent_agent():

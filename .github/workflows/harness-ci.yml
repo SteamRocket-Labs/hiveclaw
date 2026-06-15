@@ -109,8 +109,12 @@ jobs:
           HIVE_EVAL_INTEGRITY: /tmp/hive-evaluator-integrity.json
         run: |
           if [ -z "$HIVE_EVAL_API_URL" ] || [ -z "$HIVE_EVAL_CI_TOKEN" ]; then
-            echo "::warning::behavior eval gate skipped — Hive eval API secrets not configured"
-            exit 0
+            python -m app.evals.behavior_eval_evidence \
+              --api-url "$HIVE_EVAL_API_URL" \
+              --token "$HIVE_EVAL_CI_TOKEN" \
+              --output "$HIVE_EVAL_REPORT" || EVAL_BLOCKED=$?
+            cat "$HIVE_EVAL_REPORT"
+            exit "${EVAL_BLOCKED:-2}"
           fi
           python -m app.evals.evaluator_integrity \
             --current-root . \
@@ -145,3 +149,12 @@ jobs:
             --baseline app/evals/baselines/core_behavior_v1.json \
             --running-model "$RUNNING_MODEL" \
             --integrity-report "$HIVE_EVAL_INTEGRITY"
+      - name: Upload behavior eval evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: behavior-eval-evidence
+          path: |
+            /tmp/hive-behavior-report.json
+            /tmp/hive-evaluator-integrity.json
+          if-no-files-found: warn

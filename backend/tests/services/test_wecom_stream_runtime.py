@@ -101,7 +101,7 @@ async def test_process_wecom_stream_message_binds_group_sender_context(monkeypat
     monkeypatch.setattr(
         "app.services.channel_session.find_or_create_channel_session", fake_find_or_create_channel_session
     )
-    monkeypatch.setattr("app.api.feishu._call_agent_llm", fake_call_agent_llm)
+    monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
 
     clear_execution_identity()
     reply = await wecom_stream._process_wecom_stream_message(

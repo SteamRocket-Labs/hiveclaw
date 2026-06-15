@@ -478,7 +478,7 @@ async def _process_wechat_message(
     from sqlalchemy import select as _select
     from sqlalchemy.exc import IntegrityError
 
-    from app.api.feishu import _call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm
     from app.core.security import hash_password
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
@@ -570,20 +570,20 @@ async def _process_wechat_message(
         _cdt_token = _cdt.set(delivery_target)
         try:
             # Call LLM (P1-4: pass correct channel attribution)
-            reply_text = await _call_agent_llm(
+            reply_text = await call_agent_llm(
                 db,
                 agent_id,
                 user_text,
                 history=history,
                 user_id=platform_user_id,
                 session_id=session_conv_id,
-                    session_source="wechat_personal",
-                    session_channel="wechat_personal",
-                    allow_bare_plan_confirmation=True,
-                    durable_run=True,
-                    durable_session=sess,
-                    durable_user=platform_user,
-                )
+                session_source="wechat_personal",
+                session_channel="wechat_personal",
+                allow_bare_plan_confirmation=True,
+                durable_run=True,
+                durable_session=sess,
+                durable_user=platform_user,
+            )
         finally:
             _cdt.reset(_cdt_token)
         logger.info(f"[WeChatPersonal Stream] LLM reply: {reply_text[:100]}")

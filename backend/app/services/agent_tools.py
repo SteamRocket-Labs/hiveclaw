@@ -176,9 +176,9 @@ CORE_TOOL_NAMES = {
     "send_channel_file",
     "tool_search",
     "web_fetch",
-    # web_search joins CORE (Step 5): it has a SearXNG/DDG no-key fallback, so it is
-    # a turn-1 base capability like web_fetch. firecrawl/xcrawl need provider keys and
-    # stay optional_provider tools in web_pack.
+    # web_search is CORE because it is the no-key basic search path
+    # (SearXNG when configured, DuckDuckGo fallback). Provider-backed advanced
+    # search/crawl tools stay deferred in web_pack and are loaded through tool_search.
     "web_search",
     # Source capabilities (T1.1, execution-mode-spectrum §4.6): subagent and
     # workflow are runtime primitives — their schemas must be turn-1 visible,
@@ -208,6 +208,8 @@ _HR_TOOL_NAMES = {
     "discover_resources",
     "search_clawhub",
     "web_search",
+    "exa_search",
+    "tavily_search",
     "firecrawl_fetch",
     "xcrawl_scrape",
     "execute_code",
@@ -280,10 +282,13 @@ async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[st
     available: set[str] = set()
 
     exa_key = await _get_exa_api_key()
+    tavily_key = await _get_tavily_api_key()
     firecrawl_key = await _get_firecrawl_api_key()
     xcrawl_key = await _get_xcrawl_api_key()
     if exa_key:
-        available.add("web_search")
+        available.add("exa_search")
+    if tavily_key:
+        available.add("tavily_search")
     if firecrawl_key:
         available.add("firecrawl_fetch")
     if xcrawl_key:
@@ -304,7 +309,14 @@ async def _provider_available_tools(agent_id: uuid.UUID | None = None) -> set[st
 
 async def _filter_unavailable_tools(agent_id: uuid.UUID, tools: list[dict]) -> list[dict]:
     """Hide externally-backed tools that are not configured in production."""
-    provider_backed = {"firecrawl_fetch", "xcrawl_scrape", "discover_resources", "import_mcp_server"}
+    provider_backed = {
+        "exa_search",
+        "tavily_search",
+        "firecrawl_fetch",
+        "xcrawl_scrape",
+        "discover_resources",
+        "import_mcp_server",
+    }
     available = await _provider_available_tools(agent_id)
     return [
         tool
@@ -1092,6 +1104,7 @@ from app.services.agent_tool_domains.web_mcp import (  # noqa: E402
     _firecrawl_fetch as _firecrawl_fetch,
     _get_exa_api_key as _get_exa_api_key,
     _get_firecrawl_api_key as _get_firecrawl_api_key,
+    _get_tavily_api_key as _get_tavily_api_key,
     _get_xcrawl_api_key as _get_xcrawl_api_key,
     _import_mcp_server as _import_mcp_server,
     _search_exa as _search_exa,

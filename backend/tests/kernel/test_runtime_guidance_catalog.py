@@ -146,3 +146,14 @@ def test_catalog_groups_tg3_outcomes_by_namespace_for_docs_and_reviews() -> None
     assert any(entry.hive_type == "loop_guard_warning" for entry in hive_grouped["have"])
     assert all(not hasattr(entry, "hive_type") for entries in cc_grouped.values() for entry in entries)
     assert all(not hasattr(entry, "cc_type") for entries in hive_grouped.values() for entry in entries)
+
+
+def test_team_coordination_entries_are_runtime_backed_have() -> None:
+    from app.kernel.runtime_guidance_catalog import CC_NATIVE_ATTACHMENT_CATALOG
+
+    entries = {entry.cc_type: entry for entry in CC_NATIVE_ATTACHMENT_CATALOG}
+    for name in ("team_context", "teammate_mailbox", "teammate_shutdown_batch"):
+        entry = entries[name]
+        assert entry.status == "have"
+        assert "agent_team_context.py::build_prompt_facing_team_context" in entry.single_ingress
+        assert "persisted_" in entry.persistence_policy

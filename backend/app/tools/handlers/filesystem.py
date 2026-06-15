@@ -349,8 +349,9 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
             "- Working directory is your workspace/ — file paths in code are relative to it.\n"
             "- Python: standard libraries available (json, csv, math, re, collections, pathlib, etc.).\n"
             "- Default timeout: 30 seconds (max 60). Long-running code will be killed.\n"
-            "- SECURITY: No network access, no system-level operations (rm -rf, chmod, etc.). "
-            "Never include credentials, API keys, or user secrets in code.\n"
+            "- SECURITY: governed sandbox providers default to deny-all network and block system-level operations "
+            "(rm -rf, chmod, etc.); any explicit network policy is platform-controlled. Never include credentials, "
+            "API keys, or user secrets in code.\n"
             "- If code fails, read the error output carefully before retrying — fix the root cause, "
             "do not blindly retry the same code.\n"
             "- For file operations, prefer dedicated tools (read_file, write_file) over code-based I/O."
@@ -393,7 +394,7 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
     ToolMeta(
         name="run_command",
         description=(
-            "Run a shell command inside the cloud container and the agent workspace directory.\n\n"
+            "Run a shell command inside the configured sandbox provider and the agent workspace directory.\n\n"
             "Usage:\n"
             "- Working directory is your workspace/ inside the container.\n"
             "- Use this for local project commands such as `git status`, `pytest`, `npm test`, `node script.js`, or `python3 script.py`.\n"

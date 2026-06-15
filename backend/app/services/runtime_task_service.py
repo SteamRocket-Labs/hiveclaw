@@ -33,6 +33,7 @@ def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
         "parent_agent_id": str(task.parent_agent_id) if task.parent_agent_id else None,
         "child_agent_id": str(task.child_agent_id) if task.child_agent_id else None,
         "child_agent_name": task.child_agent_name,
+        "prompt": task.prompt,
         "result": task.result_summary,
         "trace_id": task.trace_id,
         "parent_session_id": task.parent_session_id,
@@ -51,7 +52,10 @@ def _is_restart_resumable_runtime_task(task: RuntimeTask) -> bool:
         return True
 
     metadata = dict(getattr(task, "metadata_json", None) or {})
-    return bool(metadata.get("resume_after_restart") and metadata.get("resumable_delegation"))
+    return bool(
+        metadata.get("resume_after_restart")
+        and (metadata.get("resumable_delegation") or metadata.get("resumable_subagent"))
+    )
 
 
 async def create_runtime_task_record(

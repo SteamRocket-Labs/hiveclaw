@@ -22,4 +22,5 @@ def build_skills_catalog_section(skills_text: str = "", budget_chars: int = 4000
 
 {truncated}
 
-Use `load_skill(name)` to load a skill's full instructions before using it. Do NOT guess what a skill contains."""
+Use `load_skill(name)` only when you need the skill's method guide, decision rules, or examples. \
+Do NOT load a skill before simple direct tool calls, and do NOT guess what a skill contains."""

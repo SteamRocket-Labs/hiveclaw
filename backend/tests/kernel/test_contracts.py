@@ -17,6 +17,7 @@ def test_runtime_config_defaults():
     assert cfg.execution_mode is None
     assert cfg.runtime_continuity_enabled is False
     assert cfg.skill_candidate_loop_enabled is False
+    assert cfg.skill_distiller_behavior_report is None
     # P0-1b: new sentinel must default to None so existing successful paths
     # behave unchanged. Only invoker fallback paths set this to a string.
     assert cfg.tenant_resolution_error is None

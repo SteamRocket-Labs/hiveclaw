@@ -80,10 +80,13 @@ If the user already provides a URL:
 ### 3. Cite every claim
 Include the source URL and fetch date when presenting results. Users need to verify.
 
-### 4. Admit gaps
+### 4. Match output size to the ask
+For simple "recent news", "related messages", or "what changed" requests, answer inline with concise bullets and source links. Do not create a report file, send an attachment, or call delivery tools unless the user explicitly asks for a report/file, the answer is too long for chat, or a durable artifact is clearly part of the task.
+
+### 5. Admit gaps
 If search returns insufficient data, say so explicitly. Do NOT fill gaps with training-data guesses — that's hallucination, and users will lose trust.
 
-### 5. Respect auth gates
+### 6. Respect auth gates
 If a page requires login/auth, search for public alternatives (press releases, GitHub README, product docs). Only report "requires authentication" as a final answer after trying public sources.
 
 </workflows>
@@ -150,6 +153,7 @@ Wrong response: 编一个数字。
 
 <success_criteria>
 - Every factual claim from the web is paired with a source URL and fetch date.
+- Simple lookup requests are answered inline; report/file artifacts are reserved for explicit report/file asks, long outputs, or durable deliverables.
 - Any empty/incomplete `web_fetch` result triggers escalation to `firecrawl_fetch` before the page is reported as inaccessible.
 - Weak basic search results trigger `tool_search` discovery of advanced search providers before you conclude no public information exists.
 - When search returns nothing, the response explicitly says so and offers a path forward (different search, waiting, alternative source).

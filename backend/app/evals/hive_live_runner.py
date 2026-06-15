@@ -64,6 +64,7 @@ AgentRunner = Callable[[str, Path], Awaitable[dict[str, Any]]]
 
 BEHAVIOR_REPORT_STDOUT_MARKER = "::hive-behavior-report::"
 BEHAVIOR_EVAL_RUNTIME_SETTING_KEY = "behavior_eval_runtime"
+BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY = "behavior_eval_latest_report"
 
 _EVAL_WORKSPACE_TOOL_NAMES: frozenset[str] = frozenset(
     {

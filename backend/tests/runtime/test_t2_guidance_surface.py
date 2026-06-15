@@ -73,12 +73,34 @@ def test_executing_actions_carries_consolidation_criteria():
     assert "never self-approved" in text
 
 
+def test_executing_actions_scales_artifacts_to_the_user_request():
+    """A small lookup should not be silently promoted into a report artifact."""
+    from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
+
+    text = build_executing_actions_section()
+
+    assert "answer inline for simple lookups" in text
+    assert "Do not create or send a report/file unless" in text
+
+
 def test_executing_actions_skills_line_excludes_source_capabilities():
     """Platform Integration must not imply source capabilities need a skill."""
     from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
 
     text = build_executing_actions_section()
     assert "never need a skill" in text
+
+
+def test_tools_section_prioritizes_direct_core_tools_before_skills():
+    """Core tools such as web_search should be callable before loading broad method skills."""
+    from app.runtime.prompt_sections.tools import build_tools_section
+
+    text = build_tools_section()
+    normalized = text.lower()
+
+    assert "Direct callable tools first" in text
+    assert "Do not load a skill just because a broad skill exists" in text
+    assert "always load and read it first" not in normalized
 
 
 # ── tool description cross-references (CC discipline) ───────────────

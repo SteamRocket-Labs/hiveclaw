@@ -12,7 +12,8 @@ def test_evaluate_runtime_prompt_contracts_has_no_failures() -> None:
     assert "system_trust_boundaries" in report["passed"]
     assert "memory_usage_guidance" in report["passed"]
     assert "always_on_required_tools_are_core" in report["passed"]
-    assert "skill_load_before_act_guidance" in report["passed"]
+    assert "direct_core_tool_before_skill_guidance" in report["passed"]
+    assert "output_scale_matches_user_request" in report["passed"]
     assert "web_lookup_requires_tool_search_discovery" in report["passed"]
     assert "tools_section_names_mcp_discovery" in report["passed"]
     assert "skill_evolution_guidance" in report["passed"]
@@ -44,6 +45,7 @@ def test_evaluate_runtime_prompt_contracts_reports_failure_details() -> None:
     report = evaluate_runtime_prompt_contracts(
         PromptEvalInputs(
             system_section="## System\n(no trust boundaries)\n",
+            executing_actions_section="## Core Directives\n(make reports for everything)\n",
             memory_section="## Your Memory System\n(save only)\n",
             tools_section="## Using Your Tools\n(load only)\n",
             review_playbook="## Task Playbook\n(no overlay)\n",
@@ -58,7 +60,8 @@ def test_evaluate_runtime_prompt_contracts_reports_failure_details() -> None:
 
     assert "system_trust_boundaries" in report["failed"]
     assert "skill_evolution_guidance" in report["failed"]
-    assert "skill_load_before_act_guidance" in report["failed"]
+    assert "direct_core_tool_before_skill_guidance" in report["failed"]
+    assert "output_scale_matches_user_request" in report["failed"]
     assert "skill_patch_instead_of_duplicate_guidance" in report["failed"]
     assert "heartbeat_skill_curation_consistency" in report["failed"]
     assert report["checks"]["system_trust_boundaries"]["passed"] is False

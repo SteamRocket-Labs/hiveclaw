@@ -1,0 +1,16 @@
+use_default_settings: true
+
+general:
+  instance_name: "Hive SearXNG"
+  enable_metrics: false
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  limiter: false
+  public_instance: false
+  method: "GET"
+  image_proxy: false

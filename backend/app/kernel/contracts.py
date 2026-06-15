@@ -90,6 +90,7 @@ class RuntimeConfig:
     execution_mode: str | None = None
     runtime_continuity_enabled: bool = False
     skill_candidate_loop_enabled: bool = False
+    skill_distiller_behavior_report: dict[str, Any] | None = None
     # P0-1b: when invoker._resolve_runtime_config cannot resolve tenant
     # (missing agent_id / agent not found / DB exception), it now sets this
     # sentinel instead of silently returning tenant_id=None. Kernel checks

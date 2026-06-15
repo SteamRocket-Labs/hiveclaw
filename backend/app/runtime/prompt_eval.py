@@ -182,8 +182,7 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
             # P4 candidate lane: the curator checks for an existing covering
             # skill before recording a skill_candidate signal — duplicates are
             # filtered at the evidence stage, not after creation.
-            predicate=lambda: "no existing skill covers it" in normalized
-            or "no duplicate skill exists" in normalized,
+            predicate=lambda: "no existing skill covers it" in normalized or "no duplicate skill exists" in normalized,
             severity="medium",
             remediation="Restore guidance that candidate signals are only recorded when no existing skill covers the workflow.",
             success_detail="Prompt contracts tell the curator to check skill coverage before recording candidates.",
@@ -320,15 +319,27 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             success_detail="Tools section teaches when save_skill should and should not be used.",
             failure_detail="Tools section lost save_skill guidance or no longer blocks one-off skill creation.",
         ),
-        "skill_load_before_act_guidance": _CheckSpec(
+        "direct_core_tool_before_skill_guidance": _CheckSpec(
             predicate=lambda: (
                 "load_skill" in (resolved.tools_section or "")
-                and "always load and read it first" in (resolved.tools_section or "").lower()
+                and "Direct callable tools first" in (resolved.tools_section or "")
+                and "Do not load a skill just because a broad skill exists" in (resolved.tools_section or "")
+                and "always load and read it first" not in (resolved.tools_section or "").lower()
             ),
             severity="high",
-            remediation="Restore the tools-section rule that matching skills must be loaded before using their instructions or pack-gated tools.",
-            success_detail="Tools section requires load_skill before acting on a matching skill.",
-            failure_detail="Tools section no longer requires load_skill before acting on a matching skill.",
+            remediation="Restore direct-core-tool-first guidance: visible tools should be called directly, while load_skill is reserved for method guidance.",
+            success_detail="Tools section tells the agent to call visible CORE tools directly before loading broad skills.",
+            failure_detail="Tools section no longer protects direct CORE tool calls from broad speculative skill loading.",
+        ),
+        "output_scale_matches_user_request": _CheckSpec(
+            predicate=lambda: (
+                "answer inline for simple lookups" in (resolved.executing_actions_section or "")
+                and "Do not create or send a report/file unless" in (resolved.executing_actions_section or "")
+            ),
+            severity="high",
+            remediation="Restore output-scale guidance so simple lookups stay inline and report/file artifacts are created only when requested or needed.",
+            success_detail="Executing-actions guidance scales chat answers versus report/file artifacts to the user's ask.",
+            failure_detail="Executing-actions guidance may still promote simple lookups into report/file artifacts.",
         ),
         "web_lookup_requires_tool_search_discovery": _CheckSpec(
             predicate=lambda: (

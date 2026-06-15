@@ -19,10 +19,15 @@ session (a denied or disabled MCP tool will not be listed). Use CORE `web_search
 internet lookup; if those results are insufficient, use `tool_search` to discover advanced tools such \
 as `exa_search`, `tavily_search`, `firecrawl_fetch`, or `xcrawl_scrape`. Use `load_skill` only for a \
 skill's method guide, not to unlock tools. Use `web_fetch` when you already have a specific URL.
+- Direct callable tools first: when a visible CORE tool clearly satisfies the user's request, call it \
+directly before loading a broad skill. For example, if the user asks to search the web, call \
+`web_search`; if they ask to fetch a known URL, call `web_fetch`. Do not load a skill just because a \
+broad skill exists for the same domain.
 - Call multiple tools in parallel when they are independent — don't serialize unnecessarily.
 - Break complex tasks into focused tool calls. Verify outcomes before proceeding.
-- Use `load_skill` to access full skill instructions when a task matches a skill name — \
-always load and read it first so you have the complete workflow.
+- Use `load_skill` only when you need a skill's method, decision guide, examples, or the user \
+explicitly asks you to use that skill. Loading a skill does not unlock tool schemas; use `tool_search` \
+for missing capabilities.
 - Use `save_skill` after a workflow has succeeded repeatedly and the steps are clearly reusable. \
 Do not save one-off notes, transient state, or raw transcripts as skills. Durable user corrections \
 go through `save_memory` only when the Memory Guide says they qualify; operational notes and \

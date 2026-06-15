@@ -26,6 +26,7 @@ _SIGNAL_TYPES = {
 }
 _CONTAINERS = {"none", "session_learning", "memory_candidate", "skill_candidate", "workflow_candidate"}
 _PROMOTION_INTENTS = {"none", "project_only", "candidate", "defer", "reject"}
+_LEARNING_BRAIN_MAX_TOKENS = 8192
 
 
 def _jsonable(value: Any) -> Any:
@@ -222,14 +223,17 @@ async def classify_fast_reflection_signal_with_learning_brain(
                 source="fast_reflection_learning_brain",
                 agent_id=agent_id,
                 tenant_id=tenant_id,
-                metadata={"session_id": session_id},
+                metadata={
+                    "session_id": session_id,
+                    "learning_brain_mode": "full_context_auxiliary_pass",
+                },
             )
         )
         try:
             response = await client.complete(
                 messages=prompt_messages,
                 temperature=0.0,
-                max_tokens=1600,
+                max_tokens=_LEARNING_BRAIN_MAX_TOKENS,
             )
         finally:
             await client.close()

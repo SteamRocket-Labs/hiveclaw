@@ -95,7 +95,7 @@ class TestToolGovernance:
 
     def test_integration_packs_use_tool_search_for_deferred_schema_discovery(self, prompt_text: str) -> None:
         normalized = " ".join(prompt_text.split())
-        assert "Integration capability packs" in normalized
+        assert "Integration/deferred tool groups" in normalized
         assert "discovered on-demand through `tool_search`" in normalized
         assert "matching deferred tool schemas then become callable" in normalized
         assert "not to unlock tools" in normalized

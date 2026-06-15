@@ -35,6 +35,62 @@ def test_connector_acl_mirror_filters_explicit_acl_without_matching_principal() 
     assert hidden is False
 
 
+def test_connector_acl_requires_metadata_for_governed_sources() -> None:
+    from app.services.connector_acl import connector_item_visible
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+
+    assert (
+        connector_item_visible(
+            {"source": "feishu://doc/missing-acl", "content": "legacy hidden by default"},
+            tenant_id=tenant_id,
+            current_user_id=user_id,
+            agent_id=uuid4(),
+        )
+        is False
+    )
+    assert (
+        connector_item_visible(
+            {"source": "internal://legacy-note", "content": "legacy internal memory"},
+            tenant_id=tenant_id,
+            current_user_id=user_id,
+            agent_id=uuid4(),
+        )
+        is True
+    )
+
+
+def test_post_generation_permission_check_reports_forbidden_sources() -> None:
+    from app.services.connector_acl import validate_generated_source_permissions
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+    allowed_source = "feishu://doc/allowed"
+    hidden_source = "feishu://doc/hidden"
+
+    result = validate_generated_source_permissions(
+        f"Use [{allowed_source}] but do not quote [{hidden_source}].",
+        source_items=[
+            {
+                "source": allowed_source,
+                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(user_id)]},
+            },
+            {
+                "source": hidden_source,
+                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(uuid4())]},
+            },
+        ],
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+        agent_id=uuid4(),
+    )
+
+    assert result.allowed is False
+    assert result.forbidden_sources == [hidden_source]
+    assert result.allowed_sources == [allowed_source]
+
+
 @pytest.mark.asyncio
 async def test_knowledge_injection_applies_connector_acl_mirror(monkeypatch) -> None:
     from app.services import knowledge_inject

@@ -39,6 +39,7 @@ from app.services.llm_error_policy import is_llm_error_message
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
 from app.services import plan_mode_core
 from app.services.long_task_runtime import build_long_task_resume_context
+from app.services.skill_lifecycle import record_skill_runtime_usage
 from app.services.web_chat_broker import web_chat_broker
 
 
@@ -71,6 +72,78 @@ def _runtime_task_to_run(task: RuntimeTask) -> dict[str, Any]:
         "completed_at": completed_at.isoformat() if completed_at else None,
         "result_summary": getattr(task, "result_summary", None),
     }
+
+
+def _tool_event_args(data: dict[str, Any]) -> dict[str, Any]:
+    raw_args = data.get("args")
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _skill_usage_status_for_run(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "completed":
+        return "success"
+    if normalized in {"failed", "killed", "cancelled", "canceled"}:
+        return "failed"
+    return "unknown"
+
+
+def _record_web_chat_skill_runtime_usage(
+    *,
+    agent_id: uuid.UUID,
+    session_id: str,
+    tool_events: list[dict[str, Any]],
+    status: str,
+    note: str,
+) -> dict[str, Any] | None:
+    loaded_skill_names: list[str] = []
+    tool_names: list[str] = []
+    for event in tool_events:
+        if event.get("status") not in {None, "done"}:
+            continue
+        tool_name = str(event.get("name") or "").strip()
+        if not tool_name:
+            continue
+        tool_names.append(tool_name)
+        if tool_name != "load_skill":
+            continue
+        args = _tool_event_args(event)
+        skill_name = str(args.get("name") or args.get("skill_name") or args.get("query") or "").strip()
+        if skill_name and skill_name not in loaded_skill_names:
+            loaded_skill_names.append(skill_name)
+
+    if not loaded_skill_names:
+        return None
+
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    try:
+        return record_skill_runtime_usage(
+            workspace,
+            skill_name=loaded_skill_names[0],
+            loaded_skill_names=loaded_skill_names,
+            tool_names=tool_names,
+            status=_skill_usage_status_for_run(status),
+            note=note,
+            source="web_chat",
+            session_id=session_id,
+            blocker=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must not break chat finalization
+        logger.warning(
+            "[WebChatRun] skill runtime usage telemetry failed: agent_id={} session_id={} error={}",
+            agent_id,
+            session_id,
+            exc,
+        )
+        return None
 
 
 def _saved_user_content(*, content: str, display_content: str = "", file_name: str = "") -> str:
@@ -1164,6 +1237,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     cancel_event = cancel_event or _CANCEL_EVENTS.setdefault(run_key, asyncio.Event())
     streamed_chunks: list[str] = []
     thinking_content: list[str] = []
+    skill_runtime_tool_events: list[dict[str, Any]] = []
+    skill_usage_recorded = False
     terminal_agent_id: uuid.UUID | None = None
     terminal_session_id: str | None = None
 
@@ -1377,6 +1452,13 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             nonlocal plan_mode_submitted
             await broadcast_web_chat_event(agent.id, session_id, build_tool_call_event(data))
             if data.get("status") == "done":
+                skill_runtime_tool_events.append(
+                    {
+                        "name": data.get("name"),
+                        "args": data.get("args"),
+                        "status": data.get("status"),
+                    }
+                )
                 if _tool_result_needs_plan(data):
                     plan_mode_submitted = True
                 await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
@@ -1444,6 +1526,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         )
         if not finalized:
             return
+        skill_usage_recorded = (
+            _record_web_chat_skill_runtime_usage(
+                agent_id=agent.id,
+                session_id=session_id,
+                tool_events=skill_runtime_tool_events,
+                status=status,
+                note=_simulation_title(assistant_response),
+            )
+            is not None
+        )
         await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response, thinking=thinking))
         if status == "completed":
             # P1-2: deliver the result back to the origin IM channel (no-op for
@@ -1461,6 +1553,19 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             else f"Web chat run failed: {type(exc).__name__}",
             metadata_json={"cancelled_by_user": True} if was_cancelled else {"error": str(exc)[:500]},
         )
+        if not skill_usage_recorded and terminal_agent_id is not None and terminal_session_id:
+            skill_usage_recorded = (
+                _record_web_chat_skill_runtime_usage(
+                    agent_id=terminal_agent_id,
+                    session_id=terminal_session_id,
+                    tool_events=skill_runtime_tool_events,
+                    status="killed" if was_cancelled else "failed",
+                    note="Generation stopped by user."
+                    if was_cancelled
+                    else f"Web chat run failed: {type(exc).__name__}",
+                )
+                is not None
+            )
         if was_cancelled:
             return
         try:

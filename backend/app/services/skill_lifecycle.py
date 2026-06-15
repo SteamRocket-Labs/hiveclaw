@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from datetime import timedelta
@@ -55,6 +56,12 @@ def _review_path(workspace: Path) -> Path:
     return evolution_dir / "skill_review.md"
 
 
+def _usage_path(workspace: Path) -> Path:
+    evolution_dir = workspace / "evolution"
+    evolution_dir.mkdir(parents=True, exist_ok=True)
+    return evolution_dir / "skill_usage.jsonl"
+
+
 def _ensure_iso(occurred_at: str | None) -> str:
     return occurred_at or datetime.now(timezone.utc).isoformat()
 
@@ -78,6 +85,23 @@ def _filter_recent(stamps: list[str], *, anchor: str) -> list[str]:
         if parsed is None or parsed >= floor:
             filtered.append(stamp)
     return list(dict.fromkeys(filtered))[-10:]
+
+
+def _normalize_tool_names(tool_names: list[str] | tuple[str, ...]) -> list[str]:
+    normalized: list[str] = []
+    for item in tool_names:
+        name = str(item or "").strip()
+        if not name or name in normalized:
+            continue
+        normalized.append(name)
+    return sorted(normalized)
+
+
+def _workflow_signature_from_tools(tool_names: list[str] | tuple[str, ...], *, fallback: str) -> str:
+    normalized = _normalize_tool_names(tool_names)
+    if not normalized:
+        return fallback.strip() or "unknown_workflow"
+    return "+".join(normalized)
 
 
 def _load_candidates(path: Path) -> dict[str, SkillCandidateRecord]:
@@ -263,3 +287,70 @@ def record_skill_execution(
         "patch_candidate_count": len(record.patch_candidates),
         "last_status": record.last_status,
     }
+
+
+def record_skill_runtime_usage(
+    workspace: Path,
+    *,
+    skill_name: str,
+    loaded_skill_names: list[str] | tuple[str, ...],
+    tool_names: list[str] | tuple[str, ...],
+    status: str,
+    note: str,
+    source: str,
+    session_id: str | None = None,
+    blocker: str | None = None,
+    occurred_at: str | None = None,
+) -> dict[str, Any]:
+    """Record organic runtime skill usage before distillation.
+
+    This is intentionally small and file-backed like the existing lifecycle
+    artifacts: the runtime can call it from web chat / trigger / task paths
+    without depending on the distiller daemon. Non-actionable/noop sessions are
+    still logged for observability, but they do not pollute candidate counters.
+    """
+
+    stamp = _ensure_iso(occurred_at)
+    normalized_loaded = [str(item).strip() for item in loaded_skill_names if str(item or "").strip()]
+    normalized_tools = _normalize_tool_names(tool_names)
+    primary_skill = (skill_name or (normalized_loaded[0] if normalized_loaded else "")).strip() or "unknown_skill"
+    workflow_signature = _workflow_signature_from_tools(normalized_tools, fallback=primary_skill)
+    normalized_status = status.strip().lower()
+    used_skill = bool(normalized_loaded or primary_skill)
+
+    usage_event = {
+        "schema": "skill_runtime_usage.v1",
+        "occurred_at": stamp,
+        "source": str(source or "").strip() or "unknown",
+        "session_id": str(session_id or "").strip() or None,
+        "skill_name": primary_skill,
+        "loaded_skill_names": normalized_loaded,
+        "tool_names": normalized_tools,
+        "workflow_signature": workflow_signature,
+        "status": normalized_status,
+        "used_skill": used_skill,
+        "note": note.strip(),
+        "blocker": (blocker or "").strip(),
+    }
+    with _usage_path(workspace).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(usage_event, ensure_ascii=False, sort_keys=True) + "\n")
+
+    if normalized_status in {"noop", "unknown", ""}:
+        return {
+            "decision": "ignored",
+            "workflow_signature": workflow_signature,
+            "promote_candidate_count": 0,
+            "patch_candidate_count": 0,
+            "last_status": normalized_status or "unknown",
+        }
+
+    return record_skill_execution(
+        workspace,
+        skill_name=primary_skill,
+        workflow_signature=workflow_signature,
+        status=normalized_status,
+        used_skill=used_skill,
+        note=note,
+        blocker=blocker,
+        occurred_at=stamp,
+    )

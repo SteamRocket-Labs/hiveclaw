@@ -152,6 +152,42 @@ def test_render_skill_evidence_contrast_splits_success_and_failure_examples() ->
     assert "Web Research" in contrast
 
 
+def test_render_skill_evidence_contrast_keeps_late_patch_signal() -> None:
+    from app.services.skill_distiller import SessionWorkflowEvidence, render_skill_evidence_contrast
+
+    evidence = [
+        SessionWorkflowEvidence(
+            session_id=f"success-{idx}",
+            source="heartbeat",
+            occurred_at=f"2026-04-0{idx + 1}T10:00:00Z",
+            status="success",
+            used_skill=False,
+            summary=f"Successful run {idx}",
+            assistant_reply="[OUTCOME:action_taken]",
+            tool_names=("web_search", "write_file"),
+        )
+        for idx in range(6)
+    ]
+    evidence.append(
+        SessionWorkflowEvidence(
+            session_id="late-patch-signal",
+            source="web_chat",
+            occurred_at="2026-04-10T10:00:00Z",
+            status="workaround",
+            used_skill=True,
+            summary="Loaded the skill but had to manually add rollback verification.",
+            assistant_reply="[OUTCOME:failure]",
+            tool_names=("load_skill", "write_file"),
+            loaded_skill_names=("Deploy Checklist",),
+        )
+    )
+
+    contrast = render_skill_evidence_contrast(evidence)
+
+    assert "late-patch-signal" in contrast
+    assert "Deploy Checklist" in contrast
+
+
 @pytest.mark.asyncio
 async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(monkeypatch, tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle

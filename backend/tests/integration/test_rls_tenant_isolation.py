@@ -11,7 +11,7 @@ cannot observe any of it):
    silently bypasses the tenant policies. Documented gap; the
    ``FORCE ROW LEVEL SECURITY`` decision lands with P1 (workflow tables are
    born FORCEd, legacy tables get an audited switch).
-4. the alembic chain actually applied RLS + policies to production tables.
+4. the alembic chain actually applied forced RLS + policies to production tables.
 """
 
 from __future__ import annotations
@@ -110,8 +110,7 @@ async def test_alembic_applied_rls_to_production_tables(owner_engine):
     exact path every fresh deployment takes. P0 found that path shipped with
     ZERO RLS policies (and without config_revisions, which env.py forgot to
     import); both are fixed, and this test pins the contract: every tenant
-    table exists with RLS enabled and its tenant_isolation_* policy in place
-    (and documents that none are FORCEd yet — P1 flips that deliberately)."""
+    table exists with forced RLS enabled and its tenant_isolation_* policy in place."""
     async with owner_engine.connect() as conn:
         rows = (
             await conn.execute(
@@ -130,10 +129,7 @@ async def test_alembic_applied_rls_to_production_tables(owner_engine):
     assert set(found) == set(_RLS_PRODUCTION_TABLES), "migration chain must create every tenant table"
     for table in _RLS_PRODUCTION_TABLES:
         assert found[table].relrowsecurity is True, f"{table}: RLS not enabled by migration"
-        # Documented gap (P1 closes it): ENABLE-only, not FORCEd.
-        assert found[table].relforcerowsecurity is False, (
-            f"{table}: unexpectedly FORCEd — update this documented-gap test and the P1 plan"
-        )
+        assert found[table].relforcerowsecurity is True, f"{table}: RLS not FORCEd by migration"
     policy_tables = {tablename for tablename, _ in policies}
     assert policy_tables == set(_RLS_PRODUCTION_TABLES)
     assert all(name.startswith("tenant_isolation_") for _, name in policies)

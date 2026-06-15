@@ -14,6 +14,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
 _RESTART_RESUMABLE_TASK_TYPES = ("workflow", "web_chat_turn")
+_TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
 
 
 def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
@@ -56,6 +57,47 @@ def _is_restart_resumable_runtime_task(task: RuntimeTask) -> bool:
         metadata.get("resume_after_restart")
         and (metadata.get("resumable_delegation") or metadata.get("resumable_subagent"))
     )
+
+
+def build_completion_journal_entry(
+    *,
+    task_type: str,
+    task_id: str,
+    status: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+    side_effect_risk: str = "unknown",
+    summary: str | None = None,
+) -> dict[str, Any]:
+    normalized_status = str(status or "").strip().lower()
+    return {
+        "schema": "runtime_completion_journal.v1",
+        "idempotency_key": f"{task_type}:{task_id}:{normalized_status}",
+        "task_type": str(task_type or "").strip() or "runtime_task",
+        "task_id": str(task_id or "").strip(),
+        "status": normalized_status,
+        "trace_id": str(trace_id or "").strip() or None,
+        "session_id": str(session_id or "").strip() or None,
+        "side_effect_risk": str(side_effect_risk or "unknown").strip(),
+        "summary": (summary or "").strip()[:1000],
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def merge_completion_journal(
+    metadata: dict[str, Any] | None,
+    entry: dict[str, Any],
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    merged = dict(metadata or {})
+    journal = [item for item in merged.get("completion_journal", []) if isinstance(item, dict)]
+    key = entry.get("idempotency_key")
+    if key:
+        journal = [item for item in journal if item.get("idempotency_key") != key]
+    journal.append(entry)
+    merged["completion_journal"] = journal[-limit:]
+    return merged
 
 
 async def create_runtime_task_record(
@@ -138,6 +180,24 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
 
             now = datetime.now(timezone.utc)
             status = fields.get("status")
+            if status in _TERMINAL_STATUSES:
+                existing_metadata = dict(getattr(task, "metadata_json", None) or {})
+                persisted_task_id = getattr(task, "id", None)
+                persisted_task_id_text = persisted_task_id.hex if isinstance(persisted_task_id, uuid.UUID) else str(task_id)
+                entry = build_completion_journal_entry(
+                    task_type=str(getattr(task, "task_type", None) or "runtime_task"),
+                    task_id=persisted_task_id_text,
+                    status=str(status),
+                    trace_id=fields.get("trace_id") or getattr(task, "trace_id", None),
+                    session_id=(
+                        fields.get("child_session_id")
+                        or fields.get("parent_session_id")
+                        or getattr(task, "child_session_id", None)
+                    ),
+                    side_effect_risk=str(existing_metadata.get("side_effect_risk") or "unknown"),
+                    summary=fields.get("result_summary") or getattr(task, "result_summary", None),
+                )
+                task.metadata_json = merge_completion_journal(task.metadata_json, entry)
             if status == "running" and task.started_at is None:
                 task.started_at = now
             if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:

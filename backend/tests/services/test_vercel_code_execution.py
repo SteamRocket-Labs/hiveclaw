@@ -220,6 +220,33 @@ async def test_vercel_provider_sanitizes_caller_env_and_records_evidence(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_vercel_provider_brokers_credentials_as_handles_not_values(tmp_path, monkeypatch, fake_vercel):
+    from app.services.code_execution.vercel_provider import execute_vercel_sandbox_command
+
+    _set_vercel_env(monkeypatch, policy="allowlist:pypi.org,files.pythonhosted.org")
+    monkeypatch.setenv("HIVE_CODE_EXEC_BROKERED_CREDENTIAL_KEYS", "TAVILY_API_KEY,EXA_API_KEY")
+    work_dir = tmp_path / "work"
+    home = tmp_path / "home"
+    work_dir.mkdir()
+    home.mkdir()
+
+    result = await execute_vercel_sandbox_command(
+        ["bash", "-lc", "printf hi"],
+        work_dir=work_dir,
+        env={"HOME": str(home), "TAVILY_API_KEY": "real-secret"},
+        timeout=10,
+    )
+
+    user_command = next(item for item in fake_vercel.instances[0].commands if item["cmd"] == "bash")
+    exec_env = user_command["env"]
+    assert result.error is None
+    assert exec_env["HIVE_BROKERED_CREDENTIALS"] == "TAVILY_API_KEY=cred://agent/tavily_api_key"
+    assert "real-secret" not in str(exec_env)
+    assert result.evidence["credential_broker"]["brokered_keys"] == ["TAVILY_API_KEY"]
+    assert result.evidence["network_allowlist"] == ["files.pythonhosted.org", "pypi.org"]
+
+
+@pytest.mark.asyncio
 async def test_vercel_provider_missing_credentials_fails_closed_without_local_fallback(tmp_path, monkeypatch):
     from app.services.agent_tool_domains.code_exec import _run_command
 

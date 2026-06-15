@@ -1188,6 +1188,78 @@ def _programmatic_dedup(lines: list[str], similarity_threshold: float = 0.7) -> 
     return kept
 
 
+_T3_ENTRY_ID_RE = _re.compile(r"\[entry_id=([^\]]+)\]")
+
+
+def _safe_int_meta(metadata: dict[str, str], key: str) -> int:
+    try:
+        return max(0, int(str(metadata.get(key, "0")).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _line_entry_id(line: str) -> str | None:
+    match = _T3_ENTRY_ID_RE.search(line)
+    return match.group(1).strip() if match else None
+
+
+def _retention_score_for_line(
+    line: str,
+    *,
+    index: int,
+    protected_markers: list[str],
+    lifecycle_metadata: dict[str, dict[str, str]],
+) -> float:
+    if any(marker in line for marker in protected_markers):
+        return 10_000.0 + index
+    metadata = lifecycle_metadata.get(_line_entry_id(line) or "", {})
+    reinforcement = _safe_int_meta(metadata, "reinforcement_count")
+    helpful = _safe_int_meta(metadata, "helpful_count")
+    harmful = _safe_int_meta(metadata, "harmful_count")
+    access = _safe_int_meta(metadata, "access_count")
+    recency = index / 1000.0
+    return recency + (reinforcement * 2.0) + helpful + min(access, 10) - (harmful * 6.0)
+
+
+def _select_t3_cap_retention(
+    lines: list[str],
+    *,
+    keep_count: int,
+    protected_markers: list[str],
+    lifecycle_metadata: dict[str, dict[str, str]],
+) -> tuple[list[str], list[str]]:
+    if len(lines) <= keep_count:
+        return lines, []
+
+    protected_indexes = {idx for idx, line in enumerate(lines) if any(marker in line for marker in protected_markers)}
+    scored = [
+        (
+            _retention_score_for_line(
+                line,
+                index=idx,
+                protected_markers=protected_markers,
+                lifecycle_metadata=lifecycle_metadata,
+            ),
+            idx,
+            line,
+        )
+        for idx, line in enumerate(lines)
+    ]
+    keep_indexes = set(protected_indexes)
+    remaining_slots = max(0, keep_count - len(keep_indexes))
+    for _score, idx, _line in sorted(scored, key=lambda item: (item[0], item[1]), reverse=True):
+        if idx in keep_indexes:
+            continue
+        if remaining_slots <= 0:
+            break
+        keep_indexes.add(idx)
+        remaining_slots -= 1
+
+    kept = [line for idx, line in enumerate(lines) if idx in keep_indexes]
+    evicted = [line for idx, line in enumerate(lines) if idx not in keep_indexes]
+    return kept, evicted
+
+
 def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
     """Programmatic T3 consolidation: dedup + cap per file. Returns {filename: entries_removed}.
 
@@ -1198,11 +1270,13 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
     near-duplicates archive as superseded, cap evictions archive as
     cap_eviction; both land in memory/archive.md + lifecycle.json.
     """
+    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
     from app.memory.t3_store import archive_t3_lines
 
     stats: dict[str, int] = {}
     t3_files = _read_all_t3(agent_id)
     data_root = Path(get_settings().AGENT_DATA_DIR)
+    lifecycle_metadata = MemoryLifecycleStore(lifecycle_path(data_root, agent_id)).metadata_map()
 
     preservation_flags = _read_preservation_flags(agent_id)
     # Group protected entries by filename for fast lookup.
@@ -1232,19 +1306,26 @@ def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
         deduped = _programmatic_dedup(entry_lines)
         dedup_dropped = [line for line in entry_lines if line not in deduped]
 
-        # Cap: keep most recent (last N entries), but protected entries are sticky.
+        # Cap: keep protected + counter-hot entries. Entries without sidecar
+        # counters keep the historical most-recent behavior via a recency
+        # tie-breaker.
         protected_markers = protected_by_file.get(fname, [])
-        cap_evicted: list[str] = []
         if len(deduped) > _T3_MAX_ENTRIES_PER_FILE and protected_markers:
-            protected_lines = [line for line in deduped if any(marker in line for marker in protected_markers)]
-            non_protected = [line for line in deduped if not any(marker in line for marker in protected_markers)]
-            # Keep all protected + last N-len(protected) non-protected.
-            keep_non_protected = max(0, _T3_MAX_ENTRIES_PER_FILE - len(protected_lines))
-            cap_evicted = non_protected[:-keep_non_protected] if keep_non_protected else non_protected
-            deduped = protected_lines + (non_protected[-keep_non_protected:] if keep_non_protected else [])
+            deduped, cap_evicted = _select_t3_cap_retention(
+                deduped,
+                keep_count=_T3_MAX_ENTRIES_PER_FILE,
+                protected_markers=protected_markers,
+                lifecycle_metadata=lifecycle_metadata,
+            )
         elif len(deduped) > _T3_MAX_ENTRIES_PER_FILE:
-            cap_evicted = deduped[:-_T3_MAX_ENTRIES_PER_FILE]
-            deduped = deduped[-_T3_MAX_ENTRIES_PER_FILE:]
+            deduped, cap_evicted = _select_t3_cap_retention(
+                deduped,
+                keep_count=_T3_MAX_ENTRIES_PER_FILE,
+                protected_markers=[],
+                lifecycle_metadata=lifecycle_metadata,
+            )
+        else:
+            cap_evicted = []
 
         after = len(deduped)
         removed = before - after

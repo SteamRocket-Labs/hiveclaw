@@ -67,6 +67,8 @@ async def test_run_completer_maps_ok_to_completed(monkeypatch):
     assert captured["status"] == "completed"
     assert captured["result_summary"] == "done"
     assert captured["token_usage"] == {"total_tokens": 42}
+    assert captured["metadata_json"]["completion_journal"][-1]["status"] == "completed"
+    assert captured["metadata_json"]["completion_journal"][-1]["idempotency_key"] == "subagent:run-1:completed"
 
 
 @pytest.mark.asyncio
@@ -82,6 +84,7 @@ async def test_run_completer_maps_failure_to_failed(monkeypatch):
     await completer(SubagentResult(name="scout", type="worker", status="failed", error="boom"))
     assert captured["status"] == "failed"
     assert "boom" in captured["result_summary"]
+    assert captured["metadata_json"]["completion_journal"][-1]["status"] == "failed"
 
 
 @pytest.mark.asyncio

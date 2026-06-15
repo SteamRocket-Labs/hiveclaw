@@ -361,6 +361,10 @@ def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
         blocker="missing rollback guidance",
         occurred_at="2026-04-03T10:00:00Z",
     )
+    skill_guidance_check = prompt_report["checks"].get(
+        "skill_load_before_act_guidance",
+        prompt_report["checks"]["direct_core_tool_before_skill_guidance"],
+    )
 
     scenarios = {
         "trigger_precision": {
@@ -371,11 +375,11 @@ def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
             "score_breakdown": top_match,
         },
         "load_before_act_compliance": {
-            "ready": bool(prompt_report["checks"]["skill_load_before_act_guidance"]["passed"]),
-            "score": 100 if prompt_report["checks"]["skill_load_before_act_guidance"]["passed"] else 0,
-            "transcript": prompt_report["checks"]["skill_load_before_act_guidance"]["detail"],
+            "ready": bool(skill_guidance_check["passed"]),
+            "score": 100 if skill_guidance_check["passed"] else 0,
+            "transcript": skill_guidance_check["detail"],
             "rubric": "matching skills must be loaded before non-read-only actions",
-            "score_breakdown": prompt_report["checks"]["skill_load_before_act_guidance"],
+            "score_breakdown": skill_guidance_check,
         },
         "save_skill_precision": {
             "ready": promote_result["decision"] == "promote",

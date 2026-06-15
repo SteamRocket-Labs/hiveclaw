@@ -7,8 +7,28 @@ implements the local mirror used before connector content enters the model.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import uuid
 from typing import Any
+
+_GOVERNED_SOURCE_PREFIXES = (
+    "feishu://",
+    "drive://",
+    "google-drive://",
+    "office://",
+    "onlyoffice://",
+    "slack://",
+    "gmail://",
+    "email://",
+    "openviking://",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedSourcePermissionCheck:
+    allowed: bool
+    allowed_sources: list[str]
+    forbidden_sources: list[str]
 
 
 def _string(value: Any) -> str:
@@ -33,6 +53,19 @@ def _acl_payload(item: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return payload
     return None
+
+
+def _source_id(item: dict[str, Any]) -> str:
+    for key in ("source", "source_uri", "uri", "url", "id"):
+        value = _string(item.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _requires_acl_metadata(item: dict[str, Any]) -> bool:
+    source = _source_id(item).lower()
+    return any(source.startswith(prefix) for prefix in _GOVERNED_SOURCE_PREFIXES)
 
 
 def _principal_ids(
@@ -63,13 +96,14 @@ def connector_item_visible(
 ) -> bool:
     """Return whether one connector result may enter prompt context.
 
-    No ACL metadata means legacy connector behavior: visible. Once ACL metadata
-    is present, the mirror is fail-closed unless tenant and principal match.
+    Internal legacy items without connector source metadata remain visible for
+    compatibility. Governed connector items (Feishu/Drive/Office/etc.) require
+    ACL metadata and then fail closed unless tenant and principal match.
     """
 
     acl = _acl_payload(item)
     if acl is None:
-        return True
+        return not _requires_acl_metadata(item)
 
     tenant = _string(tenant_id)
     if not tenant:
@@ -125,3 +159,34 @@ def filter_connector_results_for_prompt(
         if isinstance(item, dict)
         and connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id)
     ]
+
+
+def validate_generated_source_permissions(
+    text: str,
+    *,
+    source_items: list[dict[str, Any]],
+    tenant_id: uuid.UUID | str | None,
+    current_user_id: uuid.UUID | str | None,
+    agent_id: uuid.UUID | str | None = None,
+) -> GeneratedSourcePermissionCheck:
+    """Check that generated text does not cite or reveal forbidden connector sources."""
+
+    rendered = str(text or "")
+    allowed_sources: list[str] = []
+    forbidden_sources: list[str] = []
+    for item in source_items:
+        if not isinstance(item, dict):
+            continue
+        source = _source_id(item)
+        if not source or source not in rendered:
+            continue
+        if connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id):
+            if source not in allowed_sources:
+                allowed_sources.append(source)
+        elif source not in forbidden_sources:
+            forbidden_sources.append(source)
+    return GeneratedSourcePermissionCheck(
+        allowed=not forbidden_sources,
+        allowed_sources=allowed_sources,
+        forbidden_sources=forbidden_sources,
+    )

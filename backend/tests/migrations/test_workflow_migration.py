@@ -30,7 +30,7 @@ _WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_cal
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 _FEEDBACK_TABLES = ("session_feedback_events",)
 _INVOCATION_TRACE_TABLES = ("invocation_spans",)
-_CURRENT_CLOSURE_HEAD = "add_plugin_dependency_edges_0615"
+_CURRENT_CLOSURE_HEAD = "decision_trace_pg_store_0615"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:

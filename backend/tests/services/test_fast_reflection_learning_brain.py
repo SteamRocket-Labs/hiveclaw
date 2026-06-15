@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
 
 
 def test_learning_brain_prompt_preserves_complete_message_context() -> None:
@@ -88,3 +92,79 @@ def test_parse_learning_brain_json_suppresses_low_signal() -> None:
             "boundary_checks": {},
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_learning_brain_uses_auxiliary_floor_budget_and_audit_metadata(monkeypatch, tmp_path: Path) -> None:
+    from app.services import fast_reflection_learning_brain as brain
+
+    captured = {}
+
+    async def fake_get_summary_model_config(_tenant_id):
+        return {"provider": "openai", "model": "gpt-4.1", "api_key": "key"}
+
+    class _Client:
+        async def complete(self, *, messages, temperature, max_tokens):
+            captured["messages"] = messages
+            captured["temperature"] = temperature
+            captured["max_tokens"] = max_tokens
+            return type(
+                "Response",
+                (),
+                {
+                    "content": json.dumps(
+                        {
+                            "signal_type": "workflow_correction",
+                            "lesson": "Always verify deployment health after restart.",
+                            "confidence": 0.9,
+                            "container": "session_learning",
+                            "promotion_intent": "candidate",
+                            "rationale": "The user corrected the verification sequence.",
+                            "evidence_refs": ["message:1"],
+                            "boundary_checks": {
+                                "not_one_off": True,
+                                "no_credentials": True,
+                                "not_direct_memory_write": True,
+                            },
+                        }
+                    )
+                },
+            )()
+
+        async def close(self):
+            return None
+
+    def fake_with_context(config, *, source, agent_id, tenant_id, metadata):
+        captured["usage_context"] = {
+            "config": config,
+            "source": source,
+            "agent_id": agent_id,
+            "tenant_id": tenant_id,
+            "metadata": metadata,
+        }
+        return config
+
+    monkeypatch.setattr(brain, "create_llm_client_from_config", lambda _config: _Client())
+    monkeypatch.setattr(brain, "with_llm_usage_context", fake_with_context)
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_get_summary_model_config)
+    monkeypatch.setattr(
+        "app.services.session_learning.render_active_session_learning_projection",
+        lambda **_kwargs: "projection",
+    )
+    monkeypatch.setattr("app.memory.metrics.record_autonomous_llm_call", lambda **_kwargs: None)
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    result = await brain.classify_fast_reflection_signal_with_learning_brain(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id="session-1",
+        messages=[{"role": "user", "content": "please verify after restart"}],
+        metadata={"agent_name": "Ops Agent"},
+        data_root=tmp_path,
+    )
+
+    assert result is not None
+    assert captured["max_tokens"] >= 8192
+    assert captured["usage_context"]["metadata"]["session_id"] == "session-1"
+    assert captured["usage_context"]["metadata"]["learning_brain_mode"] == "full_context_auxiliary_pass"

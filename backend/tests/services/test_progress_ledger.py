@@ -48,6 +48,8 @@ def test_progress_ledger_detects_stall_and_recommends_replan(tmp_path) -> None:
     assert review["request_satisfied"] is False
     assert review["stalled"] is True
     assert review["needs_replan"] is True
+    assert review["hard_transition"] == "replan_required"
+    assert review["required_next_write"] == "record_finding:type=replan"
     assert review["next_owner"] == "researcher"
     assert "Collect source evidence" in review["next_action"]
 
@@ -99,6 +101,7 @@ def test_progress_ledger_replan_event_clears_stall_until_new_stall(tmp_path) -> 
 
     assert review["stalled"] is False
     assert review["needs_replan"] is False
+    assert review["hard_transition"] == ""
     assert review["latest_replan"].startswith("Switch to cached source index")
 
     for _ in range(2):

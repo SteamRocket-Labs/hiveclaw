@@ -98,6 +98,8 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "coordination_checkpoints",
     "session_feedback_events",
     "invocation_spans",
+    "decision_traces",
+    "decision_trace_feedback",
     # Plugin system (Step 5): new tenant-scoped table family — starts in FORCED so
     # the owner production connection is also policy-bound (P0 gap B). Mirrors the
     # MCPServer install primitive (RLS ENABLE+FORCE, tenant_id mandatory).

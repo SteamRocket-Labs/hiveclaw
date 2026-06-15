@@ -519,16 +519,37 @@ def _evidence_summary_dict(item: SessionWorkflowEvidence) -> dict[str, Any]:
     }
 
 
+def _select_representative_evidence(
+    evidence: list[SessionWorkflowEvidence],
+    *,
+    status: set[str] | None = None,
+    limit: int = 6,
+) -> list[SessionWorkflowEvidence]:
+    candidates = [item for item in evidence if status is None or item.status in status]
+    if not candidates:
+        return []
+    patch_signals = [item for item in candidates if item.used_skill and item.status in {"failed", "workaround"}]
+    newest = sorted(candidates, key=lambda item: (item.occurred_at, item.session_id), reverse=True)
+    selected: list[SessionWorkflowEvidence] = []
+    for item in [*patch_signals, *newest]:
+        if item.session_id in {existing.session_id for existing in selected}:
+            continue
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def render_skill_evidence_contrast(evidence: list[SessionWorkflowEvidence]) -> str:
     """Render Devin-style success/failure contrast for the skill distiller."""
-    successful = [item for item in evidence if item.status == "success"]
-    failed = [item for item in evidence if item.status in {"failed", "workaround"}]
+    successful = _select_representative_evidence(evidence, status={"success"})
+    failed = _select_representative_evidence(evidence, status={"failed", "workaround"})
     payload = {
         "schema": "skill_distiller_success_failure_contrast.v1",
-        "successful_examples": [_evidence_summary_dict(item) for item in successful[:4]],
-        "failed_examples": [_evidence_summary_dict(item) for item in failed[:4]],
-        "patch_signal_count": sum(1 for item in failed if item.used_skill),
-        "promote_signal_count": len(successful),
+        "successful_examples": [_evidence_summary_dict(item) for item in successful],
+        "failed_examples": [_evidence_summary_dict(item) for item in failed],
+        "patch_signal_count": sum(1 for item in evidence if item.status in {"failed", "workaround"} and item.used_skill),
+        "promote_signal_count": sum(1 for item in evidence if item.status == "success"),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -726,7 +747,7 @@ async def _draft_skill_with_llm(
         "</output_contract>"
     )
     evidence_lines = []
-    for item in evidence[:3]:
+    for item in _select_representative_evidence(evidence, limit=8):
         evidence_lines.append(
             f"- session={item.session_id} source={item.source} at={item.occurred_at}\n"
             f"  status={item.status} used_skill={item.used_skill}"

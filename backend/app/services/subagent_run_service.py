@@ -20,6 +20,7 @@ from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.services.runtime_task_service import (
+    build_completion_journal_entry,
     create_runtime_task_record,
     get_runtime_task_record,
     list_active_runtime_task_records,
@@ -73,11 +74,24 @@ def make_run_completer(run_id: str):
     """Return an ``on_complete(result)`` callback that writes the terminal status."""
 
     async def _complete(result: SubagentResult) -> None:
+        status = "completed" if result.ok else "failed"
+        summary = (result.content or result.error or "")[:8000]
         await update_runtime_task_record(
             run_id,
-            status="completed" if result.ok else "failed",
-            result_summary=(result.content or result.error or "")[:8000],
+            status=status,
+            result_summary=summary,
             token_usage={"total_tokens": result.tokens_used},
+            metadata_json={
+                "completion_journal": [
+                    build_completion_journal_entry(
+                        task_type=SUBAGENT_RUN_TASK_TYPE,
+                        task_id=run_id,
+                        status=status,
+                        side_effect_risk="read_only" if result.type in SUBAGENT_RESTART_REPLAY_SAFE_TYPES else "mutating",
+                        summary=summary,
+                    )
+                ]
+            },
         )
 
     return _complete

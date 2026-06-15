@@ -100,3 +100,60 @@ def test_record_skill_execution_marks_patch_candidate_after_repeated_loaded_fail
     assert second["decision"] == "patch"
     assert "patch_candidate_count: 2" in candidates
     assert "[patch] incident-response" in review
+
+
+def test_record_skill_runtime_usage_derives_workflow_and_patch_signal(tmp_path: Path) -> None:
+    from app.services.skill_lifecycle import record_skill_runtime_usage
+
+    first = record_skill_runtime_usage(
+        tmp_path,
+        skill_name="incident-response",
+        loaded_skill_names=["incident-response"],
+        tool_names=["load_skill", "read_file", "write_file"],
+        status="failed",
+        note="Loaded skill missed rollback notes.",
+        occurred_at="2026-04-01T10:00:00Z",
+        session_id="session-1",
+        source="web_chat",
+    )
+    second = record_skill_runtime_usage(
+        tmp_path,
+        skill_name="incident-response",
+        loaded_skill_names=["incident-response"],
+        tool_names=["write_file", "load_skill", "read_file"],
+        status="workaround",
+        note="Manual workaround added rollback notes.",
+        occurred_at="2026-04-02T10:00:00Z",
+        session_id="session-2",
+        source="web_chat",
+    )
+
+    usage_log = (tmp_path / "evolution" / "skill_usage.jsonl").read_text(encoding="utf-8")
+    candidates = (tmp_path / "evolution" / "skill_candidates.md").read_text(encoding="utf-8")
+
+    assert first["decision"] == "candidate"
+    assert second["decision"] == "patch"
+    assert first["workflow_signature"] == second["workflow_signature"] == "load_skill+read_file+write_file"
+    assert '"source": "web_chat"' in usage_log
+    assert '"session_id": "session-1"' in usage_log
+    assert "patch_candidate_count: 2" in candidates
+
+
+def test_record_skill_runtime_usage_ignores_noop_without_polluting_candidates(tmp_path: Path) -> None:
+    from app.services.skill_lifecycle import record_skill_runtime_usage
+
+    result = record_skill_runtime_usage(
+        tmp_path,
+        skill_name="research",
+        loaded_skill_names=["research"],
+        tool_names=["load_skill"],
+        status="noop",
+        note="No durable outcome.",
+        occurred_at="2026-04-01T10:00:00Z",
+        session_id="session-1",
+        source="web_chat",
+    )
+
+    assert result["decision"] == "ignored"
+    assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
+    assert (tmp_path / "evolution" / "skill_usage.jsonl").exists()

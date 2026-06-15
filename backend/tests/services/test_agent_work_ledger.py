@@ -161,6 +161,7 @@ def test_agent_work_ledger_display_view_is_chat_safe_and_counted(tmp_path):
         "verification_pending": 1,
         "progress_count": 1,
         "failures_open": 0,
+        "replan_count": 0,
     }
     assert view["path"].endswith(f"runtime_artifacts/long_tasks/{runtime_task_id.hex}/work_ledger.json")
 

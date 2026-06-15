@@ -59,6 +59,49 @@ def test_clear_interactive_plan_mode_clears_typed_state_and_metadata_mirror():
     assert "plan_mode" not in context.metadata
 
 
+def test_record_web_chat_skill_runtime_usage_collects_loaded_skill(monkeypatch, tmp_path):
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    calls = []
+
+    monkeypatch.setattr(runtime, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    def fake_record_skill_runtime_usage(workspace, **kwargs):
+        calls.append((workspace, kwargs))
+        return {"decision": "promote_candidate", "workflow_signature": "load_skill -> web_search"}
+
+    monkeypatch.setattr(runtime, "record_skill_runtime_usage", fake_record_skill_runtime_usage)
+
+    result = runtime._record_web_chat_skill_runtime_usage(
+        agent_id=agent_id,
+        session_id="session-1",
+        tool_events=[
+            {"name": "load_skill", "args": {"name": "Deployment Review"}, "status": "done"},
+            {"name": "web_search", "args": {"query": "railway logs"}, "status": "done"},
+        ],
+        status="completed",
+        note="Finished production deployment review.",
+    )
+
+    assert result == {"decision": "promote_candidate", "workflow_signature": "load_skill -> web_search"}
+    assert calls == [
+        (
+            tmp_path / str(agent_id),
+            {
+                "skill_name": "Deployment Review",
+                "loaded_skill_names": ["Deployment Review"],
+                "tool_names": ["load_skill", "web_search"],
+                "status": "success",
+                "note": "Finished production deployment review.",
+                "source": "web_chat",
+                "session_id": "session-1",
+                "blocker": None,
+            },
+        )
+    ]
+
+
 @pytest.mark.asyncio
 async def test_disconnect_does_not_cancel_registered_web_chat_run():
     from app.services.web_chat_runtime import (

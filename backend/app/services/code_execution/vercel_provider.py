@@ -40,10 +40,41 @@ def _vercel_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _network_allowlist(policy: str) -> list[str]:
+    normalized = str(policy or "").strip()
+    if ":" not in normalized:
+        return []
+    prefix, raw_hosts = normalized.split(":", 1)
+    if prefix not in {"allowlist", "allow"}:
+        return []
+    hosts = [host.strip().lower() for host in raw_hosts.split(",") if host.strip()]
+    return sorted(dict.fromkeys(hosts))
+
+
+def _brokered_credentials(env: dict[str, str]) -> tuple[dict[str, str], dict]:
+    configured = [
+        key.strip()
+        for key in os.environ.get("HIVE_CODE_EXEC_BROKERED_CREDENTIAL_KEYS", "").split(",")
+        if key.strip()
+    ]
+    handles: dict[str, str] = {}
+    for key in configured:
+        if env.get(key):
+            handles[key] = f"cred://agent/{key.lower()}"
+    evidence = {
+        "mode": "explicit_handles",
+        "values_included": False,
+        "configured_keys": sorted(configured),
+        "brokered_keys": sorted(handles),
+    }
+    return handles, evidence
+
+
 def _vercel_evidence(
     *,
     network_policy: str,
     env_policy: dict,
+    credential_broker: dict | None = None,
     remote_env_keys: list[str] | None = None,
     configured: bool = True,
 ) -> dict:
@@ -52,7 +83,14 @@ def _vercel_evidence(
         "configured": configured,
         "isolation": "vercel_microvm",
         "network_policy": network_policy,
+        "network_allowlist": _network_allowlist(network_policy),
         "credential_egress": "blocked_by_env_allowlist",
+        "credential_broker": credential_broker or {
+            "mode": "explicit_handles",
+            "values_included": False,
+            "configured_keys": [],
+            "brokered_keys": [],
+        },
         "provider_credentials_exposed_to_sandbox": False,
         "workspace_materialization": "tar_upload_sync_back",
         "remote_env_keys": sorted(remote_env_keys or []),
@@ -105,6 +143,7 @@ async def execute_vercel_sandbox_command(
 ) -> CodeExecutionResult:
     policy = (network_policy or os.environ.get("HIVE_CODE_EXEC_NETWORK_POLICY", "deny-all")).strip() or "deny-all"
     safe_env, env_policy = sanitize_agent_execution_env(env, require_home=False)
+    brokered_handles, broker_evidence = _brokered_credentials(env)
     missing = _missing_vercel_config()
     if missing:
         return CodeExecutionResult(
@@ -113,7 +152,12 @@ async def execute_vercel_sandbox_command(
                 + ", ".join(missing)
                 + ". Configure Railway backend env before enabling HIVE_CODE_EXEC_PROVIDER=vercel_sandbox."
             ),
-            evidence=_vercel_evidence(network_policy=policy, env_policy=env_policy, configured=False),
+            evidence=_vercel_evidence(
+                network_policy=policy,
+                env_policy=env_policy,
+                credential_broker=broker_evidence,
+                configured=False,
+            ),
         )
 
     # Vercel SDK create()/extend_timeout() take MILLISECONDS; `timeout` here is seconds.
@@ -131,6 +175,10 @@ async def execute_vercel_sandbox_command(
             network_policy=policy,
         )
         exec_env = _vercel_env(safe_env)
+        if brokered_handles:
+            exec_env["HIVE_BROKERED_CREDENTIALS"] = ",".join(
+                f"{key}={handle}" for key, handle in sorted(brokered_handles.items())
+            )
         exec_env["HOME"] = _REMOTE_HOME
         await sandbox.run_command("mkdir", ["-p", _REMOTE_WORKSPACE, _REMOTE_HOME])
         await sandbox.write_files([WriteFile(path=_INPUT_ARCHIVE, content=_create_workspace_archive(work_dir))])
@@ -163,6 +211,7 @@ async def execute_vercel_sandbox_command(
             evidence=_vercel_evidence(
                 network_policy=policy,
                 env_policy=env_policy,
+                credential_broker=broker_evidence,
                 remote_env_keys=sorted(exec_env),
             ),
         )
@@ -173,6 +222,7 @@ async def execute_vercel_sandbox_command(
             evidence=_vercel_evidence(
                 network_policy=policy,
                 env_policy=env_policy,
+                credential_broker=broker_evidence,
                 remote_env_keys=sorted(exec_env),
             ),
         )
@@ -182,6 +232,7 @@ async def execute_vercel_sandbox_command(
             evidence=_vercel_evidence(
                 network_policy=policy,
                 env_policy=env_policy,
+                credential_broker=broker_evidence,
                 remote_env_keys=sorted(exec_env),
             ),
         )

@@ -24,7 +24,7 @@ from app.services.action_preflight import (
     CharterZone,
     PreflightDecision,
 )
-from app.services.decision_trace import DecisionTraceStore
+from app.services.decision_trace import TenantScopedSqlDecisionTraceStore
 from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.privacy_layer import PrivacyLayer
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
@@ -237,7 +237,7 @@ class ToolRuntimeService:
     activity_logger: ActivityLogger | None = None
     backend: ToolRuntimeBackend | None = None
     preflight_service: ActionPreflightService | None = None
-    decision_trace_store: DecisionTraceStore | None = None
+    decision_trace_store: Any | None = None
     coordination_runtime: CoordinationRuntime | None = None
     coordination_gateway: CoordinationGateway | None = None
     preflight_enabled: bool = True
@@ -260,7 +260,7 @@ class ToolRuntimeService:
         if self.preflight_service is None:
             self.preflight_service = ActionPreflightService()
         if self.decision_trace_store is None:
-            self.decision_trace_store = DecisionTraceStore.persistent_default()
+            self.decision_trace_store = TenantScopedSqlDecisionTraceStore()
         if self.coordination_runtime is None:
             self.coordination_runtime = coordination_runtime
         if self.coordination_gateway is None:
@@ -731,21 +731,23 @@ class ToolRuntimeService:
             preflight_trace = preflight.as_decision_trace_preflight()
             if checkpoint_id:
                 preflight_trace["checkpoint_id"] = checkpoint_id
-            decision = self.decision_trace_store.record_decision(
-                action=preflight_input.action,
-                chosen=preflight.decision.value,
-                reasoning="Tool runtime preflight blocked execution before registry/backend invocation.",
-                alternatives_considered=["execute tool immediately", "ask owner or escalate before execution"],
-                situational_factors=preflight.reasons,
-                charter_zone=preflight_input.charter_zone.value,
-                preflight=preflight_trace,
-                sensitivity=preflight_input.sensitivity.value,
-                tenant_id=str(runtime_context.tenant_id) if runtime_context.tenant_id else None,
-                agent_id=str(runtime_context.agent_id),
-                user_id=str(runtime_context.user_id),
-                session_id=runtime_context.session_id,
-                tool_name=tool_name,
-                checkpoint_id=checkpoint_id or None,
+            decision = await _maybe_await(
+                self.decision_trace_store.record_decision(
+                    action=preflight_input.action,
+                    chosen=preflight.decision.value,
+                    reasoning="Tool runtime preflight blocked execution before registry/backend invocation.",
+                    alternatives_considered=["execute tool immediately", "ask owner or escalate before execution"],
+                    situational_factors=preflight.reasons,
+                    charter_zone=preflight_input.charter_zone.value,
+                    preflight=preflight_trace,
+                    sensitivity=preflight_input.sensitivity.value,
+                    tenant_id=str(runtime_context.tenant_id) if runtime_context.tenant_id else None,
+                    agent_id=str(runtime_context.agent_id),
+                    user_id=str(runtime_context.user_id),
+                    session_id=runtime_context.session_id,
+                    tool_name=tool_name,
+                    checkpoint_id=checkpoint_id or None,
+                )
             )
             decision_ref = f"decision/{decision.id}"
 

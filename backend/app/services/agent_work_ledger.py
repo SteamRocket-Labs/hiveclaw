@@ -887,6 +887,8 @@ def build_agent_progress_ledger_review(
             "stalled": False,
             "stall_count": 0,
             "needs_replan": False,
+            "hard_transition": "",
+            "required_next_write": "",
             "next_owner": "",
             "next_action": "",
             "open_required_todos": [],
@@ -920,6 +922,8 @@ def build_agent_progress_ledger_review(
     next_action = _clean_text((next_item or {}).get("title") or (next_item or {}).get("content"))
     next_owner = _clean_text((next_item or {}).get("owner"))
     needs_replan = bool((stalled and not request_satisfied) or failures_since_replan)
+    hard_transition = "replan_required" if needs_replan else ""
+    required_next_write = "record_finding:type=replan" if needs_replan else ""
 
     return {
         "schema": PROGRESS_LEDGER_SCHEMA,
@@ -928,6 +932,8 @@ def build_agent_progress_ledger_review(
         "stalled": stalled,
         "stall_count": stall_count,
         "needs_replan": needs_replan,
+        "hard_transition": hard_transition,
+        "required_next_write": required_next_write,
         "next_owner": next_owner,
         "next_action": next_action,
         "open_required_todos": [_clean_text(item.get("title") or item.get("content")) for item in todos],
@@ -962,7 +968,10 @@ def render_progress_ledger_block(review: dict[str, Any] | None) -> str:
     if failures:
         lines.append("- open_failures=" + "; ".join(failures))
     if review.get("needs_replan"):
-        lines.append("If stalled or failures repeat, revise the task/progress ledger before continuing.")
+        required = _clean_text(review.get("required_next_write")) or "record_finding:type=replan"
+        lines.append(f"- hard_transition={_clean_text(review.get('hard_transition')) or 'replan_required'}")
+        lines.append(f"- required_next_write={required}")
+        lines.append("Revise the task/progress ledger before continuing execution.")
     return "\n".join(lines)
 
 

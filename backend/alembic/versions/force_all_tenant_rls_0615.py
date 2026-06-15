@@ -80,6 +80,8 @@ _FORCE_TABLES: tuple[str, ...] = (
     "agent_plugin_assignments",
     "plugin_hook_registrations",
     "plugin_dependency_edges",
+    "decision_traces",
+    "decision_trace_feedback",
 )
 
 

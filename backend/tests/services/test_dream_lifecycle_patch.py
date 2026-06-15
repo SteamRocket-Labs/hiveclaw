@@ -220,6 +220,31 @@ def test_cap_cleanup_archives_instead_of_deleting(agent_env) -> None:
     assert any(r["status"] in ("archived", "superseded") for r in records)
 
 
+def test_t3_cap_retention_uses_lifecycle_counters() -> None:
+    from app.services.auto_dream import _select_t3_cap_retention
+
+    lines = [
+        "- [2026-01-01][entry_id=harmful] outdated proxy guidance",
+        "- [2026-01-02][entry_id=hot] verified deploy checklist",
+        "- [2026-01-03][entry_id=reinforced] stable user preference",
+        "- [2026-01-04][entry_id=cold] cold old note",
+    ]
+    kept, evicted = _select_t3_cap_retention(
+        lines,
+        keep_count=2,
+        protected_markers=[],
+        lifecycle_metadata={
+            "harmful": {"harmful_count": "3", "reinforcement_count": "4", "access_count": "0"},
+            "hot": {"harmful_count": "0", "reinforcement_count": "1", "access_count": "9"},
+            "reinforced": {"harmful_count": "0", "reinforcement_count": "5", "access_count": "1"},
+            "cold": {"harmful_count": "0", "reinforcement_count": "0", "access_count": "0"},
+        },
+    )
+
+    assert kept == [lines[1], lines[2]]
+    assert evicted == [lines[0], lines[3]]
+
+
 def test_archive_file_stays_out_of_active_recall(agent_env) -> None:
     """archive.md must not leak into the manifest, INDEX, or search."""
     from app.memory.md_store import build_t3_entry_manifest, rebuild_index, search_t3_facts

@@ -157,3 +157,28 @@ async def test_local_provider_sanitizes_caller_env_and_records_evidence(tmp_path
     assert result.evidence["isolation"] == "unsandboxed_dev_bypass"
     assert result.evidence["credential_egress"] == "blocked_by_env_allowlist"
     assert result.evidence["env_policy"]["credential_keys_blocked"] == ["DATABASE_URL", "OPENAI_API_KEY"]
+
+
+@pytest.mark.asyncio
+async def test_run_command_returns_tool_envelope_with_code_execution_evidence(tmp_path: Path, monkeypatch):
+    from app.services.agent_tool_domains import code_exec
+    from app.services.code_execution.contracts import CodeExecutionResult
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    async def fake_execute_agent_command(*_args, **_kwargs):
+        return CodeExecutionResult(
+            stdout="ok\n",
+            evidence={
+                "provider": "vercel_sandbox",
+                "isolation": "vercel_microvm",
+                "network_policy": "deny-all",
+            },
+        )
+
+    monkeypatch.setattr(code_exec, "execute_agent_command", fake_execute_agent_command)
+
+    result = await code_exec._run_command(tmp_path, {"command": "echo ok", "timeout": 5})
+
+    assert isinstance(result, ToolContentEnvelope)
+    assert "Output:\nok" in result
+    assert result.metadata["code_execution_evidence"]["provider"] == "vercel_sandbox"

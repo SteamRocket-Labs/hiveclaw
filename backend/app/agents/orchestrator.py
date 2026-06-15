@@ -20,6 +20,7 @@ from app.runtime.session import SessionContext
 from app.services.agent_tools import CORE_TOOL_NAMES
 from app.services.capability_gate import CAPABILITY_MAP
 from app.services.runtime_task_service import (
+    build_restart_reconciliation_metadata,
     create_runtime_task_record,
     get_runtime_task_record,
     list_active_runtime_task_records,
@@ -508,6 +509,7 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
 
     metadata["resumable_delegation"] = resumable
     metadata["resume_after_restart"] = resumable
+    metadata["side_effect_risk"] = "read_only" if resumable else "mutating"
     if not replay_safe:
         metadata["restart_resume_blocker"] = "non_idempotent_tool_profile"
     if resumable:
@@ -1397,15 +1399,23 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             try:
                 await update_runtime_task_record(
                     task_id,
-                    status="failed",
+                    status="needs_reconciliation",
                     result_summary=(
                         "Task was not resumed after restart because its delegation tool profile is not "
-                        "safe to replay without duplicating side effects."
+                        "safe to replay without duplicating side effects. Reconciliation is required before retry."
                     ),
-                    metadata_json={
-                        "resume_failed": True,
-                        "restart_resume_blocker": "non_idempotent_tool_profile",
-                    },
+                    metadata_json=build_restart_reconciliation_metadata(
+                        metadata,
+                        task_type="delegation",
+                        task_id=task_id,
+                        blocker="non_idempotent_tool_profile",
+                        summary=(
+                            "Task was not resumed after restart because its delegation tool profile is not "
+                            "safe to replay without duplicating side effects. Reconciliation is required before retry."
+                        ),
+                        trace_id=str(record.get("trace_id") or ""),
+                        session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
+                    ),
                 )
             except Exception as exc:
                 logger.warning("[Orchestrator] Failed to persist non-replay-safe resume failure for %s: %s", task_id, exc)

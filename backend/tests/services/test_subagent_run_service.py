@@ -200,3 +200,45 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
     assert calls["task"] == "read x"
     assert calls["kwargs"]["run_in_background"] is True
     assert callable(calls["kwargs"]["on_complete"])
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_marks_mutating_record_for_reconciliation(monkeypatch):
+    run_id = uuid.uuid4().hex
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(uuid.uuid4()),
+                "child_agent_name": "worker",
+                "prompt": "write x",
+                "metadata": {
+                    "subagent_type": "worker",
+                    "subagent_name": "worker",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                },
+            }
+        ]
+
+    async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("mutating subagent must not be replayed")
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        updates.append((task_id, kwargs))
+        return True
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == []
+    assert updates[-1][0] == run_id
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
+    assert updates[-1][1]["metadata_json"]["side_effect_risk"] == "mutating"

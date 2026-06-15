@@ -150,6 +150,76 @@ async def test_kernel_records_tool_span(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_kernel_records_code_execution_evidence_from_tool_envelope(monkeypatch, tmp_path):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+    from app.services import invocation_trace
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    monkeypatch.setattr(invocation_trace, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    agent_id = uuid4()
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+            ),
+            SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 4}),
+        ]
+    )
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "FROZEN",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [
+                {"type": "function", "function": {"name": "execute_code", "description": "", "parameters": {}}},
+            ],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: ToolContentEnvelope(
+                text="ok",
+                metadata={
+                    "code_execution_evidence": {
+                        "provider": "vercel_sandbox",
+                        "isolation": "vercel_microvm",
+                        "network_policy": "deny-all",
+                    }
+                },
+            ),
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "run"}],
+            agent_name="Trace Agent",
+            role_description="desc",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            session_context=SessionContext(session_id="session-code-trace", source="web"),
+        )
+    )
+
+    assert result.content == "done"
+    span_path = tmp_path / str(agent_id) / "traces" / "invocation_spans.jsonl"
+    records = [json.loads(line) for line in span_path.read_text(encoding="utf-8").splitlines()]
+    tool = next(record for record in records if record["span_type"] == "tool")
+    assert tool["metadata"]["code_execution_evidence"]["provider"] == "vercel_sandbox"
+    assert tool["metadata"]["code_execution_evidence"]["network_policy"] == "deny-all"
+
+
+@pytest.mark.asyncio
 async def test_kernel_persists_invocation_spans_with_runtime_join_keys(monkeypatch, tmp_path):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies

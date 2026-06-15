@@ -1,5 +1,7 @@
 # Hive 第二轮优化目标 — 各家最强 Agent 全维度 SOTA 对标基准（2026-06-12）
 
+> **Canonical 入口**：2026-06-15 起，未来每轮 SOTA 对照、排查、优化和循环台账先看 `docs/hive-sota-master-goal.md`。本文继续作为第二轮详细 benchmark、竞品来源、能力差距和 milestone 证据库；本文中的目标线和对标项目仍有效，但总目标入口不再让读者从 1300+ 行长文里自行抽取。
+>
 > **文档定位**：这是 Hive 第二轮（自我进化 + 全方位能力）优化的**目标线基准**。第一轮（`docs/harness-engineering-audit-2026-06-11.md`）把 Hive 对标 Claude Code 做了 harness 工程审计，回答"对齐 CC 基线没有"；本轮把视野扩到**各家当前最强 agent（2025-2026）的每一个维度**，回答"要成为当下最强数字员工，每条线的 SOTA 是什么、Hive 在哪、怎么追平甚至超越"。
 >
 > **怎么用**：后续每一仗的验收不再只对着 CC，而是对着本文每个维度标注的"**SOTA 那条线**"。每个改动问三句话——① 这条线当前最强是谁、机制是什么？② Hive 现状离它差什么？③ 改完达到/超过那条线了吗？
@@ -498,15 +500,15 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 | 2 | 自进化·技能习得+修补 | hermes(patch-first)+Devin(成败对比) | 第一优先 patch 已加载技能；成败 session 固化 | 🟡 能 patch，缺成败对比；skill_guard 只验安全 | 放大 patch-first + 接 Devin 成败对比 + 能力级验证 |
 | 3 | 自进化·验证不退化 | AlphaEvolve/SEAL/AZR(硬奖励) | 外部硬可验证奖励，自评只软补充 | 🔴 假验证门（研究铁律最忌的自评） | **最高优先**：外部硬验证门替自评 |
 | 4 | 长期记忆架构 | Letta(sleep-time)+Zep(双时态) | 后台空闲重写记忆；时间感知 multi-hop；矛盾对账 | 🟡 金字塔形态接近 ACE/Letta，缺对账/时间/校验 | sleep-time 后台编辑分离；ACE 计数器+增量 delta |
-| 5 | 记忆企业治理（独有轴） | 无人做全 | per-tenant 隔离+脱密+拒不可信源+溯源+审计 | 🟡 write-gate 有分级，缺用前校验/TTL/会话归因 | 缝 Devin(Useful/Misleading)+Copilot(引用校验/TTL)+decision_trace |
-| 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🔴 仅 workflow 一条线；subagent/delegation 裸奔 | journal 升"completion 去重边界"+withRetry+输出cap续写 |
+| 5 | 记忆企业治理（独有轴） | 无人做全 | per-tenant 隔离+脱密+拒不可信源+溯源+审计 | 🟡+ write-gate/feedback/decision ref 已接；T3 manifest 会标记 TTL 与本地 evidence ref 状态，fact retrieval 跳过 expired 条目 | 继续补矛盾对账、双时态 multi-hop、跨分支/外部 source 的 live 引用复核 |
+| 6 | 持久执行/可靠性 | Temporal | 崩溃续跑不重复外部动作，引擎级保证 | 🟡 workflow/web-chat durable；read-only delegation/subagent 可 restart-resume；mutating lane 标 `needs_reconciliation`，不再伪装 failed/resumed | durable mutating replay 仍需 journal/幂等 key/外部 completion 去重 |
 | 7 | 多 agent 编排 | Magentic-One 双 ledger | 并行收集、串行决策；progress-ledger 重规划 | 🟡+ RuntimeTask/CoordinationSignal 已进 prompt-facing team context/mailbox；Work Ledger 已派生 Progress Ledger 并标记 stalled/needs_replan | 用 live multi-agent eval 压测复杂任务收益；继续把 workflow/subagent completion 扩成更强 orchestration policy |
 | 8 | 上下文/cache 经济 | Manus(10×)+Claude+Code-Exec-MCP(省98.7%) | prefix 字节稳定+真实 usage 锚+工具按需加载 | ✅ C1 达 CC 线；✅ C2 CJK-aware fallback token 估算；✅ canonical last-assistant cache anchor + Anthropic block 透传；✅ MCP authz passthrough hard gate | 后续只在工具数爆炸时再引入 Code-Exec-over-MCP 模块树 |
-| 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟢 Railway bwrap 不可行已实测；G1 env/sandbox 已收口；`vercel_sandbox` microVM provider 已接主路径；出口代理/allowlist 凭据 brokering 后续增强 | 生产启用 Vercel Sandbox；后续补凭据出口代理与更细 network allowlist |
+| 9 | 执行隔离/安全 | Codex(OS级断网)+microVM | OS 级沙箱/microVM+凭据出口代理注入 | 🟢 Railway bwrap 不可行已实测；G1 env/sandbox 已收口；`vercel_sandbox` microVM provider 已接主路径；provider evidence 会进入 tool span metadata | 生产启用 Vercel Sandbox；后续补凭据出口代理、更细 network allowlist、真实生产 uname/network-denied 样本 |
 | 10 | agent 身份/控制面 | MS Entra Agent ID | 一等非人身份+ephemeral 生命周期+agent-to-agent 审计 | 🟡 已有 per-agent sponsor/participant + soft-delete 生命周期；缺目录级 CA/A2A 审计/access package | 在 §12.11 基础上接外部目录/委托标准/agent-to-agent 审计 |
-| 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡+ runtime memory/knowledge 已按 principal 预过滤；OpenViking connector 结果带 ACL 时进入 prompt 前 fail-closed 过滤 | 把同一 ACL mirror choke point 扩到 Feishu/Drive/Office 等 connector read model，并补 source ACL ingest |
+| 11 | 权限感知数据 | Glean | principal 看不到→模型收不到，retrieval 层强制 | 🟡+ prompt-entry ACL prefilter 已有；kernel 对 generated-output 做 source 复检；Feishu/Drive/Office tool args 会注册 deny-by-default source，防纯文本结果绕过 | 继续补每个 connector 的 authoritative ACL ingest，目标才是 Glean 级“模型完全收不到不可见项” |
 | 12 | 可观测/审计/eval | OpenAI SDK(trace默认开)+Decagon(100%QA) | 全链 trace 树+append-only+持续行为 eval | 🟡+ trace/feedback 生产地基已接；nightly behavior eval CI 缺 secrets 时写 `behavior_eval_evidence.v1` 并 fail-closed，不再静默 skip | 配置 live eval secrets、沉淀分数时序与 100% 会话 QA 抽检 |
-| 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡 MCP authz passthrough hard gate + A2A Agent Card/profile 已接；OAuth delegation 仍明确 not_exposed | 原生说开放标准=中立平面具体化，下一步只补真实 OAuth delegation，不伪装已支持 |
+| 13 | 互操作标准 | MCP authz+A2A | 原生说 MCP/A2A/OAuth 委托 | 🟡+ MCP authz passthrough hard gate + MCP OAuth authorization-client profile + A2A Agent Card/profile 已接；OAuth delegation 仍明确 not_exposed | 原生说开放标准=中立平面具体化，下一步补 MCP resource-server discovery/audience 与真实 OAuth delegation，不伪装已支持 |
 
 ---
 
@@ -521,7 +523,7 @@ LLM 当**变异算子**（提代码改动），系统当**选择器**。没一�
 
 **结构性落后（要打的硬仗）**：
 1. **验证门**（假门——研究铁律最忌的自评，**最高优先**，§2.3/§9）。
-2. **持久执行**（workflow/web-chat RuntimeTask 已有；subagent 同进程 asyncio worker 不跨重启仍是硬缺口，§7.1）。
+2. **持久执行**（workflow/web-chat RuntimeTask 已有；read-only subagent/delegation 可重启续跑；mutating lane 现在进入 `needs_reconciliation`，但还不是 Temporal 式 replay，§7.1）。
 3. **agent 身份控制面**（基础 per-agent sponsor/participant + soft-delete 生命周期已在 §12.11 关闭，A2A Agent Card/profile 已在 §12.17 关闭；剩 Entra 式目录级 CA/OAuth delegation/A2A 审计，§6）。
 4. **可观测/eval**（trace/反馈地基已在 §12.5/§12.13 关闭；外部 behavior eval CI 入口已 fail-closed，有 evidence artifact，但 live secrets、分数时序、100% QA 仍要运营化，§9 + 审计 O1/O2）。
 5. **隔离部署**（Railway bwrap 不可行已实测；Vercel Sandbox provider 已接主路径；凭据出口代理/细粒度 egress allowlist 仍是下一层，§8）。
@@ -1266,7 +1268,7 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team
 # 14 passed, 3 warnings
 ```
 
-**非 MVP 收口**：不是只改文档或只加一个 reminder。五项都接到真实链路：runtime metadata、Work Ledger reminder、CI workflow、knowledge injection prompt prefilter、catalog truth source。剩余项被明确标成 SOTA/运营化边界，而不是半接线：远程 live eval 需要真实 secrets 和分数时序；Glean 级全 connector ACL 需要每个 source 的 ACL ingest；subagent worker 跨重启仍要 durable worker 化。
+**非 MVP 收口**：不是只改文档或只加一个 reminder。五项都接到真实链路：runtime metadata、Work Ledger reminder、CI workflow、knowledge injection prompt prefilter、catalog truth source。剩余项被明确标成 SOTA/运营化边界，而不是半接线：远程 live eval 需要真实 secrets 和分数时序；Glean 级全 connector ACL 需要每个 source 的 authoritative ACL ingest；read-only subagent/delegation 已可 restart-resume，mutating lane 仍要 durable replay / reconciliation 工作流。
 
 ### 12.20 Agent-framework audit P0/P1 修复收口（2026-06-15）
 
@@ -1277,7 +1279,7 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team
 1. **`save_skill` 自授权晋升旁路关闭**：LLM-facing `save_skill` 不再写 `skills/<slug>/SKILL.md` active skill，而是写 `evolution/skill_activation_candidates.md`，返回 `active_skill_created: false`。`_save_skill()` 保留给平台晋升/distiller 等外部门控路径。
 2. **behavior eval report 接入 promotion gate**：`RuntimeConfig.skill_distiller_behavior_report` 从 tenant latest trusted behavior report 加载，distiller 把 report 交给 `decide_behavior_gated_promotion()`；无 trusted live report 时仍 hold。CI 缺 live eval secrets 时写 `behavior_eval_evidence.v1` 并 fail-closed，不再 green skip。
 3. **runtime DB RLS FORCE 兜底补齐**：`RLS_FORCED_TENANT_TABLES` 覆盖全部 `RLS_TENANT_TABLES`，migration `force_all_tenant_rls_0615` 对 tenant runtime tables ENABLE+FORCE，fresh bootstrap 与 alembic 路径一致。
-4. **subagent/delegation restart resume 改为 replay-safe governed lane**：仅 `review_readonly` / `research_readonly` delegation 与 `explorer` / `critic` subagent 写 `resume_after_restart`，orphan reconcile 保留这些 records；mutating/unsafe lane fail-closed。
+4. **subagent/delegation restart resume 改为 replay-safe governed lane**：仅 `review_readonly` / `research_readonly` delegation 与 `explorer` / `critic` subagent 写 `resume_after_restart`，orphan reconcile 保留这些 records；mutating/unsafe lane 标成 `needs_reconciliation` 并写 completion journal，不再假装安全 replay 或简单 failed。
 5. **desktop sub-agent 删除改软删**：`delete_sub_agent` 调 `soft_delete_agent()`，保留 Participant/Chat/Audit 历史并禁用执行入口，不再 `db.delete(agent)`。
 
 **P1 已关闭**：
@@ -1285,10 +1287,11 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team
 6. **memory/skill counter 读侧闭环**：memory activation 使用 sidecar `access_count/last_accessed` 形成 bounded `usage_heat`；skill curator 用 `use_count/view_count` 给 stale/archive grace。
 7. **decision trace linkback 接通**：DecisionTrace 增 tenant/agent/user/session/message/tool/checkpoint join keys；`chat_messages` 与 `session_feedback_events` 有 `decision_trace_id`；session feedback 校验 decision 同属当前 tenant/agent/session 并写 `decision/<id>` source ref。
 8. **Progress Ledger runtime replan 落地**：Work Ledger 支持 `type='replan'`，Progress Ledger 以 latest replan 为边界重算 stall；kernel reminder 在 `needs_replan=true` 时立即提示记录 replan 并更新 todo/owner。
-9. **connector ACL mirror 双入口**：`knowledge_inject.py` 与 `memory/retriever.py` external layer 都走 `filter_connector_results_for_prompt()`；OpenViking add_resource 可写 ACL/metadata/identity headers。
-10. **code execution sandbox evidence + credential egress**：新增 provider 级 env allowlist，local/vercel provider 即使收到 unsafe caller env 也二次净化；`CodeExecutionResult.evidence` 记录 provider/isolation/network_policy/env_policy；artifact gate 返回 `sandbox_evidence`。
+9. **connector ACL mirror 双入口 + generated-output 复检**：`knowledge_inject.py` 与 `memory/retriever.py` external layer 都走 `filter_connector_results_for_prompt()`；OpenViking add_resource 可写 ACL/metadata/identity headers；kernel 会把 knowledge/tool result 的 governed source 注册到 session metadata，最终回答如引用当前用户不可见 source 会被阻断且记录 permission span；Feishu/Drive/Office 工具参数会派生 deny-by-default source，避免纯文本结果绕过复检。
+10. **code execution sandbox evidence + credential egress**：新增 provider 级 env allowlist，local/vercel provider 即使收到 unsafe caller env 也二次净化；`CodeExecutionResult.evidence` 记录 provider/isolation/network_policy/env_policy；artifact gate 返回 `sandbox_evidence`；`execute_code` / `run_command` 工具返回 envelope，kernel 将 provider evidence 持久写入 tool span metadata。
+11. **T3 TTL / evidence ref 读侧闭环**：T3 manifest 会基于 sidecar/prose metadata 标记 `ttl_status` / `expired` 与本地 `evidence_refs` 有效性；`parse_t3_facts()` 跳过 expired 或非 active 条目，避免过期 fact 继续进入 prompt-facing retrieval。
 
-**当前诚实边界（留给 P2 规划，不在 P0/P1 假装完成）**：live behavior eval 仍未跑出真实分数；mutating delegation/subagent 还不是 Temporal 式 journal replay；真实 Railway/Vercel microVM uname/network-denied trace 仍未入库；Feishu/Drive/Office 全 source ACL ingest 与生成后复检未完成；DecisionTrace 仍是 JSONL，不是 PG RLS trace table。
+**当前诚实边界（留给 P2 规划，不在 P0/P1 假装完成）**：live behavior eval 仍未跑出真实分数；mutating delegation/subagent 还不是 Temporal 式 journal replay；真实 Railway/Vercel microVM uname/network-denied 端到端生产样本仍未采集；Feishu/Drive/Office 已有参数派生 fail-closed source 与生成后复检，但还没有每个 connector item 的 authoritative ACL ingest；DecisionTrace 仍是 JSONL，不是 PG RLS trace table。
 
 **已跑过的关键 focused evidence**：
 
@@ -1301,9 +1304,12 @@ cd backend && source .venv/bin/activate && pytest tests/tools/test_workspace.py 
 
 cd backend && source .venv/bin/activate && pytest tests/services/test_command_tooling.py tests/services/test_vercel_code_execution.py tests/evals/test_artifact_gate.py tests/tools/test_hr_handler.py -q
 # 38 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/kernel/test_generated_source_acl.py tests/runtime/test_memory_query_routing.py tests/services/test_runtime_task_service.py tests/agents/test_orchestrator.py tests/services/test_subagent_run_service.py tests/kernel/test_invocation_trace.py tests/services/test_command_tooling.py tests/services/test_interoperability.py tests/memory/test_entry_manifest.py -q
+# 82 passed, 4 warnings
 ```
 
-**非 MVP 收口**：P0/P1 不是 doc-only，也不是只加 unit tests。每项都落到 live choke point 或 truth surface：LLM tool handler、RuntimeConfig、db bootstrap + migration、startup resume/orphan reconcile、desktop API delete path、memory activation/retriever、session feedback/chat message model、kernel reminder、connector ACL filter、code execution providers。P2 只能在这个基线上继续规划 live eval、durable mutating replay、full connector ACL 和 production sandbox evidence。
+**非 MVP 收口**：P0/P1 不是 doc-only，也不是只加 unit tests。每项都落到 live choke point 或 truth surface：LLM tool handler、RuntimeConfig、db bootstrap + migration、startup resume/orphan reconcile、desktop API delete path、memory activation/retriever、session feedback/chat message model、kernel reminder、connector ACL filter + generated-output source recheck、code execution providers + tool span evidence。P2 只能在这个基线上继续规划 live eval、durable mutating replay、authoritative connector ACL ingest 和 production sandbox evidence。
 
 **第五仗 — cache + 互操作 + 诚实债收尾**
 - C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate、A2A Agent Card/profile、D1 memory hygiene startup apply 与 §3 诚实降级均已关闭。

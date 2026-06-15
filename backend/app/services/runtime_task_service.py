@@ -14,7 +14,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
 _RESTART_RESUMABLE_TASK_TYPES = ("workflow", "web_chat_turn")
-_TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
+_TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
 
 
 def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
@@ -98,6 +98,41 @@ def merge_completion_journal(
     journal.append(entry)
     merged["completion_journal"] = journal[-limit:]
     return merged
+
+
+def build_restart_reconciliation_metadata(
+    metadata: dict[str, Any] | None,
+    *,
+    task_type: str,
+    task_id: str,
+    blocker: str,
+    summary: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Mark a non-idempotent restarted task as requiring side-effect reconciliation."""
+
+    merged = dict(metadata or {})
+    merged.update(
+        {
+            "resume_failed": True,
+            "orphaned_by_restart": True,
+            "needs_reconciliation": True,
+            "reconciliation_reason": blocker,
+            "restart_resume_blocker": blocker,
+            "side_effect_risk": "mutating",
+        }
+    )
+    entry = build_completion_journal_entry(
+        task_type=task_type,
+        task_id=task_id,
+        status="needs_reconciliation",
+        trace_id=trace_id,
+        session_id=session_id,
+        side_effect_risk="mutating",
+        summary=summary,
+    )
+    return merge_completion_journal(merged, entry)
 
 
 async def create_runtime_task_record(
@@ -314,11 +349,35 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                     continue
                 if _is_restart_resumable_runtime_task(task):
                     continue
+                task_type = str(getattr(task, "task_type", None) or "runtime_task")
+                metadata = dict(getattr(task, "metadata_json", None) or {})
+                if task_type in {"delegation", "subagent"}:
+                    task.status = "needs_reconciliation"
+                    blocker = str(metadata.get("restart_resume_blocker") or "non_idempotent_restart_orphan")
+                    if not task.result_summary:
+                        task.result_summary = (
+                            "Task was interrupted by a worker restart and may have performed external side effects; "
+                            "it requires reconciliation before retrying or marking complete."
+                        )
+                    task.metadata_json = build_restart_reconciliation_metadata(
+                        metadata,
+                        task_type=task_type,
+                        task_id=getattr(task, "id", None).hex
+                        if isinstance(getattr(task, "id", None), uuid.UUID)
+                        else str(getattr(task, "id", "")),
+                        blocker=blocker,
+                        summary=task.result_summary,
+                        trace_id=getattr(task, "trace_id", None),
+                        session_id=getattr(task, "child_session_id", None)
+                        or getattr(task, "parent_session_id", None),
+                    )
+                    task.completed_at = now
+                    updated += 1
+                    continue
                 task.status = "failed"
                 task.completed_at = now
                 if not task.result_summary:
                     task.result_summary = "Task failed because the worker process restarted before completion."
-                metadata = dict(getattr(task, "metadata_json", None) or {})
                 metadata["orphaned_by_restart"] = True
                 task.metadata_json = metadata
                 updated += 1

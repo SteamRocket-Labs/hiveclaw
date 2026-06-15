@@ -277,7 +277,9 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_reco
     assert updated == 1
     assert resumable_delegation.status == "running"
     assert durable_web_chat.status == "running"
-    assert in_process_delegation.status == "failed"
+    assert in_process_delegation.status == "needs_reconciliation"
+    assert in_process_delegation.metadata_json["needs_reconciliation"] is True
+    assert in_process_delegation.metadata_json["side_effect_risk"] == "mutating"
     assert fake_session.commit_calls == 1
 
 
@@ -322,7 +324,9 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_subagent_rec
 
     assert updated == 1
     assert resumable_subagent.status == "running"
-    assert unsafe_subagent.status == "failed"
+    assert unsafe_subagent.status == "needs_reconciliation"
+    assert unsafe_subagent.metadata_json["needs_reconciliation"] is True
+    assert unsafe_subagent.metadata_json["side_effect_risk"] == "mutating"
     assert fake_session.commit_calls == 1
 
 

@@ -600,6 +600,7 @@ async def _resolve_retrieval_context(
 
     parts: list[str] = []
     budget_profile = _resolve_context_budget(request)
+    connector_source_items: list[dict[str, Any]] = []
 
     _knowledge_kwargs = {}
     _knowledge_sig = inspect.signature(fetch_relevant_knowledge).parameters
@@ -613,7 +614,17 @@ async def _resolve_retrieval_context(
         _knowledge_kwargs["agent_id"] = request.agent_id
     if "current_user_id" in _knowledge_sig:
         _knowledge_kwargs["current_user_id"] = request.user_id
+    if "source_collector" in _knowledge_sig:
+        _knowledge_kwargs["source_collector"] = connector_source_items
     knowledge = await _maybe_await(fetch_relevant_knowledge(query, tenant_id, **_knowledge_kwargs))
+    if connector_source_items and request.session_context is not None:
+        from app.services.connector_acl import register_connector_source_items
+
+        register_connector_source_items(
+            request.session_context,
+            connector_source_items,
+            origin="knowledge_provider:relevant",
+        )
     if knowledge:
         parts.append(
             _context_engine().inject(

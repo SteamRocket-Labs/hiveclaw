@@ -514,6 +514,29 @@ def _build_error_result(
     )
 
 
+_SOURCE_PERMISSION_BLOCK_MESSAGE = (
+    "[Permission Check] I cannot provide this answer because the draft referenced a governed connector source "
+    "that is not visible to the current user. The response was blocked and an audit event was recorded."
+)
+
+
+def _registered_connector_source_items(request: InvocationRequest) -> list[dict[str, Any]]:
+    session_context = request.session_context
+    metadata = getattr(session_context, "metadata", None) if session_context is not None else None
+    if not isinstance(metadata, dict):
+        return []
+    from app.services.connector_acl import CONNECTOR_SOURCE_ITEMS_METADATA_KEY
+
+    raw_items = metadata.get(CONNECTOR_SOURCE_ITEMS_METADATA_KEY)
+    if not isinstance(raw_items, list):
+        return []
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _should_buffer_stream_for_source_acl(request: InvocationRequest) -> bool:
+    return bool(_registered_connector_source_items(request))
+
+
 def _event_to_part(event: dict[str, Any]) -> dict[str, Any] | None:
     event_type = event.get("type")
     if event_type == "permission":
@@ -921,6 +944,38 @@ async def _execute_tool_with_hooks(
 
             reset_trusted_plan_mode_user_declined(token)
     result_str = _normalize_tool_result_for_llm(result)
+    code_execution_evidence = None
+    if isinstance(result, ToolContentEnvelope):
+        envelope_metadata = getattr(result, "metadata", {}) or {}
+        if isinstance(envelope_metadata, dict) and isinstance(envelope_metadata.get("code_execution_evidence"), dict):
+            code_execution_evidence = dict(envelope_metadata["code_execution_evidence"])
+    registered_connector_source_count = 0
+    if request.session_context is not None:
+        try:
+            from app.services.connector_acl import (
+                register_connector_source_items,
+                register_connector_source_payload,
+                source_items_from_tool_call,
+            )
+
+            registered_connector_source_count = register_connector_source_payload(
+                request.session_context,
+                result,
+                origin=f"tool:{tool_name}",
+            )
+            if registered_connector_source_count == 0 and isinstance(result, ToolContentEnvelope):
+                registered_connector_source_count = register_connector_source_payload(
+                    request.session_context,
+                    result.text,
+                    origin=f"tool:{tool_name}",
+                )
+            registered_connector_source_count += register_connector_source_items(
+                request.session_context,
+                source_items_from_tool_call(tool_name, effective_args, origin=f"tool_args:{tool_name}"),
+                origin=f"tool_args:{tool_name}",
+            )
+        except Exception as exc:  # noqa: BLE001 - source registry must not break tool execution
+            logger.warning("[Kernel] connector source registration failed for tool %s: %s", tool_name, exc)
 
     await emit_hook(
         HookEvent.POST_TOOL_USE,
@@ -938,25 +993,33 @@ async def _execute_tool_with_hooks(
         },
     )
     if record_span:
+        span_metadata = {
+            "status": "ok",
+            "result_chars": len(result_str),
+            "connector_source_count": registered_connector_source_count,
+        }
+        if code_execution_evidence is not None:
+            span_metadata["code_execution_evidence"] = code_execution_evidence
         await record_span(
             span_type="tool",
             name=tool_name,
             started_at_ms=tool_started_ms,
-            metadata={
-                "status": "ok",
-                "result_chars": len(result_str),
-            },
+            metadata=span_metadata,
         )
     else:
+        span_metadata = {
+            "status": "ok",
+            "result_chars": len(result_str),
+            "connector_source_count": registered_connector_source_count,
+        }
+        if code_execution_evidence is not None:
+            span_metadata["code_execution_evidence"] = code_execution_evidence
         append_invocation_span(
             agent_id=request.agent_id,
             span_type="tool",
             name=tool_name,
             started_at_ms=tool_started_ms,
-            metadata={
-                "status": "ok",
-                "result_chars": len(result_str),
-            },
+            metadata=span_metadata,
         )
 
     # B-05 + P0.5: track all high-value tool outcomes for post-compact restoration
@@ -2251,6 +2314,7 @@ class AgentKernel:
 
             collected_parts: list[dict[str, Any]] = []
             streamed_chunks: list[str] = []
+            delivered_chunk_count = 0
             streamed_thinking: list[str] = []
             _callback_failure_count: int = 0
             loop_guard = LoopGuard()
@@ -2306,6 +2370,66 @@ class AgentKernel:
                 part = _event_to_part(event)
                 if part:
                     collected_parts.append(part)
+
+            async def _enforce_generated_source_permissions(final_content: str) -> tuple[str, bool]:
+                source_items = _registered_connector_source_items(request)
+                if not source_items:
+                    return final_content, True
+                from app.services.connector_acl import (
+                    record_generated_source_permission_check,
+                    validate_generated_source_permissions,
+                )
+
+                check = validate_generated_source_permissions(
+                    final_content,
+                    source_items=source_items,
+                    tenant_id=runtime_config.tenant_id,
+                    current_user_id=request.user_id,
+                    agent_id=request.agent_id,
+                )
+                record_generated_source_permission_check(request.session_context, check)
+                status = "allowed" if check.allowed else "blocked"
+                await _record_span(
+                    span_type="permission",
+                    name="generated_source_permission_check",
+                    started_at_ms=monotonic_ms(),
+                    metadata={
+                        "status": status,
+                        "source_count": len(source_items),
+                        "allowed_source_count": len(check.allowed_sources),
+                        "forbidden_source_count": len(check.forbidden_sources),
+                        "forbidden_sources": list(check.forbidden_sources),
+                    },
+                )
+                if check.allowed:
+                    return final_content, True
+                await _emit_event(
+                    {
+                        "type": "generated_source_permission_block",
+                        "part": {
+                            "type": "event",
+                            "event_type": "generated_source_permission_block",
+                            "title": "Source Permission Check",
+                            "text": "Blocked a generated response that referenced an inaccessible governed connector source.",
+                            "status": "warning",
+                            "forbidden_source_count": len(check.forbidden_sources),
+                        },
+                    }
+                )
+                return _SOURCE_PERMISSION_BLOCK_MESSAGE, False
+
+            async def _flush_buffered_chunks() -> None:
+                nonlocal delivered_chunk_count
+                if request.on_chunk is None or delivered_chunk_count >= len(streamed_chunks):
+                    delivered_chunk_count = len(streamed_chunks)
+                    return
+                for chunk in streamed_chunks[delivered_chunk_count:]:
+                    try:
+                        await _maybe_await(request.on_chunk(chunk))
+                    except Exception as _cb_exc:
+                        logger.warning("[Kernel] on_chunk buffered flush failed: %s", _cb_exc)
+                        break
+                    delivered_chunk_count += 1
 
             async def _abort_for_loop_guard(decision: LoopGuardDecision) -> InvocationResult:
                 if decision.reason == "total_tool_calls":
@@ -2444,9 +2568,10 @@ class AgentKernel:
                         )
 
             async def _emit_chunk(text: str) -> None:
-                nonlocal _callback_failure_count
+                nonlocal _callback_failure_count, delivered_chunk_count
                 if text == STREAM_RETRY_TOMBSTONE:
                     streamed_chunks.clear()
+                    delivered_chunk_count = 0
                     if request.on_event:
                         try:
                             await _maybe_await(request.on_event({"type": "stream_retry_tombstone"}))
@@ -2459,9 +2584,12 @@ class AgentKernel:
                             )
                     return
                 streamed_chunks.append(text)
+                if _should_buffer_stream_for_source_acl(request):
+                    return
                 if request.on_chunk:
                     try:
                         await _maybe_await(request.on_chunk(text))
+                        delivered_chunk_count = len(streamed_chunks)
                     except Exception as _cb_exc:
                         _callback_failure_count += 1
                         logger.warning("[Kernel] on_chunk callback failed (%d): %s", _callback_failure_count, _cb_exc)
@@ -3137,6 +3265,11 @@ class AgentKernel:
 
                     if not response.tool_calls:
                         final_content = response.content or "[LLM returned empty content]"
+                        final_content, _source_permission_allowed = await _enforce_generated_source_permissions(
+                            final_content
+                        )
+                        if _source_permission_allowed:
+                            await _flush_buffered_chunks()
                         # Subagent runs execute under the parent's agent_id but are
                         # clean specialists (standalone prompt): their INTERNAL
                         # transcript is not the parent's behavior. The conclusion

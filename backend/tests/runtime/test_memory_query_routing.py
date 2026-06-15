@@ -131,6 +131,46 @@ async def test_resolve_retrieval_context_passes_agent_and_user_identity_to_knowl
 
 
 @pytest.mark.asyncio
+async def test_resolve_retrieval_context_registers_connector_source_items(monkeypatch):
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+    from app.services.connector_acl import CONNECTOR_SOURCE_ITEMS_METADATA_KEY
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    hidden_source = "feishu://doc/retrieved-hidden"
+
+    async def fake_fetch_relevant_knowledge(query, tenant_id_arg, *, source_collector=None, **kwargs):
+        del query, tenant_id_arg, kwargs
+        source_collector.append(
+            {
+                "source": hidden_source,
+                "content": "hidden result",
+                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(uuid4())]},
+            }
+        )
+        return ""
+
+    monkeypatch.setattr(invoker, "fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "latest question"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=agent_id,
+        user_id=user_id,
+        session_context=SessionContext(session_id="s-knowledge-acl"),
+    )
+
+    result = await invoker._resolve_retrieval_context(request, tenant_id)
+
+    assert result == ""
+    assert request.session_context.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["source"] == hidden_source
+
+
+@pytest.mark.asyncio
 async def test_resolve_runtime_metadata_context_routes_runtime_hints(monkeypatch):
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest

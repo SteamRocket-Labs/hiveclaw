@@ -4,7 +4,7 @@ multimodal content (text + image/document blocks)."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -33,9 +33,16 @@ class ToolContentEnvelope:
 
     text: str
     blocks: tuple[ToolResultBlock, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __str__(self) -> str:
         return self.text
+
+    def __contains__(self, item: str) -> bool:
+        return item in self.text
+
+    def lower(self) -> str:
+        return self.text.lower()
 
     @classmethod
     def image(cls, *, text: str, media_type: str, data: str) -> "ToolContentEnvelope":

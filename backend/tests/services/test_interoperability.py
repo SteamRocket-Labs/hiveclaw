@@ -48,6 +48,9 @@ def test_build_interoperability_profile_is_machine_readable_and_honest() -> None
 
     assert profile["platform"] == "hive"
     assert profile["standards"]["mcp"]["token_passthrough"] == "forbidden"
+    assert profile["standards"]["mcp"]["oauth_authorization_client"]["status"] == "implemented"
+    assert profile["standards"]["mcp"]["oauth_authorization_client"]["pkce"] == "S256"
+    assert "PKCE authorization flow" not in profile["standards"]["mcp"]["oauth_resource_server"]["missing"]
     assert profile["standards"]["a2a"]["agent_card_endpoint"] == "/api/v1/agents/{agent_id}/a2a-card"
     assert profile["standards"]["a2a"]["json_rpc_tasks"]["status"] == "not_exposed"
     assert profile["standards"]["oauth_delegation"]["status"] == "not_exposed"

@@ -21,6 +21,7 @@ from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.services.runtime_task_service import (
     build_completion_journal_entry,
+    build_restart_reconciliation_metadata,
     create_runtime_task_record,
     get_runtime_task_record,
     list_active_runtime_task_records,
@@ -54,6 +55,7 @@ async def start_subagent_run(
         "subagent_name": spec_name,
         "resumable_subagent": replay_safe,
         "resume_after_restart": replay_safe,
+        "side_effect_risk": "read_only" if replay_safe else "mutating",
     }
     if not replay_safe:
         metadata["restart_resume_blocker"] = "non_idempotent_subagent_type"
@@ -167,15 +169,23 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
         if not _subagent_type_restart_replay_safe(spec_type):
             await update_runtime_task_record(
                 run_id,
-                status="failed",
+                status="needs_reconciliation",
                 result_summary=(
                     "Subagent was not resumed after restart because its type is not safe to replay without "
-                    "duplicating side effects."
+                    "duplicating side effects. Reconciliation is required before retry."
                 ),
-                metadata_json={
-                    "resume_failed": True,
-                    "restart_resume_blocker": "non_idempotent_subagent_type",
-                },
+                metadata_json=build_restart_reconciliation_metadata(
+                    metadata,
+                    task_type=SUBAGENT_RUN_TASK_TYPE,
+                    task_id=run_id,
+                    blocker="non_idempotent_subagent_type",
+                    summary=(
+                        "Subagent was not resumed after restart because its type is not safe to replay without "
+                        "duplicating side effects. Reconciliation is required before retry."
+                    ),
+                    trace_id=str(record.get("trace_id") or ""),
+                    session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
+                ),
             )
             continue
         parent_agent_id = uuid.UUID(str(record.get("parent_agent_id") or ""))

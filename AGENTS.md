@@ -11,7 +11,7 @@ Hive exists to be **two things, and every line of code must serve one of them**:
 
 **Quality bar:** the per-agent intelligence and self-evolution must be **at least as good as `hermes-agent`** (internal benchmark at `/Users/rocky243/vc-saas/hermes-agent`) — not merely architecturally grander. A system that *feels* weaker than a lean benchmark agent is a failure of Goal 1, not a success.
 
-**Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. Roadmap: `docs/self-evolution-sota-plan.md`.
+**Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. Current SOTA target entry: `docs/hive-sota-master-goal.md`; foundation roadmap: `docs/self-evolution-sota-plan.md`.
 
 ## AI-Native Design Law (最高设计法律 — judges every architectural decision)
 
@@ -40,12 +40,13 @@ Hive is an open-source **multi-agent collaboration platform** — enterprise "di
 - **Stack:** FastAPI (Python 3.12) + React 19 (TypeScript 5) + PostgreSQL 15 + Redis 7
 - **Deployment:** Docker / Railway
 
-## Current Engineering Baseline (2026-06-13)
+## Current Engineering Baseline (2026-06-15)
 
 Treat these documents as the current truth surface before making architecture claims:
 
+- `docs/hive-sota-master-goal.md` — canonical SOTA total goal, target matrix, and future loop-comparison ledger.
 - `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
-- `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark and current improvement route.
+- `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark, detailed comparison sources, and milestone evidence.
 - `docs/self-evolution-sota-plan.md` — canonical self-evolution foundation, now a completed substrate plus ongoing benchmark baseline.
 - `docs/agent-memory-purity-spec.md` — memory purity, lifecycle, and hygiene contract.
 
@@ -53,6 +54,10 @@ Current implemented closures that future work must preserve:
 
 - Hard verification and rollback metadata are required for durable self-evolution promotion.
 - `RuntimeTask` execution is restart-resumable and web chat disconnects do not cancel runs.
+- Plan Mode is a first-class confirmation/planning boundary: substantive plan content must be agent-authored, clarification must be first-class, and unconfirmed autonomous/high-risk work must not execute.
+- Workflow is a first-class deterministic orchestration substrate parallel to Plan Mode: `RuntimeTask(task_type="workflow")`, workflow step/leaf journals, run quotas, gate/wait/resume, trigger integration, admin ops, and Deep Research workflow-native execution must remain governed and auditable.
+- Subagent/delegation is a first-class collaboration capability: lightweight workers, peer delegation, fanout, context isolation, result distillation, governed shared tool execution, and replay-safe resume boundaries must remain distinct from Workflow control flow.
+- Agent TodoList / Work Ledger / Progress Ledger is the CC Task/Todo-equivalent agent-authored task board: `track_todo` records todos/dependencies, `record_finding` records findings/failures/replan, and `read_ledger` restores state. Writing a todo is cognitive bookkeeping; it must not start execution.
 - `invocation_spans` are the canonical DB trace surface; JSONL spans remain compatibility artifacts.
 - Provider retry/overload fallback, token budget gates, CJK-aware estimates, canonical prompt-cache anchors, and Anthropic thinking-signature preservation are runtime contracts.
 - Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.

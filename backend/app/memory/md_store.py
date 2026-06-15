@@ -346,6 +346,84 @@ def compute_entry_heat(metadata: dict[str, str]) -> float:
     return round(count + recency_bonus, 2)
 
 
+def _parse_metadata_dt(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _stamp_ttl_metadata(metadata: dict[str, str], *, now: datetime | None = None) -> None:
+    expires_at = _parse_metadata_dt(metadata.get("expires_at"))
+    if expires_at is None:
+        return
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    metadata["ttl_status"] = "expired" if expires_at <= current else "active"
+    if expires_at <= current:
+        metadata["expired"] = "true"
+
+
+def _split_refs(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [item.strip() for item in re.split(r"[,;\n]", str(raw)) if item.strip()]
+
+
+def _local_ref_exists(data_root: Path, agent_id: uuid.UUID, ref: str) -> bool | None:
+    normalized = ref.strip().replace("\\", "/")
+    if normalized.startswith("tool:") or normalized.startswith("session:") or normalized.startswith("memory:"):
+        return None
+    if "://" in normalized:
+        return None
+    agent_root = (Path(data_root) / str(agent_id)).resolve()
+    if normalized.startswith(("memory/", "workspace/")):
+        target = (agent_root / normalized).resolve()
+    else:
+        return None
+    try:
+        target.relative_to(agent_root)
+    except ValueError:
+        return False
+    return target.exists()
+
+
+def _stamp_reference_metadata(data_root: Path, agent_id: uuid.UUID, metadata: dict[str, str]) -> None:
+    refs = _split_refs(metadata.get("evidence_refs") or metadata.get("source_refs"))
+    if not refs:
+        metadata["reference_status"] = "missing"
+        return
+    checked = 0
+    missing: list[str] = []
+    for ref in refs:
+        exists = _local_ref_exists(data_root, agent_id, ref)
+        if exists is None:
+            continue
+        checked += 1
+        if not exists:
+            missing.append(ref)
+    if missing:
+        metadata["reference_status"] = "invalid"
+        metadata["invalid_evidence_refs"] = ",".join(missing)
+    elif checked:
+        metadata["reference_status"] = "valid"
+    else:
+        metadata["reference_status"] = "unchecked"
+
+
+def _entry_active_for_fact_retrieval(entry: T3MemoryEntry) -> bool:
+    metadata = entry.metadata
+    if metadata.get("expired") == "true" or metadata.get("ttl_status") == "expired":
+        return False
+    status = str(metadata.get("status") or "active").strip().lower()
+    return status in {"", "active"}
+
+
 def list_retirement_candidates(
     data_root: Path,
     agent_id: uuid.UUID,
@@ -519,6 +597,8 @@ def build_t3_entry_manifest(data_root: Path, agent_id: uuid.UUID) -> list[T3Memo
                 "entry_id": entry_id,
                 **telemetry.get(entry_id, {}),
             }
+            _stamp_ttl_metadata(joined_metadata)
+            _stamp_reference_metadata(data_root, agent_id, joined_metadata)
             if "confidence" not in joined_metadata and joined_metadata.get("conf"):
                 joined_metadata["confidence"] = joined_metadata["conf"]
             if "retention_score" not in joined_metadata:
@@ -560,6 +640,8 @@ def load_t3_entries_by_ids(data_root: Path, agent_id: uuid.UUID, ids: list[str])
 def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
     facts: list[dict] = []
     for entry in build_t3_entry_manifest(data_root, agent_id):
+        if not _entry_active_for_fact_retrieval(entry):
+            continue
         fact = {
             "id": entry.entry_id,
             "content": entry.content,
@@ -571,6 +653,9 @@ def parse_t3_facts(data_root: Path, agent_id: uuid.UUID) -> list[dict]:
         }
         if entry.timestamp:
             fact["timestamp"] = entry.timestamp
+        for metadata_key in ("expires_at", "ttl_status", "reference_status", "invalid_evidence_refs"):
+            if entry.metadata.get(metadata_key):
+                fact[metadata_key] = entry.metadata[metadata_key]
         facts.append(fact)
     return facts
 

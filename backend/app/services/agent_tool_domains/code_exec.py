@@ -7,6 +7,7 @@ from pathlib import Path
 from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
 from app.services.code_execution.service import execute_agent_command
 from app.services.subprocess_env import build_agent_subprocess_env
+from app.tools.result_envelope import ToolContentEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,13 @@ def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
     return work_dir, safe_env
 
 
-async def _execute_code(ws: Path, arguments: dict) -> str:
+def _with_code_execution_evidence(text: str, result: CodeExecutionResult) -> str | ToolContentEnvelope:
+    if not result.evidence:
+        return text
+    return ToolContentEnvelope(text=text, metadata={"code_execution_evidence": dict(result.evidence)})
+
+
+async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
     """Execute code in a sandboxed subprocess within the agent's workspace."""
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
@@ -181,14 +188,14 @@ async def _execute_code(ws: Path, arguments: dict) -> str:
         if stderr_str.strip():
             result_parts.append(f"⚠️ Stderr:\n{stderr_str}")
         if result.error:
-            return result.error
+            return _with_code_execution_evidence(result.error, result)
         if result.exit_code != 0:
             result_parts.append(f"Exit code: {result.exit_code}")
 
         if not result_parts:
-            return "✅ Code executed successfully (no output)"
+            return _with_code_execution_evidence("✅ Code executed successfully (no output)", result)
 
-        return "\n\n".join(result_parts)
+        return _with_code_execution_evidence("\n\n".join(result_parts), result)
 
     except Exception as e:
         return f"❌ Execution error: {str(e)[:200]}"
@@ -200,7 +207,7 @@ async def _execute_code(ws: Path, arguments: dict) -> str:
             logger.debug("Suppressed: %s", e)
 
 
-async def _run_command(ws: Path, arguments: dict) -> str:
+async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
     """Execute a shell command inside the agent workspace."""
     command = arguments.get("command", "").strip()
     timeout = min(int(arguments.get("timeout", 60)), 120)
@@ -220,7 +227,7 @@ async def _run_command(ws: Path, arguments: dict) -> str:
         timeout=timeout,
         runtime=os.environ.get("HIVE_VERCEL_SANDBOX_RUNTIME", "python3.13"),
     )
-    return render_command_result(
+    rendered = render_command_result(
         command,
         CodeExecutionResult(
             stdout=result.stdout[:12000],
@@ -228,5 +235,7 @@ async def _run_command(ws: Path, arguments: dict) -> str:
             exit_code=result.exit_code,
             error=result.error,
             timed_out=result.timed_out,
+            evidence=result.evidence,
         ),
     )
+    return _with_code_execution_evidence(rendered, result)

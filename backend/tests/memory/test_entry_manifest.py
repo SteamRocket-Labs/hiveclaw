@@ -56,3 +56,60 @@ def test_load_t3_entries_by_ids_resolves_full_content(tmp_path: Path) -> None:
     assert [entry.entry_id for entry in entries] == ["strategy-entry-1"]
     assert entries[0].content == "Use index manifests before expanding old memory entries"
     assert entries[0].source == "memory/strategies.md"
+
+
+def test_expired_t3_entries_are_manifested_but_excluded_from_fact_retrieval(tmp_path: Path) -> None:
+    from app.memory.md_store import append_t3_entry, build_t3_entry_manifest, parse_t3_facts
+
+    agent_id = uuid.uuid4()
+    append_t3_entry(
+        tmp_path,
+        agent_id,
+        category="knowledge",
+        content="Temporary launch window closed",
+        timestamp="2026-05-28",
+        metadata={
+            "entry_id": "expired-knowledge-1",
+            "expires_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    append_t3_entry(
+        tmp_path,
+        agent_id,
+        category="knowledge",
+        content="Durable launch checklist",
+        timestamp="2026-05-28",
+        metadata={"entry_id": "active-knowledge-1"},
+    )
+
+    manifest = build_t3_entry_manifest(tmp_path, agent_id)
+    expired = next(entry for entry in manifest if entry.entry_id == "expired-knowledge-1")
+    facts = parse_t3_facts(tmp_path, agent_id)
+
+    assert expired.metadata["expired"] == "true"
+    assert [fact["id"] for fact in facts] == ["active-knowledge-1"]
+
+
+def test_manifest_validates_local_evidence_refs(tmp_path: Path) -> None:
+    from app.memory.md_store import append_t3_entry, build_t3_entry_manifest
+
+    agent_id = uuid.uuid4()
+    mem_dir = tmp_path / str(agent_id) / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "source.md").write_text("# source\n", encoding="utf-8")
+    append_t3_entry(
+        tmp_path,
+        agent_id,
+        category="knowledge",
+        content="Claim with one missing source ref",
+        timestamp="2026-05-28",
+        metadata={
+            "entry_id": "ref-check-1",
+            "evidence_refs": "memory/source.md,memory/missing.md,tool:save_memory",
+        },
+    )
+
+    entry = next(item for item in build_t3_entry_manifest(tmp_path, agent_id) if item.entry_id == "ref-check-1")
+
+    assert entry.metadata["reference_status"] == "invalid"
+    assert entry.metadata["invalid_evidence_refs"] == "memory/missing.md"

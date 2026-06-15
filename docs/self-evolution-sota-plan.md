@@ -17,12 +17,13 @@ This file remains the canonical foundation plan for the single-agent self-evolut
 
 Current active truth surface:
 
-- `docs/round2-sota-benchmark-2026.md` is the current SOTA benchmark and second-round roadmap.
+- `docs/hive-sota-master-goal.md` is the current SOTA target entry, target matrix, and future loop-comparison ledger.
+- `docs/round2-sota-benchmark-2026.md` is the detailed second-round SOTA benchmark and milestone evidence log.
 - `docs/harness-engineering-audit-2026-06-11.md` is the harness audit and remediation evidence log.
 - `docs/agent-memory-purity-spec.md` is the memory purity/lifecycle/hygiene contract.
 - Current implemented closures include hard verification and rollback metadata for promotions, fast reflection and session calibration, patch-first skill candidates, restart-resumable runtime tasks, DB-backed invocation trace spans, provider retry/overload fallback, prompt-cache anchoring, Anthropic thinking-signature preservation, unified subprocess sandboxing, MCP authz hard gates, A2A-style Agent Cards, and startup memory hygiene repair.
 
-Interpretation rule: any older wording in this file that says the foundation is "not yet" in place is historical context for why P0-P7 were built. Current work should use the round2 benchmark plus harness audit as the active delta list.
+Interpretation rule: any older wording in this file that says the foundation is "not yet" in place is historical context for why P0-P7 were built. Current work should start from the master goal document, then use the round2 benchmark plus harness audit as detailed delta evidence.
 
 ---
 

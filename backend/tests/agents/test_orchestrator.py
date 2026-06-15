@@ -771,7 +771,9 @@ async def test_resume_persisted_async_delegations_refuses_non_replay_safe_profil
         assert resumed == []
         assert task_id not in _async_tasks
         assert updates[-1][0] == task_id
-        assert updates[-1][1]["status"] == "failed"
+        assert updates[-1][1]["status"] == "needs_reconciliation"
+        assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
+        assert updates[-1][1]["metadata_json"]["side_effect_risk"] == "mutating"
         assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_tool_profile"
     finally:
         _async_tasks.clear()

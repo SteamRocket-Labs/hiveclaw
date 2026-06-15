@@ -8,8 +8,14 @@ implements the local mirror used before connector content enters the model.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import re
 import uuid
 from typing import Any
+
+CONNECTOR_SOURCE_ITEMS_METADATA_KEY = "connector_source_items"
+GENERATED_SOURCE_PERMISSION_CHECKS_METADATA_KEY = "generated_source_permission_checks"
+_MAX_REGISTERED_SOURCE_ITEMS = 200
 
 _GOVERNED_SOURCE_PREFIXES = (
     "feishu://",
@@ -22,6 +28,11 @@ _GOVERNED_SOURCE_PREFIXES = (
     "email://",
     "openviking://",
 )
+_GOVERNED_SOURCE_RE = re.compile(
+    r"\b(?:feishu|drive|google-drive|office|onlyoffice|slack|gmail|email|openviking)://[^\s\]\)\"'<>]+",
+    re.IGNORECASE,
+)
+_ARG_SOURCE_DENY_ACL = {"deny_by_default": True}
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,9 +74,262 @@ def _source_id(item: dict[str, Any]) -> str:
     return ""
 
 
+def _canonical_source_item(item: dict[str, Any], *, origin: str | None = None) -> dict[str, Any] | None:
+    source = _source_id(item)
+    acl = _acl_payload(item)
+    if not source and acl is None:
+        return None
+    canonical: dict[str, Any] = {"source": source}
+    for key in ("source_uri", "uri", "url", "id", "path"):
+        value = _string(item.get(key))
+        if value:
+            canonical[key] = value
+    for key in ("acl", "access", "permissions", "visibility"):
+        payload = item.get(key)
+        if isinstance(payload, dict):
+            canonical[key] = dict(payload)
+            break
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        canonical["metadata"] = {
+            key: value
+            for key, value in metadata.items()
+            if key
+            in {
+                "source_type",
+                "connector",
+                "tenant_id",
+                "tenant_ids",
+                "account_id",
+                "account_ids",
+                "resource_type",
+            }
+        }
+    if origin:
+        canonical["origin"] = origin
+    return canonical
+
+
 def _requires_acl_metadata(item: dict[str, Any]) -> bool:
     source = _source_id(item).lower()
     return any(source.startswith(prefix) for prefix in _GOVERNED_SOURCE_PREFIXES)
+
+
+def extract_connector_source_items(payload: Any, *, origin: str | None = None, max_items: int = 50) -> list[dict[str, Any]]:
+    """Extract governed connector source descriptors from structured or text payloads.
+
+    The returned items intentionally omit large content fields. They carry only
+    source identifiers and ACL metadata needed for prompt-entry and generated-output
+    permission checks.
+    """
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(item: dict[str, Any]) -> None:
+        if len(items) >= max_items:
+            return
+        canonical = _canonical_source_item(item, origin=origin)
+        if canonical is None:
+            return
+        source = _source_id(canonical)
+        if not source:
+            return
+        # Only governed connector sources are tracked here; legacy internal
+        # memory stays on the existing memory visibility path.
+        if not _requires_acl_metadata(canonical) and _acl_payload(canonical) is None:
+            return
+        key = source.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(canonical)
+
+    def visit(value: Any, depth: int = 0) -> None:
+        if len(items) >= max_items or depth > 5:
+            return
+        if isinstance(value, dict):
+            add(value)
+            for child_key, child_value in value.items():
+                if child_key in {"content", "text", "body", "markdown"} and not isinstance(child_value, (dict, list, tuple)):
+                    continue
+                visit(child_value, depth + 1)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for child in value:
+                visit(child, depth + 1)
+            return
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith(("{", "[")):
+                try:
+                    visit(json.loads(stripped), depth + 1)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            for match in _GOVERNED_SOURCE_RE.findall(value):
+                add({"source": match})
+
+    visit(payload)
+    return items
+
+
+def register_connector_source_items(
+    session_context: Any | None,
+    source_items: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    *,
+    origin: str | None = None,
+) -> int:
+    """Register connector source descriptors on a SessionContext for final checks."""
+
+    if session_context is None or not source_items:
+        return 0
+    metadata = getattr(session_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session_context.metadata = metadata
+
+    existing = metadata.setdefault(CONNECTOR_SOURCE_ITEMS_METADATA_KEY, [])
+    if not isinstance(existing, list):
+        existing = []
+        metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY] = existing
+    seen = {
+        _source_id(item).lower()
+        for item in existing
+        if isinstance(item, dict) and _source_id(item)
+    }
+    added = 0
+    for item in source_items:
+        if not isinstance(item, dict):
+            continue
+        canonical = _canonical_source_item(item, origin=origin)
+        if canonical is None:
+            continue
+        source = _source_id(canonical)
+        if not source:
+            continue
+        key = source.lower()
+        if key in seen:
+            continue
+        existing.append(canonical)
+        seen.add(key)
+        added += 1
+    if len(existing) > _MAX_REGISTERED_SOURCE_ITEMS:
+        del existing[:-_MAX_REGISTERED_SOURCE_ITEMS]
+    return added
+
+
+def register_connector_source_payload(session_context: Any | None, payload: Any, *, origin: str | None = None) -> int:
+    return register_connector_source_items(
+        session_context,
+        extract_connector_source_items(payload, origin=origin),
+        origin=origin,
+    )
+
+
+def source_items_from_tool_call(
+    tool_name: str,
+    arguments: dict[str, Any] | None,
+    *,
+    origin: str | None = None,
+) -> list[dict[str, Any]]:
+    """Derive governed connector sources from tool call arguments.
+
+    Tool handlers do not all return structured source metadata yet. Argument-
+    derived sources therefore fail closed (`deny_by_default`) until a real
+    result/connector payload supplies authoritative ACL metadata for the same
+    source.
+    """
+
+    if not isinstance(arguments, dict):
+        return []
+    normalized_tool = str(tool_name or "").strip().lower()
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(source: str, *, connector: str, resource_type: str) -> None:
+        value = _string(source)
+        if not value:
+            return
+        key = value.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        items.append(
+            {
+                "source": value,
+                "acl": dict(_ARG_SOURCE_DENY_ACL),
+                "metadata": {"connector": connector, "resource_type": resource_type},
+                "origin": origin or f"tool_args:{normalized_tool}",
+            }
+        )
+
+    def first_arg(*keys: str) -> str:
+        for key in keys:
+            value = _string(arguments.get(key))
+            if value:
+                return value
+        return ""
+
+    if normalized_tool.startswith("feishu_"):
+        raw_url = first_arg("url", "spreadsheet_url", "document_url")
+        if raw_url:
+            add(raw_url, connector="feishu", resource_type="url")
+
+        if normalized_tool == "feishu_doc_read":
+            token = first_arg("document_token", "doc_token", "doc_id", "token")
+            if token:
+                add(f"feishu://doc/{token}", connector="feishu", resource_type="doc")
+        elif normalized_tool == "feishu_drive_file_read":
+            token = first_arg("file_token", "file_id", "token")
+            if token:
+                add(f"feishu://drive/{token}", connector="feishu", resource_type="drive_file")
+        elif normalized_tool in {"feishu_sheet_info", "feishu_sheet_read"}:
+            token = first_arg("spreadsheet_token", "token")
+            if token:
+                add(f"feishu://sheet/{token}", connector="feishu", resource_type="sheet")
+        elif normalized_tool.startswith("feishu_base_"):
+            token = first_arg("base_token", "app_token", "token")
+            table_id = first_arg("table_id")
+            if token and table_id:
+                add(f"feishu://base/{token}/{table_id}", connector="feishu", resource_type="base_table")
+            if token:
+                add(f"feishu://base/{token}", connector="feishu", resource_type="base")
+
+    if normalized_tool.startswith("office_document_"):
+        path = first_arg("path")
+        if path:
+            add(f"office://workspace/{path.lstrip('/')}", connector="office", resource_type="document")
+        output_path = first_arg("output_path")
+        if output_path:
+            add(f"office://workspace/{output_path.lstrip('/')}", connector="office", resource_type="document")
+
+    return items
+
+
+def record_generated_source_permission_check(
+    session_context: Any | None,
+    check: GeneratedSourcePermissionCheck,
+) -> None:
+    if session_context is None:
+        return
+    metadata = getattr(session_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session_context.metadata = metadata
+    checks = metadata.setdefault(GENERATED_SOURCE_PERMISSION_CHECKS_METADATA_KEY, [])
+    if not isinstance(checks, list):
+        checks = []
+        metadata[GENERATED_SOURCE_PERMISSION_CHECKS_METADATA_KEY] = checks
+    checks.append(
+        {
+            "allowed": check.allowed,
+            "allowed_sources": list(check.allowed_sources),
+            "forbidden_sources": list(check.forbidden_sources),
+            "forbidden_source_count": len(check.forbidden_sources),
+        }
+    )
+    if len(checks) > 50:
+        del checks[:-50]
 
 
 def _principal_ids(

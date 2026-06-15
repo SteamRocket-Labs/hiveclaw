@@ -24,6 +24,7 @@ async def fetch_relevant_knowledge(
     tenant_id: uuid.UUID | None = None,
     agent_id: uuid.UUID | str | None = None,
     current_user_id: uuid.UUID | str | None = None,
+    source_collector: list[dict] | None = None,
     max_tokens: int = 500,
     max_chars: int | None = None,
     limit: int = 3,
@@ -65,6 +66,8 @@ async def fetch_relevant_knowledge(
 
     if not results:
         return ""
+    if source_collector is not None:
+        source_collector.extend(item for item in results if isinstance(item, dict))
     results = filter_connector_results_for_prompt(
         [item for item in results if isinstance(item, dict)],
         tenant_id=tid,

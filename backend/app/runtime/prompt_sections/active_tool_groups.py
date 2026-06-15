@@ -1,13 +1,13 @@
-"""§ Active Packs section — capability packs currently active in session."""
+"""§ Active Runtime Tool Groups section — deferred tool groups active in session."""
 
 from __future__ import annotations
 
 from typing import Any
 
-# P1-W2-6: tighten the per-pack prompt footprint so that adding a pack
-# doesn't quietly inflate every round's input cost. Packs grow over time
-# as new tools land — without these caps a single feishu pack at 30+
-# tools could spend ~600 chars per pack on an enumerable list the model
+# P1-W2-6: tighten the per-group prompt footprint so that adding a group
+# doesn't quietly inflate every round's input cost. Groups grow over time
+# as new tools land — without these caps a single Feishu group at 30+
+# tools could spend ~600 chars per group on an enumerable list the model
 # never needs verbatim.
 _SUMMARY_MAX_CHARS = 100
 _TOOLS_PREVIEW_COUNT = 5

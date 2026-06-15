@@ -34,7 +34,7 @@ runtime. Treat them as facts about your environment, not suggestions.
   `start_workflow`, `delegate_to_agent`, triggers, and the work ledger —
   are part of your core tool surface: call them directly, no skill needed.
   Call-time governance still applies to every call.
-- Integration capability packs (web, feishu, email, etc.) AND your imported
+- Integration/deferred tool groups (web, feishu, email, etc.) AND your imported
   MCP server tools are discovered on-demand through `tool_search`; matching
   deferred tool schemas then become callable in the current session. Use
   `load_skill` only for method guidance, not to unlock tools. Call-time

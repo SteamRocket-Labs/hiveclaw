@@ -534,7 +534,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
                 ),
                 "worker_return_format_not_forced": _CheckSpec(
                     # F-1 (dispatch symmetry): the forced `<return_format>` /
-                    # Completed/Evidence/Blockers triad was REMOVED — freezing the
+                    # Forced worker-return triad was REMOVED — freezing the
                     # return shape boxes in the worker's thinking product (an L1
                     # violation). The worker returns a free-form digest (CC-style).
                     # The legitimate isolation contract stays. This check guards the

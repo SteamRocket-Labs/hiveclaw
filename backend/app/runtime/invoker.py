@@ -719,7 +719,6 @@ async def _resolve_tool_expansion(
             active_tool_groups=packs,
             event_payload={
                 "type": "deferred_tools_delta",
-                "packs": packs,
                 "tool_groups": packs,
                 "discovered_tools": discovered,
                 "all_discovered_tools": list(request.session_context.discovered_tools),
@@ -749,7 +748,6 @@ async def _resolve_tool_expansion(
             active_tool_groups=packs,
             event_payload={
                 "type": "tool_group_activation",
-                "packs": packs,
                 "tool_groups": packs,
                 "message": "Activated MCP runtime tool group.",
                 "status": "info",

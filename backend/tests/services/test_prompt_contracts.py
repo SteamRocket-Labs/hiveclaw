@@ -171,6 +171,20 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Return skill slugs" in tools["search_clawhub"]
 
 
+def test_load_skill_pack_name_does_not_claim_schema_activation(tmp_path: Path) -> None:
+    from app.services.agent_tool_domains.workspace import _load_skill
+
+    (tmp_path / "skills").mkdir()
+
+    result = _load_skill(tmp_path, "web_pack")
+
+    assert "Runtime Tool Group" in result
+    assert "tool_search" in result
+    assert "load_skill does not make" in result
+    assert "The tools listed above are now available" not in result
+    assert "call them directly" not in result
+
+
 def test_web_search_config_schema_only_exposes_supported_search_providers() -> None:
     from app.tools.handlers.search import web_search
 
@@ -469,6 +483,30 @@ def test_runtime_prompt_surfaces_do_not_reintroduce_legacy_focus_truth_source() 
         "reads focus.md as Working Memory",
         "Working Memory bloat",
         "memory change invalidates it before reuse",
+    ]
+    for phrase in banned_phrases:
+        assert phrase not in combined
+
+
+def test_runtime_prompt_surfaces_do_not_reintroduce_skill_or_pack_schema_unlocks() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    prompt_surface_paths = [
+        "backend/app/runtime/prompt_builder.py",
+        "backend/app/runtime/invoker.py",
+        "backend/app/runtime/coordinator.py",
+        "backend/app/services/trigger_daemon.py",
+        "backend/app/services/agent_tool_domains/workspace.py",
+    ]
+    combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)
+
+    banned_phrases = [
+        "unless a loaded skill expands the task legitimately",
+        "The tools listed above are now available — call them directly",
+        "## Likely Capability Packs",
+        "These packs are likely useful for the current request",
+        '"packs": packs',
+        "Completed/Evidence/Blockers",
+        "Every user-facing reply from coordinator mode has exactly this shape",
     ]
     for phrase in banned_phrases:
         assert phrase not in combined

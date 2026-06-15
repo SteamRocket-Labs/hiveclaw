@@ -13,7 +13,7 @@ better results:
 per-action tools via a `mode` parameter; pick whichever surface keeps the \
 intent clearest.
 - Discovering capabilities: when you need a tool that is not already callable, use `tool_search` to \
-discover and load it. This covers integration packs (advanced web search/crawling, feishu, email) \
+discover and load it. This covers deferred tool groups (advanced web search/crawling, feishu, email) \
 AND this agent's imported MCP server tools — matching deferred schemas become callable in the current \
 session (a denied or disabled MCP tool will not be listed). Use CORE `web_search` first for basic \
 internet lookup; if those results are insufficient, use `tool_search` to discover advanced tools such \

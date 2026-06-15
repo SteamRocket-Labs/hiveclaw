@@ -92,6 +92,32 @@ def test_dynamic_suffix_renders_available_deferred_tools():
     assert "select:mcp__github__search" in suffix
 
 
+def test_dynamic_suffix_suggests_deferred_tool_groups_not_capability_packs():
+    from app.runtime.context_budget import TaskProfile
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    budget_profile = type(
+        "Budget",
+        (),
+        {
+            "task_profile": TaskProfile(
+                name="research",
+                complexity="medium",
+                suggested_pack_names=("web_pack",),
+            ),
+            "active_tool_groups_budget_chars": 2000,
+            "retrieval_budget_chars": 3000,
+        },
+    )()
+
+    suffix = build_dynamic_prompt_suffix(budget_profile=budget_profile)
+
+    assert "## Likely Deferred Tool Groups" in suffix
+    assert "tool_search" in suffix
+    assert "## Likely Capability Packs" not in suffix
+    assert "These packs are likely useful" not in suffix
+
+
 def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 

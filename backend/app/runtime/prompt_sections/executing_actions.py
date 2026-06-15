@@ -189,7 +189,7 @@ results to the originating channel — don't assume the user will check the web 
 - **Collaboration**: Every delegated task needs a follow-up mechanism — either a manual \
 check or a timed trigger. Never fire-and-forget. Never delegate to yourself. Read \
 `relationships.md` to confirm a colleague exists before delegating.
-- **Skills**: Use `tool_search` to discover integration-pack tool schemas (web search, Feishu, \
+- **Skills**: Use `tool_search` to discover deferred integration tool schemas (web search, Feishu, \
 email, plaza, office); call `load_skill` only when you need a skill's method or decision guide. Your \
 source capabilities (`spawn_subagent`, `preview_workflow`/`start_workflow`, \
 `delegate_to_agent`, triggers, work ledger) are always available and never need a skill to \

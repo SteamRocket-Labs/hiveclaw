@@ -1,4 +1,4 @@
-"""Skill tools — load skill instructions, search packs and skills."""
+"""Skill tools — load skill instructions, search deferred tools and skills."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         "- Only use this after an approach has succeeded repeatedly and the steps, decision rules, and verification pattern are stable.\n"
         "- Save durable, reusable instructions that will help future runs of a similar task.\n"
         "- Do NOT save one-off notes, transient state, or raw transcripts as skills. Durable user corrections belong in `save_memory` when the Memory Guide qualifies them; operational notes and evidence belong in workspace files.\n"
-        "- Include declared tools/packs only as discovery hints for capabilities used by the repeatable approach.\n"
+        "- Include declared tools/runtime tool groups only as discovery hints for capabilities used by the repeatable approach.\n"
         "- Use `overwrite: true` only when intentionally updating an existing skill."
     ),
     parameters={
@@ -86,7 +86,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "packs": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional declared capability packs used as discovery hints, e.g. ['web_pack'].",
+                "description": "Optional historical `packs` field for declared runtime tool groups used as discovery hints, e.g. ['web_pack'].",
             },
             "folder_name": {
                 "type": "string",
@@ -166,9 +166,9 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
     name="tool_search",
     max_result_chars=RESULT_CHARS_UNLIMITED,
     description=(
-        "Discover deferred capability packs, tools, and skills that can be used on demand.\n\n"
+        "Discover deferred tool groups, tools, and skills that can be used on demand.\n\n"
         "Usage:\n"
-        "- Use this when you suspect a missing capability but do not yet know the exact skill, pack, or tool name.\n"
+        "- Use this when you suspect a missing capability but do not yet know the exact skill, tool group, or tool name.\n"
         "- After this search, matching deferred tool schemas — including this agent's imported MCP server tools — "
         "become callable in the current session; already-loaded tools are a no-op.\n"
         "- Use `load_skill` only when you need the skill's method/instructions, not merely to unlock tool schemas.\n"

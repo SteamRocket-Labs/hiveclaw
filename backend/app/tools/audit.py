@@ -1,7 +1,7 @@
 """Tool coverage audit — warn on tools that no pack/skill/prompt references.
 
 Every tool should be discoverable by the LLM through at least one channel:
-  (a) membership in a `RUNTIME_TOOL_GROUPS` entry (activated via load_skill side effects)
+  (a) membership in a `RUNTIME_TOOL_GROUPS` entry (discoverable through tool_search)
   (b) `declared_tools` list of a system_skills or skills template SKILL.md
   (c) explicit mention by name inside a prompt section under
       app/runtime/prompt_sections/

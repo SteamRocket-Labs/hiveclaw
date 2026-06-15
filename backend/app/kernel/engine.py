@@ -1596,7 +1596,7 @@ def _build_restoration_context(
     1. Soul (agent identity)
     2. Recently-read files (up to 5, per-file cap each)
     3. Active skills summary
-    4. Active packs summary
+    4. Active runtime tool groups summary
     """
     from pathlib import Path as _Path
     from app.config import get_settings as _get_settings
@@ -2538,8 +2538,8 @@ class AgentKernel:
             )
             turn_token_budget = getattr(runtime_config, "turn_token_budget", None)
             accumulated_tokens = 0
-            # full_toolset tracks expanded tools after pack activation.
-            # Intentionally persists across rounds — packs stay active once loaded.
+            # full_toolset tracks expanded tools after deferred-schema discovery.
+            # Intentionally persists across rounds — discovered tool schemas stay active once loaded.
             full_toolset = None
             # Phase 5: ContextVar token if a live-chat tool-intercept activates
             # interactive Plan Mode mid-loop. Reset in the finally below so the

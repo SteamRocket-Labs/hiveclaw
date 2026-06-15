@@ -14,8 +14,10 @@ from app.evals.hive_live_runner import DETERMINISTIC_BEHAVIOR_SCENARIOS
 from app.services.eval_ci_service import (
     EvalRuntimeModelConfig,
     configure_production_behavior_eval_model,
+    get_latest_behavior_eval_report,
     get_production_behavior_eval_runtime_status,
     run_production_behavior_eval_for_ci,
+    store_latest_behavior_eval_report,
 )
 
 router = APIRouter(prefix="/eval-ci", tags=["eval-ci"])
@@ -56,7 +58,23 @@ async def run_behavior_eval(
     _require_eval_ci_token(authorization)
     scenarios = _validate_scenarios(payload.scenarios if payload else None)
     try:
-        return await run_production_behavior_eval_for_ci(scenarios=scenarios)
+        report = await run_production_behavior_eval_for_ci(scenarios=scenarios)
+        await store_latest_behavior_eval_report(report)
+        return report
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+
+@router.get("/behavior/latest")
+async def get_latest_behavior_eval(
+    summary: bool = False,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_eval_ci_token(authorization)
+    try:
+        return await get_latest_behavior_eval_report(summary_only=summary)
     except HTTPException:
         raise
     except Exception as exc:

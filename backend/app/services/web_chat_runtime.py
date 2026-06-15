@@ -647,6 +647,69 @@ async def _persist_assistant_message(
         await db.commit()
 
 
+async def _finalize_web_chat_run_with_assistant(
+    *,
+    run_uuid: uuid.UUID,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    session_id: str,
+    content: str,
+    thinking: str | None,
+    thinking_signature: str | None = None,
+    status: str,
+    result_summary: str | None,
+    metadata_json: dict[str, Any] | None = None,
+) -> bool:
+    """Persist the terminal assistant response exactly once for a durable web-chat run."""
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == run_uuid,
+                RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+            )
+            .with_for_update()
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            logger.warning("[WebChatRun] Finalization skipped; runtime task {} not found", run_uuid.hex)
+            return False
+        if task.status not in _ACTIVE_STATUSES:
+            logger.info(
+                "[WebChatRun] Duplicate finalization skipped for run {} with status {}",
+                run_uuid.hex,
+                task.status,
+            )
+            return False
+
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                role="assistant",
+                content=content,
+                thinking=thinking,
+                thinking_signature=thinking_signature,
+                conversation_id=session_id,
+            )
+        )
+        task.status = status
+        if result_summary is not None:
+            task.result_summary = result_summary
+        if metadata_json:
+            metadata = dict(task.metadata_json or {})
+            metadata.update(metadata_json)
+            task.metadata_json = metadata
+        if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
+            task.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return True
+
+
 async def _persist_tool_call(
     *,
     agent_id: uuid.UUID,
@@ -1134,15 +1197,18 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 )
                 await db.commit()
             assistant_response = "Message forwarded to OpenClaw agent. Waiting for response..."
-            await _persist_assistant_message(
+            finalized = await _finalize_web_chat_run_with_assistant(
+                run_uuid=run_uuid,
                 agent_id=agent.id,
                 user_id=user.id,
                 session_id=session_id,
                 content=assistant_response,
                 thinking=None,
+                status="completed",
+                result_summary=assistant_response[:500],
             )
-            await _update_runtime_task(run_uuid, status="completed", result_summary=assistant_response[:500])
-            await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
+            if finalized:
+                await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
             return
 
         runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
@@ -1168,28 +1234,34 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_session_context=runtime_session_context,
         )
         if plan_mode_response is not None:
-            await _persist_assistant_message(
+            finalized = await _finalize_web_chat_run_with_assistant(
+                run_uuid=run_uuid,
                 agent_id=agent.id,
                 user_id=user.id,
                 session_id=session_id,
                 content=plan_mode_response,
                 thinking=None,
+                status="completed",
+                result_summary=plan_mode_response[:500],
             )
-            await _update_runtime_task(run_uuid, status="completed", result_summary=plan_mode_response[:500])
-            await broadcast_web_chat_event(agent.id, session_id, build_done_event(plan_mode_response))
+            if finalized:
+                await broadcast_web_chat_event(agent.id, session_id, build_done_event(plan_mode_response))
             return
 
         if not llm_model:
             assistant_response = f"[LLM Error] {agent.name} has no LLM model configured. Please select a model in the agent's Settings tab."
-            await _persist_assistant_message(
+            finalized = await _finalize_web_chat_run_with_assistant(
+                run_uuid=run_uuid,
                 agent_id=agent.id,
                 user_id=user.id,
                 session_id=session_id,
                 content=assistant_response,
                 thinking=None,
+                status="failed",
+                result_summary=assistant_response[:500],
             )
-            await _update_runtime_task(run_uuid, status="failed", result_summary=assistant_response[:500])
-            await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
+            if finalized:
+                await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
             return
 
         async def stream_to_ws(text: str) -> None:
@@ -1352,26 +1424,26 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
         assistant_response = result.content
         thinking = "".join(thinking_content) if thinking_content else None
-        await _persist_assistant_message(
-            agent_id=agent.id,
-            user_id=user.id,
-            session_id=session_id,
-            content=assistant_response,
-            thinking=thinking,
-            thinking_signature=getattr(result, "reasoning_signature", None),
-        )
         status = (
             "killed"
             if cancel_event.is_set()
             else ("failed" if is_llm_error_message(assistant_response) else "completed")
         )
         metadata_update = {"cancelled_by_user": bool(cancel_event.is_set())}
-        await _update_runtime_task(
-            run_uuid,
+        finalized = await _finalize_web_chat_run_with_assistant(
+            run_uuid=run_uuid,
+            agent_id=agent.id,
+            user_id=user.id,
+            session_id=session_id,
+            content=assistant_response,
+            thinking=thinking,
+            thinking_signature=getattr(result, "reasoning_signature", None),
             status=status,
             result_summary=_simulation_title(assistant_response),
             metadata_json=metadata_update,
         )
+        if not finalized:
+            return
         await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response, thinking=thinking))
         if status == "completed":
             # P1-2: deliver the result back to the origin IM channel (no-op for

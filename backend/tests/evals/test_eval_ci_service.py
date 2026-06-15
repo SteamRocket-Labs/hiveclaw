@@ -68,3 +68,39 @@ async def test_production_behavior_eval_for_ci_requires_eval_tenant(monkeypatch)
 
     with pytest.raises(RuntimeError, match="HIVE_EVAL_TENANT_ID is required"):
         await eval_ci_service.run_production_behavior_eval_for_ci()
+
+
+def test_summarize_behavior_eval_report_keeps_gate_fields_without_transcript_body() -> None:
+    summary = eval_ci_service.summarize_behavior_eval_report(
+        {
+            "kind": "behavior_eval",
+            "transport": "hive_live",
+            "runtime": {"model": "claude-sonnet-4-5", "tenant_id": "tenant-1"},
+            "benchmark_complete": True,
+            "fallback_used": False,
+            "scenarios": {
+                "coding": {
+                    "ready": True,
+                    "score": 100,
+                    "transcript": "x" * 5000,
+                    "score_breakdown": {"passed": True},
+                }
+            },
+        }
+    )
+
+    assert summary == {
+        "kind": "behavior_eval",
+        "transport": "hive_live",
+        "benchmark_complete": True,
+        "fallback_used": False,
+        "runtime": {"model": "claude-sonnet-4-5", "tenant_id": "tenant-1"},
+        "scenarios": {
+            "coding": {
+                "ready": True,
+                "score": 100,
+                "score_breakdown": {"passed": True},
+                "transcript_chars": 5000,
+            }
+        },
+    }

@@ -1352,7 +1352,9 @@ async def _invoke_agent_for_triggers(
             )
         if runtime_options.get("allowed_tool_names"):
             system_prompt_suffix_parts.append(
-                "This job declares an explicit toolset; stay within it unless a loaded skill expands the task legitimately."
+                "This job declares an explicit toolset; stay within it. If a needed capability is missing, use "
+                "`tool_search` to discover matching deferred schemas when that tool is available, otherwise report "
+                "the missing capability instead of assuming a loaded skill can expand tools."
             )
         system_prompt_suffix = "\n".join(system_prompt_suffix_parts)
         try:

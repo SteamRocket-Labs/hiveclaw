@@ -1,8 +1,8 @@
 """Prompt assembly helpers for the unified runtime.
 
 Three-layer prompt architecture:
-  1. Frozen Prefix — stable within a session (identity, system, task rules, skill catalog)
-  2. Dynamic Suffix — changes per round (active packs, retrieval, compaction hints)
+  1. Frozen Prefix — stable within a session (identity, system, task rules)
+  2. Dynamic Suffix — changes per round (runtime tool groups, retrieval, compaction hints)
   3. Per-turn Messages — normal conversation messages
 """
 
@@ -25,7 +25,7 @@ from app.services.token_tracker import estimate_tokens_from_text
 # Default fallbacks when no task-aware budget profile is provided.
 # P1-W2-6: tool group budget tightened from 2000 → 1200 (matches the new
 # active_tool_groups section default; tool groups are referential, not full docs).
-_ACTIVE_PACKS_CHAR_BUDGET = 1200
+_ACTIVE_TOOL_GROUPS_CHAR_BUDGET = 1200
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
 # P1-W2-2: Per-section caps in the dynamic suffix.
@@ -474,7 +474,7 @@ def _meter_frozen_prefix(prefix: str) -> None:
 
 
 def _render_active_tool_groups(
-    active_tool_groups: list[dict[str, Any]], *, budget_chars: int = _ACTIVE_PACKS_CHAR_BUDGET
+    active_tool_groups: list[dict[str, Any]], *, budget_chars: int = _ACTIVE_TOOL_GROUPS_CHAR_BUDGET
 ) -> str:
     """Delegate to modular section builder (kept for backward compat)."""
     from app.runtime.prompt_sections import build_active_tool_groups_section
@@ -600,7 +600,9 @@ def build_dynamic_prompt_suffix(
         if runtime_block:
             parts.append(runtime_block)
 
-    packs_budget = budget_profile.active_tool_groups_budget_chars if budget_profile else _ACTIVE_PACKS_CHAR_BUDGET
+    tool_groups_budget = (
+        budget_profile.active_tool_groups_budget_chars if budget_profile else _ACTIVE_TOOL_GROUPS_CHAR_BUDGET
+    )
     retrieval_budget = budget_profile.retrieval_budget_chars if budget_profile else _RETRIEVAL_CHAR_BUDGET
     scenario_section = build_scenario_section(
         budget_profile.task_profile if budget_profile else None,
@@ -609,9 +611,9 @@ def build_dynamic_prompt_suffix(
     if scenario_section:
         parts.append(scenario_section)
 
-    packs_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=packs_budget)
-    if packs_section:
-        parts.append(packs_section)
+    tool_groups_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=tool_groups_budget)
+    if tool_groups_section:
+        parts.append(tool_groups_section)
 
     if available_deferred_tools:
         names = [str(name).strip() for name in available_deferred_tools if str(name).strip()]
@@ -624,7 +626,7 @@ def build_dynamic_prompt_suffix(
                 lines.append(f"- {name} — `select:{name}`")
             if len(names) > 40:
                 lines.append(f"- ...(+{len(names) - 40} more)")
-            parts.append(_trim_block("\n".join(lines), budget_chars=min(packs_budget, 1600)))
+            parts.append(_trim_block("\n".join(lines), budget_chars=min(tool_groups_budget, 1600)))
 
     # § Skills catalog (Step 9 — CC parity): progressive-disclosure index lives
     # in the dynamic suffix, next to the active tool groups it complements, so
@@ -639,12 +641,13 @@ def build_dynamic_prompt_suffix(
 
     if budget_profile and not active_tool_groups and budget_profile.task_profile.suggested_pack_names:
         hint_lines = [
-            "## Likely Capability Packs",
-            "These packs are likely useful for the current request. Activate them proactively when needed.",
+            "## Likely Deferred Tool Groups",
+            "These deferred tool groups are likely useful for the current request. Use `tool_search` to load "
+            "matching schemas when the visible tools are not enough.",
         ]
         for pack_name in budget_profile.task_profile.suggested_pack_names:
             hint_lines.append(f"- {pack_name}")
-        parts.append(_trim_block("\n".join(hint_lines), budget_chars=packs_budget))
+        parts.append(_trim_block("\n".join(hint_lines), budget_chars=tool_groups_budget))
 
     # § Environment (user, channel, time)
     env_section = build_environment_section(
@@ -692,7 +695,7 @@ def assemble_runtime_prompt(
     """Combine frozen prefix + dynamic suffix into final system prompt.
 
     If total exceeds budget, frozen prefix is trimmed (dynamic suffix preserved
-    because it contains per-round retrieval and pack context).
+    because it contains per-round retrieval and runtime tool-group context).
 
     Args:
         context_window_tokens: Model's context window in tokens. When provided,

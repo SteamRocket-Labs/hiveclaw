@@ -44,8 +44,13 @@ class TestPromptStructure:
     def test_pipeline_context_documents_upstream_and_downstream(self, prompt_text: str) -> None:
         assert "Upstream" in prompt_text
         assert "Downstream" in prompt_text
-        assert "Completed/Evidence/Blockers" in prompt_text
+        assert "free-form" in prompt_text.lower() or "digest" in prompt_text.lower()
         assert "wake policy" in prompt_text.lower()
+
+    def test_prompt_does_not_force_worker_or_final_return_shapes(self, prompt_text: str) -> None:
+        assert "Completed/Evidence/Blockers" not in prompt_text
+        assert "Every user-facing reply from coordinator mode has exactly this shape" not in prompt_text
+        assert "<return_format>" not in prompt_text
 
 
 class TestDecisionMatrix:

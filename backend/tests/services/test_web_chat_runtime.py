@@ -162,6 +162,122 @@ async def test_persist_assistant_message_stores_thinking_signature(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_finalize_web_chat_run_skips_assistant_when_run_already_terminal(monkeypatch):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    run_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="completed",
+        metadata_json={},
+        result_summary="already done",
+        completed_at=None,
+    )
+    added = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(task)
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            raise AssertionError("terminal duplicate finalization must not commit")
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+
+    finalized = await runtime._finalize_web_chat_run_with_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        user_id=uuid4(),
+        session_id=uuid4().hex,
+        content="duplicate answer",
+        thinking=None,
+        thinking_signature=None,
+        status="completed",
+        result_summary="duplicate answer",
+        metadata_json={"cancelled_by_user": False},
+    )
+
+    assert finalized is False
+    assert added == []
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_does_not_broadcast_done_when_finalization_loses_race(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="latest question",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Web3研究员",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    broadcasts: list[dict] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(_request):
+        return SimpleNamespace(content="same final answer", reasoning_signature=None)
+
+    async def fake_finalize(**_kwargs):
+        return False
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert all(event.get("type") != "done" for event in broadcasts)
+
+
+@pytest.mark.asyncio
 async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.audit import ChatMessage

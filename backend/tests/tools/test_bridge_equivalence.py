@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 
-def test_combined_openai_tools_matches_canonical_surface():
-    """The collected tool surface should expose the canonical builtin tool set."""
+def test_combined_openai_tools_matches_registered_builtin_surface():
+    """The collected tool surface exposes the registered builtin schemas.
+
+    Turn-1/minimal visibility is enforced later by CORE_TOOL_NAMES, requested
+    schema expansion, pack policy, and provider-availability filtering.
+    """
     from app.services.agent_tools import get_combined_openai_tools
 
     combined = get_combined_openai_tools()
@@ -20,12 +24,13 @@ def test_combined_openai_tools_matches_canonical_surface():
         "deep_research_start",
         "delete_file",
         "discover_resources",
-            "delegate_to_agent",
-            "edit_file",
-            "execute_code",
-            "exit_plan_mode",
-            "ask_user_question",
-            "request_plan_mode",
+        "delegate_to_agent",
+        "edit_file",
+        "execute_code",
+        "exa_search",
+        "exit_plan_mode",
+        "ask_user_question",
+        "request_plan_mode",
             "run_command",
             "spawn_subagent",
             "check_subagent",
@@ -112,6 +117,7 @@ def test_combined_openai_tools_matches_canonical_surface():
         "send_message_to_agent",
         "send_web_message",
         "set_trigger",
+        "tavily_search",
         "tool_search",
         "track_todo",
         "update_memory",

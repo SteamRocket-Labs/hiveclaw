@@ -240,17 +240,23 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
         # Not a workspace skill — fall through to check tool packs
         logger.debug("Skill %r not found in workspace, checking tool packs", requested)
 
-    # Fallback: check if the name matches a tool pack (e.g. "plaza_pack", "web_pack")
+    # Fallback: if the name matches a runtime tool group, return truthful
+    # guidance only. `load_skill` never changes the callable schema set.
     from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
     pack = runtime_tool_group_for_name(requested)
     if pack:
+        tool_selectors = ", ".join(f"`select:{tool_name}`" for tool_name in pack.tools[:8])
+        if len(pack.tools) > 8:
+            tool_selectors += ", ..."
         return (
-            f"## Tool Pack: {pack.name}\n\n"
+            f"## Runtime Tool Group: {pack.name}\n\n"
             f"{pack.summary}\n\n"
-            f"**Available tools:** {', '.join(pack.tools)}\n\n"
-            f"This is a tool pack, not a skill file. "
-            f"The tools listed above are now available — call them directly."
+            f"**Deferred tools:** {', '.join(pack.tools)}\n\n"
+            "This is a runtime tool group, not a skill file. load_skill does not make these schemas callable. "
+            f"Use `tool_search` with this group name or a specific selector such as {tool_selectors} to load "
+            "matching deferred schemas for this session. If you need method guidance, load the relevant skill or "
+            "system guide separately."
         )
 
     return _workspace_error(tool_name, "not_found", f"Skill not found: {skill_name}")

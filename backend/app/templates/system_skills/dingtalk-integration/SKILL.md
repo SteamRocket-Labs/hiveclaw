@@ -38,7 +38,8 @@ Simple reminders in the current DingTalk thread are standalone `scheduled_job` w
 <tool_reference>
 
 DingTalk has no dedicated outbound tools in the current runtime. The
-relevant tools you WILL use come from other skill packs:
+relevant tools you WILL use are core tools or are documented in other
+runtime guides:
 
 | Task | Tool (from other skills) |
 |------|-------------------------|

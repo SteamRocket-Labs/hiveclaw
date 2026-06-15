@@ -17,8 +17,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.database import enter_rls_bypass
+from app.database import async_session, enter_rls_bypass
 from app.evals.hive_live_runner import (
+    BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY,
     BEHAVIOR_EVAL_RUNTIME_SETTING_KEY,
     DETERMINISTIC_BEHAVIOR_SCENARIOS,
     _coerce_uuid,
@@ -160,6 +161,93 @@ def _mirror_setting_payload(*, model: LLMModel, config: EvalRuntimeModelConfig) 
         "label": config.label,
         "synced_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def summarize_behavior_eval_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Return a compact gate-facing view of a behavior eval report."""
+
+    scenarios: dict[str, Any] = {}
+    for name, entry in (report.get("scenarios") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        transcript = entry.get("transcript")
+        scenarios[str(name)] = {
+            "ready": bool(entry.get("ready")),
+            "score": entry.get("score"),
+            "score_breakdown": entry.get("score_breakdown"),
+            "transcript_chars": len(transcript) if isinstance(transcript, str) else 0,
+        }
+
+    return {
+        "kind": report.get("kind"),
+        "transport": report.get("transport"),
+        "benchmark_complete": bool(report.get("benchmark_complete")),
+        "fallback_used": bool(report.get("fallback_used")),
+        "runtime": report.get("runtime") if isinstance(report.get("runtime"), dict) else {},
+        "scenarios": scenarios,
+    }
+
+
+async def store_latest_behavior_eval_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Persist the latest eval report so callers can fetch it via a short request."""
+
+    tenant_id = _configured_eval_tenant_id()
+    value = {
+        "stored_at": datetime.now(timezone.utc).isoformat(),
+        "report": report,
+    }
+    async with async_session() as db:
+        async with enter_rls_bypass(db, reason="behavior eval latest report write"):
+            result = await db.execute(
+                select(TenantSetting).where(
+                    TenantSetting.tenant_id == tenant_id,
+                    TenantSetting.key == BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY,
+                )
+            )
+            setting = result.scalar_one_or_none()
+            if setting is None:
+                setting = TenantSetting(
+                    tenant_id=tenant_id,
+                    key=BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY,
+                    value=value,
+                )
+                db.add(setting)
+            else:
+                setting.value = value
+        await db.commit()
+    return value
+
+
+async def get_latest_behavior_eval_report(*, summary_only: bool = False) -> dict[str, Any]:
+    """Read the latest persisted eval report.
+
+    ``summary_only`` is the production smoke-test path: it avoids returning full
+    transcripts over Railway's long-request boundary while preserving all gate
+    fields needed to judge usefulness.
+    """
+
+    tenant_id = _configured_eval_tenant_id()
+    async with async_session() as db:
+        async with enter_rls_bypass(db, reason="behavior eval latest report read"):
+            result = await db.execute(
+                select(TenantSetting.value).where(
+                    TenantSetting.tenant_id == tenant_id,
+                    TenantSetting.key == BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY,
+                )
+            )
+            value = result.scalar_one_or_none()
+
+    stored_at = value.get("stored_at") if isinstance(value, dict) else None
+    report = value.get("report") if isinstance(value, dict) else None
+    response: dict[str, Any] = {
+        "available": isinstance(report, dict),
+        "tenant_id": str(tenant_id),
+        "setting_key": BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY,
+        "stored_at": stored_at,
+    }
+    if isinstance(report, dict):
+        response["summary" if summary_only else "report"] = summarize_behavior_eval_report(report) if summary_only else report
+    return response
 
 
 async def get_production_behavior_eval_runtime_status(db: Any) -> dict[str, Any]:

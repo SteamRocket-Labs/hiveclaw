@@ -532,7 +532,7 @@ async def get_session_runtime_summary(db: AsyncSession, session_id: uuid.UUID) -
     """Build runtime summary for a chat session.
 
     Finds messages via ChatSession.id → conversation_id → ChatMessage.conversation_id,
-    then scans parts for pack activations, tool calls, and permission events.
+    then scans parts for runtime tool-group activations, tool calls, and permission events.
     """
     from app.models.audit import ChatMessage
     from app.models.chat_session import ChatSession

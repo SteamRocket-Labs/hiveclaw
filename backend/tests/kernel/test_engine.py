@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -918,6 +919,111 @@ async def test_kernel_round_trips_reasoning_signature_after_tool_call() -> None:
     assistant_tool_turn = next(message for message in second_round_messages if message.role == "assistant")
     assert assistant_tool_turn.reasoning_content == "tool thinking"
     assert assistant_tool_turn.reasoning_signature == "sig-tool-turn"
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_tool_intercept_notice_follows_tool_result_message() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.runtime.session import SessionContext
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_delegate",
+                        "function": {
+                            "name": "delegate_to_agent",
+                            "arguments": json.dumps(
+                                {
+                                    "agent_name": "飞书知识库助手",
+                                    "message": "去飞书知识库搜索飞翼艇报告并总结",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 9},
+            ),
+            SimpleNamespace(
+                content="plan submitted",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 7},
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    needs_plan = json.dumps(
+        {
+            "ok": False,
+            "status": "needs_plan",
+            "activate_interactive_plan": True,
+            "interactive_plan_seed": {
+                "source": "tool_intercept",
+                "action_kind": "start_delegation",
+                "tool_name": "delegate_to_agent",
+                "tool_args": {
+                    "agent_name": "飞书知识库助手",
+                    "message": "去飞书知识库搜索飞翼艇报告并总结",
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: needs_plan,
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "使用飞书知识库助手找飞翼艇报告"}],
+            agent_name="Leslie的智能助手",
+            role_description="Coordinator",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=SessionContext(
+                session_id="wechat-session",
+                source="wechat_personal",
+                channel="wechat_personal",
+            ),
+        )
+    )
+
+    assert result.content == "plan submitted"
+    second_round_messages = fake_client.calls[1]["messages"]
+    assistant_index = next(
+        i for i, message in enumerate(second_round_messages) if message.role == "assistant" and message.tool_calls
+    )
+    assert second_round_messages[assistant_index + 1].role == "tool"
+    assert second_round_messages[assistant_index + 1].tool_call_id == "call_delegate"
+    assert second_round_messages[assistant_index + 2].role == "system"
+    assert "[Plan Mode Activated]" in second_round_messages[assistant_index + 2].content
 
 
 @pytest.mark.asyncio

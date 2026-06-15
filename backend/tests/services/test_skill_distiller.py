@@ -367,6 +367,73 @@ async def test_distiller_cannot_promote_without_external_behavior_eval(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_distiller_fetches_tenant_behavior_report_before_promotion(monkeypatch, tmp_path: Path) -> None:
+    from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    published: list[dict] = []
+
+    async def fake_evidence(*, agent_id, since_days, state, current_session_id):
+        del agent_id, since_days, state, current_session_id
+        return [
+            SessionWorkflowEvidence(
+                session_id=f"tenant-s-{i}",
+                source="heartbeat",
+                occurred_at=f"2026-04-0{i}T10:00:00Z",
+                status="success",
+                used_skill=False,
+                summary="Repeated tenant-local deployment verification workflow.",
+                assistant_reply="[OUTCOME:action_taken] [SCORE:8] deployed and verified",
+                tool_names=("web_search", "web_fetch", "write_file"),
+            )
+            for i in (1, 2, 3)
+        ]
+
+    async def fake_draft(**kwargs):
+        del kwargs
+        return DistilledSkillDraft(
+            decision="promote",
+            confidence=0.95,
+            name="Tenant Deploy Verification",
+            description="Run tenant-local deployment verification and save evidence.",
+            instructions_markdown="1. Check target health.\n2. Inspect public response.\n3. Save verification evidence.\n",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="Repeated successful workflow in this tenant.",
+        )
+
+    async def fake_ensure_report(**kwargs):
+        published.append(kwargs)
+        return _passing_behavior_report()
+
+    monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_evidence)
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
+    monkeypatch.setattr(
+        "app.services.tenant_behavior_eval_publisher.ensure_skill_distiller_behavior_report",
+        fake_ensure_report,
+    )
+
+    runtime_config = SimpleNamespace(skill_candidate_loop_enabled=True)
+    result = await run_skill_distillation_cycle(
+        agent_id=agent_id,
+        workspace=workspace,
+        tenant_id=tenant_id,
+        runtime_config=runtime_config,
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
+    )
+
+    assert result["status"] == "promoted"
+    assert (workspace / "skills" / "tenant-deploy-verification" / "SKILL.md").exists()
+    assert published
+    assert published[0]["agent_id"] == agent_id
+    assert published[0]["tenant_id"] == tenant_id
+    assert runtime_config.skill_distiller_behavior_report == _passing_behavior_report()
+
+
+@pytest.mark.asyncio
 async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatch, tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 

@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     # agent-level definition with this many ACTIVE memory entries (and no
     # pending proposal) gets an LLM-drafted definition-improvement proposal.
     SUBAGENT_EVOLUTION_THRESHOLD: int = 8
+    # Candidate-driven tenant behavior eval publisher. This closes the
+    # production self-evolution promotion gate for ordinary tenants without
+    # turning every heartbeat into a benchmark run.
+    BEHAVIOR_EVAL_AUTO_PUBLISH_ENABLED: bool = True
+    BEHAVIOR_EVAL_REPORT_MAX_AGE_HOURS: int = 24
 
     # Capability mapping enforcement (P1-W2-8)
     # When True, any tool absent from CAPABILITY_MAP is denied at the

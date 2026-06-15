@@ -4,6 +4,8 @@
 >
 > 本文是 `docs/sota-atomic-system-audit-2026-06-15.md`（纯读码版）的 **live 验证升级版**：方向一致（未达成、机制广泛接线但 live 行为基线 provisional），但用实跑证据**修正/锐化了 5+1 处**关键判断，并独立**纠正了本轮 workflow 自身的一处过判**（见 §4）。
 
+> 2026-06-15 Codex follow-up：核心 Goal-1 晋升暗臂已做代码级闭环。新增普通租户 `tenant_behavior_eval_publisher`，distiller 在 patch/promote 候选真正写入前会候选驱动地为当前 tenant 产出并持久化 `behavior_eval_latest_report`；只有 `behavior_eval_passed()` 接受的 trusted live report 才注入 runtime config，失败/缺前置仍 fail-closed 并节流。验证：`cd backend && source .venv/bin/activate && pytest tests -q` -> `4590 passed, 7 skipped, 4 warnings`。剩余诚实边界：此 follow-up 关闭的是“普通租户没有 writer 导致永久 HOLD”的代码路径；整体 SOTA/超越 Hermes 仍需要真实生产 live report、rebaseline 和分数时序。
+
 ## 0. 取证口径
 
 - 方法：实跑取证（不止读码）。32 个审计 agent，306 万 token，846 次工具调用，~13.6 分钟；主理人对承重发现逐条独立抽查。

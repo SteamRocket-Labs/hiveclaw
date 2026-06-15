@@ -3527,15 +3527,16 @@ class AgentKernel:
                                             _callback_failure_count,
                                         )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
+                            plan_mode_activation_notice: str | None = None
                             if _interactive_plan_token is None:
                                 _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
                                     request, str(result)
                                 )
                                 if _interactive_plan_token is not None:
-                                    # B3: tell the model WHY it just entered Plan Mode
-                                    api_messages.append(
-                                        LLMMessage(role="system", content=_plan_mode_activation_notice(request))
-                                    )
+                                    # B3: tell the model WHY it just entered Plan Mode.
+                                    # Keep the notice after the tool result message; OpenAI-compatible providers
+                                    # reject assistant tool_calls unless the matching tool messages are adjacent.
+                                    plan_mode_activation_notice = _plan_mode_activation_notice(request)
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
                                 logger.info(
@@ -3572,6 +3573,8 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
+                            if plan_mode_activation_notice is not None:
+                                api_messages.append(LLMMessage(role="system", content=plan_mode_activation_notice))
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
                     else:
@@ -3772,15 +3775,16 @@ class AgentKernel:
                                         )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
 
+                            plan_mode_activation_notice: str | None = None
                             if _interactive_plan_token is None:
                                 _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
                                     request, str(result)
                                 )
                                 if _interactive_plan_token is not None:
-                                    # B3: tell the model WHY it just entered Plan Mode
-                                    api_messages.append(
-                                        LLMMessage(role="system", content=_plan_mode_activation_notice(request))
-                                    )
+                                    # B3: tell the model WHY it just entered Plan Mode.
+                                    # Keep the notice after the tool result message; OpenAI-compatible providers
+                                    # reject assistant tool_calls unless the matching tool messages are adjacent.
+                                    plan_mode_activation_notice = _plan_mode_activation_notice(request)
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
                                 logger.info(
@@ -3817,6 +3821,8 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
+                            if plan_mode_activation_notice is not None:
+                                api_messages.append(LLMMessage(role="system", content=plan_mode_activation_notice))
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
 

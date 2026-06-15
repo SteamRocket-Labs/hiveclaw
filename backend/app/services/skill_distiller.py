@@ -141,6 +141,34 @@ def _runtime_behavior_report(runtime_config: Any) -> dict[str, Any] | None:
     return None
 
 
+async def _ensure_runtime_behavior_report(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    runtime_config: Any,
+) -> dict[str, Any] | None:
+    report = _runtime_behavior_report(runtime_config)
+    if report is not None:
+        return report
+    if tenant_id is None:
+        return None
+    from app.evals.hive_live_runner import behavior_eval_passed
+    from app.services.tenant_behavior_eval_publisher import ensure_skill_distiller_behavior_report
+
+    report = await ensure_skill_distiller_behavior_report(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        runtime_config=runtime_config,
+    )
+    if isinstance(report, dict) and behavior_eval_passed(report):
+        try:
+            setattr(runtime_config, "skill_distiller_behavior_report", report)
+        except Exception:
+            pass
+        return report
+    return None
+
+
 # ── Memory candidate lane (spec §12 P4) ──
 #
 # The Memory Curator (heartbeat) promotes strategy evidence into T3 with a
@@ -548,7 +576,9 @@ def render_skill_evidence_contrast(evidence: list[SessionWorkflowEvidence]) -> s
         "schema": "skill_distiller_success_failure_contrast.v1",
         "successful_examples": [_evidence_summary_dict(item) for item in successful],
         "failed_examples": [_evidence_summary_dict(item) for item in failed],
-        "patch_signal_count": sum(1 for item in evidence if item.status in {"failed", "workaround"} and item.used_skill),
+        "patch_signal_count": sum(
+            1 for item in evidence if item.status in {"failed", "workaround"} and item.used_skill
+        ),
         "promote_signal_count": sum(1 for item in evidence if item.status == "success"),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -1147,7 +1177,11 @@ async def run_skill_distillation_cycle(
         )
 
         patch_relative_path = patch_target.relative_path
-        behavior_report = _runtime_behavior_report(runtime_config)
+        behavior_report = await _ensure_runtime_behavior_report(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            runtime_config=runtime_config,
+        )
         candidate = record_evolution_candidate(
             workspace,
             target_type="skill_patch",
@@ -1309,7 +1343,11 @@ async def run_skill_distillation_cycle(
         run_evolution_verification,
     )
 
-    behavior_report = _runtime_behavior_report(runtime_config)
+    behavior_report = await _ensure_runtime_behavior_report(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        runtime_config=runtime_config,
+    )
     candidate = record_evolution_candidate(
         workspace,
         target_type="skill",

@@ -11,6 +11,15 @@ Risk posture (§10 decision 3): read-only / workspace-write steps stay low
 risk (lightweight preview); 外发/共享/删除 carry ``effects="external"`` and
 are therefore HIGH risk — compiler enforces a preceding gate_step and the
 launch needs a confirmed plan.
+
+Lifecycle (Step 10 核实): these examples are a TEST REFERENCE CORPUS — the
+golden fixtures behind ``test_office_workflows`` (compile / admission /
+capability-bound / artifacts / gate) and ``test_workflow_promote_suggestions``
+(``CONTRACT_REVIEW_EXAMPLE``). They are also the canonical candidates for a
+future ``visibility_scope=platform`` template seed, but are deliberately NOT
+seeded today: promoting fixtures into live platform templates is a product
+decision, not cleanup, and inventing a seeder here would be scope creep.
+Kept as data — not deleted, not auto-seeded.
 """
 
 from __future__ import annotations

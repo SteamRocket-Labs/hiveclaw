@@ -69,7 +69,7 @@ async def collect_promote_suggestions(
     for row in rows:
         metadata = row.metadata_json or {}
         if metadata.get("tenant_id") != str(tenant_id):
-            continue  # runtime_tasks has no tenant column; the mirror filters
+            continue  # tenant_id column is nullable/backfilled; mirror filters
         if metadata.get("definition_source") != "ephemeral":
             continue
         definition_hash = metadata.get("definition_hash")

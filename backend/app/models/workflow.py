@@ -95,7 +95,6 @@ class WorkflowStep(Base):
     )
     # step identifier within the definition (NOT a row id)
     step_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    phase: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # agent_step | fanout_step | gate_step | condition | wait_until
     step_type: Mapped[str] = mapped_column(
         String(30), nullable=False, default="agent_step", server_default="agent_step"

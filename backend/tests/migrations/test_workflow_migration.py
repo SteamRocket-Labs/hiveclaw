@@ -30,7 +30,7 @@ _WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_cal
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 _FEEDBACK_TABLES = ("session_feedback_events",)
 _INVOCATION_TRACE_TABLES = ("invocation_spans",)
-_CURRENT_CLOSURE_HEAD = "add_installed_plugin_tables_0614"
+_CURRENT_CLOSURE_HEAD = "drop_workflow_step_phase_0614"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -241,6 +241,39 @@ async def test_upgrade_path_adds_chat_message_thinking_signature(chain_migrated_
         assert exists is True
     finally:
         await engine.dispose()
+
+
+async def _assert_no_workflow_step_phase(database_url: str) -> None:
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            exists = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_name = 'workflow_steps'
+                              AND column_name = 'phase'
+                        )
+                        """
+                    )
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    assert exists is False, "workflow_steps.phase must be dropped (Step 10 dead column)"
+
+
+async def test_upgrade_path_drops_workflow_step_phase(chain_migrated_pg_url):
+    """Step 10: the migration's DROP COLUMN removes the dead phase column."""
+    await _assert_no_workflow_step_phase(chain_migrated_pg_url)
+
+
+async def test_bootstrap_path_has_no_workflow_step_phase(migrated_pg_url):
+    """Fresh create_all deployments never build phase (the model no longer maps it)."""
+    await _assert_no_workflow_step_phase(migrated_pg_url)
 
 
 async def test_workflow_tables_cross_tenant_invisible(migrated_pg_url, owner_engine, app_user_engine):

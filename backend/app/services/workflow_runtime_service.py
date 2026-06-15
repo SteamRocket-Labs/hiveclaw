@@ -809,8 +809,9 @@ class WorkflowRuntimeService:
         """The agent's run history (asset view §4): newest first, with step
         aggregates and promote provenance.
 
-        runtime_tasks has no tenant column — the metadata mirror is the
-        tenant boundary and is enforced here, same as ``resume_pending_runs``.
+        runtime_tasks.tenant_id exists but is nullable/backfilled — the
+        metadata mirror is the authoritative tenant boundary and is enforced
+        here, same as ``resume_pending_runs``.
         """
         from sqlalchemy import func
 
@@ -869,8 +870,9 @@ class WorkflowRuntimeService:
 
     async def resume_pending_runs(self, *, leaf_executor: LeafExecutor) -> list[ResumedRun]:
         async with self._session(None) as session:
-            # runtime_tasks has no tenant column; tenant comes from each
-            # run's metadata mirror and scopes the per-run journal sessions.
+            # runtime_tasks.tenant_id is nullable/backfilled; tenant comes from
+            # each run's metadata mirror (authoritative) and scopes the per-run
+            # journal sessions.
             rows = (
                 (
                     await session.execute(

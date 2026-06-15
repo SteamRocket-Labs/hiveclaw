@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-9 已实施落地**（2026-06-14，全量 4475 passed / 0 failed，证据见 §8 实施日志）。Step 10-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-10 已实施落地**（2026-06-15，证据见 §8 实施日志）。Step 11(docs/前端) 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -119,7 +119,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **7** ✅ | mcp | `MCPClient.list_resources/read_resource`(blob 走现有 >8KB artifact 溢出)+协议工具 `mcp_list_resources/mcp_read_resource`；DB 自省工具更名 `list_mcp_resources→list_mcp_tools`/`read_mcp_resource→inspect_mcp_tool`(旧名 alias 不破 transcript)；新建 `mcp_oauth.py` 标准 OAuth2 PKCE(加密存 token/守 mcp_authz/fail-closed)+`/enterprise/mcp/oauth/start\|callback` API+`resolve_mcp_oauth_bearer` 接入执行路径+`auth_status` 生命周期。**已实施，证据见 §8(含 OAuth live 验证诚实边界)。** | 6 |
 | **8** ✅ | subagent | schema 暴露 `run_in_background`(此前后端通但 LLM 不可达)；background spawn 落 `RuntimeTask(task_type="subagent")` durable record(非 resumable→startup `reconcile_orphaned_runtime_tasks` 把崩溃的 run 标 failed,parent poll 不再永久 running)；加 `check_subagent`(run_id 查/列表,ownership-scoped)；governance 按 type 分级**已存在**(`_TYPE_PRESETS` 给 explorer/critic 只读工具集,worker 才能编辑);completion wake/signal/tenant/recursion guard 沿用现有。**已实施，证据见 §8。** | 0 |
 | **9** ✅ | skill | catalog 移出 frozen prefix→动态 suffix(修 cache 击穿，owner 选项 A 保留兼容参数)；删 11 死字段(`declared_packs` 核实为活字段，保留)；distiller 晋升硬门**已是** `evolution_ledger` 外部 eval(核实 + 钉不变量，非重写)；`allowed_tools` 接 scoped 治理引导(load_skill registry 路径)。**已实施，证据见 §8。** | 4 |
-| **10** | workflow | preview/start_workflow 确认仅留 CORE；`office_workflow_examples` 接 platform-template seeder 或删(⚠️核实)；修 `runtime_task` 注释+`phase` 死列；文档化"结构化数据 over 脚本"为显式防御决策 | 0,5 |
+| **10** ✅ | workflow | preview/start_workflow 确认仅留 CORE；`office_workflow_examples` 核实=测试语料**保留+文档化**(不 seed=scope creep)；删 `phase` 死列(+drop-column migration)；修 5 处 `runtime_task` 过时注释(`tenant_id` 列已存在，只修注释零行为变更)；文档化"结构化数据 over 脚本"为显式防御决策。**已实施，证据见 §8。** | 0,5 |
 | **11** | docs | 修 CLAUDE.md 文档漂移(packs.py→runtime_tool_groups.py+pack.yaml)；记录插件安装生命周期 | 4,5,6,7 |
 
 ---
@@ -503,3 +503,34 @@ $ pytest tests -q
 4475 passed, 7 skipped, 4 warnings   # 0 failed (= Step8 的 4467 + 8 新测试:5 catalog-dynamic + 1 distiller 硬门 + 2 scope 引导)
 ```
 注：受保护文件(`.ultra/*` + `prompt_sections` 4 + 2 测试)全程未触碰；`test_skill_catalog_included` baseline 因保留 frozen 参数继续通过。
+
+---
+
+### Step 10 — workflow 清理（✅ 2026-06-15，零行为变更 + 死列退役）
+
+**先核实（§5.1 纪律，grep 实证三处判定）：**
+1. **`preview_workflow`/`start_workflow` 已在 CORE** —— `services/agent_tools.py:189-190` 在 `CORE_TOOL_NAMES`。治理(`start_workflow` = sensitive + plan gate，`handlers/workflow.py`)不改变其 CORE 归属(§0.x 修正①：CORE/Governance 正交)。此项 = 核实，**无改动**。
+2. **`office_workflow_examples` 不是孤儿**（纠正 §4 line 122 "接 seeder 或删 ⚠️核实"）—— `services/office_workflow_examples.py` 是测试黄金语料：被 `test_office_workflows`(compile/admission/capability-bound/artifacts/gate)、`test_workflow_promote_suggestions`(`CONTRACT_REVIEW_EXAMPLE`)、`test_extract_agent` 引用。无生产 seeder BY DESIGN。**保留 + 文档化**(docstring 补 Lifecycle 段)——不删(删=删契约测试)、不造 seeder(把 fixture 提升为生产 `visibility_scope=platform` 模板=产品决策非 cleanup=scope creep)。
+3. **`WorkflowStep.phase` 确认死列** —— `grep '\.phase' / 'phase='` 全 `app/` 零匹配；`step_type` 才载步骤类型；`add_workflow_tables_0604.py:74` 建列后从无 writer，列恒 NULL；`test_workflow_migration.py`/`entrypoint.sh`/`db_bootstrap.py` 均无 phase 引用。
+
+**10.1 phase 死列退役：**
+- `app/models/workflow.py`：删 `WorkflowStep.phase` 映射(原 line 98)。
+- `app/alembic/versions/drop_workflow_step_phase_0614.py`(新，`down_revision=add_installed_plugin_tables_0614`，单头)：`ALTER TABLE workflow_steps DROP COLUMN IF EXISTS phase`；downgrade `ADD COLUMN IF NOT EXISTS`。phase 恒 NULL → 无需 `retire_trigger_focus_ref_0613` 式数据归档。
+- **create_all 残留(rollback note，呼应 critic 1 #1)**：Railway 走 create_all+stamp head 跳 migration → 旧生产库残留 nullable 死列(model 不再映射，ORM 不碰，无害)；新 create_all 库不建 phase(model 已删)；migration 路径 drop 之。`DROP/ADD ... IF [NOT] EXISTS` 三环境皆幂等，回滚 = `alembic downgrade -1`。
+- 测试：`tests/migrations/test_workflow_migration.py` 加 `test_upgrade_path_drops_workflow_step_phase`(chain_migrated 真跑 migration) + `test_bootstrap_path_has_no_workflow_step_phase`(create_all 路径)；`_CURRENT_CLOSURE_HEAD` 同步更新为新 head(原 `add_installed_plugin_tables_0614` 的 head 常量债一并还清，否则 `test_alembic_single_head_is_current_closure_head` fail)。
+
+**10.2 runtime_task 注释修正(5 处，零行为变更)：** `RuntimeTask.tenant_id` 列已存在(`runtime_task.py:61`，RLS enforcement 时加，nullable/backfilled from `parent_agent_id`)，但 5 处注释仍写"`runtime_tasks` has no tenant column"(事实错误 = 时序债：workflow P0-P13 早于 RLS 列)。改为准确描述：列存在但 nullable/backfilled，metadata mirror(run 创建时写)是权威 tenant 边界。改动点：`api/workflows.py:20+159`、`workflow_runtime_service.py:812+872`、`workflow_promote_suggestions.py:72`。**代码逻辑不动**——`list_runs_for_agent`/`resume_pending_runs`/`collect_promote_suggestions` 仍用 mirror 过滤是有意防御(列 nullable 不可靠，mirror 是 workflow 自身权威记录)。**债边界(诚实 surface)**：迁移过滤到用 `tenant_id` 列 + RLS 是 RLS enforcement 主线范围(涉 184 bare session + 影子验证 + 非 owner 角色)，非本 cleanup step——贸然改 = RLS fail-closed 风险(参 RLS flip 全员 401 前科)。
+
+**10.3 "结构化数据 over 脚本" = 显式防御决策(文档化)：** workflow 编排单元是可序列化结构化数据(pydantic，§3.2)而非任意代码(对比 CC `WorkflowTool` 命令式 JS 脚本)。这**不是表达力妥协，是 L3 多租户安全的防御决策**：任意代码无法在多租户边界安全 admit(Hive 现无签名/沙箱基础设施)，结构化定义经 schema→compiler→admission 四阶段可静态校验 + capability 绑定 + 零代码面。`office_workflow_examples` docstring "being built-in grants no bypass"/"never on a private execution path" 即此防御的代码体现。表达力(sequence/fanout/condition AST/gate/wait_until)足够，明禁 eval/Jinja/任意解释器。
+
+**与设计稿偏差：** §4 line 122 "`office_workflow_examples` 接 platform-template seeder 或删"——核实后**两者皆不做**(保留+文档化)；"修 `runtime_task` 注释"经 grep 发现是 **5 处**(非 1 处)且触及 tenant 列语义，按 cleanup 边界只修注释不改行为。
+
+**验证证据：**
+```
+$ alembic heads                                              # drop_workflow_step_phase_0614 (单头)
+$ python -c "...WorkflowStep.__table__.columns"              # phase in columns: False; step_type: True
+$ ruff check <7 改动文件>                                     # All checks passed! / 3 files already formatted
+$ pytest tests -q
+4477 passed, 7 skipped, 4 warnings   # 0 failed (= Step 9 的 4475 + 2 新 phase-not-exists 双路径测试)
+```
+注：受保护文件全程未触碰；改动 7 代码文件(model 1 + migration 1 新 + 测试 1 + 注释 4) + doc 1，逐文件显式 stage。删 phase 后 4475→4477(+2 新测试，零现有测试失败 = 死列再证)。

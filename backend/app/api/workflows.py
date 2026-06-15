@@ -17,9 +17,10 @@ Risk-graded confirmation (§10 decision 3):
 * ``GET  .../workflows/promote-suggestions`` — repeated-run evidence.
 
 All endpoints are agent-scoped and gated by :func:`check_agent_access`.
-``runtime_tasks`` has no tenant column, so run reads/writes additionally
-verify the run's ``parent_agent_id`` and tenant metadata mirror — an
-ownership mismatch is indistinguishable from absence (404).
+``runtime_tasks.tenant_id`` exists but is nullable/backfilled; the tenant
+metadata mirror written at run creation is the authoritative boundary, so
+run reads/writes additionally verify the run's ``parent_agent_id`` and that
+mirror — an ownership mismatch is indistinguishable from absence (404).
 """
 
 from __future__ import annotations
@@ -156,9 +157,10 @@ async def start_workflow_endpoint(
 async def _load_owned_run(run_id: uuid.UUID, *, agent) -> LoadedWorkflowRun:
     """Load a run and verify it belongs to this agent + tenant.
 
-    The tenant metadata mirror is the boundary (``runtime_tasks`` has no
-    tenant column); an ownership mismatch must be indistinguishable from
-    absence, so both cases raise 404.
+    The tenant metadata mirror is the authoritative boundary
+    (``runtime_tasks.tenant_id`` exists but is nullable/backfilled); an
+    ownership mismatch must be indistinguishable from absence, so both
+    cases raise 404.
     """
     service = WorkflowRuntimeService()
     loaded = await service.load_run(run_id, tenant_id=agent.tenant_id)

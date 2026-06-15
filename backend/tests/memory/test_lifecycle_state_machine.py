@@ -82,3 +82,37 @@ def test_record_active_memory_lifecycle_uses_memory_entry_id(tmp_path: Path) -> 
     reloaded = MemoryLifecycleStore(tmp_path / agent_id / "memory" / "lifecycle.json")
     assert reloaded.get("mem-1").content == "Alice prefers concise deployment summaries."
     assert reloaded.get("mem-1").metadata["sensitivity"] == "PL1_public"
+
+
+def test_lifecycle_store_records_conflict_and_reference_revalidation(tmp_path: Path) -> None:
+    path = tmp_path / "lifecycle.json"
+    store = MemoryLifecycleStore(path)
+    store.create_active(
+        "Old deployment cadence is daily.",
+        entry_id="mem-conflict",
+        metadata={"source_refs": "workspace/old.md"},
+    )
+
+    store.record_conflict(
+        "mem-conflict",
+        conflicts_with=["mem-new"],
+        reason="Newer owner instruction says twice daily.",
+        source_refs=["workspace/new.md"],
+        now=datetime(2026, 6, 15, tzinfo=UTC),
+    )
+    store.mark_reference_revalidation_required(
+        "mem-conflict",
+        reason="source file moved",
+        source_refs=["workspace/old.md"],
+        now=datetime(2026, 6, 15, tzinfo=UTC),
+    )
+
+    reloaded = MemoryLifecycleStore(path)
+    entry = reloaded.get("mem-conflict")
+
+    assert entry.metadata["conflict_status"] == "needs_review"
+    assert entry.metadata["conflicts_with"] == "mem-new"
+    assert entry.metadata["conflict_reason"] == "Newer owner instruction says twice daily."
+    assert entry.metadata["conflict_source_refs"] == "workspace/new.md"
+    assert entry.metadata["reference_status"] == "revalidation_required"
+    assert entry.metadata["revalidation_reason"] == "source file moved"

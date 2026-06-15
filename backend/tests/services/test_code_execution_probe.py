@@ -92,6 +92,7 @@ async def test_sandbox_probe_fails_when_network_is_open(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_upsert_latest_sandbox_probe_evidence_creates_and_updates_system_setting():
     from app.services.code_execution.probe import (
+        CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY,
         CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY,
         upsert_latest_sandbox_probe_evidence,
     )
@@ -105,15 +106,23 @@ async def test_upsert_latest_sandbox_probe_evidence_creates_and_updates_system_s
 
     class _FakeDB:
         def __init__(self):
-            self.setting = None
+            self.latest = None
+            self.history = None
             self.added: list[SystemSetting] = []
             self.commits = 0
+            self.execute_calls = 0
 
         async def execute(self, _statement):
-            return _Result(self.setting)
+            self.execute_calls += 1
+            return _Result(self.latest if self.execute_calls % 2 == 1 else self.history)
 
         def add(self, setting):
-            self.setting = setting
+            if setting.key == CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY:
+                self.latest = setting
+            elif setting.key == CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY:
+                self.history = setting
+            else:  # pragma: no cover - defensive guard
+                raise AssertionError(f"unexpected setting key: {setting.key}")
             self.added.append(setting)
 
         async def commit(self):
@@ -127,12 +136,16 @@ async def test_upsert_latest_sandbox_probe_evidence_creates_and_updates_system_s
     value2 = await upsert_latest_sandbox_probe_evidence(db, second)
 
     assert db.commits == 2
-    assert len(db.added) == 1
-    assert db.setting.key == CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY
+    assert len(db.added) == 2
+    assert db.latest.key == CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY
+    assert db.history.key == CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY
     assert value1["report"] == first
     assert value2["report"] == second
-    assert db.setting.value["report"] == second
-    assert db.setting.value["stored_at"]
+    assert db.latest.value["report"] == second
+    assert db.latest.value["stored_at"]
+    assert db.latest.value["trend"]["total_runs"] == 2
+    assert db.latest.value["trend"]["passed_runs"] == 1
+    assert len(db.history.value["runs"]) == 2
 
 
 def test_sandbox_probe_persisted_summary_is_json_serializable():
@@ -148,3 +161,34 @@ def test_sandbox_probe_persisted_summary_is_json_serializable():
         "stored_at": "2026-06-15T00:00:00+00:00",
     }
     assert "report" not in summary
+
+
+def test_sandbox_probe_history_is_bounded_and_computes_trend():
+    from app.services.code_execution.probe import build_sandbox_probe_history_value
+
+    history = None
+    for index in range(35):
+        history = build_sandbox_probe_history_value(
+            history,
+            {
+                "provider": "vercel_sandbox",
+                "runtime": "python3.13",
+                "network_policy": "deny-all",
+                "passed": index % 3 != 0,
+                "checks": [
+                    {"name": "microvm_uname", "passed": True},
+                    {"name": "network_denied", "passed": index % 5 != 0},
+                ],
+                "evidence": {"microvm_uname": f"Linux-{index}"},
+            },
+            stored_at=f"2026-06-15T00:00:{index:02d}+00:00",
+            limit=30,
+        )
+
+    assert history["schema"] == "code_execution_sandbox_probe_history.v1"
+    assert len(history["runs"]) == 30
+    assert history["runs"][0]["stored_at"] == "2026-06-15T00:00:05+00:00"
+    assert history["trend"]["total_runs"] == 30
+    assert history["trend"]["passed_runs"] == 20
+    assert history["trend"]["failed_runs"] == 10
+    assert history["trend"]["latest_passed"] is True

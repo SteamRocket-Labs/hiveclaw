@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from app.memory.activation import ActivationContext, ActivationScorer
+from app.memory.activation import ActivationContext, ActivationScorer, memory_lifecycle_suppression_reason
 from app.memory.md_store import build_t3_entry_manifest
 from app.memory.t2_store import HIGH_PRIORITY_THRESHOLD, load_t2_entries
 from app.memory.types import MemoryItem, MemoryKind
@@ -561,6 +561,8 @@ class MemoryRetriever:
         items: list[MemoryItem] = []
 
         for entry in build_t3_entry_manifest(self.data_root, agent_id):
+            if memory_lifecycle_suppression_reason(entry.metadata):
+                continue
             score_spec = self._T3_SCORE_BY_SOURCE.get(entry.source)
             if not score_spec:
                 continue
@@ -610,6 +612,8 @@ class MemoryRetriever:
         p1_p2_full_ids = {entry_id for _relevance, entry_id in p1_p2_ranked[: self._P1_P2_FULL_QUERY_LIMIT]}
 
         for entry in entries:
+            if memory_lifecycle_suppression_reason(entry.metadata):
+                continue
             score_spec = self._T3_SCORE_BY_SOURCE.get(entry.source)
             if not score_spec:
                 continue

@@ -15,6 +15,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 
 _RESTART_RESUMABLE_TASK_TYPES = ("workflow", "web_chat_turn")
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
+RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA = "runtime_restart_replay_contract.v1"
 
 
 def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
@@ -57,6 +58,47 @@ def _is_restart_resumable_runtime_task(task: RuntimeTask) -> bool:
         metadata.get("resume_after_restart")
         and (metadata.get("resumable_delegation") or metadata.get("resumable_subagent"))
     )
+
+
+def build_restart_replay_contract(
+    *,
+    task_type: str,
+    task_id: str,
+    side_effect_risk: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_task_type = str(task_type or "runtime_task").strip() or "runtime_task"
+    normalized_task_id = str(task_id or "").strip()
+    return {
+        "schema": RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA,
+        "idempotency_key": f"{normalized_task_type}:{normalized_task_id}:restart",
+        "task_type": normalized_task_type,
+        "task_id": normalized_task_id,
+        "trace_id": str(trace_id or "").strip() or None,
+        "session_id": str(session_id or "").strip() or None,
+        "side_effect_risk": str(side_effect_risk or "unknown").strip() or "unknown",
+        "mode": "durable_restart_replay",
+        "requires_completion_journal": True,
+    }
+
+
+def has_restart_replay_contract(
+    metadata: dict[str, Any] | None,
+    *,
+    task_type: str,
+    task_id: str | None = None,
+) -> bool:
+    contract = (metadata or {}).get("restart_replay_contract")
+    if not isinstance(contract, dict):
+        return False
+    if contract.get("schema") != RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA:
+        return False
+    if str(contract.get("task_type") or "") != str(task_type or ""):
+        return False
+    if task_id is not None and str(contract.get("task_id") or "") not in {"", str(task_id)}:
+        return False
+    return bool(str(contract.get("idempotency_key") or "").strip())
 
 
 def build_completion_journal_entry(
@@ -162,22 +204,24 @@ async def create_runtime_task_record(
     tenant_id = await resolve_tenant_for_agent(parent_agent_id)
     async with tenant_scoped_session(tenant_id) as db:
         try:
-            db.add(RuntimeTask(
-                id=runtime_task_id,
-                task_type=task_type,
-                status=status,
-                parent_agent_id=parent_agent_id,
-                child_agent_id=child_agent_id,
-                child_agent_name=child_agent_name,
-                prompt=prompt,
-                trace_id=trace_id,
-                parent_session_id=parent_session_id,
-                child_session_id=child_session_id,
-                depth=depth,
-                metadata_json=metadata_json,
-                started_at=started_at,
-                tenant_id=tenant_id,
-            ))
+            db.add(
+                RuntimeTask(
+                    id=runtime_task_id,
+                    task_type=task_type,
+                    status=status,
+                    parent_agent_id=parent_agent_id,
+                    child_agent_id=child_agent_id,
+                    child_agent_name=child_agent_name,
+                    prompt=prompt,
+                    trace_id=trace_id,
+                    parent_session_id=parent_session_id,
+                    child_session_id=child_session_id,
+                    depth=depth,
+                    metadata_json=metadata_json,
+                    started_at=started_at,
+                    tenant_id=tenant_id,
+                )
+            )
             await db.commit()
         except Exception:
             await db.rollback()
@@ -202,11 +246,7 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
 
             for key, value in fields.items():
                 if hasattr(task, key):
-                    if (
-                        key == "metadata_json"
-                        and isinstance(value, dict)
-                        and isinstance(task.metadata_json, dict)
-                    ):
+                    if key == "metadata_json" and isinstance(value, dict) and isinstance(task.metadata_json, dict):
                         merged = dict(task.metadata_json)
                         merged.update(value)
                         setattr(task, key, merged)
@@ -218,7 +258,9 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
             if status in _TERMINAL_STATUSES:
                 existing_metadata = dict(getattr(task, "metadata_json", None) or {})
                 persisted_task_id = getattr(task, "id", None)
-                persisted_task_id_text = persisted_task_id.hex if isinstance(persisted_task_id, uuid.UUID) else str(task_id)
+                persisted_task_id_text = (
+                    persisted_task_id.hex if isinstance(persisted_task_id, uuid.UUID) else str(task_id)
+                )
                 entry = build_completion_journal_entry(
                     task_type=str(getattr(task, "task_type", None) or "runtime_task"),
                     task_id=persisted_task_id_text,
@@ -368,8 +410,7 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                         blocker=blocker,
                         summary=task.result_summary,
                         trace_id=getattr(task, "trace_id", None),
-                        session_id=getattr(task, "child_session_id", None)
-                        or getattr(task, "parent_session_id", None),
+                        session_id=getattr(task, "child_session_id", None) or getattr(task, "parent_session_id", None),
                     )
                     task.completed_at = now
                     updated += 1

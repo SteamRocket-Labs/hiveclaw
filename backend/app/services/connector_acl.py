@@ -115,7 +115,16 @@ def _requires_acl_metadata(item: dict[str, Any]) -> bool:
     return any(source.startswith(prefix) for prefix in _GOVERNED_SOURCE_PREFIXES)
 
 
-def extract_connector_source_items(payload: Any, *, origin: str | None = None, max_items: int = 50) -> list[dict[str, Any]]:
+def _authoritative_acl_payload(item: dict[str, Any]) -> dict[str, Any] | None:
+    acl = _acl_payload(item)
+    if not isinstance(acl, dict) or acl.get("deny_by_default") is True:
+        return None
+    return acl
+
+
+def extract_connector_source_items(
+    payload: Any, *, origin: str | None = None, max_items: int = 50
+) -> list[dict[str, Any]]:
     """Extract governed connector source descriptors from structured or text payloads.
 
     The returned items intentionally omit large content fields. They carry only
@@ -151,7 +160,9 @@ def extract_connector_source_items(payload: Any, *, origin: str | None = None, m
         if isinstance(value, dict):
             add(value)
             for child_key, child_value in value.items():
-                if child_key in {"content", "text", "body", "markdown"} and not isinstance(child_value, (dict, list, tuple)):
+                if child_key in {"content", "text", "body", "markdown"} and not isinstance(
+                    child_value, (dict, list, tuple)
+                ):
                     continue
                 visit(child_value, depth + 1)
             return
@@ -192,9 +203,10 @@ def register_connector_source_items(
     if not isinstance(existing, list):
         existing = []
         metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY] = existing
-    seen = {
-        _source_id(item).lower()
-        for item in existing
+    seen = {_source_id(item).lower() for item in existing if isinstance(item, dict) and _source_id(item)}
+    index_by_source = {
+        _source_id(item).lower(): index
+        for index, item in enumerate(existing)
         if isinstance(item, dict) and _source_id(item)
     }
     added = 0
@@ -209,9 +221,18 @@ def register_connector_source_items(
             continue
         key = source.lower()
         if key in seen:
+            existing_index = index_by_source.get(key)
+            existing_item = existing[existing_index] if existing_index is not None else None
+            if (
+                isinstance(existing_item, dict)
+                and _authoritative_acl_payload(canonical) is not None
+                and _authoritative_acl_payload(existing_item) is None
+            ):
+                existing[existing_index] = canonical
             continue
         existing.append(canonical)
         seen.add(key)
+        index_by_source[key] = len(existing) - 1
         added += 1
     if len(existing) > _MAX_REGISTERED_SOURCE_ITEMS:
         del existing[:-_MAX_REGISTERED_SOURCE_ITEMS]

@@ -43,6 +43,10 @@ class ActivationScorer:
         self.policy = policy or ActivationPolicy()
 
     def score(self, item: MemoryItem, context: ActivationContext) -> ActivationDecision:
+        lifecycle_suppression = memory_lifecycle_suppression_reason(item.metadata)
+        if lifecycle_suppression:
+            return ActivationDecision(item=item, score=0.0, reasons=[lifecycle_suppression], suppressed=True)
+
         sensitivity = str(item.metadata.get("sensitivity", "PL1_public"))
         if not context.principal_stack.can_access_sensitivity(sensitivity):
             return ActivationDecision(item=item, score=0.0, reasons=["sensitivity_strip"], suppressed=True)
@@ -84,6 +88,23 @@ def _terms(text: str) -> set[str]:
     return {term for term in re.split(r"\W+", text.lower()) if term}
 
 
+def memory_lifecycle_suppression_reason(metadata: dict) -> str:
+    ttl_status = str(metadata.get("ttl_status") or "").strip().lower()
+    if ttl_status == "expired" or _bool_meta_dict(metadata, "expired"):
+        return "memory_ttl_expired"
+
+    conflict_status = str(metadata.get("conflict_status") or "").strip().lower()
+    if conflict_status in {"needs_review", "unresolved", "conflicted"} or _bool_meta_dict(metadata, "memory_conflict"):
+        return "memory_conflict_unresolved"
+
+    reference_status = str(metadata.get("reference_status") or "").strip().lower()
+    if reference_status in {"invalid", "revalidation_required", "expired", "stale"}:
+        return "memory_reference_revalidation_required"
+    if _bool_meta_dict(metadata, "needs_revalidation"):
+        return "memory_reference_revalidation_required"
+    return ""
+
+
 def _overlap(needles: set[str], haystack: str) -> bool:
     if not needles:
         return False
@@ -106,7 +127,11 @@ def _float_meta_any(item: MemoryItem, keys: tuple[str, ...], default: float = 0.
 
 
 def _bool_meta(item: MemoryItem, key: str) -> bool:
-    value = item.metadata.get(key)
+    return _bool_meta_dict(item.metadata, key)
+
+
+def _bool_meta_dict(metadata: dict, key: str) -> bool:
+    value = metadata.get(key)
     if isinstance(value, bool):
         return value
     if value is None:

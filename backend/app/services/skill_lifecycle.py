@@ -62,6 +62,12 @@ def _usage_path(workspace: Path) -> Path:
     return evolution_dir / "skill_usage.jsonl"
 
 
+def _promotion_evidence_path(workspace: Path) -> Path:
+    evolution_dir = workspace / "evolution"
+    evolution_dir.mkdir(parents=True, exist_ok=True)
+    return evolution_dir / "skill_promotion_evidence.jsonl"
+
+
 def _ensure_iso(occurred_at: str | None) -> str:
     return occurred_at or datetime.now(timezone.utc).isoformat()
 
@@ -104,6 +110,54 @@ def _workflow_signature_from_tools(tool_names: list[str] | tuple[str, ...], *, f
     return "+".join(normalized)
 
 
+def _evidence_refs(*, session_id: str | None, runtime_task_id: str | None, trace_id: str | None) -> list[str]:
+    refs: list[str] = []
+    if session_id:
+        refs.append(f"session:{session_id}")
+    if runtime_task_id:
+        refs.append(f"runtime_task:{runtime_task_id}")
+    if trace_id:
+        refs.append(f"trace:{trace_id}")
+    refs.append("evolution/skill_usage.jsonl")
+    return refs
+
+
+def _append_promotion_evidence(
+    workspace: Path,
+    *,
+    decision: str,
+    usage_event: dict[str, Any],
+    candidate_result: dict[str, Any],
+) -> str:
+    path = _promotion_evidence_path(workspace)
+    event = {
+        "schema": "skill_promotion_evidence.v1",
+        "occurred_at": usage_event["occurred_at"],
+        "decision": decision,
+        "source": usage_event["source"],
+        "skill_name": usage_event["skill_name"],
+        "loaded_skill_names": list(usage_event["loaded_skill_names"]),
+        "tool_names": list(usage_event["tool_names"]),
+        "workflow_signature": usage_event["workflow_signature"],
+        "status": usage_event["status"],
+        "session_id": usage_event["session_id"],
+        "runtime_task_id": usage_event["runtime_task_id"],
+        "trace_id": usage_event["trace_id"],
+        "evidence_refs": _evidence_refs(
+            session_id=usage_event.get("session_id"),
+            runtime_task_id=usage_event.get("runtime_task_id"),
+            trace_id=usage_event.get("trace_id"),
+        ),
+        "promote_candidate_count": candidate_result.get("promote_candidate_count", 0),
+        "patch_candidate_count": candidate_result.get("patch_candidate_count", 0),
+        "note": usage_event["note"],
+        "blocker": usage_event["blocker"],
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+    return "evolution/skill_promotion_evidence.jsonl"
+
+
 def _load_candidates(path: Path) -> dict[str, SkillCandidateRecord]:
     if not path.exists():
         return {}
@@ -117,7 +171,9 @@ def _load_candidates(path: Path) -> dict[str, SkillCandidateRecord]:
                     skill_name=current_fields.get("skill_name", current_name),
                     workflow_signature=current_fields.get("workflow_signature", current_name),
                     promote_candidates=[item for item in current_fields.get("recent_successes", "").split(",") if item],
-                    patch_candidates=[item for item in current_fields.get("recent_patch_signals", "").split(",") if item],
+                    patch_candidates=[
+                        item for item in current_fields.get("recent_patch_signals", "").split(",") if item
+                    ],
                     last_status=current_fields.get("last_status", ""),
                     last_note=current_fields.get("last_note", ""),
                     blocker=current_fields.get("blocker", ""),
@@ -348,7 +404,7 @@ def record_skill_runtime_usage(
             "last_status": normalized_status or "unknown",
         }
 
-    return record_skill_execution(
+    result = record_skill_execution(
         workspace,
         skill_name=primary_skill,
         workflow_signature=workflow_signature,
@@ -358,3 +414,11 @@ def record_skill_runtime_usage(
         blocker=blocker,
         occurred_at=stamp,
     )
+    if result.get("decision") in {"promote", "patch"}:
+        result["evidence_ref"] = _append_promotion_evidence(
+            workspace,
+            decision=str(result["decision"]),
+            usage_event=usage_event,
+            candidate_result=result,
+        )
+    return result

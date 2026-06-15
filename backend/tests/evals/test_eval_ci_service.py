@@ -104,3 +104,54 @@ def test_summarize_behavior_eval_report_keeps_gate_fields_without_transcript_bod
             }
         },
     }
+
+
+def test_build_rebaseline_candidate_from_trusted_live_report() -> None:
+    report = {
+        "kind": "behavior_eval",
+        "transport": "hive_live",
+        "runtime": {"model": "claude-sonnet-4-5", "provider": "anthropic"},
+        "benchmark_complete": True,
+        "fallback_used": False,
+        "scenarios": {
+            "coding": {"ready": True, "score": 93},
+            "review": {"ready": True, "score": 88.5},
+        },
+    }
+
+    candidate = eval_ci_service.build_behavior_eval_rebaseline_candidate(
+        report,
+        generated_at="2026-06-15T00:00:00+00:00",
+        commit_sha="abc123",
+    )
+
+    assert candidate["schema"] == "behavior_eval_rebaseline_candidate.v1"
+    assert candidate["status"] == "ready"
+    assert candidate["source_report"]["trusted_live"] is True
+    assert candidate["baseline"]["schema"] == "behavior_eval_baseline.v1"
+    assert candidate["baseline"]["suite"] == "core_behavior_v1"
+    assert candidate["baseline"]["baseline_model"] == "claude-sonnet-4-5"
+    assert candidate["baseline"]["baseline_date"] == "2026-06-15"
+    assert candidate["baseline"]["commit_sha"] == "abc123"
+    assert candidate["baseline"]["provisional"] is False
+    assert candidate["baseline"]["scenarios"]["coding"]["score_p50"] == 93.0
+    assert candidate["baseline"]["scenarios"]["review"]["transport"] == "hive_live"
+
+
+def test_build_rebaseline_candidate_blocks_untrusted_report() -> None:
+    candidate = eval_ci_service.build_behavior_eval_rebaseline_candidate(
+        {
+            "kind": "behavior_eval",
+            "transport": "repo_evidence_fallback",
+            "runtime": {"model": "claude-sonnet-4-5"},
+            "benchmark_complete": True,
+            "fallback_used": True,
+            "scenarios": {"coding": {"ready": True, "score": 100}},
+        },
+        generated_at="2026-06-15T00:00:00+00:00",
+        commit_sha="abc123",
+    )
+
+    assert candidate["status"] == "blocked"
+    assert candidate["source_report"]["trusted_live"] is False
+    assert candidate["baseline"] is None

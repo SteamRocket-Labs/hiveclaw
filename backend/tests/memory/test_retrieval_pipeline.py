@@ -154,9 +154,7 @@ async def test_high_priority_t2_preserves_activation_metadata(
     )
 
     t2_item = next(item for item in items if item.metadata.get("lane") == "t2_high_priority")
-    assert {"open_loop_pressure", "retention_score", "confidence_weight"} <= set(
-        t2_item.metadata["activation_reasons"]
-    )
+    assert {"open_loop_pressure", "retention_score", "confidence_weight"} <= set(t2_item.metadata["activation_reasons"])
 
 
 @pytest.mark.asyncio
@@ -415,6 +413,68 @@ async def test_activation_context_joins_sidecar_access_telemetry_into_usage_heat
     assert by_id["mem_hot"].score > by_id["mem_cold"].score
     assert "usage_heat" in by_id["mem_hot"].metadata["activation_reasons"]
     assert "usage_heat" not in by_id["mem_cold"].metadata["activation_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_retriever_suppresses_conflicted_and_revalidation_required_t3_entries(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path, record_active_memory_lifecycle
+
+    _setup_t3_file(
+        data_root,
+        agent_id,
+        "knowledge.md",
+        "# Knowledge\n"
+        "- [2026-05-22][entry_id=mem_conflict] Deploy cadence is daily\n"
+        "- [2026-05-22][entry_id=mem_stale] API reference lives at old path\n"
+        "- [2026-05-22][entry_id=mem_clean] Durable launch checklist remains valid\n",
+    )
+    record_active_memory_lifecycle(
+        data_root,
+        agent_id,
+        content="Deploy cadence is daily",
+        metadata={"entry_id": "mem_conflict", "sensitivity": "PL1_public"},
+    )
+    record_active_memory_lifecycle(
+        data_root,
+        agent_id,
+        content="API reference lives at old path",
+        metadata={"entry_id": "mem_stale", "sensitivity": "PL1_public"},
+    )
+    record_active_memory_lifecycle(
+        data_root,
+        agent_id,
+        content="Durable launch checklist remains valid",
+        metadata={"entry_id": "mem_clean", "sensitivity": "PL1_public"},
+    )
+    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    store.record_conflict(
+        "mem_conflict",
+        conflicts_with=["mem_new"],
+        reason="newer cadence",
+        source_refs=["workspace/new.md"],
+    )
+    store.mark_reference_revalidation_required(
+        "mem_stale",
+        reason="missing local source",
+        source_refs=["workspace/missing.md"],
+    )
+
+    items = await retriever.retrieve(
+        agent_id,
+        "deploy api launch checklist",
+        session_id=None,
+        tenant_id=None,
+        activation_context=_activation_context(),
+    )
+
+    contents = "\n".join(item.content for item in items)
+    assert "Durable launch checklist remains valid" in contents
+    assert "Deploy cadence is daily" not in contents
+    assert "API reference lives at old path" not in contents
 
 
 @pytest.mark.asyncio

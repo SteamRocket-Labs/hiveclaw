@@ -21,8 +21,10 @@ from app.services.agent_tools import CORE_TOOL_NAMES
 from app.services.capability_gate import CAPABILITY_MAP
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
+    build_restart_replay_contract,
     create_runtime_task_record,
     get_runtime_task_record,
+    has_restart_replay_contract,
     list_active_runtime_task_records,
     update_runtime_task_record,
 )
@@ -87,7 +89,8 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="memory_readonly",
         core_tools_only=True,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill", "save_memory", "update_memory", "retire_memory"),
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS
+        + ("save_skill", "save_memory", "update_memory", "retire_memory"),
         tool_policy="worker_memory_readonly",
         tool_rule=(
             "Your tool surface is worker-safe, and you may use read-only recall tools when they materially help the delegated task."
@@ -406,6 +409,8 @@ class AgentDelegationRequest:
     # F-1 dispatch symmetry: parent display-name for worker framing context.
     # Travels as structured metadata, never prefixed into the instruction text.
     parent_agent_name: str | None = None
+    runtime_task_id: str | None = None
+    restart_replay_contract: dict[str, Any] | None = None
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -480,7 +485,7 @@ def _delegation_user_message(conversation_messages: list[dict[str, Any]]) -> str
     return "Complete the delegated task and report the result."
 
 
-def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, Any]:
+def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: str) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "message_count": len(request.conversation_messages),
         "system_prompt_suffix": request.system_prompt_suffix,
@@ -500,19 +505,31 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
     if execution_identity:
         metadata["execution_identity"] = execution_identity
     replay_safe = _delegation_profile_restart_replay_safe(request.policy.tool_profile)
-    resumable = request.tool_executor is None and replay_safe
+    resumable = request.tool_executor is None
+    blocker = ""
+    if request.tool_executor is not None:
+        blocker = "custom_tool_executor_not_replayable"
     if resumable:
         try:
             json.dumps(request.conversation_messages)
         except (TypeError, ValueError):
             resumable = False
+            blocker = "non_json_conversation_messages"
 
     metadata["resumable_delegation"] = resumable
     metadata["resume_after_restart"] = resumable
-    metadata["side_effect_risk"] = "read_only" if resumable else "mutating"
-    if not replay_safe:
-        metadata["restart_resume_blocker"] = "non_idempotent_tool_profile"
+    metadata["side_effect_risk"] = "read_only" if replay_safe else "mutating"
+    if blocker:
+        metadata["restart_resume_blocker"] = blocker
     if resumable:
+        contract = build_restart_replay_contract(
+            task_type="delegation",
+            task_id=task_id,
+            side_effect_risk=str(metadata["side_effect_risk"]),
+            trace_id=request.trace_id,
+            session_id=request.session_id,
+        )
+        request.restart_replay_contract = contract
         metadata.update(
             {
                 "owner_id": str(request.owner_id),
@@ -520,6 +537,7 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest) -> dict[str, A
                 "conversation_messages": request.conversation_messages,
                 "max_tool_rounds": request.max_tool_rounds,
                 "timeout_seconds": request.policy.timeout_seconds,
+                "restart_replay_contract": contract,
             }
         )
     return metadata
@@ -802,6 +820,10 @@ async def _delegate_after_cycle_check(
     session_metadata: dict[str, Any] = {
         "interaction_type": request.interaction_type,
     }
+    if request.runtime_task_id:
+        session_metadata["runtime_task_id"] = request.runtime_task_id
+    if request.restart_replay_contract:
+        session_metadata["restart_replay_contract"] = dict(request.restart_replay_contract)
     if is_delegation:
         delegation_token = _issue_delegation_token_for_request(request, tool_profile)
         if delegation_token is None:
@@ -1111,6 +1133,7 @@ async def delegate_async(
         plan_exempt_reason=plan_exempt_reason,
         tenant_id=tenant_id,
         ledger_todo_id=ledger_todo_id,
+        runtime_task_id=task_id,
     )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:
@@ -1143,7 +1166,7 @@ async def delegate_async(
             signal_type="delegation_started",
             thread_id=real_trace_id,
         )
-    metadata_json = _build_runtime_task_metadata(request)
+    metadata_json = _build_runtime_task_metadata(request, task_id=task_id)
     metadata_json.update(
         {
             "coordination_lease_id": lease_result.lease.id if lease_result.lease else None,
@@ -1395,7 +1418,8 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
         metadata = record.get("metadata") or {}
         if not metadata.get("resumable_delegation") or not metadata.get("resume_after_restart"):
             continue
-        if not _delegation_profile_restart_replay_safe(metadata.get("tool_profile")):
+        replay_contract_ok = has_restart_replay_contract(metadata, task_type="delegation", task_id=task_id)
+        if not _delegation_profile_restart_replay_safe(metadata.get("tool_profile")) and not replay_contract_ok:
             try:
                 await update_runtime_task_record(
                     task_id,
@@ -1418,7 +1442,9 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                     ),
                 )
             except Exception as exc:
-                logger.warning("[Orchestrator] Failed to persist non-replay-safe resume failure for %s: %s", task_id, exc)
+                logger.warning(
+                    "[Orchestrator] Failed to persist non-replay-safe resume failure for %s: %s", task_id, exc
+                )
             continue
 
         target_agent_id = _maybe_uuid(metadata.get("target_agent_id") or record.get("child_agent_id"))
@@ -1464,6 +1490,10 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             confirmed_plan_version=metadata.get("plan_version"),
             confirmed_plan_hash=metadata.get("plan_hash"),
             plan_exempt_reason=metadata.get("plan_exempt_reason"),
+            runtime_task_id=task_id,
+            restart_replay_contract=metadata.get("restart_replay_contract")
+            if isinstance(metadata.get("restart_replay_contract"), dict)
+            else None,
         )
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)

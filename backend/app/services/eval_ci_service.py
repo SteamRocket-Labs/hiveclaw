@@ -25,10 +25,12 @@ from app.evals.hive_live_runner import (
     _coerce_uuid,
     _model_runtime_metadata,
     _require_uuid,
+    behavior_eval_passed,
     build_invoke_agent_runner,
     resolve_production_eval_runtime,
     run_hive_behavior_eval,
 )
+from app.evals.baseline import BEHAVIOR_EVAL_BASELINE_SCHEMA
 from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.models.tenant_setting import TenantSetting
@@ -37,6 +39,8 @@ from app.services.secrets_provider import get_secrets_provider
 
 
 BEHAVIOR_EVAL_RUNTIME_MODEL_MIRROR_SETTING_KEY = "behavior_eval_runtime_model_mirror"
+BEHAVIOR_EVAL_REBASELINE_CANDIDATE_SCHEMA = "behavior_eval_rebaseline_candidate.v1"
+BEHAVIOR_EVAL_BASELINE_SUITE = "core_behavior_v1"
 EVAL_RUNTIME_MAX_OUTPUT_TOKENS = 524288
 
 
@@ -188,6 +192,87 @@ def summarize_behavior_eval_report(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _current_commit_sha() -> str:
+    for key in ("RAILWAY_GIT_COMMIT_SHA", "VERCEL_GIT_COMMIT_SHA", "GIT_COMMIT_SHA", "SOURCE_VERSION"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
+def _baseline_model_from_report(report: dict[str, Any]) -> str:
+    runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
+    for key in ("model", "model_name", "id"):
+        value = str(runtime.get(key) or "").strip()
+        if value:
+            return value
+    return "unknown"
+
+
+def build_behavior_eval_rebaseline_candidate(
+    report: dict[str, Any],
+    *,
+    generated_at: str | None = None,
+    commit_sha: str | None = None,
+) -> dict[str, Any]:
+    """Build an auditable baseline candidate from a trusted live behavior report.
+
+    This does not mutate the git-tracked baseline. It gives CI/ops a concrete,
+    reviewable artifact for the explicit rebaseline step required by the baseline
+    contract.
+    """
+
+    stamp = generated_at or datetime.now(timezone.utc).isoformat()
+    trusted_live = behavior_eval_passed(report)
+    source_report = {
+        "trusted_live": trusted_live,
+        "transport": report.get("transport"),
+        "benchmark_complete": bool(report.get("benchmark_complete")),
+        "fallback_used": bool(report.get("fallback_used")),
+        "runtime": report.get("runtime") if isinstance(report.get("runtime"), dict) else {},
+    }
+    if not trusted_live:
+        return {
+            "schema": BEHAVIOR_EVAL_REBASELINE_CANDIDATE_SCHEMA,
+            "generated_at": stamp,
+            "status": "blocked",
+            "reason": "report_is_not_a_complete_trusted_live_behavior_eval",
+            "source_report": source_report,
+            "baseline": None,
+        }
+
+    scenarios: dict[str, dict[str, Any]] = {}
+    for name, entry in (report.get("scenarios") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        scenarios[str(name)] = {
+            "score_p50": float(entry.get("score") or 0.0),
+            "score_p95_variance": 0.0,
+            "transport": report.get("transport"),
+            "ready": bool(entry.get("ready")),
+        }
+
+    baseline = {
+        "schema": BEHAVIOR_EVAL_BASELINE_SCHEMA,
+        "suite": BEHAVIOR_EVAL_BASELINE_SUITE,
+        "baseline_version": f"live-{stamp[:10]}",
+        "baseline_model": _baseline_model_from_report(report),
+        "baseline_date": stamp[:10],
+        "commit_sha": (commit_sha or _current_commit_sha()).strip() or "unknown",
+        "provisional": False,
+        "source": "eval_ci_trusted_live_report",
+        "scenarios": scenarios,
+    }
+    return {
+        "schema": BEHAVIOR_EVAL_REBASELINE_CANDIDATE_SCHEMA,
+        "generated_at": stamp,
+        "status": "ready",
+        "reason": "",
+        "source_report": source_report,
+        "baseline": baseline,
+    }
+
+
 async def store_latest_behavior_eval_report(report: dict[str, Any]) -> dict[str, Any]:
     """Persist the latest eval report so callers can fetch it via a short request."""
 
@@ -196,6 +281,10 @@ async def store_latest_behavior_eval_report(report: dict[str, Any]) -> dict[str,
         "stored_at": datetime.now(timezone.utc).isoformat(),
         "report": report,
     }
+    value["rebaseline_candidate"] = build_behavior_eval_rebaseline_candidate(
+        report,
+        generated_at=value["stored_at"],
+    )
     async with async_session() as db:
         async with enter_rls_bypass(db, reason="behavior eval latest report write"):
             result = await db.execute(
@@ -246,7 +335,12 @@ async def get_latest_behavior_eval_report(*, summary_only: bool = False) -> dict
         "stored_at": stored_at,
     }
     if isinstance(report, dict):
-        response["summary" if summary_only else "report"] = summarize_behavior_eval_report(report) if summary_only else report
+        response["summary" if summary_only else "report"] = (
+            summarize_behavior_eval_report(report) if summary_only else report
+        )
+        candidate = value.get("rebaseline_candidate") if isinstance(value, dict) else None
+        if isinstance(candidate, dict):
+            response["rebaseline_candidate"] = candidate
     return response
 
 

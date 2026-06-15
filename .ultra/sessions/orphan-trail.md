@@ -4,7 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-15T13:01Z [sid:04d5cd7f]; branch:main; 17 files (extract_agent.py, plan_mode_core.py, work_ledger.py, +14); last commit: 4a02e2be Harden restart reconciliation and source ACL checks
+- 2026-06-15T13:28Z [sid:04d5cd7f]; branch:main; 7 files (.sota-audit-workflow.js, test_eval_ci_service.py, test_connector_acl.py, +4); last commit: ff5160fa Record workflow subagent activity in session trail
 - 2026-06-15T06:18Z [sid:80dfa89a]; branch:main; 11 files (harness-ci.yml, orphan-trail.md, feishu.py, +8); last commit: d1c256c0 Refine chat runtime and work ledger behavior
 - 2026-06-15T04:33Z [sid:6fd6f665]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: bebe8ddd refactor(workflow): Step 10 清理 — 退役 phase 死列 + 修 5 
 - 2026-06-15T03:28Z [sid:8a6e0d98]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: 955d365c feat(skill): Step 9 catalog 移出 frozen 修 cache 击穿 + 

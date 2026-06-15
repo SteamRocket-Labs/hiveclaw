@@ -139,6 +139,61 @@ class MemoryLifecycleStore:
         self._flush()
         return entry
 
+    def record_conflict(
+        self,
+        entry_id: str,
+        *,
+        conflicts_with: list[str] | tuple[str, ...],
+        reason: str,
+        source_refs: list[str] | tuple[str, ...] | None = None,
+        now: datetime | None = None,
+    ) -> MemoryLifecycleEntry:
+        """Mark an active memory as conflicted until an owner/company review resolves it."""
+
+        entry = self.get(entry_id)
+        when = (now or datetime.now(UTC)).astimezone(UTC)
+        entry.metadata.update(
+            {
+                "conflict_status": "needs_review",
+                "conflicts_with": ",".join(str(item).strip() for item in conflicts_with if str(item).strip()),
+                "conflict_reason": str(reason or "").strip(),
+                "conflict_source_refs": ",".join(
+                    str(item).strip() for item in (source_refs or []) if str(item).strip()
+                ),
+                "conflict_recorded_at": when.isoformat(),
+            }
+        )
+        entry.updated_at = when
+        self._flush()
+        return entry
+
+    def mark_reference_revalidation_required(
+        self,
+        entry_id: str,
+        *,
+        reason: str,
+        source_refs: list[str] | tuple[str, ...] | None = None,
+        now: datetime | None = None,
+    ) -> MemoryLifecycleEntry:
+        """Hold a memory out of prompt activation until its evidence refs are revalidated."""
+
+        entry = self.get(entry_id)
+        when = (now or datetime.now(UTC)).astimezone(UTC)
+        refs = [str(item).strip() for item in (source_refs or []) if str(item).strip()]
+        entry.metadata.update(
+            {
+                "reference_status": "revalidation_required",
+                "revalidation_reason": str(reason or "").strip(),
+                "revalidation_source_refs": ",".join(refs),
+                "revalidation_required_at": when.isoformat(),
+            }
+        )
+        if refs:
+            entry.metadata["invalid_evidence_refs"] = ",".join(refs)
+        entry.updated_at = when
+        self._flush()
+        return entry
+
     def discard_expired(self, *, now: datetime | None = None) -> list[str]:
         current = now or datetime.now(UTC)
         discarded: list[str] = []

@@ -22,8 +22,10 @@ from app.models.runtime_task import RuntimeTask
 from app.services.runtime_task_service import (
     build_completion_journal_entry,
     build_restart_reconciliation_metadata,
+    build_restart_replay_contract,
     create_runtime_task_record,
     get_runtime_task_record,
+    has_restart_replay_contract,
     list_active_runtime_task_records,
     update_runtime_task_record,
 )
@@ -50,15 +52,21 @@ async def start_subagent_run(
     the run id the parent later passes to ``check_subagent``."""
     run_id = str(uuid.uuid4())
     replay_safe = _subagent_type_restart_replay_safe(spec_type)
+    side_effect_risk = "read_only" if replay_safe else "mutating"
     metadata: dict[str, Any] = {
         "subagent_type": spec_type,
         "subagent_name": spec_name,
-        "resumable_subagent": replay_safe,
-        "resume_after_restart": replay_safe,
-        "side_effect_risk": "read_only" if replay_safe else "mutating",
+        "resumable_subagent": True,
+        "resume_after_restart": True,
+        "side_effect_risk": side_effect_risk,
+        "restart_replay_contract": build_restart_replay_contract(
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            task_id=run_id,
+            side_effect_risk=side_effect_risk,
+            trace_id=trace_id,
+            session_id=parent_session_id,
+        ),
     }
-    if not replay_safe:
-        metadata["restart_resume_blocker"] = "non_idempotent_subagent_type"
     return await create_runtime_task_record(
         task_id=run_id,
         task_type=SUBAGENT_RUN_TASK_TYPE,
@@ -89,7 +97,9 @@ def make_run_completer(run_id: str):
                         task_type=SUBAGENT_RUN_TASK_TYPE,
                         task_id=run_id,
                         status=status,
-                        side_effect_risk="read_only" if result.type in SUBAGENT_RESTART_REPLAY_SAFE_TYPES else "mutating",
+                        side_effect_risk="read_only"
+                        if result.type in SUBAGENT_RESTART_REPLAY_SAFE_TYPES
+                        else "mutating",
                         summary=summary,
                     )
                 ]
@@ -104,9 +114,7 @@ async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnCo
 
     async with async_session() as db:
         async with enter_rls_bypass(db, reason="background subagent restart runtime bootstrap"):
-            agent = (
-                await db.execute(select(Agent).where(Agent.id == parent_agent_id))
-            ).scalar_one_or_none()
+            agent = (await db.execute(select(Agent).where(Agent.id == parent_agent_id))).scalar_one_or_none()
             if agent is None:
                 return None
             primary_model = None
@@ -166,7 +174,12 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
         spec_type = str(metadata.get("subagent_type") or "")
         if not metadata.get("resume_after_restart") or not metadata.get("resumable_subagent"):
             continue
-        if not _subagent_type_restart_replay_safe(spec_type):
+        replay_contract_ok = has_restart_replay_contract(
+            metadata,
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            task_id=run_id,
+        )
+        if not _subagent_type_restart_replay_safe(spec_type) and not replay_contract_ok:
             await update_runtime_task_record(
                 run_id,
                 status="needs_reconciliation",
@@ -210,6 +223,7 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
             status="running",
             metadata_json={
                 "resumed_after_restart": True,
+                "restart_replay_contract": metadata.get("restart_replay_contract"),
             },
         )
         await spawn_subagent(

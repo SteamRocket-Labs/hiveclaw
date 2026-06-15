@@ -203,7 +203,9 @@ async def test_delegate_async_captures_execution_identity_before_background_spaw
     monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", fake_spawn_async_delegation_task)
 
     user_id = uuid4()
-    set_execution_identity(ExecutionIdentity(identity_type="delegated_user", identity_id=user_id, label="User via Feishu"))
+    set_execution_identity(
+        ExecutionIdentity(identity_type="delegated_user", identity_id=user_id, label="User via Feishu")
+    )
     try:
         handle = await delegate_async(
             target=target,
@@ -538,7 +540,7 @@ async def test_delegate_async_returns_handle_immediately(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_delegate_async_default_worker_safe_is_not_restart_replayed(monkeypatch):
+async def test_delegate_async_default_worker_safe_persists_mutating_replay_contract(monkeypatch):
     from app.agents.orchestrator import delegate_async
 
     created = {}
@@ -578,10 +580,17 @@ async def test_delegate_async_default_worker_safe_is_not_restart_replayed(monkey
     assert created["child_agent_id"] == target.id
     assert created["parent_agent_id"] == parent_agent_id
     metadata = created["metadata_json"]
-    assert metadata["resumable_delegation"] is False
-    assert metadata["resume_after_restart"] is False
-    assert metadata["restart_resume_blocker"] == "non_idempotent_tool_profile"
-    assert "conversation_messages" not in metadata
+    assert metadata["resumable_delegation"] is True
+    assert metadata["resume_after_restart"] is True
+    assert metadata["side_effect_risk"] == "mutating"
+    assert metadata["tool_profile"] == "worker_safe"
+    assert metadata["owner_id"] == str(owner_id)
+    assert metadata["target_agent_id"] == str(target.id)
+    assert metadata["conversation_messages"] == [{"role": "user", "content": "do research"}]
+    assert metadata["restart_replay_contract"]["schema"] == "runtime_restart_replay_contract.v1"
+    assert metadata["restart_replay_contract"]["task_type"] == "delegation"
+    assert metadata["restart_replay_contract"]["idempotency_key"] == f"delegation:{handle.task_id}:restart"
+    assert "restart_resume_blocker" not in metadata
 
 
 @pytest.mark.asyncio
@@ -723,7 +732,7 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resume_persisted_async_delegations_refuses_non_replay_safe_profile(monkeypatch):
+async def test_resume_persisted_async_delegations_refuses_mutating_profile_without_replay_contract(monkeypatch):
     from app.agents.orchestrator import _async_tasks, resume_persisted_async_delegations
 
     task_id = uuid4().hex
@@ -775,6 +784,87 @@ async def test_resume_persisted_async_delegations_refuses_non_replay_safe_profil
         assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
         assert updates[-1][1]["metadata_json"]["side_effect_risk"] == "mutating"
         assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_tool_profile"
+    finally:
+        _async_tasks.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_async_delegations_rehydrates_worker_safe_with_replay_contract(monkeypatch):
+    from app.agents.orchestrator import (
+        _async_tasks,
+        check_async_delegation,
+        resume_persisted_async_delegations,
+    )
+
+    task_id = uuid4().hex
+    parent_agent_id = uuid4()
+    owner_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": task_id,
+                "trace_id": "trace-resume",
+                "parent_agent_id": str(parent_agent_id),
+                "child_agent_id": str(target.id),
+                "child_agent_name": target.name,
+                "parent_session_id": "parent-session",
+                "child_session_id": "child-session",
+                "depth": 1,
+                "metadata": {
+                    "resume_after_restart": True,
+                    "resumable_delegation": True,
+                    "tool_profile": "worker_safe",
+                    "owner_id": str(owner_id),
+                    "target_agent_id": str(target.id),
+                    "conversation_messages": [{"role": "user", "content": "resume me"}],
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "idempotency_key": f"delegation:{task_id}:restart",
+                        "task_type": "delegation",
+                    },
+                },
+            }
+        ]
+
+    async def fake_resolve_target_runtime(child_agent_id):
+        assert child_agent_id == target.id
+        return target, model
+
+    async def fake_invoke(invocation):
+        assert invocation.session_context.metadata["runtime_task_id"] == task_id
+        assert invocation.session_context.metadata["restart_replay_contract"]["idempotency_key"] == (
+            f"delegation:{task_id}:restart"
+        )
+        return SimpleNamespace(content="resumed mutating result")
+
+    async def fake_update_runtime_task_record(task_id_arg, **kwargs):
+        updates.append((task_id_arg, kwargs))
+        return True
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator.list_active_runtime_task_records", fake_list_active_runtime_task_records
+    )
+    monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+
+    _async_tasks.clear()
+    try:
+        resumed = await resume_persisted_async_delegations()
+        assert resumed == [task_id]
+        assert task_id in _async_tasks
+
+        await asyncio.sleep(0.05)
+        status = await check_async_delegation(task_id, parent_agent_id=parent_agent_id)
+
+        assert status["status"] == "completed"
+        assert status["result"] == "resumed mutating result"
+        assert any(task_id_arg == task_id and payload.get("status") == "running" for task_id_arg, payload in updates)
+        assert any(task_id_arg == task_id and payload.get("status") == "completed" for task_id_arg, payload in updates)
     finally:
         _async_tasks.clear()
 

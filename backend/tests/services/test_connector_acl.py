@@ -91,6 +91,54 @@ def test_post_generation_permission_check_reports_forbidden_sources() -> None:
     assert result.allowed_sources == [allowed_source]
 
 
+def test_authoritative_connector_result_replaces_argument_deny_acl() -> None:
+    from app.services.connector_acl import (
+        CONNECTOR_SOURCE_ITEMS_METADATA_KEY,
+        register_connector_source_items,
+        register_connector_source_payload,
+        source_items_from_tool_call,
+        validate_generated_source_permissions,
+    )
+
+    class _Context:
+        metadata: dict = {}
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+    ctx = _Context()
+
+    register_connector_source_items(
+        ctx,
+        source_items_from_tool_call("feishu_doc_read", {"document_token": "doc-1"}),
+        origin="tool_args:feishu_doc_read",
+    )
+    assert ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["acl"] == {"deny_by_default": True}
+
+    register_connector_source_payload(
+        ctx,
+        {
+            "source": "feishu://doc/doc-1",
+            "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(user_id)]},
+            "metadata": {"connector": "feishu", "resource_type": "doc"},
+        },
+        origin="tool_result:feishu_doc_read",
+    )
+
+    source_items = ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY]
+    assert len(source_items) == 1
+    assert source_items[0]["acl"] == {"tenant_ids": [str(tenant_id)], "user_ids": [str(user_id)]}
+    assert source_items[0]["origin"] == "tool_result:feishu_doc_read"
+
+    check = validate_generated_source_permissions(
+        "Cite feishu://doc/doc-1",
+        source_items=source_items,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
+    assert check.allowed is True
+    assert check.allowed_sources == ["feishu://doc/doc-1"]
+
+
 @pytest.mark.asyncio
 async def test_knowledge_injection_applies_connector_acl_mirror(monkeypatch) -> None:
     from app.services import knowledge_inject

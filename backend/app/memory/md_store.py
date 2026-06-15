@@ -394,6 +394,9 @@ def _local_ref_exists(data_root: Path, agent_id: uuid.UUID, ref: str) -> bool | 
 
 
 def _stamp_reference_metadata(data_root: Path, agent_id: uuid.UUID, metadata: dict[str, str]) -> None:
+    existing_status = str(metadata.get("reference_status") or "").strip().lower()
+    if existing_status in {"invalid", "revalidation_required", "expired", "stale"}:
+        return
     refs = _split_refs(metadata.get("evidence_refs") or metadata.get("source_refs"))
     if not refs:
         metadata["reference_status"] = "missing"

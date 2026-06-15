@@ -16,14 +16,13 @@ from app.services.code_execution.contracts import CodeExecutionResult
 from app.services.code_execution.service import configured_code_execution_provider, execute_agent_command
 
 CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY = "code_execution_sandbox_probe.latest"
+CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY = "code_execution_sandbox_probe.history"
+CODE_EXECUTION_SANDBOX_PROBE_HISTORY_LIMIT = 30
 _PROBE_NETWORK_POLICY = "deny-all"
 _PROBE_RUNTIME = "python3.13"
 _SYNC_SENTINEL = "hive-sandbox-probe-ok"
 
-_UNAME_SCRIPT = (
-    "import platform\n"
-    "print(platform.platform())\n"
-)
+_UNAME_SCRIPT = "import platform\nprint(platform.platform())\n"
 
 _NETWORK_DENY_SCRIPT = (
     "import socket, sys\n"
@@ -114,7 +113,9 @@ async def _run_probe_in_work_dir(*, work_dir: Path, timeout: int) -> dict[str, A
         _check(
             name="microvm_uname",
             passed=not uname_result.error and uname_result.exit_code == 0 and bool(uname),
-            message="microVM uname/platform probe returned output" if uname else "microVM uname/platform probe returned no output",
+            message="microVM uname/platform probe returned output"
+            if uname
+            else "microVM uname/platform probe returned no output",
             result=uname_result,
         )
     )
@@ -195,14 +196,32 @@ async def run_code_execution_sandbox_probe(*, work_dir: Path | None = None, time
 async def upsert_latest_sandbox_probe_evidence(db: Any, report: dict[str, Any]) -> dict[str, Any]:
     """Persist the latest sandbox probe report in the existing system setting store."""
 
-    value = {
-        "stored_at": _utc_now(),
-        "report": report,
-    }
+    stored_at = _utc_now()
     result = await db.execute(
         select(SystemSetting).where(SystemSetting.key == CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY)
     )
     setting = result.scalar_one_or_none()
+
+    history_result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY)
+    )
+    history_setting = history_result.scalar_one_or_none()
+    history_value = build_sandbox_probe_history_value(
+        getattr(history_setting, "value", None) if history_setting else None,
+        report,
+        stored_at=stored_at,
+    )
+    if history_setting is None:
+        history_setting = SystemSetting(key=CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY, value=history_value)
+        db.add(history_setting)
+    else:
+        history_setting.value = history_value
+
+    value = {
+        "stored_at": stored_at,
+        "report": report,
+        "trend": history_value["trend"],
+    }
     if setting is None:
         setting = SystemSetting(key=CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY, value=value)
         db.add(setting)
@@ -210,6 +229,73 @@ async def upsert_latest_sandbox_probe_evidence(db: Any, report: dict[str, Any]) 
         setting.value = value
     await db.commit()
     return value
+
+
+def _compact_probe_run(report: dict[str, Any], *, stored_at: str) -> dict[str, Any]:
+    checks = {
+        str(check.get("name") or ""): bool(check.get("passed"))
+        for check in report.get("checks", [])
+        if isinstance(check, dict) and str(check.get("name") or "").strip()
+    }
+    return {
+        "stored_at": stored_at,
+        "passed": bool(report.get("passed")),
+        "provider": report.get("provider"),
+        "runtime": report.get("runtime"),
+        "network_policy": report.get("network_policy"),
+        "checks": checks,
+        "evidence": {
+            "microvm_uname": (report.get("evidence") or {}).get("microvm_uname")
+            if isinstance(report.get("evidence"), dict)
+            else None,
+            "network_denied": (report.get("evidence") or {}).get("network_denied")
+            if isinstance(report.get("evidence"), dict)
+            else None,
+            "workspace_round_trip": (report.get("evidence") or {}).get("workspace_round_trip")
+            if isinstance(report.get("evidence"), dict)
+            else None,
+        },
+    }
+
+
+def _sandbox_probe_trend(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(runs)
+    passed = sum(1 for run in runs if bool(run.get("passed")))
+    consecutive_failures = 0
+    for run in reversed(runs):
+        if bool(run.get("passed")):
+            break
+        consecutive_failures += 1
+    return {
+        "total_runs": total,
+        "passed_runs": passed,
+        "failed_runs": total - passed,
+        "pass_rate": round(passed / total, 4) if total else 0.0,
+        "latest_passed": bool(runs[-1].get("passed")) if runs else None,
+        "consecutive_failures": consecutive_failures,
+        "latest_provider": runs[-1].get("provider") if runs else None,
+        "latest_runtime": runs[-1].get("runtime") if runs else None,
+    }
+
+
+def build_sandbox_probe_history_value(
+    previous: dict[str, Any] | None,
+    report: dict[str, Any],
+    *,
+    stored_at: str | None = None,
+    limit: int = CODE_EXECUTION_SANDBOX_PROBE_HISTORY_LIMIT,
+) -> dict[str, Any]:
+    previous_runs = previous.get("runs") if isinstance(previous, dict) else []
+    runs = [item for item in previous_runs if isinstance(item, dict)]
+    runs.append(_compact_probe_run(report, stored_at=stored_at or _utc_now()))
+    bounded = runs[-max(1, int(limit)) :]
+    return {
+        "schema": "code_execution_sandbox_probe_history.v1",
+        "updated_at": bounded[-1]["stored_at"],
+        "limit": max(1, int(limit)),
+        "runs": bounded,
+        "trend": _sandbox_probe_trend(bounded),
+    }
 
 
 async def store_latest_sandbox_probe_evidence(report: dict[str, Any]) -> dict[str, Any]:
@@ -231,7 +317,9 @@ def run_probe_sync(*, timeout: int = 20, persist: bool = False) -> dict[str, Any
     async def _run() -> dict[str, Any]:
         report = await run_code_execution_sandbox_probe(timeout=timeout)
         if persist:
-            report["latest_setting"] = persisted_sandbox_probe_summary(await store_latest_sandbox_probe_evidence(report))
+            report["latest_setting"] = persisted_sandbox_probe_summary(
+                await store_latest_sandbox_probe_evidence(report)
+            )
         return report
 
     return asyncio.run(_run())

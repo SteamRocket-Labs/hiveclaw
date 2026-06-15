@@ -139,6 +139,73 @@ def test_record_skill_runtime_usage_derives_workflow_and_patch_signal(tmp_path: 
     assert "patch_candidate_count: 2" in candidates
 
 
+def test_record_skill_runtime_usage_writes_promotion_evidence_for_patch(tmp_path: Path) -> None:
+    from app.services.skill_lifecycle import record_skill_runtime_usage
+
+    record_skill_runtime_usage(
+        tmp_path,
+        skill_name="incident-response",
+        loaded_skill_names=["incident-response"],
+        tool_names=["load_skill", "read_file", "write_file"],
+        status="failed",
+        note="Loaded skill missed rollback notes.",
+        occurred_at="2026-04-01T10:00:00Z",
+        source="web_chat",
+        session_id="session-1",
+        runtime_task_id="rt-1",
+        trace_id="trace-1",
+    )
+    result = record_skill_runtime_usage(
+        tmp_path,
+        skill_name="incident-response",
+        loaded_skill_names=["incident-response"],
+        tool_names=["write_file", "load_skill", "read_file"],
+        status="workaround",
+        note="Manual workaround added rollback notes.",
+        occurred_at="2026-04-02T10:00:00Z",
+        source="web_chat",
+        session_id="session-2",
+        runtime_task_id="rt-2",
+        trace_id="trace-2",
+    )
+
+    evidence_path = tmp_path / "evolution" / "skill_promotion_evidence.jsonl"
+    evidence = evidence_path.read_text(encoding="utf-8")
+
+    assert result["decision"] == "patch"
+    assert result["evidence_ref"] == "evolution/skill_promotion_evidence.jsonl"
+    assert '"schema": "skill_promotion_evidence.v1"' in evidence
+    assert '"decision": "patch"' in evidence
+    assert '"runtime_task_id": "rt-2"' in evidence
+    assert '"trace:trace-2"' in evidence
+
+
+def test_record_skill_runtime_usage_writes_promotion_evidence_for_promote(tmp_path: Path) -> None:
+    from app.services.skill_lifecycle import record_skill_runtime_usage
+
+    for index in range(3):
+        result = record_skill_runtime_usage(
+            tmp_path,
+            skill_name="deploy-checklist",
+            loaded_skill_names=["deploy-checklist"],
+            tool_names=["load_skill", "read_file"],
+            status="success",
+            note=f"Stable run {index}.",
+            occurred_at=f"2026-04-0{index + 1}T10:00:00Z",
+            source="trigger",
+            session_id=f"session-{index}",
+            runtime_task_id=f"rt-{index}",
+            trace_id=f"trace-{index}",
+        )
+
+    evidence = (tmp_path / "evolution" / "skill_promotion_evidence.jsonl").read_text(encoding="utf-8")
+
+    assert result["decision"] == "promote"
+    assert '"decision": "promote"' in evidence
+    assert '"skill_name": "deploy-checklist"' in evidence
+    assert '"runtime_task:rt-2"' in evidence
+
+
 def test_record_skill_runtime_usage_ignores_noop_without_polluting_candidates(tmp_path: Path) -> None:
     from app.services.skill_lifecycle import record_skill_runtime_usage
 

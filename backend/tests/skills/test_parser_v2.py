@@ -51,8 +51,6 @@ Use primary sources first.
     assert parsed.metadata.name == "Research Deep Dive"
     assert "source-attributed research report" in parsed.metadata.description
     assert len(parsed.metadata.description) > 120
-    assert parsed.metadata.license == "Proprietary"
-    assert parsed.metadata.compatibility == "Hive >= 1.8.0"
     assert parsed.metadata.allowed_tools == (
         "web_search",
         "web_fetch",
@@ -60,16 +58,15 @@ Use primary sources first.
     )
     assert parsed.metadata.declared_tools == ("web_search", "firecrawl_fetch")
     assert parsed.metadata.declared_packs == ("web_pack",)
-    assert parsed.metadata.version == "1.0.0"
     assert parsed.metadata.pack == "web_pack"
     assert parsed.metadata.requires_skills == ("industry-research", "source-ledger-audit")
-    assert parsed.metadata.locale == "cloud"
-    assert parsed.metadata.invocation == "both"
-    assert parsed.metadata.cost_tier == "high"
-    assert parsed.metadata.estimated_runtime_minutes == 30
-    assert parsed.metadata.output_artifacts == ("reports/{topic}.md", "reports/{topic}.json")
-    assert parsed.metadata.security_zone == "restricted"
     assert parsed.body.startswith("# Research Deep Dive")
+    # Step 9: dead frontmatter fields (license/version/cost_tier/security_zone/…)
+    # are no longer mapped onto SkillMetadata — but their presence in the YAML
+    # must not break parsing (forward/backward compatibility for legacy files).
+    assert not hasattr(parsed.metadata, "license")
+    assert not hasattr(parsed.metadata, "version")
+    assert not hasattr(parsed.metadata, "security_zone")
 
 
 def test_parser_supports_nested_hive_metadata_fallback(tmp_path):
@@ -94,10 +91,11 @@ metadata:
         relative_path="skills/source-audit/SKILL.md",
     )
 
-    assert parsed.metadata.version == "0.2.0"
     assert parsed.metadata.pack == "web_pack"
     assert parsed.metadata.requires_skills == ("industry-research", "source-ledger-audit")
-    assert parsed.metadata.estimated_runtime_minutes == 15
+    # Step 9: nested hive.version / hive.estimated_runtime_minutes still parse
+    # without error but are no longer surfaced on SkillMetadata.
+    assert not hasattr(parsed.metadata, "estimated_runtime_minutes")
 
 
 def test_parser_is_tolerant_of_invalid_yaml_frontmatter(tmp_path):

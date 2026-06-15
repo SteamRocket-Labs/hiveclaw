@@ -168,6 +168,27 @@ def _is_skill_instruction_file(ws: Path, file_path: Path) -> bool:
     return rel.endswith("SKILL.md") or ("/" not in rel and rel.endswith(".md"))
 
 
+def _skill_scope_guidance(metadata) -> str:
+    """Step 9: surface a skill's `allowed-tools` as scoped tool guidance.
+
+    CC parity: a loaded skill advertises which tools it is designed to use. This
+    is L1/L2-faithful guidance, NOT a hard filter — the model keeps full
+    intelligence and every tool call is still governed by normal permissions.
+    Only the registry path needs this; the explicit-path returns the raw file
+    (frontmatter included), so the model already sees `allowed-tools` there.
+    """
+    allowed = tuple(getattr(metadata, "allowed_tools", ()) or ())
+    if not allowed:
+        return ""
+    tools = ", ".join(allowed)
+    return (
+        "\n\n---\n"
+        f"**Tool scope (skill guidance):** this skill is designed to work with: {tools}. "
+        "Prefer these tools for its workflow. This is guidance, not a hard limit — "
+        "every tool call remains governed by your normal permissions."
+    )
+
+
 def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str:
     requested = (skill_name or "").strip()
     if not requested:
@@ -204,7 +225,13 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
 
     registry = _build_skill_registry(ws)
     try:
-        body = sanitize_managed_credential_guidance(registry.load_body(requested))
+        # Step 9: resolve once so allowed-tools can be re-surfaced as scoped tool
+        # guidance. The registry path strips frontmatter (where allowed-tools
+        # lives), unlike the explicit path which returns the raw file. A missing
+        # skill raises KeyError and falls through to the tool-pack check below.
+        skill = registry.resolve(requested)
+        body = sanitize_managed_credential_guidance(skill.body)
+        body += _skill_scope_guidance(skill.metadata)
         _curator_bump_use(ws, requested)
         return body
     except KeyError:

@@ -192,3 +192,52 @@ def test_load_skill_bumps_curator_use_count(tmp_path):
     rec = load_skill_usage(workspace)["deployment-review"]
     assert rec["use_count"] == 2
     assert rec["last_used_at"] is not None
+
+
+def test_load_skill_surfaces_allowed_tools_scope_guidance(tmp_path):
+    """Step 9: a skill's allowed-tools is re-surfaced as scoped tool guidance on
+    the registry path (which strips frontmatter). Guidance, not a hard filter."""
+    from app.services.agent_tools import _load_skill
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "skills" / "market-research"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: Market Research",
+                "description: Research a market.",
+                "allowed-tools: web_search, web_fetch, write_file",
+                "---",
+                "# Market Research",
+                "Search, fetch, summarize.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    content = _load_skill(workspace, "market research")
+
+    assert "# Market Research" in content
+    assert "Tool scope (skill guidance)" in content
+    assert "web_search" in content
+    assert "web_fetch" in content
+    assert "guidance, not a hard limit" in content
+
+
+def test_load_skill_without_allowed_tools_has_no_scope_guidance(tmp_path):
+    from app.services.agent_tools import _load_skill
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "skills" / "plain-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: Plain Skill\ndescription: No tool scope.\n---\n# Plain\nDo the thing.\n",
+        encoding="utf-8",
+    )
+
+    content = _load_skill(workspace, "plain skill")
+
+    assert "# Plain" in content
+    assert "Tool scope (skill guidance)" not in content

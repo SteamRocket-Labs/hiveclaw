@@ -264,6 +264,73 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
 
 
 @pytest.mark.asyncio
+async def test_distiller_cannot_promote_without_external_behavior_eval(monkeypatch, tmp_path: Path) -> None:
+    """Step 9 hard gate: a high-confidence, safe LLM draft must NOT promote when
+    no external behavior eval is present. LLM self-assessment alone can never
+    write a skill — decide_behavior_gated_promotion fail-closes to 'held' unless
+    an external (Hive live-run) behavior report passes. This pins the
+    'external eval, not LLM self-eval' invariant at the distiller level.
+    """
+    from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+
+    async def fake_evidence(*, agent_id, since_days, state, current_session_id):
+        del agent_id, since_days, state, current_session_id
+        return [
+            SessionWorkflowEvidence(
+                session_id=f"s-{i}",
+                source="heartbeat",
+                occurred_at=f"2026-04-0{i}T10:00:00Z",
+                status="success",
+                used_skill=False,
+                summary="Repeated the same market research workflow.",
+                assistant_reply="[OUTCOME:action_taken] [SCORE:8] wrote market summary",
+                tool_names=("web_search", "web_fetch", "write_file"),
+            )
+            for i in (1, 2, 3)
+        ]
+
+    async def fake_draft(**kwargs):
+        del kwargs
+        return DistilledSkillDraft(
+            decision="promote",
+            confidence=0.95,  # high self-assessed confidence — would "pass" a self-eval gate
+            name="Market Research Loop",
+            description="Run the internal market research workflow and save findings.",
+            instructions_markdown="1. Search reputable sources.\n2. Fetch the best pages.\n3. Write a concise summary file.\n",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="Repeated successful internal workflow.",
+        )
+
+    monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_evidence)
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
+
+    result = await run_skill_distillation_cycle(
+        agent_id=uuid4(),
+        workspace=workspace,
+        tenant_id=None,
+        # No skill_distiller_behavior_report → the external behavior eval is absent.
+        runtime_config=SimpleNamespace(skill_candidate_loop_enabled=True),
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
+    )
+
+    skill_path = workspace / "skills" / "market-research-loop" / "SKILL.md"
+    assert result["status"] != "promoted", "self-eval alone must not promote a skill"
+    assert not skill_path.exists(), "no skill file may be written without a passing external behavior eval"
+
+    ledger_path = workspace / "evolution" / "evolution_ledger.jsonl"
+    if ledger_path.exists():
+        promotion_decisions = [
+            record for record in _jsonl_records(ledger_path) if record["schema"] == "evolution_promotion_decision.v1"
+        ]
+        assert promotion_decisions, "a held promotion decision must be recorded"
+        assert promotion_decisions[-1]["decision"] == "held"
+
+
+@pytest.mark.asyncio
 async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatch, tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 

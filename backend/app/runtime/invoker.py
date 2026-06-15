@@ -42,7 +42,11 @@ from app.runtime.context_engine import DefaultContextEngine
 from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.runtime.session_key import build_session_key, ensure_session_key
-from app.services.agent_context import build_agent_context, build_agent_runtime_context
+from app.services.agent_context import (
+    build_agent_context,
+    build_agent_runtime_context,
+    build_skill_catalog_section_for_agent,
+)
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 from app.services.agent_work_ledger import should_enable_work_ledger
 from app.services.agent_tools import (
@@ -347,6 +351,7 @@ async def _build_system_prompt(
         include_memory_file=False,
         include_runtime_metadata=False,
         include_focus=False,
+        include_skill_catalog=False,  # Step 9: catalog flows via dynamic suffix, not the frozen prefix
         budget_profile=budget_profile,
         invocation_scope=request.invocation_scope or "conversation",
     )
@@ -1042,6 +1047,16 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         except Exception:
             execution_identity = None
 
+    # Step 9 (CC parity): load the skill catalog once and thread it through the
+    # dynamic suffix (InvocationRequest.skill_catalog → kernel → dynamic suffix),
+    # NOT the frozen prefix. Standalone subagents carry no host catalog.
+    skill_catalog_text = ""
+    if request.agent_id is not None and not (request.standalone_system_prompt or "").strip():
+        skill_catalog_text = build_skill_catalog_section_for_agent(
+            request.agent_id,
+            budget_profile=_resolve_context_budget(request),
+        )
+
     kernel_request = InvocationRequest(
         model=effective_model,
         fallback_model=effective_fallback_model,
@@ -1062,6 +1077,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         session_context=request.session_context,
         system_prompt_suffix=request.system_prompt_suffix,
         standalone_system_prompt=request.standalone_system_prompt,
+        skill_catalog=skill_catalog_text,
         tool_executor=request.tool_executor,
         mid_run_message_drain=request.mid_run_message_drain,
         cancel_event=request.cancel_event,

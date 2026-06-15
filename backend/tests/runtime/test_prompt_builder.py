@@ -735,3 +735,54 @@ class TestFrozenBudgetInversionFix:
             "Tier4 soul overrun must log an ERROR explicitly mentioning soul/identity trim; "
             f"got: {[(r.levelno, r.message) for r in caplog.records]}"
         )
+
+
+class TestSkillCatalogInDynamicSuffix:
+    """Step 9 (CC parity): the skill catalog lives in the dynamic suffix, not
+    the frozen prefix — adding/distilling a skill must never bust the
+    prompt-cache boundary.
+    """
+
+    def test_dynamic_suffix_renders_skill_catalog(self) -> None:
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+        suffix = build_dynamic_prompt_suffix(skill_catalog="## Skills\n- web_search\n- write_file")
+        assert "## Skills" in suffix
+        assert "web_search" in suffix
+
+    def test_dynamic_suffix_omits_empty_catalog(self) -> None:
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+        suffix = build_dynamic_prompt_suffix(skill_catalog="")
+        assert "## Skills" not in suffix
+
+    def test_catalog_in_dynamic_not_frozen(self) -> None:
+        """The cache-bust fix, end to end: on the invoker's primary path the
+        frozen prefix carries no catalog, while the dynamic suffix does."""
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix, build_frozen_prompt_prefix
+
+        catalog = "## Skills\n- SKILL_MARKER_XYZ"
+        # Invoker builds the frozen prefix WITHOUT passing skill_catalog.
+        frozen = build_frozen_prompt_prefix(agent_context="AGENT_CONTEXT_BODY")
+        dynamic = build_dynamic_prompt_suffix(skill_catalog=catalog)
+        assert "SKILL_MARKER_XYZ" not in frozen
+        assert "SKILL_MARKER_XYZ" in dynamic
+
+    def test_catalog_section_for_none_agent_is_empty(self) -> None:
+        from app.services.agent_context import build_skill_catalog_section_for_agent
+
+        assert build_skill_catalog_section_for_agent(None) == ""
+
+    def test_request_carries_skill_catalog_field(self) -> None:
+        """InvocationRequest must expose skill_catalog so the invoker can thread
+        the catalog to the kernel's dynamic suffix."""
+        from app.kernel.contracts import InvocationRequest
+
+        req = InvocationRequest(
+            model=None,
+            messages=[],
+            agent_name="a",
+            role_description="r",
+            skill_catalog="## Skills\n- x",
+        )
+        assert req.skill_catalog == "## Skills\n- x"

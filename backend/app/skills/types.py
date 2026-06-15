@@ -8,25 +8,19 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class SkillMetadata:
+    # Step 9: trimmed to the fields the runtime actually consumes. The parser
+    # still tolerates (and ignores) any other frontmatter keys, so legacy skill
+    # files carrying license/version/cost_tier/etc. parse without error — those
+    # 11 dead fields were parsed-but-never-read and are gone (zero consumers
+    # verified across the skill data flow).
     name: str
     description: str
     declared_tools: tuple[str, ...] = ()
     declared_packs: tuple[str, ...] = ()
     is_system: bool = False
-    license: str | None = None
-    compatibility: str | None = None
-    allowed_tools: tuple[str, ...] = ()
-    version: str = "0.0.0"
+    allowed_tools: tuple[str, ...] = ()  # Step 9: surfaced as load_skill scope guidance
     pack: str | None = None
     requires_skills: tuple[str, ...] = ()
-    locale: str = "cloud"
-    invocation: str = "both"
-    cost_tier: str | None = None
-    estimated_runtime_minutes: int | None = None
-    output_artifacts: tuple[str, ...] = ()
-    author: str | None = None
-    security_zone: str | None = None
-    raw_metadata: dict | None = None
 
 
 @dataclass(slots=True)

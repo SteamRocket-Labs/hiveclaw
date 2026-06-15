@@ -50,6 +50,13 @@ class InvocationRequest:
     # the platform must not assemble the host agent's identity (soul, memory,
     # skills, tasks) around it. Read by the prompt/memory dependency callbacks.
     standalone_system_prompt: str = ""
+    # Step 9 (CC parity): the skill catalog is progressive-disclosure metadata
+    # that changes whenever skills are added/distilled. It lives in the dynamic
+    # suffix (a per-round, non-cached reminder), NOT the frozen prefix where it
+    # would bust the prompt-cache boundary on every skill change. The invoker
+    # loads it once and threads it here; the kernel injects it into the dynamic
+    # suffix. Empty for standalone subagents (they carry no host catalog).
+    skill_catalog: str = ""
     tool_executor: ToolExecutor | None = None
     mid_run_message_drain: MidRunMessageDrain | None = None
     cancel_event: asyncio.Event | None = None

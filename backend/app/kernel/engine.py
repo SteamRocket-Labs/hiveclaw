@@ -2095,10 +2095,11 @@ class AgentKernel:
             # Prompt cache: reuse frozen prefix if available and still matches
             # the session-stable inputs that are rendered into that prefix.
             # The frozen prefix is session-stable by design — it contains
-            # agent_context (soul, identity, tone_style, skills catalog, company info) +
+            # agent_context (soul, identity, tone_style, company info) +
             # system + tasks + tools. None of these change within a session.
-            # Memory lives in the dynamic suffix which is rebuilt every round
-            # regardless.
+            # Memory AND the skill catalog (Step 9) live in the dynamic suffix,
+            # which is rebuilt every round — so adding/distilling a skill never
+            # invalidates the cached frozen prefix.
             #
             # Memory is a dynamic suffix, so it does not invalidate this key.
             # Static identity, execution mode, model window, and prompt-rendered
@@ -2145,6 +2146,7 @@ class AgentKernel:
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     memory_snapshot=resolved_memory_context,
                     memory_navigation=resolved_memory_navigation_context,
+                    skill_catalog=request.skill_catalog,
                     runtime_metadata_context=resolved_runtime_metadata_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_system_prompt_suffix,
@@ -2180,6 +2182,7 @@ class AgentKernel:
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     memory_snapshot=resolved_memory_context,
                     memory_navigation=resolved_memory_navigation_context,
+                    skill_catalog=request.skill_catalog,
                     runtime_metadata_context=resolved_runtime_metadata_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_system_prompt_suffix,
@@ -2723,6 +2726,7 @@ class AgentKernel:
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             memory_snapshot=resolved_memory_context,
                                             memory_navigation=resolved_memory_navigation_context,
+                                            skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_system_prompt_suffix,
@@ -2801,6 +2805,7 @@ class AgentKernel:
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                                             memory_snapshot=resolved_memory_context,
                                             memory_navigation=resolved_memory_navigation_context,
+                                            skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_system_prompt_suffix,
@@ -2882,6 +2887,7 @@ class AgentKernel:
                                                 else [],
                                                 memory_snapshot=resolved_memory_context,
                                                 memory_navigation=resolved_memory_navigation_context,
+                                                skill_catalog=request.skill_catalog,
                                                 runtime_metadata_context=resolved_runtime_metadata_context,
                                                 retrieval_context=resolved_retrieval_context,
                                                 system_prompt_suffix=_system_prompt_suffix,
@@ -3536,6 +3542,7 @@ class AgentKernel:
                                                     active_tool_groups=session_context.active_tool_groups,
                                                     memory_snapshot=resolved_memory_context,
                                                     memory_navigation=resolved_memory_navigation_context,
+                                                    skill_catalog=request.skill_catalog,
                                                     runtime_metadata_context=resolved_runtime_metadata_context,
                                                     retrieval_context=resolved_retrieval_context,
                                                     system_prompt_suffix=_system_prompt_suffix,

@@ -1,6 +1,6 @@
 # CC 工具/扩展/Runtime 全栈对标 + Hive 插件系统设计
 
-> 状态：v1.3 设计定稿 + **Step 0-8 已实施落地**（2026-06-14，全量 4467 passed / 0 failed，证据见 §8 实施日志）。Step 9-11 待实施。
+> 状态：v1.3 设计定稿 + **Step 0-9 已实施落地**（2026-06-14，全量 4475 passed / 0 failed，证据见 §8 实施日志）。Step 10-11 待实施。
 > 方法：Workflow `cc-tooling-alignment-audit`（12 agents / 177万 token / 327 工具调用 / 27min）——
 > 8 维度并行深读 CC 源码(`/Users/rocky243/Context Engineering/claude-code-org`)+ Hive 源码，
 > 综合统一方案，再过 3 道对抗 critic（漏链路 / 残留债 / 自创概念检测）。所有论断带 file:line。
@@ -118,7 +118,7 @@ skill frontmatter 死字段 · skill `declared_packs`(已退化 no-op) ·
 | **6** ✅ | mcp | 新增 `mcp_naming.py`(`mcp__server__tool` 前缀+反解+slug+长度/碰撞,单源)；canonical 名进 `resource_discovery` 5 个生成点；canonical 别名在 `_execute_mcp_tool`(canonical 名对未 backfill 的 legacy 行也可解析→生成可先于 backfill 部署)；dry-run+apply backfill 脚本(纯 planner 已测,旧名→新名报告即回滚记录)；**核实**=`FALLBACK_EXECUTOR_NAME` registry 分支实为死代码(无人注册`__mcp_fallback__`,活兜底是 service `fallback_executor` kwarg)→删死分支统一单路径；`mcp_server:*` 伪 pack 实为 no-op(从不写该 policy+未知 pack 默认 True)→退役两处 gate+删 `make_mcp_server_pack_name`,MCP 可见性归 assignment 单一治理。**已实施，证据见 §8。** | 0,5 |
 | **7** ✅ | mcp | `MCPClient.list_resources/read_resource`(blob 走现有 >8KB artifact 溢出)+协议工具 `mcp_list_resources/mcp_read_resource`；DB 自省工具更名 `list_mcp_resources→list_mcp_tools`/`read_mcp_resource→inspect_mcp_tool`(旧名 alias 不破 transcript)；新建 `mcp_oauth.py` 标准 OAuth2 PKCE(加密存 token/守 mcp_authz/fail-closed)+`/enterprise/mcp/oauth/start\|callback` API+`resolve_mcp_oauth_bearer` 接入执行路径+`auth_status` 生命周期。**已实施，证据见 §8(含 OAuth live 验证诚实边界)。** | 6 |
 | **8** ✅ | subagent | schema 暴露 `run_in_background`(此前后端通但 LLM 不可达)；background spawn 落 `RuntimeTask(task_type="subagent")` durable record(非 resumable→startup `reconcile_orphaned_runtime_tasks` 把崩溃的 run 标 failed,parent poll 不再永久 running)；加 `check_subagent`(run_id 查/列表,ownership-scoped)；governance 按 type 分级**已存在**(`_TYPE_PRESETS` 给 explorer/critic 只读工具集,worker 才能编辑);completion wake/signal/tenant/recursion guard 沿用现有。**已实施，证据见 §8。** | 0 |
-| **9** | skill | catalog 移出 frozen prefix→动态 suffix(修 cache 击穿)；删死字段；distiller 晋升硬门改 `evolution_ledger` 外部 eval(非 LLM 自评)；`allowed_tools` 接 scoped 治理引导 | 4 |
+| **9** ✅ | skill | catalog 移出 frozen prefix→动态 suffix(修 cache 击穿，owner 选项 A 保留兼容参数)；删 11 死字段(`declared_packs` 核实为活字段，保留)；distiller 晋升硬门**已是** `evolution_ledger` 外部 eval(核实 + 钉不变量，非重写)；`allowed_tools` 接 scoped 治理引导(load_skill registry 路径)。**已实施，证据见 §8。** | 4 |
 | **10** | workflow | preview/start_workflow 确认仅留 CORE；`office_workflow_examples` 接 platform-template seeder 或删(⚠️核实)；修 `runtime_task` 注释+`phase` 死列；文档化"结构化数据 over 脚本"为显式防御决策 | 0,5 |
 | **11** | docs | 修 CLAUDE.md 文档漂移(packs.py→runtime_tool_groups.py+pack.yaml)；记录插件安装生命周期 | 4,5,6,7 |
 
@@ -469,3 +469,37 @@ $ ruff check <5 核心文件 + 1 测试>                        # All checks pas
 $ pytest tests -q
 4467 passed, 7 skipped, 4 warnings   # 0 failed (= Step7 的 4460 + 7 subagent-run 测试)
 ```
+
+---
+
+### Step 9 — skill catalog 移出 frozen + 死字段 + distiller 硬门核实 + allowed_tools 引导（✅ 2026-06-14）
+
+**先核实（§5.1 纪律，纠正设计稿/deep-dive 两处判定）：**
+1. **`declared_packs` 不是 no-op**（纠正 §2③）—— 它在 `runtime/task_eval.py:228-231` 有活消费（按 pack 展开工具集做任务评估），`pack_service.py:351`/`skill_distiller.py` 也读。**保留**，仅删真正零消费字段。
+2. **distiller 晋升硬门已是外部 eval，非纯 LLM 自评**（纠正"需重写"判定）—— `decide_behavior_gated_promotion`(`evolution_verification.py:574`) 在 `behavior_report` 非 dict 或 `behavior_eval_passed` 不过时 **fail-closed `hold`**；`behavior_eval_passed`(`hive_live_runner.py:99`) 要求真 live run(非 fallback / benchmark_complete / trusted transport / 所有场景 ready)。两条 save 路径(patch+promote)都先过此门再 `_save_skill`，LLM confidence 仅是 pre-filter。这是 external-behavior-eval-ci(E1-E10) 的既有产物 → Step 9 此项是**核实 + 钉不变量**，非重写。
+
+**9.1 catalog 移出 frozen → 动态 suffix（cache 击穿修复，owner 拍板"选项 A：保留兼容参数定稿"）：**
+- 根因：`invoker._build_system_prompt` 调 `build_frozen_prompt_prefix` **不传 skill_catalog**(死参数)，真正 catalog 经 `build_agent_context`(`agent_context.py:379`) 嵌进 `agent_context` → 进 frozen prefix → 每次 skill 增删/蒸馏即击穿 prompt-cache 边界。
+- `app/kernel/contracts.py`：`InvocationRequest` 加 `skill_catalog: str = ""`（invoker 加载一次 → 透传 kernel → dynamic suffix；standalone subagent 不携带宿主 catalog）。
+- `app/services/agent_context.py`：提取 `build_skill_catalog_section_for_agent(agent_id, budget_profile)` 单源 helper；`build_agent_context` 加 `include_skill_catalog: bool = True`，invoker 传 `False`（catalog 不再嵌 frozen）。
+- `app/runtime/prompt_builder.py`：`build_dynamic_prompt_suffix` 加 `skill_catalog` 参数，在 `packs_section`(active tool groups) 之后注入(能力披露同类位置)；`build_frozen_prompt_prefix` 的 `skill_catalog` 参数**按 owner 选项 A 保留为向后兼容入口**(主路径不再填充)，docstring 注明。
+- `app/kernel/engine.py`：6 个 `build_dynamic_prompt_suffix` 调用点(2 主路径 + 4 PTL/compaction 重试路径)全部传 `skill_catalog=request.skill_catalog`(编程注入，缩进精确)；更新 cache-key 注释(catalog 不再在 frozen)。
+- `app/runtime/invoker.py`：`invoke_agent` 加载 catalog 填 `InvocationRequest.skill_catalog`(standalone / 无 agent_id 时为空)。
+
+**9.2 删死字段（11 个，零消费 + 零格式契约依赖）：** `app/skills/types.py` `SkillMetadata` 从 19 字段精简到 8 个(name/description/declared_tools/declared_packs/is_system/allowed_tools/pack/requires_skills)；删 license/compatibility/version/locale/invocation/cost_tier/estimated_runtime_minutes/output_artifacts/author/security_zone/raw_metadata(全部核实在 skill 数据流零属性读取)。`parser.py` 停止填充这 11 字段 + 删随之无用的 `_optional_int`。**parser 仍 `yaml.safe_load` 全部 frontmatter → 旧 skill 文件携带这些键不报错**(前向兼容，测试 `not hasattr` 钉死)。`SkillMetadata` 仅 parser+测试构造，distiller 写 markdown 文本不写对象 → 删字段不破 distiller。
+
+**9.3 distiller 硬门核实 + 钉不变量：** 生产门已正确(见上"先核实")，**无生产码改动**(诚实定位)；新增端到端回归 `test_distiller_cannot_promote_without_external_behavior_eval`——高 confidence(0.95)安全 draft + **无外部 behavior report** → `status != promoted` + skill 文件不写 + ledger `decision=held`，把"LLM 自评单独不能晋升"钉死在 distiller 层(此前测试只钉 `behavior_eval_passed` 原语)。
+
+**9.4 allowed_tools 接 scoped 治理引导（CC parity，L1/L2 忠实）：** skill 的 `allowed-tools` 此前是死字段(解析零消费)。`workspace.py` 新增 `_skill_scope_guidance(metadata)`，在 `_load_skill` **registry 路径**注入(该路径 `load_body` 剥离 frontmatter → allowed-tools 丢失；explicit-path 返回原始文件含 frontmatter 无需补)。引导是 **guidance 非硬过滤**("Prefer these tools... guidance, not a hard limit — every tool call remains governed")——守 L1(不机械限制模型) + L2(治理仍 enforce 真实权限)。顺手把内层 `except KeyError: pass` 重构为单次 `registry.resolve`(消除 silent-catch，未找到由外层 KeyError 兜底转 tool-pack 查找)。
+
+**与设计稿偏差：** §4 Step 9 列"删死字段"含 `declared_packs`(§2③)——核实为活字段，**未删**；distiller 门"改 evolution_ledger 外部 eval"已是既成事实，Step 9 改为核实 + 钉不变量。skill_catalog frozen 参数按 owner 选项 A 保留(受保护测试 `test_prompt_sections.py::test_skill_catalog_included` 永不 commit，删参数会撞 main baseline 且无法提交修复 → 保留兼容参数，cache 修复在 invoker 路径不依赖删参数)。
+
+**验证证据：**
+```
+$ pytest tests/runtime/test_prompt_builder.py::TestSkillCatalogInDynamicSuffix -q   # 5 passed
+$ pytest tests/services/test_skill_distiller.py tests/services/test_skill_loading.py tests/skills/ -q  # 全绿
+$ ruff check <8 核心文件 + 4 测试>                        # All checks passed!
+$ pytest tests -q
+4475 passed, 7 skipped, 4 warnings   # 0 failed (= Step8 的 4467 + 8 新测试:5 catalog-dynamic + 1 distiller 硬门 + 2 scope 引导)
+```
+注：受保护文件(`.ultra/*` + `prompt_sections` 4 + 2 测试)全程未触碰；`test_skill_catalog_included` baseline 因保留 frozen 参数继续通过。

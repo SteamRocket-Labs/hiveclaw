@@ -227,9 +227,14 @@ def build_frozen_prompt_prefix(
 ) -> str:
     """Build the session-stable prompt prefix.
 
-    Contains: agent identity/soul/role, § System, § Doing Tasks, § Using Your Tools,
-    and skill catalog.
+    Contains: agent identity/soul/role, § System, § Doing Tasks, § Using Your Tools.
     These do NOT change within a single session.
+
+    Step 9 (CC parity): the skill catalog moved OUT of the frozen prefix into the
+    dynamic suffix (it changes when skills are added/distilled, which would bust
+    the prompt-cache boundary). The `skill_catalog` parameter is retained for
+    backward-compatible / inline-context callers, but the invoker's primary path
+    no longer populates it — catalog flows through `build_dynamic_prompt_suffix`.
 
     P1-1b: Every build is metered. Token estimate above
     `_FROZEN_PREFIX_TOKEN_WARN` logs a warning; above
@@ -515,6 +520,7 @@ def build_dynamic_prompt_suffix(
     latest_user_query: str = "",
     memory_snapshot: str = "",
     memory_navigation: str = "",
+    skill_catalog: str = "",
     user_name: str = "",
     channel: str = "",
     agent_name: str = "",
@@ -523,9 +529,15 @@ def build_dynamic_prompt_suffix(
     """Build the per-round dynamic suffix.
 
     Contains: § Memory, § Memory Navigation, runtime metadata,
-    active runtime tool groups, external knowledge retrieval results,
-    § Environment, and request-specific suffix.
+    active runtime tool groups, § Skills catalog, external knowledge retrieval
+    results, § Environment, and request-specific suffix.
     These CAN change between rounds within the same session.
+
+    Step 9 (CC parity): the skill catalog lives here, not in the frozen prefix.
+    It is progressive-disclosure metadata that changes when skills are added or
+    distilled; keeping it out of the cached prefix preserves the prompt-cache
+    boundary (CC ships its catalog as a dynamic system-reminder for the same
+    reason).
     """
     from app.runtime.prompt_sections import (
         build_environment_section,
@@ -599,6 +611,12 @@ def build_dynamic_prompt_suffix(
     packs_section = _render_active_tool_groups(active_tool_groups or [], budget_chars=packs_budget)
     if packs_section:
         parts.append(packs_section)
+
+    # § Skills catalog (Step 9 — CC parity): progressive-disclosure index lives
+    # in the dynamic suffix, next to the active tool groups it complements, so
+    # adding/distilling a skill never busts the frozen prompt-cache boundary.
+    if skill_catalog:
+        parts.append(skill_catalog)
 
     if retrieval_context:
         knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget)

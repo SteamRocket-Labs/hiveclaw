@@ -78,8 +78,9 @@ class SkillParser:
                     description = line[:1024]
                     break
 
-        estimated_runtime = self._optional_int(hive_value("estimated_runtime_minutes"))
-
+        # Step 9: only the consumed fields are mapped into SkillMetadata. Any
+        # other frontmatter keys (license/version/cost_tier/security_zone/…) are
+        # parsed by yaml above and silently ignored — legacy files stay valid.
         return ParsedSkill(
             metadata=SkillMetadata(
                 name=name,
@@ -87,20 +88,9 @@ class SkillParser:
                 declared_tools=tuple(declared_tools),
                 declared_packs=tuple(declared_packs),
                 is_system=is_system,
-                license=self._string_value(frontmatter.get("license")),
-                compatibility=self._string_value(frontmatter.get("compatibility")),
                 allowed_tools=allowed_tools,
-                version=self._string_value(hive_value("version")) or "0.0.0",
                 pack=self._string_value(hive_value("pack")),
                 requires_skills=self._string_tuple(hive_value("requires_skills")),
-                locale=self._string_value(hive_value("locale")) or "cloud",
-                invocation=self._string_value(hive_value("invocation")) or "both",
-                cost_tier=self._string_value(hive_value("cost_tier")),
-                estimated_runtime_minutes=estimated_runtime,
-                output_artifacts=self._string_tuple(hive_value("output_artifacts")),
-                author=self._string_value(hive_value("author")),
-                security_zone=self._string_value(hive_value("security_zone")),
-                raw_metadata=dict(metadata),
             ),
             body=body,
             file_path=path,
@@ -136,15 +126,6 @@ class SkillParser:
         if isinstance(value, str):
             return value.strip().lower() in {"true", "yes", "1", "on"}
         return bool(value)
-
-    @classmethod
-    def _optional_int(cls, value: Any) -> int | None:
-        if value is None or value == "":
-            return None
-        try:
-            return int(cls._string_value(value))
-        except (TypeError, ValueError):
-            return None
 
     @staticmethod
     def _warn_frontmatter_once(relative_path: str, issue_type: str, detail: str) -> None:

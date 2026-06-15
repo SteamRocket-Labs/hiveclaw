@@ -128,6 +128,33 @@ def _load_skills_index(agent_id: uuid.UUID, *, budget_chars: int = 8000) -> str:
     return registry.render_catalog(budget_chars=budget_chars)
 
 
+def build_skill_catalog_section_for_agent(
+    agent_id: uuid.UUID | None,
+    *,
+    budget_profile: ContextBudget | None = None,
+) -> str:
+    """Render the ## Skills catalog section for an agent's workspace.
+
+    Step 9 (CC parity): the catalog is progressive-disclosure metadata that
+    changes whenever skills are added/distilled. It belongs in the dynamic
+    suffix (a per-round, non-cached reminder), NOT baked into the frozen prefix
+    where it would bust the prompt-cache boundary on every skill change. This
+    helper is the single source for that section; the invoker loads it once per
+    invocation and threads it through `InvocationRequest.skill_catalog`.
+    """
+    if agent_id is None:
+        return ""
+    from app.runtime.prompt_sections import build_skills_catalog_section
+
+    skill_budget = budget_profile.skill_catalog_budget_chars if budget_profile else 4000
+    skills_text = _load_skills_index(agent_id, budget_chars=max(skill_budget, 800))
+    if len(skills_text) > skill_budget:
+        skills_text = (
+            skills_text[:skill_budget] + "\n\n...(skill catalog truncated — use `load_skill` to see full details)"
+        )
+    return build_skills_catalog_section(skills_text, budget_chars=skill_budget)
+
+
 async def _build_runtime_metadata_sections(
     agent_id: uuid.UUID,
     *,
@@ -216,6 +243,7 @@ async def build_agent_context(
     include_memory_file: bool = True,  # deprecated: memory flows via 4-layer retriever
     include_runtime_metadata: bool = False,
     include_focus: bool = True,  # deprecated: no longer projected into the prompt
+    include_skill_catalog: bool = True,  # Step 9: invoker sets False — catalog flows via dynamic suffix
     budget_profile: ContextBudget | None = None,
     invocation_scope: str = "conversation",
 ) -> str:
@@ -236,7 +264,6 @@ async def build_agent_context(
 
     # --- Soul ---
     soul_budget = budget_profile.soul_budget_chars if budget_profile else 16000
-    skill_budget = budget_profile.skill_catalog_budget_chars if budget_profile else 4000
     relationships_budget = budget_profile.relationships_budget_chars if budget_profile else 2000
     company_info_budget = budget_profile.company_info_budget_chars if budget_profile else 5000
     org_structure_budget = budget_profile.org_structure_budget_chars if budget_profile else 2000
@@ -249,12 +276,11 @@ async def build_agent_context(
     # through the 4-layer retrieval pipeline (MemoryRetriever → [Semantic Memory] section).
     # Loading them here would double-inject the same data.
 
-    # --- Skills index (progressive disclosure, capped to prevent prompt overflow) ---
-    skills_text = _load_skills_index(agent_id, budget_chars=max(skill_budget, 800))
-    if len(skills_text) > skill_budget:
-        skills_text = (
-            skills_text[:skill_budget] + "\n\n...(skill catalog truncated — use `load_skill` to see full details)"
-        )
+    # --- Skills index ---
+    # Step 9: the skill catalog is no longer baked into agent_context (= frozen
+    # prefix). The invoker loads it via build_skill_catalog_section_for_agent and
+    # threads it through the dynamic suffix (CC parity, prompt-cache stable). This
+    # path stays for backward-compatible callers that still want it inline.
 
     # --- Relationships ---
     relationships = _read_file_safe(data_ws / "relationships.md", relationships_budget)
@@ -266,7 +292,6 @@ async def build_agent_context(
         build_identity_section,
         build_executing_actions_section,
         build_tone_style_section,
-        build_skills_catalog_section,
         build_relationships_section,
     )
 
@@ -375,10 +400,13 @@ async def build_agent_context(
 
     # soul personality is now rendered inside identity_section (build_identity_section)
 
-    # Skills and relationships use modular section builders
-    skills_section = build_skills_catalog_section(
-        skills_text,
-        budget_chars=budget_profile.skill_catalog_budget_chars if budget_profile else 4000,
+    # Skills and relationships use modular section builders.
+    # Step 9: catalog defaults to the dynamic suffix (invoker passes
+    # include_skill_catalog=False); only inline-context callers render it here.
+    skills_section = (
+        build_skill_catalog_section_for_agent(agent_id, budget_profile=budget_profile)
+        if include_skill_catalog
+        else ""
     )
     relationships_section = build_relationships_section(
         relationships_text=relationships,

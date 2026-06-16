@@ -510,7 +510,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
                 "self_evolution_requires_repeated_success": _CheckSpec(
                     predicate=lambda: "repeatedly successful" in (resolved.self_evolution_playbook or ""),
                     severity="high",
-                    remediation="Restore the self-evolution playbook rule that only repeatedly successful workflows can be promoted.",
+                    remediation="Restore the self-evolution playbook rule that only repeatedly successful approaches become skill candidates.",
                     success_detail="Self-evolution playbook still requires repeated success before skill promotion.",
                     failure_detail="Self-evolution playbook no longer requires repeated success before save_skill.",
                 ),

@@ -16,6 +16,136 @@ def test_tasks_json_protected_write_points_to_work_ledger(tmp_path):
     assert "read_ledger" in result
 
 
+def test_root_writes_are_rejected_except_governed_entrypoints(tmp_path):
+    from app.services.agent_tool_domains.workspace import _write_file
+
+    for rel_path in ("report.md", "relationships.md", "HEARTBEAT.md", "DREAM.md", "state.json"):
+        result = _write_file(tmp_path, rel_path, "raw bypass")
+
+        assert "workspace/" in result
+        assert not (tmp_path / rel_path).exists()
+
+
+def test_skill_writes_require_folder_skill_md_shape(tmp_path):
+    from app.services.agent_tool_domains.workspace import _write_file
+
+    for rel_path in ("skills/MCP_INSTALLER.md", "skills/.usage.json", "skills/flat-skill"):
+        result = _write_file(tmp_path, rel_path, "raw bypass")
+
+        assert "skills/<slug>/SKILL.md" in result
+        assert not (tmp_path / rel_path).exists()
+
+    ok = _write_file(tmp_path, "skills/deploy-checklist/SKILL.md", "---\nname: deploy-checklist\n---\n")
+
+    assert "Written" in ok
+    assert (tmp_path / "skills" / "deploy-checklist" / "SKILL.md").exists()
+
+
+def test_workspace_tool_paths_reject_sibling_prefix_escape(tmp_path):
+    from app.services.agent_tool_domains.workspace import (
+        _delete_file,
+        _edit_file,
+        _glob_search,
+        _grep_search,
+        _list_files,
+        _read_file,
+        _write_file,
+    )
+
+    ws = tmp_path / "11111111-1111-1111-1111-111111111111"
+    ws.mkdir()
+    sibling = tmp_path / f"{ws.name}-evil"
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("secret token\n", encoding="utf-8")
+
+    escaped_dir = f"workspace/../../{ws.name}-evil"
+    escaped_file = f"{escaped_dir}/secret.txt"
+    escaped_new_file = f"{escaped_dir}/pwn.txt"
+
+    assert "Access denied" in _list_files(ws, escaped_dir)
+    assert "Access denied" in _read_file(ws, escaped_file)
+    assert "Access denied" in _write_file(ws, escaped_new_file, "bad")
+    assert "Access denied" in _edit_file(ws, escaped_file, "secret", "changed")
+    assert "Access denied" in _delete_file(ws, escaped_file)
+    assert "Access denied" in _glob_search(ws, "*", root=escaped_dir)
+    assert "Access denied" in _grep_search(ws, "secret", root=escaped_dir)
+
+    assert not (sibling / "pwn.txt").exists()
+    assert (sibling / "secret.txt").read_text(encoding="utf-8") == "secret token\n"
+
+
+def test_load_skill_rejects_sibling_prefix_escape(tmp_path):
+    from app.services.agent_tool_domains.workspace import _load_skill
+
+    ws = tmp_path / "agent"
+    (ws / "skills").mkdir(parents=True)
+    sibling = ws / "skills-evil"
+    sibling.mkdir()
+    (sibling / "SKILL.md").write_text("---\nname: stolen\n---\n\nsecret skill body\n", encoding="utf-8")
+
+    result = _load_skill(ws, "skills/../skills-evil/SKILL.md")
+
+    assert "Access denied" in result
+    assert "secret skill body" not in result
+
+
+@pytest.mark.asyncio
+async def test_upload_image_rejects_sibling_prefix_escape(monkeypatch, tmp_path):
+    from app.services.agent_tool_domains import image_upload
+
+    agent_id = uuid4()
+    ws = tmp_path / "11111111-1111-1111-1111-111111111111"
+    ws.mkdir()
+    sibling = tmp_path / f"{ws.name}-evil"
+    sibling.mkdir()
+    (sibling / "secret.png").write_bytes(b"png")
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return SimpleNamespace(id=uuid4(), config={"private_key": "private", "url_endpoint": "https://img.example"})
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _query):
+            return _FakeResult()
+
+    class _FakeResponse:
+        status_code = 201
+
+        def json(self):
+            return {"url": "https://cdn.example/pwn.png", "fileId": "file-1", "size": 3}
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr(image_upload, "async_session", lambda: _FakeSession())
+    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+
+    result = await image_upload._upload_image(
+        agent_id,
+        ws,
+        {"file_path": f"../{ws.name}-evil/secret.png"},
+    )
+
+    assert "Access denied" in result
+    assert "cdn.example" not in result
+
+
 @pytest.mark.asyncio
 async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypatch, tmp_path):
     from app.tools.workspace import ensure_workspace
@@ -143,6 +273,35 @@ def test_migrate_all_workspaces_repairs_memory_hygiene(monkeypatch, tmp_path):
     lifecycle_entry = MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id)).get("f1")
     assert lifecycle_entry.metadata["sensitivity"] == "PL2_pii"
     assert lifecycle_entry.access_count == 4
+
+
+def test_migrate_all_workspaces_rehomes_legacy_runtime_and_root_files(monkeypatch, tmp_path):
+    from app.tools.workspace import migrate_all_workspaces
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    (workspace / "traces").mkdir(parents=True)
+    (workspace / "traces" / "invocation_spans.jsonl").write_text("{}\n", encoding="utf-8")
+    (workspace / "state.json").write_text('{"status": "idle"}', encoding="utf-8")
+    (workspace / "focus.md").write_text("# Legacy Focus\n", encoding="utf-8")
+    (workspace / "legacy_report.md").write_text("# Legacy Report\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", tmp_path)
+
+    migrate_all_workspaces()
+
+    assert not (workspace / "traces").exists()
+    assert not (workspace / "state.json").exists()
+    assert not (workspace / "focus.md").exists()
+    assert (workspace / "runtime_artifacts" / "traces" / "invocation_spans.jsonl").read_text(
+        encoding="utf-8"
+    ) == "{}\n"
+    assert (workspace / "runtime_artifacts" / "agent_state.json").read_text(encoding="utf-8") == '{"status": "idle"}'
+    assert (workspace / "memory" / "retired_artifacts" / "focus.md").read_text(encoding="utf-8") == "# Legacy Focus\n"
+    assert not (workspace / "legacy_report.md").exists()
+    assert (
+        workspace / "workspace" / "archived" / "legacy-root-files" / "legacy_report.md"
+    ).read_text(encoding="utf-8") == "# Legacy Report\n"
 
 
 @pytest.mark.asyncio

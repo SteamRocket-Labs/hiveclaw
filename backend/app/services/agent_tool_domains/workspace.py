@@ -48,6 +48,14 @@ def _workspace_error(
     )
 
 
+def _is_within_path(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name: str = "list_files") -> str:
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -56,12 +64,12 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = rel_path[len("enterprise_info") :].lstrip("/")
         target = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(target).startswith(str(enterprise_root)):
+        if not _is_within_path(target, enterprise_root):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
         target = (ws / rel_path) if rel_path else ws
         target = target.resolve()
-        if not str(target).startswith(str(ws.resolve())):
+        if not _is_within_path(target, ws):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
     if not target.exists():
@@ -113,11 +121,11 @@ def _read_file(
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = rel_path[len("enterprise_info") :].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
+        if not _is_within_path(file_path, enterprise_root):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
         file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
+        if not _is_within_path(file_path, ws):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
     if not file_path.exists():
@@ -200,7 +208,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
         return _workspace_error(tool_name, "not_found", "Skill not found: skills directory does not exist.")
 
     def _read_skill_file(path: Path) -> str:
-        if not str(path).startswith(str(skills_dir)):
+        if not _is_within_path(path, skills_dir):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
@@ -441,7 +449,7 @@ def _save_skill(
                 )
             target = (skills_dir / slug / "SKILL.md").resolve()
 
-    if not str(target).startswith(str(skills_dir)):
+    if not _is_within_path(target, skills_dir):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
     if target.exists() and not overwrite:
         rel_path = target.relative_to(ws).as_posix()
@@ -653,11 +661,11 @@ async def _read_document(
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = rel_path[len("enterprise_info") :].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
+        if not _is_within_path(file_path, enterprise_root):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     else:
         file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
+        if not _is_within_path(file_path, ws):
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
     if not file_path.exists():
@@ -779,15 +787,93 @@ _APPEND_ONLY = {"soul.md"}
 # gate, dedup, lifecycle, index). Raw file writes would bypass the gate.
 _GOVERNED_MEMORY_PREFIX = "memory/"
 _GOVERNED_MEMORY_MESSAGE = (
-    "memory/ is governed by the Memory Control Plane — direct file writes are not allowed. "
+    "memory/ is managed by platform services and governed by the Memory Control Plane — "
+    "direct file writes are not allowed. "
     "Use the save_memory tool to add durable memory; it runs privacy/write-gate checks, "
     "semantic dedup, lifecycle records, and index updates for you."
 )
+
+_PLATFORM_MANAGED_PREFIX_MESSAGES = {
+    "logs": (
+        "logs/ is managed by platform services — direct file writes, edits, and deletes are not allowed. "
+        "Use read_file, list_files, glob_search, or grep_search when you need log evidence."
+    ),
+    "evolution": (
+        "evolution/ is managed by platform services — direct file writes, edits, and deletes are not allowed. "
+        "Use the skill/evolution tools instead of editing promotion ledgers or candidates by hand."
+    ),
+    "runtime_artifacts": (
+        "runtime_artifacts/ is managed by platform services — direct file writes, edits, and deletes are not allowed. "
+        "Read it only as recovery or audit evidence when a tool result points there."
+    ),
+}
+
+_ROOT_WRITE_ALLOWLIST = {"soul.md"}
+_ROOT_PREFIX_ALLOWLIST = {"workspace", "skills", "subagents", "enterprise_info"}
+_ROOT_MANAGED_FILE_MESSAGES = {
+    "relationships.md": "relationships.md is generated from the Relationships control plane; update relationships through the Relationships UI/API.",
+    "HEARTBEAT.md": "HEARTBEAT.md is a platform template; heartbeat protocol updates must ship through system templates.",
+    "DREAM.md": "DREAM.md is a platform template; dream protocol updates must ship through system templates.",
+    "state.json": "state.json is a retired legacy runtime snapshot; runtime state belongs under runtime_artifacts/.",
+}
 
 
 def _is_governed_memory_path(rel_path: str) -> bool:
     normalized = rel_path.strip("/").replace("\\", "/")
     return normalized == "memory" or normalized.startswith(_GOVERNED_MEMORY_PREFIX)
+
+
+def _managed_system_path_message(rel_path: str) -> str | None:
+    normalized = rel_path.strip("/").replace("\\", "/")
+    if _is_governed_memory_path(normalized):
+        return _GOVERNED_MEMORY_MESSAGE
+    top_level = normalized.split("/", 1)[0]
+    return _PLATFORM_MANAGED_PREFIX_MESSAGES.get(top_level)
+
+
+def _root_write_guard_message(rel_path: str) -> str | None:
+    normalized = rel_path.strip("/").replace("\\", "/")
+    if not normalized:
+        return "Missing file path. Write deliverables under workspace/."
+    if normalized in _ROOT_WRITE_ALLOWLIST:
+        return None
+    protected_message = _WRITE_PROTECTED.get(normalized)
+    if protected_message:
+        return protected_message
+    managed_file_message = _ROOT_MANAGED_FILE_MESSAGES.get(normalized)
+    if managed_file_message:
+        return managed_file_message
+    top_level = normalized.split("/", 1)[0]
+    if "/" in normalized and top_level in _ROOT_PREFIX_ALLOWLIST:
+        return None
+    if "/" not in normalized:
+        return "Top-level work files are not allowed. Write deliverables under workspace/ (for example workspace/report.md)."
+    if top_level not in _ROOT_PREFIX_ALLOWLIST and not _managed_system_path_message(normalized):
+        return (
+            f"{top_level}/ is not a writable agent file namespace. Use workspace/ for deliverables, "
+            "skills/<slug>/SKILL.md for skills, or a dedicated platform API."
+        )
+    return None
+
+
+def _skill_package_path_guard_message(rel_path: str, *, operation: str) -> str | None:
+    normalized = rel_path.strip("/").replace("\\", "/")
+    if not normalized.startswith("skills/"):
+        return None
+    tail = normalized[len("skills/") :].strip("/")
+    if not tail:
+        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
+    parts = [part for part in tail.split("/") if part]
+    if not parts:
+        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
+    slug = parts[0]
+    if slug.startswith(".") or "." in slug:
+        return "Skill packages must be folders named by slug. Use skills/<slug>/SKILL.md."
+    if any(part.startswith(".") and part != ".gitkeep" for part in parts[1:]):
+        return "Hidden skill sidecars are platform-managed. Use skills/<slug>/SKILL.md and visible package resources."
+    if len(parts) == 1 and operation != "delete":
+        return "Skill definitions must be files under a skill folder. Use skills/<slug>/SKILL.md."
+    return None
 
 
 def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_file") -> str:
@@ -803,12 +889,35 @@ def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_f
     if _blocked:
         return _workspace_error(tool_name, "auth_or_permission", _blocked)
 
-    if _is_governed_memory_path(rel_path):
+    managed_message = _managed_system_path_message(rel_path)
+    if managed_message:
         return _workspace_error(
             tool_name,
             "auth_or_permission",
-            _GOVERNED_MEMORY_MESSAGE,
-            actionable_hint="Call save_memory with content + category (and optional container_candidate).",
+            managed_message,
+            actionable_hint=(
+                "Call save_memory with content + category (and optional container_candidate)."
+                if _is_governed_memory_path(rel_path)
+                else "Write deliverables under workspace/ unless a dedicated tool returns another writable path."
+            ),
+        )
+
+    root_guard_message = _root_write_guard_message(rel_path)
+    if root_guard_message:
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            root_guard_message,
+            actionable_hint="Use a path under workspace/ for user-facing work artifacts.",
+        )
+
+    skill_guard_message = _skill_package_path_guard_message(rel_path, operation="write")
+    if skill_guard_message:
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            skill_guard_message,
+            actionable_hint="Create skills as skills/<slug>/SKILL.md with optional visible resource folders.",
         )
 
     # soul.md is append-only: new content is appended under an evolution section
@@ -844,7 +953,7 @@ def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_f
         # If file doesn't exist yet, fall through to normal write
 
     file_path = (ws / rel_path).resolve()
-    if not str(file_path).startswith(str(ws.resolve())):
+    if not _is_within_path(file_path, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
 
     try:
@@ -863,15 +972,36 @@ def _edit_file(
     replace_all: bool = False,
     tool_name: str = "edit_file",
 ) -> str:
-    if _is_governed_memory_path(rel_path):
+    managed_message = _managed_system_path_message(rel_path)
+    if managed_message:
         return _workspace_error(
             tool_name,
             "auth_or_permission",
-            _GOVERNED_MEMORY_MESSAGE,
-            actionable_hint="Call save_memory with content + category (and optional container_candidate).",
+            managed_message,
+            actionable_hint=(
+                "Call save_memory with content + category (and optional container_candidate)."
+                if _is_governed_memory_path(rel_path)
+                else "Create or update normal work artifacts under workspace/ instead."
+            ),
+        )
+    root_guard_message = _root_write_guard_message(rel_path)
+    if root_guard_message:
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            root_guard_message,
+            actionable_hint="Edit normal work artifacts under workspace/.",
+        )
+    skill_guard_message = _skill_package_path_guard_message(rel_path, operation="edit")
+    if skill_guard_message:
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            skill_guard_message,
+            actionable_hint="Edit canonical skill package files such as skills/<slug>/SKILL.md.",
         )
     file_path = (ws / rel_path).resolve()
-    if not str(file_path).startswith(str(ws.resolve())):
+    if not _is_within_path(file_path, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
@@ -902,7 +1032,7 @@ def _edit_file(
 
 def _glob_search(ws: Path, pattern: str, root: str = "", tool_name: str = "glob_search") -> str:
     search_root = (ws / root).resolve() if root else ws.resolve()
-    if not str(search_root).startswith(str(ws.resolve())):
+    if not _is_within_path(search_root, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not search_root.exists():
         return _workspace_error(tool_name, "not_found", f"Directory not found: {root or '/'}")
@@ -911,7 +1041,7 @@ def _glob_search(ws: Path, pattern: str, root: str = "", tool_name: str = "glob_
     try:
         for path in sorted(search_root.glob(pattern)):
             resolved = path.resolve()
-            if not str(resolved).startswith(str(ws.resolve())):
+            if not _is_within_path(resolved, ws):
                 continue
             matches.append(resolved.relative_to(ws).as_posix())
             if len(matches) >= 100:
@@ -928,7 +1058,7 @@ def _glob_search(ws: Path, pattern: str, root: str = "", tool_name: str = "glob_
 
 def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, tool_name: str = "grep_search") -> str:
     search_root = (ws / root).resolve() if root else ws.resolve()
-    if not str(search_root).startswith(str(ws.resolve())):
+    if not _is_within_path(search_root, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not search_root.exists():
         return _workspace_error(tool_name, "not_found", f"Directory not found: {root or '/'}")
@@ -1055,8 +1185,39 @@ def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file") -> str
     if rel_path.strip("/") in protected:
         return _workspace_error(tool_name, "auth_or_permission", f"{rel_path} cannot be deleted (protected)")
 
+    managed_message = _managed_system_path_message(rel_path)
+    if managed_message:
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            managed_message,
+            actionable_hint=(
+                "Memory entries must be corrected through governed memory workflows."
+                if _is_governed_memory_path(rel_path)
+                else "Only delete normal work artifacts under workspace/."
+            ),
+        )
+
+    root_guard_message = _root_write_guard_message(rel_path)
+    if root_guard_message:
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            root_guard_message,
+            actionable_hint="Only delete normal work artifacts under workspace/.",
+        )
+
+    skill_guard_message = _skill_package_path_guard_message(rel_path, operation="delete")
+    if skill_guard_message:
+        return _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            skill_guard_message,
+            actionable_hint="Delete whole skill folders or visible files inside a canonical skill package.",
+        )
+
     file_path = (ws / rel_path).resolve()
-    if not str(file_path).startswith(str(ws.resolve())):
+    if not _is_within_path(file_path, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")

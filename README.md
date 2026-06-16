@@ -251,8 +251,8 @@ It is still pre-1.0 in API and schema stability, so upgrades should follow Alemb
 
 Three layers, in increasing order of effort:
 
-1. **Skills** — Markdown files with frontmatter that an agent can load on demand. Lowest barrier to entry; no code needed.
-2. **MCP servers** — Import any [Model Context Protocol](https://modelcontextprotocol.io) server through the UI; tools auto-register as a dynamic pack.
+1. **Skills** — Progressive-disclosure capability capsules an agent can load on demand. A folder-based Skill can contain instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions; loading it adds context/guidance only, while executable components still run through the governed workflow, subagent/delegation, or sandbox/code runtime.
+2. **MCP servers** — Import any [Model Context Protocol](https://modelcontextprotocol.io) server through the UI; tools become discoverable as deferred runtime tool groups.
 3. **Native tools** — Add a handler in `backend/app/tools/handlers/`, register it in the runtime, write a governance entry. This is what's needed for tools that touch new credential types or need custom streaming.
 
 ## Documentation

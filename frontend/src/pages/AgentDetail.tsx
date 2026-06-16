@@ -4,8 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import ConfirmModal from '../components/ConfirmModal';
-import type { FileBrowserApi } from '../components/FileBrowser';
-import FileBrowser from '../components/FileBrowser';
+import FileBrowser, { buildNewSkillFilePath, type FileBrowserApi } from '../components/FileBrowser';
 import PromptModal from '../components/PromptModal';
 import AgentApprovalsSection from './agent-detail/AgentApprovalsSection';
 import AgentWorkflowsSection from './agent-detail/AgentWorkflowsSection';
@@ -1686,9 +1685,10 @@ function AgentDetailInner() {
                         setFileDraft('');
                     } else if (action === 'newSkill') {
                         const template = `---\nname: ${value}\ndescription: Describe what this skill does\n---\n\n# ${value}\n\n## Overview\nDescribe the purpose and when to use this skill.\n\n## Process\n1. Step one\n2. Step two\n\n## Output Format\nDescribe the expected output format.\n`;
-                        await fileApi.write(id!, `skills/${value}/SKILL.md`, template);
+                        const skillPath = buildNewSkillFilePath('skills', value);
+                        await fileApi.write(id!, skillPath, template);
                         queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                        setViewingFile(`skills/${value}/SKILL.md`);
+                        setViewingFile(skillPath);
                         setFileEditing(true);
                         setFileDraft(template);
                     }

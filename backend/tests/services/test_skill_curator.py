@@ -43,15 +43,33 @@ def test_usage_store_roundtrip(tmp_path: Path) -> None:
     reloaded = load_skill_usage(tmp_path)
     assert reloaded["deploy"]["use_count"] == 3
     assert reloaded["deploy"]["created_by"] == "agent"
-    assert (tmp_path / "skills" / ".usage.json").exists()
+    assert (tmp_path / "evolution" / "skill_usage.json").exists()
+    assert not (tmp_path / "skills" / ".usage.json").exists()
+
+
+def test_load_skill_usage_migrates_legacy_sidecar(tmp_path: Path) -> None:
+    from app.services.skill_curator import load_skill_usage
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / ".usage.json").write_text(
+        '{"deploy": {"created_by": "agent", "use_count": 2, "state": "active"}}',
+        encoding="utf-8",
+    )
+
+    usage = load_skill_usage(tmp_path)
+
+    assert usage["deploy"]["use_count"] == 2
+    assert (tmp_path / "evolution" / "skill_usage.json").exists()
+    assert not (skills_dir / ".usage.json").exists()
 
 
 def test_load_skill_usage_tolerates_corrupt_file(tmp_path: Path) -> None:
     from app.services.skill_curator import load_skill_usage
 
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    (skills_dir / ".usage.json").write_text("{not valid json", encoding="utf-8")
+    evolution_dir = tmp_path / "evolution"
+    evolution_dir.mkdir(parents=True, exist_ok=True)
+    (evolution_dir / "skill_usage.json").write_text("{not valid json", encoding="utf-8")
 
     assert load_skill_usage(tmp_path) == {}
 

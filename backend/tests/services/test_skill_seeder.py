@@ -98,3 +98,43 @@ def test_remove_retired_builtin_skill_dirs_continues_after_permission_error(tmp_
     assert removed == ["topic-deep-dive"]
     assert blocked_dir.exists()
     assert not removable_dir.exists()
+
+
+def test_remove_legacy_flat_mcp_installer_file(tmp_path):
+    from app.services.skill_seeder import remove_legacy_flat_skill_files
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    legacy = skills_dir / "MCP_INSTALLER.md"
+    canonical = skills_dir / "mcp-installer" / "SKILL.md"
+    canonical.parent.mkdir(parents=True)
+    legacy.write_text("# legacy", encoding="utf-8")
+    canonical.write_text("# canonical", encoding="utf-8")
+
+    removed = remove_legacy_flat_skill_files(tmp_path)
+
+    assert removed == ["skills/MCP_INSTALLER.md"]
+    assert not legacy.exists()
+    assert canonical.exists()
+
+
+def test_remove_legacy_flat_hr_create_employee_files(tmp_path):
+    from app.services.skill_seeder import remove_legacy_flat_skill_files
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    legacy = skills_dir / "CREATE_EMPLOYEE.md"
+    legacy_resource_dir = skills_dir / "CREATE_EMPLOYEE" / "evals"
+    canonical = skills_dir / "create-employee" / "SKILL.md"
+    legacy_resource_dir.mkdir(parents=True)
+    canonical.parent.mkdir(parents=True)
+    legacy.write_text("# legacy", encoding="utf-8")
+    (legacy_resource_dir / "eval.yaml").write_text("cases: []\n", encoding="utf-8")
+    canonical.write_text("# canonical", encoding="utf-8")
+
+    removed = remove_legacy_flat_skill_files(tmp_path)
+
+    assert removed == ["skills/CREATE_EMPLOYEE.md", "skills/CREATE_EMPLOYEE"]
+    assert not legacy.exists()
+    assert not (skills_dir / "CREATE_EMPLOYEE").exists()
+    assert canonical.exists()

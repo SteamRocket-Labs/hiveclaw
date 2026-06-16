@@ -78,11 +78,15 @@ class SkillRegistry:
 
         header = (
             "You have the following skills available. "
-            "Each skill defines specific instructions for a task domain."
+            "Each skill is a progressive-disclosure capability capsule for a task domain."
         )
         footer = (
-            "\nWhen a user request matches a skill, FIRST call `load_skill` "
-            "with the Skill name above to load the full instructions.\n"
+            "\nA skill can package references, templates, scripts, workflow definitions, and subagent definitions. "
+            "Loading a skill adds context and guidance only. Executable components still run through their governed "
+            "runtime: workflows via `preview_workflow`/`start_workflow`, subagents via "
+            "`spawn_subagent`/`delegate_to_agent`, and scripts through approved sandbox/code execution.\n"
+            "When a user request matches a skill, FIRST call `load_skill` "
+            "with the Skill name above to load its instructions and component guidance.\n"
             "Load only the skill that matches the current task.\n"
             "Do NOT speculatively load multiple skills before deciding which one is relevant.\n"
             "Do NOT guess what the skill contains — always read it first.\n"

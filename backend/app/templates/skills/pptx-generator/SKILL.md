@@ -58,7 +58,7 @@ execution contract: one narrow `execute_code` render pass per task.
 Use `read_document` (preferred) or `execute_code` with `python-pptx` to extract slide text and basic structure.
 
 ### 2. Create a new deck
-Use `execute_code` with `python-pptx` to generate the deck deterministically, save under `workspace/`.
+Use `execute_code` with `python-pptx` to generate the deck deterministically. Inside `execute_code`, the current directory is already `workspace/`, so write `deck.pptx` rather than `workspace/deck.pptx`; deliver with `send_channel_file(file_path="workspace/deck.pptx")`.
 
 ### 3. Edit an existing deck
 Read first, then apply the narrowest possible slide edit with `execute_code`.

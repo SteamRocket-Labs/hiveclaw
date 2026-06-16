@@ -1736,8 +1736,10 @@ def _build_restoration_context(
     # ── 2.25: Structured session continuity artifacts ──
     if _resolved_ws and parts:
         for rel_path, label in [
-            ("workspace/session_memory.md", "Session Memory"),
-            ("workspace/compaction_summary.md", "Latest Compaction Summary"),
+            ("runtime_artifacts/session_memory.md", "Session Memory"),
+            ("runtime_artifacts/compaction_summary.md", "Latest Compaction Summary"),
+            ("workspace/session_memory.md", "Legacy Session Memory"),
+            ("workspace/compaction_summary.md", "Legacy Compaction Summary"),
         ]:
             fpath = _resolved_ws / rel_path
             if not fpath.exists():
@@ -2509,9 +2511,11 @@ class AgentKernel:
                             _P("/tmp/hive_workspaces") / str(request.agent_id),
                         ]:
                             if _root.exists():
-                                _cfile = _root / "workspace" / "compaction_summary.md"
+                                _cfile = _root / "runtime_artifacts" / "compaction_summary.md"
                                 _cfile.parent.mkdir(parents=True, exist_ok=True)
                                 _cfile.write_text(_content, encoding="utf-8")
+                                _legacy_cfile = _root / "workspace" / "compaction_summary.md"
+                                _legacy_cfile.unlink(missing_ok=True)
                     except Exception as _exc:
                         logger.warning("[Kernel] Auto-save compaction summary failed: %s", _exc)
 
@@ -2540,7 +2544,7 @@ class AgentKernel:
                                 _P("/tmp/hive_workspaces") / str(request.agent_id),
                             ]:
                                 if _root.exists():
-                                    _mfile = _root / "workspace" / "recovery_manifest.json"
+                                    _mfile = _root / "runtime_artifacts" / "recovery_manifest.json"
                                     _mfile.parent.mkdir(parents=True, exist_ok=True)
                                     _mfile.write_text(
                                         _json.dumps(
@@ -2561,6 +2565,7 @@ class AgentKernel:
                                         ),
                                         encoding="utf-8",
                                     )
+                                    (_root / "workspace" / "recovery_manifest.json").unlink(missing_ok=True)
                     except Exception as _rec_exc:
                         logger.warning(
                             "[Kernel] Recovery manifest persistence failed (non-fatal): %s",

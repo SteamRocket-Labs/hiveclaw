@@ -337,7 +337,7 @@ export default function WorkspaceSkillsSection() {
       <FileBrowser
         key={refreshKey}
         api={adapter}
-        features={{ newFile: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }}
+        features={{ newSkill: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }}
         title={t('agent.skills.skillFiles', 'Skill Files')}
         onRefresh={() => setRefreshKey((value) => value + 1)}
       />

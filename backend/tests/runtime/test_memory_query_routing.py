@@ -301,9 +301,9 @@ async def test_resolve_memory_context_injects_skill_evolution_digest(monkeypatch
     from app.runtime.invoker import AgentInvocationRequest
 
     agent_id = uuid4()
-    skills_dir = tmp_path / str(agent_id) / "skills"
-    skills_dir.mkdir(parents=True)
-    (skills_dir / ".usage.json").write_text(
+    usage_dir = tmp_path / str(agent_id) / "evolution"
+    usage_dir.mkdir(parents=True)
+    (usage_dir / "skill_usage.json").write_text(
         json.dumps(
             {
                 "deploy-checklist": {

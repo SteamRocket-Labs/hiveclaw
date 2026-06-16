@@ -287,6 +287,31 @@ def test_edit_file_tool_refuses_t3_memory_paths(tmp_path: Path) -> None:
     assert "tampered" not in target.read_text(encoding="utf-8")
 
 
+def test_file_tools_refuse_platform_managed_system_paths(tmp_path: Path) -> None:
+    from app.services.agent_tool_domains.workspace import _delete_file, _edit_file, _write_file
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    for rel in ("logs/session.md", "evolution/skill_candidates/proposal.md"):
+        out = _write_file(ws, rel, "manual bypass")
+        assert "managed by platform services" in out
+        assert not (ws / rel).exists()
+
+    for rel in ("logs/session.md", "evolution/skill_candidates/proposal.md", "memory/feedback.md"):
+        target = ws / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("platform owned content", encoding="utf-8")
+
+        edit_out = _edit_file(ws, rel, old_text="platform owned", new_text="manual bypass")
+        assert "managed by platform services" in edit_out
+        assert "manual bypass" not in target.read_text(encoding="utf-8")
+
+        delete_out = _delete_file(ws, rel)
+        assert "managed by platform services" in delete_out
+        assert target.exists()
+
+
 def test_workspace_files_outside_memory_still_writable(tmp_path: Path) -> None:
     from app.services.agent_tool_domains.workspace import _write_file
 

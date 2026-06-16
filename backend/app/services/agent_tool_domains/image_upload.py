@@ -11,6 +11,14 @@ from app.database import async_session
 logger = logging.getLogger(__name__)
 
 
+def _is_within_path(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     """Upload an image to ImageKit CDN and return the public URL.
 
@@ -71,7 +79,7 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     if file_path:
         # Read from workspace
         full_path = (ws / file_path).resolve()
-        if not str(full_path).startswith(str(ws)):
+        if not _is_within_path(full_path, ws):
             return "❌ Access denied: path is outside the workspace"
         if not full_path.exists():
             return f"❌ File not found: {file_path}"

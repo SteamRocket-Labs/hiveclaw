@@ -112,9 +112,9 @@ def _strip_primary_heading(content: str) -> str:
 def _load_skills_index(agent_id: uuid.UUID, *, budget_chars: int = 8000) -> str:
     """Load skill index (name + description) from skills/ directory.
 
-    Supports two formats:
-    - Flat file:   skills/my-skill.md
-    - Folder:      skills/my-skill/SKILL.md  (directory-style, with optional scripts/, references/)
+    Supports the canonical folder format plus legacy flat-file compatibility:
+    - Canonical:   skills/my-skill/SKILL.md  (with optional scripts/, references/)
+    - Legacy read-only fallback: skills/my-skill.md
 
     Uses progressive disclosure: only name+description go into the system
     prompt. The model is instructed to call read_file to load full content

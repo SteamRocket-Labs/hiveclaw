@@ -251,8 +251,8 @@ Hive 现在分成三层界面：
 
 按工作量从小到大三层：
 
-1. **Skills（技能）** —— 带 frontmatter 的 Markdown 文件，Agent 按需加载。门槛最低，无需写代码。
-2. **MCP Server** —— 通过 UI 导入任意 [Model Context Protocol](https://modelcontextprotocol.io) Server，工具自动注册为动态能力包。
+1. **Skills（技能）** —— Agent 按需加载的渐进式能力胶囊。文件夹型 Skill 可以包含指令、引用资料、模板、脚本、eval、workflow 定义和 subagent 定义；加载 Skill 只增加上下文和指导，真正执行仍走受治理的 workflow、subagent/delegation 或 sandbox/code runtime。
+2. **MCP Server** —— 通过 UI 导入任意 [Model Context Protocol](https://modelcontextprotocol.io) Server，工具会作为 deferred runtime tool group 被发现和启用。
 3. **原生工具** —— 在 `backend/app/tools/handlers/` 加一个 handler，注册到 runtime，写一条治理规则。如果你的工具要用新型凭证或自定义流式协议，走这条路。
 
 ## 文档

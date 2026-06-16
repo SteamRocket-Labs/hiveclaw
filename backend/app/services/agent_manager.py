@@ -259,7 +259,7 @@ class AgentManager:
                 ignore=shutil.ignore_patterns(".*"),
             )
             # Ensure required dirs exist even if template was incomplete
-            for d in ["memory", "memory/learnings", "skills", "evolution", "workspace"]:
+            for d in ["memory", "memory/learnings", "skills", "evolution", "workspace", "runtime_artifacts"]:
                 (agent_dir / d).mkdir(parents=True, exist_ok=True)
         else:
             # No template dir (local dev) — create minimal workspace structure
@@ -272,6 +272,7 @@ class AgentManager:
             (agent_dir / "memory" / "learnings").mkdir(exist_ok=True)
             (agent_dir / "skills").mkdir(exist_ok=True)
             (agent_dir / "evolution").mkdir(exist_ok=True)
+            (agent_dir / "runtime_artifacts").mkdir(exist_ok=True)
             (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
 
         # Customize soul.md
@@ -338,14 +339,6 @@ class AgentManager:
                 rel_lines.append("_暂无关系信息。_")
             rel_path.write_text("\n".join(rel_lines), encoding="utf-8")
 
-        # Customize state.json
-        state_path = agent_dir / "state.json"
-        if state_path.exists():
-            state = json.loads(state_path.read_text())
-            state["agent_id"] = str(agent.id)
-            state["name"] = agent.name
-            state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2))
-
         # Push default builtin skills (web-research, workspace-guide, etc.) into this agent's workspace
         await self._push_default_skills_to_agent(db, agent.id, agent_dir)
 
@@ -364,11 +357,24 @@ class AgentManager:
                 continue
             skill_folder = skills_dir / skill.folder_name
             skill_folder.mkdir(parents=True, exist_ok=True)
+            skill_folder_resolved = skill_folder.resolve()
             for sf in skill.files:
                 fp = (skill_folder / sf.path).resolve()
+                try:
+                    fp.relative_to(skill_folder_resolved)
+                except ValueError:
+                    continue
                 fp.parent.mkdir(parents=True, exist_ok=True)
                 fp.write_text(sf.content, encoding="utf-8")
             logger.info(f"[AgentManager] Pushed skill '{skill.name}' to agent {agent_id}")
+        try:
+            from app.services.skill_seeder import remove_legacy_flat_skill_files
+
+            removed = remove_legacy_flat_skill_files(agent_dir)
+            if removed:
+                logger.info(f"[AgentManager] Removed legacy flat skill files for {agent_id}: {removed}")
+        except Exception as exc:
+            logger.warning(f"[AgentManager] Legacy flat skill cleanup failed for {agent_id}: {exc}")
 
     async def _resolve_fallback_model_string(self, agent: Agent) -> str:
         """Resolve a model string from the tenant's first available LLM — no hardcoded provider."""

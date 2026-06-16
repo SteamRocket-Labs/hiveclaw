@@ -115,7 +115,7 @@ def append_invocation_span(
         "metadata": metadata,
     }
     _record_span_metric(span_type=span_type, status=status, duration_ms=duration_ms, metadata=metadata)
-    trace_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "traces"
+    trace_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "runtime_artifacts" / "traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
     with (trace_dir / "invocation_spans.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")

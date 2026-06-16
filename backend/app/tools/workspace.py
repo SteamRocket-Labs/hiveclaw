@@ -26,6 +26,18 @@ WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 
 # Single source of truth for HEARTBEAT.md: app/templates/HEARTBEAT.md
 _HEARTBEAT_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "HEARTBEAT.md"
+_PLATFORM_ROOT_FILES = {"soul.md", "HEARTBEAT.md", "relationships.md", "tasks.json", "DREAM.md"}
+_PLATFORM_ROOT_DIRS = {
+    "workspace",
+    "skills",
+    "memory",
+    "evolution",
+    "runtime_artifacts",
+    "logs",
+    "enterprise_info",
+    "subagents",
+}
+_LEGACY_ROOT_WORK_FILES_DIR = Path("workspace") / "archived" / "legacy-root-files"
 
 _EVOLUTION_SCORECARD_SEED = """\
 # Evolution Scorecard
@@ -98,6 +110,111 @@ _HEARTBEAT_MIGRATION_MARKER = "<decision_matrix>"
 _DEPRECATED_SKILLS = ("self-improving-agent", "proactive-agent")
 
 
+def _move_legacy_file_if_needed(source: Path, target: Path) -> bool:
+    if not source.is_file():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not target.exists():
+            source.replace(target)
+        else:
+            source.unlink()
+    except OSError as exc:
+        logger.warning("[migrate] Failed to move legacy file %s -> %s: %s", source, target, exc)
+        return False
+    return True
+
+
+def _move_legacy_directory_if_needed(source: Path, target: Path) -> bool:
+    if not source.is_dir():
+        return False
+    target.mkdir(parents=True, exist_ok=True)
+    moved_any = False
+    for item in list(source.iterdir()):
+        destination = target / item.name
+        try:
+            if item.is_dir():
+                if destination.exists():
+                    for nested in item.rglob("*"):
+                        if not nested.is_file():
+                            continue
+                        rel = nested.relative_to(item)
+                        nested_destination = destination / rel
+                        nested_destination.parent.mkdir(parents=True, exist_ok=True)
+                        if nested_destination.exists():
+                            nested_destination.unlink()
+                        nested.replace(nested_destination)
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.replace(destination)
+            else:
+                if destination.exists():
+                    if item.name.endswith(".jsonl"):
+                        with destination.open("a", encoding="utf-8") as handle:
+                            handle.write(item.read_text(encoding="utf-8", errors="replace"))
+                    item.unlink()
+                else:
+                    item.replace(destination)
+            moved_any = True
+        except OSError as exc:
+            logger.warning("[migrate] Failed to move legacy directory entry %s -> %s: %s", item, destination, exc)
+    try:
+        source.rmdir()
+    except OSError:
+        pass
+    return moved_any
+
+
+def _migrate_workspace_runtime_artifacts(agent_dir: Path) -> list[str]:
+    moved: list[str] = []
+    mappings = {
+        "workspace/session_memory.md": "runtime_artifacts/session_memory.md",
+        "workspace/compaction_summary.md": "runtime_artifacts/compaction_summary.md",
+        "workspace/recovery_manifest.json": "runtime_artifacts/recovery_manifest.json",
+        "skills/.usage.json": "evolution/skill_usage.json",
+        "state.json": "runtime_artifacts/agent_state.json",
+    }
+    for source_rel, target_rel in mappings.items():
+        if _move_legacy_file_if_needed(agent_dir / source_rel, agent_dir / target_rel):
+            moved.append(f"{source_rel}->{target_rel}")
+    if _move_legacy_directory_if_needed(agent_dir / "traces", agent_dir / "runtime_artifacts" / "traces"):
+        moved.append("traces/->runtime_artifacts/traces/")
+    return moved
+
+
+def _unique_destination(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise OSError(f"Cannot find available archive path for {path}")
+
+
+def _migrate_legacy_root_work_files(agent_dir: Path) -> list[str]:
+    """Move legacy user work files out of the agent root into workspace/archive."""
+    moved: list[str] = []
+    archive_dir = agent_dir / _LEGACY_ROOT_WORK_FILES_DIR
+    for child in sorted(agent_dir.iterdir(), key=lambda item: item.name):
+        if child.name.startswith(".") or child.is_symlink():
+            continue
+        if child.is_dir():
+            continue
+        if child.name in _PLATFORM_ROOT_FILES:
+            continue
+        if child.name in _PLATFORM_ROOT_DIRS:
+            continue
+        target = _unique_destination(archive_dir / child.name)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            child.replace(target)
+            moved.append(f"{child.name}->{target.relative_to(agent_dir).as_posix()}")
+        except OSError as exc:
+            logger.warning("[migrate] Failed to archive legacy root work file %s -> %s: %s", child, target, exc)
+    return moved
+
+
 def migrate_all_workspaces() -> None:
     """One-time migration: update HEARTBEAT.md + remove deprecated skills for all agents."""
     if not WORKSPACE_ROOT.exists():
@@ -119,6 +236,13 @@ def migrate_all_workspaces() -> None:
             continue
 
         migrate_legacy_memory_tree(WORKSPACE_ROOT, agent_uuid)
+        moved_runtime_artifacts = _migrate_workspace_runtime_artifacts(agent_dir)
+        if moved_runtime_artifacts:
+            logger.info(
+                "[migrate] Runtime artifact paths for %s: %s",
+                agent_dir.name,
+                ", ".join(moved_runtime_artifacts),
+            )
         hygiene_report = repair_agent_memory_hygiene(WORKSPACE_ROOT, agent_uuid, dry_run=False)
         if hygiene_report.get("changed"):
             logger.info(
@@ -127,6 +251,13 @@ def migrate_all_workspaces() -> None:
                 hygiene_report.get("entries_migrated", 0),
                 len(hygiene_report.get("retired_artifacts", [])),
                 len(hygiene_report.get("dead_stubs", [])),
+            )
+        moved_root_work_files = _migrate_legacy_root_work_files(agent_dir)
+        if moved_root_work_files:
+            logger.info(
+                "[migrate] Archived legacy root work files for %s: %s",
+                agent_dir.name,
+                ", ".join(moved_root_work_files),
             )
 
         try:
@@ -170,6 +301,14 @@ def migrate_all_workspaces() -> None:
                     logger.info("[migrate] Removed deprecated skill %s from %s", skill_name, agent_dir.name)
                 except Exception as e:
                     logger.warning("[migrate] Failed to remove %s from %s: %s", skill_name, agent_dir.name, e)
+        try:
+            from app.services.skill_seeder import remove_legacy_flat_skill_files
+
+            removed_flat = remove_legacy_flat_skill_files(agent_dir)
+            if removed_flat:
+                logger.info("[migrate] Removed legacy flat skill files from %s: %s", agent_dir.name, removed_flat)
+        except Exception as exc:
+            logger.warning("[migrate] Legacy flat skill cleanup failed for %s: %s", agent_dir.name, exc)
 
     if migrated:
         logger.info("[migrate] Updated HEARTBEAT.md for %d agent(s)", migrated)
@@ -192,6 +331,8 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     (ws / "memory").mkdir(exist_ok=True)
     (ws / "memory" / "learnings").mkdir(exist_ok=True)
     (ws / "evolution").mkdir(exist_ok=True)
+    (ws / "runtime_artifacts").mkdir(exist_ok=True)
+    _migrate_workspace_runtime_artifacts(ws)
     ensure_t3_layout(WORKSPACE_ROOT, agent_id)
     ensure_t2_layout(WORKSPACE_ROOT, agent_id)
 

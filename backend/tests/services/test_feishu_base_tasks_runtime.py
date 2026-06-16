@@ -810,3 +810,45 @@ async def test_feishu_base_record_upload_attachment_uses_workspace_file(
     assert "file_1" in result
     assert "Q1-final.pdf" in result
     assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_record_upload_attachment_rejects_sibling_prefix_escape(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    agent_id = "11111111-1111-1111-1111-111111111111"
+    workspace_root = tmp_path / "agents"
+    workspace = workspace_root / agent_id
+    workspace.mkdir(parents=True)
+    sibling = workspace_root / f"{agent_id}-evil"
+    sibling.mkdir()
+    (sibling / "secret.pdf").write_text("secret", encoding="utf-8")
+
+    async def fake_cli_available() -> bool:
+        raise AssertionError("CLI must not run for escaped workspace path")
+
+    async def fake_get_feishu_token(_agent_id):
+        return None
+
+    monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(
+        "app.services.agent_tool_domains.feishu_base.get_settings",
+        lambda: type("S", (), {"AGENT_DATA_DIR": str(workspace_root)})(),
+    )
+
+    result = await feishu_base._feishu_base_record_upload_attachment(
+        agent_id,
+        {
+            "base_token": "app-token",
+            "table_id": "tbl_1",
+            "record_id": "rec_1",
+            "field_id": "附件",
+            "file_path": f"../{agent_id}-evil/secret.pdf",
+        },
+    )
+
+    assert "<tool_error>" in result
+    assert "inside the agent workspace" in result

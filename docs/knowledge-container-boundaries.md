@@ -183,7 +183,7 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
 
 **来自 codex（已并入正文修正）**：①soul cap 20 是 prompt 指引非 runtime 硬 cap；②memory 两级披露是目标协议（assembler 未协议化）；③**skill_distiller 与 workflow_promote_suggestions 交叉分流风险**——同一个 repeated workflow signal 可能被两边各推一份，需要显式分流器；④soul 直写纪律与 filesystem tool 描述冲突；⑤system skills 的 `<workflows>` 标签与产品 Workflow 撞名。
 
-**来自 hermes**：①curator 是 **agent fork** 而非规则引擎（AI-native 范本——长期方向：dream Step 2 的 pattern promotion 也应由 LLM 主导）；②skill 带 `.usage.json` 定量遥测（use_count/last_used_at）——晋升判定有数据不靠感觉；③pin + 变更前自动备份（用户不怕 agent 动自己的 skill）；④MEMORY 与 USER 拆分（Hive T3 已有 user.md ✓）。
+**来自 hermes**：①curator 是 **agent fork** 而非规则引擎（AI-native 范本——长期方向：dream Step 2 的 pattern promotion 也应由 LLM 主导）；②skill 带 sidecar 定量遥测（use_count/last_used_at）——晋升判定有数据不靠感觉；Hive 落点是 `evolution/skill_usage.json`，不把 `.usage.json` 放进 `skills/`；③pin + 变更前自动备份（用户不怕 agent 动自己的 skill）；④MEMORY 与 USER 拆分（Hive T3 已有 user.md ✓）。
 
 **来自 GenericAgent**：①**按需硬化**哲学（见 8.1 表）；②verify_sop 的对抗性验证框架——"必须有工具证据，无证据的 PASS=作废"、产物类型×必做检查表、VERDICT 三态——可直接进 workflow gate 与 verify 类 skill；③L1 索引的 **ROI token 经济学**（≤30 行、反直觉触发词、"命名自解释>加描述"）——skill catalog 描述纪律的范本；④时间预算驱动的质量递进（"预算耗尽即停"vs"完成即停"）——goal/long-task 模式可借鉴。
 
@@ -203,7 +203,7 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
 
 **P2 — memory 组装协议化**：高优先（P0 级）记忆少量全文；其余渲染为 index line（id/category/source/preview/load hint）；模型需要详情时必须 `load_memory(ids=[...])` 展开。
 
-**P3 — 借鉴项（拍板后排期）**：skill `.usage.json` 式 provenance 遥测进晋升判定（hermes）；pin+backup（hermes）；verify 对抗框架进 workflow gate（GA）；skill catalog 描述的"反直觉触发词"纪律（GA）；时间预算驱动的 goal 模式（GA）。
+**P3 — 借鉴项（拍板后排期）**：skill usage sidecar 式 provenance 遥测进晋升判定（hermes 思路，Hive 路径为 `evolution/skill_usage.json`）；pin+backup（hermes）；verify 对抗框架进 workflow gate（GA）；skill catalog 描述的"反直觉触发词"纪律（GA）；时间预算驱动的 goal 模式（GA）。
 
 ### 8.4 正式 North Star（codex 裁决句，三方验证后采纳）
 
@@ -245,7 +245,7 @@ T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*
 - ⑥：memory prompt 补**主动查询触发判据**——任务涉及"过去的决策/用户偏好/曾失败过的事/具体的人或项目"时，先 search_memory 再行动（对照 CC 的 relevant_memories attachment 是系统推送，Hive 双轨：系统注入 + 教模型主动查）
 - ⑤：注入的记忆条目带最小选择理由（哪个轴召回的：goal/owner/keyword/rerank）——AI 可校准信任
 
-**S2 — usage 遥测防孤儿**（hermes `.usage.json` 哲学落到条目级）：
+**S2 — usage 遥测防孤儿**（hermes usage sidecar 哲学落到条目级；Hive 不把 telemetry sidecar 放进 `skills/`）：
 - `access_log.py` 已存在且 retriever 已引用——升级为条目级 `recall_count`/`last_recalled_at`，喂给 dream：⑦清理从"凭内容感觉"变"有数据"；⑧退役判据 = 长期零召回 + 低置信 + 过期，进 dream 的退役候选清单（dream 决策，不是机械自动删——AI-native）
 - 孤儿**文件**检测同理：某 T3 文件长期零召回 = 文件级孤儿信号
 

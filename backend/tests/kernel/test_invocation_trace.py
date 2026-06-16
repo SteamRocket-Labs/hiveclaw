@@ -77,8 +77,9 @@ async def test_kernel_records_invocation_and_generation_spans(monkeypatch, tmp_p
 
     assert result.content == "done"
     trace_id = session_ctx.metadata["trace_id"]
-    span_path = tmp_path / str(agent_id) / "traces" / "invocation_spans.jsonl"
+    span_path = tmp_path / str(agent_id) / "runtime_artifacts" / "traces" / "invocation_spans.jsonl"
     records = [json.loads(line) for line in span_path.read_text(encoding="utf-8").splitlines()]
+    assert not (tmp_path / str(agent_id) / "traces").exists()
 
     assert {record["span_type"] for record in records} == {"generation", "invocation"}
     assert {record["invocation_id"] for record in records} == {trace_id}
@@ -141,8 +142,9 @@ async def test_kernel_records_tool_span(monkeypatch, tmp_path):
     )
 
     assert result.content == "done"
-    span_path = tmp_path / str(agent_id) / "traces" / "invocation_spans.jsonl"
+    span_path = tmp_path / str(agent_id) / "runtime_artifacts" / "traces" / "invocation_spans.jsonl"
     records = [json.loads(line) for line in span_path.read_text(encoding="utf-8").splitlines()]
+    assert not (tmp_path / str(agent_id) / "traces").exists()
     tool = next(record for record in records if record["span_type"] == "tool")
     assert tool["name"] == "read_file"
     assert tool["metadata"]["status"] == "ok"
@@ -212,8 +214,9 @@ async def test_kernel_records_code_execution_evidence_from_tool_envelope(monkeyp
     )
 
     assert result.content == "done"
-    span_path = tmp_path / str(agent_id) / "traces" / "invocation_spans.jsonl"
+    span_path = tmp_path / str(agent_id) / "runtime_artifacts" / "traces" / "invocation_spans.jsonl"
     records = [json.loads(line) for line in span_path.read_text(encoding="utf-8").splitlines()]
+    assert not (tmp_path / str(agent_id) / "traces").exists()
     tool = next(record for record in records if record["span_type"] == "tool")
     assert tool["metadata"]["code_execution_evidence"]["provider"] == "vercel_sandbox"
     assert tool["metadata"]["code_execution_evidence"]["network_policy"] == "deny-all"

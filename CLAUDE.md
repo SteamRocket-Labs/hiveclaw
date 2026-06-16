@@ -55,6 +55,7 @@ Current closures that must not regress:
 - Workflow is a first-class deterministic orchestration substrate parallel to Plan Mode: `RuntimeTask(task_type="workflow")`, workflow step/leaf journals, run quotas, gate/wait/resume, trigger integration, admin ops, and Deep Research workflow-native execution must remain governed and auditable.
 - Subagent/delegation is a first-class collaboration capability: lightweight workers, peer delegation, fanout, context isolation, result distillation, governed shared tool execution, and replay-safe resume boundaries must remain distinct from Workflow control flow.
 - Agent TodoList / Work Ledger / Progress Ledger is the CC Task/Todo-equivalent agent-authored task board: `track_todo` records todos/dependencies, `record_finding` records findings/failures/replan, and `read_ledger` restores state. Writing a todo is cognitive bookkeeping; it must not start execution.
+- Skill is a progressive-disclosure capability capsule, not merely a Markdown prompt. A Skill may package instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions; loading a Skill adds context/guidance only. Executable components still run through their governed runtime (`preview_workflow`/`start_workflow`, `spawn_subagent`/`delegate_to_agent`, or approved sandbox/code execution).
 - `invocation_spans` is the canonical PostgreSQL trace surface; JSONL spans are compatibility artifacts.
 - Provider retry/overload fallback, CJK-aware token estimates, canonical assistant-turn prompt-cache anchors, output-cap telemetry, and Anthropic thinking-signature preservation are runtime contracts.
 - Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.
@@ -141,8 +142,8 @@ tools/executors/ — core.py, extended.py, integrations.py
 | `kernel/contracts.py` | `InvocationRequest`, `InvocationResult`, `RuntimeConfig` — pure dataclasses |
 | `kernel/engine.py` | `AgentKernel` — stateless LLM loop with DI. Context compaction, token budgeting, vision support |
 | `runtime/invoker.py` | `invoke_agent()` — wires kernel to platform (DB, tools, memory, prompt). Single entry for ALL paths |
-| `runtime/prompt_builder.py` | Assembles system prompt: agent context → knowledge → memory → active packs → skill catalog |
-| `runtime/session.py` | `SessionContext` — tracks source, channel, active_packs per invocation |
+| `runtime/prompt_builder.py` | Assembles system prompt: agent context → knowledge → memory → active runtime tool groups → skill catalog |
+| `runtime/session.py` | `SessionContext` — tracks source, channel, active runtime tool groups per invocation |
 | `core/execution_context.py` | `ExecutionIdentity` ContextVar — agent_bot vs delegated_user, read by audit |
 
 **Execution flow:** Every entry point builds an `InvocationRequest` and calls `invoke_agent()`. The kernel runs a multi-round LLM loop with streaming callbacks. Round budget: `max_tool_rounds` defaults to **200**; heartbeat overrides to **40**. Round-pressure warnings are injected at 80% and with 2 rounds remaining. Context compaction is **proactive** (≥75% utilization, checked every 3 rounds) + **reactive** (prompt-too-long retries with truncation). Individual tool results >50KB spill to `workspace/logs/.../artifacts/`; per-round aggregate budget is 200K chars. Semantic loop detection is wired via `LoopGuard` over assistant text, tool calls, and tool results; the round cap is the backstop. Invocation, generation, and tool spans are persisted through `record_invocation_span`, and provider behavior is wrapped by retry/overload fallback, output-cap telemetry, prompt-cache anchor stability, and Anthropic thinking-signature preservation.
@@ -165,7 +166,7 @@ Tools follow a registry + executor + governance pattern:
 
 ### Skill System (`app/skills/`)
 
-Markdown files with YAML frontmatter defining agent capabilities. `SkillParser` → `WorkspaceSkillLoader` → `SkillRegistry`. Skills loaded progressively: catalog in prompt, full body via `load_skill` tool.
+Progressive-disclosure capability capsules. `SkillParser` → `WorkspaceSkillLoader` → `SkillRegistry`. Skills load progressively: catalog metadata in prompt, full body via `load_skill`. A folder-based Skill may carry instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions. Loading a Skill does not execute side effects or unlock schemas; workflows still run through `preview_workflow`/`start_workflow`, subagents through `spawn_subagent`/`delegate_to_agent`, scripts through the approved sandbox/code execution path, and missing schemas through `tool_search`.
 
 ### Memory System — 4-Layer MD Pyramid + Control Plane
 
@@ -366,8 +367,8 @@ A2A/interoperability descriptors are machine-readable contracts. Unsupported OAu
 ### Memory Hygiene Invariant
 Do not manually edit legacy memory stores or dead stubs as a one-off fix. Use `memory/hygiene.py` or `python -m app.scripts.repair_memory_hygiene` so repairs are reversible and reportable.
 
-### Capability Packs
-Agents start with kernel-only tools (file I/O, skill loading, triggers). Capability packs (web, feishu, email, etc.) activate on-demand when a skill is loaded. Pack state tracked in `SessionContext.active_packs`.
+### Runtime Tool Groups
+Agents start with CORE tools plus the dynamic skill catalog. Deferred runtime tool groups (advanced web/crawl, Feishu, email, imported MCP tools, etc.) are discovered through `tool_search`, not by loading a Skill. Active group state is tracked as runtime tool groups for the current invocation; historical `active_packs` wording is compatibility terminology only.
 
 ### Alembic Migrations
 - Check `alembic heads` before creating — must be single head

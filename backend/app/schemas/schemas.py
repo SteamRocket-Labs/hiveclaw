@@ -168,7 +168,7 @@ class AgentUpdate(BaseModel):
 
 
 class AgentStatusOut(BaseModel):
-    """Agent status from state.json."""
+    """Legacy agent status payload shape. The state.json file path is retired."""
 
     agent_id: uuid.UUID
     name: str

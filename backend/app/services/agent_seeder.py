@@ -175,6 +175,7 @@ async def seed_default_agents():
             (agent_dir / "logs").mkdir(exist_ok=True)
             (agent_dir / "memory").mkdir(exist_ok=True)
             (agent_dir / "memory" / "learnings").mkdir(exist_ok=True)
+            (agent_dir / "runtime_artifacts").mkdir(exist_ok=True)
 
             # Soul
             (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")

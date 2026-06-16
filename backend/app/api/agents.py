@@ -260,7 +260,7 @@ async def get_or_create_hr_agent(
     # Initialize files using standard template (same as normal agents)
     await agent_manager.initialize_agent_files(db, hr_agent)
 
-    # Overlay HR-specific files (soul.md, skills/CREATE_EMPLOYEE.md)
+    # Overlay HR-specific files (soul.md, skills/create-employee/SKILL.md)
     import shutil
     from pathlib import Path
     hr_template_dir = Path(__file__).resolve().parent.parent.parent / "hr_agent_template"

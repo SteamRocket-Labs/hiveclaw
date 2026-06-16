@@ -53,7 +53,7 @@
 
 | 资产轴 | agent 级（repo 内） | tenant 级（org 库） | platform 级 | **agent↔tenant 语义** |
 |---|---|---|---|---|
-| **Skill** | workspace `skills/<name>/SKILL.md` = 运行时唯一真源（agent `save_skill` 自建走 candidate lane） | DB `Skill(tenant_id=X)` 库（`models/skill.py:19`） | DB `Skill(tenant_id=NULL)` 全局 + ClawHub | **copy / import**：库→workspace 复制安装；装完即脱钩，库更新不回流 |
+| **Skill** | workspace `skills/<name>/SKILL.md` = 渐进式能力胶囊真源（agent `save_skill` 自建走 candidate lane；可打包 context/templates/scripts/workflow refs/subagent refs，但不直接执行） | DB `Skill(tenant_id=X)` 库（`models/skill.py:19`） | DB `Skill(tenant_id=NULL)` 全局 + ClawHub | **copy / import**：库→workspace 复制安装；装完即脱钩，库更新不回流；胶囊里的 workflow/subagent/script 仍按各自 runtime 治理执行 |
 | **MCP** | `AgentMCPToolOverride`（per-agent enable/disable/per-tool deny，`models/mcp_server.py:102`） | `MCPServer` record（连接+凭据） | — | **reference + override**：tenant 注册连接，agent 引用并只能收窄 |
 | **Workflow** | 引用：`trigger.config.workflow_ref` 绑创建时 version/hash；agent 可发 ephemeral | `WorkflowDefinition(tenant_id=X)` versioned、RLS FORCED（`models/workflow.py:47-51`） | `tenant_id IS NULL` factory 只读模板 | **versioned reference + promote**：ephemeral→registered 需审批；fire 时 hash mismatch→suspend |
 | **Subagent**（§12 刚落地） | workspace `subagents/<name>.md` 真源之一（agent 可自建） | `_tenants/<tid>/subagents/definitions/` | builtin type 只读模板 | **fallback resolution**：agent 同名覆盖 tenant；无 copy、无 version 锚 |
@@ -119,7 +119,7 @@ agent 实践 → agent 级资产（自治进化，律一）
    → 各 agent 实践反馈 → 新版本晋升（迭代，不覆写历史版本）
 ```
 
-**反模式警告（KISS）**：不要造一个 `AssetRef` 万能抽象统一四轴——workflow 的 version+审批是因为它有外向副作用，skill 的 copy 是因为它是纯文本能力，差异有其正当性。**统一的不是机制，是回答问题的框架**：
+**反模式警告（KISS）**：不要造一个 `AssetRef` 万能抽象统一四轴——workflow 的 version+审批是因为它有外向副作用，skill 的 copy 是因为它是可复制的能力胶囊，差异有其正当性。即使 Skill 胶囊里引用 workflow/subagent/script，也不能把这些运行时权限折叠进 Skill 本身。**统一的不是机制，是回答问题的框架**：
 
 ### 4.1 资产轴宪法——任何资产轴（含未来新轴）必须显式回答六问
 

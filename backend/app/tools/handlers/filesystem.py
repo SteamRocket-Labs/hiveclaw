@@ -58,7 +58,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "Read file contents from the workspace.\n\n"
             "Usage:\n"
             "- Common files: soul.md (personality), memory/feedback.md or memory/knowledge.md (memory), "
-            "tasks.json (tasks), skills/*.md (skill files), enterprise_info/ (shared company info)\n"
+            "tasks.json (tasks), skills/<slug>/SKILL.md (skill files), enterprise_info/ (shared company info)\n"
             "- For large files, the output may be truncated. Check if the result ends with a truncation marker.\n"
             "- You can read office documents (PDF, Word, Excel) via the separate `read_document` tool.\n"
             "- If the file does not exist, an error will be returned — this is normal, do not retry.\n"
@@ -69,7 +69,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path, e.g.: tasks.json, soul.md, memory/knowledge.md, skills/xxx.md, enterprise_info/company_profile.md",
+                    "description": "File path, e.g.: tasks.json, soul.md, memory/knowledge.md, skills/my-skill/SKILL.md, enterprise_info/company_profile.md",
                 }
             },
             "required": ["path"],
@@ -101,8 +101,8 @@ def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
             "- For modifying existing files, prefer `edit_file` instead — it only changes a specific snippet "
             "without rewriting the entire file, which is safer and preserves content you didn't intend to change.\n"
             "- Use `write_file` when creating new files or when the entire file content needs to be replaced.\n"
-            "- Common targets: workspace/*.md (reports/documents), skills/*.md (new skills). Use the work ledger for durable goal state.\n"
-            "- Governed paths: memory/ is managed by the Memory Control Plane — use save_memory for durable memory; direct writes there are refused.\n"
+            "- Common targets: workspace/*.md (reports/documents), skills/<slug>/SKILL.md (new skills). Use the work ledger for durable goal state.\n"
+            "- Governed paths: memory/, logs/, evolution/, and runtime_artifacts/ are platform-managed; direct writes there are refused.\n"
             "- Protected paths: soul.md can be written but should only be modified carefully as it defines your personality.\n"
             "- This tool overwrites the file completely — if you only need to change part of a file, use `edit_file`."
         ),
@@ -111,7 +111,7 @@ def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path, e.g.: workspace/report.md, skills/data_analysis.md",
+                    "description": "File path, e.g.: workspace/report.md, skills/data-analysis/SKILL.md",
                 },
                 "content": {
                     "type": "string",

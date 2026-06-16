@@ -663,7 +663,7 @@ pytest tests/services/test_command_tooling.py -q
 - span 先落 agent workspace 的 append-only JSONL,避免无 DB migration 时继续零观测;后续可平滑迁到 `invocation_spans` 表或 OTel exporter。
 
 **代码证据**
-- `backend/app/services/invocation_trace.py`:新增 `current_invocation_id()`、`set_invocation_id()`、`append_invocation_span()`;写入 `<AGENT_DATA_DIR>/<agent_id>/traces/invocation_spans.jsonl`。
+- `backend/app/services/invocation_trace.py`:新增 `current_invocation_id()`、`set_invocation_id()`、`append_invocation_span()`;兼容 JSONL 写入 `<AGENT_DATA_DIR>/<agent_id>/runtime_artifacts/traces/invocation_spans.jsonl`。
 - `backend/app/kernel/engine.py`:handle 最外层设置/reset invocation ContextVar;finally 写 invocation span;provider stream 成功/错误/取消写 generation span;`_run_tool()` 成功/阻断/拒绝/异常写 tool span。
 - `backend/tests/kernel/test_invocation_trace.py`:覆盖 invocation+generation spans 和 tool span。
 

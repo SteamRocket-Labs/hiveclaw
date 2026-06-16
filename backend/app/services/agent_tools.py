@@ -6,7 +6,8 @@ The agent's workspace uses well-known paths:
   - tasks.json          → task list (auto-synced from DB)
   - soul.md             → personality definition
   - memory/*.md         → layered long-term memory (feedback / knowledge / strategies / blocked / user)
-  - skills/             → skill definitions (markdown files)
+  - skills/<slug>/SKILL.md → skill definitions and auxiliary resources
+  - runtime_artifacts/  → platform-managed recovery/audit artifacts
   - workspace/          → general working files, reports, etc.
 
 The agent reads/writes these files directly. No per-concept tools needed.
@@ -17,8 +18,9 @@ import threading
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
 from sqlalchemy import or_, select
 
@@ -64,6 +66,66 @@ _TOOL_EXECUTION_REGISTRY_INITIALIZED = False
 _TOOL_RUNTIME_SERVICE: ToolRuntimeService | None = None
 _COLLECTED_TOOLS = None  # Lazy-initialized by _ensure_tool_execution_registry
 _REGISTRY_LOCK = threading.Lock()  # M-09: protect concurrent registry init
+
+
+def _is_relative_workspace_path(raw_path: str) -> tuple[PurePosixPath | None, str | None]:
+    cleaned = str(raw_path or "").strip().replace("\\", "/")
+    if not cleaned:
+        return None, "❌ file_path is required"
+    rel = PurePosixPath(cleaned)
+    if rel.is_absolute() or any(part == ".." for part in rel.parts):
+        return None, "❌ Access denied for this path."
+    parts = tuple(part for part in rel.parts if part not in ("", "."))
+    if not parts:
+        return None, "❌ file_path is required"
+    return PurePosixPath(*parts), None
+
+
+def _channel_file_candidate_paths(ws: Path, rel: PurePosixPath) -> list[Path]:
+    parts = rel.parts
+    candidates: list[Path] = [ws.joinpath(*parts)]
+
+    if parts[0] != "workspace":
+        # Common sandbox output shape: execute_code runs with cwd=workspace/,
+        # so writing "report.xlsx" lands at agent_root/workspace/report.xlsx.
+        candidates.append(ws / "workspace" / Path(*parts))
+    else:
+        tail = Path(*parts[1:]) if len(parts) > 1 else None
+        if tail is not None:
+            # Legacy bad shape: code wrote "workspace/report.xlsx" while cwd was
+            # already workspace/, producing workspace/workspace/report.xlsx.
+            candidates.append(ws / "workspace" / "workspace" / tail)
+        if len(parts) > 1 and parts[1] == "workspace":
+            collapsed_tail = Path(*parts[2:]) if len(parts) > 2 else None
+            if collapsed_tail is not None:
+                candidates.append(ws / "workspace" / collapsed_tail)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            deduped.append(candidate)
+            seen.add(key)
+    return deduped
+
+
+def _resolve_channel_file_path(ws: Path, rel_path: str) -> tuple[Path | None, str | None]:
+    rel, error = _is_relative_workspace_path(rel_path)
+    if error:
+        return None, error
+    assert rel is not None
+
+    ws_resolved = ws.resolve()
+    for candidate in _channel_file_candidate_paths(ws_resolved, rel):
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(ws_resolved)
+        except ValueError:
+            return None, "❌ Access denied for this path."
+        if resolved.exists() and resolved.is_file():
+            return resolved, None
+    return None, f"❌ File not found: {rel_path}"
 
 
 def _get_collected_tools():
@@ -884,19 +946,10 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     """Send a file to the current requester via unified channel delivery."""
     rel_path = arguments.get("file_path", "").strip()
     accompany_msg = arguments.get("message", "")
-    if not rel_path:
-        return "❌ file_path is required"
-
-    # Resolve file path within agent workspace
-    file_path = (ws / rel_path).resolve()
-    ws_resolved = ws.resolve()
-    if not str(file_path).startswith(str(ws_resolved)):
-        # Also allow workspace/ prefix pointing to same location
-        file_path = (WORKSPACE_ROOT / str(agent_id) / rel_path).resolve()
-        if not file_path.exists():
-            return f"❌ File not found: {rel_path}"
-    if not file_path.exists():
-        return f"❌ File not found: {rel_path}"
+    file_path, error = _resolve_channel_file_path(ws, rel_path)
+    if error:
+        return error
+    assert file_path is not None
 
     reply_target = channel_delivery_target.get()
     if reply_target is not None:
@@ -931,16 +984,13 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     else:
         # Web chat mode: return a download URL
         aid = channel_web_agent_id.get() or str(agent_id)
-        base_abs = (WORKSPACE_ROOT / str(agent_id)).resolve()
-        try:
-            file_rel = str(file_path.resolve().relative_to(base_abs))
-        except ValueError:
-            file_rel = rel_path
+        base_abs = ws.resolve()
+        file_rel = file_path.resolve().relative_to(base_abs).as_posix()
         from app.config import get_settings as _gs
 
         _s = _gs()
         base_url = getattr(_s, "BASE_URL", "").rstrip("/") or ""
-        download_url = f"{base_url}/api/agents/{aid}/files/download?path={file_rel}"
+        download_url = f"{base_url}/api/agents/{aid}/files/download?path={quote(file_rel, safe='/')}"
         msg = f"✅ File ready: [{file_path.name}]({download_url})"
         if accompany_msg:
             msg = accompany_msg + "\n\n" + msg

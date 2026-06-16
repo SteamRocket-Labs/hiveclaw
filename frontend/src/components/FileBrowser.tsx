@@ -32,6 +32,7 @@ export interface FileBrowserProps {
     features?: {
         upload?: boolean;
         newFile?: boolean;
+        newSkill?: boolean;
         newFolder?: boolean;
         edit?: boolean;
         delete?: boolean;
@@ -63,6 +64,24 @@ function isImage(name: string): boolean {
     return IMAGE_EXTS.some(ext => n.endsWith(ext));
 }
 
+function normalizeSkillFolderName(value: string): string {
+    const cleaned = value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const withoutSkillFile = cleaned.replace(/\/SKILL\.md$/i, '');
+    const withoutFlatMd = withoutSkillFile.replace(/\.md$/i, '');
+    return withoutFlatMd
+        .split('/')
+        .filter(Boolean)
+        .map(part => part.trim().replace(/\s+/g, '-'))
+        .filter(Boolean)
+        .join('/');
+}
+
+export function buildNewSkillFilePath(currentPath: string, value: string): string {
+    const folderName = normalizeSkillFolderName(value);
+    const base = currentPath.trim().replace(/\/+$/g, '');
+    return base ? `${base}/${folderName}/SKILL.md` : `${folderName}/SKILL.md`;
+}
+
 // ─── Component ─────────────────────────────────────────
 
 export default function FileBrowser({
@@ -80,6 +99,7 @@ export default function FileBrowser({
     const {
         upload = false,
         newFile = false,
+        newSkill = false,
         newFolder = false,
         edit = !readOnly,
         delete: canDelete = !readOnly,
@@ -237,7 +257,7 @@ export default function FileBrowser({
                 setEditing(true);
             } else if (action === 'newSkill') {
                 const template = `# ${value}\n\n## Description\n_Describe the purpose and triggers_\n\n## Input\n- Param1: Description\n\n## Steps\n1. Step one\n2. Step two\n\n## Output\n_Describe the output format_\n`;
-                const filePath = currentPath ? `${currentPath}/${value}.md` : `${value}.md`;
+                const filePath = buildNewSkillFilePath(currentPath, value);
                 await api.write(filePath, template);
                 setViewing(filePath);
                 setEditContent(template);
@@ -483,16 +503,16 @@ export default function FileBrowser({
                             📁 {t('agent.workspace.newFolder')}
                         </button>
                     )}
-                    {newFile && !fileFilter && (
+                    {newFile && !newSkill && !fileFilter && (
                         <button className="btn btn-primary" style={{ fontSize: '12px' }}
                             onClick={() => setPromptModal({ title: t('agent.workspace.newFile', 'New File'), placeholder: 'filename.md', action: 'newFile' })}>
                             + {t('agent.workspace.newFile', 'New File')}
                         </button>
                     )}
-                    {newFile && fileFilter?.includes('.md') && (
+                    {newSkill && (
                         <button className="btn btn-primary" style={{ fontSize: '12px' }}
-                            onClick={() => setPromptModal({ title: 'New Skill', placeholder: 'skill-name', action: 'newSkill' })}>
-                            + New Skill
+                            onClick={() => setPromptModal({ title: t('agent.skills.newSkill', 'New Skill'), placeholder: 'skill-name', action: 'newSkill' })}>
+                            + {t('agent.skills.newSkill', 'New Skill')}
                         </button>
                     )}
                 </div>

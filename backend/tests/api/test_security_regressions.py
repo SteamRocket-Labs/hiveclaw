@@ -256,6 +256,283 @@ async def test_agent_files_refuses_direct_memory_writes_and_deletes(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_agent_files_refuses_platform_managed_writes_and_deletes(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.uuid4()
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member")
+
+    for rel in ("logs/session.md", "evolution/skill_usage.json", "runtime_artifacts/session_memory.md"):
+        with pytest.raises(HTTPException) as write_exc:
+            await files_api.write_file(
+                agent_id=agent_id,
+                path=rel,
+                data=files_api.FileWrite(content="raw bypass"),
+                current_user=current_user,
+                db=object(),
+            )
+        assert write_exc.value.status_code == 403
+
+        target = tmp_path / str(agent_id) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("platform owned", encoding="utf-8")
+
+        with pytest.raises(HTTPException) as delete_exc:
+            await files_api.delete_file(
+                agent_id=agent_id,
+                path=rel,
+                current_user=current_user,
+                db=object(),
+            )
+        assert delete_exc.value.status_code == 403
+        assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_files_refuses_unscoped_root_writes_and_deletes(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.uuid4()
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member")
+
+    for rel in ("report.md", "relationships.md", "HEARTBEAT.md", "DREAM.md", "state.json", "tasks.json"):
+        with pytest.raises(HTTPException) as write_exc:
+            await files_api.write_file(
+                agent_id=agent_id,
+                path=rel,
+                data=files_api.FileWrite(content="raw bypass"),
+                current_user=current_user,
+                db=object(),
+            )
+        assert write_exc.value.status_code == 403
+
+        target = tmp_path / str(agent_id) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("platform owned", encoding="utf-8")
+
+        with pytest.raises(HTTPException) as delete_exc:
+            await files_api.delete_file(
+                agent_id=agent_id,
+                path=rel,
+                current_user=current_user,
+                db=object(),
+            )
+        assert delete_exc.value.status_code == 403
+        assert target.exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_files_refuses_invalid_skill_package_paths(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.uuid4()
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member")
+
+    for rel in ("skills/MCP_INSTALLER.md", "skills/.usage.json", "skills/flat-skill"):
+        with pytest.raises(HTTPException) as write_exc:
+            await files_api.write_file(
+                agent_id=agent_id,
+                path=rel,
+                data=files_api.FileWrite(content="raw bypass"),
+                current_user=current_user,
+                db=object(),
+            )
+        assert write_exc.value.status_code == 403
+
+    await files_api.write_file(
+        agent_id=agent_id,
+        path="skills/deploy-checklist/SKILL.md",
+        data=files_api.FileWrite(content="---\nname: deploy-checklist\n---\n"),
+        current_user=current_user,
+        db=object(),
+    )
+    assert (tmp_path / str(agent_id) / "skills" / "deploy-checklist" / "SKILL.md").exists()
+
+    with pytest.raises(HTTPException) as upload_exc:
+        await files_api.upload_file_to_workspace(
+            agent_id=agent_id,
+            file=UploadFile(io.BytesIO(b"bad"), filename="MCP_INSTALLER.md"),
+            path="skills/",
+            current_user=current_user,
+            db=object(),
+        )
+    assert upload_exc.value.status_code == 403
+
+
+def test_agent_files_safe_path_rejects_sibling_prefix_escape(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    with pytest.raises(HTTPException) as exc:
+        files_api._safe_path(agent_id, f"../{agent_id}-evil/pwn.txt")
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_agent_files_upload_rejects_sibling_prefix_escape(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member")
+
+    with pytest.raises(HTTPException) as exc:
+        await files_api.upload_file_to_workspace(
+            agent_id=agent_id,
+            file=UploadFile(io.BytesIO(b"bad"), filename="pwn.txt"),
+            path=f"workspace/../../{agent_id}-evil",
+            current_user=current_user,
+            db=object(),
+        )
+
+    assert exc.value.status_code == 403
+    assert not (tmp_path / f"{agent_id}-evil" / "pwn.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_enterprise_kb_paths_reject_sibling_prefix_escape(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    tenant_id = uuid.UUID("22222222-2222-2222-2222-222222222222")
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role="org_admin")
+
+    info_dir = tmp_path / f"enterprise_info_{tenant_id}"
+    info_dir.mkdir()
+    sibling = tmp_path / f"enterprise_info_{tenant_id}-evil"
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("secret token\n", encoding="utf-8")
+    escaped_dir = f"../enterprise_info_{tenant_id}-evil"
+    escaped_file = f"{escaped_dir}/secret.txt"
+
+    with pytest.raises(HTTPException) as list_exc:
+        await files_api.list_enterprise_kb_files(path=escaped_dir, current_user=current_user)
+    assert list_exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as read_exc:
+        await files_api.read_enterprise_file(path=escaped_file, current_user=current_user)
+    assert read_exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as write_exc:
+        await files_api.write_enterprise_file(
+            path=f"{escaped_dir}/pwn.txt",
+            data=files_api.FileWrite(content="bad"),
+            current_user=current_user,
+        )
+    assert write_exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as delete_exc:
+        await files_api.delete_enterprise_file(path=escaped_file, current_user=current_user)
+    assert delete_exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as upload_exc:
+        await files_api.upload_enterprise_kb_file(
+            file=UploadFile(io.BytesIO(b"bad"), filename="pwn.txt"),
+            sub_path=escaped_dir,
+            current_user=current_user,
+        )
+    assert upload_exc.value.status_code == 403
+
+    assert not (sibling / "pwn.txt").exists()
+    assert (sibling / "secret.txt").read_text(encoding="utf-8") == "secret token\n"
+
+
+@pytest.mark.asyncio
+async def test_agent_import_skill_cannot_escape_skill_folder(monkeypatch, tmp_path):
+    import app.api.files as files_api
+    import app.api.skills as skills_api
+
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(skills_api, "_skill_visible_to_user", lambda *_args, **_kwargs: True)
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    class _FakeDB:
+        async def execute(self, _stmt):
+            return _ScalarResult(
+                SimpleNamespace(
+                    id=uuid.uuid4(),
+                    name="Unsafe Skill",
+                    folder_name="unsafe-skill",
+                    files=[
+                        SimpleNamespace(path="SKILL.md", content="---\nname: unsafe\n---\n"),
+                        SimpleNamespace(path="../evil.md", content="escaped"),
+                    ],
+                )
+            )
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role="member")
+
+    result = await files_api.import_skill_to_agent(
+        agent_id=agent_id,
+        body=files_api.ImportSkillBody(skill_id=str(uuid.uuid4())),
+        current_user=current_user,
+        db=_FakeDB(),
+    )
+
+    assert result["files"] == ["SKILL.md"]
+    assert (tmp_path / str(agent_id) / "skills" / "unsafe-skill" / "SKILL.md").exists()
+    assert not (tmp_path / str(agent_id) / "skills" / "evil.md").exists()
+    assert not (tmp_path / str(agent_id) / "evil.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_agent_files_list_hides_dotfile_sidecars(monkeypatch, tmp_path):
+    import app.api.files as files_api
+
+    agent_id = uuid.uuid4()
+    monkeypatch.setattr(files_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+
+    async def fake_check_agent_access(db, current_user, requested_agent_id):
+        return SimpleNamespace(id=requested_agent_id, tenant_id=current_user.tenant_id), "manage"
+
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    skills_dir = tmp_path / str(agent_id) / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / ".usage.json").write_text("{}", encoding="utf-8")
+    (skills_dir / "mcp-installer").mkdir()
+
+    items = await files_api.list_files(
+        agent_id=agent_id,
+        path="skills",
+        current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member"),
+        db=object(),
+    )
+
+    assert [item.name for item in items] == ["mcp-installer"]
+
+
+@pytest.mark.asyncio
 async def test_agent_files_use_access_cannot_read_raw_memory(monkeypatch, tmp_path):
     import app.api.files as files_api
 

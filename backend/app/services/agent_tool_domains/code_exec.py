@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shutil
 from pathlib import Path
 
 from app.services.code_execution.contracts import CodeExecutionResult, render_command_result
@@ -61,17 +62,28 @@ _DANGEROUS_COMMAND_PATTERNS = [
 ]
 
 
+def _contains_parent_path_reference(text: str) -> bool:
+    normalized = text.replace("\\", "/")
+    parent_path_markers = (
+        "../",
+        "/..",
+        "cd ..",
+        "Path('..",
+        'Path("..',
+    )
+    return any(marker in normalized for marker in parent_path_markers)
+
+
 def _check_code_safety(language: str, code: str) -> str | None:
     """Check code for dangerous patterns. Returns error message if unsafe, None if ok."""
     code_lower = code.lower()
+    if _contains_parent_path_reference(code):
+        return "❌ Blocked: directory traversal not allowed"
 
     if language == "bash":
         for pattern in _DANGEROUS_BASH:
             if pattern.lower() in code_lower:
                 return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
-        # Block deep path traversal outside workspace
-        if "../../" in code:
-            return "❌ Blocked: directory traversal not allowed"
 
     elif language == "python":
         for pattern in _DANGEROUS_PYTHON_IMPORTS:
@@ -88,11 +100,11 @@ def _check_code_safety(language: str, code: str) -> str | None:
 
 def _check_command_safety(command: str) -> str | None:
     command_lower = command.lower()
+    if _contains_parent_path_reference(command):
+        return "❌ Blocked: directory traversal not allowed"
     for pattern in _DANGEROUS_COMMAND_PATTERNS:
         if pattern.lower() in command_lower:
             return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
-    if "../../" in command:
-        return "❌ Blocked: directory traversal not allowed"
     return None
 
 
@@ -104,6 +116,44 @@ def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
     exec_home.mkdir(parents=True, exist_ok=True)
     safe_env = build_agent_subprocess_env(home=exec_home)
     return work_dir, safe_env
+
+
+def _promote_nested_workspace_artifacts(work_dir: Path) -> list[str]:
+    """Recover files written as workspace/* while code cwd was already workspace/."""
+    nested_workspace = work_dir / "workspace"
+    if not nested_workspace.is_dir():
+        return []
+
+    moved: list[str] = []
+    for source in sorted(nested_workspace.rglob("*")):
+        if source.is_dir() or source.is_symlink():
+            continue
+        rel = source.relative_to(nested_workspace)
+        target = work_dir / rel
+        if target.exists():
+            logger.warning("[exec] Skipped nested workspace artifact promotion; target exists: %s", target)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        moved.append(rel.as_posix())
+
+    for directory in sorted(
+        (path for path in nested_workspace.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    try:
+        nested_workspace.rmdir()
+    except OSError:
+        pass
+
+    if moved:
+        logger.info("[exec] Promoted %d nested workspace artifact(s): %s", len(moved), moved[:10])
+    return moved
 
 
 def _with_code_execution_evidence(text: str, result: CodeExecutionResult) -> str | ToolContentEnvelope:
@@ -156,6 +206,7 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
             timeout=timeout,
             runtime="node24" if language == "node" else "python3.13",
         )
+        _promote_nested_workspace_artifacts(work_dir)
         stdout_str = result.stdout[:10000]
         stderr_str = result.stderr[:5000]
 
@@ -169,14 +220,12 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
             copied = []
             for skill_dir in sandbox_skills.iterdir():
                 if skill_dir.is_dir():
+                    if not (skill_dir / "SKILL.md").is_file():
+                        continue
                     dest = agent_skills / skill_dir.name
                     if dest.exists():
                         shutil.rmtree(dest)
                     shutil.copytree(skill_dir, dest)
-                    copied.append(skill_dir.name)
-                elif skill_dir.is_file() and skill_dir.suffix == ".md":
-                    dest = agent_skills / skill_dir.name
-                    shutil.copy2(skill_dir, dest)
                     copied.append(skill_dir.name)
             if copied:
                 logger.info(f"[exec] Copied {len(copied)} skills from sandbox to workspace: {copied}")
@@ -227,6 +276,7 @@ async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         timeout=timeout,
         runtime=os.environ.get("HIVE_VERCEL_SANDBOX_RUNTIME", "python3.13"),
     )
+    _promote_nested_workspace_artifacts(work_dir)
     rendered = render_command_result(
         command,
         CodeExecutionResult(

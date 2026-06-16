@@ -104,13 +104,15 @@ def build_scenario_section(
             [
                 "",
                 "<self_evolution_playbook>",
-                "- Promote only repeatedly successful workflows into skills. Stable inputs, steps, and outputs must be visible before using save_skill.",
-                "- Use save_skill for reusable operating procedures, not one-off transcript fragments, temporary notes, or private context.",
+                "- Promote only repeatedly successful approaches into skill candidates. Stable inputs, decision rules, component boundaries, and outputs must be visible before using save_skill.",
+                "- Use save_skill for reusable capability capsules, not one-off transcript fragments, temporary notes, or private context.",
+                "- A skill may package workflow/subagent/script component guidance, but execution still belongs to the governed workflow, subagent/delegation, or sandbox/code runtime.",
+                "- If the order must not drift, record the workflow component boundary instead of treating the skill body as executable control flow.",
                 "- If a loaded skill keeps missing the mark, patch the existing skill instead of creating a duplicate skill.",
                 "- Capture the why: when the skill should be used, what tools it depends on, and what outcome it reliably produces.",
                 "- If the pattern is not yet stable, keep it in memory or working context instead of freezing it as a skill.",
                 "",
-                "**Good**: `Workflow 'web_search → web_fetch → write workspace file' succeeded 4× this week across different queries → save_skill 'research-brief' with that tool chain.`",
+                "**Good**: `Research approach 'web_search → web_fetch → write workspace file' succeeded 4× this week across different queries → save_skill 'research-brief' with that tool chain and verification pattern.`",
                 "**Bad**: `User asked one research question today → save_skill 'answer-questions'.` (single instance; generic; no stable shape)",
                 "</self_evolution_playbook>",
             ]

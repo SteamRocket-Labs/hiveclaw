@@ -4,7 +4,7 @@ The dataclass existed but only `app/evals/run.py` ever built one. This
 test pins the new path:
   - build_recovery_manifest pulls the structured state from SessionContext
   - the in-process JSON shape matches what the kernel writes to
-    `workspace/recovery_manifest.json` on PRE_COMPACTION
+    `runtime_artifacts/recovery_manifest.json` on PRE_COMPACTION
 
 Driving the kernel through a real compaction is heavy; instead we
 exercise the construction + serialization that the kernel inlines, and
@@ -123,7 +123,7 @@ def test_manifest_to_restoration_text_includes_each_section() -> None:
 def test_recovery_manifest_filename_constant_documented() -> None:
     """Anchor the filename so the prompt-builder side and operator tools
     target the same path. Lives next to compaction_summary.md in the
-    workspace dir."""
-    expected = Path("workspace") / "recovery_manifest.json"
+    runtime_artifacts dir."""
+    expected = Path("runtime_artifacts") / "recovery_manifest.json"
     assert expected.name == "recovery_manifest.json"
-    assert expected.parent.name == "workspace"
+    assert expected.parent.name == "runtime_artifacts"

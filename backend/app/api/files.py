@@ -48,11 +48,19 @@ def _agent_base_dir(agent_id: uuid.UUID) -> Path:
     return Path(settings.AGENT_DATA_DIR) / str(agent_id)
 
 
+def _is_within_path(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     """Ensure the path is within the agent's directory (no path traversal)."""
     base = _agent_base_dir(agent_id)
     full = (base / rel_path).resolve()
-    if not str(full).startswith(str(base.resolve())):
+    if not _is_within_path(full, base):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Path traversal not allowed")
     return full
 
@@ -64,6 +72,93 @@ def _normalized_rel_path(path: str) -> str:
 def _is_governed_memory_path(path: str) -> bool:
     normalized = _normalized_rel_path(path)
     return normalized == "memory" or normalized.startswith("memory/")
+
+
+def _managed_system_path_message(path: str) -> str | None:
+    normalized = _normalized_rel_path(path)
+    if _is_governed_memory_path(normalized):
+        return "memory/ is governed by the Memory Control Plane; use memory APIs instead of raw file writes."
+    top_level = normalized.split("/", 1)[0]
+    messages = {
+        "logs": "logs/ is managed by platform services; raw file writes and deletes are not allowed.",
+        "evolution": "evolution/ is managed by platform services; raw file writes and deletes are not allowed.",
+        "runtime_artifacts": (
+            "runtime_artifacts/ is managed by platform services; raw file writes and deletes are not allowed."
+        ),
+    }
+    return messages.get(top_level)
+
+
+_ROOT_FILE_WRITE_ALLOWLIST = {"soul.md"}
+_ROOT_PREFIX_WRITE_ALLOWLIST = {"workspace", "skills", "subagents", "enterprise_info"}
+_ROOT_MANAGED_FILE_MESSAGES = {
+    "relationships.md": "relationships.md is generated from the Relationships control plane; update relationships through the Relationships UI/API.",
+    "HEARTBEAT.md": "HEARTBEAT.md is a platform template; heartbeat protocol updates must ship through system templates.",
+    "DREAM.md": "DREAM.md is a platform template; dream protocol updates must ship through system templates.",
+    "state.json": "state.json is a retired legacy runtime snapshot; runtime state belongs under runtime_artifacts/.",
+    "tasks.json": "tasks.json is a read-only DB Task snapshot; use task APIs or Work Ledger tools instead.",
+}
+
+
+def _root_write_guard_message(path: str) -> str | None:
+    normalized = _normalized_rel_path(path)
+    if not normalized:
+        return "Missing file path. Write deliverables under workspace/."
+    if normalized in _ROOT_FILE_WRITE_ALLOWLIST:
+        return None
+    managed_file_message = _ROOT_MANAGED_FILE_MESSAGES.get(normalized)
+    if managed_file_message:
+        return managed_file_message
+    top_level = normalized.split("/", 1)[0]
+    if "/" in normalized and top_level in _ROOT_PREFIX_WRITE_ALLOWLIST:
+        return None
+    if "/" not in normalized:
+        return "Top-level work files are not allowed. Write deliverables under workspace/."
+    if top_level not in _ROOT_PREFIX_WRITE_ALLOWLIST and not _managed_system_path_message(normalized):
+        return f"{top_level}/ is not a writable agent file namespace."
+    return None
+
+
+def _skill_package_path_guard_message(path: str, *, operation: str) -> str | None:
+    normalized = _normalized_rel_path(path)
+    if not normalized.startswith("skills/"):
+        return None
+    tail = normalized[len("skills/") :].strip("/")
+    if not tail:
+        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
+    parts = [part for part in tail.split("/") if part]
+    if not parts:
+        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
+    slug = parts[0]
+    if slug.startswith(".") or "." in slug:
+        return "Skill packages must be folders named by slug. Use skills/<slug>/SKILL.md."
+    if any(part.startswith(".") and part != ".gitkeep" for part in parts[1:]):
+        return "Hidden skill sidecars are platform-managed. Use skills/<slug>/SKILL.md and visible package resources."
+    if len(parts) == 1 and operation != "delete":
+        return "Skill definitions must be files under a skill folder. Use skills/<slug>/SKILL.md."
+    return None
+
+
+def _raise_managed_path_write_guard(path: str) -> None:
+    message = _managed_system_path_message(path)
+    if message:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)
+    root_message = _root_write_guard_message(path)
+    if root_message:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=root_message)
+    skill_message = _skill_package_path_guard_message(path, operation="write")
+    if skill_message:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=skill_message)
+
+
+def _raise_upload_path_guard(path: str, filename: str) -> None:
+    normalized_dir = _normalized_rel_path(path)
+    target = f"{normalized_dir.rstrip('/')}/{filename}" if normalized_dir else filename
+    _raise_managed_path_write_guard(target)
+
+
+def _is_hidden_browser_entry(entry: Path) -> bool:
+    return entry.name.startswith(".")
 
 
 def _raise_memory_write_guard() -> None:
@@ -115,7 +210,7 @@ async def list_files(
     items = []
     base_abs = _agent_base_dir(agent_id).resolve()
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
-        if entry.name == ".gitkeep":
+        if entry.name == ".gitkeep" or _is_hidden_browser_entry(entry):
             continue
         rel = str(entry.resolve().relative_to(base_abs))
         stat = entry.stat()
@@ -260,8 +355,7 @@ async def write_file(
 ):
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
-    if _is_governed_memory_path(path):
-        _raise_memory_write_guard()
+    _raise_managed_path_write_guard(path)
     target = _safe_path(agent_id, path)
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -280,8 +374,7 @@ async def delete_file(
 ):
     """Delete a file."""
     await check_agent_access(db, current_user, agent_id)
-    if _is_governed_memory_path(path):
-        _raise_memory_write_guard()
+    _raise_managed_path_write_guard(path)
     target = _safe_path(agent_id, path)
 
     if not target.exists():
@@ -335,10 +428,13 @@ async def import_skill_to_agent(
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     written = []
+    skill_dir_resolved = skill_dir.resolve()
     for f in skill.files:
         file_path = (skill_dir / f.path).resolve()
         # Safety check
-        if not str(file_path).startswith(str(base.resolve())):
+        try:
+            file_path.relative_to(skill_dir_resolved)
+        except ValueError:
             continue
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(f.content, encoding="utf-8")
@@ -373,13 +469,16 @@ async def upload_file_to_workspace(
 
     base = _agent_base_dir(agent_id)
     target_dir = (base / path).resolve()
-    if not str(target_dir).startswith(str(base.resolve())):
+    try:
+        target_dir.relative_to(base.resolve())
+    except ValueError:
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
 
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = file.filename or "unnamed"
     # Sanitize filename
     filename = filename.replace("/", "_").replace("\\", "_")
+    _raise_upload_path_guard(path, filename)
     save_path = target_dir / filename
 
     content = await file.read()
@@ -451,7 +550,7 @@ async def list_enterprise_kb_files(
         target = (info_dir / path).resolve()
     else:
         target = info_dir
-    if not str(target).startswith(str(info_dir)):
+    if not _is_within_path(target, info_dir):
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
 
     if not target.exists() or not target.is_dir():
@@ -489,7 +588,7 @@ async def upload_enterprise_kb_file(
 
     info_dir = _enterprise_info_dir(str(current_user.tenant_id))
     target_dir = (info_dir / sub_path).resolve()
-    if not str(target_dir).startswith(str(info_dir.resolve())):
+    if not _is_within_path(target_dir, info_dir):
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
 
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -561,7 +660,7 @@ async def read_enterprise_file(
         raise HTTPException(status_code=400, detail="No tenant associated")
     info_dir = _enterprise_info_dir(str(current_user.tenant_id))
     target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
+    if not _is_within_path(target, info_dir):
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -587,7 +686,7 @@ async def write_enterprise_file(
 
     info_dir = _enterprise_info_dir(str(current_user.tenant_id))
     target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
+    if not _is_within_path(target, info_dir):
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -609,7 +708,7 @@ async def delete_enterprise_file(
 
     info_dir = _enterprise_info_dir(str(current_user.tenant_id))
     target = (info_dir / path).resolve()
-    if not str(target).startswith(str(info_dir.resolve())):
+    if not _is_within_path(target, info_dir):
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -695,9 +794,12 @@ async def agent_import_from_clawhub(
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     written = []
+    skill_dir_resolved = skill_dir.resolve()
     for f in files:
         file_path = (skill_dir / f["path"]).resolve()
-        if not str(file_path).startswith(str(base.resolve())):
+        try:
+            file_path.relative_to(skill_dir_resolved)
+        except ValueError:
             continue
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(f["content"], encoding="utf-8")
@@ -754,9 +856,12 @@ async def agent_import_from_url(
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     written = []
+    skill_dir_resolved = skill_dir.resolve()
     for f in files:
         file_path = (skill_dir / f["path"]).resolve()
-        if not str(file_path).startswith(str(base.resolve())):
+        try:
+            file_path.relative_to(skill_dir_resolved)
+        except ValueError:
             continue
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(f["content"], encoding="utf-8")

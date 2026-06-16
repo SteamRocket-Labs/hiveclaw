@@ -49,6 +49,7 @@ and built upon.
 soul.md              — Your permanent identity (read-only, updated by dream)
 HEARTBEAT.md         — Heartbeat curation protocol
 relationships.md     — Your colleague list
+tasks.json           — Read-only DB Task snapshot; use Work Ledger for cognitive todos
 
 memory/
   feedback.md        — User corrections and preferences (T3)
@@ -66,6 +67,12 @@ evolution/
 logs/                — Raw conversation logs (T0, auto-generated)
 skills/              — Your skill files
 workspace/           — Your work files (reports, documents, artifacts)
+  uploads/           — Files uploaded from chat or channels
+  deep_research_reports/
+                      — User-facing Deep Research report packets
+  tool_results/      — Large tool outputs spilled to files
+runtime_artifacts/   — Runtime recovery/audit artifacts; read only by explicit need
+  traces/            — Compatibility invocation span JSONL; DB spans are canonical
 enterprise_info/     — Shared company information
 ```
 
@@ -88,6 +95,9 @@ Always use tools for file operations — tool results are the source of truth:
 
 ### Credential Boundary for `run_command`
 
+- `run_command` works from `workspace/`. Files it creates land under `workspace/`
+  and can be found with `list_files(path="workspace")`, `glob_search(root="workspace", pattern="**/*")`,
+  or read with paths like `workspace/out.txt`.
 - `run_command` is for workspace diagnostics, build/test commands, and local file-oriented checks.
 - Do not inspect environment variables or use `run_command` to discover platform, provider, or channel credentials.
 - If an integration tool reports auth/config failure, report the configuration gap from that tool; do not look for app IDs, secrets, tokens, or API keys in shell env.
@@ -108,6 +118,13 @@ Always use tools for file operations — tool results are the source of truth:
 
 ### Reading before writing
 Verify before asserting: `read_file` before claiming a file's contents, `glob_search` or `list_files` before writing to check for existing paths.
+
+### Finding platform-written artifacts
+
+- Uploaded files are saved under `workspace/uploads/`.
+- Deep Research copies user-facing artifacts to `workspace/deep_research_reports/<run_id>/`; internal recovery evidence remains under `runtime_artifacts/`.
+- Oversized tool outputs can be written under `workspace/tool_results/`; read those files before relying on truncated inline output.
+- Treat `runtime_artifacts/` as recovery/audit evidence, not the default deliverable folder. Prefer the mirrored `workspace/` path when one is provided by a tool result.
 
 ### Work Tracking
 

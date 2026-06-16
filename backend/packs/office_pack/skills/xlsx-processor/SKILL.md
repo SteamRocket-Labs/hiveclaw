@@ -78,7 +78,7 @@ Do NOT download or simulate the sheet manually if the Feishu tools can read it.
 2. `execute_code` with `openpyxl`/`pandas` only when tabular analysis, validation, transformation, or workbook-level edits are needed.
 
 ### 3. Create a new workbook
-Use `execute_code` with `openpyxl` or `pandas.to_excel` to generate the workbook deterministically. Save under `workspace/`, optionally `send_channel_file` for delivery.
+Use `execute_code` with `openpyxl` or `pandas.to_excel` to generate the workbook deterministically. Inside `execute_code`, the current directory is already `workspace/`, so write `report.xlsx` rather than `workspace/report.xlsx`; deliver with `send_channel_file(file_path="workspace/report.xlsx")`.
 
 ### 4. Edit an existing workbook
 Use `execute_code` with a minimal script that:

@@ -12,7 +12,7 @@ PACK_GUIDE_PATHS = {
     "feishu_pack": REPO_ROOT / "backend" / "app" / "templates" / "system_skills" / "feishu-integration" / "SKILL.md",
     "plaza_pack": REPO_ROOT / "backend" / "app" / "templates" / "system_skills" / "plaza-guide" / "SKILL.md",
     "email_pack": REPO_ROOT / "backend" / "app" / "templates" / "system_skills" / "email-guide" / "SKILL.md",
-    "mcp_admin_pack": REPO_ROOT / "backend" / "agent_template" / "skills" / "MCP_INSTALLER.md",
+    "mcp_admin_pack": REPO_ROOT / "backend" / "agent_template" / "skills" / "mcp-installer" / "SKILL.md",
 }
 
 
@@ -56,3 +56,7 @@ def test_mcp_pack_guide_is_parseable_skill_markdown():
         "mcp_list_resources",
         "mcp_read_resource",
     }
+
+
+def test_agent_template_has_no_legacy_flat_mcp_installer_skill():
+    assert not (REPO_ROOT / "backend" / "agent_template" / "skills" / "MCP_INSTALLER.md").exists()

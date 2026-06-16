@@ -329,7 +329,9 @@ def _resolve_workspace_file(agent_id, file_path: str) -> Path:
     settings = get_settings()
     workspace_root = Path(settings.AGENT_DATA_DIR).resolve() / str(agent_id)
     candidate = (workspace_root / file_path).resolve()
-    if not str(candidate).startswith(str(workspace_root)):
+    try:
+        candidate.relative_to(workspace_root)
+    except ValueError:
         raise ValueError("file_path must stay inside the agent workspace")
     return candidate
 

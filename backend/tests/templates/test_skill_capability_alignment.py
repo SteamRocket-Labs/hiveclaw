@@ -14,8 +14,8 @@ These tests guard the Group B skill rewrites against two classes of regression:
 Test sources:
 - `app/templates/skills/*/SKILL.md`        — user skills (is_default toggle)
 - `app/templates/system_skills/*/SKILL.md` — system skills (always-installed)
-- `agent_template/skills/*.md`             — default agent template skills
-- `hr_agent_template/skills/*.md`          — HR agent template skills
+- `agent_template/skills/*/SKILL.md`       — default agent template skills
+- `hr_agent_template/skills/*/SKILL.md`    — HR agent template skills
 
 For each skill file we verify:
 - Frontmatter is parseable
@@ -278,14 +278,14 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
 
 
 def _discover_skill_files() -> list[Path]:
-    """Find every SKILL.md + agent_template skill file under the backend."""
+    """Find every SKILL.md under template and agent-template skill roots."""
     paths: list[Path] = []
     paths.extend(sorted((_BACKEND_ROOT / "app" / "templates" / "skills").glob("*/SKILL.md")))
     paths.extend(sorted((_BACKEND_ROOT / "app" / "templates" / "system_skills").glob("*/SKILL.md")))
     for template_root_name in ("agent_template", "hr_agent_template"):
         skills_dir = _BACKEND_ROOT / template_root_name / "skills"
         if skills_dir.is_dir():
-            paths.extend(sorted(skills_dir.glob("*.md")))
+            paths.extend(sorted(skills_dir.glob("*/SKILL.md")))
     return paths
 
 
@@ -543,4 +543,29 @@ class TestCoreToolNamesInvariant:
         assert not missing, (
             f"CORE_TOOL_NAMES no longer includes these baseline tools: {missing}. "
             "The skill-cross-reference test relies on them being always-on."
+        )
+
+
+class TestWorkspaceGuidePathContract:
+    def test_workspace_guide_names_current_discoverable_artifact_paths(self) -> None:
+        content = (
+            _BACKEND_ROOT
+            / "app"
+            / "templates"
+            / "system_skills"
+            / "workspace-guide"
+            / "SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        required_phrases = {
+            "workspace/uploads/",
+            "workspace/deep_research_reports/",
+            "workspace/tool_results/",
+            "runtime_artifacts/",
+            "`run_command` works from `workspace/`",
+        }
+        missing = sorted(phrase for phrase in required_phrases if phrase not in content)
+        assert not missing, (
+            "Workspace Guide must teach agents where platform writes land so they can rediscover "
+            f"files after uploads, Deep Research, large tool-result spillover, and sandbox commands: {missing}"
         )

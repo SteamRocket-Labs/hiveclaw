@@ -646,9 +646,12 @@ async def _install_external_skill_from_url(
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     written = []
+    skill_dir_resolved = skill_dir.resolve()
     for item in files:
         file_path = (skill_dir / item["path"]).resolve()
-        if not str(file_path).startswith(str(agent_dir.resolve())):
+        try:
+            file_path.relative_to(skill_dir_resolved)
+        except ValueError:
             continue
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(item["content"], encoding="utf-8")
@@ -1489,8 +1492,13 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             for skill in all_skills_to_copy:
                 skill_folder = skills_dir / skill.folder_name
                 skill_folder.mkdir(parents=True, exist_ok=True)
+                skill_folder_resolved = skill_folder.resolve()
                 for sf in skill.files:
-                    file_path = skill_folder / sf.path
+                    file_path = (skill_folder / sf.path).resolve()
+                    try:
+                        file_path.relative_to(skill_folder_resolved)
+                    except ValueError:
+                        continue
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     file_path.write_text(sf.content)
 
@@ -1726,9 +1734,12 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         files = await _fetch_github_directory("openclaw", "skills", github_path, "main", ch_token)
                         skill_dir = agent_dir / "skills" / slug
                         skill_dir.mkdir(parents=True, exist_ok=True)
+                        skill_dir_resolved = skill_dir.resolve()
                         for f in files:
                             fp = (skill_dir / f["path"]).resolve()
-                            if not str(fp).startswith(str(agent_dir.resolve())):
+                            try:
+                                fp.relative_to(skill_dir_resolved)
+                            except ValueError:
                                 continue
                             fp.parent.mkdir(parents=True, exist_ok=True)
                             fp.write_text(f["content"], encoding="utf-8")

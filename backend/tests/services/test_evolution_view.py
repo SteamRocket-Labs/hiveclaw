@@ -45,7 +45,7 @@ def _seed_workspace(ws: Path) -> None:
             "archived_at": "2026-02-01T00:00:00+00:00",
         },
     }
-    _write(ws / "skills" / ".usage.json", json.dumps(usage))
+    _write(ws / "evolution" / "skill_usage.json", json.dumps(usage))
 
     _write(
         ws / "evolution" / "skill_review.md",
@@ -141,7 +141,7 @@ def test_missing_workspace_returns_empty_structure(tmp_path):
 
 
 def test_corrupt_files_do_not_raise(tmp_path):
-    _write(tmp_path / "skills" / ".usage.json", "{ not json")
+    _write(tmp_path / "evolution" / "skill_usage.json", "{ not json")
     _write(tmp_path / "evolution" / "evolution_ledger.jsonl", "garbage line\n{bad}\n")
     _write(tmp_path / "evolution" / "skill_review.md", "# Skill Review\n\nnot a bullet line\n")
     view = build_evolution_view(tmp_path)

@@ -84,18 +84,43 @@ def _resolve_data_root(data_root: str | Path | None) -> Path:
     return Path(get_settings().AGENT_DATA_DIR)
 
 
-def _workspace_dir(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
-    workspace = _resolve_data_root(data_root) / str(agent_id) / "workspace"
-    workspace.mkdir(parents=True, exist_ok=True)
-    return workspace
+def _agent_dir(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+    agent_dir = _resolve_data_root(data_root) / str(agent_id)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return agent_dir
+
+
+def _runtime_artifacts_dir(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+    runtime_dir = _agent_dir(agent_id, data_root=data_root) / "runtime_artifacts"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return runtime_dir
+
+
+def _legacy_workspace_dir(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+    return _agent_dir(agent_id, data_root=data_root) / "workspace"
 
 
 def get_session_memory_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
-    return _workspace_dir(agent_id, data_root=data_root) / "session_memory.md"
+    return _runtime_artifacts_dir(agent_id, data_root=data_root) / "session_memory.md"
 
 
 def get_compaction_summary_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
-    return _workspace_dir(agent_id, data_root=data_root) / "compaction_summary.md"
+    return _runtime_artifacts_dir(agent_id, data_root=data_root) / "compaction_summary.md"
+
+
+def _legacy_session_memory_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+    return _legacy_workspace_dir(agent_id, data_root=data_root) / "session_memory.md"
+
+
+def _legacy_compaction_summary_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+    return _legacy_workspace_dir(agent_id, data_root=data_root) / "compaction_summary.md"
+
+
+def _remove_legacy_runtime_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
 
 
 def _render_text_block(text: str) -> str:
@@ -217,6 +242,7 @@ def update_session_memory(
         last_compaction_at=(payload.last_compaction_at or "").strip() or None,
     )
     path.write_text(render_session_memory(normalized), encoding="utf-8")
+    _remove_legacy_runtime_file(_legacy_session_memory_path(agent_id, data_root=data_root))
     return path
 
 
@@ -242,6 +268,7 @@ def write_compaction_summary(
         lines.append("")
     lines.append(summary.strip() or "(empty)")
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _remove_legacy_runtime_file(_legacy_compaction_summary_path(agent_id, data_root=data_root))
     return path
 
 
@@ -297,6 +324,10 @@ def _legacy_updated_at(lines: list[str]) -> str | None:
 
 def load_session_memory(agent_id: UUID, *, data_root: str | Path | None = None) -> SessionMemoryPayload | None:
     path = get_session_memory_path(agent_id, data_root=data_root)
+    if not path.exists():
+        legacy_path = _legacy_session_memory_path(agent_id, data_root=data_root)
+        if legacy_path.exists():
+            path = legacy_path
     if not path.exists():
         return None
     content = path.read_text(encoding="utf-8")

@@ -31,7 +31,8 @@ def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> Non
 
     content = path.read_text(encoding="utf-8")
 
-    assert path == tmp_path / str(agent_id) / "workspace" / "session_memory.md"
+    assert path == tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md"
+    assert not (tmp_path / str(agent_id) / "workspace" / "session_memory.md").exists()
     assert content.startswith("---\n")
     assert "version: 2" in content
     assert "session_id: session-123" in content
@@ -104,7 +105,7 @@ def test_merge_session_memory_into_recovery_manifest_restores_pending_work(tmp_p
             current_state="Compaction completed and restore is in progress.",
             task_spec="Keep continuity across compaction boundaries.",
             pending_work=["Re-inject session memory", "Verify long-context benchmark"],
-            last_successful_step="Compaction summary persisted to workspace/compaction_summary.md.",
+            last_successful_step="Compaction summary persisted to runtime_artifacts/compaction_summary.md.",
             key_results=["Continuation restore logic was written before compaction."],
         ),
         data_root=tmp_path,
@@ -144,10 +145,10 @@ def test_merge_session_memory_into_manifest_logs_load_failures(caplog) -> None:
 
 
 def test_load_session_memory_supports_legacy_schema_without_frontmatter(tmp_path: Path) -> None:
-    from app.services.session_memory import get_session_memory_path, load_session_memory
+    from app.services.session_memory import load_session_memory
 
     agent_id = uuid4()
-    path = get_session_memory_path(agent_id, data_root=tmp_path)
+    path = tmp_path / str(agent_id) / "workspace" / "session_memory.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "# Session Memory\n"
@@ -173,6 +174,25 @@ def test_load_session_memory_supports_legacy_schema_without_frontmatter(tmp_path
     assert payload.important_files == ["backend/app/runtime/prompt_builder.py"]
     assert payload.pending_work == ["Restore session continuity."]
     assert payload.last_successful_step == "Recorded the previous summary."
+
+
+def test_update_session_memory_migrates_legacy_workspace_file(tmp_path: Path) -> None:
+    from app.services.session_memory import SessionMemoryPayload, update_session_memory
+
+    agent_id = uuid4()
+    legacy_path = tmp_path / str(agent_id) / "workspace" / "session_memory.md"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("# Session Memory\n\nlegacy", encoding="utf-8")
+
+    new_path = update_session_memory(
+        agent_id,
+        SessionMemoryPayload(current_state="New runtime state.", task_spec="Keep runtime files out of workspace."),
+        data_root=tmp_path,
+    )
+
+    assert new_path == tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md"
+    assert new_path.exists()
+    assert not legacy_path.exists()
 
 
 def test_update_session_memory_caps_lists_and_worklog(tmp_path: Path) -> None:

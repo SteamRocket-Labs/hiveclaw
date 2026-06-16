@@ -116,7 +116,9 @@ def _safe_extract_workspace_archive(archive_bytes: bytes, work_dir: Path) -> Non
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
         for member in archive.getmembers():
             target = (root / member.name).resolve()
-            if not str(target).startswith(str(root) + os.sep) and target != root:
+            try:
+                target.relative_to(root)
+            except ValueError:
                 continue
             if member.issym() or member.islnk() or member.isdev():
                 continue

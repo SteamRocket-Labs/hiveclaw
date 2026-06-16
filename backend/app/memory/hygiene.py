@@ -20,6 +20,9 @@ _DEAD_STUB_FILES = (
     Path("memory/reflections.md"),
     Path("evolution/reflections.md"),
 )
+_RETIRED_ROOT_FILES = (
+    Path("focus" + ".md"),
+)
 
 
 def _rel(path: Path) -> str:
@@ -116,10 +119,21 @@ def repair_agent_memory_hygiene(data_root: Path, agent_id: uuid.UUID, *, dry_run
         if action:
             dead_stubs.append(action)
 
-    if not dry_run:
-        _append_quarantine_archive(agent_root, retired_artifacts + dead_stubs)
+    retired_root_files: list[dict[str, str]] = []
+    for rel_path in _RETIRED_ROOT_FILES:
+        action = _quarantine_file(
+            agent_root,
+            rel_path,
+            reason="retired objective/focus projection; canonical task state lives in Work Ledger and RuntimeTask",
+            dry_run=dry_run,
+        )
+        if action:
+            retired_root_files.append(action)
 
-    changed = bool(backfill.get("entries_migrated") or retired_artifacts or dead_stubs)
+    if not dry_run:
+        _append_quarantine_archive(agent_root, retired_artifacts + dead_stubs + retired_root_files)
+
+    changed = bool(backfill.get("entries_migrated") or retired_artifacts or dead_stubs or retired_root_files)
     return {
         "agent_id": str(agent_id),
         "dry_run": dry_run,
@@ -129,6 +143,7 @@ def repair_agent_memory_hygiene(data_root: Path, agent_id: uuid.UUID, *, dry_run
         "backfill_diff": list(backfill.get("diff") or []),
         "retired_artifacts": retired_artifacts,
         "dead_stubs": dead_stubs,
+        "retired_root_files": retired_root_files,
     }
 
 
@@ -148,5 +163,6 @@ def repair_all_memory_hygiene(data_root: Path, *, dry_run: bool = True) -> dict[
         "files_changed": sum(int(report["files_changed"]) for report in agent_reports),
         "retired_artifacts": sum(len(report["retired_artifacts"]) for report in agent_reports),
         "dead_stubs": sum(len(report["dead_stubs"]) for report in agent_reports),
+        "retired_root_files": sum(len(report["retired_root_files"]) for report in agent_reports),
         "agents": agent_reports,
     }

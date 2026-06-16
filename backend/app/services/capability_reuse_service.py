@@ -46,9 +46,12 @@ async def reuse_existing_skill_for_agent(
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     written = []
+    skill_dir_resolved = skill_dir.resolve()
     for skill_file in skill.files:
         target = (skill_dir / skill_file.path).resolve()
-        if not str(target).startswith(str(base.resolve())):
+        try:
+            target.relative_to(skill_dir_resolved)
+        except ValueError:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(skill_file.content, encoding="utf-8")

@@ -58,11 +58,11 @@ version of existing content as a print-ready PDF. Handle PDF work directly
 ### 1. Fill an existing PDF form
 1. `read_document(path="...")` to list form fields.
 2. `execute_code` with `pypdf` to fill only the requested fields, preserving layout.
-3. Save under `workspace/`, confirm with `read_file`, deliver with `send_channel_file`.
+3. Inside `execute_code`, write the PDF to the current directory (already `workspace/`), confirm with `read_file(path="workspace/name.pdf")`, deliver with `send_channel_file(file_path="workspace/name.pdf")`.
 
 ### 2. Create a new PDF from scratch
 1. `execute_code` with the smallest script that can produce the layout (reportlab for simple, weasyprint for styled).
-2. Save under `workspace/`, confirm, deliver.
+2. Inside `execute_code`, write to the current directory (already `workspace/`), confirm with `workspace/...`, deliver.
 
 ### 3. Reformat existing content into PDF
 1. Read the source content first (`read_file` or `read_document`).

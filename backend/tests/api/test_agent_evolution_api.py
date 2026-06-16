@@ -60,7 +60,7 @@ def _seed_workspace(ws: Path) -> None:
             "archived_at": "2026-02-01T00:00:00+00:00",
         },
     }
-    (ws / "skills" / ".usage.json").write_text(json.dumps(usage), encoding="utf-8")
+    (ws / "evolution" / "skill_usage.json").write_text(json.dumps(usage), encoding="utf-8")
     (ws / "evolution" / "skill_review.md").write_text(
         "# Skill Review\n\n- 2026-05-20T09:05:00+00:00 [promote] weekly-report: 3 successes\n",
         encoding="utf-8",

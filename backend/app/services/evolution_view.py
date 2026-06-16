@@ -8,7 +8,7 @@ raising, matching Hive's fault-tolerant read endpoints.
 
 Data sources (all inside an agent workspace):
 
-- ``skills/.usage.json`` — skill state sidecar maintained by ``skill_curator``.
+- ``evolution/skill_usage.json`` — skill state sidecar maintained by ``skill_curator``.
 - ``evolution/skill_review.md`` — skill lifecycle audit lines written by
   ``skill_lifecycle.record_skill_lifecycle_event``:
   ``- <iso> [<status>] <skill_name>: <note>``.
@@ -61,7 +61,7 @@ def _empty_view() -> dict[str, Any]:
 
 
 def _build_skills(workspace: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Project ``.usage.json`` into a skill list + per-state summary counts."""
+    """Project ``skill_usage.json`` into a skill list + per-state summary counts."""
     usage = load_skill_usage(workspace)
     summary = {STATE_ACTIVE: 0, STATE_STALE: 0, STATE_ARCHIVED: 0}
     skills: list[dict[str, Any]] = []

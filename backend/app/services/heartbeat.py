@@ -747,7 +747,9 @@ async def _build_evolution_context(
                 logger.debug(f"Failed to read evolution lineage: {e}")
 
         # Read compaction summary — context the agent lost during mid-loop compression
-        compaction_path = ws_root / "workspace" / "compaction_summary.md"
+        compaction_path = ws_root / "runtime_artifacts" / "compaction_summary.md"
+        if not compaction_path.exists():
+            compaction_path = ws_root / "workspace" / "compaction_summary.md"
         if compaction_path.exists():
             try:
                 compaction = compaction_path.read_text(encoding="utf-8", errors="replace").strip()

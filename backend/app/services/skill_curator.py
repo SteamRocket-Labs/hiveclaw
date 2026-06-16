@@ -9,8 +9,9 @@ Design (mirrors hermes-agent's curator, adapted to Hive's per-workspace MD
 layout):
 
 - **Sidecar telemetry**, not frontmatter. Usage counters live in
-  ``workspace/skills/.usage.json`` keyed by skill *slug* (the directory name
-  under ``skills/``). Keeps operational state out of user-authored SKILL.md.
+  ``evolution/skill_usage.json`` keyed by skill *slug* (the
+  directory name under ``skills/``). Keeps operational state out of both
+  user-authored SKILL.md and the visible skill package tree.
 - **Pure state machine.** ``apply_skill_auto_transitions`` is a pure function
   (usage dict in → transition list out) with no IO, so it is unit-testable
   without mocks. The orchestrator owns all file mutation.
@@ -52,7 +53,8 @@ _USE_COUNT_GRACE_DAYS = 2.0
 _VIEW_COUNT_GRACE_DAYS = 0.5
 _MAX_COUNTER_GRACE_DAYS = 60.0
 
-_USAGE_FILENAME = ".usage.json"
+_USAGE_FILENAME = "skill_usage.json"
+_LEGACY_USAGE_FILENAME = ".usage.json"
 _ARCHIVE_DIRNAME = ".archive"
 
 
@@ -66,7 +68,11 @@ def _skills_dir(workspace: Path) -> Path:
 
 
 def _usage_path(workspace: Path) -> Path:
-    return _skills_dir(workspace) / _USAGE_FILENAME
+    return workspace / "evolution" / _USAGE_FILENAME
+
+
+def _legacy_usage_path(workspace: Path) -> Path:
+    return _skills_dir(workspace) / _LEGACY_USAGE_FILENAME
 
 
 def _archive_dir(workspace: Path) -> Path:
@@ -107,9 +113,7 @@ def _empty_record(*, created_by: str = _UNKNOWN_PROVENANCE, now: datetime | None
 # ---------------------------------------------------------------------------
 
 
-def load_skill_usage(workspace: Path) -> dict[str, dict[str, Any]]:
-    """Read the entire ``.usage.json`` map. Returns ``{}`` on missing/corrupt."""
-    path = _usage_path(workspace)
+def _read_usage_file(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
     try:
@@ -122,6 +126,32 @@ def load_skill_usage(workspace: Path) -> dict[str, dict[str, Any]]:
     return {str(slug): rec for slug, rec in data.items() if isinstance(rec, dict)}
 
 
+def load_skill_usage(workspace: Path) -> dict[str, dict[str, Any]]:
+    """Read the entire skill usage map. Returns ``{}`` on missing/corrupt."""
+    path = _usage_path(workspace)
+    if path.exists():
+        usage = _read_usage_file(path)
+        legacy = _legacy_usage_path(workspace)
+        if legacy.exists():
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+        return usage
+
+    legacy = _legacy_usage_path(workspace)
+    if not legacy.exists():
+        return {}
+    usage = _read_usage_file(legacy)
+    if usage:
+        save_skill_usage(workspace, usage)
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+    return usage
+
+
 def save_skill_usage(workspace: Path, data: dict[str, dict[str, Any]]) -> None:
     """Write the usage map atomically (tempfile + replace)."""
     path = _usage_path(workspace)
@@ -129,6 +159,10 @@ def save_skill_usage(workspace: Path, data: dict[str, dict[str, Any]]) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
+    try:
+        _legacy_usage_path(workspace).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _mutate(workspace: Path, slug: str, mutator, *, now: datetime | None = None) -> None:

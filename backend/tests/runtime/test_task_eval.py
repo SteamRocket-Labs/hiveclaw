@@ -155,7 +155,7 @@ def test_evaluate_task_readiness_detects_case_level_benchmark_failures() -> None
                 "session_recall": "## Task Playbook\n- use search_memory first\n- prefer session transcript evidence\n",
                 "self_evolution": (
                     "## Task Playbook\n"
-                    "- Use save_skill for repeatedly successful workflows only.\n"
+                    "- Use save_skill for repeatedly successful capability capsules only.\n"
                     "- Never promote one-off transcript notes.\n"
                 ),
             },

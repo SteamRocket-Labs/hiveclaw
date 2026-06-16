@@ -58,6 +58,7 @@ Current implemented closures that future work must preserve:
 - Workflow is a first-class deterministic orchestration substrate parallel to Plan Mode: `RuntimeTask(task_type="workflow")`, workflow step/leaf journals, run quotas, gate/wait/resume, trigger integration, admin ops, and Deep Research workflow-native execution must remain governed and auditable.
 - Subagent/delegation is a first-class collaboration capability: lightweight workers, peer delegation, fanout, context isolation, result distillation, governed shared tool execution, and replay-safe resume boundaries must remain distinct from Workflow control flow.
 - Agent TodoList / Work Ledger / Progress Ledger is the CC Task/Todo-equivalent agent-authored task board: `track_todo` records todos/dependencies, `record_finding` records findings/failures/replan, and `read_ledger` restores state. Writing a todo is cognitive bookkeeping; it must not start execution.
+- Skill is a progressive-disclosure capability capsule, not merely a Markdown prompt. A Skill may package instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions; loading a Skill adds context/guidance only. Executable components still run through their governed runtime (`preview_workflow`/`start_workflow`, `spawn_subagent`/`delegate_to_agent`, or approved sandbox/code execution).
 - `invocation_spans` are the canonical DB trace surface; JSONL spans remain compatibility artifacts.
 - Provider retry/overload fallback, token budget gates, CJK-aware estimates, canonical prompt-cache anchors, and Anthropic thinking-signature preservation are runtime contracts.
 - Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.
@@ -104,7 +105,7 @@ docker compose up -d --build       # Full stack → :3008
 | Tool Domains | 21 | — | Feishu office, messaging, tasks, workspace, email |
 | Kernel | 3 | ~2.7K | Core LLM execution engine |
 | Tools | 18 handlers | — | Handler implementations; 100+ registered tool definitions |
-| Skills | 5 | ~310 | Markdown skill system |
+| Skills | 5 | ~310 | Progressive-disclosure capability capsules |
 | Memory | 25 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding, hygiene |
 | Migrations | 79 | — | Alembic schema versions |
 

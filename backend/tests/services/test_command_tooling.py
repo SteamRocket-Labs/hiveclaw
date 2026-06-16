@@ -121,6 +121,15 @@ def test_execution_environment_strips_registry_url_credentials(tmp_path: Path, m
     assert "secret" not in " ".join(env.values())
 
 
+def test_code_execution_blocks_parent_workspace_path_references():
+    from app.services.agent_tool_domains.code_exec import _check_code_safety, _check_command_safety
+
+    assert "directory traversal" in (_check_code_safety("python", "open('../runtime_artifacts/x', 'w')") or "")
+    assert "directory traversal" in (_check_code_safety("node", "fs.writeFileSync('../logs/x', 'bad')") or "")
+    assert "directory traversal" in (_check_code_safety("bash", "echo bad > ../evolution/x") or "")
+    assert "directory traversal" in (_check_command_safety("cat ../runtime_artifacts/session_memory.md") or "")
+
+
 @pytest.mark.asyncio
 async def test_local_provider_sanitizes_caller_env_and_records_evidence(tmp_path: Path, monkeypatch):
     from app.services.code_execution.local_provider import execute_local_sandboxed_command
@@ -182,3 +191,18 @@ async def test_run_command_returns_tool_envelope_with_code_execution_evidence(tm
     assert isinstance(result, ToolContentEnvelope)
     assert "Output:\nok" in result
     assert result.metadata["code_execution_evidence"]["provider"] == "vercel_sandbox"
+
+
+def test_promote_nested_workspace_artifacts_moves_workspace_prefixed_outputs(tmp_path: Path):
+    from app.services.agent_tool_domains.code_exec import _promote_nested_workspace_artifacts
+
+    work_dir = tmp_path / "workspace"
+    nested = work_dir / "workspace" / "reports"
+    nested.mkdir(parents=True)
+    (nested / "bank.xlsx").write_bytes(b"xlsx")
+
+    moved = _promote_nested_workspace_artifacts(work_dir)
+
+    assert moved == ["reports/bank.xlsx"]
+    assert (work_dir / "reports" / "bank.xlsx").read_bytes() == b"xlsx"
+    assert not (work_dir / "workspace").exists()

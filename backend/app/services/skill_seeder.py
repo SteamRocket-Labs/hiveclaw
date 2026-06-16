@@ -332,7 +332,7 @@ Plan would be:
         "icon": "🔌",
         "folder_name": "mcp-installer",
         "is_default": True,
-        "files": [],  # populated at runtime from agent_template/skills/MCP_INSTALLER.md
+        "files": [],  # populated at runtime from agent_template/skills/mcp-installer/SKILL.md
     },
     # ─── System operational guides (default — auto-assigned to all agents) ───
     {
@@ -472,11 +472,11 @@ async def seed_skills():
         if s["folder_name"] == "skill-creator" and not s["files"]:
             s["files"] = get_skill_creator_files()
         elif s["folder_name"] == "mcp-installer" and not s["files"]:
-            mcp_file = _template_skills_dir / "MCP_INSTALLER.md"
+            mcp_file = _template_skills_dir / "mcp-installer" / "SKILL.md"
             if mcp_file.exists():
                 s["files"] = [{"path": "SKILL.md", "content": mcp_file.read_text(encoding="utf-8")}]
             else:
-                logger.warning("[SkillSeeder] MCP_INSTALLER.md not found in agent_template/skills/")
+                logger.warning("[SkillSeeder] mcp-installer/SKILL.md not found in agent_template/skills/")
 
         # System operational guides + channel integration skills — load ALL files from templates/system_skills/<folder>/
         elif (
@@ -623,6 +623,43 @@ def remove_retired_builtin_skill_dirs(
     return removed
 
 
+def remove_legacy_flat_skill_files(agent_dir: Path) -> list[str]:
+    """Remove known legacy flat system skill files after canonical folder skills exist."""
+    skills_dir = agent_dir / "skills"
+    if not skills_dir.exists():
+        return []
+
+    legacy_to_canonical = {
+        "MCP_INSTALLER.md": skills_dir / "mcp-installer" / "SKILL.md",
+        "CREATE_EMPLOYEE.md": skills_dir / "create-employee" / "SKILL.md",
+    }
+    removed: list[str] = []
+    for legacy_name, canonical_path in legacy_to_canonical.items():
+        legacy_path = skills_dir / legacy_name
+        if not legacy_path.is_file() or not canonical_path.is_file():
+            continue
+        try:
+            legacy_path.unlink()
+        except OSError as exc:
+            logger.warning("[SkillSeeder] Failed to remove legacy flat skill file {}: {}", legacy_path, exc)
+            continue
+        removed.append(legacy_path.relative_to(agent_dir).as_posix())
+    legacy_resource_dirs = {
+        "CREATE_EMPLOYEE": skills_dir / "create-employee" / "SKILL.md",
+    }
+    for legacy_dir_name, canonical_path in legacy_resource_dirs.items():
+        legacy_dir = skills_dir / legacy_dir_name
+        if not legacy_dir.is_dir() or not canonical_path.is_file():
+            continue
+        try:
+            shutil.rmtree(legacy_dir)
+        except OSError as exc:
+            logger.warning("[SkillSeeder] Failed to remove legacy skill resource dir {}: {}", legacy_dir, exc)
+            continue
+        removed.append(legacy_dir.relative_to(agent_dir).as_posix())
+    return removed
+
+
 async def cleanup_retired_builtin_skills() -> dict:
     """Delete retired builtin skills from DB and existing agent workspaces."""
     from app.models.agent import Agent
@@ -662,7 +699,9 @@ async def cleanup_retired_builtin_skills() -> dict:
             await db.commit()
 
     for agent in agents:
-        removed = remove_retired_builtin_skill_dirs(agent_manager._agent_dir(agent.id))
+        agent_dir = agent_manager._agent_dir(agent.id)
+        removed = remove_retired_builtin_skill_dirs(agent_dir)
+        removed.extend(remove_legacy_flat_skill_files(agent_dir))
         if removed:
             cleaned_agent_dirs[str(agent.id)] = removed
 
@@ -724,8 +763,13 @@ async def push_default_skills_to_existing_agents():
                     continue
                 skill_folder = skills_dir / skill.folder_name
                 skill_folder.mkdir(parents=True, exist_ok=True)
+                skill_folder_resolved = skill_folder.resolve()
                 for sf in skill.files:
                     fp = (skill_folder / sf.path).resolve()
+                    try:
+                        fp.relative_to(skill_folder_resolved)
+                    except ValueError:
+                        continue
                     fp.parent.mkdir(parents=True, exist_ok=True)
                     if fp.exists():
                         existing_content = fp.read_text(encoding="utf-8")
@@ -737,6 +781,14 @@ async def push_default_skills_to_existing_agents():
                         fp.write_text(sf.content, encoding="utf-8")
                         pushed += 1
                         logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
+            legacy_removed = remove_legacy_flat_skill_files(agent_dir)
+            if legacy_removed:
+                updated += len(legacy_removed)
+                logger.info(
+                    "[SkillSeeder] Removed legacy flat skill files for agent {}: {}",
+                    agent.id,
+                    ", ".join(legacy_removed),
+                )
 
         if pushed or updated:
             logger.info(f"[SkillSeeder] Pushed {pushed} new + {updated} updated skill files to existing agents")

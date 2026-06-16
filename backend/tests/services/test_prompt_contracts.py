@@ -149,12 +149,18 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     )
     assert "Use this to schedule future work" in tools["set_trigger"]
     assert "Do NOT create a trigger without a clear reason" in tools["set_trigger"]
+    assert "progressive-disclosure capability capsule" in tools["load_skill"]
+    assert "workflow definitions, subagent definitions" in tools["load_skill"]
+    assert "Executable components still run through their governed runtime" in tools["load_skill"]
     assert "Do NOT load a skill speculatively" in tools["load_skill"]
     assert "Do NOT use `run_command` to inspect platform or channel credential env vars" in tools["load_skill"]
-    # T2: "workflow" is the engine's proper noun now — save_skill speaks of an
-    # "approach" and carries the §7 skill-vs-workflow-promotion boundary. It
-    # submits a candidate only; activation remains externally verified.
+    # T2+: "workflow" remains the engine's proper noun, but a skill may package
+    # a workflow/subagent reference as part of a progressive-disclosure
+    # capability capsule. Execution still belongs to the governed runtime.
     assert "Submit a reusable approach as a skill activation candidate" in tools["save_skill"]
+    assert "A skill is a progressive-disclosure capability capsule" in tools["save_skill"]
+    assert "workflow component" in tools["save_skill"]
+    assert "governed runtime" in tools["save_skill"]
     assert "does not create an active skill directly" in tools["save_skill"]
     assert "evolution/skill_activation_candidates.md" in tools["save_skill"]
     assert "Only use this after an approach has succeeded repeatedly" in tools["save_skill"]
@@ -231,8 +237,22 @@ def test_skill_catalog_footer_discourages_speculative_loading() -> None:
 
     rendered = registry.render_catalog()
 
+    assert "progressive-disclosure capability capsule" in rendered
+    assert "can package references, templates, scripts, workflow definitions, and subagent definitions" in rendered
+    assert "Executable components still run through their governed runtime" in rendered
     assert "Load only the skill that matches the current task" in rendered
     assert "Do NOT speculatively load multiple skills" in rendered
+
+
+def test_execution_playbook_keeps_skill_capsule_runtime_boundary() -> None:
+    from app.runtime.prompt_sections.executing_actions import build_executing_actions_section
+
+    rendered = build_executing_actions_section()
+
+    assert "A skill can package context, references, templates, scripts, workflow definitions, and subagent definitions" in rendered
+    assert "Packaging is not execution" in rendered
+    assert "Workflow execution still goes through `preview_workflow` / `start_workflow`" in rendered
+    assert "subagent execution still goes through `spawn_subagent` / `delegate_to_agent`" in rendered
 
 
 def test_summarizer_prompt_distinguishes_session_state_from_durable_memory() -> None:
@@ -321,9 +341,9 @@ def test_settings_no_longer_define_jina_api_key() -> None:
 
 def test_hr_templates_and_root_docs_no_longer_reference_jina() -> None:
     project_root = Path(__file__).resolve().parents[3]
-    hr_create_employee = (project_root / "backend" / "hr_agent_template" / "skills" / "CREATE_EMPLOYEE.md").read_text(
-        encoding="utf-8"
-    )
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
     agents_doc = (project_root / "AGENTS.md").read_text(encoding="utf-8")
     readme_doc = (project_root / "README.md").read_text(encoding="utf-8")
@@ -338,9 +358,9 @@ def test_hr_templates_and_root_docs_no_longer_reference_jina() -> None:
 
 def test_hr_templates_prefer_identity_first_and_install_later() -> None:
     project_root = Path(__file__).resolve().parents[3]
-    hr_create_employee = (project_root / "backend" / "hr_agent_template" / "skills" / "CREATE_EMPLOYEE.md").read_text(
-        encoding="utf-8"
-    )
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
     hr_focus_path = project_root / "backend" / "hr_agent_template" / "focus.md"
 
@@ -353,9 +373,9 @@ def test_hr_templates_prefer_identity_first_and_install_later() -> None:
 
 def test_hr_templates_use_blueprint_flow_instead_of_five_round_protocol() -> None:
     project_root = Path(__file__).resolve().parents[3]
-    hr_create_employee = (project_root / "backend" / "hr_agent_template" / "skills" / "CREATE_EMPLOYEE.md").read_text(
-        encoding="utf-8"
-    )
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
 
     assert "preview_agent_blueprint" in hr_create_employee
@@ -368,9 +388,9 @@ def test_hr_templates_use_blueprint_flow_instead_of_five_round_protocol() -> Non
 
 def test_hr_templates_do_not_reference_retired_objective_ledger() -> None:
     project_root = Path(__file__).resolve().parents[3]
-    hr_create_employee = (project_root / "backend" / "hr_agent_template" / "skills" / "CREATE_EMPLOYEE.md").read_text(
-        encoding="utf-8"
-    )
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
     hr_guide = (project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide" / "SKILL.md").read_text(
         encoding="utf-8"
     )

@@ -159,7 +159,7 @@ def _internal_scenario_report(ablation: str) -> dict[str, Any]:
             "ready": evolution_ready,
             "score": task_report["scenarios"]["self_evolution"]["score"],
             "transcript": "task_eval:self_evolution",
-            "rubric": "save_skill only for repeated successful workflows",
+            "rubric": "save_skill only for repeated successful approaches with stable capability-capsule boundaries",
             "score_breakdown": {"task_ready": evolution_ready},
         },
         "long_context_after_compaction": {
@@ -385,7 +385,7 @@ def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
             "ready": promote_result["decision"] == "promote",
             "score": 100 if promote_result["decision"] == "promote" else 0,
             "transcript": json.dumps(promote_result, ensure_ascii=False),
-            "rubric": "repeated successful workflows should promote into skill candidates and then skills",
+            "rubric": "repeated successful approaches should promote into skill candidates and then skills",
             "score_breakdown": promote_result,
         },
         "stale_skill_patch_recovery": {

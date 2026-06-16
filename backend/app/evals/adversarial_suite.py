@@ -15,7 +15,11 @@ The four attacks map to the documented reward-hacking case law:
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import json
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from app.evals.artifact_gate import run_artifact_execution_gate
@@ -88,3 +92,23 @@ async def run_adversarial_suite(
         "modified_baseline": attack_modified_baseline(trusted_hashes=trusted_hashes),
     }
     return {"attacks": attacks, "all_blocked": all(attacks.values())}
+
+
+async def _run_default_suite_for_cli() -> dict[str, Any]:
+    return await run_adversarial_suite()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the reward-hack adversarial suite (E9).")
+    parser.add_argument("--output", type=Path, required=True, help="path to write adversarial suite JSON evidence")
+    args = parser.parse_args(argv)
+
+    report = asyncio.run(_run_default_suite_for_cli())
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report.get("all_blocked") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

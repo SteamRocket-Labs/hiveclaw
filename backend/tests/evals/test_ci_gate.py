@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from app.evals.ci_gate import (
+    EXIT_ARTIFACT_GATE_FAILED,
     EXIT_BASELINE_UNAVAILABLE,
     EXIT_OK,
     EXIT_REGRESSION,
@@ -84,6 +85,30 @@ def test_gate_fails_on_untrusted_evaluator() -> None:
     assert decision.exit_code == EXIT_UNTRUSTED_EVALUATOR
 
 
+def test_gate_fails_when_required_artifact_gate_report_missing() -> None:
+    decision = evaluate_ci_gate(
+        behavior_report=_report({"coding": 100}),
+        baseline=_baseline({"coding": 100}),
+        running_model="claude-opus-4-8",
+        require_artifact_gate=True,
+    )
+    assert decision.passed is False
+    assert decision.exit_code == EXIT_ARTIFACT_GATE_FAILED
+    assert "artifact" in decision.reasons[0].lower()
+
+
+def test_gate_fails_when_adversarial_suite_does_not_block_all_attacks() -> None:
+    decision = evaluate_ci_gate(
+        behavior_report=_report({"coding": 100}),
+        baseline=_baseline({"coding": 100}),
+        running_model="claude-opus-4-8",
+        adversarial_report={"all_blocked": False, "attacks": {"fake_pass_claim": False}},
+    )
+    assert decision.passed is False
+    assert decision.exit_code == EXIT_ARTIFACT_GATE_FAILED
+    assert "adversarial" in decision.reasons[0].lower()
+
+
 def test_gate_fails_on_baseline_unavailable() -> None:
     decision = evaluate_ci_gate(
         behavior_report=_report({"coding": 100}),
@@ -138,3 +163,28 @@ def test_cli_fails_on_integrity_report_untrusted(tmp_path: Path) -> None:
     )
 
     assert exit_code == EXIT_UNTRUSTED_EVALUATOR
+
+
+def test_cli_fails_on_required_artifact_report_failed(tmp_path: Path) -> None:
+    behavior_report = tmp_path / "behavior.json"
+    baseline = tmp_path / "core_behavior_v1.json"
+    artifact_report = tmp_path / "artifact.json"
+    behavior_report.write_text(json.dumps(_report({"coding": 100})), encoding="utf-8")
+    baseline.write_text(json.dumps(_baseline({"coding": 100})), encoding="utf-8")
+    artifact_report.write_text(json.dumps({"status": "failed", "passed": False, "reason": "exit 1"}), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "--behavior-report",
+            str(behavior_report),
+            "--baseline",
+            str(baseline),
+            "--running-model",
+            "claude-opus-4-8",
+            "--artifact-report",
+            str(artifact_report),
+            "--require-artifact-gate",
+        ]
+    )
+
+    assert exit_code == EXIT_ARTIFACT_GATE_FAILED

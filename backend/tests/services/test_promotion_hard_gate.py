@@ -37,6 +37,13 @@ def _regression(passed: bool) -> dict:
     }
 
 
+def _artifact_report(status: str, *, passed: bool | None = None, reason: str = "artifact gate") -> dict:
+    payload = {"status": status, "reason": reason}
+    if passed is not None:
+        payload["passed"] = passed
+    return payload
+
+
 # ---- decide_verified_promotion: regression gate (backward-compatible) ----
 
 
@@ -133,6 +140,40 @@ def test_behavior_gated_promotes_when_all_pass() -> None:
     assert decision["decision"] == "promote"
 
 
+def test_behavior_gated_holds_skill_candidate_without_artifact_gate_report() -> None:
+    decision = decide_behavior_gated_promotion(
+        {"candidate_id": "c", "target_type": "skill"},
+        verification_report=_verification(True),
+        behavior_report=_behavior_report(True),
+        regression_report=_regression(True),
+    )
+    assert decision["decision"] == "hold"
+    assert "artifact" in decision["reason"].lower()
+
+
+def test_behavior_gated_holds_skill_candidate_on_failed_artifact_gate() -> None:
+    decision = decide_behavior_gated_promotion(
+        {"candidate_id": "c", "target_type": "skill_patch"},
+        verification_report=_verification(True),
+        behavior_report=_behavior_report(True),
+        regression_report=_regression(True),
+        artifact_gate_report=_artifact_report("failed", passed=False, reason="verification script failed"),
+    )
+    assert decision["decision"] == "hold"
+    assert "verification script failed" in decision["reason"]
+
+
+def test_behavior_gated_promotes_skill_candidate_with_passed_artifact_gate() -> None:
+    decision = decide_behavior_gated_promotion(
+        {"candidate_id": "c", "target_type": "skill"},
+        verification_report=_verification(True),
+        behavior_report=_behavior_report(True),
+        regression_report=_regression(True),
+        artifact_gate_report=_artifact_report("passed", passed=True),
+    )
+    assert decision["decision"] == "promote"
+
+
 def test_behavior_gated_holds_on_missing_behavior_report() -> None:
     decision = decide_behavior_gated_promotion(
         {"candidate_id": "c"},
@@ -149,3 +190,4 @@ def test_skill_distiller_real_promotion_paths_use_behavior_gate() -> None:
 
     assert "decide_behavior_gated_promotion" in source
     assert "decide_verified_promotion(candidate, verification_report=verification_report)" not in source
+    assert "artifact_gate_report=" in source

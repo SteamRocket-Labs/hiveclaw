@@ -55,6 +55,9 @@ jobs:
       - name: Prompt contract eval
         run: python -m app.runtime.prompt_eval --fail-severity=critical,high
 
+      - name: Reward-hack adversarial suite
+        run: python -m app.evals.adversarial_suite --output /tmp/hive-adversarial-suite.json
+
       - name: Internal harness eval (fail-gate G3)
         run: python -m app.evals.run --suite core_v1 --target clawith --mode internal --fail-under 90
 
@@ -107,6 +110,7 @@ jobs:
           HIVE_EVAL_CI_TOKEN: ${{ secrets.HIVE_EVAL_CI_TOKEN }}
           HIVE_EVAL_REPORT: /tmp/hive-behavior-report.json
           HIVE_EVAL_INTEGRITY: /tmp/hive-evaluator-integrity.json
+          HIVE_EVAL_ADVERSARIAL: /tmp/hive-adversarial-suite.json
         run: |
           if [ -z "$HIVE_EVAL_API_URL" ] || [ -z "$HIVE_EVAL_CI_TOKEN" ]; then
             python -m app.evals.behavior_eval_evidence \
@@ -120,6 +124,8 @@ jobs:
             --current-root . \
             --trusted-root ../protected-base/backend \
             --output "$HIVE_EVAL_INTEGRITY"
+          python -m app.evals.adversarial_suite \
+            --output "$HIVE_EVAL_ADVERSARIAL"
           HTTP_STATUS="$(curl -sS \
             -o "$HIVE_EVAL_REPORT" \
             -w '%{http_code}' \
@@ -148,7 +154,8 @@ jobs:
             --behavior-report "$HIVE_EVAL_REPORT" \
             --baseline app/evals/baselines/core_behavior_v1.json \
             --running-model "$RUNNING_MODEL" \
-            --integrity-report "$HIVE_EVAL_INTEGRITY"
+            --integrity-report "$HIVE_EVAL_INTEGRITY" \
+            --adversarial-report "$HIVE_EVAL_ADVERSARIAL"
       - name: Upload behavior eval evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -157,4 +164,5 @@ jobs:
           path: |
             /tmp/hive-behavior-report.json
             /tmp/hive-evaluator-integrity.json
+            /tmp/hive-adversarial-suite.json
           if-no-files-found: warn

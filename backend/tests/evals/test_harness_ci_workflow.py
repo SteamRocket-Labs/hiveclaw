@@ -13,6 +13,7 @@ def test_harness_ci_runs_pytest_prompt_eval_and_self_evolution_bakeoff() -> None
     assert "python -m app.runtime.prompt_eval" in source
     assert "python -m app.evals.self_evolution_bakeoff" in source
     assert "python -m app.evals.run --suite core_v1 --target clawith --mode internal" in source
+    assert "python -m app.evals.adversarial_suite" in source
 
 
 def test_nightly_behavior_gate_generates_live_report_and_integrity_before_gate() -> None:
@@ -42,6 +43,7 @@ def test_nightly_behavior_gate_generates_live_report_and_integrity_before_gate()
     assert integrity in source
     assert '--output "$HIVE_EVAL_INTEGRITY"' in source
     assert '--integrity-report "$HIVE_EVAL_INTEGRITY"' in source
+    assert '--adversarial-report "$HIVE_EVAL_ADVERSARIAL"' in source
     assert source.index(integrity) < source.index(live_endpoint)
     assert source.index(live_endpoint) < source.index(gate)
     assert source.index(integrity) < source.index(gate)

@@ -8,12 +8,14 @@ so the gate genuinely catches code that exits non-zero or lies in stdout.
 from __future__ import annotations
 
 import subprocess
+import json
 
 from app.evals.adversarial_suite import (
     attack_deleted_detection_marker,
     attack_fake_pass_claim,
     attack_modified_baseline,
     attack_modified_grader,
+    main,
     run_adversarial_suite,
 )
 from app.services.code_execution.contracts import CodeExecutionResult
@@ -54,3 +56,14 @@ async def test_full_suite_all_blocked() -> None:
         "modified_grader",
         "modified_baseline",
     }
+
+
+def test_cli_writes_adversarial_suite_report(tmp_path, monkeypatch) -> None:
+    async def fake_suite():
+        return {"all_blocked": True, "attacks": {"fake_pass_claim": True}}
+
+    monkeypatch.setattr("app.evals.adversarial_suite._run_default_suite_for_cli", fake_suite)
+    output = tmp_path / "adversarial.json"
+
+    assert main(["--output", str(output)]) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["all_blocked"] is True

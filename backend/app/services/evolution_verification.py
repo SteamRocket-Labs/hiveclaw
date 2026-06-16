@@ -546,20 +546,58 @@ def decide_verified_promotion(
     return {"decision": "promote", "reason": "verification passed"}
 
 
+_ARTIFACT_GATE_REQUIRED_TARGET_TYPES = {
+    "code",
+    "script",
+    "skill",
+    "skill_patch",
+    "skill_executable",
+    "workflow",
+    "workflow_definition",
+}
+
+
+def _candidate_requires_artifact_gate(candidate: dict[str, Any]) -> bool:
+    target_type = str(candidate.get("target_type") or "").strip().lower()
+    if target_type in _ARTIFACT_GATE_REQUIRED_TARGET_TYPES:
+        return True
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    artifact_type = str(metadata.get("artifact_type") or "").strip().lower()
+    return artifact_type in _ARTIFACT_GATE_REQUIRED_TARGET_TYPES or bool(metadata.get("requires_artifact_gate"))
+
+
+def _artifact_gate_hard_gate(artifact_gate_report: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(artifact_gate_report, dict):
+        return {"decision": "hold", "reason": "artifact execution gate report is required"}
+    status = str(artifact_gate_report.get("status") or "").strip().lower()
+    if status == "not_applicable":
+        reason = str(artifact_gate_report.get("reason") or "").strip()
+        if reason:
+            return {"decision": "promote", "reason": f"artifact execution gate not applicable: {reason}"}
+        return {"decision": "hold", "reason": "artifact execution gate not_applicable requires a reason"}
+    if status == "passed" or bool(artifact_gate_report.get("passed")):
+        return {"decision": "promote", "reason": "artifact execution gate passed"}
+    reason = str(artifact_gate_report.get("reason") or artifact_gate_report.get("error") or "artifact gate failed")
+    return {"decision": "hold", "reason": f"artifact execution gate failed: {reason}"}
+
+
 def decide_behavior_gated_promotion(
     candidate: dict[str, Any],
     *,
     verification_report: dict[str, Any] | None,
     behavior_report: dict[str, Any] | None,
     regression_report: dict[str, Any] | None = None,
+    artifact_gate_report: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """E3: canonical hard promotion gate — verification passed AND behavior eval
-    passed (execution_passed) AND no baseline regression (no_regressions).
+    passed (execution_passed) AND no baseline regression (no_regressions) AND
+    executable artifacts prove they run in the artifact execution gate.
 
     Composes E1 (regression_report from compare_to_baseline) + E2 (behavior_report
-    via behavior_eval_passed) + static verification. E8's CI eval path calls this
-    with reports produced by the Hive live runner, so a self-evolution candidate
-    cannot promote without proving real, non-regressed behavior.
+    via behavior_eval_passed) + E6 (artifact execution) + static verification.
+    E8's CI eval path calls this with reports produced by the Hive live runner,
+    so a self-evolution candidate cannot promote without proving real,
+    non-regressed behavior and, for executable artifacts, a real sandbox run.
     """
 
     base = decide_verified_promotion(
@@ -573,4 +611,8 @@ def decide_behavior_gated_promotion(
 
     if not isinstance(behavior_report, dict) or not behavior_eval_passed(behavior_report):
         return {"decision": "hold", "reason": "behavior eval did not pass (execution_passed required)"}
+    if _candidate_requires_artifact_gate(candidate):
+        artifact_gate = _artifact_gate_hard_gate(artifact_gate_report)
+        if artifact_gate["decision"] != "promote":
+            return artifact_gate
     return {"decision": "promote", "reason": "verification + behavior eval passed, no regression"}

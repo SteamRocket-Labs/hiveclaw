@@ -23,6 +23,16 @@ def _passing_behavior_report() -> dict:
     }
 
 
+async def _passing_artifact_gate(*args, **kwargs) -> dict:
+    del args, kwargs
+    return {
+        "status": "passed",
+        "passed": True,
+        "reason": "artifact executed and satisfied its declared assertion",
+        "sandbox_evidence": {"provider": "test"},
+    }
+
+
 def test_build_workflow_signature_filters_noise_and_consecutive_duplicates() -> None:
     from app.services.skill_distiller import _build_workflow_signature
 
@@ -261,6 +271,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
         fake_load_internal_session_evidence,
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
@@ -293,6 +304,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     verification_report = eval_runs[-1]["metadata"]["verification_report"]
     assert verification_report["passed"] is True
     assert [check["type"] for check in verification_report["checks"]] == ["skill_guard"]
+    assert result["artifact_gate_report"]["status"] == "passed"
     assert captured_draft_kwargs["skill_candidate_drafts"][0]["candidate_id"] == "flywheel-candidate-1"
     assert "Build, migrate, restart" in captured_draft_kwargs["skill_candidate_drafts"][0]["content"]
     assert "Market Research Loop" in review
@@ -343,6 +355,7 @@ async def test_distiller_cannot_promote_without_external_behavior_eval(monkeypat
 
     monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_evidence)
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
@@ -415,6 +428,7 @@ async def test_distiller_fetches_tenant_behavior_report_before_promotion(monkeyp
         "app.services.tenant_behavior_eval_publisher.ensure_skill_distiller_behavior_report",
         fake_ensure_report,
     )
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
 
     runtime_config = SimpleNamespace(skill_candidate_loop_enabled=True)
     result = await run_skill_distillation_cycle(
@@ -431,6 +445,73 @@ async def test_distiller_fetches_tenant_behavior_report_before_promotion(monkeyp
     assert published[0]["agent_id"] == agent_id
     assert published[0]["tenant_id"] == tenant_id
     assert runtime_config.skill_distiller_behavior_report == _passing_behavior_report()
+
+
+@pytest.mark.asyncio
+async def test_distiller_cannot_promote_when_artifact_gate_fails(monkeypatch, tmp_path: Path) -> None:
+    from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+
+    async def fake_evidence(*, agent_id, since_days, state, current_session_id):
+        del agent_id, since_days, state, current_session_id
+        return [
+            SessionWorkflowEvidence(
+                session_id=f"artifact-s-{i}",
+                source="heartbeat",
+                occurred_at=f"2026-04-0{i}T10:00:00Z",
+                status="success",
+                used_skill=False,
+                summary="Repeated the same code-producing workflow.",
+                assistant_reply="[OUTCOME:action_taken] [SCORE:8] wrote helper script",
+                tool_names=("web_search", "web_fetch", "write_file"),
+            )
+            for i in (1, 2, 3)
+        ]
+
+    async def fake_draft(**kwargs):
+        del kwargs
+        return DistilledSkillDraft(
+            decision="promote",
+            confidence=0.95,
+            name="Script Writer Loop",
+            description="Write and verify helper scripts.",
+            instructions_markdown="1. Draft a helper script.\n2. Run its verification command.\n3. Save evidence.\n",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="Repeated successful workflow.",
+        )
+
+    async def fake_artifact_gate(*args, **kwargs):
+        del args, kwargs
+        return {"status": "failed", "passed": False, "reason": "artifact exited non-zero (exit_code=1)"}
+
+    monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_evidence)
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", fake_artifact_gate)
+
+    result = await run_skill_distillation_cycle(
+        agent_id=uuid4(),
+        workspace=workspace,
+        tenant_id=None,
+        runtime_config=SimpleNamespace(
+            skill_candidate_loop_enabled=True,
+            skill_distiller_behavior_report=_passing_behavior_report(),
+        ),
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
+    )
+
+    assert result["status"] == "deferred"
+    assert "artifact exited non-zero" in result["reason"]
+    assert not (workspace / "skills" / "script-writer-loop" / "SKILL.md").exists()
+    promotion_decisions = [
+        record
+        for record in _jsonl_records(workspace / "evolution" / "evolution_ledger.jsonl")
+        if record["schema"] == "evolution_promotion_decision.v1"
+    ]
+    assert promotion_decisions[-1]["decision"] == "held"
+    assert promotion_decisions[-1]["metadata"]["artifact_gate_report"]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -474,6 +555,7 @@ async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatc
         fake_load_internal_session_evidence,
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
@@ -556,6 +638,7 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
         fake_load_internal_session_evidence,
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
@@ -658,6 +741,7 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
         fake_load_internal_session_evidence,
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),

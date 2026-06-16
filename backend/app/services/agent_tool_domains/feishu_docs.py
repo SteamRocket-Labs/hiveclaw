@@ -12,6 +12,11 @@ from app.services.agent_tool_domains.feishu_cli import (
 )
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node, _feishu_wiki_get_node_via_cli
+from app.services.connector_acl import (
+    CONNECTOR_SOURCE_ITEMS_METADATA_KEY,
+    authoritative_connector_source_item,
+    with_connector_source_items,
+)
 from app.tools.result_envelope import render_tool_error, render_tool_fallback
 
 logger = logging.getLogger(__name__)
@@ -90,6 +95,23 @@ def _safe_feishu_json(resp: httpx.Response, op: str) -> dict:
     }
 
 
+def _feishu_doc_source_items(
+    agent_id: uuid.UUID | str, document_token: str, read_token: str | None = None
+) -> list[dict]:
+    items: list[dict] = []
+    for token in dict.fromkeys([document_token, read_token or document_token]):
+        if token:
+            items.append(
+                authoritative_connector_source_item(
+                    source=f"feishu://doc/{token}",
+                    connector="feishu",
+                    resource_type="doc",
+                    agent_id=agent_id,
+                )
+            )
+    return items
+
+
 async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> str:
     import httpx
 
@@ -136,14 +158,20 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
 
     content = data.get("data", {}).get("content", "")
     if not content:
-        return f"📄 Document '{document_token}' is empty.{wiki_hint}"
+        return with_connector_source_items(
+            f"📄 Document '{document_token}' is empty.{wiki_hint}",
+            _feishu_doc_source_items(agent_id, document_token, read_token),
+        )
 
     truncated = ""
     if len(content) > max_chars:
         content = content[:max_chars]
         truncated = f"\n\n_(Truncated to {max_chars} chars)_"
 
-    return f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}"
+    return with_connector_source_items(
+        f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}",
+        _feishu_doc_source_items(agent_id, document_token, read_token),
+    )
 
 
 async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -186,24 +214,37 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
             return f"❌ Failed to read document: {data.get('msg')} (code {data.get('code')})"
         content = data.get("data", {}).get("content", "")
         if not content:
-            return f"📄 Document '{document_token}' is empty.{wiki_hint}"
+            return with_connector_source_items(
+                f"📄 Document '{document_token}' is empty.{wiki_hint}",
+                _feishu_doc_source_items(agent_id, document_token, read_token),
+            )
         truncated = ""
         if len(content) > max_chars:
             content = content[:max_chars]
             truncated = f"\n\n_(Truncated to {max_chars} chars)_"
-        return f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}"
+        return with_connector_source_items(
+            f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}",
+            _feishu_doc_source_items(agent_id, document_token, read_token),
+        )
     except FeishuCliError as exc:
         fallback_result = await _feishu_doc_read_via_openapi(agent_id, arguments)
-        return render_tool_fallback(
+        fallback_source_items = []
+        fallback_metadata = getattr(fallback_result, "metadata", None)
+        if isinstance(fallback_metadata, dict):
+            source_items = fallback_metadata.get(CONNECTOR_SOURCE_ITEMS_METADATA_KEY)
+            if isinstance(source_items, list):
+                fallback_source_items = source_items
+        rendered = render_tool_fallback(
             tool_name="feishu_doc_read",
             error_class=exc.error_class,
             message=str(exc),
             fallback_tool="feishu_doc_read:openapi",
-            fallback_result=fallback_result,
+            fallback_result=str(fallback_result),
             provider="lark-cli",
             retryable=exc.retryable,
             actionable_hint=exc.actionable_hint,
         )
+        return with_connector_source_items(rendered, fallback_source_items)
 
 
 async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:

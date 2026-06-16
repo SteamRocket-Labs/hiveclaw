@@ -1291,7 +1291,7 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team
 10. **code execution sandbox evidence + credential egress**：新增 provider 级 env allowlist，local/vercel provider 即使收到 unsafe caller env 也二次净化；`CodeExecutionResult.evidence` 记录 provider/isolation/network_policy/env_policy；artifact gate 返回 `sandbox_evidence`；`execute_code` / `run_command` 工具返回 envelope，kernel 将 provider evidence 持久写入 tool span metadata。
 11. **T3 TTL / evidence ref 读侧闭环**：T3 manifest 会基于 sidecar/prose metadata 标记 `ttl_status` / `expired` 与本地 `evidence_refs` 有效性；`parse_t3_facts()` 跳过 expired 或非 active 条目，避免过期 fact 继续进入 prompt-facing retrieval。
 
-**当前诚实边界（留给 P2 规划，不在 P0/P1 假装完成）**：live behavior eval 仍未跑出真实分数；mutating delegation/subagent 还不是 Temporal 式 journal replay；Railway/Vercel microVM uname/network-denied/workspace round-trip 已有可重复 probe 与 latest setting 写入，但真实生产样本仍需部署后持续采集；Feishu/Drive/Office 已有参数派生 fail-closed source 与生成后复检，但还没有每个 connector item 的 authoritative ACL ingest；DecisionTrace 仍是 JSONL，不是 PG RLS trace table。
+**当前诚实边界（留给 P2 规划，不在 P0/P1 假装完成）**：live behavior eval 仍未跑出真实分数；mutating delegation/subagent 已有 restart replay journal + fail-closed reconciliation，但还不是 Temporal 式 exactly-once side-effect replay；Railway/Vercel microVM uname/network-denied/workspace round-trip 已有可重复 probe 与 latest setting 写入，但真实生产样本仍需部署后持续采集；Feishu/Drive/Office 已有 tool-result authoritative source ACL metadata 与生成后复检，但还不是全 connector/per-document production ACL coverage；DecisionTrace 仍是 JSONL，不是 PG RLS trace table。
 
 **已跑过的关键 focused evidence**：
 
@@ -1309,7 +1309,45 @@ cd backend && source .venv/bin/activate && pytest tests/kernel/test_generated_so
 # 82 passed, 4 warnings
 ```
 
-**非 MVP 收口**：P0/P1 不是 doc-only，也不是只加 unit tests。每项都落到 live choke point 或 truth surface：LLM tool handler、RuntimeConfig、db bootstrap + migration、startup resume/orphan reconcile、desktop API delete path、memory activation/retriever、session feedback/chat message model、kernel reminder、connector ACL filter + generated-output source recheck、code execution providers + tool span evidence。P2 只能在这个基线上继续规划 live eval、durable mutating replay、authoritative connector ACL ingest 和 production sandbox evidence。
+**非 MVP 收口**：P0/P1 不是 doc-only，也不是只加 unit tests。每项都落到 live choke point 或 truth surface：LLM tool handler、RuntimeConfig、db bootstrap + migration、startup resume/orphan reconcile、desktop API delete path、memory activation/retriever、session feedback/chat message model、kernel reminder、connector ACL filter + generated-output source recheck、code execution providers + tool span evidence。P2 只能在这个基线上继续规划 live eval、durable mutating exactly-once replay、全连接器生产 ACL coverage 和 production sandbox evidence。
+
+### 12.21 SOTA audit 3/5/4 即刻代码优化收口（2026-06-15）
+
+本节承接 `docs/hive-sota-master-goal.md` 与 live audit 的三项可立即代码化缺口。目标不是宣称 G3/G4/G7/G10 已整体达成 SOTA，而是把“缺主路径代码”降级为“已有代码路径，等待生产/live evidence”。
+
+**已关闭的代码缺口**：
+
+1. **G10 connector authoritative ACL ingest 第一批 source**：`authoritative_connector_source_item()` 与 `with_connector_source_items()` 统一构造 tool-result source ACL metadata；Feishu doc、Feishu Drive、Office 成功读取结果会携带 `connector_source_items`。Feishu 按 `agent_ids=[agent_id]`，Office 按 `tenant_ids=[tenant_id]`，无 principal 时 deny-by-default。`extract_connector_source_items()` 现在会读取 `ToolContentEnvelope.metadata`，让 kernel 现有 generated-source ACL registry 能登记这些来源。
+2. **G3 memory TTL/revalidation/conflict maintenance**：新增 `memory_lifecycle_maintenance.v1`。heartbeat 会调用 `run_memory_lifecycle_maintenance()`，对 expired sketch 调 `discard_expired()`，对 `conflict_status=needs_review` 与 `reference_status=revalidation_required` 生成 hold report，并写入 `memory/lifecycle_maintenance.json`。
+3. **G4/G7 mutating subagent/delegation replay boundary**：新增 `runtime_restart_replay_journal.v1`。subagent/delegation 创建时记录 `spawn_intent_recorded`；restart resume 时，mutating lane 不再只凭 replay contract 自动恢复，必须有 mutating replay journal，否则写 `needs_reconciliation`；成功 resume 会追加 `resume_intent_recorded`。
+
+**TDD red 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_connector_acl.py tests/services/test_feishu_cli_runtime.py tests/services/test_feishu_drive_runtime.py tests/tools/test_office_tools.py -q
+# initial red: 5 failed
+
+cd backend && source .venv/bin/activate && pytest tests/memory/test_lifecycle_maintenance.py tests/services/test_heartbeat.py::test_heartbeat_memory_lifecycle_maintenance_uses_agent_data_dir -q
+# initial red: 2 failed
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_subagent_run_service.py tests/agents/test_orchestrator.py -q
+# initial red: 2 failed，证明 contract-only mutating task 会被错误 replay
+```
+
+**Green 证据**：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_connector_acl.py tests/kernel/test_generated_source_acl.py tests/services/test_feishu_cli_runtime.py tests/services/test_feishu_drive_runtime.py tests/tools/test_office_tools.py -q
+# 28 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/memory/test_lifecycle_state_machine.py tests/memory/test_lifecycle_maintenance.py tests/memory/test_retrieval_pipeline.py tests/services/test_heartbeat.py::test_heartbeat_memory_lifecycle_maintenance_uses_agent_data_dir -q
+# 28 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_subagent_run_service.py tests/agents/test_orchestrator.py tests/services/test_runtime_task_service.py -q
+# 57 passed, 4 warnings
+```
+
+**非 MVP 收口**：不是只给文档改状态。三项都进入 runtime-facing code path：connector result envelope、heartbeat lifecycle maintenance、RuntimeTask restart metadata / subagent / delegation resume path。剩余边界也必须诚实保留：Glean 级仍要求全 connector/per-document production ACL 与真实 access-denial trace；Letta/Zep 级仍要求 live recall eval、bi-temporal KG 与外部引用 live revalidation；Temporal 级仍要求 exactly-once mutating side-effect replay 的生产 restart trace。
 
 **第五仗 — cache + 互操作 + 诚实债收尾**
 - C2 CJK 校准、canonical last-assistant cache anchor、MCP authz passthrough hard gate、A2A Agent Card/profile、D1 memory hygiene startup apply 与 §3 诚实降级均已关闭。

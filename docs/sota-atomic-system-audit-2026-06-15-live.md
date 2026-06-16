@@ -6,6 +6,8 @@
 
 > 2026-06-15 Codex follow-up：核心 Goal-1 晋升暗臂已做代码级闭环。新增普通租户 `tenant_behavior_eval_publisher`，distiller 在 patch/promote 候选真正写入前会候选驱动地为当前 tenant 产出并持久化 `behavior_eval_latest_report`；只有 `behavior_eval_passed()` 接受的 trusted live report 才注入 runtime config，失败/缺前置仍 fail-closed 并节流。验证：`cd backend && source .venv/bin/activate && pytest tests -q` -> `4590 passed, 7 skipped, 4 warnings`。剩余诚实边界：此 follow-up 关闭的是“普通租户没有 writer 导致永久 HOLD”的代码路径；整体 SOTA/超越 Hermes 仍需要真实生产 live report、rebaseline 和分数时序。
 
+> 2026-06-15 Codex follow-up 2：三项“可立即代码优化”已做代码级闭环。G10：Feishu doc、Feishu Drive、Office 成功读取结果现在携带 authoritative `connector_source_items`，并进入现有 generated-source ACL choke point；G3：新增 memory lifecycle maintenance，heartbeat 会丢弃 expired sketch 并报告 conflict/revalidation hold；G4/G7：mutating subagent/delegation 现在必须有 restart replay journal，否则进入 fail-closed reconciliation，成功 resume 会追加 journal。验证：connector/Feishu/Office 28 passed；memory lifecycle 28 passed；subagent/delegation replay 57 passed。剩余诚实边界：这关闭的是代码路径，不等于 Glean 全连接器生产 ACL、Letta/Zep 级记忆行为证明或 Temporal exactly-once mutating side-effect replay 已达成。
+
 ## 0. 取证口径
 
 - 方法：实跑取证（不止读码）。32 个审计 agent，306 万 token，846 次工具调用，~13.6 分钟；主理人对承重发现逐条独立抽查。
@@ -24,7 +26,7 @@
 - **SOLID（live + 测试 + 生产可达）**——工程地基真扎实，多数轴达到或超过 Hermes：G4 durable（orphan reconcile + web-chat resume + workflow 副作用去重，main.py lifespan 接线，真 Testcontainers PG 测试绿）、G5 workflow（zero-DB 引擎 + PG step/leaf journal + advisory-lock quota + gate/wait/resume + trigger workflow_ref hash 绑定 + DR workflow-native，74 测试含真 PG16 quota 绿）、G6 Plan Mode（plan_markdown 胜出、ask_user 一等、plan hash/version、gate 经 `registry.calls==[]` 证明不可绕过）、G8 Work Ledger（`asyncio.create_task` spy 断言 `created_tasks==[]` 证明写 todo 不触发执行）、G11 本地 OS sandbox（探针**实跑 passed=True**、sandbox-exec 隔离 + deny-all 网络真生效 + 凭据 env 剥离）、G14 invocation_spans（PG-canonical、无条件注入 kernel、Prometheus span 驱动）、G15 互操作诚实（MCP token passthrough 硬门在构造 client 前就拦、A2A/profile 如实标 not_exposed 并列出缺的 RFC）。**RLS 真生效**：64 张表每次启动 `FORCE ROW LEVEL SECURITY`（main.py:196），enabled-but-not-forced = 0 → **证伪 owner 绕过假设**。**自进化遥测 + candidate 管线也是 live 的**（见 §4 纠正）。
 - **PROVISIONAL（机制接线 + fail-closed，但无真实分数 → 不能宣称达标/超越）**——整个行为 eval + 自进化效果面：`core_behavior_v1.json` `provisional=true`、`commit_sha=pending-e2-live-run`、6 场景 `score_p50` 全 `0.0`、`transport=pending`。门是对的（fail-closed），但从未观测到一次真实 PASS；没有 Hive-vs-Hermes live delta、没有分数时序、没有 Plan Mode / durable restart / connector access-denial 的生产 trace。
 - **DARK（built + 测试绿，但 live 主链从不调用 → 按暗臂律不算达成）**——自进化**晋升步**（非遥测）：整条链每次 heartbeat 真跑（daemon 启动、candidate 记录、skill_guard/verification/session feedback/T3 counters 全 live），但 `decide_behavior_gated_promotion` 对每个普通租户**永久 HOLD**，因为它读的 `behavior_report` 只由 token 门控的 `/eval-ci/behavior` admin 端点在隔离的 `HIVE_EVAL_TENANT_ID` 下写入 —— **没有任何 daemon 为普通租户产出它 → distiller 在生产晋升零技能**。Teammate Mailbox（G13）在默认 `COORDINATION_BACKEND=memory` 部署下暗（信号进进程内单例，prompt 读的 Postgres 表从不被写）。artifact 执行门（G2 真正的 Voyager exec-gate）只能经未被调用的 adversarial_suite 触达。
-- **MISSING**——Feishu/Drive/Office 权威 source-ACL ingest（G10，choke point live 但连接器不喂 per-document ACL）；bi-temporal KG、memory TTL sweep（`discard_expired` 零调用方）、用时引用重校验（G3）；CODEOWNERS/branch-protection（G2 人审晋升契约）；完整 MCP resource-server OAuth flow RFC 9728/8707（G15，已如实标缺）；external directory CA / access packages（G9）。
+- **CODE-LEVEL CLOSED BUT LIVE-PENDING**——Feishu/Drive/Office tool-result source ACL metadata、memory TTL/revalidation/conflict maintenance、mutating subagent/delegation replay journal 已接代码主路径并有定向测试；但还缺生产 access-denial trace、live recall eval、mutating exactly-once side-effect replay 样本。仍属 **MISSING** 的外部 SOTA 面：bi-temporal KG、完整外部引用 live revalidation（G3）；CODEOWNERS/branch-protection（G2 人审晋升契约）；完整 MCP resource-server OAuth flow RFC 9728/8707（G15，已如实标缺）；external directory CA / access packages（G9）。
 
 **Goal 1（须达到/超过 Hermes）的底线**：Hive 在 durability、治理、记忆治理、sandbox、trace 面**等于或超过** Hermes；但自进化**结果**当前**落后** lean benchmark —— Hermes 的 curator patch-first（`curator.py:403` action=patch，**无外部行为门**）live 落地技能补丁、agent 越用越强；Hive 更宏大的外部门在生产晋升零技能。**Goal 2（控制中台）**：RLS、sponsor/participant/lifecycle、ExecutionIdentity 审计、workflow 治理 live 且领先 Hermes（无租户概念），但在 directory CA、access packages、权威连接器 ACL ingest 上落后 MS Entra/Glean。
 
@@ -36,14 +38,14 @@
 |---|---:|---:|---|---|
 | G1 治理化运行时自进化 | partial | 92% | loop 默认真跑（main.py:480 + invoker.py:91）；skill_guard/feedback/T3 counters live；遥测+candidate live（§4）；34+9 测试绿 | 晋升门对普通租户永久 HOLD（behavior_report 只 admin 端点写）→ 生产晋升零技能 |
 | G2 外部硬验证门 | near | 87% | skill_guard 在 save_skill 前 fire（skills.py:132）；`--api-url ''`→EXIT=2 fail-closed；evaluator_integrity 防 in-PR 自 hash 攻击；66 测试绿 | 行为门从未真 PASS；真 exec gate（artifact_gate）全暗；无 CODEOWNERS |
-| G3 长期记忆 | partial | 86% | write gate + PL4 零保留拒绝 live；PPR over wikilink **live**（wiki_retrieval.py:34→invoker.py:455）；dream supersession live；62 测试绿 | 无 live recall eval；TTL `discard_expired` 零调用方；bi-temporal KG 缺失 |
-| G4 Durable execution | near | 88% | main.py:337 reconcile + :333 resume；断连=订阅变更非取消；完成去重 with_for_update+idempotency_key；47+19+3 测试绿；Hermes 无持久层 | mutating delegation/subagent = needs_reconciliation 非 exactly-once replay；无生产 restart trace |
+| G3 长期记忆 | partial+ | 88% | write gate + PL4 零保留拒绝 live；PPR over wikilink **live**（wiki_retrieval.py:34→invoker.py:455）；dream supersession live；lifecycle maintenance 接 heartbeat，expired sketch discard + conflict/revalidation hold 报告；62+28 测试绿 | 无 live recall eval；bi-temporal KG 缺失；外部引用 live revalidation 仍缺生产样本 |
+| G4 Durable execution | near | 90% | main.py:337 reconcile + :333 resume；断连=订阅变更非取消；完成去重 with_for_update+idempotency_key；mutating subagent/delegation 有 restart replay journal + fail-closed reconciliation；47+19+3+57 测试绿；Hermes 无持久层 | mutating lane 仍非 Temporal exactly-once side-effect replay；无生产 restart trace |
 | G5 Workflow 确定性编排 | near | 91% | 74 测试绿含真 PG16 quota（非 skip）；daemon main.py:479；trigger fire trigger_daemon.py:1150；DR 统一 deep_research.py:315；CC/Hermes 无确定性引擎 | 无 live/product eval；无生产 promote/fork lineage trace |
 | G6 Plan Mode | near | 92% | plan_markdown 胜出（plan_mode_core.py:1413）；空→missing_plan_body 导向 ask_user；gate 在治理前 fire 且 `registry.calls==[]`；129 测试绿 | 无生产 session trace；无 live UX 样本 |
-| G7 Subagent/Delegation | partial | 86%* | spawn+delegate live+plan-gated；source=subagent 跳 persist+RESPONSE_COMPLETE（engine.py:3280）；递归 deny-list+深度 cap；148 测试绿；超 Hermes | 无 live multi-agent eval；mutating lane=reconciliation；coordination 默认进程内非跨重启持久 |
+| G7 Subagent/Delegation | partial+ | 88%* | spawn+delegate live+plan-gated；source=subagent 跳 persist+RESPONSE_COMPLETE（engine.py:3280）；递归 deny-list+深度 cap；mutating restart replay journal 防 contract-only 重放；148+57 测试绿；超 Hermes | 无 live multi-agent eval；mutating lane 仍需生产级 exactly-once side-effect replay；coordination 默认进程内非跨重启持久 |
 | G8 Work Ledger | near | 90% | track_todo cognitive-only **证明**（create_task spy `created_tasks==[]`）；invoker.py:1051 注入；replan reminder live（engine.py:2722）；99 测试绿；CC 平表 Todo 的严格超集 | 无 live replan-quality eval；UI 默认可见性未代码证明 |
 | G9 企业身份与控制面/RLS | near | 85% | 64 表 FORCE RLS 每次启动（main.py:196，0 漏 force）；21 Testcontainers 测试证非 owner 隔离 + 空 GUC fail-closed；sponsor/participant/soft-delete live | 生产未做 stage-3 role-flip（连 owner，靠 FORCE 无纵深）；external directory/access packages 缺 |
-| G10 权限感知数据面 | partial | 90%* | choke point live：真 `AgentKernel.handle()` **拦截**泄露的 feishu:// 引用（`[Permission Check]`、chunks==[]、span blocked）；11+8 测试绿 | Feishu/Drive/Office 不喂 per-document ACL（唯一 writer 是粗租户级）→ 治理源回退 deny_by_default |
+| G10 权限感知数据面 | partial+ | 92%* | choke point live：真 `AgentKernel.handle()` **拦截**泄露的 feishu:// 引用（`[Permission Check]`、chunks==[]、span blocked）；Feishu doc/Drive/Office 成功读取结果携带 authoritative source ACL metadata；11+8+28 测试绿 | 仍缺全 connector / per-document production ACL coverage 与真实生产 access-denial trace |
 | G11 安全执行隔离 | near | 90% | 探针**实跑 passed=True**（sandbox-exec、deny-all 网络、workspace round-trip、EXIT=0）；无绕 sandbox 的裸 subprocess；MCP authz live；16 测试绿 | 无持续生产 microVM 样本（store_latest_sandbox_probe 零 daemon 调用）；Vercel 臂仅 mock；Darwin profile allow-default 弱于 Codex deny-default |
 | G12 Context/cache 经济 | near | 90% | CJK 估算 GATE 压缩（memory_service.py:421）；cache anchor 只标 last-assistant（engine.py:2770）；压缩送 full old_messages（修复 [-40:] 违例）；120 测试绿 | Code-Execution-over-MCP 模块树缺失；无生产 cache 命中率快照 |
 | G13 多 agent 编排 | partial | 90% | Team Context from RuntimeTask live（invoker.py:581）；Progress Ledger replan reminder live（reminder_scheduler.py:362）；131 测试绿 | Teammate Mailbox 默认 backend 暗（§3-#4）；无 live multi-agent eval |
@@ -86,9 +88,9 @@
 ## 6. 外部 SOTA 差距（均为目标文档自列的下一层）
 
 1. Voyager 执行门 / AlphaEvolve 可编程 evaluator —— Hive skill_guard 是**内容扫描**非 exec 门，真 exec 门（artifact_gate microVM）暗。
-2. Zep/Graphiti bi-temporal KG + Letta sleep-time edit + Copilot TTL/引用重校验 —— Hive 记忆均缺失或"软"。
-3. Temporal/LangGraph exactly-once mutating-activity replay —— Hive mutating lane 仅 fail-closed reconciliation。
-4. Glean 权威 per-document source ACL ingest —— Hive 有检索侧 choke point，缺 ingest 侧 ACL。
+2. Zep/Graphiti bi-temporal KG + Letta sleep-time edit + Copilot TTL/引用重校验 —— Hive 已有 heartbeat lifecycle maintenance，但仍缺 bi-temporal KG、live recall eval 和外部引用 live revalidation。
+3. Temporal/LangGraph exactly-once mutating-activity replay —— Hive mutating lane 已有 restart replay journal + fail-closed reconciliation，但还不是 exactly-once side-effect replay。
+4. Glean 权威 per-document source ACL ingest —— Hive 有检索侧 choke point，也已给 Feishu/Drive/Office tool result 补 source ACL metadata；仍缺全 connector/per-document production ACL coverage 与生产 denial trace。
 5. MS Entra Agent ID directory CA + access packages + Purview agent-to-agent 审计图 —— 缺失。
 6. Decagon 式 100% QA + 公布的 live 分数时序（SWE-bench/tau-bench/GAIA）—— Hive 无任何真实行为分。
 
@@ -99,7 +101,7 @@
 3. ~~把 `record_skill_execution` 接进 live 主链~~ —— **§4 复核显示已完成**（invoker 终态 hook）；本步可移除。
 4. 采一次 live multi-agent/delegation 行为 eval（G13 首要下一层）+ 复杂多步任务的 Hive-vs-Hermes live delta，证明编排有可测收益。
 5. 修 Teammate Mailbox 默认暗：生产 deploy 配置默认 `COORDINATION_BACKEND=postgres`，或让 renderer 读 memory backend 真写的信号源。
-6. 接 Feishu/Drive/Office 权威 source ACL ingest（per-document 成员 → `viking add_resource acl=`），让 choke point 能执行真 per-principal ACL（Glean parity）。
+6. 把 Feishu/Drive/Office 新接入的 source ACL metadata 跑到生产 access-denial trace，并继续扩展到全部 connector / per-document ACL coverage；目标不是只有 tool-result metadata，而是 Glean 级“模型完全收不到不可见项”。
 7. 落地人审晋升契约：加 CODEOWNERS + branch-protection/required-review 让 DGM 防御的 hash 比对在 merge 真生效，并把 evaluator_integrity + live 行为门按 PR 跑（非只 nightly）。
 8. 执行 stage-3 RLS role-flip（NOBYPASSRLS app role）做纵深；采生产 restart-recovery trace（G4）+ access-denial trace（G10）；把 `store_latest_sandbox_probe_evidence` 接 daemon/cron 持续采 microVM 样本。
 

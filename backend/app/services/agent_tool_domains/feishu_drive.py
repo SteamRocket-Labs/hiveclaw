@@ -13,6 +13,7 @@ import httpx
 
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node
+from app.services.connector_acl import authoritative_connector_source_item, with_connector_source_items
 from app.services.text_extractor import extract_text
 from app.tools.result_envelope import classify_http_status, render_tool_error
 
@@ -130,7 +131,9 @@ def _parse_feishu_url(value: str) -> FeishuUrlTarget | None:
     if slash_match and slash_match.group(1) in _DIRECT_KINDS:
         return FeishuUrlTarget(kind=_DIRECT_KINDS[slash_match.group(1)], token=slash_match.group(2), url=raw)
     if raw.startswith("wiki/space/"):
-        return FeishuUrlTarget(kind="wiki_space", token=raw.rsplit("/", 1)[-1], url=raw, space_id=raw.rsplit("/", 1)[-1])
+        return FeishuUrlTarget(
+            kind="wiki_space", token=raw.rsplit("/", 1)[-1], url=raw, space_id=raw.rsplit("/", 1)[-1]
+        )
     if raw.startswith("wiki/"):
         return FeishuUrlTarget(kind="wiki", token=raw.rsplit("/", 1)[-1], url=raw)
 
@@ -208,7 +211,10 @@ async def _resolve_target(agent_id: uuid.UUID | str, arguments: dict) -> FeishuU
     )
     target = _parse_feishu_url(raw)
     if target is None and arguments.get("token"):
-        target = FeishuUrlTarget(kind=_clean_token(arguments.get("type") or arguments.get("obj_type") or "unknown"), token=_clean_token(arguments["token"]))
+        target = FeishuUrlTarget(
+            kind=_clean_token(arguments.get("type") or arguments.get("obj_type") or "unknown"),
+            token=_clean_token(arguments["token"]),
+        )
     if target is None:
         return _error(
             "feishu_url_resolve",
@@ -312,7 +318,12 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
     if read_type == "doc":
         return await _feishu_drive_file_read(
             agent_id,
-            {"token": token, "type": "doc", "file_extension": arguments.get("file_extension", "docx"), "max_chars": max_chars},
+            {
+                "token": token,
+                "type": "doc",
+                "file_extension": arguments.get("file_extension", "docx"),
+                "max_chars": max_chars,
+            },
         )
 
     if read_type == "sheet":
@@ -356,7 +367,9 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
             or _first_query_value(target.query, "table", "table_id")
             or _first_query_value(target.query, "tableId")
         )
-        view_id = _clean_token(arguments.get("view_id")) or _first_query_value(target.query, "view", "view_id", "viewId")
+        view_id = _clean_token(arguments.get("view_id")) or _first_query_value(
+            target.query, "view", "view_id", "viewId"
+        )
         if table_id:
             from app.services.agent_tool_domains.feishu_base import _feishu_base_record_list
 
@@ -402,7 +415,9 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
     if read_type == "folder":
         from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_list
 
-        return await _feishu_wiki_list(agent_id, {"node_token": token, "recursive": bool(arguments.get("recursive", False))})
+        return await _feishu_wiki_list(
+            agent_id, {"node_token": token, "recursive": bool(arguments.get("recursive", False))}
+        )
 
     if target.kind == "external_url":
         return _error(
@@ -513,10 +528,9 @@ async def _export_online_document(
                 error_class="provider_error",
             )
 
-        ticket = (
-            create_payload.get("data", {}).get("ticket")
-            or create_payload.get("data", {}).get("export_task", {}).get("ticket")
-        )
+        ticket = create_payload.get("data", {}).get("ticket") or create_payload.get("data", {}).get(
+            "export_task", {}
+        ).get("ticket")
         if not ticket:
             raise FeishuDriveError("Feishu export task did not return a ticket.", error_class="provider_error")
 
@@ -592,10 +606,27 @@ def _render_file_text(filename: str, token: str, text: str, max_chars: int, sour
     return f"📎 **Feishu file content** (`{token}`)\n文件名：{filename}\n来源：{source}\n\n{text}{truncated}"
 
 
+def _feishu_drive_source_items(agent_id: uuid.UUID | str, token: str) -> list[dict]:
+    if not token:
+        return []
+    return [
+        authoritative_connector_source_item(
+            source=f"feishu://drive/{token}",
+            connector="feishu",
+            resource_type="drive_file",
+            agent_id=agent_id,
+        )
+    ]
+
+
 async def _feishu_drive_file_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
-    raw_file = arguments.get("file_token") or arguments.get("token") or arguments.get("file_url") or arguments.get("url") or ""
+    raw_file = (
+        arguments.get("file_token") or arguments.get("token") or arguments.get("file_url") or arguments.get("url") or ""
+    )
     parsed = _parse_feishu_url(str(raw_file))
-    token = _clean_token(arguments.get("file_token") or arguments.get("token") or (parsed.token if parsed else raw_file))
+    token = _clean_token(
+        arguments.get("file_token") or arguments.get("token") or (parsed.token if parsed else raw_file)
+    )
     if not token:
         return _error(
             "feishu_drive_file_read",
@@ -653,4 +684,7 @@ async def _feishu_drive_file_read(agent_id: uuid.UUID | str, arguments: dict) ->
             extra={"file_name": filename, "file_token": token},
         )
 
-    return _render_file_text(filename, token, text, _max_chars(arguments), str(meta.get("source") or "drive"))
+    return with_connector_source_items(
+        _render_file_text(filename, token, text, _max_chars(arguments), str(meta.get("source") or "drive")),
+        _feishu_drive_source_items(agent_id, token),
+    )

@@ -16,6 +16,7 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 _RESTART_RESUMABLE_TASK_TYPES = ("workflow", "web_chat_turn")
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
 RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA = "runtime_restart_replay_contract.v1"
+RUNTIME_RESTART_REPLAY_JOURNAL_SCHEMA = "runtime_restart_replay_journal.v1"
 
 
 def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
@@ -99,6 +100,72 @@ def has_restart_replay_contract(
     if task_id is not None and str(contract.get("task_id") or "") not in {"", str(task_id)}:
         return False
     return bool(str(contract.get("idempotency_key") or "").strip())
+
+
+def build_restart_replay_journal_entry(
+    *,
+    task_type: str,
+    task_id: str,
+    side_effect_risk: str,
+    phase: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_task_type = str(task_type or "runtime_task").strip() or "runtime_task"
+    normalized_task_id = str(task_id or "").strip()
+    normalized_phase = str(phase or "").strip() or "unknown"
+    return {
+        "schema": RUNTIME_RESTART_REPLAY_JOURNAL_SCHEMA,
+        "idempotency_key": f"{normalized_task_type}:{normalized_task_id}:restart:{normalized_phase}",
+        "task_type": normalized_task_type,
+        "task_id": normalized_task_id,
+        "phase": normalized_phase,
+        "trace_id": str(trace_id or "").strip() or None,
+        "session_id": str(session_id or "").strip() or None,
+        "side_effect_risk": str(side_effect_risk or "unknown").strip(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def merge_restart_replay_journal(
+    metadata: dict[str, Any] | None,
+    entry: dict[str, Any],
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    merged = dict(metadata or {})
+    journal = [item for item in merged.get("restart_replay_journal", []) if isinstance(item, dict)]
+    key = entry.get("idempotency_key")
+    if key:
+        journal = [item for item in journal if item.get("idempotency_key") != key]
+    journal.append(entry)
+    merged["restart_replay_journal"] = journal[-limit:]
+    return merged
+
+
+def has_mutating_restart_replay_journal(
+    metadata: dict[str, Any] | None,
+    *,
+    task_type: str,
+    task_id: str | None = None,
+) -> bool:
+    journal = (metadata or {}).get("restart_replay_journal")
+    if not isinstance(journal, list):
+        return False
+    for entry in journal:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("schema") != RUNTIME_RESTART_REPLAY_JOURNAL_SCHEMA:
+            continue
+        if str(entry.get("task_type") or "") != str(task_type or ""):
+            continue
+        if task_id is not None and str(entry.get("task_id") or "") not in {"", str(task_id)}:
+            continue
+        if str(entry.get("side_effect_risk") or "") != "mutating":
+            continue
+        if str(entry.get("phase") or "") == "spawn_intent_recorded":
+            return True
+    return False
 
 
 def build_completion_journal_entry(

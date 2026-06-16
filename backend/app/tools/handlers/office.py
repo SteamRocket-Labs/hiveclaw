@@ -10,11 +10,49 @@ from app.services.office_document_service import (
     OfficeDocumentService,
 )
 from app.services.officecli_adapter import OfficeCLIError
+from app.services.connector_acl import authoritative_connector_source_item
 from app.tools.decorator import ToolMeta, tool
 
 
 def _json_ok(**payload: Any) -> str:
     return json.dumps({"ok": True, **payload}, ensure_ascii=False, default=str)
+
+
+def _office_source_items(tenant_id: str | None, *paths: str | None) -> list[dict[str, Any]]:
+    if not tenant_id:
+        return []
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_path in paths:
+        path = str(raw_path or "").strip().lstrip("/")
+        if not path:
+            continue
+        source = f"office://workspace/{path}"
+        if source.lower() in seen:
+            continue
+        seen.add(source.lower())
+        items.append(
+            authoritative_connector_source_item(
+                source=source,
+                connector="office",
+                resource_type="document",
+                tenant_id=tenant_id,
+                scope="tenant",
+            )
+        )
+    return items
+
+
+def _json_ok_with_office_sources(
+    *,
+    tenant_id: str | None,
+    source_paths: tuple[str | None, ...],
+    **payload: Any,
+) -> str:
+    source_items = _office_source_items(tenant_id, *source_paths)
+    if source_items:
+        payload["connector_source_items"] = source_items
+    return _json_ok(**payload)
 
 
 def _json_error(error: str, message: str, **payload: Any) -> str:
@@ -66,7 +104,11 @@ async def office_document_create(workspace: Path, arguments: dict, tenant_id: st
             kind=str(arguments.get("kind", "")),
             template_path=arguments.get("template_path"),
         )
-        return _json_ok(**result)
+        return _json_ok_with_office_sources(
+            tenant_id=tenant_id,
+            source_paths=(result.get("path"),),
+            **result,
+        )
     except Exception as exc:
         return _handle_office_error(exc)
 
@@ -105,7 +147,11 @@ async def office_document_view(workspace: Path, arguments: dict, tenant_id: str 
             mode=str(arguments.get("mode") or "outline"),
             page=arguments.get("page"),
         )
-        return _json_ok(result=payload)
+        return _json_ok_with_office_sources(
+            tenant_id=tenant_id,
+            source_paths=(str(arguments.get("path", "")),),
+            result=payload,
+        )
     except Exception as exc:
         return _handle_office_error(exc)
 
@@ -140,7 +186,11 @@ async def office_document_query(workspace: Path, arguments: dict, tenant_id: str
             selector=str(arguments.get("selector", "")),
             depth=arguments.get("depth"),
         )
-        return _json_ok(result=payload)
+        return _json_ok_with_office_sources(
+            tenant_id=tenant_id,
+            source_paths=(str(arguments.get("path", "")),),
+            result=payload,
+        )
     except Exception as exc:
         return _handle_office_error(exc)
 
@@ -188,7 +238,11 @@ async def office_document_apply(workspace: Path, arguments: dict, tenant_id: str
             output_path=arguments.get("output_path"),
             require_no_active_editor=arguments.get("require_no_active_editor", True),
         )
-        return _json_ok(result=payload)
+        return _json_ok_with_office_sources(
+            tenant_id=tenant_id,
+            source_paths=(str(arguments.get("path", "")), arguments.get("output_path")),
+            result=payload,
+        )
     except Exception as exc:
         return _handle_office_error(exc)
 
@@ -217,7 +271,11 @@ async def office_document_apply(workspace: Path, arguments: dict, tenant_id: str
 async def office_document_validate(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
     try:
         payload = OfficeDocumentService(workspace).run_validate(str(arguments.get("path", "")))
-        return _json_ok(result=payload)
+        return _json_ok_with_office_sources(
+            tenant_id=tenant_id,
+            source_paths=(str(arguments.get("path", "")),),
+            result=payload,
+        )
     except Exception as exc:
         return _handle_office_error(exc)
 
@@ -246,6 +304,10 @@ async def office_document_validate(workspace: Path, arguments: dict, tenant_id: 
 async def office_document_dump(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
     try:
         payload = OfficeDocumentService(workspace).run_dump(str(arguments.get("path", "")))
-        return _json_ok(result=payload)
+        return _json_ok_with_office_sources(
+            tenant_id=tenant_id,
+            source_paths=(str(arguments.get("path", "")),),
+            result=payload,
+        )
     except Exception as exc:
         return _handle_office_error(exc)

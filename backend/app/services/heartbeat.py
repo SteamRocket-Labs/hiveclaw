@@ -1368,6 +1368,13 @@ def _maybe_run_skill_curator(workspace: Path) -> dict | None:
         return None
 
 
+def _run_memory_lifecycle_maintenance(agent_id: uuid.UUID, *, now: datetime | None = None) -> dict:
+    from app.config import get_settings
+    from app.memory.lifecycle_maintenance import run_memory_lifecycle_maintenance
+
+    return run_memory_lifecycle_maintenance(Path(get_settings().AGENT_DATA_DIR), agent_id, now=now)
+
+
 async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None, lease_acquired: bool = False):
     """Execute a single heartbeat for an agent.
 
@@ -1425,6 +1432,17 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
             from app.core.execution_context import set_agent_bot_identity
 
             set_agent_bot_identity(agent_id, agent.name, source="heartbeat")
+
+            try:
+                lifecycle_report = _run_memory_lifecycle_maintenance(agent_id)
+                if (
+                    lifecycle_report.get("discarded_expired_count")
+                    or lifecycle_report.get("conflict_hold_count")
+                    or lifecycle_report.get("revalidation_hold_count")
+                ):
+                    logger.info("[Heartbeat] Memory lifecycle maintenance for {}: {}", agent_id, lifecycle_report)
+            except Exception as _lifecycle_err:
+                logger.warning("[Heartbeat] Memory lifecycle maintenance failed for {}: {}", agent_id, _lifecycle_err)
 
             if not (agent.primary_model_id or agent.fallback_model_id):
                 logger.warning(f"[Heartbeat] Agent {agent.name} ({agent_id}) has no model configured — skipping")

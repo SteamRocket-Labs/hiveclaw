@@ -102,6 +102,22 @@ def test_update_evolution_files_counts_curated_as_useful_lane(monkeypatch, tmp_p
     assert "- Outcome: curated, score=7" in lineage
 
 
+def test_heartbeat_memory_lifecycle_maintenance_uses_agent_data_dir(monkeypatch, tmp_path):
+    from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore, lifecycle_path
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    now = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    store = MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id))
+    store.create_sketch("expired scratch memory", entry_id="expired", expires_at=now - timedelta(minutes=5))
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    report = heartbeat._run_memory_lifecycle_maintenance(agent_id, now=now)
+
+    assert report["discarded_expired"] == ["expired"]
+    assert MemoryLifecycleStore(lifecycle_path(tmp_path, agent_id)).get("expired").status == LifecycleStatus.DISCARDED
+
+
 def test_compose_heartbeat_instruction_adds_strategy_boundary() -> None:
     from app.services.heartbeat import _compose_heartbeat_instruction
 

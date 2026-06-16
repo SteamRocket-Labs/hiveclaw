@@ -34,6 +34,10 @@ async def test_start_subagent_run_records_running_subagent_task(monkeypatch):
     assert captured["metadata_json"]["side_effect_risk"] == "mutating"
     assert captured["metadata_json"]["restart_replay_contract"]["schema"] == "runtime_restart_replay_contract.v1"
     assert captured["metadata_json"]["restart_replay_contract"]["idempotency_key"] == f"subagent:{run_id}:restart"
+    assert captured["metadata_json"]["restart_replay_journal"][0]["phase"] == "spawn_intent_recorded"
+    assert captured["metadata_json"]["restart_replay_journal"][0]["idempotency_key"] == (
+        f"subagent:{run_id}:restart:spawn_intent_recorded"
+    )
     assert "restart_resume_blocker" not in captured["metadata_json"]
 
 
@@ -281,6 +285,16 @@ async def test_resume_persisted_subagent_runs_rehydrates_mutating_worker_with_re
                         "idempotency_key": f"subagent:{run_id}:restart",
                         "task_type": "subagent",
                     },
+                    "restart_replay_journal": [
+                        {
+                            "schema": "runtime_restart_replay_journal.v1",
+                            "idempotency_key": f"subagent:{run_id}:restart:spawn_intent_recorded",
+                            "task_type": "subagent",
+                            "task_id": run_id,
+                            "phase": "spawn_intent_recorded",
+                            "side_effect_risk": "mutating",
+                        }
+                    ],
                 },
             }
         ]
@@ -321,3 +335,64 @@ async def test_resume_persisted_subagent_runs_rehydrates_mutating_worker_with_re
     assert calls["task"] == "write x"
     assert calls["kwargs"]["run_in_background"] is True
     assert callable(calls["kwargs"]["on_complete"])
+    running_update = calls["updates"][0][1]
+    assert running_update["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_refuses_mutating_worker_without_replay_journal(monkeypatch):
+    run_id = uuid.uuid4().hex
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(uuid.uuid4()),
+                "child_agent_name": "worker",
+                "prompt": "write x",
+                "metadata": {
+                    "subagent_type": "worker",
+                    "subagent_name": "worker",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "side_effect_risk": "mutating",
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "idempotency_key": f"subagent:{run_id}:restart",
+                        "task_type": "subagent",
+                    },
+                },
+            }
+        ]
+
+    async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("mutating subagent without replay journal must not be replayed")
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        return {
+            "ctx_kwargs": {
+                "parent_agent_id": uuid.uuid4(),
+                "parent_user_id": uuid.uuid4(),
+                "model": object(),
+                "parent_agent_name": "Parent",
+                "tenant_id": uuid.uuid4(),
+            }
+        }
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        updates.append((task_id, kwargs))
+        return True
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == []
+    assert updates[-1][0] == run_id
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "missing_mutating_replay_journal"

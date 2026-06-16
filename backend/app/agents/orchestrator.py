@@ -22,10 +22,13 @@ from app.services.capability_gate import CAPABILITY_MAP
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
     build_restart_replay_contract,
+    build_restart_replay_journal_entry,
     create_runtime_task_record,
     get_runtime_task_record,
+    has_mutating_restart_replay_journal,
     has_restart_replay_contract,
     list_active_runtime_task_records,
+    merge_restart_replay_journal,
     update_runtime_task_record,
 )
 
@@ -539,6 +542,17 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
                 "timeout_seconds": request.policy.timeout_seconds,
                 "restart_replay_contract": contract,
             }
+        )
+        metadata = merge_restart_replay_journal(
+            metadata,
+            build_restart_replay_journal_entry(
+                task_type="delegation",
+                task_id=task_id,
+                side_effect_risk=str(metadata["side_effect_risk"]),
+                phase="spawn_intent_recorded",
+                trace_id=request.trace_id,
+                session_id=request.session_id,
+            ),
         )
     return metadata
 
@@ -1419,7 +1433,10 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
         if not metadata.get("resumable_delegation") or not metadata.get("resume_after_restart"):
             continue
         replay_contract_ok = has_restart_replay_contract(metadata, task_type="delegation", task_id=task_id)
-        if not _delegation_profile_restart_replay_safe(metadata.get("tool_profile")) and not replay_contract_ok:
+        replay_safe = _delegation_profile_restart_replay_safe(metadata.get("tool_profile"))
+        replay_journal_ok = has_mutating_restart_replay_journal(metadata, task_type="delegation", task_id=task_id)
+        if not replay_safe and (not replay_contract_ok or not replay_journal_ok):
+            blocker = "non_idempotent_tool_profile" if not replay_contract_ok else "missing_mutating_replay_journal"
             try:
                 await update_runtime_task_record(
                     task_id,
@@ -1432,7 +1449,7 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                         metadata,
                         task_type="delegation",
                         task_id=task_id,
-                        blocker="non_idempotent_tool_profile",
+                        blocker=blocker,
                         summary=(
                             "Task was not resumed after restart because its delegation tool profile is not "
                             "safe to replay without duplicating side effects. Reconciliation is required before retry."
@@ -1498,6 +1515,17 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
         try:
+            resume_metadata = merge_restart_replay_journal(
+                metadata,
+                build_restart_replay_journal_entry(
+                    task_type="delegation",
+                    task_id=task_id,
+                    side_effect_risk=str(metadata.get("side_effect_risk") or "read_only"),
+                    phase="resume_intent_recorded",
+                    trace_id=request.trace_id,
+                    session_id=request.session_id,
+                ),
+            )
             await update_runtime_task_record(
                 task_id,
                 status="running",
@@ -1506,6 +1534,7 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 metadata_json={
                     "resumed_after_restart": True,
                     "resumed_at": datetime.now(timezone.utc).isoformat(),
+                    "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
                 },
             )
         except Exception as exc:

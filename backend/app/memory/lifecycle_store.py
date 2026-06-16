@@ -272,6 +272,9 @@ class MemoryLifecycleStore:
     def get(self, entry_id: str) -> MemoryLifecycleEntry:
         return self._entries[entry_id]
 
+    def entries(self) -> list[MemoryLifecycleEntry]:
+        return list(self._entries.values())
+
     def _create(
         self,
         content: str,

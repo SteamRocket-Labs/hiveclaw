@@ -34,6 +34,13 @@ async def test_feishu_doc_read_prefers_cli_when_available(monkeypatch: pytest.Mo
 
     assert "CLI content" in result
     assert "<tool_error>" not in result
+    assert result.metadata["connector_source_items"] == [
+        {
+            "source": "feishu://doc/doc-token",
+            "acl": {"agent_ids": ["agent-1"]},
+            "metadata": {"connector": "feishu", "resource_type": "doc"},
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -40,11 +40,19 @@ async def test_office_document_create_tool_creates_docx(tmp_path):
         await office_document_create(
             tmp_path,
             {"path": "workspace/demo.docx", "kind": "docx"},
+            tenant_id="tenant-1",
         )
     )
 
     assert result["ok"] is True
     assert result["path"] == "workspace/demo.docx"
+    assert result["connector_source_items"] == [
+        {
+            "source": "office://workspace/workspace/demo.docx",
+            "acl": {"tenant_ids": ["tenant-1"], "scope": "tenant"},
+            "metadata": {"connector": "office", "resource_type": "document"},
+        }
+    ]
     assert (tmp_path / "workspace" / "demo.docx").is_file()
 
 

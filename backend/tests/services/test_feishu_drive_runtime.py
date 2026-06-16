@@ -176,6 +176,13 @@ async def test_feishu_drive_file_read_downloads_file_and_extracts_text(
     assert "deck.pptx" in result
     assert "Slide 1" in result
     assert "Business plan" in result
+    assert result.metadata["connector_source_items"] == [
+        {
+            "source": "feishu://drive/file-token",
+            "acl": {"agent_ids": ["agent-1"]},
+            "metadata": {"connector": "feishu", "resource_type": "drive_file"},
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -218,3 +225,10 @@ async def test_feishu_drive_file_read_exports_online_sheet_and_extracts_text(
 
     assert "sheet-token.xlsx" in result
     assert "客户" in result
+    assert result.metadata["connector_source_items"] == [
+        {
+            "source": "feishu://drive/sheet-token",
+            "acl": {"agent_ids": ["agent-1"]},
+            "metadata": {"connector": "feishu", "resource_type": "drive_file"},
+        }
+    ]

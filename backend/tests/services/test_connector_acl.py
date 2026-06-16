@@ -139,6 +139,53 @@ def test_authoritative_connector_result_replaces_argument_deny_acl() -> None:
     assert check.allowed_sources == ["feishu://doc/doc-1"]
 
 
+def test_tool_content_envelope_metadata_registers_authoritative_connector_acl() -> None:
+    from app.services.connector_acl import (
+        CONNECTOR_SOURCE_ITEMS_METADATA_KEY,
+        register_connector_source_payload,
+        source_items_from_tool_call,
+        validate_generated_source_permissions,
+    )
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    class _Context:
+        metadata: dict = {}
+
+    agent_id = uuid4()
+    ctx = _Context()
+
+    result = ToolContentEnvelope(
+        text="📄 Document content (`doc-1`):\n\nvisible",
+        metadata={
+            CONNECTOR_SOURCE_ITEMS_METADATA_KEY: [
+                {
+                    "source": "feishu://doc/doc-1",
+                    "acl": {"agent_ids": [str(agent_id)]},
+                    "metadata": {"connector": "feishu", "resource_type": "doc"},
+                }
+            ]
+        },
+    )
+
+    assert register_connector_source_payload(ctx, result, origin="tool:feishu_doc_read") == 1
+    assert ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["acl"] == {"agent_ids": [str(agent_id)]}
+
+    check = validate_generated_source_permissions(
+        "Cite feishu://doc/doc-1",
+        source_items=ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY],
+        tenant_id=uuid4(),
+        current_user_id=uuid4(),
+        agent_id=agent_id,
+    )
+    assert check.allowed is True
+    assert check.allowed_sources == ["feishu://doc/doc-1"]
+
+    # The same tool argument source must remain deny-by-default until the
+    # successful tool result provides an authoritative payload.
+    arg_items = source_items_from_tool_call("feishu_doc_read", {"document_token": "doc-2"})
+    assert arg_items[0]["acl"] == {"deny_by_default": True}
+
+
 @pytest.mark.asyncio
 async def test_knowledge_injection_applies_connector_acl_mirror(monkeypatch) -> None:
     from app.services import knowledge_inject

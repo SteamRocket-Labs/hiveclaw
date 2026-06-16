@@ -122,6 +122,46 @@ def _authoritative_acl_payload(item: dict[str, Any]) -> dict[str, Any] | None:
     return acl
 
 
+def authoritative_connector_source_item(
+    *,
+    source: str,
+    connector: str,
+    resource_type: str,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+    agent_id: uuid.UUID | str | None = None,
+    scope: str | None = None,
+) -> dict[str, Any]:
+    """Build source ACL metadata for a connector result successfully read by Hive."""
+
+    acl: dict[str, Any] = {}
+    if tenant_id:
+        acl["tenant_ids"] = [_string(tenant_id)]
+    if current_user_id:
+        acl["user_ids"] = [_string(current_user_id)]
+    if agent_id:
+        acl["agent_ids"] = [_string(agent_id)]
+    if scope:
+        acl["scope"] = _string(scope)
+    if not acl:
+        acl = dict(_ARG_SOURCE_DENY_ACL)
+    return {
+        "source": _string(source),
+        "acl": acl,
+        "metadata": {"connector": connector, "resource_type": resource_type},
+    }
+
+
+def with_connector_source_items(text: str, source_items: list[dict[str, Any]]) -> Any:
+    """Attach connector source ACL metadata while preserving the text result."""
+
+    if not source_items:
+        return text
+    from app.tools.result_envelope import ToolContentEnvelope
+
+    return ToolContentEnvelope(text=text, metadata={CONNECTOR_SOURCE_ITEMS_METADATA_KEY: source_items})
+
+
 def extract_connector_source_items(
     payload: Any, *, origin: str | None = None, max_items: int = 50
 ) -> list[dict[str, Any]]:
@@ -156,6 +196,10 @@ def extract_connector_source_items(
 
     def visit(value: Any, depth: int = 0) -> None:
         if len(items) >= max_items or depth > 5:
+            return
+        metadata = getattr(value, "metadata", None)
+        if isinstance(metadata, dict):
+            visit(metadata, depth + 1)
             return
         if isinstance(value, dict):
             add(value)

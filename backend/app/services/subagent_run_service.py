@@ -23,10 +23,13 @@ from app.services.runtime_task_service import (
     build_completion_journal_entry,
     build_restart_reconciliation_metadata,
     build_restart_replay_contract,
+    build_restart_replay_journal_entry,
     create_runtime_task_record,
     get_runtime_task_record,
+    has_mutating_restart_replay_journal,
     has_restart_replay_contract,
     list_active_runtime_task_records,
+    merge_restart_replay_journal,
     update_runtime_task_record,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -67,6 +70,17 @@ async def start_subagent_run(
             session_id=parent_session_id,
         ),
     }
+    metadata = merge_restart_replay_journal(
+        metadata,
+        build_restart_replay_journal_entry(
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            task_id=run_id,
+            side_effect_risk=side_effect_risk,
+            phase="spawn_intent_recorded",
+            trace_id=trace_id,
+            session_id=parent_session_id,
+        ),
+    )
     return await create_runtime_task_record(
         task_id=run_id,
         task_type=SUBAGENT_RUN_TASK_TYPE,
@@ -179,7 +193,14 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
             task_type=SUBAGENT_RUN_TASK_TYPE,
             task_id=run_id,
         )
-        if not _subagent_type_restart_replay_safe(spec_type) and not replay_contract_ok:
+        replay_safe = _subagent_type_restart_replay_safe(spec_type)
+        replay_journal_ok = has_mutating_restart_replay_journal(
+            metadata,
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            task_id=run_id,
+        )
+        if not replay_safe and (not replay_contract_ok or not replay_journal_ok):
+            blocker = "non_idempotent_subagent_type" if not replay_contract_ok else "missing_mutating_replay_journal"
             await update_runtime_task_record(
                 run_id,
                 status="needs_reconciliation",
@@ -191,7 +212,7 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
                     metadata,
                     task_type=SUBAGENT_RUN_TASK_TYPE,
                     task_id=run_id,
-                    blocker="non_idempotent_subagent_type",
+                    blocker=blocker,
                     summary=(
                         "Subagent was not resumed after restart because its type is not safe to replay without "
                         "duplicating side effects. Reconciliation is required before retry."
@@ -218,12 +239,24 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
             type=spec_type,
             max_tool_rounds=metadata.get("max_tool_rounds"),
         )
+        resume_metadata = merge_restart_replay_journal(
+            metadata,
+            build_restart_replay_journal_entry(
+                task_type=SUBAGENT_RUN_TASK_TYPE,
+                task_id=run_id,
+                side_effect_risk=str(metadata.get("side_effect_risk") or "read_only"),
+                phase="resume_intent_recorded",
+                trace_id=str(record.get("trace_id") or ""),
+                session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
+            ),
+        )
         await update_runtime_task_record(
             run_id,
             status="running",
             metadata_json={
                 "resumed_after_restart": True,
                 "restart_replay_contract": metadata.get("restart_replay_contract"),
+                "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },
         )
         await spawn_subagent(

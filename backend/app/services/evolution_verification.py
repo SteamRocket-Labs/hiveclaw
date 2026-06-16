@@ -581,6 +581,18 @@ def _artifact_gate_hard_gate(artifact_gate_report: dict[str, Any] | None) -> dic
     return {"decision": "hold", "reason": f"artifact execution gate failed: {reason}"}
 
 
+def _candidate_requires_regression_report(
+    candidate: dict[str, Any],
+    *,
+    artifact_gate_report: dict[str, Any] | None,
+) -> bool:
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    artifact_status = str((artifact_gate_report or {}).get("status") or "").strip().lower()
+    if bool(metadata.get("non_behavior_change")) and artifact_status == "not_applicable":
+        return False
+    return _candidate_requires_artifact_gate(candidate) or bool(metadata.get("requires_regression_report"))
+
+
 def decide_behavior_gated_promotion(
     candidate: dict[str, Any],
     *,
@@ -611,6 +623,10 @@ def decide_behavior_gated_promotion(
 
     if not isinstance(behavior_report, dict) or not behavior_eval_passed(behavior_report):
         return {"decision": "hold", "reason": "behavior eval did not pass (execution_passed required)"}
+    if _candidate_requires_regression_report(candidate, artifact_gate_report=artifact_gate_report) and not isinstance(
+        regression_report, dict
+    ):
+        return {"decision": "hold", "reason": "regression report is required"}
     if _candidate_requires_artifact_gate(candidate):
         artifact_gate = _artifact_gate_hard_gate(artifact_gate_report)
         if artifact_gate["decision"] != "promote":

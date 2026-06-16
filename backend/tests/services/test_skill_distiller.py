@@ -14,12 +14,24 @@ def _jsonl_records(path: Path) -> list[dict]:
 
 
 def _passing_behavior_report() -> dict:
+    scenarios = {
+        name: {"ready": True, "score": 100}
+        for name in (
+            "coding",
+            "review",
+            "research",
+            "operations",
+            "memory_recall",
+            "long_context_after_compaction",
+        )
+    }
     return {
         "kind": "behavior_eval",
         "transport": "hive_live",
+        "runtime": {"model": "claude-opus-4-8", "provider": "anthropic"},
         "benchmark_complete": True,
         "fallback_used": False,
-        "scenarios": {"coding": {"ready": True, "score": 100}},
+        "scenarios": scenarios,
     }
 
 
@@ -305,6 +317,10 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     assert verification_report["passed"] is True
     assert [check["type"] for check in verification_report["checks"]] == ["skill_guard"]
     assert result["artifact_gate_report"]["status"] == "passed"
+    promotion_decisions = [record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"]
+    regression_report = promotion_decisions[-1]["metadata"]["regression_report"]
+    assert regression_report["passed"] is True
+    assert regression_report["scenario_scores"]["coding"] == 100.0
     assert captured_draft_kwargs["skill_candidate_drafts"][0]["candidate_id"] == "flywheel-candidate-1"
     assert "Build, migrate, restart" in captured_draft_kwargs["skill_candidate_drafts"][0]["content"]
     assert "Market Research Loop" in review

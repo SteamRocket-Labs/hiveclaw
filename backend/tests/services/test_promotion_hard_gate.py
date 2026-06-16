@@ -174,6 +174,17 @@ def test_behavior_gated_promotes_skill_candidate_with_passed_artifact_gate() -> 
     assert decision["decision"] == "promote"
 
 
+def test_behavior_gated_holds_behavior_candidate_without_regression_report() -> None:
+    decision = decide_behavior_gated_promotion(
+        {"candidate_id": "c", "target_type": "skill"},
+        verification_report=_verification(True),
+        behavior_report=_behavior_report(True),
+        artifact_gate_report=_artifact_report("passed", passed=True),
+    )
+    assert decision["decision"] == "hold"
+    assert "regression" in decision["reason"].lower()
+
+
 def test_behavior_gated_holds_on_missing_behavior_report() -> None:
     decision = decide_behavior_gated_promotion(
         {"candidate_id": "c"},

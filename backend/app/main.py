@@ -203,6 +203,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] create_all failed: {e}")
 
+    # Verify the application runtime database role after schema bootstrap. This
+    # is deliberately outside the create_all try/except: strict enforcement must
+    # fail startup when RLS cannot be trusted.
+    from app.services.rls_runtime_guard import check_runtime_rls_role
+
+    await check_runtime_rls_role(enforcement=settings.RLS_RUNTIME_ROLE_ENFORCEMENT)
+
     # One-time workspace migration: update HEARTBEAT.md + remove deprecated skills
     try:
         from app.tools.workspace import migrate_all_workspaces
@@ -634,9 +641,17 @@ app.include_router(metrics_router)
 async def health_check():
     """Health check endpoint."""
     from app.services.daemon_liveness import daemon_health_status, daemon_liveness_snapshot
+    from app.services.rls_runtime_guard import latest_runtime_rls_role_health
 
+    rls_runtime_role = latest_runtime_rls_role_health()
+    status = daemon_health_status()
+    if rls_runtime_role["status"] in {"critical", "degraded"} and status == "ok":
+        status = "degraded"
     return HealthResponse(
-        status=daemon_health_status(),
+        status=status,
         version=settings.APP_VERSION,
-        components={"daemons": daemon_liveness_snapshot()},
+        components={
+            "daemons": daemon_liveness_snapshot(),
+            "rls_runtime_role": rls_runtime_role,
+        },
     )

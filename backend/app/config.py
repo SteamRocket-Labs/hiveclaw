@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # schema steps route through this owner URL instead. Unset = same as
     # DATABASE_URL (pre-cutover: both are the table owner, no behavior change).
     SCHEMA_DATABASE_URL: str | None = None
+    # Runtime RLS role guard. Production should stay "strict": app startup fails
+    # if DATABASE_URL connects as a PostgreSQL superuser or a BYPASSRLS role.
+    # Local one-off tests may set "warn" or "off" explicitly.
+    RLS_RUNTIME_ROLE_ENFORCEMENT: str = "strict"
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

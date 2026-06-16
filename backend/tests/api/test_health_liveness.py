@@ -58,6 +58,33 @@ async def test_health_includes_rls_runtime_role_component() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_health_includes_code_execution_sandbox_probe_component(monkeypatch) -> None:
+    from app.main import health_check
+    from app.services.daemon_liveness import reset_daemon_liveness
+    from app.services.rls_runtime_guard import reset_runtime_rls_role_guard_for_tests
+
+    reset_daemon_liveness()
+    reset_runtime_rls_role_guard_for_tests()
+
+    async def fake_latest_health():
+        return {
+            "status": "ok",
+            "provider": "vercel_sandbox",
+            "age_seconds": 120,
+            "network_denied": True,
+            "workspace_round_trip": True,
+        }
+
+    monkeypatch.setattr("app.main.latest_sandbox_probe_health", fake_latest_health)
+
+    response = await health_check()
+
+    assert response.status == "ok"
+    assert response.components["code_execution_sandbox_probe"]["provider"] == "vercel_sandbox"
+    assert response.components["code_execution_sandbox_probe"]["network_denied"] is True
+
+
 def test_prometheus_exports_daemon_liveness_metrics() -> None:
     from app.memory.metrics import render_prometheus
     from app.services.daemon_liveness import (

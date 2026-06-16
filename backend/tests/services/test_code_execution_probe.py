@@ -192,3 +192,72 @@ def test_sandbox_probe_history_is_bounded_and_computes_trend():
     assert history["trend"]["passed_runs"] == 20
     assert history["trend"]["failed_runs"] == 10
     assert history["trend"]["latest_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_scheduled_sandbox_probe_once_persists_failure_report(monkeypatch):
+    from app.services.code_execution import probe
+
+    stored_reports: list[dict] = []
+
+    async def fake_run_probe(*, timeout):
+        raise RuntimeError("vercel credentials missing")
+
+    async def fake_store(report):
+        stored_reports.append(report)
+        return {"stored_at": "2026-06-16T00:00:00+00:00", "report": report, "trend": {"total_runs": 1}}
+
+    monkeypatch.setattr(probe, "configured_code_execution_provider", lambda: "vercel_sandbox")
+    monkeypatch.setattr(probe, "run_code_execution_sandbox_probe", fake_run_probe)
+    monkeypatch.setattr(probe, "store_latest_sandbox_probe_evidence", fake_store)
+
+    report = await probe.run_scheduled_sandbox_probe_once(timeout=3)
+
+    assert report["kind"] == "code_execution_sandbox_probe.v1"
+    assert report["provider"] == "vercel_sandbox"
+    assert report["passed"] is False
+    assert report["error"]["message"] == "vercel credentials missing"
+    assert stored_reports == [report]
+    assert report["latest_setting"]["setting_key"] == "code_execution_sandbox_probe.latest"
+
+
+def test_sandbox_probe_scheduler_defaults_to_vercel_provider(monkeypatch):
+    from app.services.code_execution import probe
+
+    monkeypatch.delenv("HIVE_CODE_EXEC_PROBE_SCHEDULER_ENABLED", raising=False)
+    assert probe.should_run_sandbox_probe_scheduler(provider="vercel_sandbox") is True
+    assert probe.should_run_sandbox_probe_scheduler(provider="local_os_sandbox") is False
+
+    monkeypatch.setenv("HIVE_CODE_EXEC_PROBE_SCHEDULER_ENABLED", "true")
+    assert probe.should_run_sandbox_probe_scheduler(provider="local_os_sandbox") is True
+    monkeypatch.setenv("HIVE_CODE_EXEC_PROBE_SCHEDULER_ENABLED", "false")
+    assert probe.should_run_sandbox_probe_scheduler(provider="vercel_sandbox") is False
+
+
+def test_sandbox_probe_health_component_reports_latest_status() -> None:
+    from app.services.code_execution.probe import sandbox_probe_health_from_setting
+
+    health = sandbox_probe_health_from_setting(
+        {
+            "stored_at": "2026-06-16T00:00:00+00:00",
+            "report": {
+                "passed": True,
+                "provider": "vercel_sandbox",
+                "network_policy": "deny-all",
+                "evidence": {
+                    "network_denied": True,
+                    "workspace_round_trip": True,
+                    "microvm_uname": "Linux-vercel",
+                },
+            },
+            "trend": {"total_runs": 3, "failed_runs": 0},
+        },
+        now="2026-06-16T00:10:00+00:00",
+        max_age_seconds=3600,
+    )
+
+    assert health["status"] == "ok"
+    assert health["provider"] == "vercel_sandbox"
+    assert health["age_seconds"] == 600
+    assert health["network_denied"] is True
+    assert health["workspace_round_trip"] is True

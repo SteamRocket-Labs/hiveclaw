@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,8 @@ from app.services.code_execution.service import configured_code_execution_provid
 CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY = "code_execution_sandbox_probe.latest"
 CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY = "code_execution_sandbox_probe.history"
 CODE_EXECUTION_SANDBOX_PROBE_HISTORY_LIMIT = 30
+CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_INTERVAL_SECONDS = 6 * 60 * 60
+CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS = 20
 _PROBE_NETWORK_POLICY = "deny-all"
 _PROBE_RUNTIME = "python3.13"
 _SYNC_SENTINEL = "hive-sandbox-probe-ok"
@@ -45,6 +48,18 @@ _WORKSPACE_SYNC_SCRIPT = (
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -311,6 +326,133 @@ def persisted_sandbox_probe_summary(stored: dict[str, Any]) -> dict[str, Any]:
         "setting_key": CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY,
         "stored_at": stored.get("stored_at"),
     }
+
+
+def _env_bool(value: str | None) -> bool | None:
+    if value is None or value == "":
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def should_run_sandbox_probe_scheduler(*, provider: str | None = None) -> bool:
+    explicit = _env_bool(os.environ.get("HIVE_CODE_EXEC_PROBE_SCHEDULER_ENABLED"))
+    if explicit is not None:
+        return explicit
+    return str(provider or configured_code_execution_provider()).strip().lower() == "vercel_sandbox"
+
+
+def sandbox_probe_interval_seconds() -> int:
+    raw = os.environ.get("HIVE_CODE_EXEC_PROBE_INTERVAL_SECONDS")
+    if not raw:
+        return CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_INTERVAL_SECONDS
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_INTERVAL_SECONDS
+
+
+def _failed_scheduled_probe_report(provider: str, exc: BaseException) -> dict[str, Any]:
+    now = _utc_now()
+    return {
+        "kind": "code_execution_sandbox_probe.v1",
+        "provider": provider,
+        "network_policy": _PROBE_NETWORK_POLICY,
+        "runtime": _PROBE_RUNTIME,
+        "started_at": now,
+        "finished_at": now,
+        "passed": False,
+        "checks": [],
+        "evidence": {
+            "microvm_uname": None,
+            "network_denied": False,
+            "workspace_round_trip": False,
+        },
+        "error": {"type": type(exc).__name__, "message": str(exc)[:500]},
+    }
+
+
+async def run_scheduled_sandbox_probe_once(
+    *, timeout: int = CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS
+) -> dict[str, Any]:
+    provider = configured_code_execution_provider()
+    try:
+        report = await run_code_execution_sandbox_probe(timeout=timeout)
+    except Exception as exc:
+        report = _failed_scheduled_probe_report(provider, exc)
+    stored = await store_latest_sandbox_probe_evidence(report)
+    report["latest_setting"] = persisted_sandbox_probe_summary(stored)
+    return report
+
+
+async def start_code_execution_sandbox_probe_scheduler() -> None:
+    provider = configured_code_execution_provider()
+    if not should_run_sandbox_probe_scheduler(provider=provider):
+        return
+    interval = sandbox_probe_interval_seconds()
+    try:
+        timeout = max(
+            1,
+            int(os.environ.get("HIVE_CODE_EXEC_PROBE_TIMEOUT_SECONDS") or CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS),
+        )
+    except ValueError:
+        timeout = CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS
+    while True:
+        await run_scheduled_sandbox_probe_once(timeout=timeout)
+        await asyncio.sleep(interval)
+
+
+def sandbox_probe_health_from_setting(
+    stored: dict[str, Any] | None,
+    *,
+    now: str | datetime | None = None,
+    max_age_seconds: int | None = None,
+) -> dict[str, Any]:
+    if not isinstance(stored, dict):
+        return {
+            "status": "missing",
+            "latest_probe_present": False,
+            "scheduler_enabled": should_run_sandbox_probe_scheduler(),
+        }
+    report = stored.get("report") if isinstance(stored.get("report"), dict) else {}
+    stored_at = _parse_datetime(stored.get("stored_at"))
+    now_dt = _parse_datetime(now) or datetime.now(timezone.utc)
+    age_seconds = int((now_dt - stored_at).total_seconds()) if stored_at else None
+    interval = max_age_seconds if max_age_seconds is not None else sandbox_probe_interval_seconds() * 2
+    stale = age_seconds is None or age_seconds > interval
+    passed = bool(report.get("passed"))
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    health_status = "ok" if passed and not stale else "degraded"
+    return {
+        "status": health_status,
+        "latest_probe_present": True,
+        "scheduler_enabled": should_run_sandbox_probe_scheduler(provider=str(report.get("provider") or "")),
+        "stored_at": stored.get("stored_at"),
+        "age_seconds": age_seconds,
+        "stale": stale,
+        "passed": passed,
+        "provider": report.get("provider"),
+        "network_policy": report.get("network_policy"),
+        "network_denied": evidence.get("network_denied"),
+        "workspace_round_trip": evidence.get("workspace_round_trip"),
+        "microvm_uname": evidence.get("microvm_uname"),
+        "trend": stored.get("trend") if isinstance(stored.get("trend"), dict) else None,
+        "error": report.get("error") if isinstance(report.get("error"), dict) else None,
+    }
+
+
+async def latest_sandbox_probe_health() -> dict[str, Any]:
+    async with async_session() as db:
+        async with enter_rls_bypass(db, reason="code execution sandbox probe latest evidence health read") as bypass_db:
+            result = await bypass_db.execute(
+                select(SystemSetting).where(SystemSetting.key == CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY)
+            )
+            setting = result.scalar_one_or_none()
+            return sandbox_probe_health_from_setting(getattr(setting, "value", None) if setting else None)
 
 
 def run_probe_sync(*, timeout: int = 20, persist: bool = False) -> dict[str, Any]:

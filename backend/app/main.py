@@ -77,6 +77,11 @@ from app.core.logging_config import configure_logging, intercept_standard_loggin
 from app.core.middleware import TraceIdMiddleware
 from app.core.tenant_middleware import TenantMiddleware
 from app.schemas.schemas import HealthResponse
+from app.services.code_execution.probe import (
+    latest_sandbox_probe_health,
+    should_run_sandbox_probe_scheduler,
+    start_code_execution_sandbox_probe_scheduler,
+)
 
 settings = get_settings()
 
@@ -485,6 +490,7 @@ async def lifespan(app: FastAPI):
             ("trigger_daemon", start_trigger_daemon()),
             ("workflow_daemon", start_workflow_daemon()),
             ("evolution_daemon", start_evolution_daemon()),
+            ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
             ("feishu_ws", feishu_ws_manager.start_all()),
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
             ("wecom_stream", wecom_stream_manager.start_all()),
@@ -644,8 +650,23 @@ async def health_check():
     from app.services.rls_runtime_guard import latest_runtime_rls_role_health
 
     rls_runtime_role = latest_runtime_rls_role_health()
+    try:
+        sandbox_probe = await latest_sandbox_probe_health()
+    except Exception as exc:
+        sandbox_probe = {
+            "status": "degraded",
+            "latest_probe_present": False,
+            "scheduler_enabled": should_run_sandbox_probe_scheduler(),
+            "error": {"type": type(exc).__name__, "message": str(exc)[:500]},
+        }
     status = daemon_health_status()
     if rls_runtime_role["status"] in {"critical", "degraded"} and status == "ok":
+        status = "degraded"
+    if (
+        sandbox_probe["status"] in {"critical", "degraded"}
+        and sandbox_probe.get("scheduler_enabled") is True
+        and status == "ok"
+    ):
         status = "degraded"
     return HealthResponse(
         status=status,
@@ -653,5 +674,6 @@ async def health_check():
         components={
             "daemons": daemon_liveness_snapshot(),
             "rls_runtime_role": rls_runtime_role,
+            "code_execution_sandbox_probe": sandbox_probe,
         },
     )

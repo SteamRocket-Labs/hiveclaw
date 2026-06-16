@@ -263,7 +263,7 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill") -> str
             f"**Deferred tools:** {', '.join(pack.tools)}\n\n"
             "This is a runtime tool group, not a skill file. load_skill does not make these schemas callable. "
             f"Use `tool_search` with this group name or a specific selector such as {tool_selectors} to load "
-            "matching deferred schemas for this session. If you need method guidance, load the relevant skill or "
+            "matching deferred schemas for this session. If you need capability-capsule guidance, load the relevant skill or "
             "system guide separately."
         )
 

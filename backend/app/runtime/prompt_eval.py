@@ -315,7 +315,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
                 and "one-off notes" in (resolved.tools_section or "").lower()
             ),
             severity="medium",
-            remediation="Restore tools-section guidance that restricts save_skill to repeated reusable workflows and forbids one-off notes/transcripts.",
+            remediation="Restore tools-section guidance that restricts save_skill to repeated reusable capability capsules and forbids one-off notes/transcripts.",
             success_detail="Tools section teaches when save_skill should and should not be used.",
             failure_detail="Tools section lost save_skill guidance or no longer blocks one-off skill creation.",
         ),
@@ -327,7 +327,7 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
                 and "always load and read it first" not in (resolved.tools_section or "").lower()
             ),
             severity="high",
-            remediation="Restore direct-core-tool-first guidance: visible tools should be called directly, while load_skill is reserved for method guidance.",
+            remediation="Restore direct-core-tool-first guidance: visible tools should be called directly, while load_skill is reserved for capability-capsule guidance.",
             success_detail="Tools section tells the agent to call visible CORE tools directly before loading broad skills.",
             failure_detail="Tools section no longer protects direct CORE tool calls from broad speculative skill loading.",
         ),

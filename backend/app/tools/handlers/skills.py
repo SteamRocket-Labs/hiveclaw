@@ -86,7 +86,7 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             },
             "instructions": {
                 "type": "string",
-                "description": "The reusable workflow instructions. Include steps, decision rules, verification, and output expectations.",
+                "description": "Reusable capability-capsule guidance. Include context, steps, decision rules, component boundaries, verification, and output expectations.",
             },
             "tools": {
                 "type": "array",
@@ -181,7 +181,7 @@ async def save_skill(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> s
         "- Use this when you suspect a missing capability but do not yet know the exact skill, tool group, or tool name.\n"
         "- After this search, matching deferred tool schemas — including this agent's imported MCP server tools — "
         "become callable in the current session; already-loaded tools are a no-op.\n"
-        "- Use `load_skill` only when you need the skill's method/instructions, not merely to unlock tool schemas.\n"
+        "- Use `load_skill` only when you need the skill's instructions or component guidance, not merely to unlock tool schemas.\n"
         "- Prefer builtin tools, loaded skills, and direct web/file workflows first; reach for an imported MCP tool "
         "when the task genuinely needs it.\n"
         "- For installing or importing a NEW MCP server, use the explicit MCP resource tools and approval flow."

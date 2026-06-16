@@ -6,10 +6,10 @@ import re
 import uuid
 import logging
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 
-from app.memory.lifecycle_store import record_active_memory_lifecycle
+from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path, record_active_memory_lifecycle
 from app.memory.types import CONTAINER_CANDIDATES
 from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write, prepare_memory_write_with_llm
 
@@ -111,6 +111,9 @@ _SOURCE_BUCKET_WEIGHTS: dict[str, dict[str, float]] = {
 
 HIGH_PRIORITY_THRESHOLD = 0.85
 MEDIUM_PRIORITY_THRESHOLD = 0.50
+SKETCH_CONFIDENCE_THRESHOLD = 0.50
+SKETCH_DEFAULT_TTL_DAYS = 7
+_SKETCH_VOLATILITY_MARKERS = {"tentative", "uncertain", "unverified", "volatile", "stale"}
 
 
 def t2_dir(data_root: Path, agent_id: uuid.UUID) -> Path:
@@ -169,6 +172,129 @@ def _normalize_refs(source_refs: list[str] | tuple[str, ...] | str | None) -> li
     else:
         raw = list(source_refs)
     return [str(ref).strip() for ref in raw if str(ref).strip()]
+
+
+def _parse_lifecycle_datetime(value: str | datetime | None) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _should_create_lifecycle_sketch(extraction: dict[str, str]) -> bool:
+    confidence = _clamp_score(extraction.get("confidence") or extraction.get("conf"))
+    volatility = str(extraction.get("volatility") or extraction.get("vol") or "").strip().lower()
+    explicit = str(extraction.get("lifecycle_status") or extraction.get("status") or "").strip().lower()
+    return explicit == "sketch" or (
+        confidence is not None
+        and confidence < SKETCH_CONFIDENCE_THRESHOLD
+        and volatility in _SKETCH_VOLATILITY_MARKERS
+    )
+
+
+def _create_lifecycle_sketch(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    decision: MemoryWriteDecision,
+    extraction: dict[str, str],
+    source: str,
+    source_refs: list[str],
+) -> None:
+    expires_at = _parse_lifecycle_datetime(extraction.get("expires_at"))
+    if expires_at is None:
+        expires_at = datetime.now(UTC) + timedelta(days=SKETCH_DEFAULT_TTL_DAYS)
+    metadata = {
+        **decision.metadata,
+        **_feedback_metadata(extraction),
+        "source": source,
+        "category": decision.category,
+        "sensitivity": decision.sensitivity,
+        "sketch_reason": "low_confidence_or_tentative",
+    }
+    confidence = _clamp_score(extraction.get("confidence") or extraction.get("conf"))
+    if confidence is not None:
+        metadata["confidence"] = f"{confidence:.2f}"
+    volatility = str(extraction.get("volatility") or extraction.get("vol") or "").strip().lower()
+    if volatility:
+        metadata["volatility"] = volatility
+    if source_refs:
+        metadata["evidence_refs"] = ",".join(source_refs)
+    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    store.create_sketch(
+        decision.content,
+        entry_id=decision.metadata.get("entry_id") or None,
+        expires_at=expires_at,
+        metadata={str(key): str(value) for key, value in metadata.items() if value is not None},
+    )
+
+
+def _listify_metadata(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = value.split(",")
+    else:
+        raw = list(value)
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _resolve_local_source_ref(data_root: Path, agent_id: uuid.UUID, ref: str) -> Path | None:
+    normalized = ref.strip()
+    if normalized.startswith("workspace/") or normalized.startswith("memory/") or normalized.startswith("runtime_artifacts/"):
+        return Path(data_root) / str(agent_id) / normalized
+    return None
+
+
+def _missing_local_source_refs(data_root: Path, agent_id: uuid.UUID, refs: list[str]) -> list[str]:
+    missing: list[str] = []
+    for ref in refs:
+        path = _resolve_local_source_ref(data_root, agent_id, ref)
+        if path is not None and not path.exists():
+            missing.append(ref)
+    return missing
+
+
+def _apply_lifecycle_holds_for_entry(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    entry_id: str,
+    extraction: dict[str, str],
+    source_refs: list[str],
+) -> None:
+    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    conflicts_with = _listify_metadata(extraction.get("conflicts_with"))
+    if conflicts_with:
+        reason = str(extraction.get("conflict_reason") or "conflicting memory extraction").strip()
+        for conflict_id in conflicts_with:
+            try:
+                store.record_conflict(
+                    conflict_id,
+                    conflicts_with=[entry_id],
+                    reason=reason,
+                    source_refs=source_refs,
+                )
+            except KeyError:
+                logger.warning("[T2Store] conflict target missing in lifecycle sidecar: %s", conflict_id)
+    missing_refs = _missing_local_source_refs(data_root, agent_id, source_refs)
+    if missing_refs:
+        try:
+            store.mark_reference_revalidation_required(
+                entry_id,
+                reason="source ref not found",
+                source_refs=missing_refs,
+            )
+        except KeyError:
+            logger.warning("[T2Store] revalidation target missing in lifecycle sidecar: %s", entry_id)
 
 
 def _parse_meta(meta: str) -> dict[str, str]:
@@ -330,7 +456,7 @@ def append_t2_entries(
 
     root = ensure_t2_layout(data_root, agent_id)
     written = 0
-    grouped: dict[str, list[str]] = {}
+    grouped: dict[str, list[tuple[str, dict[str, str], list[str]]]] = {}
 
     for idx, extraction in enumerate(extractions):
         category = extraction.get("category", "general")
@@ -338,6 +464,7 @@ def append_t2_entries(
         if not content:
             continue
         source_refs = extraction.get("source_refs") or extraction.get("refs")
+        normalized_source_refs = _normalize_refs(source_refs)
         decision = (
             write_decisions[idx]
             if write_decisions is not None and idx < len(write_decisions) and write_decisions[idx] is not None
@@ -360,29 +487,38 @@ def append_t2_entries(
                 source,
             )
             continue
+        if _should_create_lifecycle_sketch(extraction):
+            _create_lifecycle_sketch(
+                data_root,
+                agent_id,
+                decision=decision,
+                extraction=extraction,
+                source=source,
+                source_refs=normalized_source_refs,
+            )
+            continue
         metadata = {**decision.metadata, **_feedback_metadata(extraction)}
         if extraction.get("concept"):
             metadata["concept"] = _sanitize_meta(str(extraction["concept"]))
         if extraction.get("discovery_tokens"):
             metadata["discovery_tokens"] = str(_positive_int(extraction.get("discovery_tokens")) or 0)
-        grouped.setdefault(t2_target_file(category), []).append(
-            format_t2_entry(
-                category=decision.category,
-                content=decision.content,
-                source=source,
-                timestamp=timestamp,
-                evidence=extraction.get("evidence") or extraction.get("ev"),
-                confidence=extraction.get("confidence") or extraction.get("conf"),
-                volatility=extraction.get("volatility") or extraction.get("vol"),
-                source_refs=source_refs,
-                novelty=extraction.get("novelty") or extraction.get("nov"),
-                reusability=extraction.get("reusability") or extraction.get("reuse"),
-                concept=extraction.get("concept"),
-                container_candidate=extraction.get("container_candidate") or extraction.get("container"),
-                discovery_tokens=extraction.get("discovery_tokens"),
-                metadata=metadata,
-            )
+        line = format_t2_entry(
+            category=decision.category,
+            content=decision.content,
+            source=source,
+            timestamp=timestamp,
+            evidence=extraction.get("evidence") or extraction.get("ev"),
+            confidence=extraction.get("confidence") or extraction.get("conf"),
+            volatility=extraction.get("volatility") or extraction.get("vol"),
+            source_refs=normalized_source_refs,
+            novelty=extraction.get("novelty") or extraction.get("nov"),
+            reusability=extraction.get("reusability") or extraction.get("reuse"),
+            concept=extraction.get("concept"),
+            container_candidate=extraction.get("container_candidate") or extraction.get("container"),
+            discovery_tokens=extraction.get("discovery_tokens"),
+            metadata=metadata,
         )
+        grouped.setdefault(t2_target_file(category), []).append((line, extraction, normalized_source_refs))
 
     for filename, lines in grouped.items():
         path = root / filename
@@ -395,7 +531,7 @@ def append_t2_entries(
             if parsed
         }
         new_lines: list[str] = []
-        for line in lines:
+        for line, extraction, source_refs_for_line in lines:
             parsed = parse_t2_entry_line(line)
             if not parsed:
                 continue
@@ -403,7 +539,7 @@ def append_t2_entries(
             if normalized in existing_contents:
                 continue
             existing_contents.add(normalized)
-            new_lines.append(line)
+            new_lines.append((line, extraction, source_refs_for_line))
 
         if not new_lines:
             continue
@@ -411,9 +547,9 @@ def append_t2_entries(
         updated = existing.rstrip()
         if updated:
             updated += "\n"
-        updated += "\n".join(new_lines) + "\n"
+        updated += "\n".join(line for line, _extraction, _refs in new_lines) + "\n"
         path.write_text(updated, encoding="utf-8")
-        for line in new_lines:
+        for line, extraction, source_refs_for_line in new_lines:
             parsed = parse_t2_entry_line(line)
             if parsed and parsed.get("entry_id"):
                 record_active_memory_lifecycle(
@@ -421,6 +557,13 @@ def append_t2_entries(
                     agent_id,
                     content=parsed["content"],
                     metadata={str(key): str(value) for key, value in parsed.items() if value is not None},
+                )
+                _apply_lifecycle_holds_for_entry(
+                    data_root,
+                    agent_id,
+                    entry_id=str(parsed["entry_id"]),
+                    extraction=extraction,
+                    source_refs=source_refs_for_line,
                 )
         written += len(new_lines)
 

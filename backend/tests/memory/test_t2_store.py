@@ -237,6 +237,114 @@ def test_append_t2_entries_applies_write_gate_before_persisting(tmp_path: Path) 
     assert lifecycle_entry.metadata["sensitivity"] == "PL2_pii"
 
 
+def test_append_t2_entries_routes_low_confidence_memory_to_lifecycle_sketch(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore
+    from app.memory.t2_store import append_t2_entries
+
+    agent_id = uuid.uuid4()
+    written = append_t2_entries(
+        tmp_path,
+        agent_id,
+        extractions=[
+            {
+                "category": "reference",
+                "content": "The vendor API may have moved to v3.",
+                "confidence": "0.32",
+                "volatility": "tentative",
+                "source_refs": ["trace:weak-signal"],
+                "expires_at": "2026-06-18T00:00:00+00:00",
+            }
+        ],
+        source="system",
+        timestamp="2026-06-16",
+    )
+
+    assert written == 0
+    body = (tmp_path / str(agent_id) / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
+    assert "The vendor API may have moved to v3." not in body
+    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    entries = store.entries()
+    assert len(entries) == 1
+    assert entries[0].status == LifecycleStatus.SKETCH
+    assert entries[0].content == "The vendor API may have moved to v3."
+    assert entries[0].metadata["sketch_reason"] == "low_confidence_or_tentative"
+
+
+def test_append_t2_entries_records_conflict_hold_from_extraction_metadata(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import MemoryLifecycleStore
+    from app.memory.t2_store import append_t2_entries
+    from app.memory.write_gate import MemoryWriteDecision
+
+    agent_id = uuid.uuid4()
+    old_decision = MemoryWriteDecision(
+        original_content="Deploy cadence is daily.",
+        content="Deploy cadence is daily.",
+        category="reference",
+        sensitivity="PL1_public",
+        metadata={"entry_id": "mem-old", "sensitivity": "PL1_public", "status": "active", "version": "1"},
+    )
+    append_t2_entries(
+        tmp_path,
+        agent_id,
+        extractions=[{"category": "reference", "content": "Deploy cadence is daily.", "concept": "deploy-cadence"}],
+        source="web",
+        timestamp="2026-06-15",
+        write_decisions=[old_decision],
+    )
+
+    written = append_t2_entries(
+        tmp_path,
+        agent_id,
+        extractions=[
+            {
+                "category": "reference",
+                "content": "Deploy cadence is weekly.",
+                "concept": "deploy-cadence",
+                "conflicts_with": ["mem-old"],
+                "conflict_reason": "newer source says weekly cadence",
+                "source_refs": ["workspace/cadence.md"],
+            }
+        ],
+        source="web",
+        timestamp="2026-06-16",
+    )
+
+    assert written == 1
+    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    old = store.get("mem-old")
+    assert old.metadata["conflict_status"] == "needs_review"
+    assert old.metadata["conflicts_with"]
+    assert old.metadata["conflict_reason"] == "newer source says weekly cadence"
+
+
+def test_append_t2_entries_marks_missing_workspace_ref_for_revalidation(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import MemoryLifecycleStore
+    from app.memory.t2_store import append_t2_entries
+
+    agent_id = uuid.uuid4()
+    written = append_t2_entries(
+        tmp_path,
+        agent_id,
+        extractions=[
+            {
+                "category": "reference",
+                "content": "The launch checklist lives in a missing workspace file.",
+                "evidence": "source_backed",
+                "source_refs": ["workspace/missing-checklist.md"],
+            }
+        ],
+        source="web",
+        timestamp="2026-06-16",
+    )
+
+    assert written == 1
+    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    entry = store.entries()[0]
+    assert entry.metadata["reference_status"] == "revalidation_required"
+    assert entry.metadata["revalidation_reason"] == "source ref not found"
+    assert entry.metadata["invalid_evidence_refs"] == "workspace/missing-checklist.md"
+
+
 def test_render_t2_snapshot_groups_by_priority_and_repetition() -> None:
     from app.memory.t2_store import render_t2_snapshot
 

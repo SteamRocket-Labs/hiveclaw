@@ -1689,7 +1689,17 @@
     "createdAt": "Created",
     "showing": "{{start}}-{{end}} / {{total}}",
     "prev": "Previous",
-    "next": "Next"
+    "next": "Next",
+    "reconciliation": {
+      "title": "Runtime Reconciliation",
+      "openItems": "open items",
+      "tenantPlaceholder": "Tenant ID",
+      "refresh": "Refresh",
+      "empty": "No runtime tasks need reconciliation.",
+      "resolve": "Resolve",
+      "archive": "Archive",
+      "retry": "Retry"
+    }
   },
   "companySetup": {
     "title": "Set Up Your Company",

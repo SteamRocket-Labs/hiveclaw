@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { adminApi } from '../api/domains/admin';
+import AdminRuntimeReconciliationSection from './admin-companies/AdminRuntimeReconciliationSection';
 
 function formatTokens(n: number | null | undefined): string {
     if (n == null) return '-';
@@ -192,6 +193,8 @@ export default function PlatformDashboard() {
                     )}
                 </div>
             </div>
+
+            <AdminRuntimeReconciliationSection />
         </div>
     );
 }

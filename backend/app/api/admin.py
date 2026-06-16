@@ -26,6 +26,13 @@ from app.services.autonomous_audit import build_autonomous_audit_report
 from app.services.harness_canary import run_harness_canary
 from app.services.harness_validation_report import build_harness_validation_report
 from app.services.plan_mode_cutover import mark_existing_triggers_plan_exempt
+from app.services.runtime_reconciliation import (
+    RuntimeReconciliationConflict,
+    RuntimeReconciliationNotFound,
+    apply_runtime_reconciliation_action,
+    get_runtime_reconciliation_task,
+    list_runtime_reconciliation_tasks,
+)
 from app.services.workflow_ops import WorkflowOpsConflict, WorkflowOpsService
 from app.services.workflow_runtime_service import WorkflowRunNotFound
 
@@ -98,6 +105,11 @@ class WorkflowAdminReasonRequest(BaseModel):
 class WorkflowReplayFromStepRequest(BaseModel):
     step_id: str = Field(min_length=1, max_length=100)
     reason: str = Field(default="operator requested", max_length=1000)
+
+
+class RuntimeReconciliationActionRequest(BaseModel):
+    action: str = Field(pattern="^(mark_resolved|archive|retry)$")
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 # ─── Company Management ────────────────────────────────
@@ -307,6 +319,67 @@ async def get_invocation_trace(
     if payload["span_count"] == 0:
         raise HTTPException(status_code=404, detail="Invocation trace not found")
     return payload
+
+
+@router.get("/runtime-reconciliation")
+async def list_runtime_reconciliation(
+    tenant_id: uuid.UUID = Query(...),
+    status: str = Query(default="needs_reconciliation"),
+    limit: int = Query(default=50, ge=1, le=200),
+    agent_id: uuid.UUID | None = Query(default=None),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """List RuntimeTasks that require operator reconciliation."""
+    del current_user
+    return await list_runtime_reconciliation_tasks(
+        db,
+        tenant_id=tenant_id,
+        status=status,
+        limit=limit,
+        agent_id=agent_id,
+    )
+
+
+@router.get("/runtime-reconciliation/{task_id}")
+async def get_runtime_reconciliation(
+    task_id: uuid.UUID,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Inspect one RuntimeTask reconciliation record."""
+    del current_user
+    payload = await get_runtime_reconciliation_task(db, task_id=task_id, tenant_id=tenant_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Runtime reconciliation task not found")
+    return payload
+
+
+@router.post("/runtime-reconciliation/{task_id}/action")
+async def apply_runtime_reconciliation(
+    task_id: uuid.UUID,
+    payload: RuntimeReconciliationActionRequest,
+    tenant_id: uuid.UUID = Query(...),
+    current_user: User = Depends(require_role("platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply an operator reconciliation action to one RuntimeTask."""
+    try:
+        return await apply_runtime_reconciliation_action(
+            db,
+            task_id=task_id,
+            tenant_id=tenant_id,
+            action=payload.action,
+            reason=payload.reason,
+            actor_user_id=current_user.id,
+        )
+    except RuntimeReconciliationNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeReconciliationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/workflows/{run_id}")

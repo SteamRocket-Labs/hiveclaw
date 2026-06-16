@@ -13,6 +13,7 @@ from app.agents.coordination_gateway import (
 )
 from app.agents.coordination_repository import CoordinationRepository
 from app.agents.coordination_wiring import gateway_from_session, gateway_scope, pick_gateway
+from app.config import Settings
 
 
 class _FakeSession:
@@ -27,6 +28,9 @@ def _settings_with_backend(backend: str):
 
 
 class TestPickGateway:
+    def test_settings_default_coordination_backend_is_postgres(self) -> None:
+        assert Settings().COORDINATION_BACKEND == "postgres"
+
     def test_default_returns_in_process_gateway(self) -> None:
         with patch("app.agents.coordination_wiring.get_settings", return_value=_settings_with_backend("memory")):
             gw = pick_gateway()

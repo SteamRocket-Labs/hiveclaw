@@ -7,12 +7,11 @@ Two ways to put coordination state on PostgreSQL:
     GUC. Pass it as `coordination_gateway` to `delegate_async()` /
     `ToolRuntimeService`.
   * Module-level fallback: instantiate `InProcessCoordinationGateway()`
-    once at startup and inject it into the shared `ToolRuntimeService`
-    singleton when `settings.COORDINATION_BACKEND == "memory"`.
+    once at startup only when `settings.COORDINATION_BACKEND == "memory"`.
 
 `pick_gateway()` is the single decision point: it reads the settings
-flag and either returns an in-process gateway (default) or a
-PostgreSQL-backed repository when a session + tenant_id are available.
+flag and either returns a PostgreSQL-backed repository (default) when a
+tenant scope is available or an explicit in-process gateway for dev/test.
 """
 
 from __future__ import annotations
@@ -42,13 +41,13 @@ def pick_gateway(
 ) -> CoordinationGateway:
     """Choose the right gateway for the current scope.
 
-    Honors `settings.COORDINATION_BACKEND` (default "memory"). When set
+    Honors `settings.COORDINATION_BACKEND` (default "postgres"). When set
     to "postgres" and the caller provides session + tenant_id, returns a
     `CoordinationRepository`. In every other case, falls back to the
     in-process gateway (which is correct for single-process Hive
     deployments and for unit tests).
     """
-    backend = (getattr(get_settings(), "COORDINATION_BACKEND", "memory") or "memory").lower()
+    backend = (getattr(get_settings(), "COORDINATION_BACKEND", "postgres") or "postgres").lower()
     if backend == "postgres" and session is not None and tenant_id is not None:
         return CoordinationRepository(session, tenant_id=tenant_id)
     if backend == "postgres":
@@ -93,7 +92,7 @@ async def gateway_scope(
         yield explicit_gateway
         return
 
-    backend = (getattr(get_settings(), "COORDINATION_BACKEND", "memory") or "memory").lower()
+    backend = (getattr(get_settings(), "COORDINATION_BACKEND", "postgres") or "postgres").lower()
     if backend != "postgres":
         yield InProcessCoordinationGateway()
         return

@@ -166,12 +166,11 @@ class Settings(BaseSettings):
     WORKFLOW_DAEMON_INTERVAL_SECONDS: int = 15
 
     # Coordination backend (Phase 17 wiring)
-    # "memory" — in-process Lease/Signal/Checkpoint (default, fine for
-    # single-process Hive deployments).
-    # "postgres" — durable PostgreSQL-backed coordination; requires the
-    # caller to provide an AsyncSession + tenant_id when picking a
-    # gateway (see `app/agents/coordination_wiring.py:pick_gateway`).
-    COORDINATION_BACKEND: str = "memory"
+    # "postgres" — durable PostgreSQL-backed coordination (default). This keeps
+    # prompt-facing Team Context / Teammate Mailbox on the same truth source as
+    # coordination writers across workers and process restarts.
+    # "memory" — explicit dev/test override for in-process Lease/Signal/Checkpoint.
+    COORDINATION_BACKEND: str = "postgres"
     OPENVIKING_API_KEY: str = ""
 
     # Hindsight memory backend (read-side accelerator for T3 MD; optional)

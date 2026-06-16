@@ -19,6 +19,14 @@ from app.services.workflow_runtime_service import WorkflowRuntimeService
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
+@pytest.fixture(autouse=True)
+def _use_in_process_coordination_backend(monkeypatch):
+    class _Settings:
+        COORDINATION_BACKEND = "memory"
+
+    monkeypatch.setattr("app.agents.coordination_wiring.get_settings", lambda: _Settings())
+
+
 def _definition() -> dict:
     return {
         "name": "signalled",

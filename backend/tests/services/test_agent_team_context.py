@@ -5,6 +5,48 @@ from uuid import uuid4
 import pytest
 
 
+class _ScalarsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _SharedCoordinationSession:
+    def __init__(self):
+        self.added = []
+        self.execute_calls = 0
+        self.commits = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        self.commits += 1
+
+    async def rollback(self):  # pragma: no cover
+        pass
+
+    async def execute(self, _stmt):
+        self.execute_calls += 1
+        if self.execute_calls == 1:
+            return _ScalarsResult([])
+        return _ScalarsResult(self.added)
+
+
 def test_render_team_context_block_surfaces_runtime_tasks_and_mailbox() -> None:
     from app.services.agent_team_context import render_team_context_block
 
@@ -64,3 +106,42 @@ async def test_agent_runtime_context_includes_team_context(monkeypatch) -> None:
 
     assert "## Team Context" in rendered
     assert "teammate state" in rendered
+
+
+@pytest.mark.asyncio
+async def test_default_gateway_scope_writes_mailbox_signal_read_by_team_context(monkeypatch) -> None:
+    from app.agents import coordination_wiring
+    from app.agents.coordination_wiring import gateway_scope
+    from app.config import Settings
+    from app.services import agent_team_context
+    from app.services.agent_team_context import build_prompt_facing_team_context
+
+    assert Settings().COORDINATION_BACKEND == "postgres"
+
+    shared_session = _SharedCoordinationSession()
+    monkeypatch.setattr(coordination_wiring, "tenant_scoped_session", lambda _tenant_id: shared_session)
+    monkeypatch.setattr(agent_team_context, "tenant_scoped_session", lambda _tenant_id: shared_session)
+
+    tenant_id = uuid4()
+    sender_id = uuid4()
+    receiver_id = uuid4()
+
+    async with gateway_scope(tenant_id=tenant_id) as gateway:
+        await gateway.send_signal(
+            from_agent_id=str(sender_id),
+            to_agent_id=str(receiver_id),
+            content="researcher completed market scan",
+            signal_type="subagent_completed",
+            thread_id="thread-1",
+        )
+
+    rendered = await build_prompt_facing_team_context(
+        agent_id=receiver_id,
+        tenant_id=tenant_id,
+        session_id="thread-1",
+    )
+
+    assert "## Teammate Mailbox" in rendered
+    assert "subagent_completed" in rendered
+    assert "researcher completed market scan" in rendered
+    assert shared_session.commits == 1

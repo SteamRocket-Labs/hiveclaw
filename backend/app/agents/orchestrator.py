@@ -25,8 +25,6 @@ from app.services.runtime_task_service import (
     build_restart_replay_journal_entry,
     create_runtime_task_record,
     get_runtime_task_record,
-    has_mutating_restart_replay_journal,
-    has_restart_replay_contract,
     list_active_runtime_task_records,
     merge_restart_replay_journal,
     update_runtime_task_record,
@@ -1432,11 +1430,8 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
         metadata = record.get("metadata") or {}
         if not metadata.get("resumable_delegation") or not metadata.get("resume_after_restart"):
             continue
-        replay_contract_ok = has_restart_replay_contract(metadata, task_type="delegation", task_id=task_id)
         replay_safe = _delegation_profile_restart_replay_safe(metadata.get("tool_profile"))
-        replay_journal_ok = has_mutating_restart_replay_journal(metadata, task_type="delegation", task_id=task_id)
-        if not replay_safe and (not replay_contract_ok or not replay_journal_ok):
-            blocker = "non_idempotent_tool_profile" if not replay_contract_ok else "missing_mutating_replay_journal"
+        if not replay_safe:
             try:
                 await update_runtime_task_record(
                     task_id,
@@ -1449,7 +1444,7 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                         metadata,
                         task_type="delegation",
                         task_id=task_id,
-                        blocker=blocker,
+                        blocker="non_idempotent_tool_profile",
                         summary=(
                             "Task was not resumed after restart because its delegation tool profile is not "
                             "safe to replay without duplicating side effects. Reconciliation is required before retry."

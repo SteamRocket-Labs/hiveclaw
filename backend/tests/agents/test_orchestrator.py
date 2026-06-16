@@ -793,10 +793,9 @@ async def test_resume_persisted_async_delegations_refuses_mutating_profile_witho
 
 
 @pytest.mark.asyncio
-async def test_resume_persisted_async_delegations_rehydrates_worker_safe_with_replay_contract(monkeypatch):
+async def test_resume_persisted_async_delegations_reconciles_worker_safe_even_with_spawn_journal(monkeypatch):
     from app.agents.orchestrator import (
         _async_tasks,
-        check_async_delegation,
         resume_persisted_async_delegations,
     )
 
@@ -804,7 +803,6 @@ async def test_resume_persisted_async_delegations_rehydrates_worker_safe_with_re
     parent_agent_id = uuid4()
     owner_id = uuid4()
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
-    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     updates: list[tuple[str, dict]] = []
 
     async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
@@ -844,16 +842,11 @@ async def test_resume_persisted_async_delegations_rehydrates_worker_safe_with_re
             }
         ]
 
-    async def fake_resolve_target_runtime(child_agent_id):
-        assert child_agent_id == target.id
-        return target, model
+    async def fake_resolve_target_runtime(_child_agent_id):  # pragma: no cover - must not run
+        raise AssertionError("mutating delegation must not resolve/replay the child runtime")
 
-    async def fake_invoke(invocation):
-        assert invocation.session_context.metadata["runtime_task_id"] == task_id
-        assert invocation.session_context.metadata["restart_replay_contract"]["idempotency_key"] == (
-            f"delegation:{task_id}:restart"
-        )
-        return SimpleNamespace(content="resumed mutating result")
+    async def fake_invoke(_invocation):  # pragma: no cover - must not run
+        raise AssertionError("mutating delegation must not invoke from spawn intent")
 
     async def fake_update_runtime_task_record(task_id_arg, **kwargs):
         updates.append((task_id_arg, kwargs))
@@ -869,20 +862,12 @@ async def test_resume_persisted_async_delegations_rehydrates_worker_safe_with_re
     _async_tasks.clear()
     try:
         resumed = await resume_persisted_async_delegations()
-        assert resumed == [task_id]
-        assert task_id in _async_tasks
-
-        await asyncio.sleep(0.05)
-        status = await check_async_delegation(task_id, parent_agent_id=parent_agent_id)
-
-        assert status["status"] == "completed"
-        assert status["result"] == "resumed mutating result"
-        assert any(task_id_arg == task_id and payload.get("status") == "running" for task_id_arg, payload in updates)
-        assert any(task_id_arg == task_id and payload.get("status") == "completed" for task_id_arg, payload in updates)
-        running_update = next(
-            payload for task_id_arg, payload in updates if task_id_arg == task_id and payload.get("status") == "running"
-        )
-        assert running_update["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
+        assert resumed == []
+        assert task_id not in _async_tasks
+        assert updates[-1][0] == task_id
+        assert updates[-1][1]["status"] == "needs_reconciliation"
+        assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
+        assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_tool_profile"
     finally:
         _async_tasks.clear()
 
@@ -943,7 +928,7 @@ async def test_resume_persisted_async_delegations_refuses_mutating_contract_with
         assert task_id not in _async_tasks
         assert updates[-1][0] == task_id
         assert updates[-1][1]["status"] == "needs_reconciliation"
-        assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "missing_mutating_replay_journal"
+        assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "non_idempotent_tool_profile"
     finally:
         _async_tasks.clear()
 

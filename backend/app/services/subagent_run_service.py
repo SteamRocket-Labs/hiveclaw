@@ -26,8 +26,6 @@ from app.services.runtime_task_service import (
     build_restart_replay_journal_entry,
     create_runtime_task_record,
     get_runtime_task_record,
-    has_mutating_restart_replay_journal,
-    has_restart_replay_contract,
     list_active_runtime_task_records,
     merge_restart_replay_journal,
     update_runtime_task_record,
@@ -188,19 +186,8 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
         spec_type = str(metadata.get("subagent_type") or "")
         if not metadata.get("resume_after_restart") or not metadata.get("resumable_subagent"):
             continue
-        replay_contract_ok = has_restart_replay_contract(
-            metadata,
-            task_type=SUBAGENT_RUN_TASK_TYPE,
-            task_id=run_id,
-        )
         replay_safe = _subagent_type_restart_replay_safe(spec_type)
-        replay_journal_ok = has_mutating_restart_replay_journal(
-            metadata,
-            task_type=SUBAGENT_RUN_TASK_TYPE,
-            task_id=run_id,
-        )
-        if not replay_safe and (not replay_contract_ok or not replay_journal_ok):
-            blocker = "non_idempotent_subagent_type" if not replay_contract_ok else "missing_mutating_replay_journal"
+        if not replay_safe:
             await update_runtime_task_record(
                 run_id,
                 status="needs_reconciliation",
@@ -212,7 +199,7 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
                     metadata,
                     task_type=SUBAGENT_RUN_TASK_TYPE,
                     task_id=run_id,
-                    blocker=blocker,
+                    blocker="non_idempotent_subagent_type",
                     summary=(
                         "Subagent was not resumed after restart because its type is not safe to replay without "
                         "duplicating side effects. Reconciliation is required before retry."

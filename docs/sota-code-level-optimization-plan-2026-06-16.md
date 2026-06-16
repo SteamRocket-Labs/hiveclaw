@@ -465,3 +465,9 @@ npm run build
 - 不应把 `provisional=true` 的 baseline 改成非 provisional，除非 report 来自 trusted live transport 且 `behavior_eval_passed()` 为 true。
 - 不应为了让 promotion “动起来”而放松 behavior gate。Hive 当前落后 Hermes 的是实证效果，不是 gate 太严格本身。
 
+## 8. Phase 完成证据
+
+| Phase | 状态 | 代码变化 | 证据 | 剩余边界 |
+|---|---|---|---|---|
+| Phase 0: 审计基线与优化计划 | completed | 提交 `docs/sota-atomic-system-audit-2026-06-16.md`、本计划文档，并在 `docs/hive-sota-master-goal.md` 记录第三轮审计 | commit `c376821c` (`Document SOTA remediation phases`) | 仅文档基线，无代码修复 |
+| Phase 1: mutating restart replay fail-closed | completed | `subagent_run_service` 与 `orchestrator` 不再自动重放 mutating subagent/delegation；Red tests 覆盖 `spawn_intent_recorded` journal 不能作为 replay-safe 凭证 | `cd backend && source .venv/bin/activate && pytest tests/services/test_subagent_run_service.py tests/agents/test_orchestrator.py tests/services/test_runtime_task_service.py -q` -> `57 passed, 4 warnings` | mutating lane 现在正确 fail-closed；尚未实现 Temporal 式 exactly-once side-effect journal，也未提供 reconciliation UI/API |

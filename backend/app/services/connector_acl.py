@@ -8,6 +8,7 @@ implements the local mirror used before connector content enters the model.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 import uuid
@@ -33,6 +34,11 @@ _GOVERNED_SOURCE_RE = re.compile(
     re.IGNORECASE,
 )
 _ARG_SOURCE_DENY_ACL = {"deny_by_default": True}
+_VERIFIED_ACL_METADATA_VALUE = "connector_verified"
+_UNVERIFIED_ACL_METADATA_VALUE = "connector_unverified"
+_PROTECTED_SHINGLE_SIZE = 5
+_MAX_PROTECTED_SIGNATURES = 64
+_PROTECTED_WORD_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +102,8 @@ def _canonical_source_item(item: dict[str, Any], *, origin: str | None = None) -
             for key, value in metadata.items()
             if key
             in {
+                "acl_authority",
+                "accessing_agent_id",
                 "source_type",
                 "connector",
                 "tenant_id",
@@ -105,6 +113,12 @@ def _canonical_source_item(item: dict[str, Any], *, origin: str | None = None) -
                 "resource_type",
             }
         }
+    content_digest = _string(item.get("content_digest"))
+    if content_digest:
+        canonical["content_digest"] = content_digest
+    snippet_signatures = _string_set(item.get("protected_snippet_signatures"))
+    if snippet_signatures:
+        canonical["protected_snippet_signatures"] = sorted(snippet_signatures)
     if origin:
         canonical["origin"] = origin
     return canonical
@@ -119,7 +133,84 @@ def _authoritative_acl_payload(item: dict[str, Any]) -> dict[str, Any] | None:
     acl = _acl_payload(item)
     if not isinstance(acl, dict) or acl.get("deny_by_default") is True:
         return None
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("acl_authority") == _UNVERIFIED_ACL_METADATA_VALUE:
+        return None
+    if not _has_authoritative_acl_subject(acl):
+        return None
     return acl
+
+
+def _list_strings(values: Any) -> list[str]:
+    return sorted(_string_set(values))
+
+
+def _extend_acl_list(acl: dict[str, Any], key: str, values: Any) -> None:
+    normalized = _list_strings(values)
+    if normalized:
+        acl[key] = normalized
+
+
+def _has_authoritative_acl_subject(acl: dict[str, Any]) -> bool:
+    if bool(acl.get("public")):
+        return True
+    if str(acl.get("scope") or "").lower() in {"public", "tenant", "company"}:
+        return True
+    for key in (
+        "principal_ids",
+        "principals",
+        "user_ids",
+        "users",
+        "group_ids",
+        "groups",
+        "department_ids",
+        "departments",
+    ):
+        if _string_set(acl.get(key)):
+            return True
+    return False
+
+
+def _normalized_words(text: str) -> list[str]:
+    return [match.group(0).lower() for match in _PROTECTED_WORD_RE.finditer(text or "")]
+
+
+def _signature(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _protected_snippet_signatures(text: str) -> list[str]:
+    words = _normalized_words(text)
+    if not words:
+        return []
+    values: list[str] = []
+    if len(words) < _PROTECTED_SHINGLE_SIZE:
+        normalized = " ".join(words)
+        if len(normalized) >= 16:
+            values.append(_signature(normalized))
+        return values
+    seen: set[str] = set()
+    for index in range(0, len(words) - _PROTECTED_SHINGLE_SIZE + 1):
+        shingle = " ".join(words[index : index + _PROTECTED_SHINGLE_SIZE])
+        digest = _signature(shingle)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        values.append(digest)
+        if len(values) >= _MAX_PROTECTED_SIGNATURES:
+            break
+    return values
+
+
+def _content_digest(text: str) -> str | None:
+    words = _normalized_words(text)
+    if not words:
+        return None
+    return _signature(" ".join(words))
+
+
+def _rendered_signature_set(text: str) -> set[str]:
+    return set(_protected_snippet_signatures(text))
 
 
 def authoritative_connector_source_item(
@@ -128,28 +219,54 @@ def authoritative_connector_source_item(
     connector: str,
     resource_type: str,
     tenant_id: uuid.UUID | str | None = None,
+    tenant_ids: list[uuid.UUID | str] | tuple[uuid.UUID | str, ...] | set[uuid.UUID | str] | None = None,
     current_user_id: uuid.UUID | str | None = None,
+    user_ids: list[uuid.UUID | str] | tuple[uuid.UUID | str, ...] | set[uuid.UUID | str] | None = None,
+    department_ids: list[uuid.UUID | str] | tuple[uuid.UUID | str, ...] | set[uuid.UUID | str] | None = None,
+    group_ids: list[uuid.UUID | str] | tuple[uuid.UUID | str, ...] | set[uuid.UUID | str] | None = None,
     agent_id: uuid.UUID | str | None = None,
     scope: str | None = None,
+    protected_text: str | None = None,
 ) -> dict[str, Any]:
     """Build source ACL metadata for a connector result successfully read by Hive."""
 
     acl: dict[str, Any] = {}
+    tenant_values = set(_list_strings(tenant_ids))
     if tenant_id:
-        acl["tenant_ids"] = [_string(tenant_id)]
+        tenant_values.add(_string(tenant_id))
+    _extend_acl_list(acl, "tenant_ids", tenant_values)
+    user_values = set(_list_strings(user_ids))
     if current_user_id:
-        acl["user_ids"] = [_string(current_user_id)]
-    if agent_id:
-        acl["agent_ids"] = [_string(agent_id)]
+        user_values.add(_string(current_user_id))
+    _extend_acl_list(acl, "user_ids", user_values)
+    _extend_acl_list(acl, "department_ids", department_ids)
+    _extend_acl_list(acl, "group_ids", group_ids)
     if scope:
         acl["scope"] = _string(scope)
-    if not acl:
+
+    verified = _has_authoritative_acl_subject(acl)
+    if not verified:
         acl = dict(_ARG_SOURCE_DENY_ACL)
-    return {
+    metadata: dict[str, Any] = {
+        "connector": connector,
+        "resource_type": resource_type,
+        "acl_authority": _VERIFIED_ACL_METADATA_VALUE if verified else _UNVERIFIED_ACL_METADATA_VALUE,
+    }
+    if agent_id:
+        metadata["accessing_agent_id"] = _string(agent_id)
+    item: dict[str, Any] = {
         "source": _string(source),
         "acl": acl,
-        "metadata": {"connector": connector, "resource_type": resource_type},
+        "metadata": metadata,
     }
+    if protected_text:
+        digest = _content_digest(protected_text)
+        if digest:
+            item["content_digest"] = digest
+        signatures = _protected_snippet_signatures(protected_text)
+        if signatures:
+            item["protected_snippet_signatures"] = signatures
+    return item
 
 
 def with_connector_source_items(text: str, source_items: list[dict[str, Any]]) -> Any:
@@ -447,8 +564,11 @@ def connector_item_visible(
     if allowed_tenants and tenant not in allowed_tenants and f"tenant:{tenant}" not in allowed_tenants:
         return False
 
-    if bool(acl.get("public")) or str(acl.get("scope") or "").lower() in {"public", "tenant", "company"}:
+    scope = str(acl.get("scope") or "").lower()
+    if bool(acl.get("public")) or scope == "public":
         return True
+    if scope in {"tenant", "company"}:
+        return bool(allowed_tenants)
 
     principals = _principal_ids(tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id)
     denied = _string_set(acl.get("deny_principal_ids") or acl.get("denied_principals"))
@@ -461,8 +581,6 @@ def connector_item_visible(
         "principals",
         "user_ids",
         "users",
-        "agent_ids",
-        "agents",
         "group_ids",
         "groups",
         "department_ids",
@@ -501,13 +619,19 @@ def validate_generated_source_permissions(
     """Check that generated text does not cite or reveal forbidden connector sources."""
 
     rendered = str(text or "")
+    rendered_signatures = _rendered_signature_set(rendered)
     allowed_sources: list[str] = []
     forbidden_sources: list[str] = []
     for item in source_items:
         if not isinstance(item, dict):
             continue
         source = _source_id(item)
-        if not source or source not in rendered:
+        if not source:
+            continue
+        source_mentioned = source in rendered
+        snippet_signatures = _string_set(item.get("protected_snippet_signatures"))
+        protected_snippet_mentioned = bool(snippet_signatures and rendered_signatures & snippet_signatures)
+        if not source_mentioned and not protected_snippet_mentioned:
             continue
         if connector_item_visible(item, tenant_id=tenant_id, current_user_id=current_user_id, agent_id=agent_id):
             if source not in allowed_sources:

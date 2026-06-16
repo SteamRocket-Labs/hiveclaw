@@ -50,7 +50,7 @@ async def test_office_document_create_tool_creates_docx(tmp_path):
         {
             "source": "office://workspace/workspace/demo.docx",
             "acl": {"tenant_ids": ["tenant-1"], "scope": "tenant"},
-            "metadata": {"connector": "office", "resource_type": "document"},
+            "metadata": {"connector": "office", "resource_type": "document", "acl_authority": "connector_verified"},
         }
     ]
     assert (tmp_path / "workspace" / "demo.docx").is_file()

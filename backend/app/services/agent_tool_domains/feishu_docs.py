@@ -96,7 +96,11 @@ def _safe_feishu_json(resp: httpx.Response, op: str) -> dict:
 
 
 def _feishu_doc_source_items(
-    agent_id: uuid.UUID | str, document_token: str, read_token: str | None = None
+    agent_id: uuid.UUID | str,
+    document_token: str,
+    read_token: str | None = None,
+    *,
+    protected_text: str | None = None,
 ) -> list[dict]:
     items: list[dict] = []
     for token in dict.fromkeys([document_token, read_token or document_token]):
@@ -107,6 +111,7 @@ def _feishu_doc_source_items(
                     connector="feishu",
                     resource_type="doc",
                     agent_id=agent_id,
+                    protected_text=protected_text,
                 )
             )
     return items
@@ -170,7 +175,7 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
 
     return with_connector_source_items(
         f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}",
-        _feishu_doc_source_items(agent_id, document_token, read_token),
+        _feishu_doc_source_items(agent_id, document_token, read_token, protected_text=content),
     )
 
 
@@ -224,7 +229,7 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
             truncated = f"\n\n_(Truncated to {max_chars} chars)_"
         return with_connector_source_items(
             f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}",
-            _feishu_doc_source_items(agent_id, document_token, read_token),
+            _feishu_doc_source_items(agent_id, document_token, read_token, protected_text=content),
         )
     except FeishuCliError as exc:
         fallback_result = await _feishu_doc_read_via_openapi(agent_id, arguments)

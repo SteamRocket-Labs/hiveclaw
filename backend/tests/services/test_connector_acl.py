@@ -139,9 +139,37 @@ def test_authoritative_connector_result_replaces_argument_deny_acl() -> None:
     assert check.allowed_sources == ["feishu://doc/doc-1"]
 
 
-def test_tool_content_envelope_metadata_registers_authoritative_connector_acl() -> None:
+def test_authoritative_connector_item_accepts_document_user_acl_and_blocks_other_user() -> None:
+    from app.services.connector_acl import authoritative_connector_source_item, connector_item_visible
+
+    tenant_id = uuid4()
+    allowed_user_id = uuid4()
+    blocked_user_id = uuid4()
+    agent_id = uuid4()
+
+    item = authoritative_connector_source_item(
+        source="feishu://doc/doc-1",
+        connector="feishu",
+        resource_type="doc",
+        tenant_id=tenant_id,
+        user_ids=[allowed_user_id],
+        agent_id=agent_id,
+    )
+
+    assert item["acl"] == {"tenant_ids": [str(tenant_id)], "user_ids": [str(allowed_user_id)]}
+    assert item["metadata"]["acl_authority"] == "connector_verified"
+    assert (
+        connector_item_visible(item, tenant_id=tenant_id, current_user_id=allowed_user_id, agent_id=agent_id) is True
+    )
+    assert (
+        connector_item_visible(item, tenant_id=tenant_id, current_user_id=blocked_user_id, agent_id=agent_id) is False
+    )
+
+
+def test_tool_content_envelope_agent_only_acl_is_not_authoritative_for_connector_source() -> None:
     from app.services.connector_acl import (
         CONNECTOR_SOURCE_ITEMS_METADATA_KEY,
+        authoritative_connector_source_item,
         register_connector_source_payload,
         source_items_from_tool_call,
         validate_generated_source_permissions,
@@ -154,21 +182,18 @@ def test_tool_content_envelope_metadata_registers_authoritative_connector_acl() 
     agent_id = uuid4()
     ctx = _Context()
 
-    result = ToolContentEnvelope(
-        text="📄 Document content (`doc-1`):\n\nvisible",
-        metadata={
-            CONNECTOR_SOURCE_ITEMS_METADATA_KEY: [
-                {
-                    "source": "feishu://doc/doc-1",
-                    "acl": {"agent_ids": [str(agent_id)]},
-                    "metadata": {"connector": "feishu", "resource_type": "doc"},
-                }
-            ]
-        },
+    source_item = authoritative_connector_source_item(
+        source="feishu://doc/doc-1",
+        connector="feishu",
+        resource_type="doc",
+        agent_id=agent_id,
+        protected_text="visible",
     )
+    result = ToolContentEnvelope(text="📄 Document content (`doc-1`):\n\nvisible", metadata={CONNECTOR_SOURCE_ITEMS_METADATA_KEY: [source_item]})
 
     assert register_connector_source_payload(ctx, result, origin="tool:feishu_doc_read") == 1
-    assert ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["acl"] == {"agent_ids": [str(agent_id)]}
+    assert ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["acl"] == {"deny_by_default": True}
+    assert ctx.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["metadata"]["acl_authority"] == "connector_unverified"
 
     check = validate_generated_source_permissions(
         "Cite feishu://doc/doc-1",
@@ -177,13 +202,41 @@ def test_tool_content_envelope_metadata_registers_authoritative_connector_acl() 
         current_user_id=uuid4(),
         agent_id=agent_id,
     )
-    assert check.allowed is True
-    assert check.allowed_sources == ["feishu://doc/doc-1"]
+    assert check.allowed is False
+    assert check.forbidden_sources == ["feishu://doc/doc-1"]
 
     # The same tool argument source must remain deny-by-default until the
     # successful tool result provides an authoritative payload.
     arg_items = source_items_from_tool_call("feishu_doc_read", {"document_token": "doc-2"})
     assert arg_items[0]["acl"] == {"deny_by_default": True}
+
+
+def test_post_generation_permission_check_blocks_protected_snippet_without_source_uri() -> None:
+    from app.services.connector_acl import authoritative_connector_source_item, validate_generated_source_permissions
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+    other_user_id = uuid4()
+    hidden_source = "feishu://doc/hidden"
+    item = authoritative_connector_source_item(
+        source=hidden_source,
+        connector="feishu",
+        resource_type="doc",
+        tenant_id=tenant_id,
+        user_ids=[other_user_id],
+        protected_text="FY26 acquisition codename is Northstar and budget is 42M.",
+    )
+
+    check = validate_generated_source_permissions(
+        "The FY26 acquisition codename is Northstar.",
+        source_items=[item],
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+        agent_id=uuid4(),
+    )
+
+    assert check.allowed is False
+    assert check.forbidden_sources == [hidden_source]
 
 
 @pytest.mark.asyncio

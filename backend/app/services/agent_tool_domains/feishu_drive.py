@@ -606,7 +606,7 @@ def _render_file_text(filename: str, token: str, text: str, max_chars: int, sour
     return f"📎 **Feishu file content** (`{token}`)\n文件名：{filename}\n来源：{source}\n\n{text}{truncated}"
 
 
-def _feishu_drive_source_items(agent_id: uuid.UUID | str, token: str) -> list[dict]:
+def _feishu_drive_source_items(agent_id: uuid.UUID | str, token: str, *, protected_text: str | None = None) -> list[dict]:
     if not token:
         return []
     return [
@@ -615,6 +615,7 @@ def _feishu_drive_source_items(agent_id: uuid.UUID | str, token: str) -> list[di
             connector="feishu",
             resource_type="drive_file",
             agent_id=agent_id,
+            protected_text=protected_text,
         )
     ]
 
@@ -686,5 +687,5 @@ async def _feishu_drive_file_read(agent_id: uuid.UUID | str, arguments: dict) ->
 
     return with_connector_source_items(
         _render_file_text(filename, token, text, _max_chars(arguments), str(meta.get("source") or "drive")),
-        _feishu_drive_source_items(agent_id, token),
+        _feishu_drive_source_items(agent_id, token, protected_text=text),
     )

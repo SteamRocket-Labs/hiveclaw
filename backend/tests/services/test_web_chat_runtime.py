@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -263,6 +264,221 @@ async def test_finalize_web_chat_run_skips_assistant_when_run_already_terminal(m
 
     assert finalized is False
     assert added == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatch):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    run_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        metadata_json={},
+        result_summary=None,
+        completed_at=None,
+    )
+    added = []
+
+    class _Session:
+        def __init__(self):
+            self.results = [task, None, None]
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.results.pop(0))
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            self.commits += 1
+
+    session = _Session()
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+
+    finalized = await runtime._finalize_web_chat_run_with_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        user_id=uuid4(),
+        session_id=uuid4().hex,
+        content="final answer",
+        thinking="private reasoning",
+        thinking_signature="sig-final",
+        status="completed",
+        result_summary="final answer",
+        metadata_json={"cancelled_by_user": False},
+    )
+
+    assert finalized is True
+    assert len(added) == 1
+    assert added[0].decision_trace_id == f"web_chat_final:{run_id.hex}"
+    assert added[0].thinking == "private reasoning"
+    assert added[0].thinking_signature == "sig-final"
+    assert task.status == "completed"
+    assert task.result_summary == "final answer"
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_web_chat_run_reuses_kernel_persisted_terminal_message(monkeypatch):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    run_id = uuid4()
+    session_id = uuid4().hex
+    created_at = datetime.now(timezone.utc)
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        metadata_json={},
+        result_summary=None,
+        created_at=created_at,
+        started_at=created_at,
+        completed_at=None,
+    )
+    kernel_message = SimpleNamespace(
+        decision_trace_id=None,
+        content="budget stopped",
+        created_at=created_at,
+    )
+    added = []
+
+    class _Session:
+        def __init__(self):
+            self.results = [task, None, kernel_message]
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.results.pop(0))
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            self.commits += 1
+
+    session = _Session()
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+
+    finalized = await runtime._finalize_web_chat_run_with_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        content="budget stopped",
+        thinking=None,
+        thinking_signature=None,
+        status="completed",
+        result_summary="budget stopped",
+        metadata_json={"cancelled_by_user": False},
+    )
+
+    assert finalized is True
+    assert added == []
+    assert kernel_message.decision_trace_id == f"web_chat_final:{run_id.hex}"
+    assert task.status == "completed"
+    assert task.result_summary == "budget stopped"
+    assert task.completed_at is not None
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_web_chat_run_skips_existing_final_assistant_marker(monkeypatch):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    run_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        metadata_json={},
+        result_summary=None,
+        completed_at=None,
+    )
+    existing_message = SimpleNamespace(id=uuid4(), decision_trace_id=f"web_chat_final:{run_id.hex}")
+    added = []
+
+    class _Session:
+        def __init__(self):
+            self.results = [task, existing_message]
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.results.pop(0))
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            self.commits += 1
+
+    session = _Session()
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+
+    finalized = await runtime._finalize_web_chat_run_with_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        user_id=uuid4(),
+        session_id=uuid4().hex,
+        content="duplicate final answer",
+        thinking=None,
+        thinking_signature=None,
+        status="completed",
+        result_summary="duplicate final answer",
+        metadata_json={"cancelled_by_user": False},
+    )
+
+    assert finalized is False
+    assert added == []
+    assert task.status == "completed"
+    assert task.result_summary == "duplicate final answer"
+    assert task.completed_at is not None
+    assert session.commits == 1
 
 
 @pytest.mark.asyncio
@@ -906,6 +1122,35 @@ async def test_maybe_handle_plan_mode_entry_activates_interactive_mode_when_expl
 
 
 @pytest.mark.asyncio
+async def test_maybe_handle_plan_mode_entry_classifies_visible_request_not_attachment_body(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    session_context = SimpleNamespace(metadata={})
+
+    result = await runtime._maybe_handle_plan_mode_entry(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_id="session-file-update",
+        content=(
+            "[File: bank_statement.pdf]\n"
+            "Monthly statement body text extracted from the uploaded PDF.\n\n"
+            "Question: 帮我更新到5月"
+        ),
+        classification_content="[📎 bank_statement.pdf]\n帮我更新到5月",
+        plan_mode_requested=True,
+        runtime_session_context=session_context,
+    )
+
+    assert result is None
+    state = session_context.metadata["plan_mode"]
+    assert state["intent_type"] == "in_session_execution"
+    assert state["action_kind"] == "start_long_task"
+    assert state["tool_name"] == "continue_current_session"
+    assert state["handoff_target"] == "continue_current_session"
+    assert state["original_request"].startswith("[File: bank_statement.pdf]")
+
+
+@pytest.mark.asyncio
 async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_mirror(monkeypatch):
     """Phase 1: a real SessionContext gets the typed PlanModeState populated,
     and the legacy metadata['plan_mode'] dict stays a byte-exact mirror."""
@@ -1126,3 +1371,46 @@ async def test_deliver_run_result_skips_web_session(monkeypatch):
 
     await runtime._deliver_run_result_to_channel(uuid4(), uuid4(), "执行完成")
     assert calls["n"] == 0  # web session → no channel delivery
+
+
+@pytest.mark.asyncio
+async def test_deliver_run_result_skips_current_web_session_delivery_target(monkeypatch):
+    """Web sessions carry delivery metadata for explicit web pushes, but a web-chat
+    run's own final response is already persisted by the run finalizer."""
+    import app.services.web_chat_runtime as runtime
+
+    session_id = uuid4()
+    session = SimpleNamespace(
+        delivery_target_json={
+            "channel": "web",
+            "username": "alice",
+            "session_id": str(session_id),
+        }
+    )
+
+    class _DB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: session)
+
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_a, **_k: _DB())
+
+    async def _fake_resolve(*_a, **_k):
+        return uuid4()
+
+    monkeypatch.setattr("app.services.tenant_resolver.resolve_tenant_for_agent", _fake_resolve)
+
+    calls = {"n": 0}
+
+    async def fake_send_text(**_kwargs):
+        calls["n"] += 1
+
+    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text)
+
+    await runtime._deliver_run_result_to_channel(uuid4(), session_id, "执行完成")
+    assert calls["n"] == 0

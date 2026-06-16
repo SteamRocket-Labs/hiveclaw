@@ -80,6 +80,28 @@ def _saved_user_content(*, content: str, display_content: str = "", file_name: s
     return saved_content
 
 
+def _final_assistant_decision_trace_id(run_uuid: uuid.UUID) -> str:
+    return f"web_chat_final:{run_uuid.hex}"
+
+
+def _apply_terminal_task_update(
+    task: RuntimeTask,
+    *,
+    status: str,
+    result_summary: str | None,
+    metadata_json: dict[str, Any] | None,
+) -> None:
+    task.status = status
+    if result_summary is not None:
+        task.result_summary = result_summary
+    if metadata_json:
+        metadata = dict(task.metadata_json or {})
+        metadata.update(metadata_json)
+        task.metadata_json = metadata
+    if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
+        task.completed_at = datetime.now(timezone.utc)
+
+
 async def _queue_mid_run_user_message(
     *,
     db: AsyncSession,
@@ -122,8 +144,9 @@ async def _queue_mid_run_user_message(
 
 async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, str]]:
     run_uuid = _run_id(run_id)
-    async with _async_session() as db, enter_rls_bypass(
-        db, reason=f"durable web-run mid-run user message drain for run {run_uuid}"
+    async with (
+        _async_session() as db,
+        enter_rls_bypass(db, reason=f"durable web-run mid-run user message drain for run {run_uuid}"),
     ):
         result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
         task = result.scalar_one_or_none()
@@ -685,6 +708,62 @@ async def _finalize_web_chat_run_with_assistant(
             )
             return False
 
+        final_decision_trace_id = _final_assistant_decision_trace_id(run_uuid)
+        existing_message_result = await db.execute(
+            select(ChatMessage)
+            .where(
+                ChatMessage.agent_id == agent_id,
+                ChatMessage.conversation_id == session_id,
+                ChatMessage.role == "assistant",
+                ChatMessage.decision_trace_id == final_decision_trace_id,
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        if existing_message_result.scalar_one_or_none() is not None:
+            logger.info("[WebChatRun] Duplicate final assistant message skipped for run {}", run_uuid.hex)
+            _apply_terminal_task_update(
+                task,
+                status=status,
+                result_summary=result_summary,
+                metadata_json=metadata_json,
+            )
+            await db.commit()
+            return False
+
+        terminal_since = getattr(task, "started_at", None) or getattr(task, "created_at", None)
+        kernel_message_filters = [
+            ChatMessage.agent_id == agent_id,
+            ChatMessage.conversation_id == session_id,
+            ChatMessage.role == "assistant",
+            ChatMessage.content == content,
+        ]
+        if terminal_since is not None:
+            kernel_message_filters.append(ChatMessage.created_at >= terminal_since)
+        kernel_persisted_result = await db.execute(
+            select(ChatMessage)
+            .where(*kernel_message_filters)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        kernel_persisted_message = kernel_persisted_result.scalar_one_or_none()
+        if kernel_persisted_message is not None:
+            logger.info("[WebChatRun] Reusing kernel-persisted final assistant message for run {}", run_uuid.hex)
+            kernel_persisted_message.decision_trace_id = final_decision_trace_id
+            if thinking and not kernel_persisted_message.thinking:
+                kernel_persisted_message.thinking = thinking
+            if thinking_signature and not kernel_persisted_message.thinking_signature:
+                kernel_persisted_message.thinking_signature = thinking_signature
+            _apply_terminal_task_update(
+                task,
+                status=status,
+                result_summary=result_summary,
+                metadata_json=metadata_json,
+            )
+            await db.commit()
+            return True
+
         db.add(
             ChatMessage(
                 agent_id=agent_id,
@@ -694,18 +773,16 @@ async def _finalize_web_chat_run_with_assistant(
                 content=content,
                 thinking=thinking,
                 thinking_signature=thinking_signature,
+                decision_trace_id=final_decision_trace_id,
                 conversation_id=session_id,
             )
         )
-        task.status = status
-        if result_summary is not None:
-            task.result_summary = result_summary
-        if metadata_json:
-            metadata = dict(task.metadata_json or {})
-            metadata.update(metadata_json)
-            task.metadata_json = metadata
-        if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
-            task.completed_at = datetime.now(timezone.utc)
+        _apply_terminal_task_update(
+            task,
+            status=status,
+            result_summary=result_summary,
+            metadata_json=metadata_json,
+        )
         await db.commit()
         return True
 
@@ -805,12 +882,14 @@ def _activate_interactive_plan_mode(
     *,
     agent_id: uuid.UUID,
     original_request: str,
+    routing_request: str | None = None,
     decision: plan_mode_core.PlanModeEntryDecision,
     session_id: str | None,
 ) -> dict[str, Any]:
     from app.runtime.session import PlanModeState
 
-    is_deep_research = _is_deep_research_chat_request(original_request)
+    route_text = routing_request or original_request
+    is_deep_research = _is_deep_research_chat_request(route_text)
     if is_deep_research:
         handoff_target = "deep_research"
     elif decision.action_kind == "create_enabled_trigger":
@@ -915,6 +994,7 @@ async def _maybe_handle_plan_mode_entry(
     user_id: uuid.UUID | None,
     session_id: str | None,
     content: str,
+    classification_content: str | None = None,
     plan_mode_requested: bool = False,
     runtime_session_context: Any | None = None,
 ) -> str | None:
@@ -926,7 +1006,8 @@ async def _maybe_handle_plan_mode_entry(
     suggests via prompt guidance). The execution safety gate remains in the
     tool/runtime layer.
     """
-    decision = plan_mode_core.classify_plan_mode_entry(content, explicit=plan_mode_requested)
+    classifier_text = str(classification_content or content)
+    decision = plan_mode_core.classify_plan_mode_entry(classifier_text, explicit=plan_mode_requested)
     if decision.mode in {"none", "declined"}:
         return None
 
@@ -960,6 +1041,7 @@ async def _maybe_handle_plan_mode_entry(
         runtime_session_context,
         agent_id=agent_id,
         original_request=content,
+        routing_request=classifier_text,
         decision=decision,
         session_id=session_id,
     )
@@ -973,9 +1055,7 @@ async def _update_runtime_task(
     result_summary: str | None = None,
     metadata_json: dict[str, Any] | None = None,
 ) -> None:
-    async with _async_session() as db, enter_rls_bypass(
-        db, reason=f"durable web-run status update for run {run_uuid}"
-    ):
+    async with _async_session() as db, enter_rls_bypass(db, reason=f"durable web-run status update for run {run_uuid}"):
         result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
         task = result.scalar_one_or_none()
         if task is None:
@@ -1151,6 +1231,11 @@ async def _deliver_run_result_to_channel(agent_id: uuid.UUID, session_id: Any, t
             target = getattr(session, "delivery_target_json", None) if session else None
             if not target:
                 return
+            if str(target.get("channel") or "").strip().lower() == "web":
+                # Web-origin durable runs are already persisted by the finalizer
+                # and streamed through the broker. Re-delivering to the same web
+                # channel would insert a second assistant chat row.
+                return
             from app.services.channel_delivery_service import ChannelDeliveryService
 
             await ChannelDeliveryService.send_text(db=db, agent_id=agent_id, reply_target=target, text=text)
@@ -1230,6 +1315,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             user_id=getattr(user, "id", None),
             session_id=session_id,
             content=prompt,
+            classification_content=str(metadata.get("display_content") or prompt),
             plan_mode_requested=bool(metadata.get("plan_mode_requested")),
             runtime_session_context=runtime_session_context,
         )
@@ -1315,12 +1401,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     "Use the following durable resume context to continue from the saved artifacts instead of "
                     f"starting over.\n{resume_prompt}"
                 )
-                pending_reply_suffix = "\n\n".join(
-                    part for part in (pending_reply_suffix, restart_suffix) if part
-                )
+                pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, restart_suffix) if part)
 
         trusted_decline = plan_mode_core.trusted_decline_metadata(
-            content=prompt,
+            content=str(metadata.get("display_content") or prompt),
             messages=history_messages,
             explicit=bool(metadata.get("plan_mode_requested")),
         )

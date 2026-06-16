@@ -464,6 +464,9 @@ export default function AgentChatSection({
   onAbortGeneration,
 }: AgentChatSectionProps) {
   const { t, i18n } = useTranslation();
+  const planModeToggleLabel = planModeRequested
+    ? t('agent.plan.composerToggleOn', 'Plan Mode enabled')
+    : t('agent.plan.composerToggleOff', 'Start next message in Plan Mode');
 
   const currentUserId = currentUser?.id ? String(currentUser.id) : null;
   const isReadOnlySession =
@@ -936,7 +939,7 @@ export default function AgentChatSection({
       value: formatCompactNumber(runtimeSummary?.runtime?.remaining_tokens_estimate),
     },
     {
-      label: t('agent.chat.runtime.compactions', 'Compactions'),
+      label: t('agent.chat.runtime.compactions', 'Turn compressions'),
       value: `${runtimeSummary?.compaction_count ?? 0}`,
     },
     {
@@ -1642,12 +1645,9 @@ export default function AgentChatSection({
               <button
                 type="button"
                 onClick={onTogglePlanMode}
+                aria-label={planModeToggleLabel}
                 aria-pressed={planModeRequested}
-                title={
-                  planModeRequested
-                    ? t('agent.plan.composerToggleOn', 'Plan Mode enabled')
-                    : t('agent.plan.composerToggleOff', 'Start next message in Plan Mode')
-                }
+                title={planModeToggleLabel}
                 disabled={!wsConnected || isWaiting || isStreaming}
                 style={{
                   width: '36px',

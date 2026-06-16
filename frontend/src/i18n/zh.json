@@ -644,7 +644,7 @@
       "runtime": {
         "model": "模型",
         "remaining": "剩余上下文",
-        "compactions": "压缩次数",
+        "compactions": "本轮压缩",
         "permissions": "权限事件",
         "teamMemory": "团队记忆",
         "retryReason": "重试原因",

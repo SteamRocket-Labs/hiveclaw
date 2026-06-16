@@ -181,12 +181,13 @@ async def _compress_once(monkeypatch, tenant_id, llm_calls: list, *, fail: bool)
 
 
 @pytest.mark.asyncio
-async def test_maybe_compress_uses_real_usage_anchor_when_estimate_is_too_low(monkeypatch):
+async def test_maybe_compress_does_not_use_cumulative_usage_anchor_as_context_pressure(monkeypatch):
     import app.services.conversation_summarizer as summarizer_mod
     from app.services import memory_service
 
     tenant_id = uuid4()
     llm_calls: list = []
+    messages = [{"role": "user", "content": "中文内容"} for _ in range(15)]
 
     async def fake_get_memory_config(_tenant_id):
         return {}
@@ -204,7 +205,7 @@ async def test_maybe_compress_uses_real_usage_anchor_when_estimate_is_too_low(mo
     monkeypatch.setattr(summarizer_mod, "_llm_summarize", fake_llm_summarize)
 
     result = await memory_service.maybe_compress_messages(
-        [{"role": "user", "content": "中文内容"} for _ in range(15)],
+        messages,
         "openai",
         "m",
         1000,
@@ -212,9 +213,8 @@ async def test_maybe_compress_uses_real_usage_anchor_when_estimate_is_too_low(mo
         usage_anchor_tokens=700,
     )
 
-    assert llm_calls == [1]
-    assert result[0]["role"] == "system"
-    assert "usage anchored summary" in result[0]["content"]
+    assert llm_calls == []
+    assert result == messages
 
 
 @pytest.mark.asyncio

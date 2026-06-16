@@ -644,7 +644,7 @@
       "runtime": {
         "model": "Model",
         "remaining": "Context remaining",
-        "compactions": "Compressions",
+        "compactions": "Turn compressions",
         "permissions": "Permissions",
         "teamMemory": "Team Memory",
         "retryReason": "Retry",

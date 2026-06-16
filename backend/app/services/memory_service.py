@@ -130,7 +130,11 @@ async def build_memory_context(
             logger.warning(
                 "Memory activation principal unresolved; suppressing prompt memory for agent %s",
                 agent_id,
-                extra={"metric": "memory_activation_fail_closed", "agent_id": str(agent_id), "tenant_id": str(tenant_id)},
+                extra={
+                    "metric": "memory_activation_fail_closed",
+                    "agent_id": str(agent_id),
+                    "tenant_id": str(tenant_id),
+                },
             )
             return ""
         if "activation_context" in retrieve_params and activation_context:
@@ -419,7 +423,19 @@ async def maybe_compress_messages(
     trigger_tokens = int(effective_limit * threshold)
 
     estimated_tokens = estimate_tokens(messages, provider=model_provider)
-    current_tokens = max(estimated_tokens, int(usage_anchor_tokens or 0))
+    # ``usage_anchor_tokens`` is turn-level cumulative usage in AgentKernel. It
+    # is valid for spend/budget controls, but it is not current context size:
+    # a 90K-token prompt repeated across many tool rounds can exceed 750K
+    # cumulative usage while the actual context is still far below a 1M window.
+    # Compaction must therefore key off the current message payload estimate.
+    if usage_anchor_tokens:
+        logger.debug(
+            "Memory compression ignoring cumulative usage anchor for threshold: estimate=%d anchor=%d threshold=%d",
+            estimated_tokens,
+            int(usage_anchor_tokens),
+            trigger_tokens,
+        )
+    current_tokens = estimated_tokens
     if current_tokens <= trigger_tokens:
         return messages
 

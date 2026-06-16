@@ -35,6 +35,7 @@ import {
     type SessionRunState,
     type SessionUiState,
 } from './agent-detail/chatRuntime';
+import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-detail/planModeComposer';
 import RelationshipEditor from './agent-detail/RelationshipEditor';
 import ToolsManager from './agent-detail/ToolsManager';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
@@ -413,6 +414,19 @@ function AgentDetailInner() {
     const [chatMessagesSessionId, setChatMessagesSessionId] = useState<string | null>(null);
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
+    const planModeScopeKey = buildPlanModeScopeKey(id, activeSession?.id);
+    const planModeScopeKeyRef = useRef(planModeScopeKey);
+    useEffect(() => {
+        const previousScopeKey = planModeScopeKeyRef.current;
+        planModeScopeKeyRef.current = planModeScopeKey;
+        setPlanModeRequested((currentRequested) =>
+            nextPlanModeRequestedForScope({
+                currentRequested,
+                previousScopeKey,
+                nextScopeKey: planModeScopeKey,
+            }),
+        );
+    }, [planModeScopeKey]);
     const [wsConnected, setWsConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);

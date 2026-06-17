@@ -942,6 +942,50 @@ def _clear_interactive_plan_mode(runtime_session_context: Any | None) -> None:
         metadata.pop("plan_mode", None)
 
 
+def _history_waits_for_blocking_clarification(history_messages: list[Any] | tuple[Any, ...] | None) -> bool:
+    for msg in reversed(history_messages or []):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        content = getattr(msg, "content", None)
+        if not isinstance(content, str) or "awaiting_user_clarification" not in content:
+            continue
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("status") == "awaiting_user_clarification":
+            return payload.get("blocking", True) is not False
+    return False
+
+
+def _plan_mode_active(runtime_session_context: Any | None) -> bool:
+    if runtime_session_context is None:
+        return False
+    typed_state = getattr(runtime_session_context, "plan_mode", None)
+    if getattr(typed_state, "active", False):
+        return True
+    metadata = getattr(runtime_session_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return False
+    plan_mode = metadata.get("plan_mode")
+    return isinstance(plan_mode, dict) and bool(plan_mode.get("active"))
+
+
+def _clear_stale_plan_mode_for_new_turn(
+    runtime_session_context: Any | None,
+    *,
+    plan_mode_requested: bool,
+    history_messages: list[Any] | tuple[Any, ...] | None,
+) -> None:
+    """Prevent stale in-memory Plan Mode from leaking into ordinary new turns."""
+    if plan_mode_requested or not _plan_mode_active(runtime_session_context):
+        return
+    if _history_waits_for_blocking_clarification(history_messages):
+        return
+    logger.info("[WebChatRun] Clearing stale Plan Mode state before ordinary new turn")
+    _clear_interactive_plan_mode(runtime_session_context)
+
+
 _DEEP_RESEARCH_CHAT_RE = re.compile(r"(deep\s*research|deepresearch|深度研究|深度调研)", re.IGNORECASE)
 
 
@@ -1309,6 +1353,12 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         )
         if metadata.get("parent_trace_id"):
             runtime_session_context.metadata["parent_trace_id"] = metadata.get("parent_trace_id")
+
+        _clear_stale_plan_mode_for_new_turn(
+            runtime_session_context,
+            plan_mode_requested=bool(metadata.get("plan_mode_requested")),
+            history_messages=history_messages,
+        )
 
         plan_mode_response = await _maybe_handle_plan_mode_entry(
             agent_id=agent.id,

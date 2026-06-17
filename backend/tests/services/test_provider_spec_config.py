@@ -13,6 +13,7 @@ Covers two things:
 from __future__ import annotations
 
 from app.services.llm_client import (
+    GeminiClient,
     LLMMessage,
     OpenAICompatibleClient,
     create_llm_client,
@@ -94,6 +95,26 @@ def test_unconfigured_providers_use_class_default_ceiling():
     # Providers without an explicit value fall back to the class default 131072.
     for provider in ("minimax", "qwen", "kimi", "zhipu", "gemini", "azure", "openrouter"):
         assert get_provider_spec(provider).max_output_tokens == 131072
+
+
+def test_gemini_usage_normalization_preserves_cached_content_tokens():
+    client = GeminiClient(api_key="test", model="gemini-2.5-pro")
+
+    usage = client._normalize_usage(
+        {
+            "promptTokenCount": 1000,
+            "candidatesTokenCount": 100,
+            "totalTokenCount": 1100,
+            "cachedContentTokenCount": 700,
+        }
+    )
+
+    assert usage == {
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "total_tokens": 1100,
+        "cachedContentTokenCount": 700,
+    }
 
 
 def test_absolute_output_ceiling_constant():

@@ -1588,11 +1588,15 @@ class GeminiClient(LLMClient):
         input_tokens = int(usage.get("promptTokenCount", 0) or 0)
         output_tokens = int(usage.get("candidatesTokenCount", 0) or 0)
         total_tokens = int(usage.get("totalTokenCount", input_tokens + output_tokens) or 0)
-        return {
+        normalized = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
         }
+        cached_content_tokens = int(usage.get("cachedContentTokenCount", 0) or 0)
+        if cached_content_tokens > 0:
+            normalized["cachedContentTokenCount"] = cached_content_tokens
+        return normalized
 
     def _normalize_finish_reason(self, finish_reason: str | None, tool_calls: list[dict]) -> str | None:
         """Normalize Gemini finish reason to OpenAI-style labels."""

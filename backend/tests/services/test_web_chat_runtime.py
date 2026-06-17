@@ -60,6 +60,84 @@ def test_clear_interactive_plan_mode_clears_typed_state_and_metadata_mirror():
     assert "plan_mode" not in context.metadata
 
 
+def test_clear_stale_plan_mode_for_plain_new_turn():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import PlanModeState, SessionContext
+
+    context = SessionContext(session_id="session-1", source="web_chat", channel="web")
+    context.plan_mode = PlanModeState(
+        active=True,
+        original_request="draft a plan",
+        intent_type="in_session_execution",
+        action_kind="start_long_task",
+        tool_name="continue_current_session",
+    )
+    context.metadata["plan_mode"] = context.plan_mode.to_metadata()
+
+    runtime._clear_stale_plan_mode_for_new_turn(
+        context,
+        plan_mode_requested=False,
+        history_messages=[],
+    )
+
+    assert context.plan_mode.active is False
+    assert "plan_mode" not in context.metadata
+
+
+def test_preserve_plan_mode_for_blocking_clarification_reply():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import PlanModeState, SessionContext
+
+    context = SessionContext(session_id="session-1", source="web_chat", channel="web")
+    context.plan_mode = PlanModeState(
+        active=True,
+        original_request="draft a plan",
+        intent_type="in_session_execution",
+        action_kind="start_long_task",
+        tool_name="continue_current_session",
+    )
+    context.metadata["plan_mode"] = context.plan_mode.to_metadata()
+    history_messages = [
+        SimpleNamespace(
+            role="assistant",
+            content='{"status":"awaiting_user_clarification","blocking":true,"question":"范围是什么？"}',
+        )
+    ]
+
+    runtime._clear_stale_plan_mode_for_new_turn(
+        context,
+        plan_mode_requested=False,
+        history_messages=history_messages,
+    )
+
+    assert context.plan_mode.active is True
+    assert context.metadata["plan_mode"]["active"] is True
+
+
+def test_explicit_plan_mode_request_does_not_clear_existing_plan_state_before_reactivation():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import PlanModeState, SessionContext
+
+    context = SessionContext(session_id="session-1", source="web_chat", channel="web")
+    context.plan_mode = PlanModeState(
+        active=True,
+        original_request="draft a plan",
+        intent_type="in_session_execution",
+        action_kind="start_long_task",
+        tool_name="continue_current_session",
+    )
+    context.metadata["plan_mode"] = context.plan_mode.to_metadata()
+
+    runtime._clear_stale_plan_mode_for_new_turn(
+        context,
+        plan_mode_requested=True,
+        history_messages=[],
+    )
+
+    assert context.plan_mode.active is True
+    assert context.metadata["plan_mode"]["active"] is True
+
+
 def test_record_skill_runtime_usage_for_invocation_collects_web_chat_loaded_skill(monkeypatch, tmp_path):
     import app.services.skill_runtime_telemetry as telemetry
     from app.runtime.session import SessionContext

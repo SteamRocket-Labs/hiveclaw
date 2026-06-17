@@ -33,30 +33,30 @@ def _reset() -> Iterator[None]:
 
 
 def test_record_recall_increments_total() -> None:
-    record_recall("hindsight", "t1", 10.5, empty=False)
-    record_recall("hindsight", "t1", 20.0, empty=True)
+    record_recall("native", "t1", 10.5, empty=False)
+    record_recall("native", "t1", 20.0, empty=True)
     snap = snapshot()
-    assert snap["recall_total"]["hindsight:t1"] == 2
-    assert snap["recall_empty_total"]["hindsight:t1"] == 1
+    assert snap["recall_total"]["native:t1"] == 2
+    assert snap["recall_empty_total"]["native:t1"] == 1
 
 
 def test_record_recall_error_increments_counter_and_failure_streak() -> None:
-    record_recall_error("hindsight", "t1", "ConnectError")
-    record_recall_error("hindsight", "t1", "ConnectError")
-    record_recall_error("hindsight", "t1", "HTTPStatusError")
+    record_recall_error("native", "t1", "ConnectError")
+    record_recall_error("native", "t1", "ConnectError")
+    record_recall_error("native", "t1", "HTTPStatusError")
 
     snap = snapshot()
-    assert snap["recall_error_total"]["hindsight:t1:ConnectError"] == 2
-    assert snap["recall_error_total"]["hindsight:t1:HTTPStatusError"] == 1
+    assert snap["recall_error_total"]["native:t1:ConnectError"] == 2
+    assert snap["recall_error_total"]["native:t1:HTTPStatusError"] == 1
     assert consecutive_failures("t1") == 3
 
 
 def test_successful_recall_resets_failure_streak() -> None:
-    record_recall_error("hindsight", "t1", "ConnectError")
-    record_recall_error("hindsight", "t1", "ConnectError")
+    record_recall_error("native", "t1", "ConnectError")
+    record_recall_error("native", "t1", "ConnectError")
     assert consecutive_failures("t1") == 2
 
-    record_recall("hindsight", "t1", 5.0, empty=False)
+    record_recall("native", "t1", 5.0, empty=False)
     assert consecutive_failures("t1") == 0
 
 
@@ -65,7 +65,7 @@ def test_time_since_last_failure_returns_none_when_never_failed() -> None:
 
 
 def test_time_since_last_failure_is_positive_after_failure() -> None:
-    record_recall_error("hindsight", "t1", "X")
+    record_recall_error("native", "t1", "X")
     elapsed = time_since_last_failure("t1")
     assert elapsed is not None
     assert 0.0 <= elapsed < 1.0
@@ -83,8 +83,8 @@ def test_sync_counters() -> None:
 
 
 def test_reset_all_clears_everything() -> None:
-    record_recall("hindsight", "t1", 10.0, empty=False)
-    record_recall_error("hindsight", "t1", "X")
+    record_recall("native", "t1", 10.0, empty=False)
+    record_recall_error("native", "t1", "X")
     record_sync("t1", 5)
     reset_all()
     snap = snapshot()
@@ -205,51 +205,51 @@ def test_latency_window_respects_max_samples() -> None:
 
 @pytest.mark.asyncio
 async def test_recall_timer_records_success() -> None:
-    async with RecallTimer("hindsight", "t1") as t:
+    async with RecallTimer("native", "t1") as t:
         await asyncio.sleep(0.01)
         t.observed_results = 3
     snap = snapshot()
-    assert snap["recall_total"]["hindsight:t1"] == 1
-    assert snap["recall_empty_total"].get("hindsight:t1", 0) == 0
-    lat = snap["recall_latency_ms"]["hindsight:t1"]
+    assert snap["recall_total"]["native:t1"] == 1
+    assert snap["recall_empty_total"].get("native:t1", 0) == 0
+    lat = snap["recall_latency_ms"]["native:t1"]
     assert lat["count"] == 1
     assert lat["max"] >= 10.0  # slept 10ms
 
 
 @pytest.mark.asyncio
 async def test_recall_timer_records_empty_result() -> None:
-    async with RecallTimer("hindsight", "t1") as t:
+    async with RecallTimer("native", "t1") as t:
         t.observed_results = 0
     snap = snapshot()
-    assert snap["recall_empty_total"]["hindsight:t1"] == 1
+    assert snap["recall_empty_total"]["native:t1"] == 1
 
 
 @pytest.mark.asyncio
 async def test_recall_timer_records_none_result_as_empty() -> None:
-    async with RecallTimer("hindsight", "t1") as t:
+    async with RecallTimer("native", "t1") as t:
         pass  # observed_results stays None
         assert t is not None
     snap = snapshot()
-    assert snap["recall_empty_total"]["hindsight:t1"] == 1
+    assert snap["recall_empty_total"]["native:t1"] == 1
 
 
 @pytest.mark.asyncio
 async def test_recall_timer_records_error_on_exception() -> None:
     with pytest.raises(ValueError):
-        async with RecallTimer("hindsight", "t1"):
+        async with RecallTimer("native", "t1"):
             raise ValueError("boom")
 
     snap = snapshot()
-    assert snap["recall_error_total"]["hindsight:t1:ValueError"] == 1
+    assert snap["recall_error_total"]["native:t1:ValueError"] == 1
     assert consecutive_failures("t1") == 1
 
 
 @pytest.mark.asyncio
 async def test_recall_timer_records_error_on_explicit_reason() -> None:
-    async with RecallTimer("hindsight", "t1") as t:
+    async with RecallTimer("native", "t1") as t:
         t.error_reason = "HTTPStatusError"
     snap = snapshot()
-    assert snap["recall_error_total"]["hindsight:t1:HTTPStatusError"] == 1
+    assert snap["recall_error_total"]["native:t1:HTTPStatusError"] == 1
     assert consecutive_failures("t1") == 1
 
 
@@ -338,6 +338,31 @@ class TestExtractionMetrics:
         snap = snapshot()
         assert snap["extract_enqueue_total"] == {}
         assert snap["extract_task_failure_total"] == {}
+
+
+class TestHeartbeatReflectionMetrics:
+    def setup_method(self):
+        from app.memory.metrics import reset_all
+
+        reset_all()
+
+    def test_record_heartbeat_reflection_metrics(self):
+        from app.memory.metrics import record_heartbeat_reflection, render_prometheus, snapshot
+
+        record_heartbeat_reflection("processed")
+        record_heartbeat_reflection("candidate_created")
+        record_heartbeat_reflection("extracted_to_t2")
+        record_heartbeat_reflection("skipped_low_signal")
+
+        snap = snapshot()
+        assert snap["heartbeat_reflection_total"] == {
+            "processed": 1,
+            "candidate_created": 1,
+            "extracted_to_t2": 1,
+            "skipped_low_signal": 1,
+        }
+        text = render_prometheus()
+        assert 'hive_memory_heartbeat_reflection_total{outcome="processed"} 1' in text
         assert snap["extract_replay"] == {"scheduled": 0, "skipped_stale": 0, "failed": 0}
 
     def test_snapshot_includes_extraction_keys_even_when_empty(self):

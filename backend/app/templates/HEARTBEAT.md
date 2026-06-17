@@ -178,16 +178,12 @@ Action: ❌ DO NOT append duplicate. Dream will consolidate — don't pile on.
 </t3_entry_rules>
 
 <phase_3_log>
-Append to `evolution/lineage.md`:
+The `evolution/` directory is platform-managed; direct file writes, edits, and deletes are not allowed. Do not use filesystem write/edit/delete tools for it.
+The runtime records the heartbeat outcome into `evolution/` after your reply by updating `evolution/lineage.md` and `evolution/scorecard.md`.
+Runtime curation audit ids use the `CUR-` prefix.
 
-```
-### CUR-{YYYY-MM-DD-HH:MM}
-- Curated: {N entries} (categories: feedback=X, strategy=Y, blocked=Z)
-- Skipped: {N entries} (reasons: low-weight / session-local / duplicate)
-- Score: {0-10, your self-assessment of this tick's signal quality}
-```
-
-Update `evolution/scorecard.md` counters to match.
+In your final reply, include a concise curation summary and the required
+`[OUTCOME:...] [SCORE:...]` tags so the runtime can record the tick.
 </phase_3_log>
 
 <scope_and_boundaries>

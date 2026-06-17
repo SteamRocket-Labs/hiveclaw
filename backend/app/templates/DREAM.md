@@ -154,16 +154,9 @@ or recent soul.md additions), do NOT re-promote. Check before writing.
 <phase_4_index>
 1. Update `memory/INDEX.md` with one-line summaries of each memory file's
    content + current entry count.
-2. Log this dream cycle to `evolution/lineage.md` using the canonical
-   format:
-
-```
-### DREAM-{YYYY-MM-DD-HH:MM}
-- Consolidated: {files touched, entries before→after}
-- Promoted to soul: {N entries, or "none"}
-- Cleanup: {what was removed/archived}
-- Skipped: {preservation-flagged entries left intact}
-```
+2. The `evolution/` directory is platform-managed; direct file writes, edits, and deletes are not allowed. Do not use filesystem write/edit/delete tools
+   for it. The runtime records dream-cycle outcomes into `evolution/` after the cycle using the structured consolidation result and summary.
+   Runtime dream audit ids use the `DREAM-` prefix.
 </phase_4_index>
 
 ## Constraints

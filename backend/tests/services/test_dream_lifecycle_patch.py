@@ -4,7 +4,7 @@ Acceptance:
 - Merge creates superseded edges.
 - Contradiction creates contradiction or supersession edges.
 - Cap cleanup archives / de-indexes entries instead of silent deletion.
-- Hindsight only syncs active entries.
+- Only active T3 files participate in native recall/indexing.
 
 Dream is the Reconsolidator: its decisions become lifecycle patches —
 retired lines move to memory/archive.md (reversible, MD-first evidence)
@@ -165,7 +165,7 @@ def test_cap_cleanup_archives_instead_of_deleting(agent_env) -> None:
         "dream gate hours",
         "extractor cursor files",
         "backfill session ids",
-        "hindsight bank ids",
+        "memory adapter ids",
         "bm25 tokenizer bigrams",
         "jaccard dedup floors",
         "lifecycle sketch expiry",
@@ -279,13 +279,13 @@ def test_archive_file_stays_out_of_active_recall(agent_env) -> None:
     assert hits == []
 
 
-def test_hindsight_only_syncs_active_t3_files() -> None:
-    """The hindsight collector reads exactly the five active T3 files —
-    archive.md must never be a sync source."""
-    from app.memory import hindsight_sync
+def test_native_t3_active_file_set_excludes_archive() -> None:
+    """Native T3 active files exclude archive.md."""
+    from app.memory.md_store import T3_FILE_SPECS
 
-    assert "archive.md" not in hindsight_sync._T3_FILES
-    assert set(hindsight_sync._T3_FILES) == {
+    active_files = {spec["filename"] for spec in T3_FILE_SPECS}
+    assert "archive.md" not in active_files
+    assert active_files == {
         "feedback.md",
         "knowledge.md",
         "strategies.md",

@@ -1091,7 +1091,7 @@ ruff check app/services/skill_distiller.py app/services/evolution_validation.py 
 - `CapabilityGate` 把 `update_memory/retire_memory` 映射到 `agent.memory.write`;tool registry/catalog 把它们归入 Memory 分组;runtime memory section 与 `memory-guide` system skill 已同步。
 
 **代码证据**
-- `backend/app/tools/handlers/memory.py`:新增两个敏感写工具;update 失败时会回滚 replacement,避免新旧两个 active facts 并存;mutation 后 best-effort 同步 Hindsight。
+- `backend/app/tools/handlers/memory.py`:新增两个敏感写工具;update 失败时会回滚 replacement,避免新旧两个 active facts 并存;mutation 后 best-effort 走可选增强 adapter。
 - `backend/app/memory/t3_store.py`:新增 exact-id `retire_t3_entries_by_id()`;扩展 T3 append 的 supersession metadata 与 dedup exclude。
 - `backend/app/memory/md_store.py`:near-duplicate hits 增加 `id`,支撑 update 排除旧 entry。
 - `backend/app/memory/lifecycle_store.py`:active lifecycle 写入结构化 `parent_id/supersedes/superseded_by`,不再只塞进 metadata 文本。
@@ -2282,14 +2282,14 @@ pytest backend/tests/tools/test_deep_research_handler.py \
 **范围**
 - 全量 backend pytest 暴露的旧测试/契约漂移全部收口,不留下“聚焦测试绿、全量测试红”的断点。
 - Kernel 对旧 `RuntimeConfig` 测试桩与外部调用保持兼容:`turn_token_budget` 缺省时按 `None` 处理,不因新增预算字段崩溃。
-- Hindsight trigger policy 文档与 allowlist 同步新增 governed memory mutation tools;`update_memory` / `retire_memory` 后的 active/archive 边界可立即同步,且不再被策略测试判为未登记旁路。
+- 可选增强 adapter trigger policy 文档与 allowlist 同步新增 governed memory mutation tools;`update_memory` / `retire_memory` 后的 active/archive 边界可立即同步,且不再被策略测试判为未登记旁路。
 - memory-guide 中 supersession metadata 不再被 skill capability scanner 误判成未声明工具名;subagent generation、extract/session/dream/skill-distiller 测试桩同步到当前 usage-aware helper 签名。
 - migration single-head contract 更新到当前链尾 `web_chat_active_run_unique_0612`,与本轮新增 token usage / active web-chat unique migrations 一致。
 
 **代码证据**
 - `backend/app/kernel/engine.py`:读取 `turn_token_budget` 改为 `getattr(runtime_config, "turn_token_budget", None)`。
-- `backend/app/memory/hindsight_sync.py`:canonical trigger doc 增加 `tools/handlers/memory.py` governed mutation window。
-- `backend/tests/services/test_hindsight_sync_strategy.py`:allowlist 与 docstring 断言同步新增 governed memory mutation tools。
+- `backend/app/memory/enhancement.py`:canonical trigger boundary 保留 governed mutation window。
+- `backend/tests/architecture/test_native_t3_memory_boundary.py`:断言 T3 链路不再硬编码具体外部记忆程序。
 - `backend/app/templates/system_skills/memory-guide/SKILL.md`:把 backtick metadata key 改为普通 supersession 描述,避免 capability scanner 误报。
 - `backend/tests/migrations/test_workflow_migration.py`:single-head 断言更新到当前 Alembic head。
 

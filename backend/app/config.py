@@ -177,15 +177,6 @@ class Settings(BaseSettings):
     COORDINATION_BACKEND: str = "postgres"
     OPENVIKING_API_KEY: str = ""
 
-    # Hindsight memory backend (read-side accelerator for T3 MD; optional)
-    # Phase A: single instance + global API key; isolation via bank_id naming
-    # (hive-t{tenant}-a{agent}). When upstream PR #855 merges, migrate to
-    # Phase B (per-tenant key + PG schema isolation).
-    HINDSIGHT_URL: str = ""
-    HINDSIGHT_API_KEY: str = ""
-    HINDSIGHT_ENABLED: bool = False
-    HINDSIGHT_TIMEOUT_SECONDS: float = 10.0
-
     # Tavily Search API
     TAVILY_API_KEY: str = ""
 

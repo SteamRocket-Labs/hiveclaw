@@ -135,6 +135,7 @@ _prompt_cache_input_tokens_total: dict[str, int] = defaultdict(int)
 _invocation_spans_total: dict[tuple[str, str], int] = defaultdict(int)  # (span_type, status)
 _invocation_span_duration_ms: dict[tuple[str, str], LatencyWindow] = defaultdict(LatencyWindow)
 _invocation_tokens_total: dict[tuple[str, str, str], int] = defaultdict(int)  # (provider, model, source)
+_heartbeat_reflection_total: dict[str, int] = defaultdict(int)
 
 _EXTRACT_FAILURE_RATIO_ALERT_THRESHOLD = 0.20
 _EXTRACT_FAILURE_RATIO_MIN_EVENTS = 5
@@ -243,6 +244,7 @@ def snapshot() -> dict[str, Any]:
         "invocation_tokens_total": {
             f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _invocation_tokens_total.items()
         },
+        "heartbeat_reflection_total": dict(_heartbeat_reflection_total),
     }
 
 
@@ -678,6 +680,13 @@ def render_prometheus() -> str:
             for (provider, model, source), count in _invocation_tokens_total.items()
         ],
     )
+    _append_prometheus_metric(
+        lines,
+        name="hive_memory_heartbeat_reflection_total",
+        metric_type="counter",
+        help_text="Total heartbeat reflection learning outcomes.",
+        samples=[({"outcome": outcome}, count) for outcome, count in _heartbeat_reflection_total.items()],
+    )
 
     return "\n".join(lines) + "\n"
 
@@ -717,6 +726,7 @@ def reset_all() -> None:
     _invocation_spans_total.clear()
     _invocation_span_duration_ms.clear()
     _invocation_tokens_total.clear()
+    _heartbeat_reflection_total.clear()
 
 
 # ── Extraction recorders (P0-2c) ──────────────────────────────
@@ -749,6 +759,11 @@ def record_extract_replay_outcome(*, scheduled: int, skipped_stale: int, failed:
     _extract_replay_scheduled_total += scheduled
     _extract_replay_skipped_stale_total += skipped_stale
     _extract_replay_failed_total += failed
+
+
+def record_heartbeat_reflection(outcome: str) -> None:
+    normalized = str(outcome or "unknown").strip().lower() or "unknown"
+    _heartbeat_reflection_total[normalized] += 1
 
 
 # ── Frozen prefix recorders (P1-1b) ───────────────────────────
@@ -846,7 +861,7 @@ class RecallTimer:
     """Async context manager that records latency + outcome on exit.
 
     Usage:
-        async with RecallTimer("hindsight", tenant_hex) as t:
+        async with RecallTimer("native", tenant_hex) as t:
             results = await do_recall()
             t.observed_results = len(results)
     """

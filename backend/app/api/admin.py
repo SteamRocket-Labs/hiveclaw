@@ -4,7 +4,6 @@ Provides endpoints for platform admins to manage companies, view stats,
 and control platform-level settings.
 """
 
-import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta
@@ -36,13 +35,7 @@ from app.services.runtime_reconciliation import (
 from app.services.workflow_ops import WorkflowOpsConflict, WorkflowOpsService
 from app.services.workflow_runtime_service import WorkflowRunNotFound
 
-logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-# Module-level strong references to delayed-close tasks so asyncio.create_task's
-# weak-ref policy doesn't GC them before the 30s drain window completes.
-_pending_delayed_closes: set = set()
 
 
 # ─── Schemas ────────────────────────────────────────────
@@ -210,13 +203,13 @@ async def create_company(
     )
 
 
-_ALLOWED_MEMORY_BACKENDS = {"md", "hindsight", None}
+_ALLOWED_NATIVE_MEMORY_VALUES = {"md", None}
 
 
 class MemoryBackendUpdate(BaseModel):
     memory_backend: str | None = Field(
         default=None,
-        description="One of 'md', 'hindsight', or null (unset → env fallback).",
+        description="Only 'md' or null are accepted. Native T3 Markdown is the memory backend.",
     )
 
 
@@ -227,22 +220,16 @@ async def set_company_memory_backend(
     current_user: User = Depends(require_role("platform_admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Flip a tenant's memory_backend preference.
+    """Persist the tenant's native Markdown memory preference.
 
-    Valid values:
-    - "md"        — force MDBackend (T3 MD + BM25)
-    - "hindsight" — force HindsightBackend (requires HINDSIGHT_ENABLED=true + URL)
-    - null        — tenant-level override unset; env MEMORY_BACKEND applies
-
-    After switching to hindsight, it's recommended to run:
-        python -m app.admin.rebuild_hindsight --tenant-id <company_id>
-    to backfill the bank from existing T3 markdown.
+    This endpoint is kept for admin compatibility, but Hive no longer exposes a
+    concrete external T3 memory backend switch.
     """
     del current_user
-    if payload.memory_backend not in _ALLOWED_MEMORY_BACKENDS:
+    if payload.memory_backend not in _ALLOWED_NATIVE_MEMORY_VALUES:
         raise HTTPException(
             status_code=400,
-            detail=f"memory_backend must be one of {sorted(x or 'null' for x in _ALLOWED_MEMORY_BACKENDS)}",
+            detail="memory_backend must be 'md' or null",
         )
 
     result = await db.execute(select(Tenant).where(Tenant.id == company_id))
@@ -252,33 +239,6 @@ async def set_company_memory_backend(
 
     tenant.memory_backend = payload.memory_backend
     await db.flush()
-
-    # Drop cached backend instance so next request builds a fresh one for the
-    # new choice. We deliberately DO NOT close the httpx client inline — other
-    # coroutines (search/retain_batch) may still hold a reference mid-flight
-    # and closing would crash their in-flight requests. Instead, schedule a
-    # delayed close so those in-flight calls have time to complete (timeout
-    # ceiling in HindsightBackend is 10s; 30s gives ample headroom).
-    from app.memory.backend import _backend_cache
-    cache_key = f"hindsight:{company_id.hex}"
-    stale = _backend_cache.pop(cache_key, None)
-    if stale is not None:
-        close = getattr(stale, "close", None)
-        if close is not None:
-            async def _delayed_close(backend):
-                import asyncio
-                await asyncio.sleep(30)
-                try:
-                    await backend.close()
-                except Exception as exc:
-                    logger.warning(
-                        "[admin] delayed close of stale backend for %s failed: %s",
-                        company_id, exc,
-                    )
-            import asyncio
-            task = asyncio.create_task(_delayed_close(stale))
-            _pending_delayed_closes.add(task)
-            task.add_done_callback(_pending_delayed_closes.discard)
 
     return {"ok": True, "memory_backend": tenant.memory_backend}
 

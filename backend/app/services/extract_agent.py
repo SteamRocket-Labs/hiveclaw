@@ -846,14 +846,27 @@ async def consolidate_ledger_findings_to_t2_with_llm(
 # ── ExtractAgent (per-agent state management) ──
 
 _EXTRACT_CURSOR_FILENAME = ".extract_cursor.json"
+_SOURCE_SCOPED_EXTRACT_CURSOR_SOURCES = {"heartbeat_reflection"}
 
 
-def _extract_cursor_path(agent_id: uuid.UUID) -> Path:
-    return t2_dir(Path(get_settings().AGENT_DATA_DIR), agent_id) / _EXTRACT_CURSOR_FILENAME
+def _extract_cursor_key(agent_id: uuid.UUID, source: str) -> str:
+    normalized = (source or "").strip().lower()
+    if normalized in _SOURCE_SCOPED_EXTRACT_CURSOR_SOURCES:
+        return f"{agent_id}:{normalized}"
+    return str(agent_id)
 
 
-def _read_extract_cursor(agent_id: uuid.UUID) -> int:
-    path = _extract_cursor_path(agent_id)
+def _extract_cursor_path(agent_id: uuid.UUID, source: str = "runtime") -> Path:
+    normalized = (source or "").strip().lower()
+    if normalized in _SOURCE_SCOPED_EXTRACT_CURSOR_SOURCES:
+        filename = f".extract_cursor.{normalized}.json"
+    else:
+        filename = _EXTRACT_CURSOR_FILENAME
+    return t2_dir(Path(get_settings().AGENT_DATA_DIR), agent_id) / filename
+
+
+def _read_extract_cursor(agent_id: uuid.UUID, source: str = "runtime") -> int:
+    path = _extract_cursor_path(agent_id, source)
     if not path.exists():
         return 0
     try:
@@ -867,8 +880,8 @@ def _read_extract_cursor(agent_id: uuid.UUID) -> int:
         return 0
 
 
-def _write_extract_cursor(agent_id: uuid.UUID, message_index: int) -> None:
-    path = _extract_cursor_path(agent_id)
+def _write_extract_cursor(agent_id: uuid.UUID, message_index: int, source: str = "runtime") -> None:
+    path = _extract_cursor_path(agent_id, source)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "message_index": max(0, int(message_index)),
@@ -877,9 +890,9 @@ def _write_extract_cursor(agent_id: uuid.UUID, message_index: int) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _delete_extract_cursor(agent_id: uuid.UUID) -> None:
+def _delete_extract_cursor(agent_id: uuid.UUID, source: str = "runtime") -> None:
     try:
-        _extract_cursor_path(agent_id).unlink()
+        _extract_cursor_path(agent_id, source).unlink()
     except FileNotFoundError:
         return
     except OSError as exc:
@@ -914,7 +927,7 @@ class ExtractAgent:
         If another extraction is in progress for this agent, stashes
         the request and runs a trailing extraction after the current one.
         """
-        key = str(agent_id)
+        key = _extract_cursor_key(agent_id, source)
         msgs = messages or []
 
         if not msgs:
@@ -927,7 +940,7 @@ class ExtractAgent:
         # Apply cursor — only process messages after last extraction
         cursor = self._cursors.get(key)
         if cursor is None:
-            cursor = _read_extract_cursor(agent_id)
+            cursor = _read_extract_cursor(agent_id, source)
             self._cursors[key] = cursor
         new_msgs = msgs[cursor:]
         if not new_msgs:
@@ -950,7 +963,7 @@ class ExtractAgent:
             await self._do_extract(agent_id, new_msgs, tenant_id, agent_name, source)
             # Advance cursor
             self._cursors[key] = len(msgs)
-            _write_extract_cursor(agent_id, len(msgs))
+            _write_extract_cursor(agent_id, len(msgs), source)
         finally:
             self._in_progress[key] = False
 
@@ -997,6 +1010,13 @@ class ExtractAgent:
         if extractions:
             written = await _append_to_learnings_with_llm(agent_id, extractions, tenant_id=tenant_id, source=source)
             logger.info("[Extractor] Wrote %d items to T2 for %s", written, agent_id)
+            if source == "heartbeat_reflection" and written:
+                try:
+                    from app.memory.metrics import record_heartbeat_reflection
+
+                    record_heartbeat_reflection("extracted_to_t2")
+                except Exception:
+                    pass
 
             # Emit MEMORY_EXTRACTED hook → monitoring/debug notification
             try:
@@ -1071,7 +1091,7 @@ class ExtractAgent:
                 )
                 return False
 
-        key = str(agent_id)
+        key = _extract_cursor_key(agent_id, source)
         task = asyncio.create_task(
             self.extract(
                 agent_id=agent_id,

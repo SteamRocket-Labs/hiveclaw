@@ -24,7 +24,7 @@ _SIGNAL_TYPES = {
     "verification_failure",
     "repeated_task_pattern",
 }
-_CONTAINERS = {"none", "session_learning", "memory_candidate", "skill_candidate", "workflow_candidate"}
+_CONTAINERS = {"none", "session_learning", "memory_candidate", "soul_candidate", "skill_candidate", "workflow_candidate"}
 _PROMOTION_INTENTS = {"none", "project_only", "candidate", "defer", "reject"}
 _LEARNING_BRAIN_MAX_TOKENS = 8192
 
@@ -97,13 +97,14 @@ def build_learning_brain_messages(
         "- Do not convert one-off context, politeness, dates, IDs, credentials, or current work state into durable learning.\n"
         "- Prefer low_signal when the correction is ambiguous.\n"
         "- A skill_candidate requires a reusable procedure; a workflow_candidate requires deterministic repeated steps.\n"
+        "- A soul_candidate requires repeated or explicit identity-level behavior evidence; it is never a direct write.\n"
         "- session_learning means next-turn projection only, not durable T2/T3 promotion.\n\n"
         "Return raw JSON only with exactly these keys:\n"
         "{"
         '"signal_type":"low_signal|user_preference_correction|workflow_correction|verification_failure|repeated_task_pattern",'
         '"lesson":"",'
         '"confidence":0.0,'
-        '"container":"none|session_learning|memory_candidate|skill_candidate|workflow_candidate",'
+        '"container":"none|session_learning|memory_candidate|soul_candidate|skill_candidate|workflow_candidate",'
         '"promotion_intent":"none|project_only|candidate|defer|reject",'
         '"rationale":"",'
         '"evidence_refs":["message:<index>","metadata:<key>"],'

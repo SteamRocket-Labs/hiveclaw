@@ -150,7 +150,7 @@ T0 raw logs  ← t0_logger       (behavior/system/artifacts, cursor-based lifecy
 
 Heartbeat cadence is configuration-backed: `evolution_daemon` dispatches every `HEARTBEAT_TICK_SECONDS` (default 60s), and runnable agents are eligible on the managed `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` cadence (default 120 minutes). Subsequent heartbeat ticks skip when no new T2 entries exist. Full Dream is a slower identity operation: at least 24 hours plus either 3 sessions or 2 productive heartbeats. Soft Dream only does deterministic T3 maintenance and index refresh when T3 is under pressure.
 
-Files are the source of truth for human-readable memory. The active T3 prose is Markdown; `lifecycle.json` carries evidence, sensitivity, lifecycle state, access telemetry, and reinforcement counters; `memory/INDEX.md` is a lightweight navigation manifest, not a second memory store. Optional Hindsight sync is a derived read-side accelerator and can be rebuilt from Markdown.
+Files are the source of truth for human-readable memory. The active T3 prose is Markdown; `lifecycle.json` carries evidence, sensitivity, lifecycle state, access telemetry, and reinforcement counters; `memory/INDEX.md` is a lightweight navigation manifest, not a second memory store. No external T3 memory enhancement program is configured by default.
 
 The pyramid is only the storage path. Runtime behavior is governed by the **Memory Control Plane**:
 

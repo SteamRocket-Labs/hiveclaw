@@ -7,7 +7,7 @@ through :func:`append_t3_memory_candidate`:
     prepare_memory_write        (privacy / form / lifecycle metadata gate)
       -> find_similar_t3_entries (semantic near-dedup)
       -> append_t3_entry         (MD write + lifecycle record + index rebuild)
-      -> sync_t3_to_hindsight    (derived read-side accelerator, best effort)
+      -> sync_t3_to_memory_enhancement (optional no-op adapter boundary)
 
 Raw ``write_file`` / ``edit_file`` access under ``memory/`` is refused at the
 workspace tool layer, so no caller can bypass this gate.
@@ -319,13 +319,13 @@ async def append_t3_memory_candidate(
         metadata=metadata,
     )
 
-    # 4. Derived read-side accelerator — best effort, never blocks the write.
+    # 4. Optional enhancement adapter boundary — best effort, never blocks the write.
     try:
-        from app.memory import hindsight_sync
+        from app.memory.enhancement import sync_t3_to_memory_enhancement
 
-        await hindsight_sync.sync_t3_to_hindsight(agent_id, tenant_id, data_root=data_root)
-    except Exception as exc:  # noqa: BLE001 — derived index failure must not fail durable truth
-        logger.warning("[T3Store] hindsight sync failed (non-fatal) for %s: %s", agent_id, exc)
+        await sync_t3_to_memory_enhancement(agent_id, tenant_id, data_root=data_root)
+    except Exception as exc:  # noqa: BLE001 - optional enhancement must not fail durable truth
+        logger.warning("[T3Store] memory enhancement sync failed (non-fatal) for %s: %s", agent_id, exc)
 
     spec = t3_spec_for_category(decision.category)
     return T3AppendResult(
@@ -342,7 +342,7 @@ async def append_t3_memory_candidate(
 #
 # Retirement de-indexes from active recall and archives in Markdown; it never
 # physically deletes evidence. Active T3 files stay clean so every reader
-# (retriever, manifest, prompt injection, hindsight) naturally sees only
+# (retriever, manifest, prompt injection) naturally sees only
 # active entries; memory/archive.md plus lifecycle.json hold the audit trail.
 
 

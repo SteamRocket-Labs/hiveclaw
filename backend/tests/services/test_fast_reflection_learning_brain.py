@@ -68,6 +68,32 @@ def test_parse_learning_brain_json_projects_rich_decision_to_classification() ->
     ]
 
 
+def test_parse_learning_brain_json_accepts_soul_candidate_container() -> None:
+    from app.services.fast_reflection_learning_brain import parse_learning_brain_json
+
+    raw = json.dumps(
+        {
+            "signal_type": "user_preference_correction",
+            "lesson": "User has repeatedly required plain Chinese responses without emoji.",
+            "confidence": 0.94,
+            "container": "soul_candidate",
+            "promotion_intent": "candidate",
+            "rationale": "Repeated explicit behavior preference with stable identity-level impact.",
+            "evidence_refs": ["message:2", "message:9"],
+            "boundary_checks": {
+                "not_one_off": True,
+                "no_credentials": True,
+                "not_direct_memory_write": True,
+            },
+        }
+    )
+
+    result = parse_learning_brain_json(raw)
+
+    assert result is not None
+    assert result["learning_brain_decision"]["container"] == "soul_candidate"
+
+
 def test_parse_learning_brain_json_suppresses_low_signal() -> None:
     from app.services.fast_reflection_learning_brain import parse_learning_brain_json
 

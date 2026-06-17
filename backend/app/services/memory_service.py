@@ -593,20 +593,6 @@ async def persist_runtime_memory(
             if summary and session_id:
                 await _save_session_summary(session_id, summary, tenant_id)
 
-            config = await _get_memory_config(tenant_id)
-            if config.get("extract_to_viking", False) and summary:
-                from app.services import viking_client
-
-                if viking_client.is_configured():
-                    await viking_client.add_resource(
-                        content=summary,
-                        to=f"viking://conversations/{agent_id}/{session_id or 'runtime'}",
-                        tenant_id=str(tenant_id),
-                        agent_id=str(agent_id),
-                        reason="conversation_summary",
-                    )
-                    logger.info("Summary written to OpenViking for session %s", session_id or "runtime")
-
             return  # success
 
         except Exception as exc:

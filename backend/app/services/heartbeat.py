@@ -54,10 +54,11 @@ When posting to the plaza during heartbeat, be selective:
 _HEARTBEAT_STRATEGY_SUFFIX = """
 
 ## Strategy Logging Scope
-evolution/lineage.md stores policy-level learning and durable strategy changes.
-Keep entries focused: strategy choice, action, outcome, learning, and next focus.
-Do NOT turn lineage into a raw task transcript.
-Avoid raw task transcripts or tool-by-tool logs — those belong in T0.
+evolution/lineage.md is an audit and candidate ledger, not the semantic memory body.
+Keep entries focused on source, lane, outcome, score, and audit summary.
+Do NOT turn lineage into raw memory, raw task transcripts, or hand-written durable
+learning. Model reflection enters memory through Learning Brain / Extractor
+candidate lanes; the platform governs final writes.
 """
 
 
@@ -643,6 +644,160 @@ def _heartbeat_action_label(outcome_type: str, summary: str) -> str:
     return "none"
 
 
+_HEARTBEAT_REFLECTION_MAX_REPLY_CHARS = 48_000
+_HEARTBEAT_REFLECTION_MAX_CONTEXT_MESSAGES = 24
+
+
+def _truncate_heartbeat_reflection_text(text: str, max_chars: int = _HEARTBEAT_REFLECTION_MAX_REPLY_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars
+    return (
+        text[:head_chars]
+        + "\n...[truncated middle of heartbeat reflection; preserved head and final conclusion]...\n"
+        + text[-tail_chars:]
+    )
+
+
+def _should_route_heartbeat_reflection(outcome_type: str, reply: str | None) -> tuple[bool, str | None]:
+    normalized = (outcome_type or "").strip().lower()
+    text = (reply or "").strip()
+    if not text:
+        return False, "empty_reply"
+    if normalized == "noop":
+        return False, "low_signal_noop"
+    if normalized not in {"action_taken", "curated", "failure", "crash"}:
+        return False, "unsupported_outcome"
+    return True, None
+
+
+def _build_heartbeat_reflection_messages(
+    *,
+    runtime_messages: list[dict] | None,
+    reply: str | None,
+    metadata: dict | None = None,
+) -> list[dict]:
+    """Build full-enough reflection input for Learning Brain / Extractor.
+
+    `metadata` is intentionally not copied into message content. Source refs and
+    governance context travel in hook metadata, while the LLM receives the
+    model-authored heartbeat reflection and recent tool/chat context.
+    """
+
+    del metadata
+    messages: list[dict] = []
+    for raw in (runtime_messages or [])[-_HEARTBEAT_REFLECTION_MAX_CONTEXT_MESSAGES:]:
+        if not isinstance(raw, dict):
+            continue
+        role = str(raw.get("role") or "unknown")
+        content = raw.get("content")
+        if isinstance(content, str):
+            content = _truncate_heartbeat_reflection_text(content)
+        messages.append(
+            {
+                key: value
+                for key, value in {
+                    "role": role,
+                    "content": content,
+                    "tool_calls": raw.get("tool_calls"),
+                    "tool_call_id": raw.get("tool_call_id"),
+                }.items()
+                if value is not None
+            }
+        )
+
+    final_reply = _truncate_heartbeat_reflection_text(reply or "")
+    if final_reply and not (
+        messages
+        and messages[-1].get("role") == "assistant"
+        and str(messages[-1].get("content") or "") == final_reply
+    ):
+        messages.append({"role": "assistant", "content": final_reply})
+    return messages
+
+
+async def _route_heartbeat_reflection_learning(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    agent_name: str,
+    session_id: uuid.UUID | str,
+    runtime_task_id: str | None,
+    assistant_message_id: str | None,
+    runtime_messages: list[dict] | None,
+    reply: str | None,
+    outcome_type: str,
+    outcome_lane: str,
+    score: int | None,
+    await_hook: bool = False,
+) -> dict[str, object]:
+    """Route non-noop heartbeat reflection into the LLM-primary learning lanes."""
+
+    from app.memory.metrics import record_heartbeat_reflection
+
+    should_route, skip_reason = _should_route_heartbeat_reflection(outcome_type, reply)
+    if not should_route:
+        record_heartbeat_reflection("skipped_low_signal")
+        return {"status": "skipped", "reason": skip_reason or "low_signal"}
+
+    source_refs = [f"heartbeat_session:{session_id}"]
+    if runtime_task_id:
+        source_refs.append(f"runtime_task:{runtime_task_id}")
+    if assistant_message_id:
+        source_refs.append(f"chat_message:{assistant_message_id}")
+
+    messages = _build_heartbeat_reflection_messages(
+        runtime_messages=runtime_messages,
+        reply=reply,
+        metadata={"source_refs": source_refs},
+    )
+    if not messages:
+        record_heartbeat_reflection("skipped_low_signal")
+        return {"status": "skipped", "reason": "empty_messages"}
+
+    record_heartbeat_reflection("processed")
+    from app.runtime import hooks as runtime_hooks
+
+    hook_kwargs = {
+        "agent_id": agent_id,
+        "session_id": str(session_id),
+        "messages": messages,
+        "source": "heartbeat_reflection",
+        "metadata": {
+            "tenant_id": str(tenant_id) if tenant_id else None,
+            "agent_name": agent_name or "Agent",
+            "heartbeat_outcome": outcome_type,
+            "heartbeat_outcome_lane": outcome_lane,
+            "heartbeat_score": score,
+            "source_refs": source_refs,
+            "runtime_task_id": runtime_task_id,
+            "assistant_message_id": assistant_message_id,
+            "source": "heartbeat_reflection",
+            "final_response": (reply or "")[:2000],
+            "learning_boundary": "llm_judges_platform_governs",
+        },
+    }
+
+    async def _emit() -> None:
+        await runtime_hooks.emit_hook(runtime_hooks.HookEvent.RESPONSE_COMPLETE, **hook_kwargs)
+
+    if await_hook:
+        await _emit()
+        return {"status": "emitted", "source_refs": source_refs}
+
+    task = asyncio.create_task(_emit())
+
+    def _on_done(done_task: asyncio.Task[None]) -> None:
+        try:
+            done_task.result()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Heartbeat] Background reflection learning hook failed for {}: {}", agent_id, exc)
+
+    task.add_done_callback(_on_done)
+    return {"status": "scheduled", "source_refs": source_refs}
+
+
 _SKILL_OPPORTUNITY_COOLDOWN_TICKS = 5  # ~3.75 hours at 45-minute ticks
 _SKILL_OPPORTUNITY_STATE_FILENAME = "skill_opportunity_cooldown.json"
 
@@ -927,7 +1082,8 @@ async def _build_evolution_context(
                 "Instead of the normal heartbeat protocol, do these bootstrapping steps:\n"
                 "1. **Read soul.md** — understand your identity and role\n"
                 "2. **List and read your skills/** — understand your capabilities\n"
-                "3. **Write to evolution/lineage.md** with your bootstrap observations\n"
+                "3. Summarize your bootstrap observations in your final reply; "
+                "runtime records the heartbeat outcome into evolution/lineage.md after the tick\n"
                 "6. Output: [OUTCOME:action_taken] [SCORE:3]\n\n"
                 "After bootstrapping, future heartbeats will follow the normal 4-phase protocol."
             )
@@ -1771,18 +1927,20 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 logger.warning("[Heartbeat] Failed to mark T2 entries absorbed for {}: {}", agent_id, _t2_absorb_err)
 
             # Save assistant reply to Reflection Session
+            assistant_message_id: str | None = None
             async with tenant_scoped_session(tenant_id) as db2:
-                db2.add(
-                    ChatMessage(
-                        agent_id=agent_id,
-                        tenant_id=tenant_id,
-                        conversation_id=str(session_id),
-                        role="assistant",
-                        content=reply or "",
-                        user_id=agent.creator_id,
-                        participant_id=agent_participant_id,
-                    )
+                assistant_message = ChatMessage(
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    conversation_id=str(session_id),
+                    role="assistant",
+                    content=reply or "",
+                    user_id=agent.creator_id,
+                    participant_id=agent_participant_id,
                 )
+                db2.add(assistant_message)
+                await db2.flush()
+                assistant_message_id = str(assistant_message.id)
                 await db2.commit()
 
             # Parse structured outcome from LLM reply
@@ -1816,6 +1974,40 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     "session_id": str(session_id),
                 },
             )
+
+            try:
+                reflection_result = await _route_heartbeat_reflection_learning(
+                    agent_id=agent_id,
+                    tenant_id=agent.tenant_id,
+                    agent_name=agent.name,
+                    session_id=session_id,
+                    runtime_task_id=runtime_task_id,
+                    assistant_message_id=assistant_message_id,
+                    runtime_messages=runtime_messages,
+                    reply=reply,
+                    outcome_type=outcome_type,
+                    outcome_lane=outcome_lane,
+                    score=heartbeat_score,
+                )
+                if reflection_result.get("status") in {"emitted", "scheduled"}:
+                    await log_activity(
+                        agent_id,
+                        "heartbeat",
+                        "Heartbeat reflection routed to Learning Brain",
+                        detail={
+                            "activity_kind": "llm_reflection_extracted",
+                            "source": "heartbeat_reflection",
+                            "outcome_type": outcome_type,
+                            "score": heartbeat_score,
+                            "source_refs": reflection_result.get("source_refs") or [],
+                        },
+                    )
+            except Exception as _reflection_err:
+                logger.warning(
+                    "[Heartbeat] Reflection learning route failed for {}: {}",
+                    agent_id,
+                    _reflection_err,
+                )
 
             # Server-side evolution file writeback — closes the feedback loop
             # Runs in thread pool to avoid blocking the event loop (flock is blocking I/O)
@@ -1913,23 +2105,20 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
             except Exception as _nrm_err:
                 logger.debug("[Heartbeat] T3 normalization failed (non-fatal): {}", _nrm_err)
 
-            # Sync normalized T3 MD to Hindsight bank (no-op when backend=md).
-            # Runs AFTER normalization so cursor mtime reflects the canonical state.
+            # Optional enhancement adapter boundary. Runs after normalization
+            # and is currently a no-op; native T3 Markdown is the source.
             try:
-                from app.memory.hindsight_sync import sync_t3_to_hindsight
+                from app.memory.enhancement import sync_t3_to_memory_enhancement
 
-                synced = await sync_t3_to_hindsight(agent_id, agent.tenant_id)
-                if synced:
+                sync_result = await sync_t3_to_memory_enhancement(agent_id, agent.tenant_id)
+                if sync_result.synced:
                     logger.info(
-                        "[Heartbeat] Hindsight sync: {} T3 items (agent={})",
-                        synced,
+                        "[Heartbeat] Memory enhancement sync: {} T3 items (agent={})",
+                        sync_result.synced,
                         agent_id,
                     )
             except Exception as _hs_err:
-                # sync_t3_to_hindsight already has its own try/except and only
-                # returns here on truly unexpected paths (import error, etc).
-                # Warning-level so ops actually see these regressions.
-                logger.warning("[Heartbeat] Hindsight sync outer guard tripped: {}", _hs_err)
+                logger.warning("[Heartbeat] Memory enhancement sync outer guard tripped: {}", _hs_err)
 
             # Emit HEARTBEAT_TICK_END hook → T0 log
             try:

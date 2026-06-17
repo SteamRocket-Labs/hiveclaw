@@ -23,7 +23,7 @@ The strongest architecture rule is:
 
 ```text
 Markdown is the durable truth source.
-Indexes, vector stores, Hindsight, graph views, manifests, and UI read models are derived accelerators.
+Indexes, vector stores, graph views, manifests, UI read models, and future enhancement adapters are derived surfaces.
 Every derived result must be rebuildable from Markdown plus runtime artifacts.
 ```
 
@@ -598,7 +598,7 @@ Memory Control Plane owns:
 - activation policy
 - promotion router
 - retention / retirement
-- Hindsight sync as derived index
+- optional enhancement adapter boundary (currently no-op)
 - audit / replay / eval evidence
 
 ## 6. PromotionRouter
@@ -734,17 +734,17 @@ agent calls load_memory(ids) or read_file(path)
 runtime returns full Markdown with source refs
 ```
 
-## 9. Hindsight And Other Indexes
+## 9. Enhancement Adapters And Other Indexes
 
-Hindsight remains a read-side accelerator over T3 Markdown.
+No external T3 memory enhancement program is configured by default.
 
 Rules:
 
 - T3 Markdown is source of truth.
-- Hindsight store is not a write path.
-- Hindsight can be disabled without losing durable memory.
+- Optional enhancement adapters are not write paths.
+- Enhancement adapters can be disabled or absent without losing durable memory.
 - Rebuild must be possible from `memory/*.md`.
-- Activation must preserve sensitivity and owner/company filtering even when using Hindsight.
+- Activation must preserve sensitivity and owner/company filtering before any derived surface reaches a prompt.
 
 The same rules apply to BM25, vector, graph, SQLite, or future KG/PPR indexes.
 
@@ -1026,14 +1026,14 @@ find_similar_t3_entries
 append_t3_entry
 record_active_memory_lifecycle
 rebuild_index
-sync_t3_to_hindsight(best-effort)
+sync_t3_to_memory_enhancement(best-effort no-op)
 ```
 
 Acceptance:
 
 - Heartbeat cannot bypass write gate for T3.
 - Entries have ids and lifecycle records.
-- Hindsight sync remains derived and best effort.
+- Optional enhancement adapter remains best effort and has no configured program.
 
 Evidence:
 
@@ -1053,10 +1053,9 @@ Evidence:
 - `save_memory` gained `container_candidate` + `source_refs` parameters
   (promotion-lane evidence); tool description updated; `write_file`
   description no longer advertises `memory/knowledge.md` as a target.
-- Hindsight sync added as sanctioned trigger #4 in
-  `app/memory/hindsight_sync.py` docstring + caller allowlist test.
+- Optional enhancement adapter boundary added as a single no-op hook.
 - Tests: `backend/tests/memory/test_t3_store.py` (8 — id/lifecycle/index,
-  PL4 rejection, near-dup skip, container marker, hindsight failure
+  PL4 rejection, near-dup skip, container marker, adapter failure
   non-fatal, write_file/edit_file refusal, non-memory paths still
   writable). Full backend suite 3656 passed.
 
@@ -1071,7 +1070,7 @@ Acceptance:
 - Merge creates superseded edges.
 - Contradiction creates contradiction or supersession edges.
 - Cap cleanup archives / de-indexes entries instead of silent deletion.
-- Hindsight only syncs active entries.
+- Native active-file set excludes archive entries.
 
 Evidence:
 
@@ -1091,12 +1090,12 @@ Evidence:
   the kept canonical line no longer retires the keep line.
 - `_consolidate_t3_files`: dedup drops archive as `dedup_superseded`, cap
   evictions archive as `cap_eviction`; preservation flags still sticky.
-- De-index is structural: `archive.md` is not in `T3_FILE_SPECS` /
-  `hindsight_sync._T3_FILES`, so manifest, INDEX.md, BM25 search, prompt
-  injection, and Hindsight all see only active entries (pinned by test).
+- De-index is structural: `archive.md` is not in `T3_FILE_SPECS`, so
+  manifest, INDEX.md, BM25 search, and prompt injection all see only active
+  entries (pinned by test).
 - Tests: `backend/tests/services/test_dream_lifecycle_patch.py` (5 —
   merge edges, contradiction edges, archival completeness on consolidation,
-  archive out of active recall, hindsight active-files pin). Full backend
+  archive out of active recall, native active-file pin). Full backend
   3661 passed.
 
 ### P4: Skill / Workflow Candidate Lane
@@ -1444,7 +1443,7 @@ Adopt now:
 5. Skill / MCP / Workflow remain independent modules.
 6. Knowledge UI is a wiki / inspector over evidence, not a capability manager.
 7. Index must have a runtime consumer.
-8. Hindsight remains optional read-side accelerator.
+8. No concrete external memory enhancement program is wired into T3.
 
 Defer:
 
@@ -1473,7 +1472,7 @@ Important code surfaces:
 - `backend/app/memory/write_gate.py`
 - `backend/app/memory/md_store.py`
 - `backend/app/memory/retriever.py`
-- `backend/app/memory/hindsight_sync.py`
+- `backend/app/memory/enhancement.py`
 - `frontend/src/pages/AgentDetail.tsx`
 - `frontend/src/pages/agent-detail/AgentSkillsSection.tsx`
 - `frontend/src/pages/agent-detail/ToolsManager.tsx`

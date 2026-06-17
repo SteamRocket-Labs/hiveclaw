@@ -800,7 +800,8 @@ _PLATFORM_MANAGED_PREFIX_MESSAGES = {
     ),
     "evolution": (
         "evolution/ is managed by platform services — direct file writes, edits, and deletes are not allowed. "
-        "Use the skill/evolution tools instead of editing promotion ledgers or candidates by hand."
+        "Return the outcome summary instead; heartbeat, trigger, dream, and promotion services record "
+        "scorecards, lineage, and candidate ledgers."
     ),
     "runtime_artifacts": (
         "runtime_artifacts/ is managed by platform services — direct file writes, edits, and deletes are not allowed. "

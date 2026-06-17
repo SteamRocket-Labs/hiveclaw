@@ -1176,3 +1176,56 @@ async def test_llm_extract_truncates_conversation_to_window_hint(monkeypatch):
     await ea._llm_extract(big, uuid.uuid4(), "Agent")
     # 1000-token hint → 1000*4*0.6 = 2400 chars conversation budget
     assert len(captured["prompt"]) < 2400 + len(ea.EXTRACT_PROMPT)
+
+
+@pytest.mark.asyncio
+async def test_extract_agent_accepts_heartbeat_reflection_source_even_when_default_cursor_is_ahead(
+    monkeypatch,
+    agent_id: uuid.UUID,
+):
+    extractor = ExtractAgent()
+    extractor._cursors[str(agent_id)] = 99
+    captured: list[dict] = []
+
+    async def fake_do_extract(agent_id_arg, messages, tenant_id, agent_name, source):
+        captured.append(
+            {
+                "agent_id": agent_id_arg,
+                "messages": messages,
+                "tenant_id": tenant_id,
+                "agent_name": agent_name,
+                "source": source,
+            }
+        )
+
+    monkeypatch.setattr(extractor, "_do_extract", fake_do_extract)
+
+    await extractor.extract(
+        agent_id,
+        [{"role": "assistant", "content": "Reusable heartbeat reflection [OUTCOME:action_taken] [SCORE:7]"}],
+        source="heartbeat_reflection",
+        agent_name="Heartbeat Agent",
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["source"] == "heartbeat_reflection"
+
+
+@pytest.mark.asyncio
+async def test_extract_agent_still_skips_raw_heartbeat_audit_source(monkeypatch, agent_id: uuid.UUID):
+    extractor = ExtractAgent()
+    called = False
+
+    async def fake_do_extract(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(extractor, "_do_extract", fake_do_extract)
+
+    await extractor.extract(
+        agent_id,
+        [{"role": "assistant", "content": "HEARTBEAT_OK [OUTCOME:noop] [SCORE:0]"}],
+        source="heartbeat",
+    )
+
+    assert called is False

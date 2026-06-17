@@ -3,7 +3,7 @@
 Acceptance:
 - Heartbeat cannot bypass write gate for T3 (single governed append path).
 - Entries have ids and lifecycle records.
-- Hindsight sync remains derived and best effort.
+- Optional enhancement adapter remains best effort.
 """
 
 from __future__ import annotations
@@ -236,18 +236,18 @@ async def test_append_preserves_container_candidate_marker(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_hindsight_sync_failure_is_non_fatal(tmp_path: Path, monkeypatch) -> None:
+async def test_memory_enhancement_sync_failure_is_non_fatal(tmp_path: Path, monkeypatch) -> None:
     agent_id = uuid.uuid4()
 
     async def boom(*args, **kwargs):
-        raise RuntimeError("hindsight down")
+        raise RuntimeError("adapter down")
 
-    monkeypatch.setattr("app.memory.hindsight_sync.sync_t3_to_hindsight", boom)
+    monkeypatch.setattr("app.memory.enhancement.sync_t3_to_memory_enhancement", boom)
 
     result = await append_t3_memory_candidate(
         agent_id,
         category="reference",
-        content="Hindsight outage must not block durable memory writes",
+        content="Enhancement adapter outage must not block durable memory writes",
         proposed_by="extractor",
         tenant_id=uuid.uuid4(),
         data_root=tmp_path,
@@ -255,7 +255,7 @@ async def test_hindsight_sync_failure_is_non_fatal(tmp_path: Path, monkeypatch) 
 
     assert result.status == "accepted"
     body = (tmp_path / str(agent_id) / "memory" / "knowledge.md").read_text(encoding="utf-8")
-    assert "Hindsight outage must not block durable memory writes" in body
+    assert "Enhancement adapter outage must not block durable memory writes" in body
 
 
 # ── No-bypass enforcement: raw file writes under memory/ are refused ──

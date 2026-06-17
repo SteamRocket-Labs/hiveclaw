@@ -141,7 +141,6 @@ async def test_get_selected_tenant_memory_config_defaults_models_to_default_mode
     assert result["rerank_model_id"] == str(default_model_id)
     assert result["compress_threshold"] == 70
     assert result["keep_recent"] == 10
-    assert result["extract_to_viking"] is False
 
 
 @pytest.mark.asyncio

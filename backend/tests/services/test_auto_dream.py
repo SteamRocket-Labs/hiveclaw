@@ -935,6 +935,30 @@ class TestDreamUserPromptBuilder:
         assert "<section_selection_matrix>" in out
         assert "<few_shot_example_1>" in out
 
+    def test_dream_prompt_includes_candidate_evidence_digest(self) -> None:
+        out = _build_dream_consolidation_user_prompt(
+            "Alice",
+            "# Soul\n",
+            {"strategies.md": "- [2026-06-17] Use governed memory writes"},
+            candidate_evidence=[
+                {
+                    "candidate_id": "cand-heartbeat-1",
+                    "source": "heartbeat_reflection",
+                    "container": "memory_candidate",
+                    "lesson": "Direct writes to evolution are audit violations; use governed candidates.",
+                    "source_refs": ["heartbeat_session:hb-1", "chat_message:msg-1"],
+                    "decision": "held",
+                    "reason": "needs repeated evidence",
+                }
+            ],
+        )
+
+        assert "<candidate_evidence>" in out
+        assert "cand-heartbeat-1" in out
+        assert "heartbeat_reflection" in out
+        assert "chat_message:msg-1" in out
+        assert "lineage.md" not in out
+
     def test_builder_full_fidelity_under_budget(self) -> None:
         """蒸馏器核查 (docs/agent-lifecycle-cc-alignment.md §3.6): the dream
         consolidator decides soul promotions — it must see FULL T3/soul when

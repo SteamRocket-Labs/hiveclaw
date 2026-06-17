@@ -277,7 +277,7 @@ async def test_knowledge_injection_applies_connector_acl_mirror(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_memory_retriever_external_layer_applies_connector_acl_mirror(monkeypatch, tmp_path) -> None:
+async def test_memory_retriever_does_not_inject_connector_sources(monkeypatch, tmp_path) -> None:
     from app.memory.activation import ActivationContext
     from app.memory.retriever import MemoryRetriever
     from app.memory.types import MemoryKind
@@ -290,9 +290,10 @@ async def test_memory_retriever_external_layer_applies_connector_acl_mirror(monk
 
     monkeypatch.setattr(viking_client, "is_configured", lambda: True)
 
-    captured = {}
+    captured = {"calls": 0}
 
     async def fake_find(*_args, **kwargs):
+        captured["calls"] += 1
         captured.update(kwargs)
         return [
             {
@@ -325,9 +326,8 @@ async def test_memory_retriever_external_layer_applies_connector_acl_mirror(monk
     )
 
     external = [item for item in items if item.kind == MemoryKind.EXTERNAL]
-    assert [item.content for item in external] == ["visible source content"]
-    assert captured["user_id"] == str(user_id)
-    assert captured["agent_id"] == str(agent_id)
+    assert external == []
+    assert captured["calls"] == 0
 
 
 @pytest.mark.asyncio

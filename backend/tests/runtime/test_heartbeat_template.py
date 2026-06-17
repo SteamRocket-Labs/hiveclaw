@@ -79,6 +79,21 @@ class TestDecisionMatrix:
         assert "Tiebreakers" in template_text or "tiebreaker" in template_text.lower()
         assert "false negative" in template_text.lower()
 
+    def test_template_does_not_tell_curator_to_write_platform_managed_evolution_files(
+        self,
+        template_text: str,
+    ) -> None:
+        forbidden_phrases = [
+            "Append to `evolution/",
+            "Update `evolution/",
+            "Write to evolution/",
+            "edit_file` under `evolution/",
+            "write_file` under `evolution/",
+        ]
+        for phrase in forbidden_phrases:
+            assert phrase not in template_text
+        assert "runtime records the heartbeat outcome into `evolution/`" in template_text
+
 
 class TestCurationExamples:
     def test_has_good_curation_examples_block(self, template_text: str) -> None:

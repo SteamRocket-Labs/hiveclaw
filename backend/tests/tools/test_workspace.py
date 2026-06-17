@@ -41,6 +41,21 @@ def test_skill_writes_require_folder_skill_md_shape(tmp_path):
     assert (tmp_path / "skills" / "deploy-checklist" / "SKILL.md").exists()
 
 
+def test_evolution_write_guard_points_to_platform_bookkeeping_not_missing_tool(tmp_path):
+    from app.services.agent_tool_domains.workspace import _edit_file, _write_file
+
+    write_result = _write_file(tmp_path, "evolution/lineage.md", "raw bypass")
+    edit_result = _edit_file(tmp_path, "evolution/scorecard.md", "old", "new")
+
+    for result in (write_result, edit_result):
+        assert "evolution/ is managed by platform services" in result
+        assert "Return the outcome summary instead" in result
+        assert "skill/evolution" not in result
+
+    assert not (tmp_path / "evolution" / "lineage.md").exists()
+    assert not (tmp_path / "evolution" / "scorecard.md").exists()
+
+
 def test_workspace_tool_paths_reject_sibling_prefix_escape(tmp_path):
     from app.services.agent_tool_domains.workspace import (
         _delete_file,

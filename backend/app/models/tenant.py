@@ -45,11 +45,8 @@ class Tenant(Base):
     # Desktop sync: global version counter bumped on any Desktop-visible resource change (ARCHITECTURE.md §6.6)
     sync_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
 
-    # Memory backend selection — per-tenant opt-in for Hindsight read-side acceleration.
-    # NULL = "not set, use env MEMORY_BACKEND fallback".
-    # "md" = force T3 markdown via BM25. "hindsight" = force HindsightBackend.
-    # Nullable is intentional: a persisted literal "md" would shadow any
-    # env-level override. See app/memory/backends/hindsight.py module docstring.
+    # Deprecated compatibility field. Native T3 Markdown is the only memory
+    # backend; non-null legacy values are ignored by app.memory.backend.
     memory_backend: Mapped[str | None] = mapped_column(
         String(32), default=None, nullable=True
     )

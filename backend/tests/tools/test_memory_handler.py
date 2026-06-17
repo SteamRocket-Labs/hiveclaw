@@ -38,34 +38,30 @@ async def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_save_memory_passes_tenant_id_to_hindsight_sync(tmp_path: Path) -> None:
+async def test_save_memory_passes_tenant_id_to_memory_enhancement_sync(tmp_path: Path) -> None:
     """Closure A3: agent-tool writes must carry tenant_id end-to-end.
 
-    hindsight_sync returns early on tenant_id=None, so a save_memory that
-    drops it silently skips the immediate read-side sync for every
-    Hindsight-enabled tenant. The agent_args adapter passes tenant_id as the
-    third positional argument once the handler signature accepts it.
+    The optional enhancement adapter is currently a no-op, but the governed
+    write path must still preserve tenant context for any future adapter.
     """
-    from app.memory import hindsight_sync
+    from app.memory import enhancement
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
     seen: dict = {}
 
-    # Test Double rationale: Hindsight is the optional external read-side
-    # accelerator boundary; the durable MD write chain below it runs for real.
     async def _capture(aid, tid, *, data_root=None):
         seen["agent_id"] = aid
         seen["tenant_id"] = tid
-        return 0
+        return enhancement.MemoryEnhancementSyncResult()
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             "app.config.get_settings",
             lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
         )
-        mp.setattr(hindsight_sync, "sync_t3_to_hindsight", _capture)
+        mp.setattr(enhancement, "sync_t3_to_memory_enhancement", _capture)
 
         result = await save_memory(
             agent_id,
@@ -79,13 +75,13 @@ async def test_save_memory_passes_tenant_id_to_hindsight_sync(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_save_memory_adapter_string_tenant_reaches_hindsight_as_uuid(tmp_path: Path) -> None:
+async def test_save_memory_adapter_string_tenant_reaches_enhancement_as_uuid(tmp_path: Path) -> None:
     """The production agent_args adapter carries tenant_id as a string.
 
-    Hindsight backend resolution uses tenant_id.hex, so save_memory must
-    normalize the adapter value before calling append_t3_memory_candidate.
+    save_memory must normalize the adapter value before calling the governed
+    T3 append path and optional enhancement adapter boundary.
     """
-    from app.memory import hindsight_sync
+    from app.memory import enhancement
     from app.tools.adapters import adapt_and_call
     from app.tools.handlers.memory import save_memory
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
@@ -99,14 +95,14 @@ async def test_save_memory_adapter_string_tenant_reaches_hindsight_as_uuid(tmp_p
         seen["agent_id"] = aid
         seen["tenant_id"] = tid
         seen["tenant_type"] = type(tid).__name__
-        return 0
+        return enhancement.MemoryEnhancementSyncResult()
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             "app.config.get_settings",
             lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
         )
-        mp.setattr(hindsight_sync, "sync_t3_to_hindsight", _capture)
+        mp.setattr(enhancement, "sync_t3_to_memory_enhancement", _capture)
 
         result = await adapt_and_call(
             save_memory.meta,

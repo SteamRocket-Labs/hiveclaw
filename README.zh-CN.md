@@ -150,7 +150,7 @@ T0 原始日志   ← t0_logger        （behavior/system/artifacts，游标式�
 
 Heartbeat cadence 由配置驱动：`evolution_daemon` 每 `HEARTBEAT_TICK_SECONDS` 调度一次（默认 60 秒），可运行 Agent 按受平台托管的 `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` cadence 进入资格判断（默认 120 分钟）。后续 Heartbeat tick 如果没有新的 T2 entries 会直接跳过。完整 Dream 是更慢的身份层操作：至少 24 小时，并满足 3 个会话或 2 次有效 Heartbeat。Soft Dream 只在 T3 压力上来时做确定性去重、容量缓压和 index refresh。
 
-**面向人的记忆真相仍是 MD 文件**。活跃 T3 正文是 Markdown；`lifecycle.json` 保存 evidence、sensitivity、lifecycle state、access telemetry 与 reinforcement counters；`memory/INDEX.md` 是轻量导航 manifest，不是第二套记忆库。可选 Hindsight sync 是派生读侧加速器，可以从 Markdown 重建。
+**面向人的记忆真相仍是 MD 文件**。活跃 T3 正文是 Markdown；`lifecycle.json` 保存 evidence、sensitivity、lifecycle state、access telemetry 与 reinforcement counters；`memory/INDEX.md` 是轻量导航 manifest，不是第二套记忆库。默认不配置任何外部 T3 记忆增强程序。
 
 记忆金字塔只是沉淀路径。真正决定 Agent 如何判断和行动的是 **Memory Control Plane**：
 

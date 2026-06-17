@@ -28,7 +28,6 @@ class MemoryConfigUpdate(BaseModel):
     rerank_model_id: str | None = None
     compress_threshold: int = 70  # percentage
     keep_recent: int = 10
-    extract_to_viking: bool = False
 
 
 class TeamMemoryUpsert(BaseModel):
@@ -46,7 +45,6 @@ DEFAULT_MEMORY_CONFIG = {
     "rerank_model_id": None,
     "compress_threshold": 70,
     "keep_recent": 10,
-    "extract_to_viking": False,
 }
 
 

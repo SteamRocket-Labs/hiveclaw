@@ -168,6 +168,7 @@ async def _fast_reflection_on_response(ctx: HookContext) -> None:
     if not messages:
         return
     metadata = dict(ctx.metadata or {})
+    metadata.setdefault("source", ctx.source or "web")
     tenant_id = metadata.get("tenant_id")
     classification = await _run_fast_reflection_learning_brain(
         agent_id=agent_id,

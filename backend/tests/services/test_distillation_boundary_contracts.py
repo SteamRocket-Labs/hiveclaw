@@ -106,6 +106,20 @@ def test_dream_template_preserves_t2_retention_provenance() -> None:
     assert "do not archive referenced t2" not in dream_template
 
 
+def test_dream_template_does_not_instruct_direct_writes_to_platform_managed_evolution_files() -> None:
+    dream_template = (PROJECT_ROOT / "backend" / "app" / "templates" / "DREAM.md").read_text(encoding="utf-8")
+
+    forbidden_phrases = [
+        "Log this dream cycle to `evolution/",
+        "Append to `evolution/",
+        "Update `evolution/",
+        "write_file` / `edit_file` under `evolution/",
+    ]
+    for phrase in forbidden_phrases:
+        assert phrase not in dream_template
+    assert "runtime records dream-cycle outcomes into `evolution/`" in dream_template
+
+
 def test_skill_distiller_prompt_rejects_goal_and_wake_policy_as_skills() -> None:
     from app.services import skill_distiller
 

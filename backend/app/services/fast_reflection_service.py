@@ -157,6 +157,13 @@ def create_fast_reflection_candidate(
     metadata = metadata or {}
     signal = _classify_signal(messages, metadata)
     if signal is None:
+        if str(metadata.get("source") or "") == "heartbeat_reflection":
+            try:
+                from app.memory.metrics import record_heartbeat_reflection
+
+                record_heartbeat_reflection("skipped_low_signal")
+            except Exception:
+                pass
         return {"status": "skipped", "reason": "low_signal"}
 
     signal_type = str(signal["signal_type"])
@@ -164,7 +171,12 @@ def create_fast_reflection_candidate(
     classification_method = str(signal.get("method") or "unknown")
     workspace = Path(data_root) / str(agent_id)
     normalized_session_id = str(session_id or metadata.get("session_id") or "unknown-session")
-    source_attempt_ids = [normalized_session_id]
+    metadata_source_refs = [
+        str(ref).strip()
+        for ref in (metadata.get("source_refs") or [])
+        if str(ref).strip()
+    ]
+    source_attempt_ids = metadata_source_refs or [normalized_session_id]
     payload = {
         "schema": "fast_reflection_candidate.v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -178,6 +190,8 @@ def create_fast_reflection_candidate(
         "classification_confidence": float(signal.get("confidence") or 0.0),
         "message_digest": _message_digest(messages),
         "final_response": str(metadata.get("final_response") or "")[:1000],
+        "source": str(metadata.get("source") or "runtime"),
+        "source_refs": source_attempt_ids,
         "promotion_state": "candidate",
     }
     learning_brain_decision = signal.get("learning_brain_decision")
@@ -201,7 +215,7 @@ def create_fast_reflection_candidate(
         session_id=normalized_session_id,
         candidate_id=candidate["candidate_id"],
         lesson=lesson,
-        source_refs=[f"runtime_task:{item}" for item in source_attempt_ids],
+        source_refs=source_attempt_ids if metadata_source_refs else [f"runtime_task:{item}" for item in source_attempt_ids],
         evidence="user_stated" if signal_type == "user_preference_correction" else "system_observed",
         ttl_minutes=60,
     )
@@ -213,6 +227,13 @@ def create_fast_reflection_candidate(
         "manifest": candidate["manifest"],
         "projection": projection,
     }
+    if payload["source"] == "heartbeat_reflection":
+        try:
+            from app.memory.metrics import record_heartbeat_reflection
+
+            record_heartbeat_reflection("candidate_created")
+        except Exception:
+            pass
     if not _skill_candidate_loop_enabled(metadata):
         result["skill_candidate"] = {
             "status": "skipped",

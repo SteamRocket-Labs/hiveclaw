@@ -106,8 +106,8 @@ def _coerce_tenant_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
 )
 async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
     # Closure A3: the third positional parameter makes the agent_args adapter
-    # pass request.context.tenant_id — without it the immediate Hindsight sync
-    # is skipped for every agent-tool write (hindsight_sync early-returns on None).
+    # pass request.context.tenant_id so governed memory writes retain tenant
+    # context for the optional enhancement adapter boundary.
     from app.memory.t3_store import append_t3_memory_candidate
 
     content = (arguments.get("content") or "").strip()
@@ -152,19 +152,18 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
 # -- update_memory / retire_memory -------------------------------------------
 
 
-async def _sync_hindsight_after_memory_mutation(
+async def _sync_memory_enhancement_after_memory_mutation(
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID | str | None,
     *,
     data_root: Path,
 ) -> None:
     try:
-        from app.memory import hindsight_sync
+        from app.memory.enhancement import sync_t3_to_memory_enhancement
 
-        await hindsight_sync.sync_t3_to_hindsight(agent_id, _coerce_tenant_uuid(tenant_id), data_root=data_root)
+        await sync_t3_to_memory_enhancement(agent_id, _coerce_tenant_uuid(tenant_id), data_root=data_root)
     except Exception:
-        # Hindsight is a derived accelerator. T3 markdown + lifecycle sidecar
-        # remain the durable source of truth.
+        # T3 markdown + lifecycle sidecar remain the durable source of truth.
         return
 
 
@@ -294,10 +293,10 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
             entry_ids=[result.entry_id],
             reason="discarded_update_rollback",
         )
-        await _sync_hindsight_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
+        await _sync_memory_enhancement_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
         return f"[Error] Replacement written but old memory could not be retired; rolled back replacement {result.entry_id}."
 
-    await _sync_hindsight_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
+    await _sync_memory_enhancement_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
     saved = content[:80]
     return (
         f"Updated memory {memory_id} -> {result.entry_id} [{result.category}]: "
@@ -362,7 +361,7 @@ async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
     if retired == 0:
         return f"[Error] Memory entry could not be retired: {memory_id}"
 
-    await _sync_hindsight_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
+    await _sync_memory_enhancement_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
     return f"Retired memory {memory_id}: {reason}"
 
 
@@ -626,53 +625,8 @@ async def _search_semantic_backend_facts(
     date_to: str | None,
     md_facts: list[dict],
 ) -> list[dict]:
-    if not tenant_id:
-        return []
-    try:
-        tenant_uuid = uuid.UUID(str(tenant_id))
-    except (TypeError, ValueError):
-        return []
-    try:
-        from app.memory.backend import MDBackend, get_memory_backend
-        from app.memory.hindsight_sync import LOOKUP_FAILED, _fetch_tenant_backend_pref
-
-        pref = await _fetch_tenant_backend_pref(tenant_uuid)
-        if pref is LOOKUP_FAILED:
-            return []
-        backend = get_memory_backend(tenant_id=tenant_uuid, tenant_backend_pref=pref)
-        if isinstance(backend, MDBackend):
-            return []
-        scored = await backend.search(
-            agent_id,
-            query,
-            limit=limit,
-            date_from=date_from,
-            date_to=date_to,
-        )
-    except Exception:
-        return []
-
-    md_by_content = {_normalize_fact_content(fact.get("content", "")): fact for fact in md_facts}
-    facts: list[dict] = []
-    for item in scored:
-        content = (item.content or "").strip()
-        if not content:
-            continue
-        matched = md_by_content.get(_normalize_fact_content(content))
-        if matched:
-            fact = dict(matched)
-        else:
-            fact = {
-                "content": content,
-                "preview": content[:160],
-                "category": item.category or "general",
-                "timestamp": item.timestamp or "",
-                "source": "hindsight",
-            }
-        fact["semantic_backend"] = "hindsight"
-        fact["semantic_score"] = item.score
-        facts.append(fact)
-    return facts
+    del agent_id, tenant_id, query, limit, date_from, date_to, md_facts
+    return []
 
 
 def _dedupe_fact_results(facts: list[dict]) -> list[dict]:

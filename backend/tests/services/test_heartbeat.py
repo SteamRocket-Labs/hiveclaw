@@ -124,8 +124,8 @@ def test_compose_heartbeat_instruction_adds_strategy_boundary() -> None:
     text = _compose_heartbeat_instruction("Base heartbeat")
 
     assert "Base heartbeat" in text
-    assert "evolution/lineage.md stores policy-level learning" in text
-    assert "Do NOT turn lineage into a raw task transcript" in text
+    assert "evolution/lineage.md is an audit and candidate ledger" in text
+    assert "not the semantic memory body" in text
 
 
 def test_compact_heartbeat_runtime_messages_full_fidelity_under_budget() -> None:
@@ -352,6 +352,8 @@ async def test_build_evolution_context_cold_start_bootstrap():
     result = await _build_evolution_context(agent_id, activities)
     assert "Bootstrap Mode" in result
     assert "Read soul.md" in result
+    assert "Write to evolution/" not in result
+    assert "runtime records the heartbeat outcome into evolution/" in result
 
 
 @pytest.mark.asyncio

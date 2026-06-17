@@ -1,15 +1,9 @@
-"""Pluggable memory backend interface.
+"""Native Markdown memory backend.
 
-The retriever uses this interface to read/write memory. The default
-MDBackend wraps the existing md_store + BM25 search. Alternative
-backends (Hindsight, Cognee, pgvector, etc.) implement the same
-protocol and are swapped via MEMORY_BACKEND config.
-
-Design principles:
-- MD files remain the write-side source of truth
-- Enhanced backends are read-side accelerators
-- Any backend can be rebuilt from MD at any time
-- Unknown / missing backend degrades gracefully to MD
+T3 Markdown remains the only long-term memory store used by Hive's memory
+runtime. This module intentionally exposes a small protocol so future optional
+enhancement adapters can be built outside the native T3 chain, but backend
+resolution always returns the Markdown backend.
 """
 
 from __future__ import annotations
@@ -152,7 +146,7 @@ class MDBackend:
         return None
 
 
-# ── Backend resolution ──────────────────────────────────────────
+# -- Backend resolution -------------------------------------------------------
 
 _backend_cache: dict[str, MemoryBackend] = {}
 
@@ -165,84 +159,23 @@ def _md_backend() -> MemoryBackend:
     return _backend_cache["md"]
 
 
-def _resolve_backend_name(tenant_backend_pref: str | None) -> str:
-    """Resolve backend name. Priority: tenant override > env > 'md'."""
-    if tenant_backend_pref and tenant_backend_pref.strip():
-        return tenant_backend_pref.strip().lower()
-    import os
-    return os.environ.get("MEMORY_BACKEND", "md").strip().lower()
-
-
 def get_memory_backend(
     tenant_id: uuid.UUID | None = None,
     *,
     tenant_backend_pref: str | None = None,
 ) -> MemoryBackend:
-    """Return the configured memory backend.
+    """Return the native T3 Markdown backend.
 
-    MDBackend is tenant-agnostic (singleton). HindsightBackend is tenant-scoped
-    (cached per tenant_id to reuse its httpx.AsyncClient).
-
-    Backend resolution (first non-empty wins):
-    1. ``tenant_backend_pref`` argument (caller read from Tenant.memory_backend)
-    2. ``MEMORY_BACKEND`` environment variable
-    3. "md" default
-
-    Supported backend names:
-    - "md": MDBackend — T3 markdown files + BM25
-    - "hindsight": HindsightBackend (Phase A: global key + bank_id isolation)
-    - unknown values or unconfigured Hindsight → fall back to MD with warning
-
-    `tenant_id=None` always returns MDBackend regardless of preference —
-    tenant-agnostic callers (admin tools, legacy paths) always use MD.
+    ``tenant_id`` and ``tenant_backend_pref`` are accepted only for compatibility
+    with older call sites and persisted tenant rows. They deliberately do not
+    select another memory system.
     """
-    from app.config import get_settings
-
-    backend_name = _resolve_backend_name(tenant_backend_pref)
-
-    # MD path — tenant-agnostic, shared singleton
-    if backend_name == "md" or tenant_id is None:
-        return _md_backend()
-
-    if backend_name == "hindsight":
-        settings = get_settings()
-        if not (settings.HINDSIGHT_ENABLED and settings.HINDSIGHT_URL):
-            logger.warning(
-                "[MemoryBackend] hindsight selected but disabled/unconfigured "
-                "(ENABLED=%s URL=%r), falling back to MD",
-                settings.HINDSIGHT_ENABLED, settings.HINDSIGHT_URL,
-            )
-            return _md_backend()
-
-        cache_key = f"hindsight:{tenant_id.hex}"
-        if cache_key in _backend_cache:
-            return _backend_cache[cache_key]
-
-        from app.memory.backends.hindsight import HindsightBackend
-        _backend_cache[cache_key] = HindsightBackend(
-            tenant_id=tenant_id,
-            url=settings.HINDSIGHT_URL,
-            api_key=settings.HINDSIGHT_API_KEY,
-            timeout=settings.HINDSIGHT_TIMEOUT_SECONDS,
-        )
-        logger.info("[MemoryBackend] Using HindsightBackend for tenant=%s", tenant_id)
-        return _backend_cache[cache_key]
-
-    if backend_name == "cognee":
-        logger.warning("[MemoryBackend] cognee backend not yet implemented, falling back to MD")
-        return _md_backend()
-
-    logger.warning("[MemoryBackend] Unknown backend '%s', falling back to MD", backend_name)
+    del tenant_id, tenant_backend_pref
     return _md_backend()
 
 
 def reset_memory_backend() -> None:
-    """Clear all cached backends (for testing).
-
-    Note: this does NOT close HindsightBackend's httpx.AsyncClient — tests
-    using MockTransport are unaffected, but production callers must use
-    aclose_all_backends() during app shutdown to avoid leaking sockets.
-    """
+    """Clear cached backend instances for tests."""
     _backend_cache.clear()
 
 

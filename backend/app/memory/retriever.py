@@ -248,9 +248,8 @@ class MemoryRetriever:
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
 
         # T3 markdown is the only long-term memory source injected into the prompt.
-        # Other retrieval paths (search_memory tool, session_recall service) run
-        # independently and must not merge into prompt assembly — md-first only,
-        # to avoid dual-source drift.
+        # Other retrieval paths run independently and must not merge into prompt
+        # assembly, avoiding dual-source drift.
 
         items.extend(
             await self._retrieve_semantic_backend(
@@ -763,7 +762,7 @@ class MemoryRetriever:
 
         return items
 
-    # -- Semantic backend layer: optional Hindsight read-side accelerator --
+    # -- Optional enhancement layer: currently no external memory program --
 
     async def _retrieve_semantic_backend(
         self,
@@ -773,63 +772,15 @@ class MemoryRetriever:
         *,
         limit: int = 5,
     ) -> list[MemoryItem]:
-        """If tenant has a non-MD MemoryBackend configured, augment T3 direct reads
-        with ranked results from that backend (e.g. Hindsight's TEMPR fusion).
+        """Compatibility hook for future optional memory enhancement adapters.
 
-        The T3 direct layer already covers every bullet; this layer adds ranking
-        signal by producing items at higher base scores for semantically relevant
-        matches. The assembler dedupes near-identical content so overlap is safe.
-
-        Any failure / MD backend / missing tenant → returns [] silently.
+        Native T3 Markdown already covers durable semantic memory. With no
+        enhancement program configured, this hook must remain empty.
         """
-        if not query or not tenant_id:
-            return []
-        try:
-            tenant_uuid = uuid.UUID(tenant_id)
-        except (ValueError, TypeError):
-            return []
+        del agent_id, query, tenant_id, limit
+        return []
 
-        try:
-            from app.memory.backend import MDBackend, get_memory_backend
-            from app.memory.hindsight_sync import (
-                LOOKUP_FAILED,
-                _fetch_tenant_backend_pref,
-            )
-
-            pref = await _fetch_tenant_backend_pref(tenant_uuid)
-            if pref is LOOKUP_FAILED:
-                return []  # fail-closed: unknown tenant state → skip external backend
-            backend = get_memory_backend(tenant_id=tenant_uuid, tenant_backend_pref=pref)
-            if isinstance(backend, MDBackend):
-                return []  # MD path already covered by _retrieve_t3_direct
-
-            scored = await backend.search(agent_id, query, limit=limit)
-        except Exception as exc:
-            logger.debug("[Retriever] semantic backend failed: %s", exc)
-            return []
-
-        items: list[MemoryItem] = []
-        for sm in scored:
-            content = (sm.content or "").strip()
-            if not content:
-                continue
-            items.append(
-                MemoryItem(
-                    kind=MemoryKind.SEMANTIC,
-                    content=f"[{sm.category}] {content}",
-                    score=float(sm.score or 0.5),
-                    source="hindsight",
-                    metadata={
-                        "category": sm.category,
-                        "timestamp": sm.timestamp,
-                        "source_type": "memory_backend",
-                        **(sm.metadata or {}),
-                    },
-                )
-            )
-        return items
-
-    # -- External layer: OpenViking recall --
+    # -- External knowledge layer: kept outside native memory --
 
     async def _retrieve_external(
         self,
@@ -840,54 +791,8 @@ class MemoryRetriever:
         limit: int = 5,
         activation_context: ActivationContext | None = None,
     ) -> list[MemoryItem]:
-        if not query or not tenant_id:
-            return []
-
-        try:
-            from app.services import viking_client
-            from app.services.connector_acl import filter_connector_results_for_prompt
-
-            if not viking_client.is_configured():
-                return []
-
-            current_user_id = _activation_current_user_id(activation_context)
-            results = await viking_client.find(
-                query,
-                tenant_id=tenant_id,
-                agent_id=str(agent_id),
-                user_id=current_user_id,
-                limit=limit,
-            )
-            results = filter_connector_results_for_prompt(
-                [item for item in results if isinstance(item, dict)],
-                tenant_id=tenant_id,
-                agent_id=str(agent_id),
-                current_user_id=current_user_id,
-            )
-
-            items: list[MemoryItem] = []
-            for result in results:
-                content = result.get("content", "")
-                if not content:
-                    continue
-                items.append(
-                    MemoryItem(
-                        kind=MemoryKind.EXTERNAL,
-                        content=content,
-                        score=result.get("score", 0.5),
-                        source="openviking",
-                        metadata={
-                            "uri": result.get("uri", ""),
-                            "source_ref": result.get("source", "") or result.get("path", ""),
-                            "source_type": "connector",
-                        },
-                    )
-                )
-            return items
-
-        except Exception as exc:
-            logger.warning("External retrieval failed: %s", exc)
-            return []
+        del agent_id, query, tenant_id, limit, activation_context
+        return []
 
 
 def _parse_session_uuid(session_id: str | None) -> uuid.UUID | None:

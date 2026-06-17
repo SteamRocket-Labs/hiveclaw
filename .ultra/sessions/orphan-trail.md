@@ -4,6 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-16T13:00Z [sid:f211fca9]; branch:main; 1 files (hive-sota-master-goal.md); last commit: 82c60ac7 Clarify load_skill as capability-capsule guidance
 - 2026-06-15T13:28Z [sid:04d5cd7f]; branch:main; 7 files (.sota-audit-workflow.js, test_eval_ci_service.py, test_connector_acl.py, +4); last commit: ff5160fa Record workflow subagent activity in session trail
 - 2026-06-15T06:18Z [sid:80dfa89a]; branch:main; 11 files (harness-ci.yml, orphan-trail.md, feishu.py, +8); last commit: d1c256c0 Refine chat runtime and work ledger behavior
 - 2026-06-15T04:33Z [sid:6fd6f665]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, executing_actions.py, +5); last commit: bebe8ddd refactor(workflow): Step 10 清理 — 退役 phase 死列 + 修 5 
@@ -103,4 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-03T12:44Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr
 - 2026-06-03T12:43Z [sid:8a0e09ba]; branch:main; 1 files (orphan-trail.md); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr
 - 2026-06-03T02:38Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 40aeccd fix(mcp): 修复 Skill+MCP cutover 的扩展面遗留
-- 2026-06-03T02:24Z [sid:8b13322e]; branch:main; 1 files (orphan-trail.md); last commit: 40aeccd fix(mcp): 修复 Skill+MCP cutover 的扩展面遗留

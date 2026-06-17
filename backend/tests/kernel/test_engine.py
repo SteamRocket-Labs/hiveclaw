@@ -2230,10 +2230,83 @@ async def test_turn_token_budget_stops_before_next_tool_round():
         )
     )
 
-    assert "token budget" in result.content.lower()
+    assert result.content.startswith("[Runtime Limit]")
+    assert "higher turn budget" not in result.content
     assert executed == []
     assert len(fake_client.calls) == 1
     assert persist_calls[0]["session_id"] == "sess-budget"
+
+
+@pytest.mark.asyncio
+async def test_turn_token_budget_ignores_cached_prompt_reads_before_tool_round():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
+    from app.services.token_tracker import extract_usage_tokens
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "c1", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}}],
+                reasoning_content=None,
+                usage={
+                    "total_tokens": 1000,
+                    "prompt_tokens": 980,
+                    "completion_tokens": 20,
+                    "prompt_tokens_details": {"cached_tokens": 960},
+                },
+            ),
+            SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
+    executed: list[str] = []
+    persist_calls: list[dict] = []
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=3,
+                turn_token_budget=100,
+            ),
+            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
+            build_system_prompt=lambda *_a, **_kw: "SYSTEM",
+            resolve_memory_context=lambda *_a, **_kw: "",
+            get_tools=lambda *_a, **_kw: [
+                {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}}
+            ],
+            maybe_compress_messages=lambda messages, **kw: messages,
+            create_client=lambda _m: fake_client,
+            execute_tool=lambda tool_name, *_a, **_kw: executed.append(tool_name) or "tool result",
+            persist_memory=lambda **kw: persist_calls.append(kw),
+            record_token_usage=lambda *a, **kw: None,
+            get_max_tokens=lambda *a, **kw: 2048,
+            extract_usage_tokens=extract_usage_tokens,
+            estimate_tokens_from_chars=lambda c: c // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "respect effective budget"}],
+            agent_name="Agent",
+            role_description="test",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            memory_session_id="sess-budget-cache",
+        )
+    )
+
+    assert result.content == "done"
+    assert executed == ["read_file"]
+    assert len(persist_calls) == 1
+    persisted_text = "\n".join(
+        str(message.get("content") or "") for message in persist_calls[0].get("messages", []) if isinstance(message, dict)
+    )
+    assert "[Runtime Limit]" not in persisted_text
+    assert len(fake_client.calls) == 2
 
 
 @pytest.mark.asyncio

@@ -130,5 +130,8 @@ def should_surface_without_model_fallback(exc: Exception) -> bool:
 
 
 def is_llm_error_message(content: object) -> bool:
-    """Detect persisted assistant rows that represent failed model calls."""
-    return isinstance(content, str) and content.lstrip().startswith("[LLM Error]")
+    """Detect persisted assistant rows that represent failed model/runtime calls."""
+    if not isinstance(content, str):
+        return False
+    stripped = content.lstrip()
+    return stripped.startswith("[LLM Error]") or stripped.startswith("[Runtime Limit]")

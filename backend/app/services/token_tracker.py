@@ -34,18 +34,86 @@ def estimate_tokens_from_text(text: str, *, chars_per_token: float = _DEFAULT_CH
     return max(int(cjk_chars + (other_chars / cpt)), 1)
 
 
-def extract_usage_tokens(usage: dict | None) -> int | None:
-    """Extract total token count from an LLM response usage dict.
+def _usage_int(usage: dict[str, Any], key: str) -> int:
+    value = usage.get(key)
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
 
-    Supports both OpenAI format (prompt_tokens + completion_tokens)
-    and Anthropic format (input_tokens + output_tokens).
+
+def _nested_usage_int(usage: dict[str, Any], parent: str, key: str) -> int:
+    value = usage.get(parent)
+    if not isinstance(value, dict):
+        return 0
+    return _usage_int(value, key)
+
+
+def _cache_read_tokens(usage: dict[str, Any]) -> int:
+    return max(
+        _usage_int(usage, "prompt_cache_hit_tokens"),
+        _usage_int(usage, "cache_read_input_tokens"),
+        _usage_int(usage, "cached_tokens"),
+        _usage_int(usage, "cachedContentTokenCount"),
+        _nested_usage_int(usage, "prompt_tokens_details", "cached_tokens"),
+        _nested_usage_int(usage, "input_tokens_details", "cached_tokens"),
+    )
+
+
+def _cache_creation_tokens(usage: dict[str, Any]) -> int:
+    nested_creation = usage.get("cache_creation")
+    nested_total = 0
+    if isinstance(nested_creation, dict):
+        nested_total = sum(_usage_int(nested_creation, key) for key in nested_creation)
+    return max(
+        _usage_int(usage, "cache_creation_input_tokens"),
+        _usage_int(usage, "cacheCreationInputTokens"),
+        nested_total,
+    )
+
+
+def _completion_tokens(usage: dict[str, Any]) -> int:
+    return max(
+        _usage_int(usage, "completion_tokens"),
+        _usage_int(usage, "output_tokens"),
+        _usage_int(usage, "candidatesTokenCount"),
+    )
+
+
+def extract_usage_tokens(usage: dict | None) -> int | None:
+    """Extract effective token count from an LLM response usage dict.
+
+    Cached prompt reads are excluded from the returned count. The runtime turn
+    budget should guard new work in this turn, not repeatedly count the same
+    cache-hit prompt prefix on every tool round.
     """
     if not usage:
         return None
+    if not isinstance(usage, dict):
+        return None
+    cache_read = _cache_read_tokens(usage)
+    cache_creation = _cache_creation_tokens(usage)
+    prompt_cache_miss = _usage_int(usage, "prompt_cache_miss_tokens")
+    if prompt_cache_miss:
+        return prompt_cache_miss + _completion_tokens(usage)
+
+    if "cache_read_input_tokens" in usage and ("input_tokens" in usage or "output_tokens" in usage):
+        # Anthropic native usage keeps cache reads in a separate field: input_tokens
+        # is the non-cache-read input. Count fresh input + cache writes + output.
+        return _usage_int(usage, "input_tokens") + cache_creation + _usage_int(usage, "output_tokens")
+
     if "total_tokens" in usage:
-        return usage["total_tokens"]
+        return max(_usage_int(usage, "total_tokens") - cache_read, 0)
+    if "totalTokenCount" in usage:
+        return max(_usage_int(usage, "totalTokenCount") - cache_read, 0)
+    if "prompt_tokens" in usage or "completion_tokens" in usage:
+        total = _usage_int(usage, "prompt_tokens") + _usage_int(usage, "completion_tokens")
+        return max(total - cache_read, 0)
     if "input_tokens" in usage or "output_tokens" in usage:
-        return (usage.get("input_tokens", 0) or 0) + (usage.get("output_tokens", 0) or 0)
+        total = _usage_int(usage, "input_tokens") + cache_creation + _usage_int(usage, "output_tokens")
+        if cache_read:
+            return max(total - cache_read, 0)
+        return total
     return None
 
 

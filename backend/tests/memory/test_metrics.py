@@ -145,6 +145,31 @@ def test_invocation_span_metrics_snapshot_and_prometheus_export() -> None:
     assert 'hive_invocation_tokens_total{provider="openai",model="gpt-4.1",source="web"} 13' in text
 
 
+def test_invocation_span_metrics_exclude_cached_prompt_reads() -> None:
+    from app.memory.metrics import record_invocation_span_metric, render_prometheus
+
+    record_invocation_span_metric(
+        span_type="generation",
+        status="ok",
+        duration_ms=20.0,
+        usage={
+            "total_tokens": 1000,
+            "prompt_tokens": 900,
+            "completion_tokens": 100,
+            "prompt_tokens_details": {"cached_tokens": 700},
+        },
+        provider="openai",
+        model="gpt-4.1",
+        source="web",
+    )
+
+    snap = snapshot()
+    assert snap["invocation_tokens_total"]["openai:gpt-4.1:web"] == 300
+
+    text = render_prometheus()
+    assert 'hive_invocation_tokens_total{provider="openai",model="gpt-4.1",source="web"} 300' in text
+
+
 # ── LatencyWindow ─────────────────────────────────────────────
 
 

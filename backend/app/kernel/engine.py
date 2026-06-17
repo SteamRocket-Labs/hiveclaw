@@ -670,8 +670,8 @@ def _tool_round_limit_message(max_rounds: int) -> str:
 
 def _turn_token_budget_message(tokens_used: int, token_budget: int) -> str:
     return (
-        f"I reached the turn token budget ({tokens_used}/{token_budget} tokens) before the next tool round. "
-        "The current state has been saved; continue the task with a higher turn budget or narrower scope."
+        f"[Runtime Limit] 本轮执行在下一次工具调用前达到运行 token 预算上限（{tokens_used}/{token_budget} tokens）。"
+        "当前进度已保存，但下一次工具调用未执行。请缩小后续请求范围、开启新会话，或让管理员调整该 Agent 的 max_tool_rounds。"
     )
 
 

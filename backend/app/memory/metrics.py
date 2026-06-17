@@ -805,10 +805,9 @@ def record_invocation_span_metric(
 
     token_count = 0
     if isinstance(usage, dict):
-        if usage.get("total_tokens") is not None:
-            token_count = int(usage.get("total_tokens") or 0)
-        else:
-            token_count = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+        from app.services.token_tracker import extract_usage_tokens
+
+        token_count = int(extract_usage_tokens(usage) or 0)
     if token_count > 0:
         _invocation_tokens_total[(provider or "unknown", model or "unknown", source or "unknown")] += token_count
 

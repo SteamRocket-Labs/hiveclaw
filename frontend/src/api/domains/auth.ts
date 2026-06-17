@@ -47,8 +47,15 @@ export interface FeishuSsoPollResponse {
   detail?: string;
 }
 
+function normalizeLoginParams(data: LoginParams): LoginParams {
+  return {
+    ...data,
+    username: data.username.trim(),
+  };
+}
+
 export const authApi = {
-  login: (data: LoginParams) => post<TokenResponse>('/auth/login', data),
+  login: (data: LoginParams) => post<TokenResponse>('/auth/login', normalizeLoginParams(data)),
   register: (data: RegisterParams) => post<TokenResponse>('/auth/register', data),
   getMe: () => get<User>('/auth/me'),
   updateMe: (data: ProfileUpdateParams) => patch<User>('/auth/me', data),

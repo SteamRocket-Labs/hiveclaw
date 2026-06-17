@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -59,13 +59,25 @@ class _FakeDB:
 
     def __init__(self, results):
         self._results = list(results)
+        self.executed_statements: list[str] = []
+        self.executed_params = []
+        self.rollback_called = False
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        statement = str(stmt)
+        self.executed_statements.append(statement)
+        if "SET LOCAL app.current_tenant_id" in statement:
+            return _FakeResult(None)
+        self.executed_params.append(dict(stmt.compile().params))
         if not self._results:
             return _FakeResult(None)
         return _FakeResult(self._results.pop(0))
 
     async def commit(self):
+        return None
+
+    async def rollback(self):
+        self.rollback_called = True
         return None
 
 
@@ -74,6 +86,10 @@ def _make_client(db: _FakeDB) -> TestClient:
     app.include_router(router, prefix="/api")
     app.dependency_overrides[get_db] = lambda: db
     return TestClient(app)
+
+
+def _executed_param_values(db: _FakeDB) -> list[object]:
+    return [value for params in db.executed_params for value in params.values()]
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +123,69 @@ def test_login_by_username_succeeds():
     assert resp.json()["access_token"] == "jwt-stub"
 
 
+def test_login_trims_username_identifier_before_lookup():
+    user = _fake_user(username="alice", email="alice@example.com")
+    db = _FakeDB([user])
+
+    with patch("app.api.auth.verify_password", return_value=True):
+        resp = _make_client(db).post(
+            "/api/auth/login",
+            json={"username": " \talice\n ", "password": "whatever"},
+        )
+
+    assert resp.status_code == 200
+    values = _executed_param_values(db)
+    assert "alice" in values
+    assert " \talice\n " not in values
+
+
+def test_login_identifier_lookup_uses_rls_bypass():
+    user = _fake_user(username="alice", email="alice@example.com")
+    db = _FakeDB([user])
+
+    with patch("app.api.auth.verify_password", return_value=True):
+        resp = _make_client(db).post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "whatever"},
+        )
+
+    assert resp.status_code == 200
+    assert any("app.current_tenant_id = 'BYPASS'" in statement for statement in db.executed_statements)
+
+
+def test_login_success_scopes_session_to_user_tenant_for_audit():
+    tenant_id = uuid4()
+    user = _fake_user(username="alice", email="alice@example.com", tenant_id=tenant_id)
+    tenant = SimpleNamespace(is_active=True)
+    db = _FakeDB([user, tenant])
+
+    with patch("app.api.auth.verify_password", return_value=True):
+        resp = _make_client(db).post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "whatever"},
+        )
+
+    assert resp.status_code == 200
+    assert any(str(tenant_id) in statement for statement in db.executed_statements)
+
+
+def test_login_success_rolls_back_session_after_audit_failure():
+    user = _fake_user(username="alice", email="alice@example.com")
+    db = _FakeDB([user])
+
+    with patch("app.api.auth.verify_password", return_value=True), patch(
+        "app.core.policy.write_audit_event",
+        new=AsyncMock(side_effect=Exception("audit insert rejected by RLS")),
+    ):
+        resp = _make_client(db).post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "whatever"},
+        )
+
+    assert resp.status_code == 200
+    assert db.rollback_called is True
+
+
 def test_login_by_email_falls_back_when_username_miss():
     """Feishu-imported users know their real email, not the machine-generated
     username feishu_<id>. Email must work as a login identifier."""
@@ -121,6 +200,22 @@ def test_login_by_email_falls_back_when_username_miss():
         )
 
     assert resp.status_code == 200
+
+
+def test_login_trims_and_lowercases_email_identifier_before_fallback_lookup():
+    user = _fake_user(username="feishu_ou_xxx", email="bob@company.com")
+    db = _FakeDB([None, user])
+
+    with patch("app.api.auth.verify_password", return_value=True):
+        resp = _make_client(db).post(
+            "/api/auth/login",
+            json={"username": " Bob@Company.COM ", "password": "123456"},
+        )
+
+    assert resp.status_code == 200
+    values = _executed_param_values(db)
+    assert "bob@company.com" in values
+    assert " Bob@Company.COM " not in values
 
 
 def test_login_username_lookup_takes_precedence_over_email():

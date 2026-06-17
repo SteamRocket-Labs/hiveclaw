@@ -18,6 +18,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
     setAuth: (user, token) => {
         localStorage.setItem('token', token);
+        if (user.tenant_id) {
+            localStorage.setItem('current_tenant_id', user.tenant_id);
+        } else {
+            localStorage.removeItem('current_tenant_id');
+        }
         set({ user, token });
     },
 
@@ -27,6 +32,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
     logout: () => {
         localStorage.removeItem('token');
+        localStorage.removeItem('current_tenant_id');
         set({ user: null, token: null });
     },
 

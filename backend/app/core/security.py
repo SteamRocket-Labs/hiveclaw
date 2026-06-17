@@ -12,11 +12,11 @@ import bcrypt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.database import get_db
+from app.database import enter_rls_bypass, get_db, set_current_tenant
 
 if TYPE_CHECKING:
     from app.models.refresh_token import RefreshToken
@@ -69,6 +69,29 @@ def decode_access_token(token: str) -> dict:
         )
 
 
+async def _set_session_tenant(db: AsyncSession, tenant_id: uuid.UUID | str | None) -> None:
+    """Pin the active DB session and request context to a validated tenant."""
+    if tenant_id:
+        validated = uuid.UUID(str(tenant_id))
+        set_current_tenant(str(validated))
+        await db.execute(text(f"SET LOCAL app.current_tenant_id = '{validated}'"))
+    else:
+        set_current_tenant(None)
+        await db.execute(text("SET LOCAL app.current_tenant_id = ''"))
+
+
+async def _load_user_with_tenant_status(db: AsyncSession, user_id: uuid.UUID):
+    from app.models.user import User
+    from app.models.tenant import Tenant
+
+    result = await db.execute(
+        select(User, Tenant.is_active.label("tenant_is_active"))
+        .outerjoin(Tenant, User.tenant_id == Tenant.id)
+        .where(User.id == user_id)
+    )
+    return result.first()
+
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -80,21 +103,31 @@ async def get_current_user(
     - platform_admin: can operate as any active tenant
     - org_admin / member: can only use their own tenant (header ignored if mismatched)
     """
-    from app.models.user import User
     from app.models.tenant import Tenant
 
     payload = decode_access_token(credentials.credentials)
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    user_uuid = uuid.UUID(user_id)
+    token_role = payload.get("role", "")
+    requested_tenant = request.headers.get("x-tenant-id")
 
-    # Single query: load user + tenant is_active via LEFT JOIN (no extra round-trip)
-    result = await db.execute(
-        select(User, Tenant.is_active.label("tenant_is_active"))
-        .outerjoin(Tenant, User.tenant_id == Tenant.id)
-        .where(User.id == uuid.UUID(user_id))
-    )
-    row = result.first()
+    # Single query: load user + tenant is_active via LEFT JOIN (no extra round-trip).
+    # For platform admins using X-Tenant-Id, TenantMiddleware has already scoped
+    # the DB session to the selected target tenant. The admin user's own row can
+    # live in a different home tenant, so identity lookup must happen before
+    # applying the selected tenant scope to route queries.
+    if requested_tenant and token_role == "platform_admin":
+        async with enter_rls_bypass(
+            db,
+            reason="platform-admin identity lookup before selected-tenant override",
+            actor_id=user_id,
+        ) as bypass_db:
+            row = await _load_user_with_tenant_status(bypass_db, user_uuid)
+    else:
+        row = await _load_user_with_tenant_status(db, user_uuid)
+
     if not row:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
     user, tenant_is_active = row[0], row[1]
@@ -109,24 +142,32 @@ async def get_current_user(
         )
 
     # Tenant context override via X-Tenant-Id header
-    requested_tenant = request.headers.get("x-tenant-id")
-    if requested_tenant and user.tenant_id and str(user.tenant_id) != requested_tenant:
-        if user.role == "platform_admin":
-            try:
-                target_id = uuid.UUID(requested_tenant)
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid X-Tenant-Id")
-            target_result = await db.execute(
-                select(Tenant.is_active).where(Tenant.id == target_id)
-            )
-            target_active = target_result.scalar_one_or_none()
-            if target_active is None:
-                raise HTTPException(status_code=404, detail="Target tenant not found")
-            if not target_active:
-                raise HTTPException(status_code=403, detail="Target tenant is disabled")
-            # Detach user from ORM session and override tenant_id in-memory
+    if requested_tenant and user.role == "platform_admin":
+        try:
+            target_id = uuid.UUID(requested_tenant)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid X-Tenant-Id")
+        target_result = await db.execute(
+            select(Tenant.is_active).where(Tenant.id == target_id)
+        )
+        target_active = target_result.scalar_one_or_none()
+        if target_active is None:
+            raise HTTPException(status_code=404, detail="Target tenant not found")
+        if not target_active:
+            raise HTTPException(status_code=403, detail="Target tenant is disabled")
+        if user.tenant_id is None or str(user.tenant_id) != requested_tenant:
+            # Detach user from ORM session and override tenant_id in-memory.
+            # The active DB session is then pinned to the selected tenant for
+            # the endpoint's actual tenant-scoped data access.
             db.expunge(user)
             user.tenant_id = target_id
+        await _set_session_tenant(db, target_id)
+    elif requested_tenant and user.tenant_id and str(user.tenant_id) != requested_tenant:
+        # A stale token may still claim platform_admin after the DB role was
+        # downgraded. Ignore the selected tenant and restore the user's own
+        # tenant scope so downstream route queries do not run under a foreign
+        # tenant chosen from an old localStorage value.
+        await _set_session_tenant(db, user.tenant_id)
 
     return user
 
@@ -231,4 +272,3 @@ async def revoke_refresh_token(db: AsyncSession, raw_token: str) -> None:
     if row:
         row.revoked = True
         await db.flush()
-

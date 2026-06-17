@@ -23,6 +23,13 @@ _PUBLIC_PATHS = frozenset({
     "/api/health",
     "/api/auth/login",
     "/api/auth/register",
+    "/api/auth/registration-config",
+    "/api/auth/feishu/sso/available",
+    "/api/auth/feishu/sso/init",
+    "/api/auth/feishu/sso/poll",
+    "/api/auth/feishu/callback",
+    "/api/auth/feishu/authorize",
+    "/api/auth/feishu/callback-desktop",
     "/docs",
     "/openapi.json",
     "/redoc",
@@ -32,7 +39,6 @@ _PUBLIC_PATHS = frozenset({
 _PUBLIC_PREFIXES = (
     "/ws/",
     "/webhooks/",
-    "/api/auth/",
     "/api/tenants/public/",
 )
 

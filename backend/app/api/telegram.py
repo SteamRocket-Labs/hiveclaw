@@ -16,6 +16,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.channel_rls import load_public_agent_channel_config
 from app.api.channel_secrets import resolve_secret_field
 from app.config import get_settings
 from app.core.events import get_redis
@@ -321,6 +322,7 @@ async def configure_telegram_channel(
 
     config = ChannelConfig(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         channel_type="telegram",
         app_id="telegram",
         app_secret=bot_token,
@@ -402,14 +404,8 @@ async def telegram_webhook(
     except (json.JSONDecodeError, UnicodeDecodeError):
         return Response(status_code=400)
 
-    # Get channel config
-    result = await db.execute(
-        select(ChannelConfig).where(
-            ChannelConfig.agent_id == agent_id,
-            ChannelConfig.channel_type == "telegram",
-        )
-    )
-    config = result.scalar_one_or_none()
+    # Get channel config and pin tenant RLS for this public webhook.
+    config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="telegram")
     if not config:
         return Response(status_code=404)
 
@@ -538,11 +534,12 @@ async def telegram_webhook(
     }
 
     session = await find_or_create_channel_session(
-        db,
-        agent_id,
-        platform_user.id,
-        conv_id,
-        "telegram",
+        db=db,
+        agent_id=agent_id,
+        tenant_id=agent_obj.tenant_id,
+        user_id=platform_user.id,
+        external_conv_id=conv_id,
+        source_channel="telegram",
         first_message_title=f"Telegram: {sender_name}",
         delivery_target=delivery_target,
     )
@@ -553,6 +550,7 @@ async def telegram_webhook(
     db.add(
         ChatMessage(
             agent_id=agent_id,
+            tenant_id=agent_obj.tenant_id,
             conversation_id=str(session.id),
             role="user",
             content=user_text,
@@ -610,6 +608,7 @@ async def telegram_webhook(
     db.add(
         ChatMessage(
             agent_id=agent_id,
+            tenant_id=agent_obj.tenant_id,
             conversation_id=str(session.id),
             role="assistant",
             content=reply,

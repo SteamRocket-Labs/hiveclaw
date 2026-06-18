@@ -17,8 +17,9 @@ from app.services.plan_mode_core import ACTION_KINDS
 def test_first_batch_tools_are_tagged_with_expected_action_kinds():
     """The §9.2 first-batch autonomous-enabling tools carry the right tag.
 
-    The hard-gated tools map onto a real ACTION_KIND; deep_research_start
-    is registered via the BRIDGE_SELF sentinel (it owns its plan_confirmed gate).
+    The hard-gated tools map onto a real ACTION_KIND. Tools with a runtime
+    backstop are registered via BRIDGE_SELF so the early tool gate does not
+    force Plan Mode before the runtime can inspect the user/session boundary.
     """
     from app.tools.plan_gate_registry import BRIDGE_SELF, plan_gated_tool_action_kinds
 
@@ -26,7 +27,7 @@ def test_first_batch_tools_are_tagged_with_expected_action_kinds():
 
     assert tagged["set_trigger"] == "create_enabled_trigger"
     assert tagged["update_trigger"] == "create_enabled_trigger"
-    assert tagged["delegate_to_agent"] == "start_delegation"
+    assert tagged["delegate_to_agent"] == BRIDGE_SELF
     # F-2: manage_tasks is retired from the agent tool face — no tool-side
     # binding to start_long_task remains (REST/manual trigger keep the action_kind).
     assert "manage_tasks" not in tagged
@@ -53,14 +54,13 @@ def test_hard_gated_tools_resolve_to_a_real_action_kind():
     assert hard_gated_action_kind("set_trigger") == "create_enabled_trigger"
     assert hard_gated_action_kind("update_trigger") is None
     assert hard_gated_action_kind("update_trigger", {"config": {"type": "cron"}}) == "create_enabled_trigger"
-    assert hard_gated_action_kind("delegate_to_agent") == "start_delegation"
+    assert hard_gated_action_kind("delegate_to_agent") is None
     # F-2: manage_tasks retired from the tool face — it no longer resolves to a gate.
     assert hard_gated_action_kind("manage_tasks") is None
     # Every hard-gated action_kind must be a member of the canonical ACTION_KINDS.
     for resolved_action_kind in (
         hard_gated_action_kind("set_trigger"),
         hard_gated_action_kind("update_trigger", {"config": {"type": "cron"}}),
-        hard_gated_action_kind("delegate_to_agent"),
     ):
         assert resolved_action_kind in ACTION_KINDS
 
@@ -141,11 +141,12 @@ def test_reactive_trigger_tools_are_not_hard_gated():
 
 
 def test_bridge_self_tools_are_not_hard_gated():
-    """deep_research_start is registered but self-gates — the service must not
-    invoke PlanModeGate for it (that would double-block its plan_confirmed)."""
+    """Bridge tools are registered as plan-governed but not hard-gated by the
+    generic tool service; their runtime owns the final boundary check."""
     from app.tools.plan_gate_registry import hard_gated_action_kind
 
     assert hard_gated_action_kind("deep_research_start") is None
+    assert hard_gated_action_kind("delegate_to_agent") is None
 
 
 def test_low_risk_sync_tools_are_not_plan_gated():

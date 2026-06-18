@@ -276,6 +276,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     sess = await find_or_create_feishu_chat_session(
                         db=db,
                         agent_id=agent_id,
+                        tenant_id=agent_obj.tenant_id if agent_obj else None,
                         user_id=user_id,
                         provider_user_id=stable_user_id,
                         provider_open_id=stable_open_id,
@@ -284,6 +285,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     db.add(
                         ChatMessage(
                             agent_id=agent_id,
+                            tenant_id=agent_obj.tenant_id if agent_obj else None,
                             user_id=user_id,
                             role="assistant",
                             content=message_text,

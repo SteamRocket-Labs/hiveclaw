@@ -1,9 +1,8 @@
-"""§9 P4 red tests: risk classification + Plan Mode wiring + real-spawn leaf.
+"""Workflow confirmation inspection + real-spawn leaf tests.
 
 Covers the launch half of P4:
-* ``start_workflow`` joins ACTION_KINDS so PlanModeGate can arbitrate it;
-* risk classification decides WHICH launches need a confirmed plan
-  (§10 decision 3: graded by risk, not by ephemeral/registered);
+* workflow preview can surface confirmation notes without assigning low/high
+  risk levels or entering Plan Mode;
 * the production leaf executor binds agent_step to the REAL axis-1
   ``spawn_subagent`` entry (asserted via an injected double) and inherits
   tenant / budget / governance context from the spawn ctx.
@@ -20,7 +19,7 @@ from app.runtime.workflow_compiler import compile_workflow
 from app.runtime.workflow_engine import LeafRequest
 from app.services.workflow_launch import (
     build_subagent_leaf_executor,
-    classify_workflow_risk,
+    inspect_workflow_confirmation_needs,
 )
 
 
@@ -53,27 +52,26 @@ def _ctx(**overrides) -> SubagentSpawnContext:
     return ctx
 
 
-# ── ACTION_KINDS wiring ───────────────────────────────────────────
+# ── PlanModeGate decoupling ───────────────────────────────────────
 
 
-def test_start_workflow_is_a_plan_action_kind():
-    from app.services.plan_mode_core import ACTION_KINDS, intent_type_for_action
+def test_start_workflow_is_not_a_plan_action_kind():
+    from app.services.plan_mode_core import ACTION_KINDS
 
-    assert "start_workflow" in ACTION_KINDS
-    assert intent_type_for_action("start_workflow")  # mapped, does not raise
-
-
-# ── risk classification (§10 decision 3) ──────────────────────────
+    assert "start_workflow" not in ACTION_KINDS
 
 
-def test_read_only_small_workflow_is_low_risk():
+# ── confirmation inspection ───────────────────────────────────────
+
+
+def test_read_only_small_workflow_needs_no_extra_confirmation_note():
     compiled = compile_workflow(_definition())
-    assessment = classify_workflow_risk(compiled, args={})
-    assert assessment.level == "low"
+    assessment = inspect_workflow_confirmation_needs(compiled, args={})
+    assert assessment.requires_confirmation is False
     assert assessment.reasons == []
 
 
-def test_external_effects_are_high_risk():
+def test_external_effects_are_confirmation_notes():
     data = _definition()
     data["steps"].insert(0, {"id": "gate", "type": "gate_step", "reason": "external send"})
     data["steps"].append(
@@ -86,19 +84,19 @@ def test_external_effects_are_high_risk():
         }
     )
     compiled = compile_workflow(data)
-    assessment = classify_workflow_risk(compiled, args={})
-    assert assessment.level == "high"
+    assessment = inspect_workflow_confirmation_needs(compiled, args={})
+    assert assessment.requires_confirmation is True
     assert any("external" in reason for reason in assessment.reasons)
 
 
-def test_high_budget_is_high_risk():
+def test_large_budget_is_confirmation_note():
     compiled = compile_workflow(_definition(default_budget={"max_total_tokens": 1_500_000}))
-    assessment = classify_workflow_risk(compiled, args={})
-    assert assessment.level == "high"
+    assessment = inspect_workflow_confirmation_needs(compiled, args={})
+    assert assessment.requires_confirmation is True
     assert any("budget" in reason for reason in assessment.reasons)
 
 
-def test_wide_fanout_is_high_risk():
+def test_wide_fanout_is_confirmation_note():
     data = _definition()
     data["steps"].append(
         {
@@ -110,21 +108,21 @@ def test_wide_fanout_is_high_risk():
         }
     )
     compiled = compile_workflow(data)
-    assessment = classify_workflow_risk(compiled, args={"targets": [f"t{i}" for i in range(12)]})
-    assert assessment.level == "high"
+    assessment = inspect_workflow_confirmation_needs(compiled, args={"targets": [f"t{i}" for i in range(12)]})
+    assert assessment.requires_confirmation is True
     assert any("fanout" in reason for reason in assessment.reasons)
 
 
-def test_long_wait_is_high_risk():
+def test_long_wait_is_confirmation_note():
     data = _definition()
     data["steps"].append({"id": "wait", "type": "wait_until_step", "delay_seconds": 24 * 3600})
     compiled = compile_workflow(data)
-    assessment = classify_workflow_risk(compiled, args={})
-    assert assessment.level == "high"
+    assessment = inspect_workflow_confirmation_needs(compiled, args={})
+    assert assessment.requires_confirmation is True
     assert any("wait" in reason or "wall" in reason for reason in assessment.reasons)
 
 
-def test_absolute_wait_until_is_high_risk_when_far_in_future():
+def test_absolute_wait_until_is_confirmation_note_when_far_in_future():
     data = _definition()
     data["steps"].append(
         {
@@ -134,21 +132,21 @@ def test_absolute_wait_until_is_high_risk_when_far_in_future():
         }
     )
     compiled = compile_workflow(data)
-    assessment = classify_workflow_risk(compiled, args={})
-    assert assessment.level == "high"
+    assessment = inspect_workflow_confirmation_needs(compiled, args={})
+    assert assessment.requires_confirmation is True
     assert any("wait" in reason or "wall" in reason for reason in assessment.reasons)
 
 
-def test_wait_until_args_reference_is_high_risk_when_far_in_future():
+def test_wait_until_args_reference_is_confirmation_note_when_far_in_future():
     data = _definition()
     data["args_schema"]["resume_at"] = {"type": "string", "required": True}
     data["steps"].append({"id": "wait", "type": "wait_until_step", "until": "args.resume_at"})
     compiled = compile_workflow(data)
-    assessment = classify_workflow_risk(
+    assessment = inspect_workflow_confirmation_needs(
         compiled,
         args={"resume_at": (datetime.now(UTC) + timedelta(hours=12)).isoformat()},
     )
-    assert assessment.level == "high"
+    assert assessment.requires_confirmation is True
     assert any("wait" in reason or "wall" in reason for reason in assessment.reasons)
 
 

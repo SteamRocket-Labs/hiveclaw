@@ -1,12 +1,10 @@
-"""Workflow launch surface (§9 P4): risk grading + real-spawn leaf + launcher.
+"""Workflow launch surface: confirmation inspection + real-spawn leaf + launcher.
 
 Three responsibilities, one cohesive "how a run gets started" module:
 
-* :func:`classify_workflow_risk` — §10 decision 3: confirmation is graded by
-  RISK, not by ephemeral/registered. Low risk (read-only/workspace, small
-  budget/fanout/wait) may start on in-conversation confirmation; high risk
-  (external/irreversible effects, big budget, wide fanout, long waits) must
-  carry a confirmed plan through PlanModeGate.
+* :func:`inspect_workflow_confirmation_needs` — deterministic preview notes for
+  definitions that should be shown to the user before launch. These notes never
+  force Plan Mode and do not assign low/high risk levels.
 * :func:`build_subagent_leaf_executor` — binds ``agent_step`` to the REAL
   axis-1 ``spawn_subagent`` entry (§6.3): governance, tenant isolation,
   delegation token and SubagentBudget are inherited from the spawn ctx, so
@@ -22,7 +20,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from app.agents.subagent import (
     SubagentBudget,
@@ -39,17 +37,15 @@ from app.services.workflow_runtime_service import WorkflowRunHandle, WorkflowRun
 
 logger = logging.getLogger(__name__)
 
-RiskLevel = Literal["low", "high"]
-
 
 @dataclass(slots=True)
-class WorkflowRiskAssessment:
-    level: RiskLevel
+class WorkflowConfirmationAssessment:
+    requires_confirmation: bool
     reasons: list[str] = field(default_factory=list)
 
 
-def classify_workflow_risk(compiled: CompiledWorkflow, *, args: dict) -> WorkflowRiskAssessment:
-    """Grade a compiled definition + args. Thresholds live in Settings."""
+def inspect_workflow_confirmation_needs(compiled: CompiledWorkflow, *, args: dict) -> WorkflowConfirmationAssessment:
+    """Return deterministic user-confirmation notes for a compiled workflow."""
     settings = get_settings()
     reasons: list[str] = []
 
@@ -59,7 +55,7 @@ def classify_workflow_risk(compiled: CompiledWorkflow, *, args: dict) -> Workflo
 
     budget = compiled.definition.default_budget.max_total_tokens
     if budget > settings.WORKFLOW_HIGH_RISK_BUDGET_TOKENS:
-        reasons.append(f"budget {budget} exceeds high-risk threshold {settings.WORKFLOW_HIGH_RISK_BUDGET_TOKENS}")
+        reasons.append(f"budget {budget} exceeds confirmation threshold {settings.WORKFLOW_HIGH_RISK_BUDGET_TOKENS}")
 
     total_wait = 0
     for step in compiled.definition.steps:
@@ -76,10 +72,10 @@ def classify_workflow_risk(compiled: CompiledWorkflow, *, args: dict) -> Workflo
             total_wait += estimate_wait_seconds(step, args=args)
     if total_wait > settings.WORKFLOW_HIGH_RISK_WAIT_SECONDS:
         reasons.append(
-            f"total wait {total_wait}s exceeds high-risk threshold {settings.WORKFLOW_HIGH_RISK_WAIT_SECONDS}s"
+            f"total wait {total_wait}s exceeds confirmation threshold {settings.WORKFLOW_HIGH_RISK_WAIT_SECONDS}s"
         )
 
-    return WorkflowRiskAssessment(level="high" if reasons else "low", reasons=reasons)
+    return WorkflowConfirmationAssessment(requires_confirmation=bool(reasons), reasons=reasons)
 
 
 def build_subagent_leaf_executor(

@@ -345,13 +345,16 @@ async def test_finalize_web_chat_run_skips_assistant_when_run_already_terminal(m
 
 
 @pytest.mark.asyncio
-async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatch):
+async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
 
     agent_id = uuid4()
     tenant_id = uuid4()
     run_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
     task = SimpleNamespace(
         id=run_id,
         task_type="web_chat_turn",
@@ -389,12 +392,13 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
 
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     finalized = await runtime._finalize_web_chat_run_with_assistant(
         run_uuid=run_id,
         agent_id=agent_id,
-        user_id=uuid4(),
-        session_id=uuid4().hex,
+        user_id=user_id,
+        session_id=session_id,
         content="final answer",
         thinking="private reasoning",
         thinking_signature="sig-final",
@@ -411,6 +415,11 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
     assert task.status == "completed"
     assert task.result_summary == "final answer"
     assert session.commits == 1
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("assistant_message", "assistant", "final answer")
+    ]
+    assert events[0].runtime_task_id == run_id.hex
 
 
 @pytest.mark.asyncio
@@ -619,8 +628,9 @@ async def test_execute_web_chat_run_does_not_broadcast_done_when_finalization_lo
 
 
 @pytest.mark.asyncio
-async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypatch):
+async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypatch, tmp_path):
     import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
     from app.models.runtime_task import RuntimeTask
 
@@ -650,6 +660,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
         return None
 
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await runtime.start_web_chat_run(
         db=db,
@@ -675,13 +686,22 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert task.metadata_json["runtime_task_id"] == task.id.hex
     assert task.metadata_json["request_id"] == str(task.id)
     assert task.metadata_json["trace_id"] == task.trace_id
-    assert db.commits == 1
+    assert db.commits == 2
     assert scheduled
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.sequence, event.event_type, event.role, event.content) for event in events] == [
+        (1, "user_message", "user", "请规划一个长任务")
+    ]
+    assert events[0].message_id
+    assert events[0].metadata["source"] == "web"
 
 
 @pytest.mark.asyncio
-async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_without_duplicate_user_message(monkeypatch):
+async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_without_duplicate_user_message(
+    monkeypatch, tmp_path
+):
     import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
     from app.models.runtime_task import RuntimeTask
 
@@ -712,6 +732,7 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
         return None
 
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await runtime.start_channel_chat_run_from_saved_turn(
         db=db,
@@ -737,11 +758,17 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     assert task.metadata_json["channel"] == "feishu"
     assert task.metadata_json["delivery_target_json"] == session.delivery_target_json
     assert scheduled
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("user_message", "user", "处理这条飞书消息")
+    ]
+    assert events[0].metadata["existing_user_message_saved"] is True
 
 
 @pytest.mark.asyncio
-async def test_start_web_chat_run_queues_user_message_when_run_is_active():
+async def test_start_web_chat_run_queues_user_message_when_run_is_active(monkeypatch, tmp_path):
     import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
 
     agent_id = uuid4()
@@ -761,6 +788,7 @@ async def test_start_web_chat_run_queues_user_message_when_run_is_active():
         metadata_json={},
     )
     db = _FakeDB(active_run=active_run)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     with pytest.raises(runtime.ActiveWebChatRunExists) as exc_info:
         await runtime.start_web_chat_run(
@@ -777,12 +805,66 @@ async def test_start_web_chat_run_queues_user_message_when_run_is_active():
     assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
     assert active_run.metadata_json["pending_user_messages"][0]["content"] == "second message"
     assert db.commits == 1
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("user_message", "user", "second message")
+    ]
+    assert events[0].runtime_task_id == existing_run_id.hex
 
 
 @pytest.mark.asyncio
-async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(monkeypatch):
+async def test_persist_tool_call_appends_t0_tool_result(monkeypatch, tmp_path):
+    import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    added = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            return None
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        data={"name": "read_file", "args": {"path": "workspace/a.md"}, "result": "file content"},
+    )
+
+    assert added[0].role == "tool_call"
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role) for event in events] == [("tool_result", "tool")]
+    assert events[0].metadata["tool_name"] == "read_file"
+    assert events[0].metadata["status"] == "done"
+    assert '"result": "file content"' in events[0].content
+
+
+@pytest.mark.asyncio
+async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(monkeypatch, tmp_path):
+    import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
+    from app.models.runtime_task import RuntimeTask
     from sqlalchemy.exc import IntegrityError
 
     agent_id = uuid4()
@@ -823,7 +905,7 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
 
         async def commit(self):
             self.commits += 1
-            if self.commits == 1:
+            if self.commits == 2:
                 raise IntegrityError("insert runtime_tasks", {}, _Orig())
 
         async def rollback(self):
@@ -837,6 +919,7 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
         broadcasts.append(event)
 
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     with pytest.raises(runtime.ActiveWebChatRunExists) as exc_info:
         await runtime.start_web_chat_run(
@@ -851,10 +934,15 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
     assert exc_info.value.run["status"] == "running"
     assert exc_info.value.run["queued_user_message"]["content"] == "race message"
     assert db.rollbacks == 1
-    assert db.commits == 2
-    assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
+    assert db.commits == 3
+    assert not any(isinstance(item, ChatMessage) for item in db.added)
+    assert not any(isinstance(item, RuntimeTask) for item in db.added)
     assert active_run.metadata_json["pending_user_messages"][0]["content"] == "race message"
     assert broadcasts[-1]["type"] == "user_message_queued"
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("user_message", "user", "race message")
+    ]
 
 
 @pytest.mark.asyncio

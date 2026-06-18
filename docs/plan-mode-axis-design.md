@@ -1,6 +1,6 @@
 # Track 1 — Plan Mode 轴完整设计（A entry + E plan→执行交接 + G/H 模式边界）
 
-> 设计原则：Plan Mode = 用户控制的权限模式开关；判断归模型(L1)、触发/批准归用户（零强加）、治理 L2 叠加复用 Plan 批准。**不动**治理核心（`plan_mode_core.py` hash / `validate_confirmation` / `PlanModeGate` fail-closed）。
+> 设计原则：Plan Mode = 用户控制的权限模式开关；判断归模型(L1)、触发/批准归用户（零强加）、治理 L2 叠加复用 Plan 批准。**2026-06-18 口径**：risk grade / tool gate / REST gate 只能阻断执行并返回 `requires_confirmation`，不能强制切入 Plan Mode；`needs_plan` 只属于显式 Plan Mode 内的计划提交/确认流程。
 
 ## 关键事实地图
 
@@ -20,20 +20,20 @@
 
 ## A — Entry：进入路径收敛为「用户显式 + AI 请求许可」
 
-**结论**：删 pre-LLM `auto` 自动激活；进入只剩两条——① 用户显式（`plan_mode_requested`/`_EXPLICIT_PLAN_MODE_RE`）；② AI 调新工具 `request_plan_mode`（对标 CC `EnterPlanModeTool`，语义=请求许可，需用户批准）。`recommend` 的"建议不触发"语义保留但判断来源从正则改为 prompt 引导下模型产出 `request_plan_mode`。
+**结论**：删 pre-LLM `auto` 自动激活；进入只剩两条——① 用户显式（`plan_mode_requested`/`_EXPLICIT_PLAN_MODE_RE`）；② AI 调 `request_plan_mode`（对标 CC `EnterPlanModeTool`，语义=请求许可，需用户批准）。工具结果本身永远不 flip Plan Mode；`recommend` 的"建议不触发"语义保留但判断来源从正则改为 prompt 引导下模型产出 `request_plan_mode`。
 
 **硬骨头①**：CC 的 EnterPlanMode 在终端 `call()` 直接 flip mode + deferred permission gate；Hive 无同构同步终端批准。→ Hive 用「**进入低门槛（read-only 无害）+ 执行高门槛（PlanCard 用户确认）**」替代 CC 的 flip-时-批准，与 CC「plan mode 本身无害、ExitPlanMode 才需批准」语义一致。
-**硬骨头②**：无人值守（trigger/heartbeat）无在场用户批准 → `request_plan_mode` 在无人值守 source **fail-closed**（不暴露/no-op）；无人值守 Plan Mode 入口仍只能是 tool-intercept。
+**硬骨头②**：无人值守（trigger/heartbeat）无在场用户批准 → `request_plan_mode` 在无人值守 source **fail-closed**（不暴露/no-op）；无人值守路径只能产出 checkpoint / `requires_confirmation`，不能自行进入 Plan Mode。
 
 **改动文件**：
 - `plan_mode_core.py`：删 `classify_plan_mode_entry` 的 `has_long_task` 分支(214-222) + `_LONG_TASK_RE`(122-126)；`PlanModeEntryDecision.mode` 枚举去 `auto`。保留 schedule→recommend。
 - `web_chat_runtime.py`：`_maybe_handle_plan_mode_entry` 收窄到 recommend+explicit（auto 删后自然）；更新 docstring。
 - `api/feishu.py:2225-2226`：`in {"auto","explicit"}` → `=="explicit"`。
-- **新 `tools/handlers/plan_mode_entry.py`**：`@tool request_plan_mode`（产 `activate_interactive_plan` envelope，复用 `engine._maybe_activate_interactive_plan_from_tool_result`）。
+- **`tools/handlers/plan_mode.py`**：`@tool request_plan_mode`（产 `plan_mode_entry_requested` envelope；用户批准后由 web/chat entry path 进入 Plan Mode，工具结果不激活）。
 - `tools/capability_gate.py CAPABILITY_MAP`：⚠️必加 `request_plan_mode`=safe（STRICT 默认 True，漏注册→真实 invocation 被拒）。
 - `runtime/prompt_sections/`：「何时该先规划」判据移进 prompt（与 Track 3 协调，见 Track 3 plan_mode_guidance.py）。
 
-**契约 `request_plan_mode`**：governance=safe, read_only=True, parallel_safe=False；params `{reason?: string}`（对标 CC 无参，reason 可选供审计）。返回 `{status:needs_plan, activate_interactive_plan:true, requires_user_approval:true, interactive_plan_seed:{entry:"agent_requested",...}, next_action:"END turn, 等用户批准"}`。`PlanModeState` 加 `entry` 字段审计进入路径。
+**契约 `request_plan_mode`**：governance=safe, read_only=True, parallel_safe=False；params `{reason: string}`（reason 必填供用户判断和审计）。返回 `{status:"plan_mode_entry_requested", reason, next_action:"END turn, 等用户批准"}`。没有 `activate_interactive_plan` / `interactive_plan_seed`，也不写 PlanRequest；只有真实用户批准事件才能进入 Plan Mode。
 
 **测试**：更新 `test_plan_mode_gate_core.py:372`（auto 断言→改为长任务文本不自动进）；新 `test_request_plan_mode_tool.py`（envelope 正确/seed entry=agent_requested/无参成功）、`test_request_plan_mode_no_op_in_unattended`（硬骨头②防线）、`test_long_task_text_no_longer_auto_activates`、`test_executing_actions_teaches_when_to_plan`。
 
@@ -74,10 +74,10 @@
 **推荐**：`_INTENT_HANDOFF_TARGET["external_action"]/["state_change"]` 从 `"tool_action"` 改 `"continue_current_session"`（直接复用 live 续跑，无 session 时 fail-closed），彻底删 `tool_action` target 词。
 关键验收测试 `test_every_intent_handoff_target_has_registered_handler`（遍历 `_INTENT_HANDOFF_TARGET.values()` 全有 handler，钉死无 no_handler_registered 死路径）。
 
-### G/H.4 高风险 workflow 复用 Plan Mode（**已基本实现**）
-`plan_gate_registry.py:135-159`：HIGH risk→`start_workflow` action_kind→`long_task` intent→Plan Gate；risk 分级只决定要不要进 Plan Mode，批准走 PlanCard。残余审查：grep 确认无第二条独立 risk 批准路径，有则删。
+### G/H.4 Workflow 确认不再复用 Plan Mode 强制入口（**2026-06-18 修正**）
+`start_workflow` 不再注册 `plan_gate_action_kind`，`workflow_launch.inspect_workflow_confirmation_needs` 只给 preview/start 返回 `confirmation_required` / `confirmation_reasons`。需要确认时由 UI/调用方收集 `user_confirmed` 或同等用户事件；risk/预算/fanout/等待阈值只能解释为什么要确认，不能决定是否进入 Plan Mode。
 
-**G/H 验收**：`invocation_scope` 改名 + 两 execution_mode 语义文档化；skeleton long_task intent→continue_current_session；`test_every_intent_handoff_target_has_registered_handler` 绿；高风险 workflow 唯一确认是 Plan Mode。
+**G/H 验收**：`invocation_scope` 改名 + 两 execution_mode 语义文档化；skeleton long_task intent→continue_current_session；`test_every_intent_handoff_target_has_registered_handler` 绿；workflow 的确认面返回 `requires_confirmation` 或 `confirmation_required`，不会产出 `needs_plan`。
 
 ## 落地顺序（Track 1 内）
 1. G/H.2+G/H.3（命名/断链收敛，纯重构+兼容别名，风险最低）。

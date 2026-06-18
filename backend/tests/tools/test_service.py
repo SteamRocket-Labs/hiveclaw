@@ -542,7 +542,9 @@ async def test_tool_runtime_service_timeout_returns_structured_error():
         ("deep_research_run", 180.0),
     ],
 )
-async def test_tool_runtime_service_long_running_tools_have_explicit_timeout(monkeypatch, tool_name, expected_min_timeout):
+async def test_tool_runtime_service_long_running_tools_have_explicit_timeout(
+    monkeypatch, tool_name, expected_min_timeout
+):
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
 
@@ -754,7 +756,7 @@ async def test_interactive_plan_mode_allows_write_only_to_exact_plan_file():
         reset_interactive_plan_mode(token)
 
 
-# ── Phase 5: tool-intercept interactive signal on the needs_plan envelope ──
+# ── Confirmation gate: tool intercept never auto-enters Plan Mode ──
 
 
 def test_redact_args_drops_handshake_keys_and_masks_secrets():
@@ -771,45 +773,31 @@ def test_redact_args_drops_handshake_keys_and_masks_secrets():
     assert out == {"cron": "0 9 * * *", "api_key": "[redacted]", "webhook_token": "[redacted]"}
 
 
-def test_interactive_signal_noop_when_disabled():
-    # Cut ④: the signal is driven by the gate's defer decision (``enabled``), not
-    # a flag. A non-eligible source passes enabled=False → static needs_plan.
-    from app.tools.service import _maybe_attach_interactive_signal
+def test_confirmation_required_payload_strips_legacy_plan_activation_signal():
+    from app.tools.service import _confirmation_required_payload
 
-    payload = {"status": "needs_plan", "plan_id": "p1"}
-    out = _maybe_attach_interactive_signal(
-        payload, action_kind="create_enabled_trigger", tool_name="set_trigger", arguments={}, enabled=False
-    )
-    assert out == payload
+    payload = {
+        "status": "needs_plan",
+        "activate_interactive_plan": True,
+        "interactive_plan_seed": {"action_kind": "create_enabled_trigger"},
+        "summary": "needs a plan",
+    }
+    out = _confirmation_required_payload(payload)
+
+    assert out["status"] == "requires_confirmation"
+    assert out["requires_confirmation"] is True
     assert "activate_interactive_plan" not in out
-
-
-def test_interactive_signal_tags_envelope_when_enabled():
-    # An eligible source defers (enabled=True, the default) → activation signal.
-    from app.tools.service import _maybe_attach_interactive_signal
-
-    payload = {"status": "needs_plan", "plan_id": "p1", "plan_version": 1, "plan_hash": "h"}
-    out = _maybe_attach_interactive_signal(
-        payload,
-        action_kind="create_enabled_trigger",
-        tool_name="set_trigger",
-        arguments={"cron": "x", "api_key": "s"},
-    )
-    assert out["activate_interactive_plan"] is True
-    seed = out["interactive_plan_seed"]
-    assert seed["action_kind"] == "create_enabled_trigger"
-    assert seed["tool_name"] == "set_trigger"
-    assert seed["tool_args"] == {"cron": "x", "api_key": "[redacted]"}
-    assert seed["plan_id"] == "p1"
-    # the original payload is not mutated
-    assert "activate_interactive_plan" not in payload
+    assert "interactive_plan_seed" not in out
+    assert payload["status"] == "needs_plan"
 
 
 @pytest.mark.asyncio
-async def test_live_intercept_signal_defers_plan_authoring_for_eligible_live_chat():
-    """Cut ④: a live-chat (eligible) source whose gated tool is blocked defers plan
-    authoring to the agent's own main-loop Plan Mode — activation signal attached,
-    no static plan materialised, no execution. Unconditional (no flag)."""
+async def test_live_intercept_returns_confirmation_required_without_plan_mode_activation():
+    """A live source whose gated tool is blocked returns a confirmation block.
+
+    It must not attach a Plan Mode activation signal; Plan Mode entry is explicit
+    user/UI state only.
+    """
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -887,18 +875,21 @@ async def test_live_intercept_signal_defers_plan_authoring_for_eligible_live_cha
     )
     payload = json.loads(result)
 
-    assert payload["status"] == "needs_plan"
-    assert payload["activate_interactive_plan"] is True
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
+    assert "activate_interactive_plan" not in payload
+    assert "interactive_plan_seed" not in payload
     assert "plan_id" not in payload
     assert plan_service.calls == 0
     assert registry.calls == []
 
 
 @pytest.mark.asyncio
-async def test_unattended_intercept_defers_plan_authoring_for_eligible_unattended_run():
-    """Cut ②/④: an unattended run (trigger/heartbeat, eligible) whose gated tool is
-    blocked defers to the agent's own main-loop Plan Mode (activation signal
-    attached, no static plan materialised). Unconditional now (no flag)."""
+async def test_unattended_intercept_returns_confirmation_required_without_plan_mode_activation():
+    """An unattended source must also fail closed without creating Plan Mode.
+
+    Background runs cannot self-author their way into Plan Mode when blocked.
+    """
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -972,20 +963,22 @@ async def test_unattended_intercept_defers_plan_authoring_for_eligible_unattende
     )
     payload = json.loads(result)
 
-    assert payload["status"] == "needs_plan"
-    assert payload["activate_interactive_plan"] is True
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
+    assert "activate_interactive_plan" not in payload
+    assert "interactive_plan_seed" not in payload
     assert "plan_id" not in payload
     assert plan_service.calls == 0
     assert registry.calls == []
 
 
 @pytest.mark.asyncio
-async def test_non_eligible_source_intercept_returns_static_needs_plan_fail_closed():
-    """Cut ④ critical edge: a NON-eligible source (neither live chat nor
-    trigger/heartbeat — e.g. delegation source="agent" / runtime) whose gated
-    tool is blocked gets a STATIC needs_plan block: no activation signal (the
-    agent does not plan) and no plan materialised, while the tool stays blocked
-    (it does not execute). Fail-closed — there is no RPC fallback any more."""
+async def test_non_eligible_source_intercept_returns_confirmation_required_fail_closed():
+    """A non-eligible source gets the same static confirmation block.
+
+    The key invariant is source-independent: no tool intercept may enter Plan
+    Mode for the user.
+    """
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -1046,7 +1039,8 @@ async def test_non_eligible_source_intercept_returns_static_needs_plan_fail_clos
     )
     payload = json.loads(result)
 
-    assert payload["status"] == "needs_plan"  # blocked
+    assert payload["status"] == "requires_confirmation"  # blocked
+    assert payload["requires_confirmation"] is True
     assert "activate_interactive_plan" not in payload  # agent does NOT plan
     assert "plan_id" not in payload  # nothing materialised — no RPC fallback
     assert registry.calls == []  # tool did NOT execute (fail-closed)

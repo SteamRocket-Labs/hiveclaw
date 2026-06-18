@@ -108,3 +108,45 @@ async def test_get_hr_agent_uses_oldest_canonical_when_duplicate_rows_exist(
 
     assert result == {"id": str(older.id), "name": agents_api.HR_AGENT_NAME, "status": "idle"}
     assert fake_db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_get_hr_agent_refreshes_existing_workspace_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Existing HR workspaces must be upgraded when the template contract changes."""
+    from app.api import agents as agents_api
+    import app.services.agent_manager as agent_manager_module
+
+    tenant_id = uuid.uuid4()
+    hr_agent = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        name=agents_api.HR_AGENT_NAME,
+        agent_class="internal_system",
+        status="idle",
+        primary_model_id=uuid.uuid4(),
+    )
+    agent_dir = tmp_path / str(hr_agent.id)
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "soul.md").write_text(
+        "OLD HR FLOW: run a fixed five-round interview before creation.\n",
+        encoding="utf-8",
+    )
+    (agent_dir / "HEARTBEAT.md").write_text("OLD HEARTBEAT\n", encoding="utf-8")
+
+    fake_db = _FakeDb([hr_agent])
+    monkeypatch.setattr(agent_manager_module, "agent_manager", _FakeAgentManager(tmp_path))
+
+    result = await agents_api.get_or_create_hr_agent(
+        current_user=SimpleNamespace(tenant_id=tenant_id),
+        db=fake_db,  # type: ignore[arg-type]
+    )
+
+    assert result == {"id": str(hr_agent.id), "name": agents_api.HR_AGENT_NAME, "status": "idle"}
+    soul = (agent_dir / "soul.md").read_text(encoding="utf-8")
+    assert "dynamic rounds, mandatory gates" in soul
+    assert "fixed five-round interview" not in soul
+    assert (agent_dir / ".hr_template_version").read_text(encoding="utf-8") == agents_api.HR_TEMPLATE_VERSION
+    assert (agent_dir / ".soul.md.pre-hr-template.bak").read_text(encoding="utf-8").startswith("OLD HR FLOW")

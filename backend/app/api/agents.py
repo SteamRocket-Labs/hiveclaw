@@ -1,7 +1,9 @@
 """Agent (Digital Employee) API routes."""
 
 import logging
+import shutil
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -10,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
-from app.core.tenant_scope import resolve_tenant_scope
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.domain.agent_lifecycle import InvalidTransitionError, TransitionContext, transition
 from app.models.agent import Agent, AgentPermission
@@ -72,7 +74,7 @@ async def list_agents(
     """List all agents the current user has access to."""
     # platform_admin & org_admin see all agents (optionally filtered by tenant)
     if current_user.role in ("platform_admin", "org_admin"):
-        target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+        target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         stmt = select(Agent).where(
             Agent.tenant_id == target_tenant_id,
             Agent.agent_class != "internal_system",
@@ -139,6 +141,7 @@ async def list_agents(
 
 
 HR_AGENT_NAME = "__system_hr__"
+HR_TEMPLATE_VERSION = "hr-flow-v2-dynamic-gates-2026-06-18"
 
 
 async def _get_existing_hr_agent(db: AsyncSession, tenant_id: uuid.UUID, *, lock_rows: bool) -> Agent | None:
@@ -164,6 +167,57 @@ async def _get_existing_hr_agent(db: AsyncSession, tenant_id: uuid.UUID, *, lock
             len(hr_agents) - 1,
         )
     return hr_agents[0] if hr_agents else None
+
+
+def _hr_template_dir() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "hr_agent_template"
+
+
+def _copy_hr_identity_template(src: Path, dest: Path, *, force: bool) -> None:
+    if not src.exists():
+        return
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        current = dest.read_text(encoding="utf-8")
+        incoming = src.read_text(encoding="utf-8")
+        if current == incoming:
+            return
+        if not force:
+            return
+        backup = dest.with_name(f".{dest.name}.pre-hr-template.bak")
+        shutil.copy2(str(dest), str(backup))
+        dest.write_text(incoming, encoding="utf-8")
+        return
+
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _sync_hr_agent_workspace(agent_dir: Path, *, force_identity_files: bool) -> None:
+    """Sync the system HR workspace with the bundled template contract."""
+    hr_template_dir = _hr_template_dir()
+    if not hr_template_dir.exists():
+        return
+
+    agent_dir.mkdir(parents=True, exist_ok=True)
+
+    for fname in ("soul.md", "HEARTBEAT.md"):
+        _copy_hr_identity_template(
+            hr_template_dir / fname,
+            agent_dir / fname,
+            force=force_identity_files,
+        )
+
+    hr_skills = hr_template_dir / "skills"
+    if hr_skills.exists():
+        for skill_file in hr_skills.rglob("*"):
+            if skill_file.is_file():
+                rel = skill_file.relative_to(hr_skills)
+                dest = agent_dir / "skills" / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(skill_file), str(dest))
+
+    (agent_dir / ".hr_template_version").write_text(HR_TEMPLATE_VERSION, encoding="utf-8")
 
 
 @router.get("/system/hr")
@@ -201,32 +255,15 @@ async def get_or_create_hr_agent(
                 hr_agent.primary_model_id = default_model.id
                 await db.commit()
 
-        # Always sync HR agent workspace with latest template
-        # (soul.md, HEARTBEAT.md, and skills/ synced to ensure updates propagate)
+        # Keep existing HR agents on the current hiring-flow contract. Older
+        # workspaces are refreshed once per template version with local backups.
         from app.services.agent_manager import agent_manager
-        import shutil
-        from pathlib import Path
         agent_dir = agent_manager._agent_dir(hr_agent.id)
         if not agent_dir.exists():
             await agent_manager.initialize_agent_files(db, hr_agent)
-        hr_template_dir = Path(__file__).resolve().parent.parent.parent / "hr_agent_template"
-        if hr_template_dir.exists():
-            agent_dir.mkdir(parents=True, exist_ok=True)
-            # Sync soul.md and HEARTBEAT.md from template (create if missing)
-            for fname in ("soul.md", "HEARTBEAT.md"):
-                src = hr_template_dir / fname
-                dest = agent_dir / fname
-                if src.exists() and not dest.exists():
-                    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-            # Sync skills/
-            hr_skills = hr_template_dir / "skills"
-            if hr_skills.exists():
-                for skill_file in hr_skills.rglob("*"):
-                    if skill_file.is_file():
-                        rel = skill_file.relative_to(hr_skills)
-                        dest = agent_dir / "skills" / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(str(skill_file), str(dest))
+        version_file = agent_dir / ".hr_template_version"
+        current_version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else ""
+        _sync_hr_agent_workspace(agent_dir, force_identity_files=current_version != HR_TEMPLATE_VERSION)
 
         return {"id": str(hr_agent.id), "name": hr_agent.name, "status": hr_agent.status}
 
@@ -253,33 +290,16 @@ async def get_or_create_hr_agent(
 
     # No public permissions — HR agent is only accessible via this endpoint
     db.add(AgentPermission(
-        agent_id=hr_agent.id, scope_type="company", access_level="use",
+        agent_id=hr_agent.id, tenant_id=hr_agent.tenant_id, scope_type="company", access_level="use",
     ))
     await db.flush()
 
     # Initialize files using standard template (same as normal agents)
     await agent_manager.initialize_agent_files(db, hr_agent)
 
-    # Overlay HR-specific files (soul.md, skills/create-employee/SKILL.md)
-    import shutil
-    from pathlib import Path
-    hr_template_dir = Path(__file__).resolve().parent.parent.parent / "hr_agent_template"
+    # Overlay HR-specific files (soul.md, HEARTBEAT.md, skills/)
     agent_dir = agent_manager._agent_dir(hr_agent.id)
-
-    if hr_template_dir.exists():
-        # Copy HR soul.md (overwrites the standard one)
-        hr_soul = hr_template_dir / "soul.md"
-        if hr_soul.exists():
-            (agent_dir / "soul.md").write_text(hr_soul.read_text(encoding="utf-8"), encoding="utf-8")
-        # Copy HR-specific skills
-        hr_skills = hr_template_dir / "skills"
-        if hr_skills.exists():
-            for skill_file in hr_skills.rglob("*"):
-                if skill_file.is_file():
-                    rel = skill_file.relative_to(hr_skills)
-                    dest = agent_dir / "skills" / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(str(skill_file), str(dest))
+    _sync_hr_agent_workspace(agent_dir, force_identity_files=True)
 
     # Start container
     await agent_manager.start_container(db, hr_agent)
@@ -349,7 +369,7 @@ async def create_agent(
     # Determine target tenant: normally user's tenant; admins can override via payload
     target_tenant_id = current_user.tenant_id
     if current_user.role in ("platform_admin", "org_admin"):
-        target_tenant_id = resolve_tenant_scope(current_user, data.tenant_id)
+        target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, data.tenant_id)
 
     # Get default limits from target tenant
     default_max_triggers = 20
@@ -405,14 +425,30 @@ async def create_agent(
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
     if data.permission_scope_type == "company":
-        db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
+        db.add(AgentPermission(agent_id=agent.id, tenant_id=agent.tenant_id, scope_type="company", access_level=access_level))
     elif data.permission_scope_type == "user":
         if data.permission_scope_ids:
             for scope_id in data.permission_scope_ids:
-                db.add(AgentPermission(agent_id=agent.id, scope_type="user", scope_id=scope_id, access_level=access_level))
+                db.add(
+                    AgentPermission(
+                        agent_id=agent.id,
+                        tenant_id=agent.tenant_id,
+                        scope_type="user",
+                        scope_id=scope_id,
+                        access_level=access_level,
+                    )
+                )
         else:
             # "仅自己" — insert creator as the only permitted user
-            db.add(AgentPermission(agent_id=agent.id, scope_type="user", scope_id=current_user.id, access_level="manage"))
+            db.add(
+                AgentPermission(
+                    agent_id=agent.id,
+                    tenant_id=agent.tenant_id,
+                    scope_type="user",
+                    scope_id=current_user.id,
+                    access_level="manage",
+                )
+            )
 
     await db.flush()
 
@@ -650,14 +686,30 @@ async def update_agent_permissions(
 
     # Insert new permissions
     if scope_type == "company":
-        db.add(AgentPermission(agent_id=agent_id, scope_type="company", access_level=access_level))
+        db.add(AgentPermission(agent_id=agent_id, tenant_id=agent.tenant_id, scope_type="company", access_level=access_level))
     elif scope_type == "user":
         if scope_ids:
             for sid in scope_ids:
-                db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uuid.UUID(sid), access_level=access_level))
+                db.add(
+                    AgentPermission(
+                        agent_id=agent_id,
+                        tenant_id=agent.tenant_id,
+                        scope_type="user",
+                        scope_id=uuid.UUID(sid),
+                        access_level=access_level,
+                    )
+                )
         else:
             # "仅自己"
-            db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=current_user.id, access_level="manage"))
+            db.add(
+                AgentPermission(
+                    agent_id=agent_id,
+                    tenant_id=agent.tenant_id,
+                    scope_type="user",
+                    scope_id=current_user.id,
+                    access_level="manage",
+                )
+            )
 
     await db.commit()
     return {"status": "ok"}

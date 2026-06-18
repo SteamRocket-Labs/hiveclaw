@@ -13,7 +13,13 @@ from app.database import get_db
 
 
 class _FakeDB:
-    pass
+    def __init__(self):
+        self.sync_session = SimpleNamespace(info={})
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(str(stmt))
+        return SimpleNamespace()
 
 
 def _platform_admin():

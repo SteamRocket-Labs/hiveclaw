@@ -59,9 +59,19 @@ async def configure_email_channel(
         )
         at = at_r.scalar_one_or_none()
         if at:
+            if at.tenant_id is None:
+                at.tenant_id = agent.tenant_id
             at.config = {**(at.config or {}), **email_config}
         else:
-            db.add(AgentTool(agent_id=agent_id, tool_id=tool.id, enabled=True, config=email_config))
+            db.add(
+                AgentTool(
+                    agent_id=agent_id,
+                    tenant_id=agent.tenant_id,
+                    tool_id=tool.id,
+                    enabled=True,
+                    config=email_config,
+                )
+            )
     await db.flush()
 
     return {

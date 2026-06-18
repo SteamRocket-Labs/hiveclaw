@@ -24,6 +24,7 @@ async def find_or_create_channel_session(
     external_conv_id: str,
     source_channel: str,
     first_message_title: str,
+    tenant_id: _uuid.UUID | None = None,
     legacy_external_conv_ids: list[str] | None = None,
     delivery_target: dict | None = None,
 ) -> ChatSession:
@@ -38,6 +39,8 @@ async def find_or_create_channel_session(
         )
     )
     session = result.scalar_one_or_none()
+    if session is not None and tenant_id and session.tenant_id is None:
+        session.tenant_id = tenant_id
 
     if session is not None and legacy_external_conv_ids:
         for legacy_conv_id in legacy_external_conv_ids:
@@ -54,7 +57,7 @@ async def find_or_create_channel_session(
             await db.execute(
                 update(ChatMessage)
                 .where(ChatMessage.conversation_id == str(legacy_session.id))
-                .values(conversation_id=str(session.id), user_id=user_id)
+                .values(conversation_id=str(session.id), user_id=user_id, tenant_id=tenant_id)
             )
             if legacy_session.last_message_at and (
                 session.last_message_at is None or legacy_session.last_message_at > session.last_message_at
@@ -78,6 +81,8 @@ async def find_or_create_channel_session(
                 if legacy_session:
                     legacy_session.external_conv_id = external_conv_id
                     legacy_session.user_id = user_id
+                    if tenant_id and legacy_session.tenant_id is None:
+                        legacy_session.tenant_id = tenant_id
                     if not legacy_session.title or legacy_session.title == "New Session":
                         legacy_session.title = first_message_title[:40]
                     if delivery_target:
@@ -88,6 +93,7 @@ async def find_or_create_channel_session(
         now = datetime.now(timezone.utc)
         session = ChatSession(
             agent_id=agent_id,
+            tenant_id=tenant_id,
             user_id=user_id,
             title=first_message_title[:40],
             source_channel=source_channel,
@@ -114,6 +120,7 @@ async def start_new_channel_session(
     external_conv_id: str,
     source_channel: str,
     title: str = "New Session",
+    tenant_id: _uuid.UUID | None = None,
     legacy_external_conv_ids: list[str] | None = None,
     delivery_target: dict | None = None,
 ) -> ChatSession:
@@ -127,12 +134,15 @@ async def start_new_channel_session(
     )
     existing_sessions = list(existing_result.scalars().all())
     for existing in existing_sessions:
+        if tenant_id and existing.tenant_id is None:
+            existing.tenant_id = tenant_id
         if existing.external_conv_id:
             existing.external_conv_id = _archived_external_conv_id(existing.external_conv_id, existing.id)
 
     now = datetime.now(timezone.utc)
     session = ChatSession(
         agent_id=agent_id,
+        tenant_id=tenant_id,
         user_id=user_id,
         title=(title or "New Session")[:40],
         source_channel=source_channel,

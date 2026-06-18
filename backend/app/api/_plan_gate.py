@@ -1,11 +1,10 @@
-"""REST early-intercept helper for Plan Mode (``docs/plan-mode-design.md`` §9.3).
+"""REST confirmation-gate helper.
 
 Thin translation layer between the shared :class:`PlanModeGate` decision service
 and a FastAPI route handler. A handler that is about to create or enable an
 autonomous artifact calls :func:`enforce_plan_gate` *after* its existing
 permission / tenant / validation checks; when the gate blocks the action this
-raises ``HTTPException(409)`` carrying the §9.2 ``needs_plan`` envelope, so every
-REST surface returns an identical, agent-actionable ``plan_required`` body.
+raises ``HTTPException(409)`` carrying a ``requires_confirmation`` envelope.
 
 Keeping the FastAPI import out of :mod:`app.services.plan_mode_gate` (a read-only
 service consumed by both the REST and the backstop layers) is deliberate: the
@@ -33,7 +32,7 @@ async def enforce_plan_gate(
     confirmed_plan_hash: str | None = None,
     action_artifact: dict | None = None,
 ) -> None:
-    """Consult the Plan Mode gate; raise ``409`` when a confirmed plan is required.
+    """Consult the confirmation gate; raise ``409`` when confirmation is required.
 
     The handler must already have run its access / validation checks and decided
     that this request *opens autonomous behaviour* (an enabled trigger, an
@@ -41,7 +40,7 @@ async def enforce_plan_gate(
     resolved ``gate`` via the router-local :func:`get_plan_mode_gate` (a single
     patch point per router). On a clean confirmed-plan handoff (or a cutover
     exemption) this returns ``None`` and the handler proceeds; otherwise it
-    raises with the gate's ``needs_plan`` payload as the response detail.
+    raises with the gate's confirmation-required payload as the response detail.
     """
     decision = await gate.check(
         db,

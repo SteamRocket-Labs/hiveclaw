@@ -1741,6 +1741,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 # Create new DB session (only on first tick)
                 session = ChatSession(
                     agent_id=agent_id,
+                    tenant_id=tenant_id,
                     user_id=agent.creator_id,
                     participant_id=agent_participant_id,
                     source_channel="heartbeat",
@@ -1756,6 +1757,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 db.add(
                     ChatMessage(
                         agent_id=agent_id,
+                        tenant_id=tenant_id,
                         conversation_id=str(session_id),
                         role="user",
                         content=heartbeat_instruction[:4000],
@@ -1796,6 +1798,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 db.add(
                     ChatMessage(
                         agent_id=agent_id,
+                        tenant_id=tenant_id,
                         conversation_id=str(session_id),
                         role="user",
                         content=tick_msg[:4000],
@@ -2087,7 +2090,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
 
             # PR-9: scrub any T3 rows the LLM may have written off-spec so
             # dream's parser sees them. Must run BEFORE the T0 hook so the
-            # normalization report rides along in the heartbeat MD.
+            # normalization report rides along in the heartbeat ledger event.
             normalization_report: dict = {"fixed": 0, "warnings": [], "files_touched": []}
             try:
                 from app.config import get_settings as _get_settings
@@ -2120,13 +2123,13 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
             except Exception as _hs_err:
                 logger.warning("[Heartbeat] Memory enhancement sync outer guard tripped: {}", _hs_err)
 
-            # Emit HEARTBEAT_TICK_END hook → T0 log
+            # Emit HEARTBEAT_TICK_END hook → T0 session ledger
             try:
                 from app.runtime.hooks import HookEvent, emit_hook
 
                 # Derive `reasoning` from the last assistant text so the
-                # T0 system/heartbeat-*.md log records WHY the tick chose
-                # this outcome (PR-3: heartbeat decision audit trail).
+                # heartbeat T0 ledger event records WHY the tick chose this
+                # outcome.
                 reasoning_text = ""
                 for _msg in reversed(runtime_messages or []):
                     if not isinstance(_msg, dict):

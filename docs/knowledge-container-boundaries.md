@@ -41,7 +41,7 @@
 
 ```
 经历                 事实                成熟度分叉                         最终形态
-T0 logs ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*.md
+T0 session ledger ──extract──▶ T2 learnings ──heartbeat──▶ T3 memory/*.md
                                                     │
                                   ┌─────────────────┼──────────────────┐
                                   ▼                 ▼                  ▼

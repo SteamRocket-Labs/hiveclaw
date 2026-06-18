@@ -13,7 +13,6 @@ from typing import Any
 
 from app.services.deep_research.artifact_composer import compose_deep_research_artifact
 from app.services.deep_research.plan_mode import (
-    build_deep_research_plan_fill,
     build_deep_research_plan_preview,
     deep_research_plan_signature,
     normalize_deep_research_output_format,
@@ -24,7 +23,6 @@ from app.services.deep_research.workflow_definition import (
 )
 from app.services.long_task_runtime import record_long_task_progress
 from app.services.office_document_service import OfficeDocumentService
-from app.services.plan_mode_service import get_plan_mode_service
 from app.services.runtime_task_service import (
     get_runtime_task_record,
     list_active_runtime_task_records,
@@ -62,17 +60,21 @@ _REQUEST_PROPERTIES: dict[str, Any] = {
         "type": "string",
         "description": "Force the report's output language (e.g. 'zh', 'en', '中文'). Defaults to the question's language.",
     },
-    "plan_confirmed": {
+    "user_confirmed": {
         "type": "boolean",
         "description": (
-            "Set true ONLY after the user has reviewed and approved the research plan. Without it, the tool "
+            "Set true ONLY after the user has reviewed and approved the research preview. Without it, the tool "
             "returns a plan + clarifying questions to confirm and does NOT execute the research."
         ),
+    },
+    "plan_confirmed": {
+        "type": "boolean",
+        "description": "Deprecated alias for user_confirmed; accepted for backward compatibility.",
     },
     "worker_topics": {
         "type": "array",
         "items": {"type": "string"},
-        "description": "User-approved worker topics from the plan stage. Pass them back together with plan_confirmed=true.",
+        "description": "User-approved worker topics from the preview stage. Pass them back with user_confirmed=true.",
     },
 }
 
@@ -157,110 +159,35 @@ async def _plan_preview(research_request: ResearchRequest) -> dict[str, Any]:
     return await build_deep_research_plan_preview(research_request)
 
 
-async def _materialize_plan_card_payload(
+async def _confirmation_card_payload(
     tool_request: ToolExecutionRequest,
     research_request: ResearchRequest,
     preview: dict[str, Any],
 ) -> dict[str, Any]:
-    fill = build_deep_research_plan_fill(research_request, preview)
-    worker_topics = list(fill.get("deep_research", {}).get("worker_topics") or [])
-    signature = deep_research_plan_signature(research_request, worker_topics=worker_topics)
-    plan = await get_plan_mode_service().ensure_awaiting_plan_from_fill(
-        agent_id=tool_request.context.agent_id,
-        intent_type="in_session_execution",
-        signature=signature,
-        fill=fill,
-        original_request=research_request.question,
-        source="tool_runtime",
-        tenant_id=_parse_uuid_or_none(tool_request.context.tenant_id),
-        requested_by_user_id=None,
-        metadata_json={
-            "deep_research_plan": True,
-            "deep_research_tool": tool_request.tool_name,
-            "requested_output_format": fill.get("deep_research", {}).get("output_format"),
-        },
-    )
-    return _needs_plan_payload(preview, plan=plan)
+    _ = tool_request
+    _ = research_request
+    return _deep_research_confirmation_required_payload(preview)
 
 
-def _needs_plan_payload(preview: dict[str, Any], *, plan: Any | None = None) -> dict[str, Any]:
+def _deep_research_confirmation_required_payload(preview: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "ok": False,
-        "status": "needs_plan",
+        "status": "requires_confirmation",
+        "requires_confirmation": True,
         "summary": (
-            "Confirm the research plan before running. Relay the clarifying_questions and the proposed plan / "
+            "Confirm the research preview before running. Relay the clarifying_questions and the proposed plan / "
             "worker_topics to the user; collect their answers and explicit approval first. Preference memory may "
             "prefill parameters but is NOT approval; never self-confirm on the user's behalf."
         ),
         **preview,
         "next_action": (
             "STOP and present the clarifying_questions + proposed worker_topics to the user, then WAIT for their "
-            "reply. Only call this tool again with plan_confirmed=true AFTER the user explicitly approves THIS plan "
+            "reply. Only call this tool again with user_confirmed=true AFTER the user explicitly approves THIS preview "
             "in a new message. Preference memory may prefill depth/scope/language, but it is NOT approval; never "
-            "self-confirm or set plan_confirmed=true in the same turn the plan was returned."
+            "self-confirm or set user_confirmed=true in the same turn the preview was returned."
         ),
     }
-    if plan is not None:
-        plan_json = plan.plan_json or {}
-        deep_research_plan = plan_json.get("deep_research") if isinstance(plan_json, dict) else {}
-        if isinstance(deep_research_plan, dict):
-            payload["worker_topics"] = deep_research_plan.get("worker_topics") or payload.get("worker_topics") or []
-            payload["clarifying_questions"] = (
-                deep_research_plan.get("clarifying_questions") or payload.get("clarifying_questions") or []
-            )
-        payload.pop("plan", None)
-        plan_markdown = _plan_markdown_for_payload(plan)
-        payload.update(
-            {
-                "plan_id": str(plan.id),
-                "plan_version": plan.plan_version,
-                "plan_hash": plan.plan_hash,
-                "plan_markdown_path": plan.plan_markdown_path,
-                "plan_markdown": plan_markdown,
-                "summary": (
-                    "A Deep Research Markdown plan has been created. Show the plan_markdown / plan_markdown_path "
-                    "to the user and wait for explicit confirmation before starting the research run."
-                ),
-            }
-        )
     return payload
-
-
-def _plan_markdown_for_payload(plan: Any) -> str:
-    path_value = str(getattr(plan, "plan_markdown_path", "") or "").strip()
-    if path_value:
-        path = Path(path_value)
-        try:
-            if path.exists() and path.is_file():
-                text = path.read_text(encoding="utf-8").strip()
-                if text:
-                    return text
-        except OSError:
-            logger.warning("[DeepResearch] failed to read plan markdown at %s", path_value)
-
-    plan_json = getattr(plan, "plan_json", None) or {}
-    if not isinstance(plan_json, dict):
-        return ""
-    try:
-        from app.services import plan_mode_core
-
-        created_at = getattr(plan, "created_at", None)
-        return plan_mode_core.render_plan_markdown(
-            plan_id=getattr(plan, "id", ""),
-            agent_id=getattr(plan, "agent_id", ""),
-            tenant_id=getattr(plan, "tenant_id", None),
-            status=str(getattr(plan, "status", "awaiting_confirmation") or "awaiting_confirmation"),
-            plan_version=int(getattr(plan, "plan_version", 1) or 1),
-            plan_hash=str(getattr(plan, "plan_hash", "") or ""),
-            intent_type=str(getattr(plan, "intent_type", plan_json.get("intent_type") or "in_session_execution") or "in_session_execution"),
-            created_at=created_at.isoformat() if created_at else "",
-            plan_json=plan_json,
-            confirmed_by=getattr(plan, "confirmed_by_user_id", None),
-            confirmed_at=None,
-        ).strip()
-    except Exception:
-        logger.warning("[DeepResearch] failed to render fallback plan markdown for plan=%s", getattr(plan, "id", None))
-        return str(plan_json.get("plan_markdown") or plan_json.get("objective") or plan_json.get("title") or "").strip()
 
 
 @tool(
@@ -307,7 +234,7 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
 
     if not research_request.plan_confirmed:
         preview = await _plan_preview(research_request)
-        return _json(await _materialize_plan_card_payload(request, research_request, preview))
+        return _json(await _confirmation_card_payload(request, research_request, preview))
 
     # DR-6b: the workflow runtime is the ONE Deep Research path. quick/standard
     # depth runs synchronously to completion (export + workspace packet happen
@@ -334,9 +261,9 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
         icon="🔎",
         is_default=False,
         governance="sensitive",
-        # Plan Mode §9.2 bridge: register as plan-governed but keep this tool's
-        # own plan_confirmed gate (below) — the service gate must NOT double-block
-        # it. Value mirrors app.tools.plan_gate_registry.BRIDGE_SELF.
+        # Confirmation bridge: register as governed but keep this tool's own
+        # user_confirmed gate (plan_confirmed remains a compatibility alias).
+        # The service gate must not double-block it.
         plan_gate_action_kind="bridge:self",
         pack="deep_research_pack",
         adapter="request",
@@ -350,7 +277,7 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
 
     if not research_request.plan_confirmed:
         preview = await _plan_preview(research_request)
-        return _json(await _materialize_plan_card_payload(request, research_request, preview))
+        return _json(await _confirmation_card_payload(request, research_request, preview))
 
     signature = _deep_research_signature(research_request)
     dedup_key = (str(request.context.agent_id), signature)
@@ -946,14 +873,6 @@ def _parse_uuid(value: str) -> uuid.UUID | None:
         return uuid.UUID(str(value))
     except (TypeError, ValueError):
         return None
-
-
-def _parse_uuid_or_none(value: str | uuid.UUID | None) -> uuid.UUID | None:
-    if isinstance(value, uuid.UUID):
-        return value
-    if not value:
-        return None
-    return _parse_uuid(str(value))
 
 
 def _escape_html(value: str) -> str:

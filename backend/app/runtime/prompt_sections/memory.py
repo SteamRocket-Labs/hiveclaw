@@ -6,11 +6,11 @@ _MEMORY_SECTION_TEMPLATE = """\
 You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 
 ### Layers
-- **T0** (logs/): raw session records, 30-day retention
+- **T0** (`memory/t0/sessions/<session_id>/segments/<segment_id>/source.md`): append-only raw session ledger, 30-day retention
 - **T2** (learnings/): recent observations, curated by heartbeat every ~2 h
 - **T3** (memory/*.md + soul.md): long-term knowledge, refined by dream about once a day
 
-Your conversations automatically produce T0 logs and T2 extractions. \
+Your conversations and runtime events automatically produce T0 ledger events and T2 extractions. \
 The heartbeat curates T2 → T3. The dream refines T3 and promotes patterns to soul.md.
 
 ### Using Memory Tools
@@ -24,7 +24,7 @@ memory index. Prefer this over asking for broad memory dumps.
 bypassing the heartbeat curation that normally filters low-signal content. Use ONLY when:
   * The user issues a direct imperative ("记住", "remember this", "never do X again")
   * You must override something heartbeat would otherwise drop
-  Everything else flows automatically: conversation → T0 logs → extractor picks salient bits \
+  Everything else flows automatically: conversation/runtime event → T0 ledger → extractor picks salient bits \
 into T2 → heartbeat curates T2 into T3. Do not pre-empt that pipeline.
 - `update_memory(memory_id, content, category?)` — Use when a loaded T3 fact is wrong or stale \
 and the user gives an explicit correction. The replacement is write-gated, and the old entry is \

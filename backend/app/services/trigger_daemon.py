@@ -1526,7 +1526,7 @@ async def _invoke_agent_for_triggers(
 
         logger.info(f"⚡ Triggers fired for {agent.name}: {[t.name for t in triggers]}")
 
-        # Emit TRIGGER_END hook → T0 log + extraction pipeline
+        # Emit TRIGGER_END hook → T0 session ledger + extraction pipeline
         try:
             from app.runtime.hooks import HookEvent, emit_hook
 

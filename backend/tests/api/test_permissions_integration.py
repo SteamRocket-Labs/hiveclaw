@@ -27,9 +27,13 @@ class _PermissionsDB:
     def __init__(self, *, agent, permissions=None):
         self.agent = agent
         self.permissions = permissions or []
+        self.statements = []
 
     async def execute(self, stmt):
         sql = str(stmt)
+        self.statements.append(sql)
+        if "SET LOCAL app.current_tenant_id" in sql:
+            return _ScalarResult(None)
         if "FROM agents" in sql:
             return _ScalarResult(self.agent)
         if "FROM agent_permissions" in sql:

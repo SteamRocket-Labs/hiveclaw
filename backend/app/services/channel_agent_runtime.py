@@ -129,6 +129,17 @@ async def call_agent_llm(
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
     effective_user_id = user_id or agent_id
+    plan_confirmation_reply = await try_confirm_channel_plan_from_text(
+        agent_id=agent_id,
+        user_id=user_id,
+        user_text=user_text,
+        session_id=session_id,
+        session_source=session_source,
+        allow_bare_latest=allow_bare_plan_confirmation,
+    )
+    if plan_confirmation_reply is not None:
+        return plan_confirmation_reply
+
     if durable_run:
         from app.services.web_chat_runtime import start_channel_chat_run_from_saved_turn
 
@@ -154,17 +165,6 @@ async def call_agent_llm(
         if run.get("queued_user_message"):
             return f"已接收补充消息，并排队到当前任务（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
         return f"已接收，正在后台处理（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
-
-    plan_confirmation_reply = await try_confirm_channel_plan_from_text(
-        agent_id=agent_id,
-        user_id=user_id,
-        user_text=user_text,
-        session_id=session_id,
-        session_source=session_source,
-        allow_bare_latest=allow_bare_plan_confirmation,
-    )
-    if plan_confirmation_reply is not None:
-        return plan_confirmation_reply
 
     from app.services import plan_mode_core
 

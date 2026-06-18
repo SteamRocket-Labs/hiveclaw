@@ -1,12 +1,8 @@
-"""Workflow tools (§9 P4): preview + start for ephemeral definitions.
+"""Workflow tools: preview + start for ephemeral definitions.
 
 The agent submits DEFINITION DATA only (§3.2) — the engine interprets it;
-there is no code execution surface. ``start_workflow`` is risk-graded
-through the standard plan-gate intercept (``ToolMeta.plan_gate_action_kind``
-+ the argument-aware classifier in plan_gate_registry): low-risk launches
-run directly (equivalent governance to the agent calling its own tools in
-sequence), high-risk launches are hard-gated on a confirmed plan BEFORE this
-handler ever runs.
+there is no code execution surface. ``preview_workflow`` surfaces deterministic
+confirmation notes, but ``start_workflow`` never enters Plan Mode automatically.
 """
 
 from __future__ import annotations
@@ -16,7 +12,7 @@ import uuid
 
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
-from app.services.workflow_launch import classify_workflow_risk, start_ephemeral_workflow_for_agent
+from app.services.workflow_launch import inspect_workflow_confirmation_needs, start_ephemeral_workflow_for_agent
 from app.tools.decorator import ToolMeta, tool
 
 _DEFINITION_PARAM = {
@@ -35,10 +31,9 @@ _DEFINITION_PARAM = {
         description=(
             "Compile and preflight an ephemeral workflow definition WITHOUT running it.\n\n"
             "Usage:\n"
-            "- Always preview before start_workflow: returns definition_hash, risk level "
-            "(low/high), planned leaf calls and budget.\n"
-            "- High-risk workflows (external/irreversible effects, big budget/fanout/waits) "
-            "need a confirmed plan before start_workflow will run.\n"
+            "- Always preview before start_workflow: returns definition_hash, confirmation notes, "
+            "planned leaf calls and budget.\n"
+            "- Confirmation notes are informational; they do not force Plan Mode.\n"
             "- Show the user the preview and get their go-ahead before starting."
         ),
         parameters={
@@ -64,7 +59,7 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         from app.config import get_settings
 
         admission = admit_workflow(compiled, args=args, limits=AdmissionLimits.from_settings(get_settings()))
-        risk = classify_workflow_risk(compiled, args=args)
+        confirmation = inspect_workflow_confirmation_needs(compiled, args=args)
     except (WorkflowCompileError, WorkflowAdmissionError) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
@@ -72,8 +67,8 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         {
             "ok": True,
             "definition_hash": compiled.definition_hash,
-            "risk": risk.level,
-            "risk_reasons": risk.reasons,
+            "confirmation_required": confirmation.requires_confirmation,
+            "confirmation_reasons": confirmation.reasons,
             "planned_leaf_calls": admission.planned_leaf_calls,
             "budget_tokens": admission.budget_tokens,
         },
@@ -92,9 +87,8 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
             "work to another digital employee, use delegate_to_agent.\n\n"
             "Usage:\n"
             "- preview_workflow FIRST and show the user what will run.\n"
-            "- Low-risk (read-only/workspace, small budget) runs start directly.\n"
-            "- High-risk (external/irreversible effects, big budget/fanout/waits) requires a "
-            "confirmed plan — create one via Plan Mode and retry after confirmation.\n"
+            "- If preview shows confirmation notes, obtain explicit user go-ahead before starting; "
+            "do not enter Plan Mode unless the user explicitly asks for it.\n"
             "- Pass ledger_todo_id to mirror the run onto your work-ledger todo."
         ),
         parameters={
@@ -112,7 +106,6 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         category="workflow",
         display_name="Start Workflow",
         governance="sensitive",
-        plan_gate_action_kind="start_workflow",
     )
 )
 async def start_workflow(agent_id: uuid.UUID, arguments: dict) -> str:

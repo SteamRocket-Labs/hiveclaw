@@ -165,6 +165,7 @@ async def handover_agent(
     db.add(AuditLog(
         user_id=current_user.id,
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         action="agent:handover",
         details={
             "from_creator": str(old_creator_id),

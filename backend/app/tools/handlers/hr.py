@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 import shlex
@@ -91,6 +92,48 @@ _RESEARCH_WORKFLOW_KEYWORDS = (
 
 _SKILLS_REF_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$")
 
+_HR_CREATE_FAILURE_LIMIT = 2
+
+_HIGH_RISK_KEYWORDS = (
+    "美股",
+    "股票",
+    "证券",
+    "金融",
+    "投资",
+    "投研",
+    "交易",
+    "财报",
+    "个股",
+    "荐股",
+    "喊单",
+    "medical",
+    "health",
+    "legal",
+    "finance",
+    "stock",
+    "trading",
+    "investment",
+    "securities",
+)
+
+_EXTERNAL_VISIBLE_KEYWORDS = (
+    "telegram",
+    "twitter",
+    " x ",
+    "推特",
+    "飞书群",
+    "微信群",
+    "社群",
+    "社区",
+    "发布",
+    "推送",
+    "对外",
+    "public",
+    "publish",
+    "post",
+    "send",
+)
+
 
 def _parse_list(value) -> list:
     if isinstance(value, list):
@@ -142,6 +185,272 @@ def _dedupe_strings(values: list[str]) -> list[str]:
     return deduped
 
 
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _blueprint_hash(blueprint: dict) -> str:
+    digest = hashlib.sha256(_canonical_json(blueprint).encode("utf-8")).hexdigest()[:24]
+    return f"bp_{digest}"
+
+
+def _text_blob(*values: object) -> str:
+    chunks: list[str] = []
+    for value in values:
+        if isinstance(value, list):
+            chunks.extend(str(item) for item in value)
+        elif isinstance(value, dict):
+            chunks.append(_canonical_json(value))
+        elif value is not None:
+            chunks.append(str(value))
+    return f" {' '.join(chunks).lower()} "
+
+
+def _classify_creation_risk(
+    *,
+    role_description: str,
+    primary_users: list[str],
+    core_outputs: list[str],
+    focus_content: str,
+    triggers: list[dict],
+    welcome_message: str,
+) -> str:
+    blob = _text_blob(role_description, primary_users, core_outputs, focus_content, triggers, welcome_message)
+    high_domain = any(keyword.lower() in blob for keyword in _HIGH_RISK_KEYWORDS)
+    external_visible = any(keyword.lower() in blob for keyword in _EXTERNAL_VISIBLE_KEYWORDS)
+    if high_domain or external_visible:
+        return "high"
+    return "standard"
+
+
+def _build_creation_flow_gates(
+    *,
+    name: str,
+    role_description: str,
+    primary_users: list[str],
+    core_outputs: list[str],
+    boundaries: str,
+    focus_content: str,
+    triggers: list[dict],
+    risk_class: str,
+    manual_steps: list[str],
+    install_now_skill_names: list[str],
+    mcp_server_ids: list[str],
+    clawhub_slugs: list[str],
+    external_skill_refs: list[str],
+) -> tuple[dict, list[str]]:
+    identity_missing = []
+    if not name:
+        identity_missing.append("name")
+    if not role_description:
+        identity_missing.append("role_description")
+    if not primary_users:
+        identity_missing.append("primary_users")
+    if not core_outputs:
+        identity_missing.append("core_outputs")
+
+    governance_missing = []
+    if risk_class == "high" and not boundaries:
+        governance_missing.append("boundaries")
+
+    activation_missing = []
+    if not focus_content and not triggers:
+        activation_missing.append("first_objective")
+
+    capability_notes = []
+    if manual_steps:
+        capability_notes.append("manual_setup_debt")
+    if install_now_skill_names or mcp_server_ids or clawhub_slugs or external_skill_refs:
+        capability_notes.append("day_one_installs")
+
+    gates = {
+        "identity": {
+            "label": "Identity gate",
+            "status": "missing" if identity_missing else "complete",
+            "missing": identity_missing,
+        },
+        "governance": {
+            "label": "Governance gate",
+            "status": "missing" if governance_missing else "complete",
+            "missing": governance_missing,
+            "risk_class": risk_class,
+        },
+        "activation": {
+            "label": "Activation gate",
+            "status": "missing" if activation_missing else "complete",
+            "missing": activation_missing,
+        },
+        "capabilities": {
+            "label": "Capability / Setup Debt gate",
+            "status": "complete",
+            "notes": capability_notes,
+        },
+        "confirmation": {
+            "label": "Preview + Confirmation gate",
+            "status": "pending",
+            "missing": ["explicit_user_confirmation"],
+        },
+    }
+    missing_gates = [gate for gate, data in gates.items() if data["status"] == "missing"]
+    return gates, missing_gates
+
+
+def _parse_tool_call_payload(content: str | None) -> dict:
+    if not content:
+        return {}
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_tool_result_json(payload: dict) -> dict:
+    result = payload.get("result")
+    if isinstance(result, dict):
+        return result
+    if not isinstance(result, str) or not result.strip():
+        return {}
+    try:
+        value = json.loads(result)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _is_create_failure_result(result: object) -> bool:
+    text = str(result or "").lower()
+    return (
+        "failed to create the digital employee" in text
+        or "create_digital_employee exceeded" in text
+        or (('"tool_name": "create_digital_employee"' in text or '"tool_name":"create_digital_employee"' in text) and "timeout" in text)
+    )
+
+
+async def _validate_creation_flow_confirmation(request, db) -> str | None:
+    args = request.arguments
+    preview_payload = _build_blueprint_preview_payload(args)
+    expected_hash = preview_payload["blueprint_hash"]
+    confirmed_hash = str(args.get("confirmed_blueprint_hash") or args.get("blueprint_hash") or "").strip()
+    if not confirmed_hash:
+        return (
+            "Error: confirmed_blueprint_hash is required. First call preview_agent_blueprint, present the preview "
+            "to the user, then pass the returned blueprint_hash as confirmed_blueprint_hash after explicit confirmation."
+        )
+    if confirmed_hash != expected_hash:
+        return (
+            "Error: confirmed_blueprint_hash does not match the current creation blueprint. "
+            "Regenerate the preview and ask the user to confirm the exact current blueprint."
+        )
+
+    blocking_gates = [gate for gate in preview_payload["missing_gates"] if gate != "confirmation"]
+    if blocking_gates:
+        return (
+            "Error: creation gates are incomplete before create_digital_employee: "
+            + ", ".join(blocking_gates)
+            + ". Run preview_agent_blueprint and resolve the missing gates before creation."
+        )
+
+    session_id = str(getattr(request.context, "session_id", None) or "").strip()
+    if not session_id:
+        return "Error: HR creation must run inside a session so preview and confirmation can be audited."
+
+    from sqlalchemy import select
+
+    from app.models.audit import ChatMessage
+
+    result = await db.execute(
+        select(ChatMessage)
+        .where(
+            ChatMessage.agent_id == request.context.agent_id,
+            ChatMessage.conversation_id == session_id,
+            ChatMessage.role == "tool_call",
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .limit(50)
+    )
+    rows = list(result.scalars().all())
+    failed_creates = 0
+    preview_found = False
+    for row in rows:
+        payload = _parse_tool_call_payload(getattr(row, "content", None))
+        tool_name = payload.get("name")
+        if tool_name == "create_digital_employee" and _is_create_failure_result(payload.get("result")):
+            failed_creates += 1
+        if tool_name == "preview_agent_blueprint":
+            preview_result = _parse_tool_result_json(payload)
+            if preview_result.get("blueprint_hash") == confirmed_hash:
+                preview_found = True
+
+    if failed_creates >= _HR_CREATE_FAILURE_LIMIT:
+        return (
+            f"Error: stopped after {_HR_CREATE_FAILURE_LIMIT} failed create attempts in this HR session. "
+            "Do not retry with smaller or renamed arguments. Report the failure and inspect backend logs/config instead."
+        )
+    if not preview_found:
+        return (
+            "Error: no matching preview_agent_blueprint result was found in this session. "
+            "Create must be session-bound to a previewed blueprint."
+        )
+    return None
+
+
+async def _resolve_employee_creation_model(db, tenant_id: uuid.UUID | None):
+    """Resolve a valid enabled model for a newly created employee."""
+    from sqlalchemy import select
+
+    from app.models.llm import LLMModel
+    from app.services.model_resolution import resolve_default_model_for_tenant
+
+    if tenant_id is not None:
+        return await resolve_default_model_for_tenant(db, tenant_id)
+
+    model_result = await db.execute(
+        select(LLMModel)
+        .where(
+            LLMModel.tenant_id.is_(None),
+            LLMModel.enabled.is_(True),
+        )
+        .order_by(LLMModel.created_at.asc())
+        .limit(1)
+    )
+    return model_result.scalar_one_or_none()
+
+
+async def _resolve_employee_refinement_model(
+    db,
+    tenant_id: uuid.UUID | None,
+    *,
+    preferred_model_id: uuid.UUID | None,
+    creation_model,
+) -> tuple[object | None, str]:
+    """Use the HR agent model only when it is valid for the current tenant."""
+    from sqlalchemy import select
+
+    from app.models.llm import LLMModel
+
+    if preferred_model_id is not None:
+        predicates = [
+            LLMModel.id == preferred_model_id,
+            LLMModel.enabled.is_(True),
+        ]
+        if tenant_id is None:
+            predicates.append(LLMModel.tenant_id.is_(None))
+        else:
+            predicates.append(LLMModel.tenant_id == tenant_id)
+        model_result = await db.execute(select(LLMModel).where(*predicates))
+        preferred_model = model_result.scalar_one_or_none()
+        if preferred_model is not None:
+            return preferred_model, "hr_agent"
+        logger.warning(
+            "[HR] Ignoring unavailable HR refinement model %s for tenant %s",
+            preferred_model_id,
+            tenant_id,
+        )
+
+    return creation_model, "tenant_default"
+
+
 _SOUL_REFINE_PROMPT = """\
 <role>
 You are the identity architect for Hive, a multi-agent collaboration platform.
@@ -152,7 +461,7 @@ digital employee IS — for their entire lifetime.
 <pipeline_context>
 Every agent has a 4-layer memory pyramid that runs automatically:
 
-  T0 (raw logs, 30d) → T2 (episodic learnings) → T3 (semantic memory) → soul.md (identity)
+  T0 (append-only session ledger, 30d) → T2 (episodic learnings) → T3 (semantic memory) → soul.md (identity)
 
 - **soul.md is the TOP**: most permanent, most condensed layer.
 - Conversations extract into T2 after each response (automatic).
@@ -876,37 +1185,81 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
             "验证外部 GitHub/skills.sh skill 的源码、安全性与首个真实任务输出，避免直接信任第三方能力。"
         )
 
+    risk_class = _classify_creation_risk(
+        role_description=role_description,
+        primary_users=primary_users,
+        core_outputs=core_outputs,
+        focus_content=focus_content,
+        triggers=triggers,
+        welcome_message=welcome_message,
+    )
+    gates, missing_gates = _build_creation_flow_gates(
+        name=name,
+        role_description=role_description,
+        primary_users=primary_users,
+        core_outputs=core_outputs,
+        boundaries=boundaries,
+        focus_content=focus_content,
+        triggers=triggers,
+        risk_class=risk_class,
+        manual_steps=manual_steps,
+        install_now_skill_names=install_now_skill_names,
+        mcp_server_ids=mcp_server_ids,
+        clawhub_slugs=clawhub_slugs,
+        external_skill_refs=external_skill_refs,
+    )
+    if gates["governance"]["status"] == "missing":
+        warnings.append(
+            "governance gate incomplete — high-risk or external-visible roles require explicit boundaries before creation."
+        )
+    if missing_gates:
+        warnings.append("creation gates incomplete: " + ", ".join(missing_gates))
+
+    blueprint = {
+        "name": name,
+        "role_description": role_description,
+        "primary_users": primary_users,
+        "core_outputs": core_outputs,
+        "personality": personality,
+        "boundaries": boundaries,
+        "archetype": archetype,
+        "company_charter": company_charter,
+        "owner_agency_charter": owner_agency_charter,
+        "skill_names": install_now_skill_names,
+        "requested_skill_names": requested_skill_names,
+        "effective_skill_names": install_now_skill_names,
+        "deferred_skill_names": deferred_skill_names,
+        "external_skill_urls": [ref for ref in external_skill_refs if _parse_github_url(ref)],
+        "external_skill_refs": external_skill_refs,
+        "mcp_server_ids": mcp_server_ids,
+        "clawhub_slugs": clawhub_slugs,
+        "permission_scope": permission_scope,
+        "triggers": triggers,
+        "welcome_message": welcome_message,
+        "focus_content": focus_content,
+        "heartbeat_topics": heartbeat_topics,
+        "ready_now": _default_ready_now(),
+        "deferred_capabilities": [
+            f"{skill_name} (defer until a first real task proves builtin/default coverage is insufficient)"
+            for skill_name in deferred_skill_names
+        ],
+    }
+    blueprint_hash = _blueprint_hash(blueprint)
+
     return {
         "status": "preview",
-        "blueprint": {
-            "name": name,
-            "role_description": role_description,
-            "primary_users": primary_users,
-            "core_outputs": core_outputs,
-            "personality": personality,
-            "boundaries": boundaries,
-            "archetype": archetype,
-            "company_charter": company_charter,
-            "owner_agency_charter": owner_agency_charter,
-            "skill_names": install_now_skill_names,
-            "requested_skill_names": requested_skill_names,
-            "effective_skill_names": install_now_skill_names,
-            "deferred_skill_names": deferred_skill_names,
-            "external_skill_urls": [ref for ref in external_skill_refs if _parse_github_url(ref)],
-            "external_skill_refs": external_skill_refs,
-            "mcp_server_ids": mcp_server_ids,
-            "clawhub_slugs": clawhub_slugs,
-            "permission_scope": permission_scope,
-            "triggers": triggers,
-            "welcome_message": welcome_message,
-            "focus_content": focus_content,
-            "heartbeat_topics": heartbeat_topics,
-            "ready_now": _default_ready_now(),
-            "deferred_capabilities": [
-                f"{skill_name} (defer until a first real task proves builtin/default coverage is insufficient)"
-                for skill_name in deferred_skill_names
-            ],
+        "blueprint_hash": blueprint_hash,
+        "risk_class": risk_class,
+        "missing_gates": missing_gates,
+        "creation_flow": {
+            "mode": "dynamic_rounds_mandatory_gates",
+            "instruction": (
+                "Do not treat this as a fixed five-round interview. Complete the gates dynamically, "
+                "then pass blueprint_hash as confirmed_blueprint_hash only after explicit user confirmation."
+            ),
+            "gates": gates,
         },
+        "blueprint": blueprint,
         "summary": {
             "mission": role_description,
             "primary_users": primary_users,
@@ -989,6 +1342,13 @@ def _build_create_employee_result(
                 "name": {
                     "type": "string",
                     "description": "Name for the new digital employee (2-100 characters)",
+                },
+                "confirmed_blueprint_hash": {
+                    "type": "string",
+                    "description": (
+                        "The blueprint_hash returned by preview_agent_blueprint after the user explicitly confirms "
+                        "that exact preview. Required for session-bound HR creation."
+                    ),
                 },
                 "role_description": {
                     "type": "string",
@@ -1093,7 +1453,7 @@ def _build_create_employee_result(
                     "description": "Role-specific exploration topics for the agent's heartbeat. E.g. 'Focus on AI/VC funding news, semiconductor breakthroughs, and founder movements.'",
                 },
             },
-            "required": ["name"],
+            "required": ["name", "confirmed_blueprint_hash"],
         },
         category="hr",
         display_name="Create Digital Employee",
@@ -1186,44 +1546,32 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
             effective_tenant_id = uuid.UUID(tenant_id) if tenant_id else user.tenant_id
 
-            # Resolve default model for this tenant (TenantSetting → fallback to first enabled)
-            primary_model_id = None
-            from app.models.llm import LLMModel
-            from app.models.tenant_setting import TenantSetting
+            creation_flow_error = await _validate_creation_flow_confirmation(request, db)
+            if creation_flow_error:
+                return creation_flow_error
 
-            ts_r = await db.execute(
-                select(TenantSetting.value).where(
-                    TenantSetting.tenant_id == effective_tenant_id,
-                    TenantSetting.key == "default_model_id",
-                )
-            )
-            ts_val = ts_r.scalar_one_or_none()
-            if isinstance(ts_val, dict) and ts_val.get("model_id"):
-                primary_model_id = uuid.UUID(ts_val["model_id"])
-            if not primary_model_id:
-                model_result = await db.execute(
-                    select(LLMModel)
-                    .where(LLMModel.tenant_id == effective_tenant_id, LLMModel.enabled.is_(True))
-                    .order_by(LLMModel.created_at)
-                    .limit(1)
-                )
-                default_model = model_result.scalar_one_or_none()
-                if default_model:
-                    primary_model_id = default_model.id
-            if not primary_model_id:
+            # Resolve default model through the shared tenant-aware model resolver. The
+            # tenant setting may point at a deleted/cross-tenant/disabled model; never
+            # write that raw UUID into agents.primary_model_id.
+            creation_model = await _resolve_employee_creation_model(db, effective_tenant_id)
+            if not creation_model:
                 return (
                     f"❌ Cannot create agent '{name}': no LLM model configured for this tenant. "
                     "Please add at least one enabled LLM model in Enterprise Settings → LLM Pool."
                 )
+            primary_model_id = creation_model.id
 
             # LLM soul refinement — use the HR agent's own model (proven capable,
             # it just ran the entire hiring conversation). Falls back to new agent's
             # default model if HR agent model is unavailable.
             _hr_agent_r = await db.execute(select(Agent).where(Agent.id == request.context.agent_id))
             _hr_agent = _hr_agent_r.scalar_one_or_none()
-            _refine_model_id = (_hr_agent.primary_model_id if _hr_agent else None) or primary_model_id
-            _model_r = await db.execute(select(LLMModel).where(LLMModel.id == _refine_model_id))
-            _llm_obj = _model_r.scalar_one_or_none()
+            _llm_obj, _refine_model_source = await _resolve_employee_refinement_model(
+                db,
+                effective_tenant_id,
+                preferred_model_id=_hr_agent.primary_model_id if _hr_agent else None,
+                creation_model=creation_model,
+            )
             _model_cfg = (
                 {
                     "provider": _llm_obj.provider,
@@ -1238,7 +1586,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 "[HR] Soul refinement using model: %s/%s (from %s)",
                 _model_cfg.get("provider", "?"),
                 _model_cfg.get("model", "?"),
-                "hr_agent" if _hr_agent and _hr_agent.primary_model_id else "tenant_default",
+                _refine_model_source,
             )
             _refined = await _refine_soul_inputs(
                 name=name,
@@ -1341,6 +1689,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 db.add(
                     AgentPermission(
                         agent_id=agent.id,
+                        tenant_id=agent.tenant_id,
                         scope_type="user",
                         scope_id=user.id,
                         access_level="manage",
@@ -1350,6 +1699,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 db.add(
                     AgentPermission(
                         agent_id=agent.id,
+                        tenant_id=agent.tenant_id,
                         scope_type="company",
                         access_level="use",
                     )
@@ -1439,6 +1789,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     db.add(
                         AgentTrigger(
                             agent_id=agent.id,
+                            tenant_id=agent.tenant_id,
                             name=_trigger_name,
                             type=trig_type,
                             config=raw_config,
@@ -1460,6 +1811,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 db.add(
                     AgentTrigger(
                         agent_id=agent.id,
+                        tenant_id=agent.tenant_id,
                         name="first_task_boot",
                         type="once",
                         config=_stamp_hr_blueprint_trigger_exemption(

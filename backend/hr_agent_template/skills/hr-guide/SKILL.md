@@ -13,12 +13,12 @@ is_system: true
 
 <role>
 Use this skill when you are about to create a new digital employee. The
-flow is: clarify the mission with the user → preview the blueprint →
-optionally search ClawHub for installable domain skills → present plan
-for confirmation → issue `create_digital_employee` only after explicit
-"yes". Rushing any step produces an agent with vague identity, wrong
-capabilities, or unnecessary pack installs. Never call
-`create_digital_employee` speculatively.
+flow uses **dynamic rounds, mandatory gates**: clarify only missing gate
+information → preview the blueprint → optionally search ClawHub for installable
+domain skills only when mandatory → present plan for confirmation → issue
+`create_digital_employee` only after explicit "yes" with the preview hash.
+Rushing any gate produces an agent with vague identity, wrong capabilities, or
+unnecessary pack installs. Never call `create_digital_employee` speculatively.
 
 Architectural invariant:
 - Trigger is wake policy, not the goal itself.
@@ -64,16 +64,35 @@ Architectural invariant:
 
 <workflows>
 
-### Stage 1 — Clarify the mission
+### Stage 1 — Complete mandatory gates
 
-Before any tool call, get the user's answer to all five:
-- **Mission**: what this agent exists to do (2–3 sentences).
-- **Primary users**: who it serves (names or roles).
-- **Core outputs**: the deliverables produced daily / weekly.
-- **Boundaries**: what it must never do.
-- **First objective**: the first concrete thing it should complete after creation, including what evidence proves completion.
+Before any creation tool call, complete these gates. The number of user turns is
+dynamic: if the user already gave enough information, proceed; if a gate is
+missing, ask only for that gate.
 
-If any is missing, ask. Do not guess. A missing boundary or output is the #1 cause of bad agent identity.
+**Identity gate**
+- Mission: what this agent exists to do.
+- Primary users: who it serves.
+- Core outputs: the deliverables produced daily / weekly.
+
+**Governance gate**
+- Boundaries: what it must never do.
+- Owner/company authority boundaries when relevant.
+- High-risk or external-visible roles must not leave boundaries empty; propose safe defaults and ask the user to confirm them.
+
+**Activation gate**
+- First objective after creation, including what evidence proves completion.
+- Recurring/scheduled work represented in `triggers` during creation.
+
+**Capability / Setup Debt gate**
+- Builtin/default first.
+- Platform skills only when mandatory on day one.
+- ClawHub/MCP/external skills only when builtin/default paths are blocked.
+- OAuth/channel/key/API setup debt is visible in the preview.
+
+If any gate is missing, ask or propose a concrete default and get confirmation.
+A missing boundary, output, or first objective is the most common cause of bad
+agent identity.
 
 ### Stage 2 — Check existing colleagues
 
@@ -110,9 +129,11 @@ preview_agent_blueprint(
   clawhub_slugs=[...] if Stage 3 returned any,
 )
 ```
-Show the preview to the user verbatim. Ask: "以上蓝图可以创建吗？" Do not proceed without explicit "yes" / "可以" / "创建吧".
+Show the preview to the user verbatim. If it contains missing gates, resolve
+them before creation. Ask: "以上蓝图可以创建吗？" Do not proceed without explicit
+"yes" / "可以" / "创建吧".
 
-### Stage 5 — Create
+### Stage 5 — Preview + Confirmation gate
 
 Only after explicit confirmation:
 
@@ -121,6 +142,7 @@ create_digital_employee(
   name=...,
   role_description=...,
   personality=...,
+  confirmed_blueprint_hash="<blueprint_hash from preview>",
   # …same fields as preview, verified identical
 )
 ```
@@ -169,7 +191,8 @@ create_digital_employee(
 )
 ```
 
-No clarification, no preview, no confirmation. The new agent wakes up without a concrete first objective and no identity anchor. Do the 5-stage flow.
+No gate completion, no preview, no confirmation. The new agent wakes up without
+a concrete first objective and no identity anchor. Complete the mandatory gates.
 
 ### Example D — Bad: over-installing
 
@@ -203,7 +226,7 @@ preview_agent_blueprint(..., clawhub_slugs=[s1, s2, s3, s4, s5, s6])
 ## Success Criteria
 
 <success_criteria>
-- Every `create_digital_employee` call is preceded by: mission clarification with five questions, `relationships.md` check, `preview_agent_blueprint`, and explicit user confirmation.
+- Every `create_digital_employee` call is preceded by: Identity gate, Governance gate, Activation gate, Capability / Setup Debt gate, `relationships.md` check, `preview_agent_blueprint`, and explicit user confirmation with the confirmed blueprint hash.
 - `search_clawhub` is only called when the mission clearly requires a domain-specific installable skill; queries are keyword form, not sentences.
 - `clawhub_slugs` passed to `create_digital_employee` never exceed 3 items and always originate from a real `search_clawhub` tool result.
 - After creation, the new agent has concrete first work and any recurring user work has a `scheduled_job` wake policy before the HR session ends.

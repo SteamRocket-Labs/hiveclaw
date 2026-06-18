@@ -12,26 +12,33 @@ from app.database import get_db
 
 
 class _FakeDB:
-    pass
+    def __init__(self):
+        self.sync_session = SimpleNamespace(info={})
+        self.statements: list[str] = []
+
+    async def execute(self, stmt):
+        self.statements.append(str(stmt))
+        return SimpleNamespace()
 
 
-def _client(role: str = "platform_admin") -> TestClient:
+def _client(role: str = "platform_admin") -> tuple[TestClient, _FakeDB]:
     app = FastAPI()
     app.include_router(admin_api.router)
+    fake_db = _FakeDB()
 
     async def override_user():
         return SimpleNamespace(id=uuid4(), role=role, tenant_id=uuid4(), username="admin")
 
     async def override_db():
-        yield _FakeDB()
+        yield fake_db
 
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
-    return TestClient(app)
+    return TestClient(app), fake_db
 
 
 def test_admin_runtime_reconciliation_requires_platform_admin() -> None:
-    client = _client(role="org_admin")
+    client, _fake_db = _client(role="org_admin")
 
     response = client.get("/admin/runtime-reconciliation", params={"tenant_id": str(uuid4())})
 
@@ -39,6 +46,8 @@ def test_admin_runtime_reconciliation_requires_platform_admin() -> None:
 
 
 def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) -> None:
+    from app import database
+
     tenant_id = uuid4()
     task_id = uuid4()
     captured = {}
@@ -65,7 +74,7 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
     monkeypatch.setattr(admin_api, "get_runtime_reconciliation_task", fake_get)
     monkeypatch.setattr(admin_api, "apply_runtime_reconciliation_action", fake_apply)
 
-    client = _client()
+    client, fake_db = _client()
     list_resp = client.get("/admin/runtime-reconciliation", params={"tenant_id": str(tenant_id), "limit": "25"})
     get_resp = client.get(f"/admin/runtime-reconciliation/{task_id}", params={"tenant_id": str(tenant_id)})
     action_resp = client.post(
@@ -83,3 +92,5 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
     assert captured["list"]["tenant_id"] == tenant_id
     assert captured["list"]["limit"] == 25
     assert captured["apply"]["action"] == "mark_resolved"
+    assert fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in fake_db.statements)

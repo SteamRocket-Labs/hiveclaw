@@ -8,7 +8,7 @@ from loguru import logger
 
 from sqlalchemy import text
 
-from app.database import async_session
+from app.database import async_session, tenant_scoped_session
 
 
 async def write_audit_log(
@@ -37,7 +37,7 @@ async def write_audit_log(
             from app.services.tenant_resolver import resolve_tenant_for_agent
 
             tenant_id = await resolve_tenant_for_agent(agent_id)
-        async with async_session() as db:
+        async with tenant_scoped_session(tenant_id, session_factory=async_session) as db:
             await db.execute(
                 text(
                     "INSERT INTO audit_logs (id, action, details, agent_id, user_id, tenant_id, created_at) "

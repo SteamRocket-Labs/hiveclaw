@@ -29,20 +29,20 @@ perform it. Writing to memory without these rules corrupts the pipeline.
 </when_to_use>
 
 <do_not_use_when>
-- The information will be in T0 logs automatically (every conversation, tool call, delegation is logged without your intervention).
+- The information will be in the T0 session ledger automatically (conversation turns, one-off background tasks, tool results, trigger runs, delegation runs, heartbeat ticks, and dream runs are append-logged without your intervention).
 - The fact is a transient task detail, intermediate tool output, or debug note — goal state belongs in the work ledger and working notes belong in workspace files, not memory.
 - You are about to write code patterns, file paths, or debugging steps — those live in the workspace.
 - You already called `save_memory` for the same fact in this session (it is idempotent at character level, but repeated calls still waste turns).
-- You want to update `memory/learnings/`, `evolution/`, or `logs/` directly — forbidden. The automated pipeline owns these paths.
+- You want to update `memory/t0/`, `memory/learnings/`, `evolution/`, or `logs/` directly — forbidden. The automated pipeline owns these paths.
 </do_not_use_when>
 
 ## The 4-Layer Pyramid
 
 <pyramid>
 ```
-T0 (logs/YYYY-MM-DD/behavior/*.md)
-   raw session records, 30-day retention
-   written automatically after every session/trigger/delegation
+T0 (memory/t0/sessions/<session_id>/segments/<segment_id>/source.md)
+   append-only raw session ledger
+   written as user/assistant/tool events are accepted; idle/close only seal segments
          │  extract_agent (hot path: after each response; backfill: from T0)
          ▼
 T2 (memory/learnings/*.md)

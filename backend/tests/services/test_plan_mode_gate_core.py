@@ -30,7 +30,6 @@ def test_action_kinds_are_the_documented_set():
         "enable_autonomous_wake",
         "start_long_task",
         "start_delegation",
-        "start_workflow",
     }
 
 
@@ -174,14 +173,14 @@ def test_validate_plan_handoff_requires_submitted_version_and_hash():
 
 
 # ---------------------------------------------------------------------------
-# needs_plan payload assembly (§9.2 contract — isomorphic with deep_research)
+# confirmation-required payload assembly (tool/REST backstop contract)
 # ---------------------------------------------------------------------------
 
 
-def test_build_needs_plan_payload_shape_matches_contract():
-    from app.services.plan_mode_core import build_needs_plan_payload
+def test_build_confirmation_required_payload_shape_matches_contract():
+    from app.services.plan_mode_core import build_confirmation_required_payload
 
-    payload = build_needs_plan_payload(
+    payload = build_confirmation_required_payload(
         plan_id="11111111-1111-1111-1111-111111111111",
         plan_version=1,
         summary="Confirm the plan before creating this autonomous wake policy.",
@@ -189,7 +188,8 @@ def test_build_needs_plan_payload_shape_matches_contract():
     )
 
     assert payload["ok"] is False
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert payload["plan_id"] == "11111111-1111-1111-1111-111111111111"
     assert payload["plan_version"] == 1
     assert payload["summary"]
@@ -197,24 +197,25 @@ def test_build_needs_plan_payload_shape_matches_contract():
     assert payload["next_action"]
 
 
-def test_build_needs_plan_payload_omits_optional_fields_when_absent():
-    from app.services.plan_mode_core import build_needs_plan_payload
+def test_build_confirmation_required_payload_omits_optional_fields_when_absent():
+    from app.services.plan_mode_core import build_confirmation_required_payload
 
-    payload = build_needs_plan_payload(summary="Create and confirm a plan first.")
+    payload = build_confirmation_required_payload(summary="Confirm explicitly before running.")
 
     assert payload["ok"] is False
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert "plan_id" not in payload
     assert "plan_version" not in payload
     assert "plan_preview" not in payload
-    assert payload["summary"] == "Create and confirm a plan first."
+    assert payload["summary"] == "Confirm explicitly before running."
     assert payload["next_action"]
 
 
-def test_build_needs_plan_payload_default_summary_and_next_action_present():
-    from app.services.plan_mode_core import build_needs_plan_payload
+def test_build_confirmation_required_payload_default_summary_and_next_action_present():
+    from app.services.plan_mode_core import build_confirmation_required_payload
 
-    payload = build_needs_plan_payload()
+    payload = build_confirmation_required_payload()
     assert payload["summary"]
     assert payload["next_action"]
 
@@ -228,10 +229,10 @@ def test_classify_plan_mode_entry_user_decline_does_not_reenter_plan_mode():
     assert decision.reason == "user_declined_recommended_plan_mode"
 
 
-def test_default_needs_plan_summary_is_the_payload_default():
-    from app.services.plan_mode_core import build_needs_plan_payload, default_needs_plan_summary
+def test_default_needs_plan_summary_is_the_confirmation_payload_default():
+    from app.services.plan_mode_core import build_confirmation_required_payload, default_needs_plan_summary
 
-    assert build_needs_plan_payload()["summary"] == default_needs_plan_summary()
+    assert build_confirmation_required_payload()["summary"] == default_needs_plan_summary()
 
 
 # ---------------------------------------------------------------------------

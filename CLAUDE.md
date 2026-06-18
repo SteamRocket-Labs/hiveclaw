@@ -23,6 +23,8 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory / self-evolution boundary law:** LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。Any memory, heartbeat, dream, skill, workflow, or evolution path that replaces model judgment with counters, regexes, truncated summaries, or platform-authored "semantic" text is an AI-native violation. Any path that lets the model bypass governed write surfaces for durable memory/evolution/soul files is a governance violation.
 
+**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown summary blocks, a converged T3 semantic layer (`memory/t3/canon.md`, `relations.md`, `contradictions.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from memory evidence, not a T3 page. Graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/index.md` is a navigation map, not always-on prompt memory.
+
 **Review lens — apply to every subsystem:** ① Is the LLM's input visibility complete? ② Is its output budget sufficient? ③ Is the prompt engineered to benchmark quality? ④ Does mechanical processing appear only as an observable fallback?
 
 ## Delivery Discipline — One Complete Pass, No MVP (交付纪律 — 一次改完，零技术债)
@@ -35,7 +37,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, durable web chat runs, Office workbench editing, and an owner/company-aware Memory Control Plane. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, durable web chat runs, Office workbench editing, and an owner/company-aware Memory Governance Layer. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
 
 **Version:** tracked in `backend/VERSION` and `frontend/VERSION` (currently 1.7.0).
 
@@ -46,6 +48,9 @@ Before making architecture claims, use the current evidence surface:
 - `docs/hive-sota-master-goal.md` — canonical SOTA total goal, target matrix, and future loop-comparison ledger.
 - `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
 - `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark, detailed comparison sources, and milestone evidence.
+- `docs/memory-clean-loop-refactor-plan-2026-06-17.md` — current memory clean-loop redesign and Agent Markdown Wiki / Learning Vault target.
+- `docs/memory-system-flow-map-2026-06-17.md` — end-to-end memory flow map, including source_refs-backed residual evidence verification, T3 semantic layer, and capability candidate lanes.
+- `docs/agent-memory-md-first-spec.md` — MD-first memory truth-source contract and lifecycle spec.
 - `docs/self-evolution-sota-plan.md` — canonical self-evolution foundation and completed substrate baseline.
 - `docs/agent-memory-purity-spec.md` — memory purity, lifecycle, and hygiene contract.
 
@@ -58,6 +63,7 @@ Current closures that must not regress:
 - Subagent/delegation is a first-class collaboration capability: lightweight workers, peer delegation, fanout, context isolation, result distillation, governed shared tool execution, and replay-safe resume boundaries must remain distinct from Workflow control flow.
 - Agent TodoList / Work Ledger / Progress Ledger is the CC Task/Todo-equivalent agent-authored task board: `track_todo` records todos/dependencies, `record_finding` records findings/failures/replan, and `read_ledger` restores state. Writing a todo is cognitive bookkeeping; it must not start execution.
 - Skill is a progressive-disclosure capability capsule, not merely a Markdown prompt. A Skill may package instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions; loading a Skill adds context/guidance only. Executable components still run through their governed runtime (`preview_workflow`/`start_workflow`, `spawn_subagent`/`delegate_to_agent`, or approved sandbox/code execution).
+- Memory/Self-Evolution target form is Agent Markdown Wiki / Learning Vault: T0 -> T2 -> T3 -> `soul.md` is the durable gradient; residual verification means T3 curation follows T2 `source_refs` back to T0 evidence; Skill may grow from memory evidence, while Workflow remains a separate execution-control system that memory can only reference or hand off evidence to.
 - `invocation_spans` is the canonical PostgreSQL trace surface; JSONL spans are compatibility artifacts.
 - Provider retry/overload fallback, CJK-aware token estimates, canonical assistant-turn prompt-cache anchors, output-cap telemetry, and Anthropic thinking-signature preservation are runtime contracts.
 - Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.
@@ -170,16 +176,17 @@ Tools follow a registry + executor + governance pattern:
 
 Progressive-disclosure capability capsules. `SkillParser` → `WorkspaceSkillLoader` → `SkillRegistry`. Skills load progressively: catalog metadata in prompt, full body via `load_skill`. A folder-based Skill may carry instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions. Loading a Skill does not execute side effects or unlock schemas; workflows still run through `preview_workflow`/`start_workflow`, subagents through `spawn_subagent`/`delegate_to_agent`, scripts through the approved sandbox/code execution path, and missing schemas through `tool_search`.
 
-### Memory System — 4-Layer MD Pyramid + Control Plane
+### Memory System — 4-Layer MD Pyramid + Memory Governance Layer
 
 MD files are the source of truth; the legacy SQLite/JSON shadow stores are retired and repaired through `memory/hygiene.py`.
 
 ```
-T0 (raw logs, 30d)  →  T2 (learnings/*.md)  →  T3 (canonical MD + lifecycle sidecar)  →  soul.md
-     ↑ write                 ↑ extract/candidate       ↑ governed append/curation          ↑ dream
-SESSION_IDLE/CLOSE      RESPONSE_COMPLETE         Heartbeat/save_memory/feedback      24h + activity gate
-  behavior/ only       PRE_COMPACTION drain       dream/manual, dedup counters        (or soft dream relief)
-  feeds T2 backfill    T0 backfill fallback
+T0 (append-only session ledger, 30d)  →  T2 (learnings/*.md)  →  T3 (canonical MD + lifecycle sidecar)  →  soul.md
+     ↑ append                ↑ extract/candidate       ↑ governed append/curation          ↑ dream
+web_chat_runtime        RESPONSE_COMPLETE         Heartbeat/save_memory/feedback      24h + activity gate
+user/assistant/tool     PRE_COMPACTION drain       dream/manual, dedup counters        (or soft dream relief)
+events; idle/close
+seal segments
 ```
 
 **Cadence configuration (P1-W2-5, current)**: the `evolution_daemon` dispatcher
@@ -191,27 +198,24 @@ there are no new T2 entries. Full Dream is gated by `MIN_HOURS_BETWEEN_DREAMS`
 `MIN_HEARTBEAT_TICKS_SINCE_DREAM` (2 productive heartbeat ticks). Soft Dream is
 a 6h deterministic relief path when T3 is near the 100-entry pressure threshold.
 
-**T0 layout (split by role, since PR-1):**
+**T0 session layout (Claude Code transcript / Codex rollout aligned):**
 
 ```
-logs/YYYY-MM-DD/
-  behavior/        ← agent ↔ outside-world events — eligible T2 substrate
-    chat-*.md      ← full message thread, tool_calls + tool_results inline
-    trigger-*.md   ← same, for scheduled tasks
-    delegation-*.md ← same, for agent→agent
-  system/          ← distiller self-trace, audit only (NOT fed to T2)
-    heartbeat-*.md ← decision reasoning + T2 inputs considered + tool calls
-    dream-*.md     ← dedup decisions + soul promotion decisions + reasoning
-  artifacts/       ← spilled tool_results > 8000 chars (PR-5)
-    {tool_call_id}-{tool_name}.json
+memory/t0/sessions/<chat_session_id>/
+  index.json
+  segments/
+    <segment_id>/
+      source.md    ← append-only XML event blocks: user_message, assistant_message, tool_result, segment_boundary
 ```
+
+`logs/YYYY-MM-DD/**` is now legacy/import compatibility only. Old chat logs can be imported, but runtime chat, one-off task, trigger, delegation, heartbeat, and dream T0 truth is the append-only session ledger.
 
 **T2 extraction has two paths:**
 
 1. **Hot path (primary)**: in-memory messages → `extract_agent` via
    `RESPONSE_COMPLETE` hook → `learnings/*.md`. Per-agent cursor skips
    already-processed messages.
-2. **Backfill path (PR-4)**: behavior T0 MD → `replay_messages_from_t0`
+2. **Backfill path**: append-only T0 session ledger / replayed DB sessions
    → same extractor → `learnings/*.md`. Gated by
    `learnings/.backfill_cursor.json` (idempotent by `session_id`).
    Triggered manually via `POST /api/admin/agents/{id}/backfill-t2`.
@@ -220,14 +224,13 @@ logs/YYYY-MM-DD/
 
 | Layer | Location | Written By | Read By |
 |-------|----------|-----------|---------|
-| **T0 behavior** | `logs/YYYY-MM-DD/behavior/` | `t0_logger.write_t0_log` (post-session/trigger/delegation) | `extract_agent.backfill_missing_extractions` |
-| **T0 system**   | `logs/YYYY-MM-DD/system/`   | heartbeat / auto_dream | Operators only |
-| **T0 artifacts**| `logs/YYYY-MM-DD/artifacts/` | `_spillover_large_tool_results` when tool_result > 8000 chars | `_resolve_artifact_content` during backfill |
+| **T0 session ledger** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | `web_chat_runtime` append points; `task_executor` one-off task events; runtime hook events for trigger/delegation/heartbeat/dream; `SESSION_IDLE/CLOSE` seal chat segments | replay/import/backfill; higher layers as evidence |
+| **T0 legacy/import logs** | `logs/YYYY-MM-DD/{behavior,system}/` | Legacy import/manual compatibility only; not a runtime T0 writer | legacy import/operators |
 | **T2** | `memory/learnings/*.md` | `extract_agent` (LLM hot path + pattern fallback) | Heartbeat curation |
 | **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | governed T3 append path: heartbeat, `save_memory`, session feedback, dream/manual | Prompt injection via `retriever.py`; metadata in `lifecycle.json` |
 | **soul.md** | Root workspace | Dream consolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |
 
-The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Control Plane:
+The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Governance Layer:
 
 | Capability | Code paths | Rule |
 |------------|------------|------|
@@ -245,16 +248,17 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 
 | File | Purpose |
 |------|---------|
-| `services/t0_logger.py` | Write T0 MD logs (chat, trigger, delegation, heartbeat, dream) |
+| `memory/t0/ledger.py` | Append-only T0 session ledger writer, sealer, replay, and legacy import |
+| `services/t0_logger.py` | Legacy T0 formatter/import compatibility; runtime hooks no longer call it; chat backfill writes the session ledger |
 | `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata; source bucket weights live in `memory/t2_store.py`. |
 | `services/heartbeat.py` | Platform-managed T2→T3 curation and self-evolution tick (KAIROS persistent session, 120min default eligibility, no-new-T2 skip). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` — **already SOP-driven** |
-| `services/auto_dream.py` | T3→soul consolidation (24h plus 3 sessions or 2 productive heartbeat ticks; soft dream is 6h T3-pressure maintenance). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback is applied by the Memory Control Plane/internal dream service, not by direct `write_file` under `memory/`. |
+| `services/auto_dream.py` | T3→soul consolidation (24h plus 3 sessions or 2 productive heartbeat ticks; soft dream is 6h T3-pressure maintenance). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback is applied by the Memory Governance Layer/internal dream service, not by direct `write_file` under `memory/`. |
 | `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace. |
 | `services/invocation_trace.py` | Per-invocation runtime trace: file-backed JSONL compatibility plus PostgreSQL `invocation_spans` canonical query surface. |
 | `services/session_feedback.py` | Persists useful/misleading feedback and writes calibrated memory through governed paths. |
 | `memory/hygiene.py` | Retires legacy shadow stores, quarantines dead stubs, and backfills lifecycle metadata with dry-run/apply reports. |
 | `memory/retriever.py` | Read T3 into prompt. High-priority files are injected directly where policy allows; knowledge/strategy/user entries are scored against query. |
-| `memory/md_store.py` | Maintains Markdown T3 stores and `memory/INDEX.md`; the index is a navigation artifact, not the primary retriever route. |
+| `memory/md_store.py` | Maintains Markdown T3 stores and `memory/index.md`; the index is a navigation artifact, not the primary retriever route. |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)

@@ -1,5 +1,7 @@
 # Hive Plan Mode 设计文档
 
+> **2026-06-18 当前口径修正**：本文早期段落里“长任务 / 高风险 / tool gate 自动进入 Plan Mode”的说法已经废弃。Plan Mode 入口只有两类：用户显式进入，或 agent 调 `request_plan_mode` 后由用户批准进入。工具、REST、Workflow、Deep Research 需要阻断执行时返回 `requires_confirmation` / `confirmation_required`，不能创建 PlanRequest，也不能产出 `needs_plan`，除非用户已经显式进入 Plan Mode。
+>
 > 本文定义 Hive 的完整 Plan Mode。它不是单个 skill、不是 Deep Research 的专用参数、也不是
 > `Agent.execution_mode` 的一种取值。Plan Mode 是 Hive runtime 的一等阶段:
 >
@@ -25,11 +27,11 @@
 
 Plan Mode 是:
 
-> 当用户诉求会让 agent 在当前对话之外继续自主执行,或会触发外部可见 / 高风险副作用时,
-> 系统必须先创建一份可审阅、可修改、可确认的结构化计划。只有用户在后续独立动作中确认
-> 该计划版本后,系统才允许把它交给执行层。
+> 用户显式要求先计划，或 agent 请求进入计划模式并获得用户批准后，系统创建一份可审阅、
+> 可修改、可确认的结构化计划。只有用户在后续独立动作中确认该计划版本后，系统才允许
+> 把它交给执行层。
 
-它覆盖的不只是定时任务。所有这些都属于 Plan Mode 的管辖范围:
+Plan Mode 可以用于这些场景，但不能由这些场景自动强制触发:
 
 - 创建或修改未来会自动触发的 wake policy / trigger。
 - 创建 objective 后让 agent 自主推进。
@@ -59,7 +61,7 @@ Plan Mode 不等于“永远不执行”。它的目标是让执行有明确边�
 
 | 现有机制 | 当前作用 | 缺口 |
 |---|---|---|
-| Deep Research plan gate | `plan_confirmed=false` 时返回 `needs_plan`,不执行研究 | 只覆盖 deep research 工具,不是全局 runtime gate |
+| Deep Research confirmation gate | `user_confirmed=false` 时返回 `requires_confirmation`,不执行研究 | 只覆盖 deep research 工具,不是全局 runtime gate，也不创建 PlanRequest |
 | Complex Task Executor skill | 让 agent 对复杂任务写 `workspace/<task>/plan.md` | 是 prompt/skill 习惯,不是安全边界,不能阻止工具执行 |
 | long task artifact | 写 `runtime_artifacts/long_tasks/<id>/plan.json` 和 progress | 是恢复/审计 artifact,不是用户确认闸门 |
 | objective proposed gate | `objective_task` 绑定 proposed/requires_approval objective 时 trigger preflight 会 skip | 只覆盖 objective_task,不覆盖普通 scheduled_job、REST trigger、agent set_trigger |
@@ -154,18 +156,18 @@ Plan Mode 要解决四件事:
 
 ## 5. 触发规则
 
-### 5.1 进入策略: 显式、自动、推荐、兜底
+### 5.1 进入策略: 显式、请求许可、确认阻断
 
 Plan Mode 是底层能力,但入口不能一律"强制计划"。正确分层是:
 
 | 入口 | 行为 | 示例 |
 |---|---|---|
 | 用户显式选择/表达 Plan Mode | 立即创建 PlanRequest | 前端 Plan Mode toggle、"先做计划"、"进入计划模式" |
-| 长任务创建 | 自动进入 Plan Mode | "完整调研这个行业并出报告" |
-| 定时/监控类任务创建 | 推荐进入 Plan Mode,询问是否继续 | "每天 9 点帮我整理新闻"、"盯一下这个网站" |
-| 工具/REST 兜底发现即将开启未来自主行为 | hard gate,返回 `needs_plan` 或要求显式 opt-out | agent 直接调 `set_trigger`、legacy schedule API |
+| agent 调 `request_plan_mode` | 返回 `plan_mode_entry_requested`，等待用户批准后进入 | agent 判断需要先计划多步骤任务 |
+| 长任务 / 定时 / 监控 / 委派 / Workflow / Deep Research | 需要确认时返回 `requires_confirmation` / `confirmation_required`；不自动进入 Plan Mode | "完整调研这个行业并出报告"、"每天 9 点帮我整理新闻" |
+| 工具/REST 兜底发现即将开启未来自主行为 | hard gate，返回确认需求或要求真实用户确认 | agent 直接调 `set_trigger`、legacy schedule API |
 
-定时/监控的默认 UX 是**推荐**,不是硬强制:agent 应先说明需要确认频率、范围、成本、停止条件和通知方式,询问用户是否进入 Plan Mode。用户明确拒绝推荐后,可以继续创建定时/监控任务,但必须写入审计豁免 `plan_exempt_reason=user_declined_plan_mode`。信任根必须来自真实用户事件:REST body 只有在已认证用户同时提交已被本人拒绝的 `plan_recommendation_id` 时才可带 `plan_mode_decision=declined`;agent 工具参数不能暴露或信任该字段,web/IM runtime 只能在"上一轮确实推荐过 + 本轮用户明确拒绝"后设置内部 trusted opt-out。
+定时/监控的默认 UX 是**确认需求**,不是硬强制 Plan Mode:agent 应先说明需要确认频率、范围、成本、停止条件和通知方式。信任根必须来自真实用户事件；agent 工具参数不能暴露或信任内部确认字段。
 
 ### 5.2 必须创建 PlanRequest
 
@@ -198,9 +200,9 @@ Plan Mode 是底层能力,但入口不能一律"强制计划"。正确分层是:
 提醒我 / 等回复 / 有变化就 / 帮我长期 / 自己跟进 / 派给 / 让某个 agent 去
 ```
 
-长任务、委派、高风险 future action 的失败方向必须是“不执行,先计划”。定时/监控任务的常规方向是“先推荐 Plan Mode,等用户确认是否进入”,而不是静默创建 trigger。
+长任务、委派、高风险 future action 的失败方向必须是“不执行,先确认”。定时/监控任务的常规方向是返回确认需求或由 agent 请求进入 Plan Mode，而不是静默创建 trigger。
 
-但**关键词匹配 / 意图识别只是 UX 层预判**(让 chat 能提前推荐或弹 plan card),不是安全边界,判错不致命。真正的 fail-closed 安全闸门锚在工具/REST/执行兜底层(§9.2):无论意图识别是否命中,agent 一旦真的去调会开启未来自主行为的工具,必须有 confirmed plan、显式用户 opt-out,或其他受支持的审计豁免。**意图识别负责"体验",兜底层负责"安全",两者解耦。**
+但**关键词匹配 / 意图识别只是 UX 层预判**(让 chat 能提前推荐确认或请求 Plan Mode),不是安全边界,判错不致命。真正的 fail-closed 安全闸门锚在工具/REST/执行兜底层(§9.2):无论意图识别是否命中,agent 一旦真的去调会开启未来自主行为的工具,必须有真实用户确认、显式 Plan Mode 的 confirmed plan、或其他受支持的审计豁免。**意图识别负责"体验",兜底层负责"安全",两者解耦。**
 
 ---
 
@@ -439,8 +441,8 @@ Plan Mode 的安全保证**不是单点锚**(早期草案一度以为是"工具�
   hook:objective intake 不再把 wake_policy 意图直接判 active
 
 兜底层(安全保证:确定性 fail-closed,少数收口覆盖所有上游)
-  trigger daemon 执行前 preflight:无 confirmed plan 且无 cutover 豁免的 autonomous trigger → skip/quarantine
-  wake reconciler:只为 confirmed plan / 豁免 objective 创建 enabled trigger
+  trigger daemon 执行前 preflight:无真实用户确认/confirmed plan 且无 cutover 豁免的 autonomous trigger → skip/quarantine
+  wake reconciler:只为已确认 / 豁免 objective 创建 enabled trigger
   task_executor:execute_task 启动前校验
   delegation:启动前校验
 ```
@@ -456,9 +458,9 @@ Plan Mode 的安全保证**不是单点锚**(早期草案一度以为是"工具�
 Plan Mode 接入方式:
 
 1. 在 web chat run 创建后,先做 intent classification。
-2. 如果请求命中 Plan Mode:
-   - 显式 Plan Mode 或长任务:创建 `agent_plan_requests` row。
-   - 定时/监控:先推荐进入 Plan Mode 并等待用户选择;不立即创建 PlanRequest。
+2. 如果用户显式进入 Plan Mode，或批准了 agent 的 `request_plan_mode` 请求，创建 `agent_plan_requests` row。
+   - 长任务 / 定时 / 监控 / 委派 / Workflow / Deep Research 本身不再自动创建 PlanRequest。
+   - 这些动作需要阻断时返回 `requires_confirmation` / `confirmation_required`。
 3. 创建 PlanRequest 后:
    - 启动受限 agent-authored planning invocation,生成 plan draft。
    - 写 `plans/{plan_id}.md`。
@@ -479,36 +481,34 @@ planning 期"只读取、不落地"的约束由上面的 allow/exclude 列表 + 
 
 ### 9.2 ToolRuntimeService(早拦层之一)
 
-工具层是早拦层里最大的一块(覆盖 agent 主动调的所有自主工具),但它是**纵深防御的一层,不是唯一锚点**——真正的安全保证在 §9.0 的兜底层。
+工具层是早拦层里最大的一块(覆盖 agent 主动调的所有自主工具),但它是**纵深防御的一层,不是唯一锚点**——真正的安全保证在 §9.0 的兜底层。工具层只能返回确认需求，不能自行把会话切入 Plan Mode。
 
 实现要点:
 
 - **打标用代码级 `ToolMeta` 字段,不用 `Tool.config`**:`Tool.config` 是 DB seed,seeder 不覆盖已有非空 config,做不了治理事实源。ToolMeta 已有现成的 `governance: "" | "safe" | "sensitive"`,扩展它(如加 `"autonomous"`)或新增 `plan_gate` 字段即可——import 期注册的代码级 registry。
 - **tagged 工具必须在所有执行入口统一检查**:`execute()` / `execute_direct()` / `execute_approved()`,尤其 `execute_approved` 不能成为绕过点。不对所有工具查 DB,只对 tagged 工具查。
 
-第一批 tagged(真正"开启自主行为"的)工具:
+第一批需要确认或 preflight 的工具:
 
 ```text
-set_trigger                       # 启用未来自主 wake;用户拒绝推荐后仅可由 runtime 注入 trusted opt-out,不能信 LLM 参数
-update_trigger                    # 只有显式替换为 autonomous wake config 时 hard gate;改 reason/name 等不 gate
-delegate_to_agent                 # 交出执行权,异步推进
-start_workflow                     # 确定性长任务/编排启动
-deep_research_start               # 已有 plan_confirmed(RC11-RC15 刚修好);MVP 只桥接登记 PlanRequest,不重构
+set_trigger                       # 启用未来自主 wake;只能信真实用户确认或 runtime trusted opt-out
+update_trigger                    # 只有显式替换为 autonomous wake config 时 confirmation gate;改 reason/name 等不 gate
+delegate_to_agent                 # 交出执行权,异步推进；用户当前请求触发的委派可直接执行，后台/无人值守需确认
+start_workflow                    # 确定性长任务/编排启动；按 confirmation_required/user_confirmed，不进 Plan Mode
+deep_research_start               # user_confirmed=false 时返回 requires_confirmation，不登记 PlanRequest
 ```
 
-**不要**把 `send_feishu_message` / `write_file` / `edit_file` / `delete_file` / `create_digital_employee` 放进第一批强拦——当前轮明确授权的低风险同步动作和 HR blueprint 已确认的创建动作不该进 Plan Mode,它们继续走现有 ActionPreflight / capability approval / HR blueprint 确认。只有"未来自动发送、批量覆盖、改生产配置"这类才升级到 plan。
+**不要**把 `send_feishu_message` / `write_file` / `edit_file` / `delete_file` / `create_digital_employee` 放进 Plan Mode 强拦——当前轮明确授权的低风险同步动作和 HR blueprint 已确认的创建动作不该进 Plan Mode,它们继续走现有 ActionPreflight / capability approval / HR blueprint 确认。只有"未来自动发送、批量覆盖、改生产配置"这类才升级到确认需求或显式 Plan Mode 请求。
 
-工具层返回应类似 Deep Research:
+工具层返回应类似:
 
 ```json
 {
   "ok": false,
-  "status": "needs_plan",
-  "plan_id": "...",
-  "plan_version": 1,
-  "summary": "Confirm the plan before creating this autonomous wake policy.",
-  "plan_preview": {...},
-  "next_action": "Show this plan to the user and wait for explicit confirmation."
+  "status": "requires_confirmation",
+  "requires_confirmation": true,
+  "summary": "Confirm before creating this autonomous wake policy.",
+  "next_action": "Ask the user to confirm this exact action before retrying."
 }
 ```
 
@@ -518,17 +518,17 @@ deep_research_start               # 已有 plan_confirmed(RC11-RC15 刚修好);M
 
 改法:
 
-- 新增可选 `confirmed_plan_id`, `confirmed_plan_version`, `confirmed_plan_hash`。
-- 如果请求创建 enabled autonomous trigger 且没有 confirmed plan,返回 409/422:
+- 新增可选 `confirmed_plan_id`, `confirmed_plan_version`, `confirmed_plan_hash` 作为显式 Plan Mode provenance；普通确认路径使用真实用户事件/内部 trusted confirmation。
+- 如果请求创建 enabled autonomous trigger 且没有真实用户确认或 confirmed plan,返回 409/422:
 
 ```json
 {
-  "error": "plan_required",
-  "message": "Create and confirm a plan before enabling this wake policy."
+  "error": "confirmation_required",
+  "message": "Confirm before enabling this wake policy."
 }
 ```
 
-前端 New wake 入口应先创建 PlanRequest,不是直接 create trigger。
+前端 New wake 入口应先收集真实用户确认；如果用户显式选择 Plan Mode，再创建 PlanRequest。
 
 ### 9.4 Objective approval
 
@@ -753,9 +753,9 @@ pytest tests/services/test_plan_mode_service.py -q
 
 ### Phase 2: trigger 硬闸门
 
-- `set_trigger` 没有 confirmed plan 时返回 `needs_plan`。
-- REST `create_trigger` 没有 confirmed plan 时拒绝创建 enabled autonomous trigger。
-- 已 confirmed plan handoff 可以创建 trigger。
+- `set_trigger` 没有真实用户确认时返回 `requires_confirmation`。
+- REST `create_trigger` 没有真实用户确认或 confirmed plan provenance 时拒绝创建 enabled autonomous trigger。
+- 已确认 action 或 explicit Plan Mode confirmed handoff 可以创建 trigger。
 
 验收:
 
@@ -811,14 +811,14 @@ npm test -- planMode
 |---|---|
 | 用户说“每天 9 点提醒我” | 推荐进入 Plan Mode,不直接创建 enabled trigger |
 | 用户在收到推荐后回复“不用计划模式,直接创建” | 不再重新进入 Plan Mode;后续 `set_trigger` 由 runtime 内部 trusted opt-out 放行,REST trigger/schedule body 必须由认证用户带已拒绝的 `plan_recommendation_id` + `plan_mode_decision=declined` 创建并记录豁免 |
-| agent 调用 `set_trigger` 但无 confirmed plan | 返回 `needs_plan`,不落库 trigger |
-| REST create trigger 无 confirmed plan | 4xx `plan_required` |
+| agent 调用 `set_trigger` 但无真实用户确认 | 返回 `requires_confirmation`,不落库 trigger |
+| REST create trigger 无真实用户确认 | 4xx `confirmation_required` |
 | 用户确认 plan_version=1/hash 匹配 | status -> confirmed |
 | 用户确认旧 version | 409 |
 | plan confirmed 后被修改 | hash 改变,旧确认不能执行 |
 | confirmed handoff 成功 | 创建 objective/trigger,记录 IDs |
 | rejected plan | 不创建 objective/trigger/runtime task |
-| deep research 未确认 | 仍返回 needs_plan,并登记/兼容 PlanRequest |
+| deep research 未确认 | 返回 `requires_confirmation`,不登记 PlanRequest |
 | low-risk read-only chat | 不进入 Plan Mode |
 | external action plan confirmed | 开始执行,具体 send 仍走 ActionPreflight/approval |
 
@@ -829,7 +829,7 @@ npm test -- planMode
 原设计里有几条需要替换:
 
 1. **“只覆盖定时任务”不够**
-   Plan Mode 必须覆盖所有 future/autonomous/high-risk workflow。
+   Confirmation 必须覆盖所有 future/autonomous/high-risk workflow；Plan Mode 只覆盖显式计划路径。
 
 2. **“plan.md 是唯一交付物/事实源”不够**
    必须有 DB canonical PlanRequest。Markdown 是用户可读 artifact。
@@ -873,15 +873,15 @@ Plan Mode 视为完成,当且仅当:
 
 1. `agent_plan_requests` + `PlanModeService` + `PlanModeGate`。
 2. **早拦层**:
-   - tool gate(代码级 ToolMeta 打标):`set_trigger`/`update_trigger`/`delegate_to_agent`/`start_workflow`/`deep_research_start`,在 `execute`/`execute_direct`/`execute_approved` 全入口生效。
+   - tool gate(代码级 ToolMeta 打标):`set_trigger`/`update_trigger`/`delegate_to_agent`/`deep_research_start`,在 `execute`/`execute_direct`/`execute_approved` 全入口生效；`start_workflow` 用 workflow preview/start 的 `confirmation_required`，不走 PlanModeGate。
    - REST gate:`triggers` + legacy `schedules` + `objectives` 激活/wake_policy + `collaborate/delegate` + `tasks` 自动执行。
 3. **兜底层(安全保证)**:
-   - `wake_reconciler`:只为 confirmed plan / 豁免 objective 建 enabled trigger。
-   - `trigger_daemon` 执行前 preflight:cutover 后无 confirmed plan 的 autonomous trigger 不执行。
+   - `wake_reconciler`:只为已确认 / 豁免 objective 建 enabled trigger。
+   - `trigger_daemon` 执行前 preflight:cutover 后无真实确认或 confirmed plan provenance 的 autonomous trigger 不执行。
    - `task_executor` / delegation 启动前校验。
-4. Web chat plan UX:对 autonomous intent 弹 plan card(早拦,判错由兜底兜)。
-5. Chat card + Aware plan queue:确认 / 拒绝 / 请求修改。
-6. Confirmed plan 第一版只支持 `objective_trigger` handoff;存量 trigger 按 §9.0 cutover 处理。
+4. Web chat confirmation UX:对 autonomous intent 弹确认卡或允许 agent 调 `request_plan_mode`。
+5. Chat card + Aware confirmation queue:确认 / 拒绝 / 请求修改；显式 Plan Mode 仍使用 plan queue。
+6. Confirmed plan 第一版只支持 `objective_trigger` handoff;普通确认路径不要求 PlanRequest。存量 trigger 按 §9.0 cutover 处理。
 
 这才真正解决最痛的问题:
 

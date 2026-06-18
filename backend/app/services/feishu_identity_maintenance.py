@@ -45,6 +45,7 @@ async def find_or_create_feishu_chat_session(
     provider_user_id: str | None,
     provider_open_id: str | None,
     first_message_title: str,
+    tenant_id: uuid.UUID | None = None,
     delivery_target: dict | None = None,
 ) -> ChatSession:
     """Find or create the canonical Feishu P2P session for a stable user/open id pair."""
@@ -57,6 +58,7 @@ async def find_or_create_feishu_chat_session(
     return await find_or_create_channel_session(
         db=db,
         agent_id=agent_id,
+        tenant_id=tenant_id,
         user_id=user_id,
         external_conv_id=external_conv_id,
         source_channel="feishu",

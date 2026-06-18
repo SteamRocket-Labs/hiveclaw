@@ -1,23 +1,27 @@
-"""T0 Raw Behavior Logger — writes per-behavior MD files to logs/ directory.
+"""Legacy T0 behavior/system log formatter.
 
-T0 is the bottom layer of the 4-layer MD pyramid (T0→T2→T3→soul).
-Each event produces a timestamped MD file with YAML frontmatter + body.
+Session T0 truth now lives in the append-only ledger under:
 
-Layout (since PR-1 of T0 raw revamp):
+    memory/t0/sessions/{chat_session_id}/segments/{segment_id}/source.md
+
+Runtime chat, trigger, delegation, heartbeat, and dream events must write that
+ledger. This module remains only for legacy file imports, explicit manual
+compatibility exports, and backfill adapters. It must not be used as a runtime
+T0 writer.
+
+Legacy layout:
 
     logs/YYYY-MM-DD/
-        behavior/        ← agent ↔ outside-world events (real T0 substrate)
+        behavior/        ← legacy behavior logs / import compatibility
             chat-{HHmm}-{id}.md
             trigger-{HHmm}-{id}.md
             delegation-{HHmm}-{id}.md
-        system/          ← distiller self-trace (audit only, NOT consumed by T2)
+        system/          ← legacy distiller self-trace (audit only, NOT consumed by T2)
             heartbeat-{HHmm}-{id}.md
             dream-{HHmm}-{id}.md
 
-Only behavior/* files are eligible to feed `extract_agent` / T2 backfill.
-system/* files exist purely so operators can debug heartbeat / dream decisions.
-
-Retention: 30 days (cleanup_old_logs removes older date directories).
+Chat backfill writes to the new session ledger. New runtime hooks must not
+write ``logs/YYYY-MM-DD/**`` as primary T0 evidence.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.database import tenant_scoped_session
 from app.memory.form_lint import lint_memory_form
+from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events, seal_t0_session_segment
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.services.privacy_layer import PrivacyLayer, PrivacyStore
@@ -89,8 +94,10 @@ def _apply_t0_privacy_gate(content: str) -> str:
 def _category_of(behavior_type: str) -> str:
     """Map a behavior_type to its storage subdirectory.
 
-    behavior/ holds true T0 substrate; system/ holds distiller traces.
-    Unknown types fall back to system/ so they don't pollute the T2 input set.
+    This is the legacy logs layout. Runtime T0 truth lives in
+    memory/t0/sessions/**/source.md. behavior/ holds legacy importable behavior
+    snapshots; system/ holds legacy distiller traces. Unknown types fall back
+    to system/ so they do not look like runtime session evidence.
     """
     if behavior_type in _BEHAVIOR_TYPES:
         return "behavior"
@@ -570,10 +577,10 @@ def write_t0_log(
     messages: list[dict] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Path | None:
-    """Write a T0 raw log file. Returns the file path, or None on failure.
+    """Write a legacy raw log file. Returns the file path, or None on failure.
 
-    This is a synchronous, fire-and-forget operation.
-    Zero LLM dependency — pure pattern-based formatting.
+    This is retained for legacy import/manual compatibility only. Runtime T0
+    events must use app.memory.t0.ledger.
     """
     formatter = _FORMATTERS.get(behavior_type)
     if not formatter:
@@ -724,9 +731,9 @@ def cleanup_old_logs(agent_id: uuid.UUID, retention_days: int = 30) -> int:
 
 
 def audit_t0_logs(agent_id: uuid.UUID, recent_days: int = 30) -> dict[str, Any]:
-    """Inspect T0 log health for an agent.
+    """Inspect legacy log health for an agent.
 
-    Counts behavior/* and system/* separately under the new layout while still
+    Counts behavior/* and system/* separately under the legacy logs layout while still
     counting any leftover legacy flat files (top-level under YYYY-MM-DD/) so
     audits before the migration runs are not under-reported.
     """
@@ -812,9 +819,13 @@ async def backfill_recent_chat_logs(
     *,
     tenant_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
-    """Backfill recent chat sessions into T0 logs when raw files are missing."""
-    logs_dir = _agent_logs_dir(agent_id)
-    existing_session_ids = _extract_existing_session_ids(logs_dir.rglob("chat-*.md")) if logs_dir.exists() else set()
+    """Backfill recent chat sessions into the append-only T0 session ledger.
+
+    This function intentionally no longer writes ``logs/YYYY-MM-DD/**/chat-*.md``.
+    The legacy per-file logger remains available for import/compatibility, but
+    session T0 truth is ``memory/t0/sessions/<session>/segments/*/source.md``.
+    """
+    data_root = Path(get_settings().AGENT_DATA_DIR)
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
     session_stmt = (
@@ -836,7 +847,7 @@ async def backfill_recent_chat_logs(
 
             for session in sessions:
                 session_key = str(session.id)
-                if session_key in existing_session_ids:
+                if replay_t0_session_events(agent_id=agent_id, session_id=session_key, data_root=data_root):
                     skipped_existing += 1
                     continue
 
@@ -850,32 +861,38 @@ async def backfill_recent_chat_logs(
                     .order_by(ChatMessage.created_at.asc())
                 )
                 messages = (await db.execute(message_stmt)).scalars().all()
-                rendered_messages = [
-                    {
-                        "role": message.role,
-                        "content": message.content,
-                    }
-                    for message in messages
-                    if (message.content or "").strip()
-                ]
-                if not rendered_messages:
+                appendable_messages = [message for message in messages if (message.content or "").strip()]
+                if not appendable_messages:
                     skipped_empty += 1
                     continue
 
-                path = write_t0_log(
-                    agent_id,
-                    behavior_type="chat",
-                    messages=rendered_messages,
-                    metadata={
-                        "session_id": session_key,
-                        "source": session.source_channel,
-                        "started_at": session.created_at,
-                        "occurred_at": session.created_at,
-                    },
+                for message in appendable_messages:
+                    role = str(message.role)
+                    append_t0_session_event(
+                        agent_id=agent_id,
+                        session_id=session_key,
+                        event_type="assistant_message" if role == "assistant" else "user_message",
+                        role=role,
+                        content=message.content,
+                        message_id=getattr(message, "id", None),
+                        actor_id=agent_id if role == "assistant" else getattr(session, "user_id", None),
+                        source=str(session.source_channel or "backfill"),
+                        data_root=data_root,
+                        created_at=getattr(message, "created_at", None),
+                        metadata={
+                            "source": "backfill_recent_chat_logs",
+                            "session_source": str(session.source_channel or ""),
+                        },
+                    )
+                seal_t0_session_segment(
+                    agent_id=agent_id,
+                    session_id=session_key,
+                    reason="backfill_recent_chat_logs",
+                    data_root=data_root,
+                    created_at=getattr(session, "last_message_at", None),
+                    metadata={"source": "backfill_recent_chat_logs"},
                 )
-                if path is not None:
-                    written += 1
-                    existing_session_ids.add(session_key)
+                written += 1
     except Exception as exc:
         logger.debug("[T0] Backfill skipped for %s: %s", agent_id, exc)
         return {

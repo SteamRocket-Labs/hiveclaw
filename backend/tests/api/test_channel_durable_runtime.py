@@ -136,6 +136,74 @@ async def test_call_agent_llm_durable_preloads_sponsor_before_lifecycle_check(mo
     assert "已接收" in reply
 
 
+@pytest.mark.asyncio
+async def test_call_agent_llm_durable_confirms_channel_plan_before_starting_runtime(monkeypatch) -> None:
+    from app.services.channel_agent_runtime import call_agent_llm
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Leslie的智能助手",
+        tenant_id=uuid4(),
+        agent_type="chat",
+        role_description="",
+        primary_model_id=None,
+        fallback_model_id=None,
+    )
+    session = SimpleNamespace(id=session_id, delivery_target_json={"channel": "wechat_personal"})
+    user = SimpleNamespace(id=user_id, username="wechat_user", display_name="WeChat User")
+
+    class _Result:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result(agent)
+
+    captured = {}
+
+    async def fake_confirm(**kwargs):
+        captured["confirm"] = kwargs
+        return "已确认计划（plan_id=plan-1），并已启动执行。"
+
+    async def fail_start_channel_run(**_kwargs):
+        raise AssertionError("durable runtime should not start for a channel plan confirmation")
+
+    monkeypatch.setattr("app.services.channel_agent_runtime.try_confirm_channel_plan_from_text", fake_confirm)
+    monkeypatch.setattr(
+        "app.services.web_chat_runtime.start_channel_chat_run_from_saved_turn",
+        fail_start_channel_run,
+    )
+
+    reply = await call_agent_llm(
+        _DB(),
+        agent_id,
+        "确认",
+        user_id=user_id,
+        session_id=str(session_id),
+        session_source="wechat_personal",
+        session_channel="wechat_personal",
+        allow_bare_plan_confirmation=True,
+        durable_run=True,
+        durable_session=session,
+        durable_user=user,
+    )
+
+    assert reply == "已确认计划（plan_id=plan-1），并已启动执行。"
+    assert captured["confirm"]["agent_id"] == agent_id
+    assert captured["confirm"]["user_id"] == user_id
+    assert captured["confirm"]["user_text"] == "确认"
+    assert captured["confirm"]["session_id"] == str(session_id)
+    assert captured["confirm"]["session_source"] == "wechat_personal"
+    assert captured["confirm"]["allow_bare_latest"] is True
+
+
 def test_all_im_call_sites_opt_into_durable_runtime() -> None:
     root = Path(__file__).resolve().parents[2]
     channel_files = [

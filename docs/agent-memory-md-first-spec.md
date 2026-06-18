@@ -2,7 +2,7 @@
 
 > Merged specification from `docs/agent-memory-research.md` and `docs/archive/legacy-docs/agent-memory-md-first-research-codex.md`.
 > Date: 2026-06-04.
-> Scope: Hive agent memory architecture, MD-first source of truth, distillation boundaries, Memory Control Plane, and AgentDetail presentation.
+> Scope: Hive agent memory architecture, MD-first source of truth, distillation boundaries, Memory Governance Layer, and AgentDetail presentation.
 
 ## 0. Executive Position
 
@@ -10,14 +10,16 @@ Hive memory should be specified as:
 
 ```text
 Memory Engine =
-  MD-first plaintext memory
+  Agent Markdown Wiki / Learning Vault
+  + MD-first plaintext memory
   + lifecycle-governed distillation
+  + source_refs-backed residual evidence verification
   + dynamic activation
   + evidence-backed promotion
   + reversible retirement
 ```
 
-It should not be described as "neural memory" or as "vector DB recall".
+It should not be described as "neural memory", "vector DB recall", or an external memory-provider integration. The product shape is a Markdown-first LLM Wiki that can be read directly by agents and humans.
 
 The strongest architecture rule is:
 
@@ -31,7 +33,7 @@ The second rule is:
 
 ```text
 Distillers produce candidates.
-The Memory Control Plane decides writes, activation, promotion, retirement, and audit.
+The Memory Governance Layer decides writes, activation, promotion, retirement, and audit.
 ```
 
 The third rule is:
@@ -41,6 +43,31 @@ Knowledge is not the parent of Skills, MCP, or Workflows.
 Knowledge explains evidence and activation.
 Skills, MCP, and Workflows remain independent capability / protocol / execution modules.
 ```
+
+The current target prototype is:
+
+```text
+Agent Markdown Wiki / Learning Vault =
+  T0 raw evidence
+  + T2 tagged Markdown summary blocks
+  + T3 converged semantic layer
+  + residual evidence backreferences from T3 curation to T2/T0 source_refs
+  + soul.md identity layer
+  + skill capability candidates
+  + Memory Governance Layer governance
+```
+
+This is intentionally close to the LLM Wiki pattern: the whole vault is the Wiki, raw sources stay immutable, semantic pages are Markdown, pages link with `[[wikilinks]]`, provenance is explicit, contradictions are marked instead of hidden, and indexes/graphs/search surfaces are derived.
+
+The directory and relationship contract should borrow the useful minimum from Google's Open Knowledge Format (OKF):
+
+- The vault is a knowledge bundle: a directory tree of Markdown files.
+- T2 summary blocks and T3 semantic sections are concept documents: controlled metadata plus Markdown body.
+- `index.md` files support progressive disclosure and should list only the current directory's contents and descriptions.
+- `log.md` files record scope-local update history where auditability matters.
+- Directory hierarchy is not the full ontology. Markdown links and frontmatter express graph relationships across directories.
+- Consumers must tolerate unknown `type` values, unknown frontmatter fields, missing optional fields, missing `index.md`, and broken links. These are growth states, not fatal schema errors.
+- Citations/source refs are first-class: stable claims should link back to T2 summary blocks, T0 source packets, artifacts, or external references.
 
 ## 1. Honest Scientific Position
 
@@ -63,6 +90,7 @@ These principles are useful because they produce engineering constraints:
 | --- | --- |
 | Complementary Learning Systems | Keep fast encoding and slow consolidation separate. Heartbeat and Dream should not be merged merely to reduce component count. |
 | Interleaved replay | Consolidation should mix new candidate memories with relevant old memories, not only process deltas. |
+| Residual / skip connection | T2 -> T3 curation should follow T2 `source_refs` back to targeted T0 evidence before trusting a compressed summary. This is not a new memory layer and not a T0 -> T3 shortcut. |
 | Episodic vs semantic distinction | Preserve raw episodes / scenes separately from semantic wiki claims. Do not collapse everything into generic facts. |
 | Reconsolidation | A memory that is retrieved, corrected, contradicted, or successfully reused should become eligible for lifecycle update. |
 | Reversible forgetting | Retirement should usually mean de-index / archive from active recall, not physical deletion. |
@@ -94,34 +122,34 @@ HippoRAG is the strongest brain-inspired candidate because it maps a theory to a
 For Hive this should stay future-facing:
 
 ```text
-T3 / wiki Markdown -> derived KG -> PPR multi-hop retrieval -> source_ref back to Markdown
+T3 semantic pages -> derived KG -> PPR multi-hop retrieval -> source_ref back to Markdown
 ```
 
 Do not make KG/PPR a P0 requirement.
 
 ## 2. Container Boundary
 
-Hive has four durable knowledge containers and two adjacent execution/protocol surfaces:
+Hive has four durable knowledge containers and adjacent execution/protocol surfaces:
 
 ```text
-Memory   = evidence, episodes, scenes, semantic wiki, lifecycle, source refs
-Soul     = stable identity, accountability, charter, long-term behavior invariants
-Skill    = reusable verified method packaged as SKILL.md
-Workflow = durable executable process with state, gates, replay, and verification
-MCP      = external connector/tool protocol surface
-Artifact = runtime output / Work Ledger / task evidence, not long-term memory by default
+Memory    = evidence, episodes, scenes, semantic wiki, lifecycle, source refs
+Soul      = stable identity, accountability, charter, long-term behavior invariants
+Skill     = reusable verified method packaged as SKILL.md
+Workflow  = durable executable process with state, gates, replay, and verification
+MCP       = external connector/tool protocol surface
+Artifact  = runtime output / Work Ledger / task evidence, not long-term memory by default
 ```
 
 Memory is the root evidence layer, but it is not the final home for everything:
 
 ```text
 T0 / runtime artifacts
-  -> T2 atom
-  -> T3 memory entry / episode / scene / wiki
+  -> T2 summary block
+  -> T3 memory entry / episode / scene / Markdown wiki
   -> candidate:
        soul patch
        skill candidate
-       workflow candidate
+       workflow evidence handoff
        memory lifecycle patch
        artifact-only
 ```
@@ -147,6 +175,41 @@ Memory should not contain:
 - Installed skill source of truth.
 - MCP auth/tool configuration source of truth.
 - Workflow run state source of truth.
+
+### 2.1.1 Residual Evidence Backreference
+
+Residual evidence backreference is a curation technique, not a fifth durable memory layer.
+
+It should contain or load:
+
+- The selected T2 summary block.
+- The `source_refs` carried by that T2 summary block.
+- Targeted T0 evidence or runtime artifacts loaded through those refs.
+- The current T3 semantic page or index context.
+- Optional short-lived session projection as context only.
+
+It should not contain or create:
+
+- Durable user preferences.
+- Stable project facts.
+- T3 semantic claims.
+- soul.md identity rules.
+- Installed skill or workflow source of truth.
+- Any direct T3 or soul write.
+
+Residual curation rule:
+
+```text
+T2 summary blocks
+  + their source_refs
+  + targeted T0 evidence loaded via source_refs
+  + current T3 semantic page context
+  -> LLM Heartbeat Curator
+  -> T3 semantic page candidate
+  -> Memory Governance Layer write decision
+```
+
+The important redline is that T0 cannot directly create T3. T3 curation starts from T2 and uses T0 only to audit or correct the T2 summary.
 
 ### 2.2 Soul
 
@@ -214,7 +277,11 @@ scene or strategy evidence
   -> SKILL.md candidate
 ```
 
+Skill is the target form for procedural memory. A repeated successful method should become a progressive capability capsule (`SKILL.md` plus optional `references/`, `templates/`, `scripts/`, `evals/`) only after evidence and verification support it. It should not be hidden inside T3 as a long prose memory.
+
 ### 2.4 Workflow
+
+Workflow is an adjacent execution-control system, not a Memory Governance Layer write target. It should normally be manually designed as JSON/YAML/DSL, or follow the Claude Code dynamic workflow pattern through the Workflow runtime.
 
 Workflow should contain:
 
@@ -234,7 +301,7 @@ Workflow should not contain:
 - Simple preferences.
 - Natural-language SOP with no state or gate.
 
-Workflow promotion gate:
+Workflow handoff rule:
 
 ```text
 repeated multi-step task
@@ -243,8 +310,10 @@ repeated multi-step task
   + step journal required
   + failure recovery required
   + verification contract
-  -> workflow definition candidate
+  -> workflow evidence handoff to Workflow system
 ```
+
+The memory system may preserve evidence and links that help a human or Workflow agent design a workflow. It must not mint workflow definitions as part of T3 or Memory Governance Layer writeback.
 
 ### 2.5 MCP
 
@@ -278,38 +347,125 @@ Recommended logical layers:
 soul.md
 relationships.md
 memory/
-  feedback.md
-  blocked.md
-  knowledge.md
-  strategies.md
-  user.md
-  wiki/
-    <concept>.md
-  scenes/
-    <scene>.md
-  INDEX.md
+  index.md
+  log.md
+  _meta/
+    schema.md
+    tags.md
+    relation-types.md
+  t0/
+    index.md
+    2026-06/
+      <session-or-run>.md
+  t2/
+    index.md
+    summary.md
+    archive/
+      2026-06.md
+  t3/
+    index.md
+    canon.md
+    relations.md
+    contradictions.md
+  feedback.md       # compatibility view / legacy entry point
+  blocked.md        # compatibility view / legacy entry point
+  knowledge.md      # compatibility view / legacy entry point
+  strategies.md     # compatibility view / legacy entry point
+  user.md           # compatibility view / legacy entry point
   lifecycle.json
   access_log.jsonl
   distillation_audit.jsonl
 skills/
   <skill>/SKILL.md
-workflows/
-  <workflow>.yaml|json|md
+  <skill>/references/
+  <skill>/templates/
+  <skill>/scripts/
+  <skill>/evals/
 runtime_artifacts/
+  session_memory.md
+  session_learning_projection.jsonl
   ...
 ```
 
 `lifecycle.json`, `access_log.jsonl`, and `distillation_audit.jsonl` may be structured sidecars. They still serve the MD-first model because they explain and index Markdown truth, rather than replacing it.
 
-### 3.1 Markdown Micro-syntax For Wiki / Scenes
+The directory hierarchy expresses the gradient layers (`t0/`, `t2/`, `t3/`). It must not become an exploding ontology. Topic classification belongs in controlled metadata, Markdown links, and derived indexes. Existing `memory/wiki/**`, `memory/learnings/**`, and legacy flat T3 files may remain as compatibility views during migration, but the target is fewer semantic files with stronger metadata.
 
-Borrow the useful part of basic-memory: make graph relations expressible in Markdown.
+### 3.1 T2 Summary Block Format
+
+T2 is the summary layer. It is not raw evidence and not a random tag dump. Each T2 block must contain:
+
+- A final summary paragraph written by the LLM.
+- Controlled metadata / tags.
+- `source_refs` back to T0 source packets, messages, tool spans, artifacts, or Work Ledger evidence.
+- Evidence notes.
+- A residual check for future T3 curation.
+- A target hint such as `recall_only`, `t3_candidate`, `soul_candidate`, `skill_candidate`, or `workflow_reference_hint`.
+
+Canonical target:
+
+```text
+memory/t2/summary.md
+```
+
+Example:
+
+````markdown
+## T2-2026-06-17-001 - Workflow boundary
+
+```yaml
+kind: t2_summary_block
+tags:
+  memory_kind: decision
+  scope: system
+  subject: workflow_boundary
+  stability: stable
+  evidence: user_stated
+  sensitivity: PL1
+  actionability: workflow_reference_hint
+  status: active
+source_refs:
+  - t0/2026-06/session-xxx.md#turn-17
+confidence: 0.88
+```
+
+### Summary
+
+Workflow is an independent execution-control system. Memory may keep evidence and reference hints, but it must not mint workflow definitions.
+
+### Evidence
+
+- User stated that workflow is a separate JSON/YAML/DSL control system.
+
+### Residual Check
+
+- Before T3 promotion, reload the referenced T0 turn and check for contradictory workflow design docs.
+````
+
+### 3.2 Controlled Tag Taxonomy
+
+T2 and T3 use a closed taxonomy. The model may propose a new `subject`, but the proposal must be versioned through `_meta/tags.md`; it cannot silently invent a new classification scheme at write time.
+
+| Field | Allowed Values |
+| --- | --- |
+| `memory_kind` | `preference`, `fact`, `decision`, `constraint`, `correction`, `relationship`, `pattern`, `failure`, `procedure_note`, `open_question`, `reference` |
+| `scope` | `session`, `user`, `agent`, `project`, `company`, `system`, `global` |
+| `subject` | Controlled vocabulary in `_meta/tags.md`, for example `memory_system`, `workflow_boundary`, `prompt_context`, `tool_usage`, `owner_preference`, `company_policy`, `product_domain` |
+| `stability` | `ephemeral`, `short_lived`, `evolving`, `stable` |
+| `evidence` | `user_stated`, `tool_verified`, `system_observed`, `inferred`, `external_reference` |
+| `sensitivity` | `PL0`, `PL1`, `PL2`, `PL3`, `PL4` |
+| `actionability` | `recall_only`, `t3_candidate`, `soul_candidate`, `skill_candidate`, `workflow_reference_hint`, `archive` |
+| `status` | `candidate`, `active`, `contested`, `superseded`, `rejected`, `archived` |
+
+### 3.3 Markdown Micro-syntax For T3 Semantic Layer
+
+Borrow the useful part of LLM Wiki / Obsidian-style vaults: make graph relations expressible in Markdown.
 
 Example:
 
 ```markdown
 ---
-title: Memory Control Plane
+title: Memory Governance Layer
 type: concept
 tags: [memory, governance]
 status: active
@@ -321,7 +477,7 @@ Distillers should not directly own final durable writes.
 
 ## Evidence
 
-- [decision] Distillers produce candidates; Memory Control Plane decides writes. #governance
+- [decision] Distillers produce candidates; Memory Governance Layer decides writes. #governance
 - [fact] Extractor already routes T2 writes through write gate. #code
 - [risk] Heartbeat and Dream can still rewrite T3 Markdown directly. #gap
 
@@ -335,20 +491,21 @@ Distillers should not directly own final durable writes.
 Parsing rules:
 
 - Frontmatter carries structured metadata.
-- `## Evidence` lines can use `[category] content #tag`.
+- `## Evidence` lines can use `[category] content #tag` and source refs.
 - `## Relations` lines can express typed edges to `[[wikilinks]]`.
 - Inline `[[wikilink]]` references are allowed and may point to pages not yet created.
 - Derived graph indexes must resolve links back to Markdown paths and entry ids.
+- Contested or low-confidence pages must carry explicit `confidence`, `contested`, or `contradictions` metadata instead of being silently rewritten.
 
-### 3.2 Entry Metadata
+### 3.4 Entry Metadata
 
 Each memory entry should eventually carry:
 
 ```yaml
 entry_id: stable id
 source_refs: runtime artifact / T0 / T2 / message refs
-category: feedback | constraint | blocked_pattern | project | reference | general | strategy | user
-concepts: []
+memory_kind: preference | fact | decision | constraint | correction | relationship | pattern | failure | procedure_note | open_question | reference
+subject: controlled vocabulary in _meta/tags.md
 scope: personal | agent | owner | company | tenant
 sensitivity: PL0 | PL1 | PL2 | PL3 | PL4
 confidence: 0.0-1.0
@@ -360,10 +517,11 @@ last_recalled_at:
 recall_count:
 supersedes: []
 contradicts: []
-promoted_to: soul | skill | workflow | null
+promoted_to: soul | skill | null
+workflow_reference_hint: true | false
 ```
 
-First implementation can encode most of this in frontmatter or a sidecar manifest rather than rewriting every existing bullet format at once.
+Complete migration may encode metadata either in frontmatter or in a sidecar manifest, but the result must be internally consistent: every active semantic entry needs a stable id, source refs, lifecycle state, and a rebuild path back to Markdown truth. Leaving old bullets without resolvable metadata is not an acceptable partial state.
 
 ## 4. Lifecycle Pipeline
 
@@ -387,13 +545,29 @@ Every stage must make six operational elements explicit. Semantic judgment belon
 | --- | --- | --- | --- | --- | --- | --- |
 | Capture | messages, RuntimeTask journals, Work Ledger, tool results, artifacts | mechanical recorder + policy prefilter | event validity, agent scope, tenant/owner context, access rights | raw event ids, task ids, artifact paths | source refs / raw packets | record `capture_error`, retry if transient, do not synthesize memory from missing evidence |
 | Encode | captured raw packet | mechanical context builder | timestamp, principal context, goal, user instruction, artifact refs, sensitivity hints | raw refs plus current owner/company context | source packet for LLM judgment | mark packet `incomplete_context` and hold if principal or source refs are missing |
-| Atom Extraction | source packet + nearby existing entries | LLM primary + mechanical schema validator | durability, surprise, persistence, correction value, conflict, sensitivity, container candidate | source refs, retrieved comparable entries, extraction prompt version | atom / T2 candidate | on LLM or schema failure, write no durable memory; keep source packet for retry and audit the failure |
-| Episode / Scene Consolidation | atom batch, similar scenes, relevant old memory | LLM primary + mechanical similarity/capacity support | update vs merge vs create, anti-proliferation, interleaved replay, heat | atom ids, scene ids, old/new diffs, heat | scene patch candidate | if duplicate vs contradiction is ambiguous, hold unresolved candidate instead of rewriting Markdown |
-| Wiki Consolidation | scenes, T3 entries, existing wiki page | LLM primary + mechanical link/frontmatter parser | current claim, scope, evidence strength, contradiction, supersession | entry ids, scene refs, current page revision | wiki patch candidate | if claim confidence is low, add or hold contradiction evidence; do not overwrite current claim |
+| T2 Summary Extraction | source packet + nearby existing entries + short-lived session context when relevant | LLM primary + mechanical schema validator | durability, surprise, persistence, correction value, conflict, sensitivity, controlled tags, target hint | source refs, retrieved comparable entries, extraction prompt version | tagged summary block / T2 candidate | on LLM or schema failure, write no durable memory; keep source packet for retry and audit the failure |
+| Episode / Scene Consolidation | atom batch, similar scenes, relevant old memory | LLM primary + mechanical similarity/capacity support | update vs merge vs create, anti-proliferation, interleaved replay, heat | atom ids, scene ids, old/new diffs, heat, source refs | scene patch candidate | if duplicate vs contradiction is ambiguous, hold unresolved candidate instead of rewriting Markdown |
+| Wiki Consolidation | scenes, T2 summary blocks, targeted T0 evidence loaded through T2 source refs, existing T3 semantic page | LLM primary + mechanical link/frontmatter parser | current claim, scope, evidence strength, contradiction, supersession | entry ids, scene refs, source refs, current page revision | semantic page patch candidate | if claim confidence is low, add or hold contradiction evidence; do not overwrite current claim |
 | Activation / Retrieval | goal, query, principal context, manifest/index | mechanical retrieval + policy filter; LLM rerank when needed | relevance, recency, importance, heat, owner/company match, sensitivity access | manifest, lifecycle state, access log, query match | activated memory packet with reasons | if index fails, fall back to direct T3 scan with degraded marker; if policy is uncertain, suppress |
 | Use | activated memory + runtime outcome | mechanical telemetry; LLM/user signal for semantic outcome when available | helpful, unused, contradicted, user-corrected, caused bad action | run id, task id, response/tool outcome, user correction | access log / use outcome event | telemetry failure is non-fatal but auditable; never mutate memory based only on missing telemetry |
 | Reconsolidation | use outcomes, corrections, conflicts, scope drift | LLM primary + mechanical lifecycle writer | supersede, contradict, archive, freeze, keep active | old/new entry ids, correction refs, policy context | lifecycle patch candidate | on LLM failure or ambiguous result, hold candidate; do not delete or rewrite source Markdown |
-| Promotion / Retirement | memory candidates, lifecycle patches, usage data | PromotionRouter fast-path + LLM adjudication + policy/human gate | soul/skill/workflow gates, decay, interference, owner approval, protected evidence | source refs, repeated evidence, eval results, access log | target candidate or lifecycle state change | denied or low-confidence cases become held/rejected audit records; protected evidence is never physically deleted |
+| Promotion / Retirement | memory candidates, lifecycle patches, usage data | PromotionRouter fast-path + LLM adjudication + policy/human gate | soul/skill gates, decay, interference, owner approval, protected evidence | source refs, repeated evidence, eval results, access log | target candidate or lifecycle state change | denied or low-confidence cases become held/rejected audit records; protected evidence is never physically deleted |
+
+### 4.0 Impact-Scaled Verification And Mechanical Fidelity
+
+Validation strength follows blast radius, not whether the change happens to be a tag, frontmatter field, or page body.
+
+| Impact Scope | Typical Change | Required Validation |
+| --- | --- | --- |
+| Raw evidence | T0 capture, source packet, artifact refs | Mechanical hard gates: tenant/agent scope, path validity, sensitivity rejection, immutability. No semantic rewrite. |
+| T2 summary block | Extracted summary with controlled tags and source refs | LLM primary judgment plus schema, source_ref, privacy, duplicate, and controlled-tag validation. On failure, hold for retry. |
+| T3 semantic page | Stable claim, contradiction, merge, wiki placement | T2 reference required, targeted T0 evidence loaded through `source_refs`, duplicate/contradiction checks, rollback metadata. |
+| `soul.md` | Identity, charter, long-term behavioral invariant | Strong gate: repeated evidence, source_refs, frozen mission compatibility, rollback ref, and owner/company policy where needed. |
+| Skill | Capability promotion | Evidence-backed eval, promotion ledger, rollback path, and explicit source package. |
+| Workflow handoff | Reference to external execution-control system | Memory may provide evidence refs only; workflow definitions are governed by the Workflow system. |
+| Derived index | Graph/vector/search/UI read model | Rebuildability check. It may never become durable semantic truth. |
+
+Mechanical code may validate, deny, hold, dedupe, index, count, audit, and enforce authority. It must not synthesize semantic conclusions, replace LLM reflection with counters or regexes, or write truncated summaries as durable truth. If prompt budget or parser failure prevents full preservation, the system must keep source refs, ranges, hashes, artifact paths, and held candidate ids rather than pretending the reduced text is the memory.
 
 ### 4.1 Capture
 
@@ -424,17 +598,18 @@ source packet =
   sensitivity hints
 ```
 
-### 4.3 Atom Extraction
+### 4.3 T2 Summary Extraction
 
-Extractor should produce atom candidates, not directly write soul, skills, or workflows.
+Extractor should produce tagged T2 summary block candidates, not directly write soul, skills, or workflows.
 
 Required fields:
 
 ```text
-content
-category
-concepts
+summary
+controlled tags
 source_refs
+evidence notes
+residual check
 confidence
 sensitivity
 container_candidate
@@ -485,25 +660,33 @@ Wiki pages hold semantic claims:
 
 Wiki is the default user-facing knowledge view. It is not a random document dump.
 
-### 4.6 Activation / Retrieval
+### 4.6 Activation / Retrieval / Prompt Assembly
 
-Activation should produce a reasoned memory packet:
+Activation should produce a reasoned memory packet, not dump the whole vault into the prompt.
 
 ```text
-Always-on:
-  soul identity / frozen charters
+Frozen Identity:
+  soul.md identity / frozen charters
 
-High priority:
-  recent P0 feedback and blocked patterns
+Active Long-Term Memory:
+  selected T3 sections from memory/t3/canon.md, relations.md, contradictions.md
+  by relevance, recency, lifecycle, owner/company scope, and sensitivity access
 
-Selected:
-  T3 entries by relevance, recency, importance, owner/company scope, sensitivity access
+Active Summary Memory:
+  selected T2 summary blocks when they are newer than T3, not yet absorbed,
+  user-corrected, contested, or high priority for the current task
 
-Indexed:
-  navigation rows with id/path/summary/heat/reason
+Session Working Memory:
+  current conversation state, session projection, runtime recovery context
+  with TTL / session scope only
 
-On demand:
-  load_memory(ids) / read_file for full Markdown
+Navigation Map:
+  compact memory/index.md or t3/index.md excerpt only when retrieval needs
+  exploration, when no relevant memory is found, or when the agent must decide
+  which page to load next
+
+Residual Evidence:
+  targeted T0 source refs only for curation, replay, debug, or dispute checks
 ```
 
 Retrieval should expose why a memory was activated:
@@ -514,9 +697,17 @@ activated because:
   owner/company match
   high heat
   recent correction
-  related workflow or skill evidence
+  related skill evidence or workflow reference hint
   safety constraint
 ```
+
+Prompt rules:
+
+- `soul.md` is the only always-on identity layer.
+- `index.md` is navigation, not identity or long-term memory. It should not be permanently appended to every prompt.
+- Long-term memory comes from selected T3 sections plus, when needed, high-priority T2 blocks.
+- Short-term memory comes from session projection and current runtime state; it cannot become durable semantic truth without the T0 -> T2 -> T3 path.
+- T0 raw evidence is loaded by source ref only, not as normal prompt background.
 
 ### 4.7 Use
 
@@ -570,14 +761,15 @@ decay lane:
 
 Do not physically delete PL4, audit, compliance, approval, or charter evidence.
 
-## 5. Distillers And Memory Control Plane
+## 5. Distillers And Memory Governance Layer
 
 Current Hive should keep the distillers but reduce their authority.
 
 | Component | Target Role | Authority Boundary |
 | --- | --- | --- |
 | Extractor | Fast atom extraction from T0/message/Work Ledger into T2 candidates | Does not write T3/soul/skill/workflow directly. |
-| Heartbeat | Medium-frequency Memory Curator: T2 -> T3 candidates, scene/wiki updates, candidate signals | Does not directly save skills; should not bypass governed T3 append. |
+| Heartbeat | Medium-frequency Memory Curator: T2 -> T3 candidates, using T2 source_refs to verify against targeted T0 evidence | Does not directly save skills; should not bypass governed T3 append; must not let T0 bypass T2 into T3. |
+| Learning Brain | Agent Markdown Wiki organization intelligence: page placement, metadata, tags, relations, dedupe, contradiction review, retrieval hints, capability suggestions | Does not run T0 -> T2 extraction, does not write files, and does not replace Heartbeat/Dream. |
 | Dream | Slow Reconsolidator + IdentityPromoter: T3 cleanup, contradictions, soul proposals, retirement | Does not silently delete T3; does not bypass owner/charter gates. |
 | SkillDistiller | Skill promotion lane consuming evidence-backed skill candidates | Does not bypass Memory Engine evidence and promotion routing. |
 
@@ -585,12 +777,12 @@ The control relationship:
 
 ```text
 Extractor ─┐
-Heartbeat ├──> PromotionRouter / Memory Control Plane -> MD truth source + lifecycle + derived indexes
+Heartbeat ├──> PromotionRouter / Memory Governance Layer -> MD truth source + lifecycle + derived indexes
 Dream ────┘
 SkillDistiller consumes skill_candidate evidence and returns candidate/eval/audit.
 ```
 
-Memory Control Plane owns:
+Memory Governance Layer owns:
 
 - write gate
 - sensitivity and owner/company access
@@ -601,6 +793,26 @@ Memory Control Plane owns:
 - optional enhancement adapter boundary (currently no-op)
 - audit / replay / eval evidence
 
+### 5.1 Explicit `save_memory`
+
+`save_memory` is an explicit high-priority user signal, not a direct T3 write path.
+
+```text
+save_memory
+  -> Memory Governance Layer
+  -> T2 summary block with source=save_memory
+  -> optional T3 patch candidate if stable, safe, and source-backed
+  -> normal promotion gates for T3, soul, or skill
+```
+
+Default behavior:
+
+- Write or propose a T2 summary block tagged with `evidence=user_stated`.
+- Preserve the caller, current session/message refs, timestamp, and principal context as `source_refs`.
+- Use controlled `actionability` values: `recall_only`, `t3_candidate`, `soul_candidate`, `skill_candidate`, or `workflow_reference_hint`.
+- If the user explicitly asks to remember a stable fact/preference and the content is low risk, the governance layer may create a T3 patch candidate in the same transaction, but the T2 block remains the evidence anchor.
+- It must not write `soul.md`, Skill source, or workflow definitions directly.
+
 ## 6. PromotionRouter
 
 Introduce a small, testable router before changing large runtime flows.
@@ -610,7 +822,7 @@ class PromotionKind(str, Enum):
     MEMORY_APPEND = "memory_append"
     SOUL_CANDIDATE = "soul_candidate"
     SKILL_CANDIDATE = "skill_candidate"
-    WORKFLOW_CANDIDATE = "workflow_candidate"
+    WORKFLOW_REFERENCE_HINT = "workflow_reference_hint"
     ARTIFACT_ONLY = "artifact_only"
     LIFECYCLE_PATCH = "lifecycle_patch"
 
@@ -634,7 +846,7 @@ feedback / constraint + repeated or explicit -> soul_candidate or memory_append
 blocked_pattern -> memory_append or lifecycle_patch
 project / reference / general / user -> memory_append
 strategy + repeated success + no durable state -> skill_candidate
-strategy + durable state / replay / verifier / multi-step gate -> workflow_candidate
+strategy + durable state / replay / verifier / multi-step gate -> workflow_reference_hint
 runtime-only evidence -> artifact_only
 contradiction / duplicate / stale -> lifecycle_patch
 ```
@@ -654,36 +866,48 @@ LLM unavailable, schema invalid, or adjudication still uncertain
   -> HELD candidate with audit reason; no durable target write
 ```
 
-Mechanical routing must never silently choose between `soul_candidate`, `skill_candidate`, and `workflow_candidate` when the evidence is semantic or ambiguous. This prevents the Mem0-V3 failure mode where semantic memory control degrades into hash/entity heuristics.
+Mechanical routing must never silently choose between `soul_candidate`, `skill_candidate`, and `workflow_reference_hint` when the evidence is semantic or ambiguous. This prevents the Mem0-V3 failure mode where semantic memory control degrades into hash/entity heuristics.
 
 The important invariant:
 
 ```text
-One signal should not be simultaneously written as T3 strategy, SKILL.md, and workflow definition.
-It should first become a candidate with evidence and then be promoted by target-specific gates.
+One signal should not be simultaneously written as T3 strategy and SKILL.md.
+Workflow-shaped evidence is handed off to the Workflow system as a reference hint; it is not promoted by Memory Governance Layer.
 ```
 
 ## 7. T3 File Boundary
 
-Current files:
+Target T3 files:
 
 ```text
-feedback.md    P0 always
-blocked.md     P0 always
-knowledge.md   P1 on-demand
-strategies.md  P1 on-demand
-user.md        P2 optional
+memory/t3/index.md
+memory/t3/canon.md
+memory/t3/relations.md
+memory/t3/contradictions.md
 ```
 
-`knowledge.md` and `strategies.md` currently have similar retrieval priority, but they still carry different routing and promotion semantics. Do not immediately merge them without a migration.
+Compatibility files:
+
+```text
+feedback.md
+blocked.md
+knowledge.md
+strategies.md
+user.md
+memory/wiki/**
+```
+
+The target is convergence, not topic-folder proliferation. `canon.md` carries stable facts, preferences, constraints, and principles. `relations.md` carries important cross-links and relationship notes. `contradictions.md` carries contested, stale, superseded, or unresolved claims.
+
+Legacy `knowledge.md` and `strategies.md` currently have similar retrieval priority, but they still carry different routing and promotion semantics. Do not immediately merge them without a migration.
 
 Near-term decision:
 
 ```text
-Keep both files for compatibility.
-Move the long-term boundary from file name to entry-level category and metadata.
-Mark promoted strategy entries with promoted_to_skill or promoted_to_workflow.
-Only consider merging knowledge.md + strategies.md after runtime, prompt, dream, tests, and migration semantics agree.
+Keep legacy files for compatibility.
+Move the long-term boundary from file name to controlled metadata and relation links.
+Mark promoted strategy entries with promoted_to_skill.
+Only consider merging legacy views after runtime, prompt, dream, tests, and migration semantics agree.
 ```
 
 Formal anti-proliferation rule:
@@ -694,12 +918,12 @@ Create a new T3 file only when it has either:
   2. different governance axis, or
   3. different lifecycle policy.
 
-Pure taxonomy differences belong in entry-level category/concept tags.
+Pure taxonomy differences belong in controlled tags, wikilinks, and derived indexes.
 ```
 
 ## 8. Index And Navigation
 
-`memory/INDEX.md` should not be an orphan. It needs a runtime consumer.
+`memory/index.md` should not be an orphan, but it is a navigation map, not always-on prompt memory.
 
 Recommended first form:
 
@@ -719,8 +943,10 @@ Do not append this directly into `soul.md`. Soul must stay identity, not navigat
 
 ```text
 Soul
-Memory Navigation
-Activated Memory
+Activated Long-Term Memory
+Active T2 Summary
+Session Working Memory
+Optional Memory Navigation
 Available Skills
 Workflow State
 Tool/MCP Context
@@ -818,7 +1044,7 @@ Knowledge may show linked references:
 
 ```text
 Skill candidate -> open Skills module
-Workflow candidate -> open Workflows module
+Workflow reference hint -> open Workflows module
 MCP tool need -> open MCP module
 ```
 
@@ -833,17 +1059,27 @@ Recommended layout:
 │ Knowledge header: health, freshness, active candidates       │
 ├───────────────┬───────────────────────────┬─────────────────┤
 │ Left nav      │ Center wiki/page view      │ Right inspector │
-│ - Overview    │ - selected concept/page    │ - provenance    │
-│ - Wiki        │ - linked entries           │ - lifecycle     │
-│ - Memory      │ - markdown-rendered body   │ - activation    │
-│ - Soul        │ - related capabilities     │ - actions       │
-│ - Candidates  │                           │                 │
-│ - Timeline    │                           │                 │
-│ - Raw MD      │                           │                 │
+│ - Overview    │ - T3 canon/relations       │ - provenance    │
+│ - Evidence T0 │ - T2 summary blocks        │ - lifecycle     │
+│ - Summary T2  │ - prompt context preview   │ - activation    │
+│ - Wiki T3     │ - markdown-rendered body   │ - actions       │
+│ - Prompt      │ - linked entries           │                 │
+│ - Review      │                           │                 │
+│ - Raw/Audit   │                           │                 │
 └───────────────┴───────────────────────────┴─────────────────┘
 ```
 
 Default view should be Wiki / Overview, not a file browser.
+
+Tab responsibilities:
+
+- Overview: health, freshness, major T3 summary, held candidates.
+- Evidence / T0: source packets, behavior evidence, artifacts, trace refs.
+- Summary / T2: tagged summary blocks, source refs, residual checks, status.
+- Wiki / T3: `canon.md`, `relations.md`, `contradictions.md` and derived graph views.
+- Prompt Context: the exact `soul.md`, T3 snippets, T2 blocks, session projection, and activation reasons currently assembled.
+- Review Queue: held, contested, duplicate, `save_memory`, and promotion candidates.
+- Raw / Audit: advanced Markdown file view, lifecycle, distillation audit, invocation refs.
 
 ## 11. Read Model API
 
@@ -861,14 +1097,16 @@ GET /api/agents/{agent_id}/knowledge/candidates
 Initial data sources:
 
 - `soul.md`
-- `memory/INDEX.md`
+- `memory/index.md`
+- `memory/t2/summary.md`
+- `memory/t3/canon.md`, `relations.md`, `contradictions.md`
 - `build_t3_entry_manifest()`
 - `memory/lifecycle.json`
 - `memory/access_log.jsonl`
 - `understandings.md`
 - `evolution/*`
 - distillation audit artifacts
-- linked capability refs from skill/workflow/MCP surfaces
+- linked capability refs from skill / workflow-reference / MCP surfaces
 
 Example overview type:
 
@@ -914,6 +1152,14 @@ type AgentKnowledgeOverview = {
 > originally deferred (§13) and explicitly green-lit by the owner on
 > 2026-06-05; the retrieval benchmark settled the experiment (PPR wins
 > multi-hop 1.0 vs 0.333 with no direct-hit regression).
+>
+> **2026-06-17 convergence note:** P0-P10 below preserve historical
+> implementation evidence. Paths such as `memory/wiki/**`,
+> `memory/learnings/**`, and legacy `memory/INDEX.md` should now be read as
+> compatibility surfaces unless the current blueprint above explicitly keeps
+> them. The current target is `t0/`, tagged `t2/summary.md`, converged
+> `t3/canon.md` / `relations.md` / `contradictions.md`, controlled tags,
+> and dynamic prompt assembly.
 
 ### P0: Freeze Terms And Prompt Contracts
 
@@ -930,7 +1176,7 @@ Files:
 Acceptance:
 
 - Extractor is named as atom extraction, not promotion.
-- Heartbeat is Memory Curator, not final skill/workflow writer.
+- Heartbeat is Memory Curator, not final skill writer or workflow writer.
 - Dream is Reconsolidator + IdentityPromoter, not free identity editor.
 - SkillDistiller consumes candidate evidence, not raw ungoverned patterns.
 - Prompts output or reason about `container_candidate`.
@@ -938,7 +1184,7 @@ Acceptance:
 Evidence:
 
 - `CONTAINER_CANDIDATES` vocabulary frozen in `backend/app/memory/types.py`
-  (`memory_append | soul_candidate | skill_candidate | workflow_candidate |
+  (`memory_append | soul_candidate | skill_candidate | workflow_reference_hint |
   artifact_only`) — shared by Extractor prompt, T2 metadata, and (P1)
   PromotionRouter.
 - Extractor: role rewritten to ATOM EXTRACTION with `<container_candidate>`
@@ -971,7 +1217,7 @@ Files:
 
 Acceptance:
 
-- Same input cannot route to skill and workflow simultaneously.
+- Same input cannot route to skill promotion and workflow handoff simultaneously.
 - Every route has source refs, confidence, and reason.
 - Runtime artifacts can be classified as artifact-only.
 
@@ -981,10 +1227,10 @@ Evidence:
   per §6) + `PromotionSignal` → `fast_path_route()` deterministic pass →
   `route_promotion_signal()` with injected async `AdjudicatorFn`.
 - Single-candidate invariant: route output is one `PromotionCandidate` or an
-  escalation/hold — skill+workflow simultaneity impossible by construction.
+  escalation/hold — skill promotion + workflow handoff simultaneity impossible by construction.
 - Anti-Mem0-V3 enforced: hint/rule conflicts, cross-container hints, and
   low-confidence durable promotions return `NEEDS_ADJUDICATION`; mechanical
-  code never picks between soul/skill/workflow on semantic evidence.
+  code never picks between soul/skill/workflow-reference on semantic evidence.
 - Fail-closed: adjudicator absent / raising / verdict outside
   `allowed_kinds` → `HELD` with audit reason (`no_adjudicator` /
   `adjudicator_error` / `verdict_out_of_bounds`); durable kinds without
@@ -1098,38 +1344,39 @@ Evidence:
   archive out of active recall, native active-file pin). Full backend
   3661 passed.
 
-### P4: Skill / Workflow Candidate Lane
+### P4: Skill Candidate Lane And Workflow Handoff
 
 **Status: ✅ DONE (2026-06-04).**
 
+2026-06-17 boundary update: the historical workflow-candidate lane is now considered a Workflow-system handoff, not a Memory Governance Layer target. Existing implementation evidence below is retained as history, but current architecture must not let memory generate or own workflow definitions.
+
 Acceptance:
 
-- Heartbeat only records skill/workflow candidate signals.
+- Heartbeat only records skill candidate signals and workflow reference hints.
 - SkillDistiller consumes `skill_candidate`.
-- Workflow promotion consumes `workflow_candidate`.
-- Promoted T3 strategy entries mark `promoted_to_skill` or `promoted_to_workflow`.
+- Workflow promotion is owned by the Workflow system, not by memory writeback.
+- Promoted T3 strategy entries mark `promoted_to_skill`; workflow-shaped evidence remains a reference/handoff.
 
 Evidence:
 
 - Heartbeat lane closed both ways: the tool executor BLOCKS `save_skill`
   with a candidate-signal redirect, and the "Skill Candidate Opportunity"
   nudge + HEARTBEAT.md (default and `hr_agent_template`) instruct
-  `save_memory(category="strategy", container_candidate="skill_candidate"
-  | "workflow_candidate", source_refs=[...])` — direct creation guidance
+  `save_memory(category="strategy", container_candidate="skill_candidate",
+  source_refs=[...])` — direct creation guidance
   removed (no dual path).
 - Consumption side in `skill_distiller.py`:
-  `load_memory_skill_candidates()` / `load_memory_workflow_candidates()`
-  read unpromoted `[container=...]` T3 entries via the manifest;
+  `load_memory_skill_candidates()`
+  reads unpromoted `[container=skill_candidate]` T3 entries via the manifest;
   `run_skill_distillation_cycle` feeds skill candidates into the LLM draft
   prompt as `memory_candidate_evidence` and the LLM names
   `consumed_memory_candidate_ids` (semantic attribution stays with the
   model; ids validated against the known pool).
-- Workflow lane: `record_workflow_candidates_from_memory()` surfaces each
-  `workflow_candidate` as an auditable evolution-ledger candidate
-  (idempotent per entry_id) — automatic workflow approval stays deferred
-  per §13; the promotion lane consumes evidence, not memory greps.
+- Workflow lane: superseded by the 2026-06-17 boundary. Memory may surface
+  `workflow_reference_hint` evidence to the Workflow system, but workflow
+  definitions and approvals live outside memory.
 - Promotion marking: `md_store.mark_t3_entry_promoted()` stamps
-  `[promoted_to=skill|workflow][promoted_target=...]` on the T3 line
+  `[promoted_to=skill][promoted_target=...]` on the T3 line
   (evidence stays in T3, entry leaves the candidate pool); called after a
   successful skill save for every consumed candidate.
 - Eval contracts updated with the spec (prompt_eval
@@ -1198,7 +1445,7 @@ Evidence:
 
 Acceptance:
 
-- `memory/INDEX.md` or manifest has consumer in prompt assembly.
+- `memory/index.md` or manifest has consumer in prompt assembly.
 - Entry-level `recall_count` and `last_recalled_at` are updated.
 - Heat drives navigation order and retirement candidates.
 - Activated memory includes activation reasons.
@@ -1248,12 +1495,12 @@ Evidence:
   LLM): overview (§11 `AgentKnowledgeOverview` shape: identity/memory
   counters incl. lifecycle superseded/archived + sensitiveSuppressed,
   distiller statuses from state-file traces, linkedCapabilities incl.
-  skill/workflow candidate counts), pages (wiki + scenes with frontmatter),
+  skill candidate counts and workflow reference hints), pages (wiki + scenes with frontmatter),
   page detail (markdown + frontmatter, slug-validated against traversal),
   entries (heat-ordered with recallCount/lastRecalledAt/container/
   promoted_to/sensitivity), events (distillation_audit.jsonl + dream
-  history merged, newest first), candidates (skill / workflow / soul-hold
-  from evolution_ledger.jsonl + held curations).
+  history merged, newest first), candidates (skill / soul-hold plus workflow
+  reference hints from evolution_ledger.jsonl + held curations).
 - `api/agent_knowledge.py` — the six §11 GET endpoints under
   `/api/agents/{agent_id}/knowledge/*`, each guarded by
   `check_agent_access` (multi-tenant invariant); registered in `main.py`
@@ -1292,7 +1539,7 @@ Evidence:
 - `tools` tab renamed to **MCP** in both locales (en + zh tooltips
   describe external connectors/policy); ToolsManager content was already
   MCP-only from the extension-surface work.
-- Deep-link only: skill candidates → Skills tab, workflow candidates →
+- Deep-link only: skill candidates → Skills tab, workflow reference hints →
   Workflows tab via `onNavigateTab` — Knowledge never installs/edits
   capabilities. `skills` and `workflows` tabs untouched.
 - Typed adapter `api/domains/knowledge.ts` for all six endpoints.
@@ -1438,7 +1685,7 @@ Adopt now:
 
 1. Brain science is inspiration, not a truth claim for thresholds.
 2. Distillers stay; authority is reduced.
-3. Memory Control Plane is horizontal governance.
+3. Memory Governance Layer is horizontal governance.
 4. Retirement means de-index first, not physical deletion.
 5. Skill / MCP / Workflow remain independent modules.
 6. Knowledge UI is a wiki / inspector over evidence, not a capability manager.
@@ -1450,7 +1697,7 @@ Defer:
 1. Merging `knowledge.md` and `strategies.md`.
 2. ~~Full KG/PPR retrieval.~~ — deferral lifted by the owner 2026-06-05;
    implemented as P9 (wikilink-network KG + PPR, benchmark-validated).
-3. Automatic skill/workflow approval.
+3. Automatic skill approval or workflow handoff automation.
 4. Physical deletion of retired memory.
 5. Frontend visual redesign before read model exists.
 

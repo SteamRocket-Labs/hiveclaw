@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.core.permissions import is_agent_expired
 from app.kernel.contracts import ExecutionIdentityRef
+from app.memory.t0.ledger import append_t0_session_event
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -138,6 +139,24 @@ async def _queue_mid_run_user_message(
     metadata["pending_user_messages"] = pending
     metadata["pending_user_message_count"] = len(pending)
     active_run.metadata_json = metadata
+    append_t0_session_event(
+        agent_id=agent.id,
+        session_id=session.id,
+        event_type="user_message",
+        role="user",
+        content=saved_content,
+        message_id=message_id,
+        actor_id=user.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        runtime_task_id=getattr(active_run, "id", None),
+        source="web",
+        metadata={
+            "source": "web",
+            "queued": True,
+            "display_content": display_content,
+            "file_name": file_name,
+        },
+    )
     await db.commit()
     return queued
 
@@ -305,9 +324,11 @@ async def start_web_chat_run(
     run_uuid = uuid.uuid4()
     now = datetime.now(timezone.utc)
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
+    message_id = uuid.uuid4()
 
     db.add(
         ChatMessage(
+            id=message_id,
             agent_id=agent.id,
             tenant_id=getattr(agent, "tenant_id", None),
             user_id=user.id,
@@ -323,6 +344,26 @@ async def start_web_chat_run(
         if file_name and not clean_title:
             clean_title = f"📎 {file_name}"
         session.title = clean_title[:40] if clean_title else content[:40]
+    await db.commit()
+    append_t0_session_event(
+        agent_id=agent.id,
+        session_id=session.id,
+        event_type="user_message",
+        role="user",
+        content=saved_content,
+        message_id=message_id,
+        actor_id=user.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        runtime_task_id=run_uuid,
+        source="web",
+        metadata={
+            "source": "web",
+            "display_content": display_content,
+            "file_name": file_name,
+            "plan_mode_requested": bool(plan_mode_requested),
+            **(extra_metadata or {}),
+        },
+    )
 
     runtime_task = RuntimeTask(
         id=run_uuid,
@@ -367,7 +408,7 @@ async def start_web_chat_run(
                 status_code=409,
                 detail="Web chat run already exists, but the active run could not be loaded. Retry the request.",
             ) from exc
-        queued = await _queue_mid_run_user_message(
+        payload = await _queue_saved_mid_run_user_message(
             db=db,
             active_run=active_after_conflict,
             agent=agent,
@@ -376,10 +417,9 @@ async def start_web_chat_run(
             content=content,
             display_content=display_content,
             file_name=file_name,
+            source_channel="web",
+            message_already_in_t0=True,
         )
-        payload = _runtime_task_to_run(active_after_conflict)
-        payload["queued_user_message"] = queued
-        await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
         raise ActiveWebChatRunExists(payload) from exc
 
     cancel_event = asyncio.Event()
@@ -398,10 +438,13 @@ async def _queue_saved_mid_run_user_message(
     db: AsyncSession,
     active_run: RuntimeTask,
     agent: Agent,
+    user: User,
     session: ChatSession,
     content: str,
     display_content: str = "",
     file_name: str = "",
+    source_channel: str = "channel",
+    message_already_in_t0: bool = False,
 ) -> dict[str, Any]:
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
@@ -416,6 +459,26 @@ async def _queue_saved_mid_run_user_message(
     metadata["pending_user_message_count"] = len(pending)
     active_run.metadata_json = metadata
     session.last_message_at = datetime.now(timezone.utc)
+    if not message_already_in_t0:
+        append_t0_session_event(
+            agent_id=agent.id,
+            session_id=session.id,
+            event_type="user_message",
+            role="user",
+            content=saved_content,
+            message_id=queued["id"],
+            actor_id=user.id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            runtime_task_id=getattr(active_run, "id", None),
+            source=source_channel,
+            metadata={
+                "source": source_channel,
+                "queued": True,
+                "existing_user_message_saved": True,
+                "display_content": display_content,
+                "file_name": file_name,
+            },
+        )
     await db.commit()
     payload = _runtime_task_to_run(active_run)
     payload["queued_user_message"] = queued
@@ -454,10 +517,12 @@ async def start_channel_chat_run_from_saved_turn(
             db=db,
             active_run=active,
             agent=agent,
+            user=user,
             session=session,
             content=content,
             display_content=display_content,
             file_name=file_name,
+            source_channel=source_channel,
         )
 
     run_uuid = uuid.uuid4()
@@ -496,6 +561,27 @@ async def start_channel_chat_run_from_saved_turn(
         metadata_json=metadata,
     )
     db.add(runtime_task)
+    append_t0_session_event(
+        agent_id=agent.id,
+        session_id=session.id,
+        event_type="user_message",
+        role="user",
+        content=_saved_user_content(content=content, display_content=display_content, file_name=file_name),
+        message_id=(extra_metadata or {}).get("message_id"),
+        actor_id=user.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        runtime_task_id=run_uuid,
+        source=source_channel,
+        metadata={
+            "source": source_channel,
+            "channel": source_channel,
+            "existing_user_message_saved": True,
+            "display_content": display_content,
+            "file_name": file_name,
+            "plan_mode_requested": bool(plan_mode_requested),
+            **(extra_metadata or {}),
+        },
+    )
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -512,10 +598,13 @@ async def start_channel_chat_run_from_saved_turn(
             db=db,
             active_run=active_after_conflict,
             agent=agent,
+            user=user,
             session=session,
             content=content,
             display_content=display_content,
             file_name=file_name,
+            source_channel=source_channel,
+            message_already_in_t0=True,
         )
 
     cancel_event = asyncio.Event()
@@ -761,11 +850,32 @@ async def _finalize_web_chat_run_with_assistant(
                 result_summary=result_summary,
                 metadata_json=metadata_json,
             )
+            append_t0_session_event(
+                agent_id=agent_id,
+                session_id=session_id,
+                event_type="assistant_message",
+                role="assistant",
+                content=content,
+                message_id=getattr(kernel_persisted_message, "id", None),
+                actor_id=agent_id,
+                tenant_id=tenant_id,
+                runtime_task_id=run_uuid,
+                source="web_chat_runtime",
+                metadata={
+                    "source": "web_chat_runtime",
+                    "final_decision_trace_id": final_decision_trace_id,
+                    "kernel_persisted": True,
+                    "status": status,
+                    **(metadata_json or {}),
+                },
+            )
             await db.commit()
             return True
 
+        assistant_message_id = uuid.uuid4()
         db.add(
             ChatMessage(
+                id=assistant_message_id,
                 agent_id=agent_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
@@ -782,6 +892,24 @@ async def _finalize_web_chat_run_with_assistant(
             status=status,
             result_summary=result_summary,
             metadata_json=metadata_json,
+        )
+        append_t0_session_event(
+            agent_id=agent_id,
+            session_id=session_id,
+            event_type="assistant_message",
+            role="assistant",
+            content=content,
+            message_id=assistant_message_id,
+            actor_id=agent_id,
+            tenant_id=tenant_id,
+            runtime_task_id=run_uuid,
+            source="web_chat_runtime",
+            metadata={
+                "source": "web_chat_runtime",
+                "final_decision_trace_id": final_decision_trace_id,
+                "status": status,
+                **(metadata_json or {}),
+            },
         )
         await db.commit()
         return True
@@ -803,27 +931,45 @@ async def _persist_tool_call(
 
     decision_trace_id = extract_decision_id_from_text(raw_str)
     tenant_id = await resolve_tenant_for_agent(agent_id)
+    message_id = uuid.uuid4()
+    payload = {
+        "name": data.get("name", ""),
+        "args": data.get("args"),
+        "status": "done",
+        "result": raw_str,
+        "reasoning_content": data.get("reasoning_content"),
+        "reasoning_signature": data.get("reasoning_signature"),
+    }
     async with tenant_scoped_session(tenant_id) as db:
         db.add(
             ChatMessage(
+                id=message_id,
                 agent_id=agent_id,
                 tenant_id=tenant_id,
                 user_id=user_id,
                 role="tool_call",
-                content=json.dumps(
-                    {
-                        "name": data.get("name", ""),
-                        "args": data.get("args"),
-                        "status": "done",
-                        "result": raw_str,
-                        "reasoning_content": data.get("reasoning_content"),
-                        "reasoning_signature": data.get("reasoning_signature"),
-                    },
-                    ensure_ascii=False,
-                ),
+                content=json.dumps(payload, ensure_ascii=False),
                 decision_trace_id=decision_trace_id,
                 conversation_id=session_id,
             )
+        )
+        append_t0_session_event(
+            agent_id=agent_id,
+            session_id=session_id,
+            event_type="tool_result",
+            role="tool",
+            content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            message_id=message_id,
+            actor_id=agent_id,
+            tenant_id=tenant_id,
+            runtime_task_id=data.get("runtime_task_id") or data.get("run_id"),
+            source="web_chat_runtime",
+            metadata={
+                "source": "web_chat_runtime",
+                "tool_name": data.get("name", ""),
+                "status": "done",
+                "decision_trace_id": decision_trace_id,
+            },
         )
         await db.commit()
 

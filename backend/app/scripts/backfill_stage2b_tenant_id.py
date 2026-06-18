@@ -1,4 +1,4 @@
-"""Stage-2b backfill: populate ``tenant_id`` on the 18 agent-scoped tables that
+"""Stage-2b backfill: populate ``tenant_id`` on the agent-scoped tables that
 ``rls_stage2b_agent_scoped_0610`` just gave a (nullable) ``tenant_id`` column.
 
 **Dry-run by default** — counts only, mutates nothing. ``--apply --confirm``
@@ -8,7 +8,7 @@ discipline — a safety gate, not an MVP stage).
 
 Source of tenant_id (the column is filled from the row's owning agent / parent):
 
-* 16 standard tables — ``agent_id`` → ``agents.tenant_id``
+* standard agent-owned tables — ``agent_id`` → ``agents.tenant_id``
 * ``runtime_tasks`` — ``parent_agent_id`` → ``agents.tenant_id`` (nullable source:
   delegation rows with no parent stay NULL)
 * ``task_logs`` — ``task_id`` → ``tasks.tenant_id`` (MUST run after ``tasks``;
@@ -76,6 +76,7 @@ _STANDARD_TABLES = (
     "agent_capability_installs",
     "agent_permissions",
     "agent_relationships",
+    "agent_plan_requests",
     "agent_schedules",
     "agent_tools",
     "agent_triggers",

@@ -205,7 +205,7 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
         category="communication",
         display_name="Delegate to Agent",
         icon="\U0001f9ed",
-        plan_gate_action_kind="start_delegation",
+        plan_gate_action_kind="bridge:self",
         adapter="agent_args",
     )
 )

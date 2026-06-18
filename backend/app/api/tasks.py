@@ -77,7 +77,7 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new task for an agent."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
     # Plan Mode early intercept (§9.3): a todo task auto-executes in the
     # background (execute_task), so it needs a confirmed plan.
     await enforce_plan_gate(
@@ -91,6 +91,7 @@ async def create_task(
     )
     task = Task(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         title=data.title,
         description=data.description,
         type=data.type,
@@ -161,8 +162,8 @@ async def add_task_log(
     db: AsyncSession = Depends(get_db),
 ):
     """Add a progress log entry to a task."""
-    await check_agent_access(db, current_user, agent_id)
-    log = TaskLog(task_id=task_id, content=data.content)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    log = TaskLog(tenant_id=agent.tenant_id, task_id=task_id, content=data.content)
     db.add(log)
     await db.flush()
     return TaskLogOut.model_validate(log)

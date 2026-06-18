@@ -12,11 +12,11 @@ import bcrypt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.database import enter_rls_bypass, get_db, set_current_tenant
+from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 
 if TYPE_CHECKING:
     from app.models.refresh_token import RefreshToken
@@ -71,13 +71,7 @@ def decode_access_token(token: str) -> dict:
 
 async def _set_session_tenant(db: AsyncSession, tenant_id: uuid.UUID | str | None) -> None:
     """Pin the active DB session and request context to a validated tenant."""
-    if tenant_id:
-        validated = uuid.UUID(str(tenant_id))
-        set_current_tenant(str(validated))
-        await db.execute(text(f"SET LOCAL app.current_tenant_id = '{validated}'"))
-    else:
-        set_current_tenant(None)
-        await db.execute(text("SET LOCAL app.current_tenant_id = ''"))
+    await pin_rls_tenant_context(db, tenant_id)
 
 
 async def _load_user_with_tenant_status(db: AsyncSession, user_id: uuid.UUID):

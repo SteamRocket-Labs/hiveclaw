@@ -1,9 +1,9 @@
 """Memory system hook handler registration.
 
 Phase 0: logging-only for SESSION_START, POST_COMPACTION, MEMORY_EXTRACTED.
-Phase 1: T0 cursor-based log writers for SESSION_CLOSE/IDLE, TRIGGER_END,
-         DELEGATION_END, HEARTBEAT_TICK_END, DREAM_END.
-         Chat T0 uses cursor to write only new messages — safe across reconnects.
+Phase 1: T0 session ledger segment boundaries for SESSION_CLOSE/IDLE, plus
+         runtime-session ledger events for TRIGGER_END, DELEGATION_END,
+         HEARTBEAT_TICK_END, DREAM_END.
 Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION, SESSION_CLOSE drain.
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from app.runtime.hooks import (
     hook_registry,
     load_registration_specs,
 )
+from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
 from app.services.extract_agent import extract_agent
 from app.services.pending_reply_service import OUTBOUND_TOOL_NAMES
 from app.services.session_memory import (
@@ -28,7 +30,6 @@ from app.services.session_memory import (
     update_session_memory,
     write_compaction_summary,
 )
-from app.services.t0_logger import write_t0_log
 
 logger = logging.getLogger(__name__)
 _DEFAULT_HOOK_REGISTRY = hook_registry
@@ -223,9 +224,6 @@ def _parse_agent_id(ctx: HookContext) -> uuid.UUID | None:
         return None
 
 
-_t0_cursors: dict[str, int] = {}  # "agent_id:session_id" → message index of last T0 write
-
-
 def _is_reportable_session(messages: list[dict], metadata: dict) -> bool:
     if metadata.get("loop_guard_triggered") or metadata.get("failed") or metadata.get("partial_failure"):
         return True
@@ -237,8 +235,74 @@ def _is_reportable_session(messages: list[dict], metadata: dict) -> bool:
     return any(marker in text.lower() for marker in ("wrong", "错了", "不是", "failed", "失败", "loop guard"))
 
 
+def _safe_t0_session_id(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_.:-]+", "_", text)
+
+
+def _runtime_event_session_id(ctx: HookContext, event_type: str) -> str:
+    if ctx.session_id:
+        return _safe_t0_session_id(ctx.session_id)
+    for key in (
+        "session_id",
+        "runtime_task_id",
+        "task_id",
+        "run_id",
+        "trigger_run_id",
+        "trigger_id",
+        "delegation_id",
+        "tick_id",
+        "dream_id",
+    ):
+        value = ctx.metadata.get(key)
+        if value:
+            return f"{event_type}-{_safe_t0_session_id(value)}"
+    return f"{event_type}-{uuid.uuid4().hex}"
+
+
+def _runtime_event_content(messages: list[dict] | None, fallback: str) -> str:
+    rendered: list[str] = []
+    for message in messages or []:
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        role = str(message.get("role") or "").strip()
+        rendered.append(f"{role}: {content}" if role and len(messages or []) > 1 else content)
+    return "\n".join(rendered) if rendered else fallback
+
+
+def _append_and_seal_runtime_t0_event(
+    *,
+    agent_id: uuid.UUID,
+    ctx: HookContext,
+    event_type: str,
+    boundary_reason: str,
+    fallback_content: str,
+) -> None:
+    session_id = _runtime_event_session_id(ctx, event_type)
+    source = ctx.source or event_type
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        event_type=event_type,
+        role="system",
+        content=_runtime_event_content(ctx.messages, fallback_content),
+        actor_id=agent_id,
+        source=source,
+        metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
+    )
+    seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason=boundary_reason,
+        metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
+    )
+
+
 async def _t0_session_close(ctx: HookContext) -> None:
-    """SESSION_CLOSE → drain extractor + write incremental T0 (cursor-based)."""
+    """SESSION_CLOSE → drain extractor + seal the append-only T0 session segment."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
@@ -254,7 +318,7 @@ async def _t0_session_close(ctx: HookContext) -> None:
     # 切口④: settle the session's verified ledger findings into durable T2 memory.
     # Runtime settlement uses the LLM-primary write gate; a missing tenant/model
     # context is recorded as a regex_fallback decision by the gate. Best-effort:
-    # a consolidation failure must not abort SESSION_CLOSE T0 logging below.
+    # a consolidation failure must not abort SESSION_CLOSE T0 segment sealing below.
     try:
         from app.services.extract_agent import consolidate_ledger_findings_to_t2_with_llm
 
@@ -269,19 +333,21 @@ async def _t0_session_close(ctx: HookContext) -> None:
             logger.info("[Hooks] SESSION_CLOSE: agent=%s ledger→T2 settled %d entries", agent_id, written)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Hooks] SESSION_CLOSE: ledger→T2 consolidation skipped for %s: %s", agent_id, exc)
-    # Write only new messages since last T0 cursor
-    session_key = f"{agent_id}:{ctx.session_id}"
-    cursor = _t0_cursors.get(session_key, 0)
-    new_messages = messages[cursor:]
-    if not new_messages:
-        logger.debug("[Hooks] SESSION_CLOSE: no new messages since cursor=%d, skipping T0", cursor)
-        return
-    write_t0_log(
-        agent_id,
-        behavior_type="chat",
-        messages=new_messages,
-        metadata={**ctx.metadata, "source": ctx.source or "web", "cursor_start": cursor},
-    )
+    if ctx.session_id:
+        sealed = seal_t0_session_segment(
+            agent_id=agent_id,
+            session_id=str(ctx.session_id),
+            reason=str(reason or "session_close"),
+            metadata={**ctx.metadata, "source": ctx.source or "web"},
+        )
+        if sealed:
+            logger.info(
+                "[Hooks] SESSION_CLOSE: sealed T0 segment agent=%s session=%s segment=%s seq=%d",
+                agent_id,
+                ctx.session_id,
+                sealed.segment_id,
+                sealed.sequence,
+            )
     if _is_reportable_session(messages, ctx.metadata):
         try:
             from app.config import get_settings
@@ -297,98 +363,95 @@ async def _t0_session_close(ctx: HookContext) -> None:
             )
         except Exception as exc:
             logger.debug("[Hooks] reportable reflection skipped for %s: %s", agent_id, exc)
-    _t0_cursors[session_key] = len(messages)
 
 
 async def _t0_session_idle(ctx: HookContext) -> None:
-    """SESSION_IDLE → write incremental T0 log (cursor-based, no duplication).
+    """SESSION_IDLE → seal the active T0 segment as a resume boundary.
 
     Extraction is NOT triggered here — RESPONSE_COMPLETE already extracts
-    after every agent response (cursor-based, no duplicates). SESSION_IDLE
-    only writes the T0 snapshot and marks the session for dream gate counting.
+    after every agent response. SESSION_IDLE only creates a ledger boundary;
+    it does not summarize or rewrite historical T0 events.
     """
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
-    messages = ctx.messages or []
     idle_s = ctx.metadata.get("idle_seconds", "?")
-    # Write only new messages since last T0 cursor
-    session_key = f"{agent_id}:{ctx.session_id}"
-    cursor = _t0_cursors.get(session_key, 0)
-    new_messages = messages[cursor:]
-    if not new_messages:
-        logger.debug("[Hooks] SESSION_IDLE: agent=%s no new messages since cursor=%d", ctx.agent_id, cursor)
+    if not ctx.session_id:
         return
-    logger.info(
-        "[Hooks] SESSION_IDLE: agent=%s idle=%ss new_msgs=%d (cursor %d→%d)",
-        ctx.agent_id,
-        idle_s,
-        len(new_messages),
-        cursor,
-        len(messages),
+    sealed = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=str(ctx.session_id),
+        reason="session_idle",
+        metadata={**ctx.metadata, "source": ctx.source or "web", "idle_seconds": idle_s},
     )
-    write_t0_log(
-        agent_id,
-        behavior_type="chat",
-        messages=new_messages,
-        metadata={**ctx.metadata, "source": ctx.source or "web", "cursor_start": cursor},
-    )
-    _t0_cursors[session_key] = len(messages)
+    if sealed:
+        logger.info(
+            "[Hooks] SESSION_IDLE: sealed T0 segment agent=%s session=%s idle=%ss segment=%s seq=%d",
+            ctx.agent_id,
+            ctx.session_id,
+            idle_s,
+            sealed.segment_id,
+            sealed.sequence,
+        )
 
 
 async def _t0_trigger_end(ctx: HookContext) -> None:
-    """TRIGGER_END → write trigger T0 log."""
+    """TRIGGER_END → append and seal a T0 runtime-session ledger."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] TRIGGER_END: agent=%s trigger=%s", ctx.agent_id, ctx.metadata.get("trigger_name", "?"))
-    write_t0_log(
-        agent_id,
-        behavior_type="trigger",
-        messages=ctx.messages or [],
-        metadata=ctx.metadata,
+    _append_and_seal_runtime_t0_event(
+        agent_id=agent_id,
+        ctx=ctx,
+        event_type="trigger_run",
+        boundary_reason="trigger_end",
+        fallback_content="trigger_end",
     )
 
 
 async def _t0_delegation_end(ctx: HookContext) -> None:
-    """DELEGATION_END → write delegation T0 log."""
+    """DELEGATION_END → append and seal a T0 runtime-session ledger."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] DELEGATION_END: agent=%s", ctx.agent_id)
-    write_t0_log(
-        agent_id,
-        behavior_type="delegation",
-        messages=ctx.messages or [],
-        metadata=ctx.metadata,
+    _append_and_seal_runtime_t0_event(
+        agent_id=agent_id,
+        ctx=ctx,
+        event_type="delegation_run",
+        boundary_reason="delegation_end",
+        fallback_content="delegation_end",
     )
 
 
 async def _t0_heartbeat_tick_end(ctx: HookContext) -> None:
-    """HEARTBEAT_TICK_END → write heartbeat T0 log."""
+    """HEARTBEAT_TICK_END → append and seal a T0 runtime-session ledger."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] HEARTBEAT_TICK_END: agent=%s", ctx.agent_id)
-    write_t0_log(
-        agent_id,
-        behavior_type="heartbeat",
-        messages=ctx.messages or [],
-        metadata=ctx.metadata,
+    _append_and_seal_runtime_t0_event(
+        agent_id=agent_id,
+        ctx=ctx,
+        event_type="heartbeat_tick",
+        boundary_reason="heartbeat_tick_end",
+        fallback_content="heartbeat_tick_end",
     )
 
 
 async def _t0_dream_end(ctx: HookContext) -> None:
-    """DREAM_END → write dream T0 log + reset heartbeat persistent session."""
+    """DREAM_END → append/seal a T0 runtime-session ledger + reset heartbeat session."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] DREAM_END: agent=%s", ctx.agent_id)
-    write_t0_log(
-        agent_id,
-        behavior_type="dream",
-        messages=ctx.messages or [],
-        metadata=ctx.metadata,
+    _append_and_seal_runtime_t0_event(
+        agent_id=agent_id,
+        ctx=ctx,
+        event_type="dream_run",
+        boundary_reason="dream_end",
+        fallback_content="dream_end",
     )
     # Phase 5: Reset heartbeat KAIROS session after dream completes
     # so next heartbeat tick starts fresh with updated T3 memory.
@@ -480,7 +543,7 @@ def register_memory_hooks() -> None:
 
     Called from main.py lifespan during startup.
     Phase 0: logging-only for SESSION_START, POST_COMPACTION, MEMORY_EXTRACTED.
-    Phase 1: T0 cursor-based writers for SESSION_CLOSE/IDLE, TRIGGER_END, DELEGATION_END, HEARTBEAT_TICK_END, DREAM_END.
+    Phase 1: T0 session-ledger boundaries and runtime-session ledger events.
     Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION; drain on SESSION_CLOSE.
     Phase 3: Pending reply capture for outbound messages.
     """

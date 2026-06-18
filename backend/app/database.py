@@ -7,9 +7,9 @@ import uuid
 from collections.abc import AsyncGenerator
 from contextvars import ContextVar
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session as SyncSession
 
 from app.config import get_settings
 
@@ -50,6 +50,45 @@ schema_engine = (
 # Context variable to carry the current tenant_id through the request lifecycle.
 # Set by get_db() from request.state.tenant_id (populated by TenantMiddleware).
 _current_tenant_id: ContextVar[str | None] = ContextVar("_current_tenant_id", default=None)
+_RLS_TENANT_INFO_KEY = "hive_rls_tenant_id"
+
+
+def _normalize_rls_tenant_value(tenant_id: str | uuid.UUID | None) -> str:
+    """Return a validated tenant id string, or empty string for fail-closed scope."""
+    if tenant_id:
+        return str(uuid.UUID(str(tenant_id)))
+    return ""
+
+
+def _set_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID | None) -> str:
+    """Attach tenant scope to an ORM session so every new transaction re-pins RLS."""
+    normalized = _normalize_rls_tenant_value(tenant_id)
+    sync_session = getattr(session, "sync_session", None)
+    if sync_session is not None:
+        sync_session.info[_RLS_TENANT_INFO_KEY] = normalized
+    return normalized
+
+
+def _rls_tenant_statement(tenant_id: str) -> str:
+    if tenant_id:
+        return f"SET LOCAL app.current_tenant_id = '{tenant_id}'"
+    return "SET LOCAL app.current_tenant_id = ''"
+
+
+@event.listens_for(SyncSession, "after_begin")
+def _apply_rls_tenant_for_transaction(session: SyncSession, _transaction, connection) -> None:
+    """Re-apply transaction-local RLS tenant context after explicit commits.
+
+    PostgreSQL ``SET LOCAL`` is cleared on every COMMIT. Channel runtimes save a
+    user turn, commit it, then continue with the same ORM session to start a
+    durable run and persist the assistant reply. Without this hook the second
+    transaction runs fail-closed under enforced RLS and the agent appears
+    missing even though it exists.
+    """
+    if _RLS_TENANT_INFO_KEY not in session.info:
+        return
+    tenant_id = _normalize_rls_tenant_value(session.info.get(_RLS_TENANT_INFO_KEY))
+    connection.exec_driver_sql(_rls_tenant_statement(tenant_id))
 
 
 class Base(DeclarativeBase):
@@ -63,6 +102,14 @@ def set_current_tenant(tenant_id: str | None) -> None:
     _current_tenant_id.set(tenant_id)
 
 
+async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID | None) -> uuid.UUID | None:
+    """Pin the current transaction and future transactions on this ORM session to a tenant."""
+    pinned_tenant_id = _set_rls_tenant_context(session, tenant_id)
+    _current_tenant_id.set(pinned_tenant_id or None)
+    await session.execute(text(_rls_tenant_statement(pinned_tenant_id)))
+    return uuid.UUID(pinned_tenant_id) if pinned_tenant_id else None
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for getting async database sessions.
 
@@ -74,15 +121,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as session:
         try:
             # Set tenant context for PostgreSQL RLS policies.
-            # Note: SET LOCAL does not support parameterized queries in PostgreSQL,
-            # so we validate the tenant_id as UUID before interpolation to prevent injection.
-            if tenant_id:
-                import uuid as _uuid
-
-                _uuid.UUID(str(tenant_id))  # Raises ValueError if not a valid UUID
-                await session.execute(text(f"SET LOCAL app.current_tenant_id = '{tenant_id}'"))
-            else:
-                await session.execute(text("SET LOCAL app.current_tenant_id = ''"))
+            # Note: SET LOCAL is transaction-local. The session info hook below
+            # re-applies it automatically if request code commits mid-handler.
+            await pin_rls_tenant_context(session, tenant_id)
 
             yield session
             await session.commit()
@@ -124,13 +165,7 @@ async def tenant_scoped_session(
 
     async with factory() as session:
         try:
-            if effective:
-                import uuid as _uuid
-
-                _uuid.UUID(str(effective))  # Raises ValueError if not a valid UUID
-                await session.execute(text(f"SET LOCAL app.current_tenant_id = '{effective}'"))
-            else:
-                await session.execute(text("SET LOCAL app.current_tenant_id = ''"))
+            await pin_rls_tenant_context(session, effective)
 
             yield session
             await session.commit()

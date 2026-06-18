@@ -105,6 +105,7 @@ async def _record_blocked_run(
             RuntimeTask(
                 id=run_id,
                 task_type="workflow",
+                tenant_id=tenant_id,
                 status="suspended",
                 parent_agent_id=agent_id,
                 metadata_json={

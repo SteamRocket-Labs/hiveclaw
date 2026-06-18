@@ -54,8 +54,7 @@ def test_to_metadata_matches_legacy_dict_shape_for_non_deep_research():
         "reason": "explicit_request",
         "handoff_target": "long_task",
     }
-    # Non-deep-research plans MUST NOT carry deep_research keys (byte-compat with
-    # _activate_interactive_plan_mode's conditional update).
+    # Non-deep-research plans MUST NOT carry deep_research keys.
     assert "deep_research" not in data
     assert "deep_research_args" not in data
 
@@ -98,17 +97,16 @@ def test_plan_file_path_round_trips_through_the_mirror():
 
 
 def test_plan_id_absent_from_mirror_when_unset():
-    # Live chat / unattended tool-intercept never pre-arm a plan_id; the mirror
-    # must NOT carry the key so exit_plan_mode falls into its "create new" branch
-    # (cut ③a) and the legacy dict shape stays byte-compatible.
+    # Ordinary explicit Plan Mode may not pre-arm a plan_id; the mirror must NOT
+    # carry the key so exit_plan_mode falls into its "create new" branch.
     data = PlanModeState(active=True).to_metadata()
     assert "plan_id" not in data
 
 
 def test_plan_id_round_trips_through_the_mirror_when_armed():
-    # Cut ③a: a system_plan_run launcher pre-arms Plan Mode with the draft's
-    # plan_id; exit_plan_mode reads it off the ContextVar mirror to fill THAT
-    # draft instead of creating a new one, so it must survive to_metadata.
+    # A system_plan_run launcher pre-arms Plan Mode with the draft's plan_id;
+    # exit_plan_mode reads it off the ContextVar mirror to fill THAT draft instead
+    # of creating a new one, so it must survive to_metadata.
     state = PlanModeState(active=True, plan_id="11111111-1111-1111-1111-111111111111")
     data = state.to_metadata()
     assert data["plan_id"] == "11111111-1111-1111-1111-111111111111"
@@ -187,11 +185,9 @@ def test_from_metadata_handles_none_and_empty_safely():
 
 
 def test_to_metadata_carries_action_artifact_when_present():
-    """P1 deadlock fix: the artifact computed at gate-check time rides the
-    typed state into the metadata mirror (consumed by exit_plan_mode), and is
-    omitted entirely when absent — the legacy mirror stays byte-compatible."""
-    artifact = {"definition_hash": "wf-hash", "args_hash": "args-hash", "risk_reasons": ["external send"]}
-    state = PlanModeState(active=True, action_kind="start_workflow", action_artifact=artifact)
+    """Optional action artifacts round-trip through the metadata mirror."""
+    artifact = {"handoff": "continue_current_session", "args_hash": "args-hash"}
+    state = PlanModeState(active=True, action_kind="start_long_task", action_artifact=artifact)
     data = state.to_metadata()
     assert data["action_artifact"] == artifact
     assert "action_artifact" not in PlanModeState(active=True).to_metadata()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -18,16 +19,17 @@ def test_create_digital_employee_is_registered():
     assert "preview_agent_blueprint" in names
 
 
-def test_create_digital_employee_schema_has_required_name():
-    """The tool schema must require 'name' as the only required field."""
+def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
+    """Creation is sensitive: it must be bound to a previewed and confirmed blueprint."""
     from app.services.agent_tools import get_combined_openai_tools
 
     all_tools = get_combined_openai_tools()
     hr_tool = next(t for t in all_tools if t["function"]["name"] == "create_digital_employee")
     params = hr_tool["function"]["parameters"]
 
-    assert params["required"] == ["name"]
+    assert params["required"] == ["name", "confirmed_blueprint_hash"]
     assert "name" in params["properties"]
+    assert "confirmed_blueprint_hash" in params["properties"]
     assert "role_description" in params["properties"]
     assert "personality" in params["properties"]
     assert "boundaries" in params["properties"]
@@ -162,6 +164,13 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["summary"]["primary_users"] == ["投资团队", "研究团队"]
     assert payload["summary"]["core_outputs"] == ["日报", "周报"]
     assert payload["summary"]["first_mission"] == "先完成行业扫描"
+    assert payload["blueprint_hash"]
+    assert payload["creation_flow"]["mode"] == "dynamic_rounds_mandatory_gates"
+    assert payload["creation_flow"]["gates"]["identity"]["status"] == "complete"
+    assert payload["creation_flow"]["gates"]["governance"]["status"] == "complete"
+    assert payload["creation_flow"]["gates"]["activation"]["status"] == "complete"
+    assert payload["creation_flow"]["gates"]["capabilities"]["status"] == "complete"
+    assert payload["creation_flow"]["gates"]["confirmation"]["status"] == "pending"
 
 
 def test_build_blueprint_preview_payload_auto_recommends_platform_skills() -> None:
@@ -204,6 +213,53 @@ def test_build_blueprint_preview_payload_warns_when_external_installs_cover_buil
 
     assert any("default productivity skills already cover" in warning for warning in payload["warnings"])
     assert any("PDF/DOCX/XLSX/PPTX" in item for item in payload["capability_routing"]["builtin_paths"])
+
+
+def test_build_blueprint_preview_payload_requires_governance_for_finance_external_publishing() -> None:
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    payload = _build_blueprint_preview_payload(
+        {
+            "name": "华尔街段子手",
+            "role_description": "美股社区自媒体分析师，每日发布行情复盘和个股分析到 Telegram 和 X。",
+            "primary_users": ["Telegram 美股社区", "X 关注者"],
+            "core_outputs": ["每日美股内容"],
+            "focus_content": "搭建追踪框架",
+            "boundaries": "",
+        }
+    )
+
+    assert payload["risk_class"] == "high"
+    assert "governance" in payload["missing_gates"]
+    assert payload["creation_flow"]["gates"]["governance"]["status"] == "missing"
+    assert any("governance gate" in warning for warning in payload["warnings"])
+
+
+def test_blueprint_hash_is_stable_for_semantically_identical_payloads() -> None:
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    first = _build_blueprint_preview_payload(
+        {
+            "name": "研究员",
+            "role_description": "服务投研团队的市场研究员。",
+            "primary_users": ["投研团队"],
+            "core_outputs": ["日报"],
+            "boundaries": "不捏造来源",
+            "focus_content": "先产出日报模板",
+        }
+    )
+    second = _build_blueprint_preview_payload(
+        {
+            "focus_content": "先产出日报模板",
+            "boundaries": "不捏造来源",
+            "core_outputs": ["日报"],
+            "primary_users": ["投研团队"],
+            "role_description": "服务投研团队的市场研究员。",
+            "name": "研究员",
+        }
+    )
+
+    assert first["blueprint_hash"] == second["blueprint_hash"]
 
 
 def test_build_blueprint_preview_payload_keeps_external_skill_urls_separate_from_platform_skills() -> None:
@@ -382,3 +438,222 @@ async def test_install_external_skill_from_skills_ref_fails_closed_without_sandb
             agent_id=agent_id,
             ref="patricio0312rev/skills@design-to-component-translator",
         )
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _ScalarsResult:
+    def __init__(self, values):
+        self._values = list(values)
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._values
+
+
+class _QueuedDB:
+    def __init__(self, results):
+        self._results = list(results)
+        self.executed = 0
+
+    async def execute(self, _stmt):
+        self.executed += 1
+        if not self._results:
+            raise AssertionError("Unexpected execute() call")
+        return self._results.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_hr_employee_creation_ignores_dangling_default_model_setting() -> None:
+    from app.tools.handlers.hr import _resolve_employee_creation_model
+
+    tenant_id = uuid4()
+    dangling_model_id = uuid4()
+    fallback_model = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, enabled=True)
+    db = _QueuedDB(
+        [
+            _ScalarResult({"model_id": str(dangling_model_id)}),
+            _ScalarResult(None),
+            _ScalarResult(fallback_model),
+        ]
+    )
+
+    model = await _resolve_employee_creation_model(db, tenant_id)
+
+    assert model is fallback_model
+    assert model.id != dangling_model_id
+
+
+@pytest.mark.asyncio
+async def test_hr_soul_refinement_model_falls_back_when_hr_model_is_unavailable() -> None:
+    from app.tools.handlers.hr import _resolve_employee_refinement_model
+
+    tenant_id = uuid4()
+    creation_model = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, enabled=True)
+    db = _QueuedDB([_ScalarResult(None)])
+
+    model, source = await _resolve_employee_refinement_model(
+        db,
+        tenant_id,
+        preferred_model_id=uuid4(),
+        creation_model=creation_model,
+    )
+
+    assert model is creation_model
+    assert source == "tenant_default"
+
+
+def test_create_digital_employee_uses_validated_model_resolution() -> None:
+    from app.tools.handlers import hr
+
+    src = inspect.getsource(hr.create_digital_employee)
+
+    assert "_resolve_employee_creation_model" in src
+    assert "_resolve_employee_refinement_model" in src
+    assert "_validate_creation_flow_confirmation" in src
+
+
+@pytest.mark.asyncio
+async def test_validate_creation_flow_confirmation_rejects_missing_hash() -> None:
+    from app.tools.handlers.hr import _validate_creation_flow_confirmation
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    request = ToolExecutionRequest(
+        tool_name="create_digital_employee",
+        arguments={"name": "研究员"},
+        context=ToolExecutionContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            workspace=__import__("pathlib").Path("/tmp"),
+            session_id=str(uuid4()),
+        ),
+    )
+
+    message = await _validate_creation_flow_confirmation(request, _QueuedDB([]))
+
+    assert message is not None
+    assert "confirmed_blueprint_hash" in message
+
+
+@pytest.mark.asyncio
+async def test_validate_creation_flow_confirmation_accepts_same_session_preview() -> None:
+    import json
+
+    from app.tools.handlers.hr import _build_blueprint_preview_payload, _validate_creation_flow_confirmation
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    preview = _build_blueprint_preview_payload(
+        {
+            "name": "研究员",
+            "role_description": "服务投研团队的市场研究员。",
+            "primary_users": ["投研团队"],
+            "core_outputs": ["日报"],
+            "boundaries": "不捏造来源",
+            "focus_content": "先产出日报模板",
+        }
+    )
+    preview_row = SimpleNamespace(
+        content=json.dumps(
+            {
+                "name": "preview_agent_blueprint",
+                "args": preview["blueprint"],
+                "status": "done",
+                "result": json.dumps(preview, ensure_ascii=False),
+            },
+            ensure_ascii=False,
+        )
+    )
+    request = ToolExecutionRequest(
+        tool_name="create_digital_employee",
+        arguments={
+            **preview["blueprint"],
+            "confirmed_blueprint_hash": preview["blueprint_hash"],
+        },
+        context=ToolExecutionContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            workspace=__import__("pathlib").Path("/tmp"),
+            session_id=str(uuid4()),
+        ),
+    )
+
+    message = await _validate_creation_flow_confirmation(request, _QueuedDB([_ScalarsResult([preview_row])]))
+
+    assert message is None
+
+
+@pytest.mark.asyncio
+async def test_validate_creation_flow_confirmation_blocks_after_repeated_failures() -> None:
+    import json
+
+    from app.tools.handlers.hr import _build_blueprint_preview_payload, _validate_creation_flow_confirmation
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    preview = _build_blueprint_preview_payload(
+        {
+            "name": "研究员",
+            "role_description": "服务投研团队的市场研究员。",
+            "primary_users": ["投研团队"],
+            "core_outputs": ["日报"],
+            "boundaries": "不捏造来源",
+            "focus_content": "先产出日报模板",
+        }
+    )
+    rows = [
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "name": "preview_agent_blueprint",
+                    "status": "done",
+                    "result": json.dumps(preview, ensure_ascii=False),
+                },
+                ensure_ascii=False,
+            )
+        ),
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "name": "create_digital_employee",
+                    "status": "done",
+                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
+                },
+                ensure_ascii=False,
+            )
+        ),
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "name": "create_digital_employee",
+                    "status": "done",
+                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
+                },
+                ensure_ascii=False,
+            )
+        ),
+    ]
+    request = ToolExecutionRequest(
+        tool_name="create_digital_employee",
+        arguments={**preview["blueprint"], "confirmed_blueprint_hash": preview["blueprint_hash"]},
+        context=ToolExecutionContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            workspace=__import__("pathlib").Path("/tmp"),
+            session_id=str(uuid4()),
+        ),
+    )
+
+    message = await _validate_creation_flow_confirmation(request, _QueuedDB([_ScalarsResult(rows)]))
+
+    assert message is not None
+    assert "stopped after 2 failed create attempts" in message

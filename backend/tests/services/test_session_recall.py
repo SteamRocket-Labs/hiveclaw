@@ -100,6 +100,60 @@ async def test_search_session_history_returns_empty_when_no_match(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_search_session_history_prefers_t0_session_ledger(monkeypatch, tmp_path: Path) -> None:
+    from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
+    from app.services.session_recall import search_session_history
+
+    agent_id = uuid.uuid4()
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id="sess-ledger-1",
+        event_type="user_message",
+        role="user",
+        content="我们上次确认 session ledger 是 T0 唯一真相源。",
+        source="web",
+        data_root=tmp_path,
+        created_at=datetime(2026, 4, 9, 9, 0, tzinfo=timezone.utc),
+    )
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id="sess-ledger-1",
+        event_type="assistant_message",
+        role="assistant",
+        content="我会用 memory/t0/sessions 下的 source.md 作为 recall 入口。",
+        source="web",
+        data_root=tmp_path,
+        created_at=datetime(2026, 4, 9, 9, 1, tzinfo=timezone.utc),
+    )
+    seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id="sess-ledger-1",
+        reason="session_close",
+        data_root=tmp_path,
+        created_at=datetime(2026, 4, 9, 9, 2, tzinfo=timezone.utc),
+    )
+
+    def _unexpected_session(*_a, **_k):
+        raise AssertionError("T0 session ledger should satisfy recall without touching DB")
+
+    monkeypatch.setattr("app.services.session_recall.tenant_scoped_session", _unexpected_session)
+    monkeypatch.setattr(
+        "app.services.session_recall.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    hits = await search_session_history(agent_id, "session ledger", limit=5, snippet_limit=2)
+
+    assert len(hits) == 1
+    assert hits[0]["session_id"] == "sess-ledger-1"
+    assert hits[0]["source"] == "web"
+    assert hits[0]["started_at"] == "2026-04-09"
+    assert "session ledger 是 T0 唯一真相源" in hits[0]["summary"]
+    assert any("memory/t0/sessions" in snippet for snippet in hits[0]["snippets"])
+    assert not (tmp_path / str(agent_id) / "logs").exists()
+
+
+@pytest.mark.asyncio
 async def test_search_session_history_prefers_t0_chat_logs(monkeypatch, tmp_path: Path) -> None:
     from app.services.session_recall import search_session_history
 
@@ -129,7 +183,7 @@ tools: []
     )
 
     def _unexpected_session(*_a, **_k):
-        raise AssertionError("T0 chat logs should satisfy recall without touching DB")
+        raise AssertionError("legacy per-file chat logs should satisfy recall without touching DB")
 
     monkeypatch.setattr("app.services.session_recall.tenant_scoped_session", _unexpected_session)
     monkeypatch.setattr(

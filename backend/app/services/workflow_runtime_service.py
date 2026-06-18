@@ -630,6 +630,7 @@ class WorkflowRuntimeService:
             task = RuntimeTask(
                 id=run_id,
                 task_type="workflow",
+                tenant_id=tenant_id,
                 status="running",
                 parent_agent_id=agent_id,
                 metadata_json={

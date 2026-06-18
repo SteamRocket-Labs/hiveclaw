@@ -54,14 +54,13 @@ class ToolMeta:
     # Governance
     governance: str = ""  # "" | "safe" | "sensitive"
 
-    # Plan Mode gate (docs/plan-mode-design.md §9.2). Non-empty marks a tool as
-    # an "autonomous-enabling" action that must have a confirmed plan before it
-    # runs. The value is the PlanModeGate action_kind
-    # (app.services.plan_mode_core.ACTION_KINDS) the gate arbitrates, EXCEPT the
-    # sentinel "bridge:self" which only registers a tool as plan-governed while
-    # delegating the actual gate to the tool's own confirmation (deep_research's
-    # plan_confirmed). This is a code-level registry tag — NOT Tool.config, which
-    # the seeder does not overwrite when already non-empty.
+    # Confirmation gate. Non-empty marks a tool as an autonomous-enabling action
+    # that must be confirmed before it runs. The value is the PlanModeGate
+    # action_kind (app.services.plan_mode_core.ACTION_KINDS), EXCEPT the sentinel
+    # "bridge:self" which registers a tool while delegating the actual gate to
+    # the tool's own confirmation (for example Deep Research's user_confirmed
+    # path). This is a code-level registry tag — NOT Tool.config, which the
+    # seeder does not overwrite when already non-empty.
     plan_gate_action_kind: str = ""
 
     # Pack membership

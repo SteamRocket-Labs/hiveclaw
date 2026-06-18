@@ -331,6 +331,7 @@ async def _process_wecom_stream_message(
         sess = await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,
+            tenant_id=agent_obj.tenant_id,
             user_id=platform_user_id,
             external_conv_id=conv_id,
             source_channel="wecom",
@@ -354,6 +355,7 @@ async def _process_wecom_stream_message(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="user",
                 content=user_text,
@@ -388,6 +390,7 @@ async def _process_wecom_stream_message(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="assistant",
                 content=reply_text,

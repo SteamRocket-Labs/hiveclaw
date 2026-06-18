@@ -59,6 +59,7 @@ class _FakeDB:
 
     def __init__(self, results):
         self._results = list(results)
+        self.sync_session = SimpleNamespace(info={})
         self.executed_statements: list[str] = []
         self.executed_params = []
         self.rollback_called = False
@@ -154,6 +155,8 @@ def test_login_identifier_lookup_uses_rls_bypass():
 
 
 def test_login_success_scopes_session_to_user_tenant_for_audit():
+    from app import database
+
     tenant_id = uuid4()
     user = _fake_user(username="alice", email="alice@example.com", tenant_id=tenant_id)
     tenant = SimpleNamespace(is_active=True)
@@ -167,6 +170,7 @@ def test_login_success_scopes_session_to_user_tenant_for_audit():
 
     assert resp.status_code == 200
     assert any(str(tenant_id) in statement for statement in db.executed_statements)
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
 
 
 def test_login_success_rolls_back_session_after_audit_failure():

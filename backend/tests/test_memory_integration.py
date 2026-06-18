@@ -100,7 +100,7 @@ class TestHooksIntegration:
             hooks_setup_mod.hook_registry = original
 
 
-# ── §2: T0 raw log layer (Phase 1) ──
+# ── §2: Legacy raw log compatibility layer ──
 
 
 class TestT0Integration:

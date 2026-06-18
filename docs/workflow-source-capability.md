@@ -13,13 +13,13 @@
 ## 0. 主旨（用户拍板，2026-06-03）
 
 1. **Workflow 是 Hive 的确定性执行编排基础能力，与 Plan Mode 并列。**
-2. **Plan Mode 管确认边界**（能不能开始执行、是否需要人确认、计划怎么被确认）；**Workflow 管执行控制流**（执行开始后，控制流如何确定性推进、暂停、恢复、审计）。两者可组合，**不能混成一个概念**——Workflow run 可以被 plan gate 拦住，但 Workflow 本身不是 Plan Mode 的一个 action type。
+2. **Confirmation / Plan Mode 管确认边界**（能不能开始执行、是否需要人确认、显式计划怎么被确认）；**Workflow 管执行控制流**（执行开始后，控制流如何确定性推进、暂停、恢复、审计）。两者可组合，**不能混成一个概念**——Workflow run 可以要求确认，但 Workflow 本身不是 Plan Mode 的一个 action type。
 3. **Workflow 不属于 subagent、deep research、office 或 Work Ledger**；这些只是它的**调用方、叶子执行器或观察面**。
 4. **同一套 runtime engine，支持 ephemeral 与 registered 两种 definition 来源**——不是两条 runtime。
 
 ### 0.2 对 v0 的修正记录（诚实留痕）
 
-- ~~v0-D1"发起门 = Plan Mode gate"~~ → **降级为 integration（§6.1）**：那种写法把 Workflow 矮化成 plan gate 下的 action type，违反主旨 2。
+- ~~v0-D1"发起门 = Plan Mode gate"~~ → **降级为 confirmation integration（§6.1）**：那种写法把 Workflow 矮化成 plan gate 下的 action type，违反主旨 2。
 - ~~v0-D2"只开 registered、不开 inline ad-hoc"~~ → **推翻**：CC 基线本来就是 inline script（临时）+ named workflow（注册）**双路径**，砍 inline 是减法、违反 superset 方法论。正确的 delta 是**换载体不砍路径**：CC 的"任意 JS"在多租户下换成**结构化 definition 数据**（§3.2），ephemeral 与 registered 都保住。
 - ~~v0-§8 问 3"definition 载体 = 代码库内置 Python 注册表"~~ → **连带改判**：Python 模块当载体则 ephemeral / promote / fork 全部无法成立；**definition 必须是可序列化数据**。
 - ~~v0"DR = 第一个 registered workflow"放核心~~ → 降级为 integration example（§6.5），且按次序铁律最后做。
@@ -144,7 +144,7 @@ registered ──本次需要微调──▶ fork ──▶ ephemeral run
 
 | # | 集成对象 | 关系 | 接线（现有 seam 标 file:line；拟新增 schema 明确标出） |
 |---|---|---|---|
-| 6.1 | **Plan Mode** | 组合：确认边界 × 执行控制流 | 重型/无人值守 run 发起被 gate（`PlanModeGate.check`，`plan_mode_gate.py:81`；工具层 `ToolMeta.plan_gate_action_kind`）；ephemeral"确认后运行"可挂 plan 确认面（definition 预览随 authored plan；`author_type="workflow"` 缝已在 `plan_mode_service.py:338`）；无人值守自动转主循环 Plan Mode（`session.py:260` / `invoker.py:172`） |
+| 6.1 | **Plan Mode / Confirmation** | 组合：确认边界 × 执行控制流 | Workflow run 发起前可要求用户确认；确认结果是 `confirmation_required` / `user_confirmed`，不是 `start_workflow` 自动进入 Plan Mode。显式 Plan Mode 可以携带 workflow definition 作为 authored plan 的上下文，但 Workflow 本身不再是 PlanModeGate action type。 |
 | 6.2 | **触发层（6 类，一个不加）** | trigger 是 workflow 的一个**调用方** | 时间组 cron/once/interval + 事件组 webhook/poll/on_message 全覆盖"何时开始"；拟新增融合点 = fire 后的 payload 分支：`trigger.config.workflow_ref={definition_name, definition_version, definition_hash, args}` → 引擎 start/resume，无 ref → 现状散文 ReAct（`_invoke_agent_for_triggers` 一个分支）；创建带 ref 的 enabled trigger 走既有 `create_enabled_trigger` gate，**授权绑定 creation-time 的 definition_version + definition_hash**；fire 时必须校验 version/hash，mismatch → suspend / needs re-confirmation，不能静默运行新版 definition；once 只作为 `sleep_until` / `delay_until` 的时间恢复点（`fire_count==0`），不承载 approval/budget/signal 恢复；webhook `_webhook_payload` → run args |
 | 6.3 | **Subagent（轴 1）** | **叶子执行器** | agent_step → `spawn_subagent`；fanout_step → `fanout_subagents`（per_agent_budget 透传）；治理/隔离/budget/Signal 全继承，不开第二条执行路 |
 | 6.4 | **Work Ledger** | **观察面**（单向） | run 创建时 `initialize_agent_work_ledger_artifact(runtime_task_id=run_id)`（`agent_work_ledger.py:206`）；step 进度镜像 todo（`assign_todo_owner:559` / `record_delegated_todo_status:595`）；**引擎绝不读 ledger 驱动控制流**（cognitive-scaffold §8 不变量①认知≠治理） |
@@ -226,7 +226,7 @@ pytest tests/agents/test_subagent_*.py tests/agents/test_orchestrator_*.py tests
 > **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3467 passed**（+12：`tests/migrations/test_workflow_migration.py` 7 + `tests/models/test_workflow_models.py` 6，含共享 fixture 复算）；后续 P11 安全补丁后 `alembic heads` 单 head = `coordination_rls_0604`；ruff clean。
 >
 > **交付物**：
-> - `app/models/workflow.py`：`WorkflowDefinitionRecord` / `WorkflowStep` / `WorkflowLeafCall` / `WorkflowQuota` 四 model；run = `RuntimeTask(task_type="workflow")`，run metadata（definition_source/hash/args_hash/confirmed_plan_id/tenant_id 镜像）走 `metadata_json` 不加列。
+> - `app/models/workflow.py`：`WorkflowDefinitionRecord` / `WorkflowStep` / `WorkflowLeafCall` / `WorkflowQuota` 四 model；run = `RuntimeTask(task_type="workflow")`，run metadata（definition_source/hash/args_hash/confirmed_plan_id provenance/tenant_id 镜像）走 `metadata_json` 不加列。
 > - `alembic/versions/add_workflow_tables_0604.py`：四表 + tenant/run/status 索引 + **RLS ENABLE+FORCE+policy**（workflow 表族第一天 FORCE，闭 P0 缺口 B 的新表侧）。
 > - `db_bootstrap.apply_rls_policies` 增加 `RLS_FORCED_TENANT_TABLES` 组：bootstrap（create_all+stamp）路径建出的 workflow 表同样 ENABLE+FORCE。
 > - **双部署路径合同一致并分别验证**：升级路径用 `chain_migrated_pg_url` fixture（先 bootstrap 全库→拆四表→回拨 alembic_version 至上一 head→重跑 `upgrade head`，真执行 migration DDL）；新部署路径用 bootstrap fixture。两者断言同一合同（表存在 + relrowsecurity + relforcerowsecurity + policy）。
@@ -240,7 +240,7 @@ pytest tests/agents/test_subagent_*.py tests/agents/test_orchestrator_*.py tests
 
 改动面：
 - 新增 `backend/app/models/workflow.py`：`WorkflowStep`、`WorkflowLeafCall`、`WorkflowQuota`、`WorkflowDefinitionRecord`。
-- `RuntimeTask.task_type="workflow"` 作为 run 入口；run metadata 存 `definition_source`、`definition_hash`、`args_hash`、`confirmed_plan_id`、`tenant_id` 镜像。
+- `RuntimeTask.task_type="workflow"` 作为 run 入口；run metadata 存 `definition_source`、`definition_hash`、`args_hash`、可选 `confirmed_plan_id` provenance、`tenant_id` 镜像。
 - Alembic migration：`workflow_steps`、`workflow_leaf_calls`、`workflow_quotas`、`workflow_definitions`，全部带 `tenant_id` / 索引 / RLS policy。
 - `WorkflowDefinitionRecord` 的 `definition_version + definition_hash` immutable；`status` 支持 `draft | active | deprecated | revoked`。
 
@@ -323,31 +323,31 @@ cd backend
 pytest tests/runtime/test_workflow_engine_skeleton.py tests/services/test_workflow_runtime_service.py
 ```
 
-### P4 Ephemeral launch + 风险确认分级
+### P4 Ephemeral launch + 确认需求检查
 
 > **✅ 完成（2026-06-04）** — 证据：`pytest tests/ -q` → **3538 passed**（+25：plan-gate integration 10 + tools 9 + api 8，及 3 处治理 parity 同步）；ruff clean。
 >
 > **交付物**：
-> - `services/workflow_launch.py`：`classify_workflow_risk`（§10 决策3 按风险分级——external/irreversible effects、预算 > `WORKFLOW_HIGH_RISK_BUDGET_TOKENS`、fanout > `WORKFLOW_HIGH_RISK_FANOUT_ITEMS`、等待 > `WORKFLOW_HIGH_RISK_WAIT_SECONDS` 任一即 high，阈值进 Settings）+ `build_subagent_leaf_executor`（**fake leaf 切真 `spawn_subagent` 入口**：spec/task/budget/ctx 全过轴1 真入口，governance/capability gate/tenant/SubagentBudget 继承自 spawn ctx，引擎不开第二条执行路；double 测试钉死契约含 leaf.max_tool_rounds→budget）+ `start_ephemeral_workflow_for_agent`（解析 agent runtime → ctx → executor → service.start_run，工具与 REST 共用单一入口）。
-> - `api/workflows.py`：preview（编译+admission+风险分级，绝不执行）/ start（低风险=用户确认按钮即对话内确认直接跑、**高风险无 confirmed plan 409 fail-closed**、PlanModeGate action artifact 校验，绑定 `definition_hash + args_hash + risk_reasons`）/ get run（含 step journal）/ cancel。全端点 `check_agent_access`。
-> - `tools/handlers/workflow.py`：`preview_workflow` + `start_workflow`（只提交 definition 数据）。`start_workflow` 走标准 `ToolMeta.plan_gate_action_kind` 早拦截：`plan_gate_registry._start_workflow_action_kind` 按参数实时编译分级——低风险放行（等同 agent 顺序调自己的工具）、高风险硬 gate、**编译失败/缺参数 fail-closed gate**（malformed payload 永远过不去）。
-> - Plan Mode 接线：`ACTION_KINDS` + `"start_workflow"`（intent=long_task）；`ToolMeta.plan_gate_action_kind` 只是 integration，不进 Workflow 核心定义 ✓。
+> - `services/workflow_launch.py`：`inspect_workflow_confirmation_needs`（external/irreversible effects、预算 > `WORKFLOW_HIGH_RISK_BUDGET_TOKENS`、fanout > `WORKFLOW_HIGH_RISK_FANOUT_ITEMS`、等待 > `WORKFLOW_HIGH_RISK_WAIT_SECONDS` 任一即要求确认，阈值进 Settings）+ `build_subagent_leaf_executor`（**fake leaf 切真 `spawn_subagent` 入口**：spec/task/budget/ctx 全过轴1 真入口，governance/capability gate/tenant/SubagentBudget 继承自 spawn ctx，引擎不开第二条执行路；double 测试钉死契约含 leaf.max_tool_rounds→budget）+ `start_ephemeral_workflow_for_agent`（解析 agent runtime → ctx → executor → service.start_run，工具与 REST 共用单一入口）。
+> - `api/workflows.py`：preview（编译+admission+确认需求检查，绝不执行）/ start（调用方提交 `user_confirmed` 或同等真实用户事件后运行；缺确认时返回确认需求，不创建 PlanRequest）/ get run（含 step journal）/ cancel。全端点 `check_agent_access`。
+> - `tools/handlers/workflow.py`：`preview_workflow` + `start_workflow`（只提交 definition 数据）。`start_workflow` 不走 `ToolMeta.plan_gate_action_kind`，不会因预算/fanout/外部动作自动切入 Plan Mode；必要确认由 preview/start 的 `confirmation_required` / `confirmation_reasons` 表达。
+> - Plan Mode 接线：`start_workflow` 不属于 `ACTION_KINDS`。显式 Plan Mode 可以把 workflow definition 作为计划内容或 handoff provenance，但不是 Workflow 的启动 gate。
 > - **治理 parity 全同步**（新工具的完整接线清单回归锚）：`capability_gate.CAPABILITY_MAP`（坑回归测试钉死）、`collector` 模块表、`runtime_tool_groups.coordination_pack`（orphan 审计过）、bridge canonical surface、ACTION_KINDS documented-set、`main.py` router 注册。
 > - `ledger_todo_id` 透传：run 完成镜像到 ledger todo（observation only，失败 log 不阻断）。
 
-目标：让 agent 可以生成一次性 definition，但运行前必须经过 preview / 风险分级 / 必要确认。
+目标：让 agent 可以生成一次性 definition，但运行前必须经过 preview / 确认需求检查 / 必要确认。
 
 改动面：
 - 新增 `backend/app/api/workflows.py`：preview ephemeral、start ephemeral、get run、cancel run。
 - 新增 `backend/app/tools/handlers/workflow.py`：`start_workflow` / `preview_workflow`，只提交 definition 数据。
-- 低风险：对话内 definition preview + 用户确认。
-- 高风险：Plan Mode 确认面，提交 `confirmed_plan_id/version/hash` 后才 start。
-- `ToolMeta.plan_gate_action_kind` 只作为 integration，不进入 Workflow 核心定义。
+- 无需额外确认：对话内 definition preview 后可直接 start。
+- 需要确认：返回 `confirmation_required` / `confirmation_reasons`，等待真实用户确认后再 start；不创建 PlanRequest，不强制 Plan Mode。
+- `ToolMeta.plan_gate_action_kind` 不用于 `start_workflow`；Workflow 核心定义只表达执行控制流。
 - 把 P3 的 fake/injected leaf executor 切到真 `spawn_subagent` / `spawn_subagent_from_definition` 入口；confirmed start 必须继承 tenant、tool governance、capability gate、SubagentBudget 和审计字段。
 
 Red tests：
 - 低风险只读 workflow 可 preview + confirmed start。
-- 创建 trigger / 外向 action / 高预算 / promote 等高风险 workflow 无 confirmed plan 时 fail-closed。
+- 创建 trigger / 外向 action / 高预算 / promote 等需要确认的 workflow 无真实用户确认时 fail-closed。
 - plan hash 不匹配时不能 start。
 - confirmed start 的 `agent_step` 调用真 `spawn_subagent` 入口（测试可用 double 断言入口和参数），并继承 capability gate / tenant / SubagentBudget；未授权 leaf fail-closed。
 
@@ -594,9 +594,9 @@ pytest tests/runtime/test_workflow_wait_signal.py tests/agents/test_coordination
 >
 > **交付物**：
 > - **Playwright E2E 设施（从零）**：`@playwright/test` 依赖 + `playwright.config.ts`（webServer=vite dev fixture, chromium project, trace retain-on-failure）+ `npm run test:e2e` script + `e2e/workflow.spec.ts`。范围=浏览器级真实 UI + `/api` 面 per-test route-mock（确定性、无后端依赖；坑：glob `**/api/**` 会拦 Vite `/src/api/...` 模块请求，handler 内 `path.startsWith('/api/')` 过滤）。**全栈 E2E（真后端+PG）归 P15 部署验收**。
-> - **两条 E2E 全绿**：低风险 ephemeral preview→confirm→run completed（步进度 done 断言）；高风险 preview→start 禁用 + Plan-Mode-required 提示（fail-closed UX）。
+> - **两条 E2E 全绿**：无需额外确认的 ephemeral preview→run completed（步进度 done 断言）；需要确认的 preview→start 禁用 + confirmation-required 提示（fail-closed UX）。
 > - `api/domains/workflows.ts`：ephemeral preview/start（confirmed plan 绑定透传）/getRun/cancel + registered 全生命周期（create draft/list/activate/deprecate/revoke/approve-promotion/fork）+ `classifyTriggerPin`（§6.2 pin 状态推导：pinned/version_mismatch/hash_mismatch/missing）。Vitest 10 条覆盖文档红测试四项（preview/run status/registered list/trigger mismatch）。
-> - **`AgentWorkflowsSection`（一个心智模型 §4）**：一次性编排（definition 粘贴→preview 风险卡→确认运行，高风险禁用并列 reasons）→ 运行进度（step journal 轮询+cancel）→ 模板表（version/status/visibility/hash + promote 审批/fork/deprecate/revoke）。AgentDetail 注册 `workflows` tab。
+> - **`AgentWorkflowsSection`（一个心智模型 §4）**：一次性编排（definition 粘贴→preview 确认需求卡→确认运行，需要确认时禁用并列 reasons）→ 运行进度（step journal 轮询+cancel）→ 模板表（version/status/visibility/hash + promote 审批/fork/deprecate/revoke）。AgentDetail 注册 `workflows` tab。
 > - i18n：`en.json`/`zh.json` 双语全量（tab + workflows.* 19 keys）。
 > - **覆盖面诚实记录**：Office workbench 工作流入口归 P13（office 场景接线时才有内容）；Trigger 创建 UI 的 workflow_ref 选择器已在 `AgentAwareSection` 落地（active registered workflow 下拉 + args JSON 输入,测试覆盖 `buildWakePolicyPayload` pin/stale/invalid args），后续维护归 trigger 表单/Workflow 前端体验迭代。
 
@@ -612,7 +612,7 @@ pytest tests/runtime/test_workflow_wait_signal.py tests/agents/test_coordination
 
 Red tests：
 - Vitest 覆盖 preview、run status、registered list、trigger mismatch 状态。
-- Playwright 覆盖低风险 ephemeral preview → confirm → run complete；高风险 workflow → Plan Mode confirm；该覆盖以本阶段新增的 `npm run test:e2e` / Playwright config 为前置。
+- Playwright 覆盖无需额外确认的 ephemeral preview → run complete；需要确认的 workflow → confirmation-required → 用户确认 → run complete；该覆盖以本阶段新增的 `npm run test:e2e` / Playwright config 为前置。
 
 验收命令：
 
@@ -651,7 +651,7 @@ npm run test:e2e -- --project=chromium
 改动面：
 - 内置 office workflow examples：文档 OCR/解析/风险表、周报汇总、合同审阅。
 - Office document tools 作为 leaf capability，被 workflow compiler/admission 校验。
-- 低风险只读/工作区写入走轻量 preview；外发/共享/删除走 Plan Mode + gate_step。
+- 只读/工作区写入走轻量 preview；外发/共享/删除走 confirmation-required + gate_step。显式 Plan Mode 可作为计划入口，但不是外发 workflow 的强制入口。
 
 Red tests：
 - 合同处理 ephemeral workflow 生成 artifacts，并可 promote proposal。
@@ -709,7 +709,7 @@ pytest tests/deep_research/test_workflow_definition.py \
 >
 > **🔧 Review 修复轮（2026-06-04，P14/P15 之上）** — 证据：第一轮后端全量 **3669 passed, 7 skipped**（+10 新测试）、`ruff` clean、前端 Vitest **152**、build ✓、Playwright **2 passed**；第二轮 targeted：`tests/deep_research/test_workflow_definition.py` **5 passed**，`tests/services/test_workflow_ops.py tests/api/test_admin_workflow_ops.py` **8 passed**。
 >
-> - **P1 高风险死锁**：gate 的 confirmed-plan artifact 绑定此前无生产写入方（plan seeding/确认链路均不写）→ 合法确认后仍 `action_artifact_missing` 拒绝。闭环 = gate-check 时算好的 artifact 随 `interactive_plan_seed` → `PlanModeState`（typed + 镜像）→ `exit_plan_mode` fill → `plan_json["action_artifact"]`（被 plan hash 锁定）。链路五点测试覆盖（seed/state/kernel/exit/gate 位置4）。
+> - **P1 历史死锁（已废弃链路）**：旧方案把 workflow 启动绑定到 confirmed-plan artifact，且 artifact 无生产写入方，合法确认后仍可能 `action_artifact_missing`。2026-06-18 后 `start_workflow` 不再走 PlanModeGate action artifact；必要确认用 `confirmation_required` / `user_confirmed`，显式 Plan Mode 只作为可选 provenance。
 > - **force-suspend mid-run 生效**：`should_continue` 现认 `("killed","suspended")`，下一步边界停；收尾不再把 operator 的 suspended 覆盖成 killed（resume 前已标 running，无回归）。
 > - **Admin ops 审计**：cancel/force-suspend/replay 补 fail-soft `write_audit_log`（与 P9 口径一致；replay 含 rewound_step_ids）。
 > - **Replay quota 回退**：删除 fanout leaf 行前按其 `token_usage` 全额退还（floored 0）；普通 agent_step 无行级计量不退，runbook 声明。
@@ -753,7 +753,7 @@ alembic heads
 **v1 决策（2026-06-03）**：
 1. **definition 表达力边界**：v1 支持 `sequence`、bounded `fanout/map`、structured `condition`、`gate`、`wait_until`/time suspend。允许 `retry(max_attempts=...)`，但只允许可逆步骤重试；P11 后 v2 开放 `wait_signal_step`，且只能绑定 PostgreSQL-backed Signal + persistent signal-resume consumer；不开放任意 loop、任意 Python/JS 表达式、动态生成新 step。
 2. **condition 谓词形态**：谓词是结构化比较 AST，不是字符串表达式。原子形态为 `{field, op, value}`，`field` 只能指向 `args` 或 structured step output，`op ∈ {eq, ne, gt, lt, gte, lte, contains, exists, in}`；布尔组合仅 `and/or/not`，且嵌套深度有上限。禁止 `eval`、Jinja、Python/JS 表达式、模板求值或任意解释器。
-3. **ephemeral 的"确认后运行"分级**：按风险分级，不按 ephemeral/registered 分级。低风险 ephemeral 可走对话内 definition preview + 用户确认；外部可见、不可逆/敏感、创建/启用 trigger、高预算/高 fanout/长时运行、跨 agent/org/company 资源、或 promote 成 registered 时，必须走 Plan Mode 确认面。预算、fanout、时长阈值进入配置，不硬编码。
+3. **ephemeral 的"确认后运行"分级**：按确认需求分级，不按 ephemeral/registered 分级。无需额外确认的 ephemeral 可走对话内 definition preview 后直接运行；外部可见、不可逆/敏感、创建/启用 trigger、高预算/高 fanout/长时运行、跨 agent/org/company 资源、或 promote 成 registered 时，必须返回确认需求并等待真实用户确认。预算、fanout、时长阈值进入配置，不硬编码；这些阈值不再强制进入 Plan Mode。
 4. **promote 权限**：agent 只能建议 promote，不能自行 promote。流程是 repeated ephemeral evidence → promote proposal → 用户/owner/admin 审批 → compile/admission/capability check → registered workflow version/hash → audit log。*演进口径（2026-06-05，权威见 `docs/org-agent-asset-rights-model.md` §0/§6.7 解耦三律）：真正的不变量是"source agent 不得自审 + 准入过 gate + admission/provenance 留痕"；审批者当前是人，未来是 Asset Curator Agent（高风险/破例仍 human checkpoint）——实施时本条同步修订，人审不是永久产品上限。*
 5. **registered 权限模型**：拆成可见性与可执行性。`visibility_scope = agent | org | tenant | platform`；`call_policy = allowed_agents / allowed_roles / allowed_orgs`；`owner_type = user | agent | org | tenant | platform`；`status = draft | active | deprecated | revoked`；`definition_version` + `definition_hash` immutable。registered workflow 可见不等于可执行，leaf capability 仍必须逐 run 校验。`platform` scope 只能是出厂策展只读模板，不能由租户产物聚合生成。
 6. **journal 粒度**：fanout 必须 leaf-level journal。结构为 `RuntimeTask(task_type="workflow") -> WorkflowStep -> WorkflowLeafCall`；`WorkflowLeafCall` 至少记录 `run_id`、`step_id`、`leaf_id`、`input_hash`、`definition_hash`、`status`、`result_ref`、`token_usage`、`error`、`started_at`、`finished_at`、`idempotency_key`，避免 8 叶跑完 7 叶后整步重跑。

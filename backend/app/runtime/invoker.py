@@ -214,16 +214,14 @@ def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
 
 
 def _plan_mode_interactive_available(session_context: SessionContext | None) -> bool:
-    # Delegate to the shared boundary so the invoker and kernel never drift.
+    # Compatibility-only: ToolRuntimeService ignores this for Plan Mode entry.
     from app.runtime.session import is_interactive_plan_eligible
 
     return is_interactive_plan_eligible(session_context)
 
 
 def _plan_mode_unattended_available(session_context: SessionContext | None) -> bool:
-    # Unattended (trigger/heartbeat) tool-intercept → main-loop Plan Mode
-    # eligibility (path-unification §5.3 / cut ②). Shared boundary so the invoker
-    # and kernel never drift on which sources defer to the agent's own loop.
+    # Compatibility-only: ToolRuntimeService ignores this for Plan Mode entry.
     from app.runtime.session import is_unattended_plan_eligible
 
     return is_unattended_plan_eligible(session_context)

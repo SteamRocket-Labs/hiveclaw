@@ -95,6 +95,7 @@ async def receive_webhook(token: str, request: Request):
                 db.add(
                     AuditLog(
                         agent_id=target_agent_id,
+                        tenant_id=agent_obj.tenant_id if agent_obj else None,
                         action="webhook_rate_limited",
                         details={
                             "trigger_name": target_name,

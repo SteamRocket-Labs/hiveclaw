@@ -40,11 +40,12 @@ Hive 的总目标只有两个，所有路线都服务这两个目标：
 2. 外部硬验证：自进化晋升、技能保留、记忆强化和“变强”声明，必须由 agent 改不动的外部硬信号裁决；LLM 自评只能作为辅助。
 3. 企业治理包在外层：治理约束限制 agent 能做什么，不能削弱 agent 怎么思考。
 4. 记忆/自进化边界：LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。平台不能用计数器、正则、截断摘要或平台代写语义内容替代模型思考；模型也不能绕过治理面直接改 durable memory、evolution、soul。
-5. 多租户和 principal 隔离：用户、owner、company、tenant 看不到的数据，模型也不能在 prompt、retrieval、tool result、memory activation 中看到。
-6. 模型平等：所有能力对 OpenAI、Anthropic、Gemini、compatible provider 保持中立；不做 vendor 特权路径。
-7. 零基座权重自改：Hive 默认不改 base model 权重。自进化主战场是平台层 memory、skill、policy、prompt 和 evaluation loop；per-tenant LoRA 只能作为隔离、人审、低优先级 R&D。
-8. 进化可追溯可回滚：candidate、eval、promotion、rollback、owner feedback、trace 都是一等审计对象。
-9. 生产 fail-closed：代码执行、MCP authz、外部凭据、connector ACL、migration 和 eval gate 缺前置条件时失败，不能静默降级到裸跑或绿色跳过。
+5. Agent Markdown Wiki / Learning Vault：长期记忆目标形态是 Markdown-first LLM Wiki，而不是外部记忆 provider。主梯度是 `T0 -> T2 -> T3 -> soul.md`；residual verification 只表示 T3 curation 沿 T2 `source_refs` 回看 T0 证据，不是新增层、也不是 T0 直达 T3。T2 是 tagged Markdown summary blocks，T3 是收敛的 semantic layer（`memory/t3/canon.md`、`relations.md`、`contradictions.md`），`memory/index.md` 是可选导航图而不是常驻 prompt 记忆，Skill 是从记忆中长出的 progressive capability capsule；graph/vector/index/UI read model 都是可重建派生面。
+6. 多租户和 principal 隔离：用户、owner、company、tenant 看不到的数据，模型也不能在 prompt、retrieval、tool result、memory activation 中看到。
+7. 模型平等：所有能力对 OpenAI、Anthropic、Gemini、compatible provider 保持中立；不做 vendor 特权路径。
+8. 零基座权重自改：Hive 默认不改 base model 权重。自进化主战场是平台层 memory、skill、policy、prompt 和 evaluation loop；per-tenant LoRA 只能作为隔离、人审、低优先级 R&D。
+9. 进化可追溯可回滚：candidate、eval、promotion、rollback、owner feedback、trace 都是一等审计对象。
+10. 生产 fail-closed：代码执行、MCP authz、外部凭据、connector ACL、migration 和 eval gate 缺前置条件时失败，不能静默降级到裸跑或绿色跳过。
 
 ## 3. Agent 原子能力版图
 
@@ -53,15 +54,15 @@ Hive 的总目标只有两个，所有路线都服务这两个目标：
 | 原子能力 | 职责边界 | 当前 canonical / 证据文档 | 总目标关系 |
 |---|---|---|---|
 | Agent Kernel / Session Loop | 单一 `invoke_agent()` 主循环、工具轮次、prompt/cache、provider、runtime context。所有入口都应回到这里。 | `docs/harness-engineering-audit-2026-06-11.md`、`docs/session-loop-cc-alignment-plan.md`、`docs/runtime-guidance-cc-alignment.md` | G4 / G11 的 runtime、trace、retry、cache 和行为 eval 地基。 |
-| Plan Mode | 确认边界：能不能开始、是否需要澄清、计划是否由 agent authored、用户确认哪个 plan hash。它不负责执行控制流。 | `docs/plan-mode-design.md`、`docs/plan-mode-agent-authored-planning.md`、`docs/plan-mode-runtime-paradigm.md`、`docs/plan-mode-path-unification.md`、`docs/plan-mode-agent-work-ledger.md` | 必须成为 autonomous / high-risk / long-running work 的一等 gate；不能退化成 schema skeleton 或工具参数填表。 |
+| Plan Mode | 显式计划边界：用户主动进入，或 agent 调 `request_plan_mode` 后由用户批准进入；进入后负责澄清、agent-authored plan、plan hash/version 确认和 handoff。它不负责执行控制流，也不由 risk grade 自动触发。工具/REST 需要确认时返回 `requires_confirmation`，外部动作继续走 ActionPreflight / capability approval。 | `docs/plan-mode-design.md`、`docs/plan-mode-agent-authored-planning.md`、`docs/plan-mode-runtime-paradigm.md`、`docs/plan-mode-path-unification.md`、`docs/plan-mode-agent-work-ledger.md` | 必须保持显式、可审阅、agent-authored；autonomous / high-risk / long-running work 必须经过确认边界后执行，但确认边界不等于强制进入 Plan Mode。 |
 | Workflow | 确定性执行控制流：ephemeral/registered definition、step/leaf journal、gate/wait/resume、quota、trigger integration。它不是 Plan Mode，也不是 Multi-Agent 子项。 | `docs/workflow-source-capability.md`、`docs/workflow-ops-runbook.md`、`docs/execution-mode-spectrum.md` | G5；对标 Temporal/LangGraph/Claude Code workflow baseline。 |
 | Subagent / Delegation | 协作执行体：轻量 worker spawn、peer delegation、fanout、context isolation、result distillation、governed tool sharing、restart-safe resume。 | `docs/subagent-source-capability.md`、`docs/subagent-evolution-loop.md` | G7 / G10；Multi-Agent 是 subagent/delegation 的组合形态，不等于 Workflow。 |
 | Agent TodoList / Work Ledger / Progress Ledger | agent 自己写给自己的 task board / TodoList（对标 CC Task/Todo）：`track_todo` 记录 todo 和依赖，`record_finding` 记录发现/失败/replan，`read_ledger` 读取当前工作状态；Progress Ledger 是基于 Work Ledger 派生的 stall/replan/owner 判断。写 todo 只是认知记录，不会触发执行。 | `docs/agent-task-cognitive-scaffold.md`、`docs/plan-mode-agent-work-ledger.md` | G8 / G10；对标 CC Task/Todo 和 Magentic-One Task/Progress Ledger，并给 Plan Mode/Workflow/Subagent 提供可见进度。 |
-| Memory / Self-Evolution | T0/T2/T3/soul、feedback、skill candidate、promotion、rollback、memory hygiene、activation。 | `docs/self-evolution-sota-plan.md`、`docs/agent-memory-md-first-spec.md`、`docs/agent-memory-purity-spec.md`、`docs/agent-memory-research.md`、`docs/owner-steward-agent-memory-design.md` | G1 / G2 / G3；数字员工越用越强的核心。 |
+| Memory / Self-Evolution | Agent Markdown Wiki / Learning Vault：T0 raw evidence、T2 tagged Markdown summary blocks、T3 converged semantic layer、source_refs-backed residual verification、soul.md、feedback、skill candidate、promotion、rollback、memory hygiene、activation。Workflow 是独立执行控制体系，memory 只提供 evidence refs / reference hints。 | `docs/memory-clean-loop-refactor-plan-2026-06-17.md`、`docs/memory-system-flow-map-2026-06-17.md`、`docs/agent-memory-md-first-spec.md`、`docs/self-evolution-sota-plan.md`、`docs/agent-memory-purity-spec.md` | G1 / G2 / G3；数字员工越用越强的核心。 |
 | Skills / MCP / Extension Surface | agent 可扩展能力面：Skill 是渐进式能力胶囊，可打包指令、上下文、模板、脚本、eval、workflow 定义和 subagent 定义；MCP Server 是外部工具/资源连接器；pack/capability 是内部治理概念。Skill 只负责发现、加载和引导，不吞并 Workflow/Subagent/Code Execution 的运行时边界。 | `docs/agent-extension-surface-skill-mcp.md`、`docs/SKILLS_AND_PACKS_V2.md`、`docs/capability-pack-consolidation.md`、`docs/cc-tooling-alignment-and-plugin-system.md` | G2 / G12 / G13；必须保持 user-facing 模型简单、runtime governance fail-closed。 |
 | Tools / Action Governance | ToolRuntimeService、capability gate、approval、ActionPreflight、external-visible/sensitive/irreversible action boundary。 | `docs/harness-engineering-audit-2026-06-11.md`、`docs/runtime-guidance-cc-alignment.md` | 所有原子能力的执行咽喉；任何工具旁路都破坏总目标。 |
-| Trigger / Autonomy / Scheduling | 什么时候启动 agent/workflow/objective；自动唤醒、周期任务、事件任务和 plan-gated automation。 | `docs/trigger-cc-alignment.md`、`docs/execution-mode-spectrum.md` | Plan Mode 管确认，Workflow 管执行，Trigger 管启动条件；三者不能混层。 |
-| Deep Research | 组合能力，不是源能力：Plan Mode gate + Workflow control flow + Subagent fanout + Work Ledger/trace/eval。 | `docs/workflow-source-capability.md`、`docs/external-behavior-eval-ci.md`、`docs/round2-sota-benchmark-2026.md` | 用来证明原子能力组合质量；不能用 Deep Research 的局部补丁替代 Subagent/Workflow 底座。 |
+| Trigger / Autonomy / Scheduling | 什么时候启动 agent/workflow/objective；自动唤醒、周期任务、事件任务和 confirmation-gated automation。 | `docs/trigger-cc-alignment.md`、`docs/execution-mode-spectrum.md` | Confirmation 管能不能开始，Workflow 管执行，Trigger 管启动条件；显式 Plan Mode 可以作为一种确认方式，但三者不能混层。 |
+| Deep Research | 组合能力，不是源能力：确认边界 / 可选显式 Plan Mode + Workflow control flow + Subagent fanout + Work Ledger/trace/eval。 | `docs/workflow-source-capability.md`、`docs/external-behavior-eval-ci.md`、`docs/round2-sota-benchmark-2026.md` | 用来证明原子能力组合质量；不能用 Deep Research 的局部补丁替代 Subagent/Workflow 底座，也不能让 Deep Research 的确认卡强制进入 Plan Mode。 |
 | Office / Document / Multimodal | 文档编辑、转换、阅读、结构化提取、ONLYOFFICE workbench、document conversion。 | `docs/document-conversion-multimodal-design.md`、`docs/workflow-source-capability.md` | 典型 workflow/agent tool 场景；验收要看文件、格式、权限和可恢复执行。 |
 | Remote Workstation / Code Execution | agent 远程本地能力、持久浏览器/工作站状态、code execution provider、sandbox/microVM。 | `docs/remote-workstation-runtime.md`、`docs/round2-sota-benchmark-2026.md` | G9；属于 agent 能动性和安全隔离的交界。 |
 | Connector / Knowledge / ACL | Feishu/Drive/Office/OpenViking 等外部知识源接入，source ACL ingest、retrieval prefilter、生成后复检。 | `docs/knowledge-container-boundaries.md`、`docs/org-agent-asset-rights-model.md`、`docs/round2-sota-benchmark-2026.md` | G8；对标 Glean，模型看不到 principal 看不到的数据。 |
@@ -80,11 +81,11 @@ Hive 的总目标只有两个，所有路线都服务这两个目标：
 |---|---|---|
 | 自进化学习脑 | Claude memory/skills、Letta sleep-time、hermes patch-first、Devin success/failure | 完整模型判断学什么，patch-first 修既有技能，成败对比进入候选，晋升走外部硬验证。 |
 | 不退化验证 | Voyager、AlphaEvolve、SEAL/AZR、Reflexion | 验证器在 agent 可改写面之外；单测、执行结果、ground truth、人审和 live eval 决定晋升。 |
-| 长期记忆 | Letta sleep-time、Zep/Graphiti 双时态 KG、Copilot Memory TTL/引用校验、ACE counters | T0/T2/T3/soul 保持治理化；补齐矛盾对账、双时态 multi-hop、用前引用校验、TTL、helpful/harmful counters。 |
+| 长期记忆 | Karpathy LLM Wiki、Claude/Codex memory files、Hermes LLM Wiki/Skills、Letta sleep-time、Zep/Graphiti 双时态 KG、Copilot Memory TTL/引用校验、ACE counters | T0/T2/T3/soul 保持治理化；T3 目标形态为 Markdown-first LLM Wiki；补齐 source_refs-backed residual verification、矛盾对账、derived graph multi-hop、用前引用校验、TTL、helpful/harmful counters。 |
 | 企业数字员工 | Devin、Decagon、Sierra、Agentforce | agent 能真实完成长任务、复用经验、被 QA 和运营闭环约束，而不是后台配置生成器。 |
 | 企业控制面 | Microsoft Entra Agent ID、Purview、Google Agent Gateway、Glean permissions-aware retrieval | 一等 agent 身份、sponsor 生命周期、A2A 审计、权限预过滤、预算、审计、策略和观测统一。 |
 | Durable execution | Temporal、LangGraph checkpoint、Claude Agent SDK session store | 崩溃恢复不重复已完成外部副作用；LLM/tool completion 成为去重边界；长任务 restart-resumable。 |
-| Plan Mode / confirmed autonomy | Claude Code Plan Mode、human-in-the-loop agent systems | 计划内容由 agent authored；系统只做 envelope、权限、hash、确认和 handoff；自主/高风险/长任务必须确认后执行。 |
+| Plan Mode / confirmed autonomy | Claude Code Plan Mode、human-in-the-loop agent systems | 计划内容由 agent authored；系统只做 envelope、权限、hash、确认和 handoff；自主/高风险/长任务必须确认后执行。确认可以是 `requires_confirmation`、ActionPreflight/approval 或显式 Plan Mode，不能由 risk grade 强制切入 Plan Mode。 |
 | Workflow 确定性编排 | Claude Code workflow baseline、Temporal workflow/activity、LangGraph graph runtime | Workflow 是与 Plan Mode 并列的 runtime 底座，不是 Multi-Agent 子项；同一引擎支持 ephemeral/registered definition、step/leaf journal、gate/wait/resume、quota、trigger/office/deep research 调用。 |
 | Subagent / Delegation | Claude Code Agent tool、Codex subagents/thread、Anthropic multi-agent research | 轻量 worker 与 peer delegation 分层；context 隔离、fanout、结果蒸馏、治理共享、replay-safe resume 边界清晰。 |
 | Agent TodoList / Work Ledger / Progress Ledger | CC Task/Todo、Magentic-One Task/Progress Ledger、Claude Todo/plan artifacts | Work Ledger 就是 Hive 的 agent-authored TodoList / task board：agent 主动写 todo、依赖、发现、失败和验收状态；Progress Ledger 是派生 review，不是第二套 todo。写 todo 不启动执行，stall/replan/owner 信号进入 runtime reminder。 |

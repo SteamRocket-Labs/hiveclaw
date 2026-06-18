@@ -256,13 +256,14 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new chat session for the current user."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
 
     now = datetime.now(tz.utc)
     new_id = uuid.uuid4()
     session = ChatSession(
         id=new_id,
         agent_id=agent_id,
+        tenant_id=getattr(agent, "tenant_id", getattr(current_user, "tenant_id", None)),
         user_id=current_user.id,
         title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
         created_at=now,

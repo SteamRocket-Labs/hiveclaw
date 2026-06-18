@@ -1,10 +1,10 @@
 """Plan Mode gate — the shared fail-closed decision service (§9.0 / §9.2).
 
-``PlanModeGate.check`` is the single decision core consulted by both layers of
-the Plan Mode defence (``docs/plan-mode-design.md`` §9.0):
+``PlanModeGate.check`` is the single decision core for confirmed-plan handoffs
+and confirmation backstops:
 
-* **Early intercept layer** (tool / REST): surfaces ``needs_plan`` so the agent
-  or UI steers the user to confirm a plan *before* an autonomous action runs.
+* **Early intercept layer** (tool / REST): surfaces ``requires_confirmation`` so
+  the agent or UI asks the user before an autonomous action runs.
 * **Fail-closed backstop layer** (wake reconciler / trigger daemon / task
   executor / delegation): the deterministic guard that, even when an upstream
   early-intercept is missed, refuses to enable a trigger or start an autonomous
@@ -16,8 +16,8 @@ right now?"* — and must answer it identically, so the logic lives here once.
 Design split (consistent with :mod:`app.services.plan_mode_service`):
 
 * Functional core (pure, separately unit tested in ``plan_mode_core``):
-  action_kind -> intent mapping, cutover-exemption extraction, confirmed-plan
-  version/hash validation, and the ``needs_plan`` envelope assembly.
+      action_kind -> intent mapping, cutover-exemption extraction, confirmed-plan
+      version/hash validation, and the confirmation-required envelope assembly.
 * Shell (this file): load the referenced plan row, resolve the artifact
   exemption (inline dict or async resolver callback), and translate the core
   decision into a :class:`PlanGateDecision`.
@@ -58,8 +58,8 @@ class PlanGateDecision:
       ``confirmed_plan_handoff`` / ``plan_exempt`` (allowed) or
       ``no_confirmed_plan`` / ``plan_not_found`` / ``plan_not_confirmed`` /
       ``version_mismatch`` / ``hash_mismatch`` (blocked).
-    * ``needs_plan_payload`` — the §9.2 envelope to return to the caller when
-      blocked; ``None`` when allowed.
+    * ``needs_plan_payload`` — legacy field name for the confirmation-required
+      envelope to return to the caller when blocked; ``None`` when allowed.
     * ``exempt_reason`` — the cutover exemption that allowed the action, when
       ``reason == "plan_exempt"``.
     """
@@ -71,7 +71,7 @@ class PlanGateDecision:
 
     @property
     def needs_plan(self) -> bool:
-        """True when the action is blocked pending a confirmed plan."""
+        """True when the action is blocked pending explicit confirmation."""
         return not self.allowed
 
 
@@ -101,7 +101,7 @@ class PlanModeGate:
         2. **Cutover exemption** — the action's artifact carries
            ``plan_exempt_reason`` (probed from ``action_artifact`` or via
            ``artifact_resolver(action_ref)``). -> *allow*.
-        3. Otherwise -> *needs_plan* (fail-closed), with a §9.2 envelope.
+        3. Otherwise -> blocked with a confirmation-required envelope.
 
         Args:
             db: A live async session (the gate is read-only; the caller owns the
@@ -169,7 +169,7 @@ class PlanModeGate:
         return PlanGateDecision(
             allowed=False,
             reason="no_confirmed_plan",
-            needs_plan_payload=core.build_needs_plan_payload(),
+            needs_plan_payload=core.build_confirmation_required_payload(),
         )
 
     # -- step 1: confirmed-plan handoff -----------------------------------
@@ -188,10 +188,11 @@ class PlanModeGate:
     ) -> PlanGateDecision | None:
         """Resolve and validate the referenced plan.
 
-        Returns an *allow* decision on a clean confirmed handoff, a *needs_plan*
-        decision when the referenced plan is missing / unconfirmed / mismatched,
-        and never falls through to exemption once a ``confirmed_plan_id`` was
-        supplied — a caller asserting a specific plan must satisfy it.
+        Returns an *allow* decision on a clean confirmed handoff, or a
+        confirmation-required decision when the referenced plan is missing /
+        unconfirmed / mismatched. It never falls through to exemption once a
+        ``confirmed_plan_id`` was supplied — a caller asserting a specific plan
+        must satisfy it.
         """
         plan = await self._load_plan(db, confirmed_plan_id)
         if plan is None:
@@ -202,7 +203,7 @@ class PlanModeGate:
             return PlanGateDecision(
                 allowed=False,
                 reason="plan_not_found",
-                needs_plan_payload=core.build_needs_plan_payload(
+                needs_plan_payload=core.build_confirmation_required_payload(
                     summary=(
                         "The referenced plan was not found. Create a plan and have the user confirm it before "
                         "starting this autonomous action."
@@ -218,7 +219,7 @@ class PlanModeGate:
             return PlanGateDecision(
                 allowed=False,
                 reason="plan_agent_mismatch",
-                needs_plan_payload=core.build_needs_plan_payload(
+                needs_plan_payload=core.build_confirmation_required_payload(
                     plan_id=plan.id,
                     plan_version=plan.plan_version,
                     summary="The referenced plan belongs to a different agent. Confirm a plan for this agent first.",
@@ -239,7 +240,7 @@ class PlanModeGate:
             return PlanGateDecision(
                 allowed=False,
                 reason="plan_intent_mismatch",
-                needs_plan_payload=core.build_needs_plan_payload(
+                needs_plan_payload=core.build_confirmation_required_payload(
                     plan_id=plan.id,
                     plan_version=plan.plan_version,
                     summary=(
@@ -257,24 +258,6 @@ class PlanModeGate:
             submitted_hash=plan_hash,
         )
         if check.ok:
-            artifact_check = self._validate_confirmed_action_artifact(plan, action_artifact)
-            if action_kind == "start_workflow" and artifact_check is not None:
-                logger.info(
-                    "plan_gate_needs_plan",
-                    extra={"action_kind": action_kind, "reason": artifact_check, "plan_id": str(plan.id)},
-                )
-                return PlanGateDecision(
-                    allowed=False,
-                    reason=artifact_check,
-                    needs_plan_payload=core.build_needs_plan_payload(
-                        plan_id=plan.id,
-                        plan_version=plan.plan_version,
-                        summary=(
-                            "The confirmed plan does not match the action payload being started. "
-                            "Regenerate and confirm a plan for this exact action."
-                        ),
-                    ),
-                )
             return PlanGateDecision(allowed=True, reason="confirmed_plan_handoff")
 
         logger.info(
@@ -284,7 +267,7 @@ class PlanModeGate:
         return PlanGateDecision(
             allowed=False,
             reason=check.error_code or "plan_not_confirmed",
-            needs_plan_payload=core.build_needs_plan_payload(
+            needs_plan_payload=core.build_confirmation_required_payload(
                 plan_id=plan.id,
                 plan_version=plan.plan_version,
                 summary=check.message or core.default_needs_plan_summary(),
@@ -298,47 +281,6 @@ class PlanModeGate:
         stmt._plan_lookup_id = str(plan_id)  # type: ignore[attr-defined]
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
-
-    @staticmethod
-    def _expected_action_artifact(plan: AgentPlanRequest) -> dict | None:
-        """Return the artifact recorded at plan-confirmation time, if any.
-
-        High-risk workflow starts pass a caller-side ``action_artifact``
-        (definition hash, args hash, risk reasons). A confirmed plan must
-        carry the same artifact in a durable field; otherwise a generic
-        long-task plan could authorise an unrelated workflow definition or
-        a different argument set.
-        """
-        metadata = getattr(plan, "metadata_json", None) or {}
-        if isinstance(metadata.get("confirmed_action_artifact"), dict):
-            return metadata["confirmed_action_artifact"]
-        if isinstance(metadata.get("action_artifact"), dict):
-            return metadata["action_artifact"]
-
-        handoff = getattr(plan, "handoff_payload", None) or {}
-        if isinstance(handoff, dict) and isinstance(handoff.get("action_artifact"), dict):
-            return handoff["action_artifact"]
-
-        plan_json = getattr(plan, "plan_json", None) or {}
-        if isinstance(plan_json, dict):
-            handoff_json = plan_json.get("handoff")
-            if isinstance(handoff_json, dict) and isinstance(handoff_json.get("action_artifact"), dict):
-                return handoff_json["action_artifact"]
-            if isinstance(plan_json.get("action_artifact"), dict):
-                return plan_json["action_artifact"]
-        return None
-
-    @classmethod
-    def _validate_confirmed_action_artifact(cls, plan: AgentPlanRequest, action_artifact: dict | None) -> str | None:
-        if action_artifact is None:
-            return None
-        expected = cls._expected_action_artifact(plan)
-        if expected is None:
-            return "action_artifact_missing"
-        for key, value in action_artifact.items():
-            if expected.get(key) != value:
-                return "action_artifact_mismatch"
-        return None
 
     # -- step 2: cutover exemption ----------------------------------------
 

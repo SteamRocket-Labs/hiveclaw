@@ -61,6 +61,7 @@ async def configure_dingtalk_channel(
 
     config = ChannelConfig(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         channel_type="dingtalk",
         app_id=app_key,
         app_secret=app_secret,
@@ -201,6 +202,7 @@ async def process_dingtalk_message(
         sess = await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,
+            tenant_id=agent_obj.tenant_id if agent_obj else None,
             user_id=platform_user_id,
             external_conv_id=conv_id,
             source_channel="dingtalk",
@@ -224,6 +226,7 @@ async def process_dingtalk_message(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="user",
                 content=user_text,
@@ -288,6 +291,7 @@ async def process_dingtalk_message(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="assistant",
                 content=reply_text,

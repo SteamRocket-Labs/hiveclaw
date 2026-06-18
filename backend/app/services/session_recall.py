@@ -1,4 +1,4 @@
-"""Cross-session recall over T0 chat logs with DB fallback."""
+"""Cross-session recall over the append-only T0 session ledger with DB fallback."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from sqlalchemy import String as SaString, cast as sa_cast, or_, select
 
 from app.config import get_settings
 from app.database import tenant_scoped_session
+from app.memory.t0.ledger import replay_t0_session_events
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 
@@ -495,6 +496,69 @@ def _t0_log_root(agent_id: uuid.UUID) -> Path:
     return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "logs"
 
 
+def _t0_session_root(agent_id: uuid.UUID) -> Path:
+    return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / "t0" / "sessions"
+
+
+def _search_t0_session_ledger(
+    agent_id: uuid.UUID,
+    query: str,
+    *,
+    limit: int,
+    snippet_limit: int,
+) -> list[dict]:
+    sessions_root = _t0_session_root(agent_id)
+    if not sessions_root.exists():
+        return []
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+
+    terms = _query_terms(query)
+    hits: list[dict] = []
+
+    for session_dir in sorted((path for path in sessions_root.iterdir() if path.is_dir()), reverse=True):
+        session_id = session_dir.name
+        events = [
+            event
+            for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=data_root)
+            if event.event_type != "segment_boundary" and event.content.strip()
+        ]
+        if not events:
+            continue
+        source = next((event.source for event in events if event.source), "unknown")
+        if source in _EXCLUDED_CHANNELS:
+            continue
+        transcript_messages = [(event.role or "unknown", event.content) for event in events]
+        transcript_lines = _transcript_lines_from_messages(transcript_messages)
+        body = "\n".join(transcript_lines)
+        body_score = _match_score(body, terms)
+        headline_score = _match_score(session_id, terms)
+        if max(body_score, headline_score) <= 0:
+            continue
+
+        started_at = _started_label(events[0].created_at)
+        headline = _infer_headline(body, query, fallback=_FALLBACK_HEADLINE)
+        hit = {
+            "session_id": session_id,
+            "source": source,
+            "started_at": started_at,
+            "headline": headline,
+            "snippets": _extract_snippets(body, query, snippet_limit=snippet_limit),
+            "context_snippets": _extract_context_snippets_from_lines(
+                transcript_lines,
+                query,
+                snippet_limit=snippet_limit,
+            ),
+            "_score": max(body_score, headline_score),
+        }
+        _annotate_recall_hit(hit, query=query, transcript_lines=transcript_lines, headline=headline)
+        hits.append(hit)
+
+    hits.sort(key=lambda item: (-item["_score"], item["started_at"], item["session_id"]))
+    for hit in hits:
+        hit.pop("_score", None)
+    return hits[:limit]
+
+
 def _search_t0_chat_logs(
     agent_id: uuid.UUID,
     query: str,
@@ -502,6 +566,7 @@ def _search_t0_chat_logs(
     limit: int,
     snippet_limit: int,
 ) -> list[dict]:
+    """Search legacy chat logs after the new session ledger misses."""
     logs_root = _t0_log_root(agent_id)
     if not logs_root.exists():
         return []
@@ -684,19 +749,28 @@ async def search_session_history(
     snippet_limit: int = 3,
     tenant_id: uuid.UUID | None = None,
 ) -> list[dict]:
-    """Search past sessions, preferring canonical T0 chat md logs."""
+    """Search past sessions, preferring the canonical T0 session ledger."""
     needle = (query or "").strip()
     if not needle:
         return []
 
-    log_hits = _search_t0_chat_logs(
+    ledger_hits = _search_t0_session_ledger(
         agent_id,
         needle,
         limit=limit,
         snippet_limit=snippet_limit,
     )
-    if log_hits:
-        return await _summarize_recall_hits(needle, log_hits, tenant_id, agent_id)
+    if ledger_hits:
+        return await _summarize_recall_hits(needle, ledger_hits, tenant_id, agent_id)
+
+    legacy_log_hits = _search_t0_chat_logs(
+        agent_id,
+        needle,
+        limit=limit,
+        snippet_limit=snippet_limit,
+    )
+    if legacy_log_hits:
+        return await _summarize_recall_hits(needle, legacy_log_hits, tenant_id, agent_id)
 
     db_hits = await _search_session_history_db(
         agent_id,

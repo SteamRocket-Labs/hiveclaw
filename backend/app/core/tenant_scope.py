@@ -5,6 +5,9 @@ from __future__ import annotations
 import uuid
 
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import pin_rls_tenant_context
 
 
 def resolve_tenant_scope(current_user, requested_tenant_id: uuid.UUID | str | None = None) -> uuid.UUID:
@@ -28,3 +31,14 @@ def resolve_tenant_scope(current_user, requested_tenant_id: uuid.UUID | str | No
     if not current_user.tenant_id:
         raise HTTPException(status_code=400, detail="No tenant assigned")
     return current_user.tenant_id
+
+
+async def resolve_and_pin_tenant_scope(
+    db: AsyncSession,
+    current_user,
+    requested_tenant_id: uuid.UUID | str | None = None,
+) -> uuid.UUID:
+    """Resolve request tenant scope and pin the active DB session to it for RLS."""
+    target_tenant_id = resolve_tenant_scope(current_user, requested_tenant_id)
+    await pin_rls_tenant_context(db, target_tenant_id)
+    return target_tenant_id

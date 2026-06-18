@@ -1,9 +1,9 @@
-"""§9 P4 red tests: workflow tools + plan-gate registry + capability map.
+"""Workflow tools + confirmation-neutral plan-gate registry + capability map.
 
 The agent-facing surface: ``preview_workflow`` (always allowed — pure
-compile/admission preview) and ``start_workflow`` (risk-graded: low risk runs
-directly, high risk hard-gates on a confirmed plan via the standard
-``ToolMeta.plan_gate_action_kind`` intercept, same pattern as set_trigger).
+compile/admission preview) and ``start_workflow`` (starts through the workflow
+runtime, not PlanModeGate). Preview may show confirmation notes, but there is no
+low/high risk grade and no automatic Plan Mode entry.
 
 ⚠️ Regression anchor for the known trap: every new agent tool MUST be in
 services/capability_gate.py CAPABILITY_MAP, or real tenant invocations are
@@ -53,25 +53,23 @@ def _high_risk_definition() -> dict:
 # ── plan-gate registry (early intercept) ──────────────────────────
 
 
-def test_high_risk_start_workflow_is_hard_gated():
+def test_external_effect_start_workflow_is_not_plan_mode_hard_gated():
     kind = hard_gated_action_kind("start_workflow", {"definition": _high_risk_definition(), "args": {}})
-    assert kind == "start_workflow"
+    assert kind is None
 
 
-def test_low_risk_start_workflow_is_not_gated():
+def test_workspace_effect_start_workflow_is_not_plan_mode_hard_gated():
     kind = hard_gated_action_kind("start_workflow", {"definition": _low_risk_definition(), "args": {}})
     assert kind is None
 
 
-def test_invalid_definition_fails_closed_to_gate():
-    """A definition the registry cannot compile must gate (fail-closed), so a
-    malformed payload can never slip past as 'unclassifiable'."""
+def test_invalid_definition_is_not_routed_to_plan_mode_gate():
     kind = hard_gated_action_kind("start_workflow", {"definition": {"steps": "not-a-list"}, "args": {}})
-    assert kind == "start_workflow"
+    assert kind is None
 
 
-def test_missing_arguments_fail_closed_to_gate():
-    assert hard_gated_action_kind("start_workflow", None) == "start_workflow"
+def test_missing_arguments_are_not_routed_to_plan_mode_gate():
+    assert hard_gated_action_kind("start_workflow", None) is None
 
 
 # ── capability map (the known trap) ───────────────────────────────
@@ -87,14 +85,28 @@ def test_workflow_tools_registered_in_capability_map():
 # ── tool handlers ─────────────────────────────────────────────────
 
 
-async def test_preview_workflow_returns_hash_and_risk():
+async def test_preview_workflow_returns_hash_and_confirmation_notes():
     from app.tools.handlers.workflow import preview_workflow
 
     result = await preview_workflow(uuid.uuid4(), {"definition": _low_risk_definition(), "args": {}})
     payload = json.loads(result)
     assert payload["definition_hash"]
-    assert payload["risk"] == "low"
+    assert "risk" not in payload
+    assert payload["confirmation_required"] is False
+    assert payload["confirmation_reasons"] == []
     assert payload["planned_leaf_calls"] == 1
+
+
+async def test_preview_workflow_external_effects_return_confirmation_notes_without_risk_level():
+    from app.tools.handlers.workflow import preview_workflow
+
+    result = await preview_workflow(uuid.uuid4(), {"definition": _high_risk_definition(), "args": {}})
+    payload = json.loads(result)
+    assert payload["definition_hash"]
+    assert "risk" not in payload
+    assert "risk_reasons" not in payload
+    assert payload["confirmation_required"] is True
+    assert payload["confirmation_reasons"]
 
 
 async def test_preview_workflow_reports_compile_errors():

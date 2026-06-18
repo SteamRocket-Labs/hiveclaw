@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin
-from app.database import get_db
+from app.database import get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.user import User
@@ -164,6 +164,8 @@ async def feishu_tenant_webhook(
     body_str = body_bytes.decode("utf-8")
     import json as _json_tw
     body = _json_tw.loads(body_str)
+
+    await pin_rls_tenant_context(db, tenant_id)
 
     # Load tenant channel config
     result = await db.execute(

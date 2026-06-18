@@ -13,7 +13,13 @@ from app.database import get_db
 
 
 class _FakeDB:
-    pass
+    def __init__(self):
+        self.sync_session = SimpleNamespace(info={})
+        self.statements: list[str] = []
+
+    async def execute(self, stmt):
+        self.statements.append(str(stmt))
+        return SimpleNamespace()
 
 
 def _platform_admin():
@@ -31,12 +37,16 @@ def _client(user):
     async def override_user():
         return user
 
+    fake_db = _FakeDB()
+
     async def override_db():
-        yield _FakeDB()
+        yield fake_db
 
     app.dependency_overrides[get_current_user] = override_user
     app.dependency_overrides[get_db] = override_db
-    return TestClient(app)
+    client = TestClient(app)
+    client.fake_db = fake_db
+    return client
 
 
 def test_harness_validation_requires_platform_admin() -> None:
@@ -48,6 +58,8 @@ def test_harness_validation_requires_platform_admin() -> None:
 
 
 def test_harness_validation_returns_service_report(monkeypatch) -> None:
+    from app import database
+
     agent_id = uuid4()
     tenant_id = uuid4()
     captured = {}
@@ -85,3 +97,4 @@ def test_harness_validation_returns_service_report(monkeypatch) -> None:
     assert captured["tenant_id"] == tenant_id
     assert captured["agent_id"] == agent_id
     assert captured["lookback_hours"] == 72
+    assert client.fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)

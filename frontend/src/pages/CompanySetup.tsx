@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi } from '../api/domains/auth';
 import { systemApi } from '../api/domains/system';
+import type { User } from '../types';
 
 export default function CompanySetup() {
     const { t, i18n } = useTranslation();
@@ -32,10 +33,13 @@ export default function CompanySetup() {
         }
     }, [user, navigate]);
 
-    const refreshUser = async () => {
+    const refreshUser = async (tokenOverride?: string) => {
         try {
+            if (tokenOverride) {
+                localStorage.setItem('token', tokenOverride);
+            }
             const me = await authApi.getMe();
-            const token = useAuthStore.getState().token;
+            const token = tokenOverride || useAuthStore.getState().token;
             if (token) setAuth(me, token);
         } catch { /* ignore */ }
     };
@@ -45,8 +49,17 @@ export default function CompanySetup() {
         setError('');
         setLoading(true);
         try {
-            await systemApi.joinTenant({ invitation_code: inviteCode });
-            await refreshUser();
+            const normalizedInviteCode = inviteCode.trim().toUpperCase();
+            const result = await systemApi.joinTenant({ invitation_code: normalizedInviteCode });
+            if (user) {
+                setAuth({
+                    ...user,
+                    tenant_id: result.tenant.id,
+                    role: result.role as User['role'],
+                }, result.access_token);
+            } else {
+                await refreshUser(result.access_token);
+            }
             navigate('/');
         } catch (err: any) {
             setError(err.message || 'Failed to join company');
@@ -122,13 +135,13 @@ export default function CompanySetup() {
                             <label>{t('companySetup.inviteCode', 'Invitation Code')}</label>
                             <input
                                 value={inviteCode}
-                                onChange={(e) => setInviteCode(e.target.value)}
+                                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
                                 required
                                 placeholder={t('companySetup.inviteCodePlaceholder', 'e.g. ABC12345')}
                                 style={{ textTransform: 'uppercase', letterSpacing: '2px', fontFamily: 'monospace' }}
                             />
                         </div>
-                        <button className="login-submit" type="submit" disabled={loading || !inviteCode}>
+                        <button className="login-submit" type="submit" disabled={loading || !inviteCode.trim()}>
                             {loading ? <span className="login-spinner" /> : t('companySetup.joinBtn', 'Join Company')}
                         </button>
                     </form>

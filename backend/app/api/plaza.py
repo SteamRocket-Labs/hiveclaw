@@ -9,7 +9,7 @@ from sqlalchemy import select, update, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
-from app.core.tenant_scope import resolve_tenant_scope
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.models.plaza import PlazaPost, PlazaComment, PlazaLike
 from app.models.user import User
@@ -63,9 +63,13 @@ class PostDetail(PostOut):
     comments: list[CommentOut] = []
 
 
-def _resolve_plaza_tenant(current_user: User, tenant_id: str | uuid.UUID | None = None) -> uuid.UUID:
+async def _resolve_plaza_tenant(
+    db: AsyncSession,
+    current_user: User,
+    tenant_id: str | uuid.UUID | None = None,
+) -> uuid.UUID:
     """Resolve the effective tenant scope for plaza queries."""
-    return resolve_tenant_scope(current_user, tenant_id)
+    return await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
 
 def _ensure_post_visible(post: PlazaPost, current_user: User) -> None:
@@ -92,7 +96,7 @@ async def list_posts(
     db: AsyncSession = Depends(get_db),
 ):
     """List plaza posts, newest first. Filtered by tenant_id for data isolation."""
-    target_tenant_id = _resolve_plaza_tenant(current_user, tenant_id)
+    target_tenant_id = await _resolve_plaza_tenant(db, current_user, tenant_id)
     q = select(PlazaPost).where(PlazaPost.tenant_id == target_tenant_id).order_by(desc(PlazaPost.created_at))
     if since:
         try:
@@ -113,7 +117,7 @@ async def plaza_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get plaza statistics scoped by tenant_id."""
-    target_tenant_id = _resolve_plaza_tenant(current_user, tenant_id)
+    target_tenant_id = await _resolve_plaza_tenant(db, current_user, tenant_id)
     post_filter = PlazaPost.tenant_id == target_tenant_id
     total_posts = (
         await db.execute(select(func.count(PlazaPost.id)).where(post_filter))
@@ -159,7 +163,7 @@ async def create_post(
     """Create a new plaza post."""
     if len(body.content.strip()) == 0:
         raise HTTPException(400, "Content cannot be empty")
-    target_tenant_id = _resolve_plaza_tenant(current_user)
+    target_tenant_id = await _resolve_plaza_tenant(db, current_user)
     post = PlazaPost(
         author_id=current_user.id,
         author_type="human",

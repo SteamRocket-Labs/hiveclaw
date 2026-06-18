@@ -12,6 +12,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.channel_rls import load_public_agent_channel_config
 from app.config import get_settings
 from app.api.channel_secrets import resolve_secret_field
 from app.core.permissions import check_agent_access, is_agent_creator
@@ -295,6 +296,7 @@ async def configure_teams_channel(
 
     config = ChannelConfig(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         channel_type="microsoft_teams",
         app_id=app_id if not use_managed_identity else None,
         app_secret=app_secret if not use_managed_identity else None,
@@ -430,17 +432,19 @@ async def teams_event_webhook(
         # For now, we rely on the unguessable URL token.
         # In a full production setup, you'd validate the JWT token in the Authorization header.
 
-        # Get channel config
-        result = await db.execute(
-            select(ChannelConfig).where(
-                ChannelConfig.agent_id == agent_id,
-                ChannelConfig.channel_type == "microsoft_teams",
-            )
+        # Get channel config and pin tenant RLS for this public webhook.
+        config = await load_public_agent_channel_config(
+            db,
+            agent_id=agent_id,
+            channel_type="microsoft_teams",
         )
-        config = result.scalar_one_or_none()
         if not config:
             logger.warning(f"Teams: Webhook received for unconfigured agent {agent_id}")
             return Response(status_code=404)
+        agent_tenant_id = config.tenant_id
+        if not agent_tenant_id:
+            _agent_obj = await db.get(AgentModel, agent_id)
+            agent_tenant_id = _agent_obj.tenant_id if _agent_obj else None
 
         # Extract serviceUrl from the activity for sending replies
         service_url = activity.get("serviceUrl")
@@ -504,7 +508,7 @@ async def teams_event_webhook(
                 password_hash=_hp(uuid.uuid4().hex),
                 display_name=sender_name,
                 role="member",
-                tenant_id=agent_obj.tenant_id if (agent_obj := await db.get(AgentModel, agent_id)) else None,
+                tenant_id=agent_tenant_id,
             )
             db.add(_platform_user)
             await db.flush()
@@ -531,6 +535,7 @@ async def teams_event_webhook(
         sess = await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,
+            tenant_id=agent_tenant_id,
             user_id=platform_user_id,
             external_conv_id=conversation_id,
             source_channel="microsoft_teams",
@@ -558,6 +563,7 @@ async def teams_event_webhook(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_tenant_id,
                 user_id=platform_user_id,
                 role="user",
                 content=user_text,
@@ -617,6 +623,7 @@ async def teams_event_webhook(
             db.add(
                 ChatMessage(
                     agent_id=agent_id,
+                    tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
                     role="assistant",
                     content=reply_text,

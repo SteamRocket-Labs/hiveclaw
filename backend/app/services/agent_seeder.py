@@ -162,8 +162,22 @@ async def seed_default_agents():
         await ensure_agent_identity(db, meeseeks)
 
         # ── Permissions (company-wide, manage) ──
-        db.add(AgentPermission(agent_id=morty.id, scope_type="company", access_level="manage"))
-        db.add(AgentPermission(agent_id=meeseeks.id, scope_type="company", access_level="manage"))
+        db.add(
+            AgentPermission(
+                agent_id=morty.id,
+                tenant_id=morty.tenant_id,
+                scope_type="company",
+                access_level="manage",
+            )
+        )
+        db.add(
+            AgentPermission(
+                agent_id=meeseeks.id,
+                tenant_id=meeseeks.tenant_id,
+                scope_type="company",
+                access_level="manage",
+            )
+        )
 
         # ── Initialize workspace files ──
         for agent, soul_content in [(morty, MORTY_SOUL), (meeseeks, MEESEEKS_SOUL)]:
@@ -245,6 +259,7 @@ async def seed_default_agents():
         db.add(
             AgentAgentRelationship(
                 agent_id=morty.id,
+                tenant_id=morty.tenant_id,
                 target_agent_id=meeseeks.id,
                 relation="collaborator",
                 description="Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
@@ -253,6 +268,7 @@ async def seed_default_agents():
         db.add(
             AgentAgentRelationship(
                 agent_id=meeseeks.id,
+                tenant_id=meeseeks.tenant_id,
                 target_agent_id=morty.id,
                 relation="collaborator",
                 description="Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",

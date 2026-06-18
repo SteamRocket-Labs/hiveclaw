@@ -186,13 +186,9 @@ class PlanModeService:
     # -- intercept-then-create (§9.2) -------------------------------------
     #
     # The RPC-planner intercept-then-create entry (``ensure_awaiting_plan``) was
-    # removed in path-unification cut ④. A blocked gated tool now either flips the
-    # run into main-loop Plan Mode (live chat / unattended tool-intercept, where
-    # the agent authors the plan and submits via ``exit_plan_mode``) or — for a
-    # non-eligible source — returns a static ``needs_plan`` block and the agent
-    # neither plans nor executes (fail-closed). The structured-fill landing below
-    # (``ensure_awaiting_plan_from_fill``) is the single ledger entry for caller-
-    # authored fills (Deep Research, exit_plan_mode without a pre-armed plan_id).
+    # removed. Blocked tools now return ``requires_confirmation`` and never enter
+    # Plan Mode. The structured-fill landing below is for explicit Plan Mode
+    # submissions and system-owned fills.
 
     async def ensure_awaiting_plan_from_fill(
         self,
@@ -211,13 +207,11 @@ class PlanModeService:
     ) -> AgentPlanRequest:
         """Materialise an awaiting plan from a caller-owned structured fill.
 
-        This is the single ledger entry for caller/agent-authored fills: the
-        agent authors the plan in main-loop Plan Mode and submits via
-        ``exit_plan_mode`` (live chat / unattended tool-intercept), and richer
-        workflows such as Deep Research supply a complete ``plan_json`` fill
-        directly. The caller supplies a stable signature and the fill; this
-        service owns dedupe, persistence, hashing, markdown rendering, and the
-        user-confirmation state boundary.
+        This is the ledger entry for explicit Plan Mode fills: the agent authors
+        the plan in Plan Mode and submits via ``exit_plan_mode``. The caller
+        supplies a stable signature and the fill; this service owns dedupe,
+        persistence, hashing, markdown rendering, and the user-confirmation
+        state boundary.
         """
         if intent_type not in core.INTENT_TYPES:
             raise ValueError(f"unknown intent_type {intent_type!r}; expected one of {core.INTENT_TYPES}")
@@ -308,10 +302,9 @@ class PlanModeService:
     ) -> AgentPlanRequest:
         """Land a caller-supplied ``fill`` as the plan's ``plan_json`` (§10.2).
 
-        Cut ④ collapsed this to a pure structured-fill landing: the agent authors
-        the plan in main-loop Plan Mode (live chat / unattended tool-intercept /
-        system_plan_run launcher) and submits it via ``exit_plan_mode``; this
-        method validates that fill against the deterministic schema envelope,
+        This is a pure structured-fill landing: the agent authors the plan in
+        explicit Plan Mode or a system_plan_run launcher and submits it via
+        ``exit_plan_mode``; this method validates that fill against the deterministic schema envelope,
         computes the hash and writes markdown. On schema failure the plan becomes
         ``planning_failed`` (no markdown, no hash). There is no longer an isolated
         RPC planner — that was the second plan path the unification removed.

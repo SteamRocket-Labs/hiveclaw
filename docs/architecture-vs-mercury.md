@@ -75,7 +75,7 @@ Mercury 的 loop detection 设计成熟，Hive 几乎是裸奔的；但 Hive 的
 ### Hive：4 层 MD 金字塔（全文件，无 DB shadow store）
 
 ```
-T0 raw logs → T2 learnings → T3 memory → soul.md
+T0 session ledger → T2 learnings → T3 memory → soul.md
 SESSION_CLOSE  RESPONSE_COMPLETE  Heartbeat (120min managed eligibility)  Dream (24h + activity gate)
               (hot fire-forget +
                replay backfill)

@@ -31,6 +31,7 @@ def _settings_patch(mp: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake = lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path))  # noqa: E731
     mp.setattr("app.services.agent_work_ledger.get_settings", fake)
     mp.setattr("app.services.extract_agent.get_settings", fake)
+    mp.setattr("app.memory.t0.ledger.get_settings", fake)
 
 
 # ── pure mapper ──────────────────────────────────────────────────────────────
@@ -267,16 +268,25 @@ def test_consolidation_is_idempotent_on_dedup(tmp_path, monkeypatch):
 async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkeypatch):
     """The SESSION_CLOSE handler runs ledger→T2 consolidation through the real gate."""
     from app.memory.t2_store import load_t2_entries
+    from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events
     from app.runtime.hooks import HookContext, HookEvent
     from app.runtime.hooks_setup import _t0_session_close
     from app.services.agent_work_ledger import append_agent_work_ledger_finding
 
     agent_id = uuid4()
     _settings_patch(monkeypatch, tmp_path)
-    # The handler also writes T0 logs / session memory; point those at tmp too and
-    # keep the test focused on the ledger→T2 path.
-    monkeypatch.setattr("app.runtime.hooks_setup.write_t0_log", lambda *a, **k: None)
+    # The handler also updates session memory; keep the test focused on the
+    # ledger→T2 path. T0 itself should seal the session ledger, not call the
+    # retired legacy log writer.
     monkeypatch.setattr("app.runtime.hooks_setup.update_session_memory", lambda *a, **k: None)
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id="sess-close-1",
+        event_type="user_message",
+        role="user",
+        content="thanks",
+        data_root=tmp_path,
+    )
 
     append_agent_work_ledger_finding(
         agent_id=agent_id,
@@ -301,3 +311,6 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
 
     entries, _ = load_t2_entries(tmp_path, agent_id)
     assert any("exponential backoff capped at 5 minutes" in e["content"] for e in entries)
+    t0_events = replay_t0_session_events(agent_id=agent_id, session_id="sess-close-1", data_root=tmp_path)
+    assert [event.event_type for event in t0_events] == ["user_message", "segment_boundary"]
+    assert not list((tmp_path / str(agent_id) / "logs").glob("**/chat-*.md"))

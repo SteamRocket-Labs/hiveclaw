@@ -14,6 +14,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.channel_rls import load_public_agent_channel_config
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
@@ -188,6 +189,7 @@ async def configure_wecom_channel(
     else:
         config = ChannelConfig(
             agent_id=agent_id,
+            tenant_id=agent.tenant_id,
             channel_type="wecom",
             app_id=corp_id,
             app_secret=secret,
@@ -290,13 +292,7 @@ async def wecom_verify_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     """Handle WeCom callback URL verification (GET request)."""
-    result = await db.execute(
-        select(ChannelConfig).where(
-            ChannelConfig.agent_id == agent_id,
-            ChannelConfig.channel_type == "wecom",
-        )
-    )
-    config = result.scalar_one_or_none()
+    config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="wecom")
     if not config:
         return Response(status_code=404)
 
@@ -330,14 +326,8 @@ async def wecom_event_webhook(
     """Handle WeCom message callback (POST request with encrypted XML)."""
     body_bytes = await request.body()
 
-    # Get channel config
-    result = await db.execute(
-        select(ChannelConfig).where(
-            ChannelConfig.agent_id == agent_id,
-            ChannelConfig.channel_type == "wecom",
-        )
-    )
-    config = result.scalar_one_or_none()
+    # Get channel config and pin tenant RLS for this public webhook.
+    config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="wecom")
     if not config:
         return Response(status_code=404)
 
@@ -497,6 +487,7 @@ async def _process_wecom_text(
         sess = await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,
+            tenant_id=agent_obj.tenant_id if agent_obj else None,
             user_id=platform_user_id,
             external_conv_id=conv_id,
             source_channel="wecom",
@@ -520,6 +511,7 @@ async def _process_wecom_text(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="user",
                 content=user_text,
@@ -554,6 +546,7 @@ async def _process_wecom_text(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="assistant",
                 content=reply_text,

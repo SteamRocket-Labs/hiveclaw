@@ -3,10 +3,9 @@ plus the asset-view endpoints (run history list / promote-from-run /
 promote suggestions) and run-ownership guards.
 
 API-layer responsibilities only (service behaviour is covered on real PG in
-tests/services/): agent access control, risk-graded confirmation
-(low → user-confirmed start allowed; high → confirmed plan REQUIRED,
-hash-bound), run↔agent/tenant ownership, and error mapping. The runtime
-service is stubbed.
+tests/services/): agent access control, confirmation notes without low/high risk
+grades, run↔agent/tenant ownership, and error mapping. The runtime service is
+stubbed.
 """
 
 from __future__ import annotations
@@ -101,7 +100,7 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
     return client
 
 
-def test_preview_returns_hash_risk_and_planned_leaves(monkeypatch):
+def test_preview_returns_hash_confirmation_notes_and_planned_leaves(monkeypatch):
     client = _client(_user(), monkeypatch)
     resp = client.post(
         f"/agents/{uuid.uuid4()}/workflows/preview",
@@ -110,8 +109,24 @@ def test_preview_returns_hash_risk_and_planned_leaves(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["definition_hash"]
-    assert body["risk"] == "low"
+    assert "risk" not in body
+    assert body["confirmation_required"] is False
+    assert body["confirmation_reasons"] == []
     assert body["planned_leaf_calls"] == 1
+
+
+def test_preview_external_effects_has_confirmation_notes_not_risk_level(monkeypatch):
+    client = _client(_user(), monkeypatch)
+    resp = client.post(
+        f"/agents/{uuid.uuid4()}/workflows/preview",
+        json={"definition": _high_risk_definition(), "args": {}},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "risk" not in body
+    assert "risk_reasons" not in body
+    assert body["confirmation_required"] is True
+    assert body["confirmation_reasons"]
 
 
 def test_preview_maps_compile_error_to_400(monkeypatch):
@@ -123,7 +138,7 @@ def test_preview_maps_compile_error_to_400(monkeypatch):
     assert resp.status_code == 400
 
 
-def test_low_risk_start_runs_without_plan(monkeypatch):
+def test_start_runs_without_plan_gate(monkeypatch):
     client = _client(_user(), monkeypatch)
     resp = client.post(
         f"/agents/{uuid.uuid4()}/workflows/runs",
@@ -132,20 +147,22 @@ def test_low_risk_start_runs_without_plan(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["status"] == "completed"
     assert len(client.fake_launch.calls) == 1
-    assert client.fake_gate_check.calls == []  # low risk never consults the plan gate
+    assert client.fake_gate_check.calls == []  # start never consults PlanModeGate
 
 
-def test_high_risk_start_without_plan_fails_closed(monkeypatch):
+def test_external_effect_start_without_plan_still_runs_without_plan_mode_gate(monkeypatch):
     client = _client(_user(), monkeypatch, gate_allowed=False, gate_reason="needs_plan")
     resp = client.post(
         f"/agents/{uuid.uuid4()}/workflows/runs",
         json={"definition": _high_risk_definition(), "args": {}},
     )
-    assert resp.status_code == 409
-    assert client.fake_launch.calls == []  # the run must NOT start
+    assert resp.status_code == 200
+    assert resp.json()["confirmation_required"] is True
+    assert len(client.fake_launch.calls) == 1
+    assert client.fake_gate_check.calls == []
 
 
-def test_high_risk_start_with_confirmed_plan_passes_gate(monkeypatch):
+def test_confirmed_plan_metadata_is_forwarded_as_optional_provenance_without_gate(monkeypatch):
     client = _client(_user(), monkeypatch, gate_allowed=True)
     plan_id = str(uuid.uuid4())
     resp = client.post(
@@ -159,12 +176,9 @@ def test_high_risk_start_with_confirmed_plan_passes_gate(monkeypatch):
         },
     )
     assert resp.status_code == 200
-    assert len(client.fake_gate_check.calls) == 1
-    gate_kwargs = client.fake_gate_check.calls[0]
-    assert gate_kwargs["confirmed_plan_id"] == plan_id
-    assert gate_kwargs["plan_version"] == 2
-    assert gate_kwargs["plan_hash"] == "abc123"
-    assert gate_kwargs["action_artifact"]["args_hash"]
+    assert client.fake_gate_check.calls == []
+    launch_kwargs = client.fake_launch.calls[0]
+    assert launch_kwargs["confirmed_plan_id"] == plan_id
     assert len(client.fake_launch.calls) == 1
 
 
@@ -449,11 +463,7 @@ def test_promote_suggestions_returns_agent_scoped_payload(monkeypatch):
 
     async def fake_collect(*, tenant_id, agent_id=None, **kwargs):
         calls.append({"tenant_id": tenant_id, "agent_id": agent_id})
-        return [
-            SimpleNamespace(
-                definition_hash="abc", name="contract-batch", run_count=3, sample_run_ids=[sample]
-            )
-        ]
+        return [SimpleNamespace(definition_hash="abc", name="contract-batch", run_count=3, sample_run_ids=[sample])]
 
     monkeypatch.setattr(workflows_api, "collect_promote_suggestions", fake_collect, raising=False)
     resp = client.get(f"/agents/{agent_id}/workflows/promote-suggestions")

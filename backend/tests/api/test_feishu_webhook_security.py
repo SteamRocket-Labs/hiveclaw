@@ -24,8 +24,11 @@ class _ScalarResult:
 class _FakeDB:
     def __init__(self, config):
         self._config = config
+        self.sync_session = SimpleNamespace(info={})
+        self.statements: list[str] = []
 
     async def execute(self, _stmt):
+        self.statements.append(str(_stmt))
         return _ScalarResult(self._config)
 
 
@@ -75,6 +78,7 @@ def _sign_feishu_body(encrypt_key: str, timestamp: str, nonce: str, body: bytes)
 @pytest.mark.asyncio
 async def test_feishu_webhook_falls_back_to_verification_token(monkeypatch):
     import app.api.feishu as feishu_api
+    from app import database
 
     captured: dict[str, object] = {}
 
@@ -86,6 +90,7 @@ async def test_feishu_webhook_falls_back_to_verification_token(monkeypatch):
     monkeypatch.setattr(feishu_api, "process_feishu_event", fake_process)
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     request = _build_request(
         json.dumps(
             {
@@ -94,18 +99,20 @@ async def test_feishu_webhook_falls_back_to_verification_token(monkeypatch):
             }
         ).encode("utf-8")
     )
+    db = _FakeDB(
+        SimpleNamespace(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            channel_type="feishu",
+            encrypt_key=None,
+            verification_token="verification-token",
+        )
+    )
 
     result = await feishu_api.feishu_event_webhook(
         agent_id=agent_id,
         request=request,
-        db=_FakeDB(
-            SimpleNamespace(
-                agent_id=agent_id,
-                channel_type="feishu",
-                encrypt_key=None,
-                verification_token="verification-token",
-            )
-        ),
+        db=db,
     )
 
     assert result == {"ok": True}
@@ -114,6 +121,8 @@ async def test_feishu_webhook_falls_back_to_verification_token(monkeypatch):
         "token": "verification-token",
         "header": {"event_type": "im.message.receive_v1"},
     }
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in stmt for stmt in db.statements)
 
 
 @pytest.mark.asyncio
@@ -137,6 +146,7 @@ async def test_feishu_webhook_rejects_bad_verification_token():
             db=_FakeDB(
                 SimpleNamespace(
                     agent_id=agent_id,
+                    tenant_id=uuid4(),
                     channel_type="feishu",
                     encrypt_key=None,
                     verification_token="verification-token",
@@ -189,12 +199,13 @@ async def test_feishu_webhook_decrypts_encrypted_payload_before_processing(monke
     result = await feishu_api.feishu_event_webhook(
         agent_id=agent_id,
         request=request,
-        db=_FakeDB(
-            SimpleNamespace(
-                agent_id=agent_id,
-                channel_type="feishu",
-                encrypt_key=encrypt_key,
-                verification_token=None,
+            db=_FakeDB(
+                SimpleNamespace(
+                    agent_id=agent_id,
+                    tenant_id=uuid4(),
+                    channel_type="feishu",
+                    encrypt_key=encrypt_key,
+                    verification_token=None,
             )
         ),
     )

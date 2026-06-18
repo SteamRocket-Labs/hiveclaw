@@ -959,20 +959,12 @@ async def test_plan_mode_tool_intercept_notice_follows_tool_result_message() -> 
         ]
     )
 
-    needs_plan = json.dumps(
+    requires_confirmation = json.dumps(
         {
             "ok": False,
-            "status": "needs_plan",
-            "activate_interactive_plan": True,
-            "interactive_plan_seed": {
-                "source": "tool_intercept",
-                "action_kind": "start_delegation",
-                "tool_name": "delegate_to_agent",
-                "tool_args": {
-                    "agent_name": "飞书知识库助手",
-                    "message": "去飞书知识库搜索飞翼艇报告并总结",
-                },
-            },
+            "status": "requires_confirmation",
+            "requires_confirmation": True,
+            "summary": "Confirm before delegating.",
         },
         ensure_ascii=False,
     )
@@ -990,7 +982,7 @@ async def test_plan_mode_tool_intercept_notice_follows_tool_result_message() -> 
             get_tools=lambda *_args, **_kwargs: [],
             maybe_compress_messages=lambda messages, **_kwargs: messages,
             create_client=lambda _model: fake_client,
-            execute_tool=lambda *_args, **_kwargs: needs_plan,
+            execute_tool=lambda *_args, **_kwargs: requires_confirmation,
             persist_memory=lambda **_kwargs: None,
             record_token_usage=lambda *_args, **_kwargs: None,
             get_max_tokens=lambda _provider, _model, override=None: override or 2048,
@@ -1022,8 +1014,10 @@ async def test_plan_mode_tool_intercept_notice_follows_tool_result_message() -> 
     )
     assert second_round_messages[assistant_index + 1].role == "tool"
     assert second_round_messages[assistant_index + 1].tool_call_id == "call_delegate"
-    assert second_round_messages[assistant_index + 2].role == "system"
-    assert "[Plan Mode Activated]" in second_round_messages[assistant_index + 2].content
+    assert not any(
+        message.role == "system" and "[Plan Mode Activated]" in (message.content or "")
+        for message in second_round_messages
+    )
 
 
 @pytest.mark.asyncio
@@ -1054,8 +1048,7 @@ async def test_agent_kernel_stops_after_blocking_ask_user_question_result():
                         "function": {
                             "name": "ask_user_question",
                             "arguments": (
-                                '{"questions":[{"question":"Pick one?",'
-                                '"options":[{"label":"A"},{"label":"B"}]}]}'
+                                '{"questions":[{"question":"Pick one?","options":[{"label":"A"},{"label":"B"}]}]}'
                             ),
                         },
                     }
@@ -2303,7 +2296,9 @@ async def test_turn_token_budget_ignores_cached_prompt_reads_before_tool_round()
     assert executed == ["read_file"]
     assert len(persist_calls) == 1
     persisted_text = "\n".join(
-        str(message.get("content") or "") for message in persist_calls[0].get("messages", []) if isinstance(message, dict)
+        str(message.get("content") or "")
+        for message in persist_calls[0].get("messages", [])
+        if isinstance(message, dict)
     )
     assert "[Runtime Limit]" not in persisted_text
     assert len(fake_client.calls) == 2

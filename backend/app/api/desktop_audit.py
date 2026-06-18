@@ -66,6 +66,7 @@ async def ingest_audit_events(
         db.add(AuditLog(
             user_id=current_user.id,
             agent_id=event.agent_id,
+            tenant_id=current_user.tenant_id,
             action=f"desktop:{event.action}",
             details={**event.details, "source": "desktop"},
         ))
@@ -84,6 +85,7 @@ async def ingest_guard_events(
         db.add(AuditLog(
             user_id=current_user.id,
             agent_id=event.agent_id,
+            tenant_id=current_user.tenant_id,
             action=f"desktop:guard:{event.action}",
             details={
                 "rule": event.rule,

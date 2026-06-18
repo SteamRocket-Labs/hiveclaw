@@ -20,8 +20,9 @@ export interface TenantInfo {
 }
 
 export interface JoinResult {
-  success: boolean;
-  tenant?: TenantInfo;
+  tenant: TenantInfo;
+  role: string;
+  access_token: string;
 }
 
 export interface DeleteTenantResult {

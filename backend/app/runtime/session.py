@@ -35,11 +35,8 @@ class PlanModeState:
     intent_type: str | None = None
     action_kind: str | None = None
     tool_name: str | None = None
-    # P1 binding: the action artifact computed at gate-check time (definition
-    # hash / args hash / risk reasons for ``start_workflow``). Rides the state
-    # into the metadata mirror so ``exit_plan_mode`` can bind the authored plan
-    # to the exact blocked action; without it the confirmed plan is rejected
-    # with ``action_artifact_missing`` and the high-risk launch deadlocks.
+    # Optional action artifact for explicit Plan Mode handoffs. Tool-result
+    # interception no longer populates this field.
     action_artifact: dict[str, Any] | None = None
     original_request: str | None = None
     handoff_target: str | None = None
@@ -66,11 +63,9 @@ class PlanModeState:
             "reason": self.reason,
             "handoff_target": self.handoff_target,
         }
-        # Path-unification cut ③: a system_plan_run launcher pre-arms Plan Mode
+        # A system_plan_run launcher pre-arms Plan Mode
         # with a draft ``plan_id`` so ``exit_plan_mode`` fills THAT draft instead
-        # of creating a new awaiting plan. Emitted only when present so live chat
-        # / unattended tool-intercept (no pre-created plan_id) keep the legacy
-        # "create new" mirror byte-for-byte.
+        # of creating a new awaiting plan. Emitted only when present.
         if self.plan_id:
             data["plan_id"] = self.plan_id
         # Emitted only when present (same rule as plan_id) so mirrors without a
@@ -268,40 +263,33 @@ class SessionContext:
             self.pending_items.pop(0)
 
 
-# Live interactive user channels eligible for tool-intercept → interactive Plan
-# Mode. Real runtime web-chat sessions use source="web"; IM channel messages use
-# their channel slug as source/channel. Unattended paths (trigger/heartbeat) get
-# their own eligibility below.
-_INTERACTIVE_PLAN_CHAT_SURFACES = frozenset({
-    "web",
-    "web_chat",
-    "chat",
-    "feishu",
-    "wechat_personal",
-    "wecom",
-    "telegram",
-    "dingtalk",
-    "slack",
-    "discord",
-    "teams",
-})
+# Live interactive user channels that may explicitly enter Plan Mode. Real
+# runtime web-chat sessions use source="web"; IM channel messages use their
+# channel slug as source/channel.
+_INTERACTIVE_PLAN_CHAT_SURFACES = frozenset(
+    {
+        "web",
+        "web_chat",
+        "chat",
+        "feishu",
+        "wechat_personal",
+        "wecom",
+        "telegram",
+        "dingtalk",
+        "slack",
+        "discord",
+        "teams",
+    }
+)
 
-# Unattended agent runs eligible for tool-intercept → main-loop Plan Mode
-# (path-unification §5.3 / cut ②, made unconditional in cut ④). These are
-# multi-round kernel loops with no live user stream: a blocked gated tool flips
-# the run into the SAME Plan Mode runtime as live chat (read-only policy +
-# scheduler-driven transient reminder + exit_plan_mode), and the authored plan lands
-# awaiting_confirmation for asynchronous user confirmation from the plan queue.
+# Unattended sources are not live interactive channels. Kept only as a
+# compatibility predicate for tests and old invoker kwargs; tool results no
+# longer use it to enter Plan Mode.
 _UNATTENDED_PLAN_RUN_SOURCES = frozenset({"trigger", "heartbeat"})
 
 
 def is_interactive_plan_eligible(session_context: Any | None) -> bool:
-    """Single source of truth for the tool-intercept → interactive Plan Mode
-    boundary, shared by the invoker tool-runtime gate and kernel activation so
-    the two can never drift (Phase 5 follow-up: the prior duplicated checks
-    disagreed on ``chat``/channel — harmless while source is always ``"web"``,
-    but unified here before flag rollout).
-    """
+    """Single source of truth for live channels that can explicitly enter Plan Mode."""
     if session_context is None:
         return False
     source = str(getattr(session_context, "source", "") or "").lower()
@@ -310,14 +298,10 @@ def is_interactive_plan_eligible(session_context: Any | None) -> bool:
 
 
 def is_unattended_plan_eligible(session_context: Any | None) -> bool:
-    """True for an unattended agent run (trigger/heartbeat) that is still a
-    multi-round kernel loop, so a blocked gated tool can flip into main-loop
-    Plan Mode and let the agent author the plan in its own loop — deferring
-    confirmation to the next time a user is present (path-unification §5.3).
+    """True for unattended trigger/heartbeat sources.
 
-    Distinct from :func:`is_interactive_plan_eligible` (live chat, synchronous
-    confirmation). The kernel activation and the invoker tool-runtime
-    RPC-fallback decision both consult this so the two can never drift.
+    Retained for compatibility with old invoker kwargs. A true result no longer
+    means a blocked tool can enter Plan Mode.
     """
     if session_context is None:
         return False

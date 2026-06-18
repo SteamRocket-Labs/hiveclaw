@@ -86,7 +86,7 @@ async def save_relationships(
     db: AsyncSession = Depends(get_db),
 ):
     """Replace all human relationships for this agent."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
 
     await db.execute(
         delete(AgentRelationship).where(AgentRelationship.agent_id == agent_id)
@@ -95,6 +95,7 @@ async def save_relationships(
     for r in data.relationships:
         db.add(AgentRelationship(
             agent_id=agent_id,
+            tenant_id=agent.tenant_id,
             member_id=uuid.UUID(r.member_id),
             relation=r.relation,
             description=r.description,
@@ -172,7 +173,7 @@ async def save_agent_relationships(
     db: AsyncSession = Depends(get_db),
 ):
     """Replace all agent-to-agent relationships."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
 
     await db.execute(
         delete(AgentAgentRelationship).where(AgentAgentRelationship.agent_id == agent_id)
@@ -184,6 +185,7 @@ async def save_agent_relationships(
             continue  # skip self-reference
         db.add(AgentAgentRelationship(
             agent_id=agent_id,
+            tenant_id=agent.tenant_id,
             target_agent_id=target_id,
             relation=r.relation,
             description=r.description,

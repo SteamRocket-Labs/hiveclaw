@@ -44,6 +44,8 @@ class _FakeDB:
         self._execute_results = list(execute_results)
         self.added: list[object] = []
         self.commit_count = 0
+        self.sync_session = SimpleNamespace(info={})
+        self.statements: list[object] = []
 
     def add(self, obj) -> None:
         self.added.append(obj)
@@ -52,6 +54,10 @@ class _FakeDB:
         self.commit_count += 1
 
     async def execute(self, _stmt):
+        self.statements.append(_stmt)
+        sql = getattr(_stmt, "text", None) or str(_stmt)
+        if sql.lstrip().upper().startswith("SET LOCAL"):
+            return _FakeScalarResult(None)
         if not self._execute_results:
             raise AssertionError("Unexpected execute call")
         return _FakeScalarResult(self._execute_results.pop(0))
@@ -79,14 +85,37 @@ class _AsyncSessionFactory:
 
 
 @pytest.mark.asyncio
+async def test_gateway_api_key_lookup_pins_agent_tenant() -> None:
+    from app import database
+    from app.api import gateway as gateway_mod
+
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        api_key_hash="ignored-by-fake-db",
+        agent_type="openclaw",
+    )
+    db = _FakeDB([agent])
+
+    result = await gateway_mod._get_agent_by_key("test-key", db)
+
+    assert result is agent
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)
+
+
+@pytest.mark.asyncio
 async def test_gateway_send_message_persists_openclaw_agent_request_to_chat_transcript(monkeypatch) -> None:
     from app.api import gateway as gateway_mod
 
+    tenant_id = uuid4()
     source_agent = SimpleNamespace(
         id=uuid4(),
         name="Source OpenClaw",
         agent_type="openclaw",
         creator_id=uuid4(),
+        tenant_id=tenant_id,
         openclaw_last_seen=None,
     )
     target_owner_id = uuid4()
@@ -95,6 +124,7 @@ async def test_gateway_send_message_persists_openclaw_agent_request_to_chat_tran
         name="Target OpenClaw",
         agent_type="openclaw",
         creator_id=target_owner_id,
+        tenant_id=tenant_id,
         openclaw_last_seen=None,
     )
     chat_session = SimpleNamespace(id=uuid4(), agent_id=uuid4(), last_message_at=None)
@@ -121,7 +151,9 @@ async def test_gateway_send_message_persists_openclaw_agent_request_to_chat_tran
     outbound_gateway = next(obj for obj in db.added if isinstance(obj, GatewayMessage))
     outbound_chat = next(obj for obj in db.added if isinstance(obj, ChatMessage))
     assert outbound_gateway.conversation_id == "agent-pair-conv"
+    assert outbound_gateway.tenant_id == tenant_id
     assert outbound_chat.agent_id == chat_session.agent_id
+    assert outbound_chat.tenant_id == tenant_id
     assert outbound_chat.conversation_id == "agent-pair-conv"
     assert outbound_chat.role == "user"
     assert outbound_chat.content == "Need the release summary."
@@ -146,6 +178,7 @@ async def test_gateway_report_result_persists_openclaw_agent_reply_to_chat_trans
         name="Source OpenClaw",
         agent_type="openclaw",
         creator_id=uuid4(),
+        tenant_id=current_agent.tenant_id,
     )
     queued_message = SimpleNamespace(
         id=uuid4(),
@@ -183,7 +216,9 @@ async def test_gateway_report_result_persists_openclaw_agent_reply_to_chat_trans
     reply_gateway = next(obj for obj in reply_db.added if isinstance(obj, GatewayMessage))
     reply_chat = next(obj for obj in reply_db.added if isinstance(obj, ChatMessage))
     assert reply_gateway.conversation_id == "agent-pair-conv"
+    assert reply_gateway.tenant_id == current_agent.tenant_id
     assert reply_chat.agent_id == chat_session.agent_id
+    assert reply_chat.tenant_id == current_agent.tenant_id
     assert reply_chat.conversation_id == "agent-pair-conv"
     assert reply_chat.role == "assistant"
     assert reply_chat.content == "Here is the release summary."

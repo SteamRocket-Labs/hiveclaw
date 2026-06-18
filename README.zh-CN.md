@@ -137,13 +137,13 @@ T3 语义记忆   ← 受治理写入       （Heartbeat、save_memory、session
    ↑                            feedback / knowledge / strategies / blocked / user
 T2 学习提取   ← extract_agent    （RESPONSE_COMPLETE 热路径、PRE_COMPACTION drain、T0 replay）
    ↑                            fast reflection 写 ledger/session candidate，不直接写 T3
-T0 原始日志   ← t0_logger        （behavior/system/artifacts，游标式生命周期日志）
-               behavior 保留 30 天
+T0 证据账本   ← session ledger   （append-only MD/XML events，segment-sealed resume boundaries）
+               原始证据保留 30 天
 ```
 
 | 层级 | 存放位置 | 写入者 | 内容 |
 |-------|-------|-----------|---------------|
-| **T0** | `logs/YYYY-MM-DD/behavior/` | session hooks | 完整对话 MD —— 每条消息、每次工具调用、每个工具结果 |
+| **T0** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | web chat、task executor、runtime hooks | append-only 原始 MD/XML events —— user、assistant、tool、task、trigger、delegation、heartbeat、dream 与 segment boundary |
 | **T2** | `memory/learnings/*.md` | `extract_agent` 热路径 + backfill | 原子化学习：事实、偏好、错误、模式 |
 | **T3** | `memory/{feedback,knowledge,strategies,blocked,user}.md` | 受治理的 T3 append 路径 | 带去重、reinforcement counter 与 `lifecycle.json` sidecar 的语义记忆 |
 | **soul** | `soul.md` | Dream 守护进程，经 promotion gate | 永久身份 —— 角色、语气、边界 |

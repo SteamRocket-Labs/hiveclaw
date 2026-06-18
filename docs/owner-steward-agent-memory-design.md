@@ -41,10 +41,10 @@ relationships, goals, evidence, and boundaries.
 
 ## 2. Core Diagnosis
 
-当前 Hive 已经有 T0/T1/T2/T3/soul 的长期演化链路：
+当前 Hive 已经有 T0/T2/T3/soul 的长期演化链路：
 
 ```text
-T0 raw logs
+T0 session ledger
   -> T2 learnings
   -> T3 semantic memory
   -> soul.md
@@ -79,14 +79,14 @@ Hive 的记忆是一组扁平快照，缺少目标投影、关系投影和人格
 
 因此，4 层蒸馏如果没有方向性，就容易变成无差别压缩。人的记忆不是静态文件夹，而是随目标、关系、风险和时间动态调整注意力的系统。
 
-### 2.1 Memory Control Plane Conclusion
+### 2.1 Memory Governance Layer Conclusion
 
 最终目标不是把四层蒸馏做得更复杂，也不是把所有长期记忆换成一个更大的 graph 或 vector store。
 
 更准确的架构目标是：
 
 ```text
-Memory Control Plane =
+Memory Governance Layer =
   Principal Stack
   + Privacy / Sensitivity Gate
   + Self-contained Memory Form
@@ -97,7 +97,7 @@ Memory Control Plane =
   + Coordination Runtime
 ```
 
-四层蒸馏仍然保留，但它只是存储和沉淀路径。`Memory Control Plane` 决定：
+四层蒸馏仍然保留，但它只是存储和沉淀路径。`Memory Governance Layer` 决定：
 
 ```text
 what gets stored,
@@ -388,7 +388,7 @@ last_accessed:  最近一次命中时间
 新 4 层蒸馏图示（在原 T0/T2/T3/soul 之上加 T1 sketch buffer）：
 
 ```text
-T0 raw logs
+T0 session ledger
   -> T1 sketch buffer  (主动判断 / dream 提案 / 待验证假设)
   -> T2 learnings      (sketch promoted = active)
   -> T3 semantic memory
@@ -432,7 +432,7 @@ cold     < 0.3       不进默认池，仅 explicit query 可召回
 | Reference | Useful Signal | Hive Decision |
 |---|---|---|
 | `rohitg00/agentmemory` | lifecycle hooks、hybrid retrieval、retention、audit、Lease / Signal / Checkpoint / Sentinel 这类 runtime primitives 应该一等化 | 采纳 hooks + retention + coordination primitives 的思想；不把外部 sidecar 作为 Hive 的 source of truth |
-| `MemTensor/MemPrivacy` | privacy 必须发生在写入前；PL1-PL4、typed placeholder、local reverse map 比后置 redact 更安全 | 采纳 PL1-PL4 + typed placeholder + PrivacyStore；把它放在 T0/T1/T2/T3 写入前和 channel 出站前 |
+| `MemTensor/MemPrivacy` | privacy 必须发生在写入前；PL1-PL4、typed placeholder、local reverse map 比后置 redact 更安全 | 采纳 PL1-PL4 + typed placeholder + PrivacyStore；把它放在 T0/T2/T3/soul durable 写入前、短期 session projection 写入前和 channel 出站前 |
 | `FredJiang0324/MAGMA` | long-horizon memory 需要 event / entity / temporal / causal graph 才能支持多跳和关系变化理解 | 采纳 graph schema 和 temporal/causal linking；不照搬研究型 query heuristics |
 | `aiming-lab/SimpleMem` | memory entry 必须 semantic-lossless、自包含；retrieval policy 应该由 telemetry/eval 迭代，而不是永久固定 | 采纳 form contract、multi-view retrieval、telemetry-driven policy evolution；不直接替换现有 T0/T2/T3/soul |
 
@@ -440,7 +440,7 @@ cold     < 0.3       不进默认池，仅 explicit query 可召回
 
 ```text
 Hive should keep its current memory layers,
-but add a Memory Control Plane above them.
+but add a Memory Governance Layer above them.
 ```
 
 具体取舍：
@@ -625,7 +625,7 @@ company form: company charter / tenant policy / audit 决定哪些动作不能�
 
 ```text
 - extract_agent.py 必须先经过 privacy_extractor，给每条 entry 打 sensitivity 标签。
-- T1/T2/T3 frontmatter 加 sensitivity 字段。
+- T2/T3 frontmatter 加 sensitivity 字段；短期 session projection 如需持久化，也必须带 sensitivity metadata。
 - retriever 读取时，根据 current principal stack 应用 strip：
     PL4 永远不召回；
     PL3 仅 direct_owner 在场时召回；
@@ -1419,7 +1419,7 @@ Goal: define who the agent serves, which company context it belongs to, and whic
 
 Goal: every newly written memory is safe, attributable, self-contained, and inspectable before it enters any durable layer.
 
-- Apply `privacy_layer.classify_and_mask()` before new T0/T1/T2/T3 writes.
+- Apply `privacy_layer.classify_and_mask()` before new T0/T2/T3/soul durable writes and before any persisted short-lived session projection.
 - Reject PL4 credentials before persistence.
 - Apply `form_lint` to agent-authored durable facts.
 - Persist `sensitivity`, `evidence_refs`, `status`, `version`, `parent_id`, `supersedes`, `superseded_by`, `expires_at`, `access_count`, and `last_accessed` metadata for new entries.
@@ -1783,7 +1783,7 @@ deployment touches.
   checkpoint path both go through the scope and produce identical
   Lease / Signal / Checkpoint dataclasses regardless of backend.
 
-### Phase 19: Memory Control Plane Closure
+### Phase 19: Memory Governance Layer Closure
 
 Goal: close the remaining end-to-end gaps that kept the memory system
 from being a full control plane rather than a set of substrates.
@@ -1821,7 +1821,7 @@ from being a full control plane rather than a set of substrates.
 | 7 Coordination Runtime | Completed 2026-05-22 | Code paths: `backend/app/agents/coordination.py`, `backend/app/agents/orchestrator.py`, `backend/app/tools/service.py`, `backend/tests/agents/test_coordination_primitives.py`, `backend/tests/agents/test_orchestrator.py`, `backend/tests/tools/test_service.py`. Runtime gate wired: `delegate_async()` now acquires a coordination `Lease` before spawning duplicate cross-agent work and sends a `delegation_started` `Signal`; confirm-first tool preflight now creates a `Checkpoint` with approver, deadline, escalation target, metadata, and decision-trace linkage before returning the ask block; `Sentinel` can map trigger-like open loops into either Signal or Checkpoint emissions. Tests: red run failed because `coordination_runtime` was not exported, preflight output lacked `checkpoint=`, and `register_sentinel()` did not exist; green targeted run `pytest tests/tools/test_service.py::test_tool_runtime_service_preflight_asks_before_external_visible_tool tests/agents/test_orchestrator.py::test_delegate_async_serializes_duplicate_work_with_coordination_lease` -> `2 passed, 3 warnings in 2.34s`; Sentinel red/green run `pytest tests/agents/test_coordination_primitives.py::test_sentinel_can_emit_signal_for_full_authority_followup tests/agents/test_coordination_primitives.py::test_sentinel_can_emit_checkpoint_for_confirm_first_action` -> red `AttributeError`, green `2 passed in 0.01s`; broader run `pytest tests/agents/test_coordination_primitives.py tests/agents/test_orchestrator.py tests/tools/test_service.py tests/services/test_action_preflight.py tests/services/test_decision_trace.py` -> `52 passed, 3 warnings in 2.81s`; lint `ruff check ... && ruff format --check ...` -> passed. Utility smoke: two identical async delegations return one running handle with `coordination_lease_id` and one `blocked_by_lease` handle with `blocked_by_lease_id`; external Feishu message preflight returns `[Preflight:ask] ... checkpoint=<id>` and the trace stores `checkpoint_id`; a full-authority Sentinel emits a Signal while a confirm-first Sentinel emits a Checkpoint. Residual risk: coordination state is still process-local and not a durable DB-backed approval queue; Phase 8 wires these primitives into the proactive heartbeat/eval loop. |
 | 8 Proactive Employee Loop and Eval-Driven Policy Evolution | Completed 2026-05-22 | Code paths: `backend/app/services/proactive_employee_loop.py`, `backend/app/services/heartbeat.py`, `backend/app/memory/activation.py`, `backend/app/memory/policy_replay.py`, `backend/tests/services/test_proactive_employee_loop.py`, `backend/tests/services/test_heartbeat.py`, `backend/tests/memory/test_policy_replay.py`. Runtime gate wired: heartbeat evolution context now builds a proactive steward plan from open-loop activity using real creator/tenant accountability when available; low-risk full-authority work emits a Sentinel Signal for local preparation, external-visible work creates a Checkpoint, and never-do work is refused without emission. Memory activation weights are now parameterized by `ActivationPolicy`, and `guard_activation_policy_experiment()` compares candidate policy changes against replay cases before accepting or reverting. Tests: proactive/red run failed with missing `app.services.proactive_employee_loop`; heartbeat integration red run failed because `Proactive Steward Context` was absent; replay red run failed with missing `ActivationPolicy`; green run `pytest tests/services/test_proactive_employee_loop.py tests/memory/test_policy_replay.py tests/services/test_heartbeat.py::test_build_evolution_context_includes_proactive_steward_plan` -> `6 passed, 3 warnings in 1.47s`; broader run `pytest tests/services/test_proactive_employee_loop.py tests/memory/test_policy_replay.py tests/services/test_heartbeat.py tests/memory/test_activation_scoring.py tests/services/test_action_preflight.py tests/agents/test_coordination_primitives.py` -> `45 passed, 4 warnings in 1.59s`; lint `ruff check ... && ruff format --check ...` -> passed. Utility smoke: an open-loop investor memo follow-up becomes `Prepare local draft` plus a Signal; a ready-to-send vendor reply becomes `Checkpoint required` with owner approver and objective metadata; a credential-sharing action is refused; a replay candidate that improves expected memory hits is accepted, while a lower-quality candidate is reverted to the baseline policy. Residual risk: replay sets are currently in-code/test fixtures rather than a persisted anonymized production corpus; coordination objects remain process-local until durable approval storage is added. |
 | 18 Auto-Resolve Gateway Scope at Runtime | Completed 2026-05-22 | Code paths: `backend/app/agents/coordination_wiring.py`, `backend/app/agents/orchestrator.py`, `backend/app/tools/service.py`, `backend/app/services/agent_tool_domains/messaging.py`, `backend/tests/agents/test_coordination_wiring.py`. Runtime gate wired: `delegate_async()` and `ToolRuntimeService._preflight_tool_execution()` both go through `async with gateway_scope(...) as gateway:` which honours an explicit gateway, then `COORDINATION_BACKEND=postgres` + tenant_id (opens `async_session()`, yields `CoordinationRepository`, commits on success / rolls back on error), then falls back to the in-process gateway. `_delegate_to_agent_async` forwards `source_agent.tenant_id` so an in-agent confirm-first delegation lands in PostgreSQL whenever the deployment is configured for it. Tests: red run failed because `gateway_scope`, the `tenant_id` parameter, and the in-callsite `async with` did not exist; green run `pytest tests/agents/ tests/services/test_charter_proposals.py tests/services/test_outbound_privacy.py tests/services/test_t0_privacy_gate.py tests/services/test_archetype.py tests/memory/test_access_log.py tests/memory/test_replay_corpus.py tests/memory/test_understanding_store.py tests/tools/test_service.py` -> `159 passed in 1.84s`; targeted `pytest tests/agents/test_coordination_wiring.py -v` -> `11 passed in 0.22s`; lint `ruff check ... && ruff format ...` -> passed. Utility smoke: with `COORDINATION_BACKEND=memory`, every `delegate_async` / checkpoint call yields the in-process gateway; with `postgres` + tenant_id supplied, `gateway_scope` opens a session and yields `CoordinationRepository`; with `postgres` but missing or malformed tenant_id, `gateway_scope` logs a warning and yields the in-process fallback. `_delegate_to_agent_async("agent-a -> agent-b")` propagates `source_agent.tenant_id` through. **Closes the Phase 17 production-wiring residual end-to-end.** |
-| 19 Memory Control Plane Closure | Completed 2026-05-22 | Code paths: `backend/app/memory/retriever.py`, `backend/app/memory/lifecycle_store.py`, `backend/app/memory/t2_store.py`, `backend/app/memory/md_store.py`, `backend/app/services/charter_proposals.py`, `backend/tests/memory/test_retrieval_pipeline.py`, `backend/tests/memory/test_lifecycle_state_machine.py`, `backend/tests/memory/test_t2_store.py`, `backend/tests/tools/test_memory_handler.py`, `backend/tests/services/test_charter_proposals.py`. Runtime gate wired: relationship-shaped `UnderstandingStore` entries now enter prompt retrieval through the same activation path as T3; every new T2/T3 active write records a durable `memory/lifecycle.json` entry keyed by the same markdown `entry_id`; approved charter proposals can be explicitly applied to `soul.md` frozen owner agency charter and emit `memory/charter_calibration.md` audit rows. Tests: red run failed with understanding retrieval returning `0`, missing `apply_approved_proposal_to_soul`, and missing `record_active_memory_lifecycle`; green focused runs `pytest tests/memory/test_retrieval_pipeline.py::test_retrieve_includes_relationship_understandings -q` -> `1 passed`, `pytest tests/services/test_charter_proposals.py::TestApplyApprovedProposal -q` -> `2 passed`, `pytest tests/memory/test_lifecycle_state_machine.py::test_lifecycle_store_persists_state_machine tests/memory/test_lifecycle_state_machine.py::test_record_active_memory_lifecycle_uses_memory_entry_id -q` -> `2 passed`; broader related runs `pytest tests/memory/test_retrieval_pipeline.py tests/memory/test_understanding_store.py tests/memory/test_lifecycle_state_machine.py tests/memory/test_t2_store.py tests/tools/test_memory_handler.py -q` -> `43 passed, 3 warnings` and `pytest tests/services/test_charter_proposals.py tests/services/test_auto_dream.py tests/services/test_decision_trace.py tests/tools/test_service.py -q` -> `71 passed, 3 warnings`; closure regression `pytest tests/services/test_outbound_privacy.py tests/services/test_channel_delivery_service.py tests/services/test_privacy_layer.py tests/services/test_t0_privacy_gate.py tests/services/test_t0_logger.py tests/memory/test_understanding_store.py tests/memory/test_retrieval_pipeline.py tests/memory/test_activation_scoring.py tests/memory/test_access_log.py tests/memory/test_lifecycle_state_machine.py tests/memory/test_t2_store.py tests/tools/test_memory_handler.py tests/agents/test_coordination_primitives.py tests/agents/test_coordination_repository.py tests/agents/test_coordination_gateway.py tests/agents/test_coordination_wiring.py tests/services/test_charter_proposals.py tests/services/test_auto_dream.py tests/services/test_decision_trace.py tests/tools/test_service.py tests/memory/test_replay_corpus.py -q` -> `260 passed, 3 warnings`; lint `ruff check ...`, `ruff format --check ...`, and `git diff --check` -> passed. Utility smoke: `agent_a -[collaborator]-> agent_b` appears as `source_type=understanding_store`; a masked owner email memory writes both markdown metadata and lifecycle sidecar; an approved `consider_full_authority` proposal updates `soul.md` once and writes audit metadata. Closes Phase 11 retriever residual, Phase 15 apply-to-charter residual, and the remaining lifecycle persistence residual. |
+| 19 Memory Governance Layer Closure | Completed 2026-05-22 | Code paths: `backend/app/memory/retriever.py`, `backend/app/memory/lifecycle_store.py`, `backend/app/memory/t2_store.py`, `backend/app/memory/md_store.py`, `backend/app/services/charter_proposals.py`, `backend/tests/memory/test_retrieval_pipeline.py`, `backend/tests/memory/test_lifecycle_state_machine.py`, `backend/tests/memory/test_t2_store.py`, `backend/tests/tools/test_memory_handler.py`, `backend/tests/services/test_charter_proposals.py`. Runtime gate wired: relationship-shaped `UnderstandingStore` entries now enter prompt retrieval through the same activation path as T3; every new T2/T3 active write records a durable `memory/lifecycle.json` entry keyed by the same markdown `entry_id`; approved charter proposals can be explicitly applied to `soul.md` frozen owner agency charter and emit `memory/charter_calibration.md` audit rows. Tests: red run failed with understanding retrieval returning `0`, missing `apply_approved_proposal_to_soul`, and missing `record_active_memory_lifecycle`; green focused runs `pytest tests/memory/test_retrieval_pipeline.py::test_retrieve_includes_relationship_understandings -q` -> `1 passed`, `pytest tests/services/test_charter_proposals.py::TestApplyApprovedProposal -q` -> `2 passed`, `pytest tests/memory/test_lifecycle_state_machine.py::test_lifecycle_store_persists_state_machine tests/memory/test_lifecycle_state_machine.py::test_record_active_memory_lifecycle_uses_memory_entry_id -q` -> `2 passed`; broader related runs `pytest tests/memory/test_retrieval_pipeline.py tests/memory/test_understanding_store.py tests/memory/test_lifecycle_state_machine.py tests/memory/test_t2_store.py tests/tools/test_memory_handler.py -q` -> `43 passed, 3 warnings` and `pytest tests/services/test_charter_proposals.py tests/services/test_auto_dream.py tests/services/test_decision_trace.py tests/tools/test_service.py -q` -> `71 passed, 3 warnings`; closure regression `pytest tests/services/test_outbound_privacy.py tests/services/test_channel_delivery_service.py tests/services/test_privacy_layer.py tests/services/test_t0_privacy_gate.py tests/services/test_t0_logger.py tests/memory/test_understanding_store.py tests/memory/test_retrieval_pipeline.py tests/memory/test_activation_scoring.py tests/memory/test_access_log.py tests/memory/test_lifecycle_state_machine.py tests/memory/test_t2_store.py tests/tools/test_memory_handler.py tests/agents/test_coordination_primitives.py tests/agents/test_coordination_repository.py tests/agents/test_coordination_gateway.py tests/agents/test_coordination_wiring.py tests/services/test_charter_proposals.py tests/services/test_auto_dream.py tests/services/test_decision_trace.py tests/tools/test_service.py tests/memory/test_replay_corpus.py -q` -> `260 passed, 3 warnings`; lint `ruff check ...`, `ruff format --check ...`, and `git diff --check` -> passed. Utility smoke: `agent_a -[collaborator]-> agent_b` appears as `source_type=understanding_store`; a masked owner email memory writes both markdown metadata and lifecycle sidecar; an approved `consider_full_authority` proposal updates `soul.md` once and writes audit metadata. Closes Phase 11 retriever residual, Phase 15 apply-to-charter residual, and the remaining lifecycle persistence residual. |
 | 17 Production Wiring — CoordinationGateway | Completed 2026-05-22 | Code paths: `backend/app/agents/coordination_gateway.py`, `backend/app/agents/coordination_wiring.py`, `backend/app/agents/orchestrator.py`, `backend/app/tools/service.py`, `backend/app/config.py`, `backend/tests/agents/test_coordination_gateway.py`, `backend/tests/agents/test_coordination_wiring.py`. Runtime gate wired: `orchestrator.delegate_async` and `ToolRuntimeService._preflight_tool_execution` now go through the `CoordinationGateway` Protocol; default `InProcessCoordinationGateway(coordination_runtime)` keeps single-process behaviour byte-identical, while `pick_gateway(session, tenant_id)` returns a `CoordinationRepository` when `COORDINATION_BACKEND=postgres`. Tests: red run failed because gateway / wiring modules and the optional `coordination_gateway` parameter did not exist; green run `pytest tests/agents/ tests/services/test_charter_proposals.py tests/tools/test_service.py` -> `153 passed in 1.92s`; lint `ruff check ... && ruff format ...` -> passed. Utility smoke: an in-process gateway acquires a lease, sends and reads a signal, creates / fetches / escalates a checkpoint with the same surface as the sync runtime; `pick_gateway(session, tenant_id)` returns a `CoordinationRepository` when `COORDINATION_BACKEND=postgres`, an `InProcessCoordinationGateway` (with a log warning) when postgres is requested but no session was supplied, and the in-process gateway by default. Residual risk: Sentinel state remains process-local (not part of the Protocol). The deployment-side lifespan / request-scope injection note from this phase is **closed by Phase 18**, which makes `gateway_scope` resolve the right backend automatically per call without any deployment hook. Closes the Phase 14 production-wiring residual. |
 | 16 Persisted Replay Corpus | Completed 2026-05-22 | Code paths: `backend/app/memory/replay_corpus.py`, `backend/tests/memory/test_replay_corpus.py`. Runtime gate available: production replay material can now be appended to a jsonl corpus and reloaded by `guard_activation_policy_experiment`. Tests: red run failed with `ModuleNotFoundError: No module named 'app.memory.replay_corpus'`; green run `pytest tests/memory/test_replay_corpus.py` -> `9 passed in 0.02s`; lint `ruff check ... && ruff format ...` -> passed. Utility smoke: `alice@example.com` in candidate content becomes a typed PII placeholder; two cases with owner term `alice` produce the same anonymized `owner_term_1_<digest>`; a malformed line is silently skipped; `evaluate_activation_policy()` runs on a corpus reloaded from disk. Residual risk: the anonymization map is per-write today — long-running production should persist the map alongside the corpus so placeholders stay stable across restarts (left as a follow-on operational nicety). Closes the Phase 8 production-corpus residual. |
 | 15 Charter Calibration Approval Surface (PostgreSQL) | Completed 2026-05-22 | Code paths: `backend/app/models/charter_proposal.py`, `backend/alembic/versions/coordination_charter_proposals_0522.py`, `backend/app/services/charter_proposals.py`, `backend/tests/services/test_charter_proposals.py`. Storage: PostgreSQL table `charter_proposals` with `tenant_id` foreign key, indexed by `(tenant_id, status)`. Replaces the local-sqlite shim from the first Phase 15 implementation so proposals live in Hive's single source of truth, participate in tenant isolation, and survive worker restarts. Tests: red run failed because the rewritten store now requires `AsyncSession` + `tenant_id`; green run `pytest tests/services/test_charter_proposals.py` -> `9 passed in 0.17s`; lint `ruff check ... && ruff format ...` -> passed. Utility smoke: `submit(...)` adds a pending row to PG; `approve(by="alice", decision_reason="LGTM")` updates the same row to `status=approved` with `decided_at` / `decided_by`; second `approve` raises `ProposalAlreadyDecided`; `expire_stale(max_age_days=7)` walks pending rows older than the cutoff and sets `status=expired`; unknown `proposal_id` raises `KeyError`. The apply-to-frozen-charter residual is **closed by Phase 19**, which adds explicit approved-proposal application to `soul.md` plus `memory/charter_calibration.md` audit. Closes the Phase 5/6 missing-approval-surface residual. |
@@ -1836,7 +1836,7 @@ from being a full control plane rather than a set of substrates.
 
 This design is not complete until these conditions are true:
 
-- PL4 credentials never enter T0/T1/T2/T3/soul. They are rejected or represented only as typed placeholders with restricted reverse mapping.
+- PL4 credentials never enter T0/T2/T3/soul or persisted short-lived session projection. They are rejected or represented only as typed placeholders with restricted reverse mapping.
 - Every active memory has evidence refs, sensitivity, lifecycle status, and enough form to stand alone outside its original context.
 - A retrieved memory can explain why it was activated: objective, principal, company, relationship, feedback, risk, or open-loop reason.
 - A contradicted memory is versioned and down-ranked, not overwritten or silently deleted.
@@ -1944,10 +1944,10 @@ The goal is to add directionality and judgment, not to remove safety.
 
 ## 22. Summary
 
-Hive 当前的 memory system 已经有长期沉淀能力，但要成为公司语境下 owner 理想中的精英员工型 agent，还需要从“记忆分层系统”升级为 **Memory Control Plane**：
+Hive 当前的 memory system 已经有长期沉淀能力，但要成为公司语境下 owner 理想中的精英员工型 agent，还需要从“记忆分层系统”升级为 **Memory Governance Layer**：
 
 ```text
-Memory Control Plane
+Memory Governance Layer
   = principal stack
   + privacy / sensitivity gate
   + self-contained memory form

@@ -1,12 +1,10 @@
-"""Contract tests for the system_plan_run launcher (path-unification §12 / cut ③).
+"""Contract tests for the explicit system_plan_run launcher.
 
-``launch_system_plan_run`` pre-arms the SAME Plan Mode runtime used by live chat
-/ unattended tool-intercept (read-only ContextVar + typed PlanModeState) — but
-*before* the loop and with the draft's ``plan_id`` already set — then runs the
-agent main loop so the agent authors the plan via ``exit_plan_mode`` (which fills
-THAT draft, cut ③a). These tests assert the launcher's pre-arm + invocation
-contract and its fail-closed guarantee; the actual fill is covered by the
-exit_plan_mode dual-state tests.
+``launch_system_plan_run`` pre-arms Plan Mode before the loop with the draft's
+``plan_id`` already set, then runs the agent main loop so the agent authors the
+plan via ``exit_plan_mode``. These tests assert the launcher's pre-arm +
+invocation contract and its fail-closed guarantee; the actual fill is covered by
+the exit_plan_mode dual-state tests.
 
 The DB-touching surface (``_resolve_agent_models``) is exercised with the
 project's hand-rolled async-session fake; ``invoke_agent`` is patched on the

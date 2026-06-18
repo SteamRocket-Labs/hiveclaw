@@ -170,88 +170,6 @@ async def test_check_allows_when_confirmed_plan_id_version_hash_match(patched_ga
 
 
 @pytest.mark.asyncio
-async def test_check_allows_when_confirmed_plan_action_artifact_matches(patched_gate):
-    """High-risk handoff is not just plan hash bound: the exact action payload
-    being authorised must match the confirmed plan's recorded artifact."""
-    gate, session = patched_gate
-    agent_id = uuid4()
-    plan = _make_confirmed_plan(
-        session,
-        agent_id=agent_id,
-        version=1,
-        plan_hash="sha256:abc",
-        intent_type="in_session_execution",
-        metadata_json={
-            "confirmed_action_artifact": {
-                "definition_hash": "wf-hash-1",
-                "risk_reasons": ["step 'send' has external effects"],
-            }
-        },
-    )
-
-    decision = await gate.check(
-        session,
-        agent_id=agent_id,
-        action_kind="start_workflow",
-        confirmed_plan_id=plan.id,
-        plan_version=1,
-        plan_hash="sha256:abc",
-        action_artifact={"definition_hash": "wf-hash-1", "risk_reasons": ["step 'send' has external effects"]},
-    )
-
-    assert decision.allowed is True
-    assert decision.reason == "confirmed_plan_handoff"
-
-
-@pytest.mark.asyncio
-async def test_check_needs_plan_when_action_artifact_missing_from_confirmed_plan(patched_gate):
-    gate, session = patched_gate
-    agent_id = uuid4()
-    plan = _make_confirmed_plan(session, agent_id=agent_id, version=1, plan_hash="sha256:abc")
-    plan.intent_type = "in_session_execution"
-
-    decision = await gate.check(
-        session,
-        agent_id=agent_id,
-        action_kind="start_workflow",
-        confirmed_plan_id=plan.id,
-        plan_version=1,
-        plan_hash="sha256:abc",
-        action_artifact={"definition_hash": "wf-hash-1"},
-    )
-
-    assert decision.allowed is False
-    assert decision.reason == "action_artifact_missing"
-
-
-@pytest.mark.asyncio
-async def test_check_needs_plan_when_action_artifact_mismatches_confirmed_plan(patched_gate):
-    gate, session = patched_gate
-    agent_id = uuid4()
-    plan = _make_confirmed_plan(
-        session,
-        agent_id=agent_id,
-        version=1,
-        plan_hash="sha256:abc",
-        intent_type="in_session_execution",
-        metadata_json={"confirmed_action_artifact": {"definition_hash": "wf-hash-1"}},
-    )
-
-    decision = await gate.check(
-        session,
-        agent_id=agent_id,
-        action_kind="start_workflow",
-        confirmed_plan_id=plan.id,
-        plan_version=1,
-        plan_hash="sha256:abc",
-        action_artifact={"definition_hash": "wf-hash-2"},
-    )
-
-    assert decision.allowed is False
-    assert decision.reason == "action_artifact_mismatch"
-
-
-@pytest.mark.asyncio
 async def test_check_needs_plan_with_bare_confirmed_plan_id(patched_gate):
     """A plan id alone is not enough; handoff must bind version + hash."""
     gate, session = patched_gate
@@ -329,7 +247,8 @@ async def test_check_needs_plan_when_no_plan_referenced(patched_gate):
     payload = decision.needs_plan_payload
     assert payload is not None
     assert payload["ok"] is False
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert payload["next_action"]
 
 
@@ -349,7 +268,7 @@ async def test_check_needs_plan_when_confirmed_plan_id_unknown(patched_gate):
 
     assert decision.allowed is False
     assert decision.reason == "plan_not_found"
-    assert decision.needs_plan_payload["status"] == "needs_plan"
+    assert decision.needs_plan_payload["status"] == "requires_confirmation"
 
 
 @pytest.mark.asyncio
@@ -391,7 +310,7 @@ async def test_check_needs_plan_on_version_mismatch(patched_gate):
 
     assert decision.allowed is False
     assert decision.reason == "version_mismatch"
-    assert decision.needs_plan_payload["status"] == "needs_plan"
+    assert decision.needs_plan_payload["status"] == "requires_confirmation"
 
 
 @pytest.mark.asyncio
@@ -546,34 +465,3 @@ async def test_needs_plan_payload_summary_mentions_the_action(patched_gate):
     assert decision.allowed is False
     # The summary should be human/agent-actionable and reference confirming a plan.
     assert "plan" in decision.needs_plan_payload["summary"].lower()
-
-
-@pytest.mark.asyncio
-async def test_check_allows_artifact_recorded_in_plan_json(patched_gate):
-    """The production landing spot: exit_plan_mode submits the artifact inside
-    the fill, so it lives in ``plan_json["action_artifact"]`` (and is covered by
-    the plan hash). The gate must accept that position."""
-    gate, session = patched_gate
-    agent_id = uuid4()
-    artifact = {"definition_hash": "wf-hash-1", "args_hash": "args-hash-1", "risk_reasons": ["external send"]}
-    plan = _make_confirmed_plan(
-        session,
-        agent_id=agent_id,
-        version=1,
-        plan_hash="sha256:abc",
-        intent_type="in_session_execution",
-        plan_json={"schema": "hive_plan.v1", "title": "外发周报", "action_artifact": artifact},
-    )
-
-    decision = await gate.check(
-        session,
-        agent_id=agent_id,
-        action_kind="start_workflow",
-        confirmed_plan_id=plan.id,
-        plan_version=1,
-        plan_hash="sha256:abc",
-        action_artifact=dict(artifact),
-    )
-
-    assert decision.allowed is True
-    assert decision.reason == "confirmed_plan_handoff"

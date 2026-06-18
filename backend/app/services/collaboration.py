@@ -63,6 +63,7 @@ class CollaborationService:
 
         db.add(AuditLog(
             agent_id=from_agent_id,
+            tenant_id=from_agent.tenant_id,
             action="collaboration:delegate",
             details={
                 "from_agent": str(from_agent_id),
@@ -164,6 +165,7 @@ class CollaborationService:
 
         db.add(AuditLog(
             agent_id=from_agent_id,
+            tenant_id=tenant_id,
             action=f"collaboration:{msg_type}",
             details={"to_agent": str(to_agent_id), "message_preview": message[:100]},
         ))

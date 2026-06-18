@@ -13,7 +13,7 @@ rejected write ABORTS — it never falls back to raw content, and the store neve
 hand-assembles Markdown around the gate.
 
 Storage is tenant-scoped (a separate ``base_dir`` per tenant). The offline daemon
-that scans T0 logs and LLM-distills How is wired on top of ``distill_and_record``
+that scans the T0 session ledger and LLM-distills How is wired on top of ``distill_and_record``
 via an injected distiller; periodic scheduling + T0 scanning is operational
 follow-up (kept out of this cut so the governed-write invariant lands first).
 """

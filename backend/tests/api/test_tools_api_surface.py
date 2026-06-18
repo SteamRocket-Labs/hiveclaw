@@ -35,6 +35,8 @@ class _FakeDB:
         self.committed = False
 
     async def execute(self, _stmt):
+        if "SET LOCAL app.current_tenant_id" in str(_stmt):
+            return _ScalarResult(None)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)

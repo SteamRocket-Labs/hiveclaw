@@ -94,7 +94,7 @@ The following facts were verified against the current repository before writing 
 
 1. Heartbeat reflection is preserved but excluded from learning.
 
-   `heartbeat.py` saves the full assistant reply to `ChatMessage` and emits `HEARTBEAT_TICK_END` with `reasoning`, but `t0_logger.py` stores heartbeat under `logs/.../system/`, which is explicitly audit-only. `extract_agent.extract()` also returns early for `source == "heartbeat"`.
+   `heartbeat.py` saves the full assistant reply to `ChatMessage` and emits `HEARTBEAT_TICK_END` with `reasoning`; after the T0 ledger rewrite, that runtime event must be preserved in `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md`. The old `t0_logger.py` `logs/.../system/` path is legacy/import compatibility only and remains audit-only.
 
    Result: high-value model reflection can exist in storage but never enter the main T2/T3/dream learning lane.
 
@@ -253,7 +253,7 @@ This must be delivered as one complete pass. Do not ship only one patch that mak
 ### R6. Backfill Without Polluting Memory
 
 - Provide a dry-run backfill tool for recent heartbeat reflections:
-  - read recent heartbeat ChatMessages and system T0 logs
+  - read recent heartbeat ChatMessages and T0 session ledger events, with legacy system logs only as import/audit fallback
   - run Learning Brain / Extractor
   - show candidate count by category and confidence
   - require explicit apply confirmation
@@ -331,7 +331,7 @@ Required red tests:
   - Given a long reflection where the useful lesson occurs after the first 80 chars, assert the learning pass receives the useful lesson.
 
 - `test_heartbeat_reflection_preserves_source_refs`
-  - Assert emitted candidates contain source refs to heartbeat session id, ChatMessage, invocation span, T0 log, or runtime task.
+  - Assert emitted candidates contain source refs to heartbeat session id, ChatMessage, invocation span, T0 session ledger event, or runtime task.
 
 ### 6.3 Extractor / Learning Brain Tests
 

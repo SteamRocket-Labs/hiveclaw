@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
-from app.core.tenant_scope import resolve_tenant_scope
+from app.core.tenant_scope import resolve_and_pin_tenant_scope, resolve_tenant_scope
 from app.database import get_db
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
@@ -122,7 +122,7 @@ async def get_memory_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Get tenant memory configuration."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(TenantSetting).where(
             TenantSetting.tenant_id == target_tenant_id,
@@ -142,7 +142,7 @@ async def update_memory_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Update tenant memory configuration (admin only)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     result = await db.execute(
         select(TenantSetting).where(

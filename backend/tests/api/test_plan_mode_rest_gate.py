@@ -1,11 +1,12 @@
-"""REST early-intercept layer for Plan Mode (``docs/plan-mode-design.md`` §9.3 / §9.0).
+"""REST confirmation-gate wiring.
 
 These tests pin the behaviour of the *REST gate*: every endpoint that creates or
 enables an autonomous artifact (an enabled trigger, an activated wake objective,
 an async delegation, or an auto-executing task) must consult
 :class:`PlanModeGate` *after* the existing permission / tenant / validation
-checks, and return **409 ``plan_required``** when no confirmed plan authorises the
-action. The same request carrying a matching confirmed plan must pass through.
+checks, and return **409 ``requires_confirmation``** when no confirmed plan
+authorises the action. The same request carrying a matching confirmed plan must
+pass through.
 
 Read-only GETs, disables, deletes, and low-risk updates must **not** be gated —
 they keep their existing contract verbatim (covered by the pre-existing API
@@ -132,13 +133,14 @@ async def _fake_enrich_task_out(task, _db):
     )
 
 
-def _needs_plan_decision() -> PlanGateDecision:
+def _requires_confirmation_decision() -> PlanGateDecision:
     return PlanGateDecision(
         allowed=False,
         reason="no_confirmed_plan",
         needs_plan_payload={
             "ok": False,
-            "status": "needs_plan",
+            "status": "requires_confirmation",
+            "requires_confirmation": True,
             "summary": "Confirm a plan before starting this autonomous action.",
             "next_action": "STOP and create/show a plan, then WAIT for confirmation.",
         },
@@ -219,7 +221,7 @@ def test_create_trigger_without_plan_returns_409(monkeypatch):
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     _trigger_view_stub(monkeypatch, mod)
-    gate = _StubGate(_needs_plan_decision())
+    gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
     client = TestClient(app)
@@ -231,7 +233,7 @@ def test_create_trigger_without_plan_returns_409(monkeypatch):
 
     assert resp.status_code == 409
     body = resp.json()["detail"]
-    assert body["status"] == "needs_plan"
+    assert body["status"] == "requires_confirmation"
     # No trigger persisted on the blocked branch.
     assert db.added == []
     assert db.committed is False
@@ -355,7 +357,7 @@ def test_update_trigger_enable_without_plan_returns_409(monkeypatch):
     db = _QueuedDB([_ScalarResult(trigger)])
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    gate = _StubGate(_needs_plan_decision())
+    gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
     client = TestClient(app)
@@ -365,7 +367,7 @@ def test_update_trigger_enable_without_plan_returns_409(monkeypatch):
     )
 
     assert resp.status_code == 409
-    assert resp.json()["detail"]["status"] == "needs_plan"
+    assert resp.json()["detail"]["status"] == "requires_confirmation"
     # The enable must not have been applied or committed.
     assert trigger.is_enabled is False
     assert db.committed is False
@@ -504,7 +506,7 @@ def test_create_schedule_without_plan_returns_409(monkeypatch):
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "is_agent_creator", lambda _u, _a: True)
-    gate = _StubGate(_needs_plan_decision())
+    gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
     client = TestClient(app)
@@ -515,7 +517,7 @@ def test_create_schedule_without_plan_returns_409(monkeypatch):
     )
 
     assert resp.status_code == 409
-    assert resp.json()["detail"]["status"] == "needs_plan"
+    assert resp.json()["detail"]["status"] == "requires_confirmation"
     assert db.added == []
     assert db.flushed is False
     assert gate.calls[0]["action_kind"] == "create_enabled_trigger"
@@ -669,14 +671,14 @@ def test_schedule_run_without_plan_returns_409(monkeypatch):
     db = _QueuedDB([_ScalarResult(schedule)])
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    gate = _StubGate(_needs_plan_decision())
+    gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
     client = TestClient(app)
     resp = client.post(f"/agents/{schedule.agent_id}/schedules/{schedule.id}/run")
 
     assert resp.status_code == 409
-    assert resp.json()["detail"]["status"] == "needs_plan"
+    assert resp.json()["detail"]["status"] == "requires_confirmation"
     # No manual one-shot trigger queued.
     assert db.added == []
     assert gate.calls[0]["action_kind"] == "create_enabled_trigger"
@@ -767,7 +769,7 @@ def test_delegate_without_plan_returns_409(monkeypatch):
     db = _QueuedDB()
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    gate = _StubGate(_needs_plan_decision())
+    gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
     delegate_called = {"n": 0}
@@ -786,7 +788,7 @@ def test_delegate_without_plan_returns_409(monkeypatch):
     )
 
     assert resp.status_code == 409
-    assert resp.json()["detail"]["status"] == "needs_plan"
+    assert resp.json()["detail"]["status"] == "requires_confirmation"
     assert delegate_called["n"] == 0
     assert gate.calls[0]["action_kind"] == "start_delegation"
 
@@ -865,7 +867,7 @@ def test_create_todo_task_without_plan_returns_409(monkeypatch):
     db = _QueuedDB()
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
-    gate = _StubGate(_needs_plan_decision())
+    gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
     client = TestClient(app)
@@ -876,7 +878,7 @@ def test_create_todo_task_without_plan_returns_409(monkeypatch):
     )
 
     assert resp.status_code == 409
-    assert resp.json()["detail"]["status"] == "needs_plan"
+    assert resp.json()["detail"]["status"] == "requires_confirmation"
     # No task persisted, no background execution fired.
     assert db.added == []
     assert db.committed is False
@@ -929,7 +931,7 @@ def test_trigger_task_without_plan_returns_409(monkeypatch):
     app, _user, allow_access = _make_client(mod, db=db)
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
-    gate = _StubGate(_needs_plan_decision())
+    gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
 
     executed = {"n": 0}
@@ -943,6 +945,6 @@ def test_trigger_task_without_plan_returns_409(monkeypatch):
     resp = client.post(f"/agents/{task.agent_id}/tasks/{task.id}/trigger")
 
     assert resp.status_code == 409
-    assert resp.json()["detail"]["status"] == "needs_plan"
+    assert resp.json()["detail"]["status"] == "requires_confirmation"
     assert executed["n"] == 0
     assert gate.calls[0]["action_kind"] == "start_long_task"

@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
-from app.core.tenant_scope import resolve_tenant_scope
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.models.user import Department, User
 from app.schemas.schemas import DepartmentCreate, DepartmentOut, DepartmentTree, UserOut, UserUpdate
@@ -24,7 +24,7 @@ async def get_department_tree(
     db: AsyncSession = Depends(get_db),
 ):
     """Get full department tree."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(Department)
         .where(Department.tenant_id == target_tenant_id)
@@ -70,7 +70,7 @@ async def create_department(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new department (admin only)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     dept = Department(
         tenant_id=target_tenant_id,
         name=data.name,
@@ -91,7 +91,7 @@ async def update_department(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a department."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(Department).where(
             Department.id == dept_id,
@@ -119,7 +119,7 @@ async def delete_department(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a department (admin only)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(Department).where(
             Department.id == dept_id,
@@ -142,7 +142,7 @@ async def list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """List users, optionally filtered by department."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(User).where(User.is_active, User.tenant_id == target_tenant_id)
     if department_id:
         query = query.where(User.department_id == department_id)

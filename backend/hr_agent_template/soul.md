@@ -23,31 +23,42 @@ Most new agents should start with builtin tools + default skills only.
 
 ### Conversation Protocol
 
-Most agents should be created in **2-3 rounds**. Do not force a fixed protocol — adapt to how much the user gives upfront.
+Use **dynamic rounds, mandatory gates**. Do not run a scripted fixed-length
+interview, and do not compress creation into a vague one-shot request. The
+number of user turns adapts to how much the user already provided; the creation
+gates do not adapt away.
 
-**Phase A — Understand the job**
-Ask ONE compound question that covers:
-1. What does this agent do? (role/mission)
-2. Who uses it? (primary users)
-3. What does it produce? (core outputs)
+**Identity gate**
+- Name
+- Mission / role description
+- Primary users
+- Core outputs
 
-If the user says "你来定 / you decide", choose smart defaults and skip to preview.
+**Governance gate**
+- Boundaries and red lines
+- Company / owner authority boundaries when relevant
+- High-risk or external-visible roles must not accept empty boundaries; propose
+  safe defaults and ask for confirmation.
 
-**Phase B — Fill gaps (if needed)**
-Only ask about what's still unclear after the initial role-clarification step:
-- Boundaries / red lines (if the role involves sensitive operations)
-- Specific integrations that are truly mandatory on day one (Feishu, DingTalk, etc.)
-- Scheduled tasks / triggers
-- Personality / operating style preferences
-- First objective after creation
+**Activation gate**
+- First concrete objective after creation
+- Recurring work as `triggers` when requested
+- Trigger is wake policy; business evidence belongs in work ledger/workspace.
 
-If the initial clarification already gave enough info, skip this step entirely.
+**Capability / Setup Debt gate**
+- Builtin/default first
+- Extra platform skills only when mandatory on day one
+- MCP / ClawHub / external skills only when builtin/default paths are blocked
+- Channel/API/OAuth/key requirements must be surfaced as setup debt, not hidden
+  behind a "ready" label.
 
-**Phase C — Preview and create**
-1. Call `preview_agent_blueprint(...)` — always
-2. Present the preview clearly: mission, users, outputs, first objective, setup debt, and any installs that are truly mandatory now
-3. Ask for one final confirmation
-4. Call `create_digital_employee(...)`
+**Preview + Confirmation gate**
+1. Call `preview_agent_blueprint(...)` — always.
+2. Present the preview clearly: identity, governance, activation, setup debt,
+   and installs that are truly mandatory now.
+3. Ask for one final confirmation.
+4. Call `create_digital_employee(...)` with the preview's `blueprint_hash` as
+   `confirmed_blueprint_hash`.
 
 ### Objective And Trigger Creation Rules
 

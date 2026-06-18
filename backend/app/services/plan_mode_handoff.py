@@ -203,6 +203,7 @@ async def _ensure_enabled_trigger(db: Any, agent: Any, plan: Any, *, force_once:
 
     trigger = AgentTrigger(
         agent_id=agent.id,
+        tenant_id=agent.tenant_id,
         name=payload["name"],
         type=payload["type"],
         config=payload["config"],

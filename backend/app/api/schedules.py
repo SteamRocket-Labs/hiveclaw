@@ -263,6 +263,7 @@ async def create_schedule(
 
     trigger = AgentTrigger(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         name=data.name.strip(),
         type="cron",
         config=config,
@@ -378,8 +379,12 @@ async def trigger_schedule(
     db: AsyncSession = Depends(get_db),
 ):
     """Queue a one-shot trigger instead of directly invoking a scheduler runtime."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
+    trigger_tenant_id = getattr(trigger, "tenant_id", None)
+    if trigger_tenant_id is None:
+        trigger.tenant_id = agent.tenant_id
+        trigger_tenant_id = agent.tenant_id
     # Plan Mode early intercept (§9.3): a manual run queues an enabled one-shot
     # autonomous trigger, so it needs a confirmed plan (or cutover exemption).
     run = data or ScheduleRunIn()
@@ -425,6 +430,7 @@ async def trigger_schedule(
         )
     manual = AgentTrigger(
         agent_id=agent_id,
+        tenant_id=trigger_tenant_id or agent.tenant_id,
         name=f"manual_{trigger.name[:70]}_{uuid.uuid4().hex[:8]}",
         type="once",
         config=manual_config,

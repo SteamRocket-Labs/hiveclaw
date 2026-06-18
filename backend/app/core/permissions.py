@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.policy import check_permission
+from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
@@ -25,7 +26,15 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
     3. User is the agent creator → manage
     4. User has explicit permission (company/user scope) → from permission record
     """
-    result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+    if user.role == "platform_admin":
+        async with enter_rls_bypass(
+            db,
+            reason=f"platform-admin agent access lookup for {agent_id}",
+            actor_id=str(user.id),
+        ) as bypass_db:
+            result = await bypass_db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+    else:
+        result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -41,6 +50,7 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
 
     # Platform admins can access everything with manage
     if user.role == "platform_admin":
+        await pin_rls_tenant_context(db, agent.tenant_id)
         return agent, "manage"
 
     # Tenant boundary: non-platform users can only access agents in their own tenant

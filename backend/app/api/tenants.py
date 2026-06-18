@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import get_current_user, require_role
-from app.database import get_db
+from app.core.security import create_access_token, get_current_user, require_role
+from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -66,6 +66,18 @@ def _slugify(name: str) -> str:
     return slug
 
 
+def _normalize_invitation_code(code: str) -> str:
+    return code.strip().upper()
+
+
+async def _scope_session_to_tenant(db: AsyncSession, tenant_id: uuid.UUID | str) -> uuid.UUID:
+    """Pin this request transaction to the tenant selected by a validated invite."""
+    pinned = await pin_rls_tenant_context(db, tenant_id)
+    if pinned is None:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    return pinned
+
+
 # ─── Self-Service: Create Company ───────────────────────
 
 @router.post("/self-create", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
@@ -93,6 +105,7 @@ async def self_create_company(
     tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
     db.add(tenant)
     await db.flush()
+    await _scope_session_to_tenant(db, tenant.id)
 
     # Assign creator as org_admin
     current_user.tenant_id = tenant.id
@@ -114,6 +127,7 @@ class JoinRequest(BaseModel):
 class JoinResponse(BaseModel):
     tenant: TenantOut
     role: str
+    access_token: str
 
 
 @router.post("/join", response_model=JoinResponse)
@@ -127,24 +141,36 @@ async def join_company(
         raise HTTPException(status_code=400, detail="You already belong to a company")
 
     from app.models.invitation_code import InvitationCode
-    ic_result = await db.execute(
-        select(InvitationCode).where(
-            InvitationCode.code == data.invitation_code,
-            InvitationCode.is_active,
-            InvitationCode.tenant_id.is_not(None),
-        )
-    )
-    code_obj = ic_result.scalar_one_or_none()
-    if not code_obj:
-        raise HTTPException(status_code=400, detail="Invalid invitation code")
-    if code_obj.used_count >= code_obj.max_uses:
-        raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
 
-    # Find the company
-    t_result = await db.execute(select(Tenant).where(Tenant.id == code_obj.tenant_id))
-    tenant = t_result.scalar_one_or_none()
-    if not tenant or not tenant.is_active:
-        raise HTTPException(status_code=400, detail="Company not found or is disabled")
+    normalized_code = _normalize_invitation_code(data.invitation_code)
+    if not normalized_code:
+        raise HTTPException(status_code=400, detail="Invalid invitation code")
+
+    async with enter_rls_bypass(
+        db,
+        reason="tenant join invitation lookup",
+        actor_id=str(current_user.id),
+    ) as bypass_db:
+        ic_result = await bypass_db.execute(
+            select(InvitationCode).where(
+                InvitationCode.code == normalized_code,
+                InvitationCode.is_active,
+                InvitationCode.tenant_id.is_not(None),
+            ).with_for_update()
+        )
+        code_obj = ic_result.scalar_one_or_none()
+        if not code_obj:
+            raise HTTPException(status_code=400, detail="Invalid invitation code")
+        if code_obj.used_count >= code_obj.max_uses:
+            raise HTTPException(status_code=400, detail="Invitation code has reached its usage limit")
+
+        # Find the company while tenantless users still have no RLS tenant scope.
+        t_result = await bypass_db.execute(select(Tenant).where(Tenant.id == code_obj.tenant_id))
+        tenant = t_result.scalar_one_or_none()
+        if not tenant or not tenant.is_active:
+            raise HTTPException(status_code=400, detail="Company not found or is disabled")
+
+    target_tenant_id = await _scope_session_to_tenant(db, code_obj.tenant_id)
 
     # Check if this company has an org_admin already
     admin_check = await db.execute(
@@ -169,10 +195,16 @@ async def join_company(
     # Increment invitation code usage
     code_obj.used_count += 1
     await db.flush()
+    await db.commit()
 
     return JoinResponse(
         tenant=TenantOut.model_validate(tenant),
         role=current_user.role,
+        access_token=create_access_token(
+            str(current_user.id),
+            current_user.role,
+            tenant_id=str(target_tenant_id),
+        ),
     )
 
 

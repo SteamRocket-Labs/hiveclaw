@@ -1,11 +1,11 @@
-"""Plan Mode tool gate at the ToolRuntimeService entry points (§9.2).
+"""Confirmation gate at the ToolRuntimeService entry points.
 
-These tests pin the *early-intercept* behaviour of the tool layer: a tagged
-autonomous-enabling tool with no confirmed plan must short-circuit with the
-``needs_plan`` envelope (and never reach the registry), while an untagged tool
-runs exactly as before. The gate must fire at all three entrypoints —
-``execute`` / ``execute_direct`` / ``execute_approved`` — so ``execute_approved``
-cannot be used to bypass it (§9.2 + design §18 "no hole").
+These tests pin the tool-layer confirmation backstop: a tagged autonomous-
+enabling tool with no confirmed user approval must short-circuit with a
+``requires_confirmation`` envelope (and never reach the registry), while an
+untagged tool runs exactly as before. The gate must fire at all three entrypoints
+— ``execute`` / ``execute_direct`` / ``execute_approved`` — so
+``execute_approved`` cannot be used to bypass it.
 
 The decision logic itself is covered by the gate's own suites
 (``test_plan_mode_gate.py`` / ``test_plan_mode_gate_core.py``); here we only
@@ -145,7 +145,7 @@ _ALLOWED = PlanGateDecision(allowed=True, reason="confirmed_plan_handoff")
 
 
 # ---------------------------------------------------------------------------
-# execute(): tagged tool with no plan -> needs_plan, registry untouched.
+# execute(): tagged tool with no confirmation -> requires_confirmation, registry untouched.
 # ---------------------------------------------------------------------------
 
 
@@ -164,9 +164,12 @@ async def test_execute_blocks_tagged_tool_without_confirmed_plan():
     )
 
     payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert payload["ok"] is False
     assert payload["next_action"]
+    assert "activate_interactive_plan" not in payload
+    assert "interactive_plan_seed" not in payload
     assert registry.calls == []  # fail-closed: tool never executed
     assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
     assert gate.calls[0]["agent_id"] == context.agent_id
@@ -212,8 +215,10 @@ async def test_execute_blocks_agent_supplied_decline_without_trusted_runtime_con
     )
 
     payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert payload["ok"] is False
+    assert "activate_interactive_plan" not in payload
     assert registry.calls == []
     assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
 
@@ -349,23 +354,24 @@ async def test_execute_direct_blocks_tagged_tool_without_confirmed_plan():
     service = _make_service(context=context, registry=registry, gate=gate)
 
     result = await service.execute_direct(
-        "delegate_to_agent",
-        {"agent_name": "Worker", "message": "go"},
+        "set_trigger",
+        {"name": "Recurring sweep", "type": "cron", "config": {"expr": "0 9 * * *"}},
         agent_id=context.agent_id,
     )
 
     payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert registry.calls == []
-    assert gate.calls and gate.calls[0]["action_kind"] == "start_delegation"
+    assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
 
 
 @pytest.mark.asyncio
 async def test_execute_approved_blocks_tagged_tool_without_confirmed_plan():
     """§9.2: execute_approved must not be a bypass for the Plan Mode gate.
 
-    F-2: driven via delegate_to_agent (start_delegation) — manage_tasks was
-    retired from the agent tool face, so a still-gated tool proves the gate.
+    F-2: manage_tasks was retired from the agent tool face, so set_trigger
+    proves that a still-gated autonomous action cannot bypass the gate.
     """
     context = _context()
     registry = _FakeRegistry("SHOULD_NOT_RUN")
@@ -373,17 +379,18 @@ async def test_execute_approved_blocks_tagged_tool_without_confirmed_plan():
     service = _make_service(context=context, registry=registry, gate=gate)
 
     result = await service.execute_approved(
-        "delegate_to_agent",
-        {"agent_name": "Worker", "message": "Run the recurring sweep"},
+        "set_trigger",
+        {"name": "Recurring sweep", "type": "cron", "config": {"expr": "0 9 * * *"}},
         agent_id=context.agent_id,
         approved_by_user_id=uuid4(),
         approval_id=uuid4(),
     )
 
     payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert registry.calls == []
-    assert gate.calls and gate.calls[0]["action_kind"] == "start_delegation"
+    assert gate.calls and gate.calls[0]["action_kind"] == "create_enabled_trigger"
 
 
 @pytest.mark.asyncio
@@ -472,16 +479,17 @@ async def test_execute_passes_confirmed_plan_args_to_gate():
 
 
 @pytest.mark.asyncio
-async def test_execute_passes_start_workflow_action_artifact_to_gate():
-    """Tool and REST high-risk workflow starts must bind the same action
-    artifact. A confirmed long-task plan cannot authorise an unrelated
-    workflow definition."""
+async def test_execute_does_not_plan_gate_start_workflow_by_risk_grade():
+    """Workflow start must not enter Plan Mode through a hard-coded risk grade.
+
+    The workflow handler/REST surface may still require explicit confirmation,
+    but ToolRuntimeService must not route it through PlanModeGate.
+    """
     context = _context()
     registry = _FakeRegistry("OK")
-    gate = _RecordingGate(_ALLOWED)
+    gate = _RecordingGate(_BLOCKED)
     service = _make_service(context=context, registry=registry, gate=gate)
 
-    plan_id = uuid4()
     definition = {
         "name": "send-report",
         "steps": [
@@ -492,43 +500,35 @@ async def test_execute_passes_start_workflow_action_artifact_to_gate():
                 "leaf": {"name": "sender", "type": "worker"},
                 "task": "Send the report",
                 "effects": "external",
-            }
+            },
         ],
     }
 
-    await service.execute(
+    result = await service.execute(
         "start_workflow",
         {
             "definition": definition,
             "args": {},
-            "confirmed_plan_id": str(plan_id),
-            "confirmed_plan_version": 1,
-            "confirmed_plan_hash": "sha256:abc",
         },
         agent_id=context.agent_id,
         user_id=context.user_id,
     )
 
-    call = gate.calls[0]
-    assert call["action_kind"] == "start_workflow"
-    assert call["action_artifact"]["definition_hash"]
-    assert call["action_artifact"]["args_hash"]
-    assert call["action_artifact"]["risk_reasons"]
+    assert result == "OK"
+    assert len(registry.calls) == 1
+    assert gate.calls == []
 
 
 # ---------------------------------------------------------------------------
-# Blocked tagged tool with no confirmed plan (§9.2). Path-unification cut ④: an
-# eligible source (live chat / unattended) flips into main-loop Plan Mode via the
-# activation signal; a NON-eligible source gets a static needs_plan block. There
-# is no longer an RPC intercept-then-create that embeds plan_id/json/hash.
+# Blocked tagged tool with no confirmed plan. Every source gets the same static
+# confirmation block. There is no Plan Mode activation signal and no RPC
+# intercept-then-create that embeds plan_id/json/hash.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_blocked_tool_eligible_source_defers_to_main_loop_plan_mode():
-    """An eligible (live-chat) source whose tagged tool is blocked gets an
-    activation signal to flip into main-loop Plan Mode — no static plan
-    materialised, tool does not execute."""
+async def test_blocked_tool_eligible_source_returns_confirmation_required_without_plan_mode():
+    """An eligible source is still blocked, but it must not enter Plan Mode."""
     context = _context()
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     gate = _RecordingGate(_BLOCKED)
@@ -543,20 +543,18 @@ async def test_blocked_tool_eligible_source_defers_to_main_loop_plan_mode():
     )
 
     payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
-    # Eligible → activation signal carried (kernel flips the run into Plan Mode).
-    assert payload["activate_interactive_plan"] is True
-    assert payload["interactive_plan_seed"]["action_kind"] == "create_enabled_trigger"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
+    assert "activate_interactive_plan" not in payload
+    assert "interactive_plan_seed" not in payload
     # No static plan materialised, and the tool never executed (fail-closed).
     assert "plan_id" not in payload
     assert registry.calls == []
 
 
 @pytest.mark.asyncio
-async def test_blocked_tool_non_eligible_source_returns_static_needs_plan():
-    """Cut ④ fail-closed edge: a NON-eligible source (no availability flags) gets a
-    STATIC needs_plan block — no activation signal (agent does not plan), no plan
-    materialised, tool stays blocked. No RPC fallback."""
+async def test_blocked_tool_non_eligible_source_returns_confirmation_required():
+    """A non-eligible source gets the same static confirmation block."""
     context = _context()
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     gate = _RecordingGate(_BLOCKED)
@@ -570,7 +568,8 @@ async def test_blocked_tool_non_eligible_source_returns_static_needs_plan():
     )
 
     payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
+    assert payload["status"] == "requires_confirmation"
+    assert payload["requires_confirmation"] is True
     assert "activate_interactive_plan" not in payload  # agent does NOT plan
     assert "plan_id" not in payload  # nothing materialised
     assert registry.calls == []  # tool did not execute
@@ -605,13 +604,10 @@ async def test_confirmed_plan_handoff_does_not_create_a_new_plan():
 
 
 @pytest.mark.asyncio
-async def test_blocked_start_workflow_seed_carries_action_artifact():
-    """The activation seed must carry the SAME action artifact the gate was
-    checked with, so the plan authored in main-loop Plan Mode durably binds to
-    this exact definition + args. Without it a confirmed plan is later rejected
-    with ``action_artifact_missing`` and the high-risk launch deadlocks."""
+async def test_start_workflow_never_gets_tool_intercept_activation_seed():
+    """The old high-risk workflow path must not synthesize Plan Mode activation."""
     context = _context()
-    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    registry = _FakeRegistry("WORKFLOW_HANDLER_RESULT")
     gate = _RecordingGate(_BLOCKED)
     service = _make_service(context=context, registry=registry, gate=gate)
 
@@ -637,8 +633,6 @@ async def test_blocked_start_workflow_seed_carries_action_artifact():
         plan_mode_interactive_available=True,
     )
 
-    payload = json.loads(result)
-    assert payload["status"] == "needs_plan"
-    expected = gate.calls[0]["action_artifact"]
-    assert expected["definition_hash"] and expected["args_hash"]
-    assert payload["interactive_plan_seed"]["action_artifact"] == expected
+    assert result == "WORKFLOW_HANDLER_RESULT"
+    assert gate.calls == []
+    assert len(registry.calls) == 1

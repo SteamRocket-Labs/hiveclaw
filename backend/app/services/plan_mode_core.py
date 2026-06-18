@@ -45,7 +45,6 @@ ACTION_KINDS: tuple[str, ...] = (
     "enable_autonomous_wake",
     "start_long_task",
     "start_delegation",
-    "start_workflow",
 )
 
 #: action_kind -> intent_type. Trigger/wake creation maps to a recurring
@@ -56,9 +55,6 @@ _ACTION_INTENT: dict[str, str] = {
     "enable_autonomous_wake": "autonomous_wake",
     "start_long_task": "in_session_execution",
     "start_delegation": "delegation",
-    # §9 P4: high-risk ephemeral workflow launches confirm through Plan Mode
-    # (§10 decision 3 — graded by risk, not by ephemeral/registered).
-    "start_workflow": "in_session_execution",
 }
 
 
@@ -1214,7 +1210,7 @@ class HandoffCheck:
 
     ``error_code`` is one of ``plan_not_confirmed`` /
     ``missing_plan_version_hash`` / ``version_mismatch`` / ``hash_mismatch`` —
-    all of which collapse to ``needs_plan`` at the gate.
+    all of which collapse to a confirmation-required block at the gate.
     """
 
     ok: bool
@@ -1264,9 +1260,9 @@ def validate_plan_handoff(
     return HandoffCheck(ok=True)
 
 
-#: §9.2 — default copy for the ``needs_plan`` envelope. Kept terse and
-#: agent-actionable; the next_action mirrors deep_research's RC14 wording so the
-#: agent STOPs and waits for a real user confirmation rather than self-confirming.
+#: Default copy for explicit Plan Mode submissions and tool/REST confirmation
+#: blocks. Kept terse and agent-actionable so the agent STOPs and waits for a
+#: real user confirmation rather than self-confirming.
 _NEEDS_PLAN_SUMMARY = (
     "Confirm a plan before starting this autonomous action. Present the plan to the user and collect their "
     "explicit approval first; preference memory or prior authorization may prefill the plan but is NOT approval."
@@ -1278,7 +1274,7 @@ _NEEDS_PLAN_NEXT_ACTION = (
 
 
 def default_needs_plan_summary() -> str:
-    """Return the default ``needs_plan`` summary copy (§9.2).
+    """Return the default confirmation summary copy.
 
     Exposed so the shell can reuse it as a fallback without reaching into a
     module-private constant.
@@ -1294,11 +1290,11 @@ def build_needs_plan_payload(
     plan_preview: dict | None = None,
     next_action: str | None = None,
 ) -> dict:
-    """Assemble the §9.2 ``needs_plan`` response envelope.
+    """Assemble the explicit Plan Mode ``needs_plan`` response envelope.
 
-    Isomorphic with the deep_research ``needs_plan`` contract so every gate
-    surface (tool result, REST body) speaks the same shape. Optional fields are
-    omitted when absent rather than emitted as ``None``.
+    This is retained for Plan Mode's own submit/confirmation flow. Tool/REST
+    gate blocks should use :func:`build_confirmation_required_payload` instead.
+    Optional fields are omitted when absent rather than emitted as ``None``.
     """
     payload: dict = {
         "ok": False,
@@ -1312,6 +1308,32 @@ def build_needs_plan_payload(
         payload["plan_version"] = plan_version
     if plan_preview is not None:
         payload["plan_preview"] = plan_preview
+    return payload
+
+
+def build_confirmation_required_payload(
+    *,
+    plan_id: str | UUID | None = None,
+    plan_version: int | None = None,
+    summary: str | None = None,
+    plan_preview: dict | None = None,
+    next_action: str | None = None,
+) -> dict:
+    """Assemble the non-Plan-Mode confirmation-required response envelope.
+
+    This is for tool/REST/backstop refusals that need explicit user approval but
+    must not force the session into Plan Mode. ``build_needs_plan_payload`` stays
+    available for explicit Plan Mode's own submission/ledger flow.
+    """
+    payload = build_needs_plan_payload(
+        plan_id=plan_id,
+        plan_version=plan_version,
+        summary=summary,
+        plan_preview=plan_preview,
+        next_action=next_action,
+    )
+    payload["status"] = "requires_confirmation"
+    payload["requires_confirmation"] = True
     return payload
 
 

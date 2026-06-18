@@ -69,6 +69,7 @@ async def configure_atlassian_channel(
 
     config = ChannelConfig(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         channel_type="atlassian",
         app_id="atlassian",
         app_secret=api_key,

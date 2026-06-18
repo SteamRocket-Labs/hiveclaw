@@ -23,6 +23,8 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory / self-evolution boundary law:** LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。Any memory, heartbeat, dream, skill, workflow, or evolution path that replaces model judgment with counters, regexes, truncated summaries, or platform-authored "semantic" text is an AI-native violation. Any path that lets the model bypass governed write surfaces for durable memory/evolution/soul files is a governance violation.
 
+**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown summary blocks, a converged T3 semantic layer (`memory/t3/canon.md`, `relations.md`, `contradictions.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from memory evidence, not a T3 page. Graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/index.md` is a navigation map, not always-on prompt memory.
+
 **Review lens — apply to every subsystem:** ① Is the LLM's input visibility complete? ② Is its output budget sufficient? ③ Is the prompt engineered to benchmark quality? ④ Does mechanical processing appear only as an observable fallback?
 
 ## Delivery Discipline — One Complete Pass, No MVP (交付纪律 — 一次改完，零技术债)
@@ -35,7 +37,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, and an owner/company-aware Memory Control Plane.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, and an owner/company-aware Memory Governance Layer.
 
 - **Version:** 1.7.0 (tracked in `backend/VERSION` and `frontend/VERSION`)
 - **License:** Apache 2.0
@@ -49,6 +51,9 @@ Treat these documents as the current truth surface before making architecture cl
 - `docs/hive-sota-master-goal.md` — canonical SOTA total goal, target matrix, and future loop-comparison ledger.
 - `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
 - `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark, detailed comparison sources, and milestone evidence.
+- `docs/memory-clean-loop-refactor-plan-2026-06-17.md` — current memory clean-loop redesign and Agent Markdown Wiki / Learning Vault target.
+- `docs/memory-system-flow-map-2026-06-17.md` — end-to-end memory flow map, including source_refs-backed residual evidence verification, T3 semantic layer, and capability candidate lanes.
+- `docs/agent-memory-md-first-spec.md` — MD-first memory truth-source contract and lifecycle spec.
 - `docs/self-evolution-sota-plan.md` — canonical self-evolution foundation, now a completed substrate plus ongoing benchmark baseline.
 - `docs/agent-memory-purity-spec.md` — memory purity, lifecycle, and hygiene contract.
 
@@ -61,6 +66,7 @@ Current implemented closures that future work must preserve:
 - Subagent/delegation is a first-class collaboration capability: lightweight workers, peer delegation, fanout, context isolation, result distillation, governed shared tool execution, and replay-safe resume boundaries must remain distinct from Workflow control flow.
 - Agent TodoList / Work Ledger / Progress Ledger is the CC Task/Todo-equivalent agent-authored task board: `track_todo` records todos/dependencies, `record_finding` records findings/failures/replan, and `read_ledger` restores state. Writing a todo is cognitive bookkeeping; it must not start execution.
 - Skill is a progressive-disclosure capability capsule, not merely a Markdown prompt. A Skill may package instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions; loading a Skill adds context/guidance only. Executable components still run through their governed runtime (`preview_workflow`/`start_workflow`, `spawn_subagent`/`delegate_to_agent`, or approved sandbox/code execution).
+- Memory/Self-Evolution target form is Agent Markdown Wiki / Learning Vault: T0 -> T2 -> T3 -> `soul.md` is the durable gradient; residual verification means T3 curation follows T2 `source_refs` back to T0 evidence; Skill may grow from memory evidence, while Workflow remains a separate execution-control system that memory can only reference or hand off evidence to.
 - `invocation_spans` are the canonical DB trace surface; JSONL spans remain compatibility artifacts.
 - Provider retry/overload fallback, token budget gates, CJK-aware estimates, canonical prompt-cache anchors, and Anthropic thinking-signature preservation are runtime contracts.
 - Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.
@@ -149,9 +155,9 @@ Social: `PlazaPost`, `PlazaComment`, `PlazaLike`
 | Office / docs | `office_document_service`, `officecli_adapter`, `text_extractor` |
 | Other | `pack_service`, `skill_creator_content`, `token_tracker`, `objective_service`, `autonomy_repair_plan` |
 
-### Memory Control Plane
+### Memory Governance Layer
 
-Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is governed by a Memory Control Plane. This layer decides what can be stored, what can be activated, and which actions require owner/company confirmation.
+Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is governed by a Memory Governance Layer. This layer decides what can be stored, what can be activated, and which actions require owner/company confirmation.
 
 | Capability | Primary code paths | Runtime invariant |
 |------------|--------------------|-------------------|

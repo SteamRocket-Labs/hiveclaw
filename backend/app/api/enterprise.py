@@ -12,7 +12,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
-from app.core.tenant_scope import resolve_tenant_scope
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, AuditLog, EnterpriseInfo
@@ -193,7 +193,7 @@ async def sync_eval_ci_runtime_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Mirror a selected company model into the isolated eval backend."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(LLMModel).where(
             LLMModel.id == data.model_id,
@@ -229,7 +229,7 @@ async def test_llm_model(
     from app.services.llm_client import create_llm_client, get_llm_model_identifier_error
     from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     identifier_error = get_llm_model_identifier_error(data.provider, data.model)
     if identifier_error:
         return {"success": False, "latency_ms": 0, "error": identifier_error}
@@ -291,7 +291,7 @@ async def list_llm_models(
     db: AsyncSession = Depends(get_db),
 ):
     """List LLM models scoped to the selected tenant, with is_default flag."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     # Get default model ID from TenantSetting
     from app.models.tenant_setting import TenantSetting
@@ -335,7 +335,7 @@ async def set_default_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Set the default LLM model for the tenant."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     model_id = data.get("model_id")
     if not model_id:
         raise HTTPException(status_code=400, detail="model_id required")
@@ -372,7 +372,7 @@ async def add_llm_model(
     """Add a new LLM model to the tenant's pool (admin)."""
     from app.services.llm_client import get_llm_model_identifier_error
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     identifier_error = get_llm_model_identifier_error(data.provider, data.model)
     if identifier_error:
         raise HTTPException(status_code=422, detail=identifier_error)
@@ -430,7 +430,7 @@ async def remove_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove an LLM model from the pool (tenant-scoped)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id))
     model = result.scalar_one_or_none()
     if not model:
@@ -499,7 +499,7 @@ async def update_llm_model(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing LLM model in the pool (admin, tenant-scoped)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(select(LLMModel).where(LLMModel.id == model_id, LLMModel.tenant_id == target_tenant_id))
     model = result.scalar_one_or_none()
     if not model:
@@ -594,7 +594,7 @@ async def list_enterprise_info(
     db: AsyncSession = Depends(get_db),
 ):
     """List all enterprise information entries."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(
         select(EnterpriseInfo).where(EnterpriseInfo.tenant_id == target_tenant_id).order_by(EnterpriseInfo.info_type)
     )
@@ -611,7 +611,7 @@ async def update_enterprise_info(
     db: AsyncSession = Depends(get_db),
 ):
     """Create or update enterprise information. Triggers sync to agents."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     info = await enterprise_sync_service.update_enterprise_info(
         db, target_tenant_id, info_type, data.content, data.visible_roles, current_user.id
     )
@@ -643,7 +643,7 @@ async def list_approvals(
     """List approval requests scoped to a tenant."""
     query = select(ApprovalRequest)
     # Scope by tenant: only show approvals for agents belonging to this tenant
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == target_tenant_id)
     query = query.where(ApprovalRequest.agent_id.in_(tenant_agent_ids))
     # Non-admins further restricted to their own agents
@@ -700,7 +700,7 @@ async def list_audit_logs(
     """List audit logs scoped to a tenant (admin only)."""
     query = select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)
     # Scope by tenant: only show logs for agents belonging to this tenant
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == target_tenant_id)
     query = query.where(AuditLog.agent_id.in_(tenant_agent_ids))
     if agent_id:
@@ -821,7 +821,7 @@ async def get_enterprise_stats(
 ):
     """Get enterprise dashboard statistics, optionally scoped to a tenant."""
     # Determine which tenant to filter by
-    tid = resolve_tenant_scope(current_user, tenant_id)
+    tid = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     total_agents = await db.execute(select(func.count(Agent.id)).where(Agent.tenant_id == tid))
     running_agents = await db.execute(
@@ -862,7 +862,7 @@ async def get_tenant_quotas(
     db: AsyncSession = Depends(get_db),
 ):
     """Get tenant quota defaults."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
@@ -884,7 +884,7 @@ async def update_tenant_quotas(
     db: AsyncSession = Depends(get_db),
 ):
     """Update tenant quota defaults (admin only)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
     tenant = result.scalar_one_or_none()
     if not tenant:
@@ -954,7 +954,7 @@ async def get_oidc_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Get OIDC SSO configuration for the current tenant (admin only)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     from app.models.tenant_setting import TenantSetting
 
@@ -988,7 +988,7 @@ async def update_oidc_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Set or update OIDC SSO configuration for the current tenant (admin only)."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     # Validate issuer URL by attempting discovery
     from app.services.oidc_service import discover_oidc
@@ -1082,7 +1082,7 @@ async def get_system_setting(
     if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 
-        target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+        target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         result = await db.execute(
             select(TenantSetting).where(
                 TenantSetting.tenant_id == target_tenant_id,
@@ -1121,7 +1121,7 @@ async def update_system_setting(
     if key in TENANT_SYSTEM_SETTING_KEYS:
         from app.models.tenant_setting import TenantSetting
 
-        target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+        target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
         result = await db.execute(
             select(TenantSetting).where(
                 TenantSetting.tenant_id == target_tenant_id,
@@ -1158,7 +1158,7 @@ async def list_org_departments(
     db: AsyncSession = Depends(get_db),
 ):
     """List all departments, optionally filtered by tenant."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(OrgDepartment).where(OrgDepartment.tenant_id == target_tenant_id)
     result = await db.execute(query.order_by(OrgDepartment.name))
     depts = [d for d in result.scalars().all() if getattr(d, "tenant_id", None) == target_tenant_id]
@@ -1184,7 +1184,7 @@ async def list_org_members(
     db: AsyncSession = Depends(get_db),
 ):
     """List org members, optionally filtered by department, search, or tenant."""
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     query = select(OrgMember).where(
         OrgMember.status == "active",
         OrgMember.tenant_id == target_tenant_id,
@@ -1213,11 +1213,12 @@ async def list_org_members(
 async def trigger_org_sync(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
 ):
     """Manually trigger org structure sync from Feishu."""
     from app.services.org_sync_service import org_sync_service
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     result = await org_sync_service.full_sync(target_tenant_id)
 
     # Sync org structure to workspace files + broadcast dirty mark to peers
@@ -1257,7 +1258,7 @@ async def create_invitation_codes(
 ):
     """Batch-create invitation codes for the current user's company."""
     _require_tenant_admin(current_user)
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     import random
     import string
 
@@ -1290,7 +1291,7 @@ async def list_invitation_codes(
     _require_tenant_admin(current_user)
     from sqlalchemy import func as sqla_func
 
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     base_filter = InvitationCode.tenant_id == target_tenant_id
     stmt = select(InvitationCode).where(base_filter)
@@ -1332,7 +1333,7 @@ async def export_invitation_codes_csv(
 ):
     """Export invitation codes for the current user's company as CSV."""
     _require_tenant_admin(current_user)
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     import csv
     import io
     from fastapi.responses import StreamingResponse
@@ -1375,7 +1376,7 @@ async def deactivate_invitation_code(
 ):
     """Deactivate an invitation code (must belong to current user's company)."""
     _require_tenant_admin(current_user)
-    target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     import uuid as _uuid
 
     result = await db.execute(

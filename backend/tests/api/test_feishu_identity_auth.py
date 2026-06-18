@@ -44,15 +44,15 @@ class _FakeDB:
         self.committed = False
         self.flushed = False
         self.added = []
+        self.sync_session = SimpleNamespace(info={})
+        self.statements = []
 
     async def get(self, model, pk):
         return self.session
 
     async def execute(self, _stmt):
-        if not self.execute_results:
-            raise AssertionError("Unexpected execute() call")
-
-        value = self.execute_results.pop(0)
+        self.statements.append(_stmt)
+        sql = getattr(_stmt, "text", None) or str(_stmt)
 
         class _Result:
             def __init__(self, item):
@@ -60,6 +60,13 @@ class _FakeDB:
 
             def scalar_one_or_none(self):
                 return self.item
+
+        if sql.lstrip().upper().startswith("SET LOCAL"):
+            return _Result(None)
+        if not self.execute_results:
+            raise AssertionError("Unexpected execute() call")
+
+        value = self.execute_results.pop(0)
 
         return _Result(value)
 
@@ -89,8 +96,10 @@ def _build_app(db: _FakeDB, current_user=None) -> FastAPI:
 
 
 def test_feishu_callback_post_uses_provider_driven_auth():
+    from app import database
+
     tenant_id = uuid4()
-    db = _FakeDB()
+    db = _FakeDB(execute_results=[None])
     app = _build_app(db)
     user = _fake_user(tenant_id)
 
@@ -106,11 +115,13 @@ def test_feishu_callback_post_uses_provider_driven_auth():
     body = response.json()
     assert body["access_token"] == "jwt-token"
     assert body["user"]["id"] == str(user.id)
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)
     auth_mock.assert_awaited_once()
 
 
 def test_feishu_sso_init_uses_current_oauth_authorize_contract(monkeypatch: pytest.MonkeyPatch):
-    db = _FakeDB()
+    db = _FakeDB(execute_results=[None])
     app = _build_app(db)
 
     settings = SimpleNamespace(
@@ -130,6 +141,29 @@ def test_feishu_sso_init_uses_current_oauth_authorize_contract(monkeypatch: pyte
     assert "response_type=code" in payload["authorize_url"]
     assert "redirect_uri=https%3A%2F%2Fexample.com%2Fapi%2Fauth%2Ffeishu%2Fcallback" in payload["authorize_url"]
     assert db.added, "Expected an SSO session row to be created"
+
+
+def test_feishu_sso_init_pins_explicit_tenant(monkeypatch: pytest.MonkeyPatch):
+    from app import database
+
+    tenant_id = uuid4()
+    db = _FakeDB(execute_results=[None])
+    app = _build_app(db)
+
+    settings = SimpleNamespace(
+        FEISHU_APP_ID="cli_test_app_id",
+        FEISHU_APP_SECRET="secret",
+        FEISHU_REDIRECT_URI="https://example.com/api/auth/feishu/callback",
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(f"/auth/feishu/sso/init?tenant_id={tenant_id}")
+
+    assert response.status_code == 200
+    assert db.added[0].tenant_id == tenant_id
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)
 
 
 def test_feishu_sso_init_returns_503_when_platform_env_missing(monkeypatch: pytest.MonkeyPatch):
@@ -221,6 +255,8 @@ def test_feishu_bind_init_returns_503_when_only_app_id_missing(monkeypatch: pyte
 
 
 def test_feishu_callback_get_completes_scan_session_and_returns_html_redirect():
+    from app import database
+
     tenant_id = uuid4()
     session_id = uuid4()
     user = _fake_user(tenant_id)
@@ -250,7 +286,36 @@ def test_feishu_callback_get_completes_scan_session_and_returns_html_redirect():
     assert session.provider_type == "feishu"
     assert session.user_id == user.id
     assert session.access_token == "jwt-token"
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)
     assert db.committed is True
+
+
+def test_feishu_sso_poll_pins_session_tenant():
+    from datetime import timedelta
+
+    from app import database
+
+    tenant_id = uuid4()
+    session_id = uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        tenant_id=tenant_id,
+        status="pending",
+        access_token=None,
+        user_id=None,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    db = _FakeDB(session=session)
+    app = _build_app(db)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get(f"/auth/feishu/sso/poll?session_id={session_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)
 
 
 def test_bind_feishu_account_uses_provider_binding():
@@ -273,6 +338,8 @@ def test_bind_feishu_account_uses_provider_binding():
 
 
 def test_feishu_card_callback_resolves_user_via_channel_user_service():
+    from app import database
+
     tenant_id = uuid4()
     approval_id = uuid4()
     agent_id = uuid4()
@@ -308,6 +375,8 @@ def test_feishu_card_callback_resolves_user_via_channel_user_service():
     assert response.status_code == 200
     resolve_user_mock.assert_awaited_once()
     resolve_approval_mock.assert_awaited_once()
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)
 
 
 @pytest.mark.asyncio

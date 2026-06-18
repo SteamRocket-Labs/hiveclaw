@@ -38,6 +38,8 @@ class _FakeDB:
         self.flushed = False
 
     async def execute(self, _stmt):
+        if "SET LOCAL app.current_tenant_id" in str(_stmt):
+            return _ScalarResult(None)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)
@@ -222,6 +224,7 @@ async def test_org_sync_route_uses_selected_tenant(monkeypatch):
     result = await enterprise_api.trigger_org_sync(
         tenant_id=str(target_tenant_id),
         current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        db=_FakeDB([]),
     )
 
     assert result["departments"] == 3

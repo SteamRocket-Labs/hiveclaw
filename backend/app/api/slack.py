@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.channel_rls import load_public_agent_channel_config
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
@@ -58,6 +59,7 @@ async def configure_slack_channel(
 
     config = ChannelConfig(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         channel_type="slack",
         app_id="slack",  # placeholder
         app_secret=bot_token,  # Bot Token (xoxb-...)
@@ -168,14 +170,8 @@ async def slack_event_webhook(
     """Handle Slack Event API callbacks."""
     body_bytes = await request.body()
 
-    # Get channel config
-    result = await db.execute(
-        select(ChannelConfig).where(
-            ChannelConfig.agent_id == agent_id,
-            ChannelConfig.channel_type == "slack",
-        )
-    )
-    config = result.scalar_one_or_none()
+    # Get channel config and pin tenant RLS for this public webhook.
+    config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="slack")
     if not config:
         return Response(status_code=404)
 
@@ -307,6 +303,7 @@ async def slack_event_webhook(
     sess = await find_or_create_channel_session(
         db=db,
         agent_id=agent_id,
+        tenant_id=agent_obj.tenant_id if agent_obj else None,
         user_id=platform_user_id,
         external_conv_id=conv_id,
         source_channel="slack",
@@ -367,6 +364,7 @@ async def slack_event_webhook(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="assistant",
                 content=_ack,
@@ -385,6 +383,7 @@ async def slack_event_webhook(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="user",
                 content=_file_content,
@@ -396,6 +395,7 @@ async def slack_event_webhook(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
                 user_id=platform_user_id,
                 role="assistant",
                 content=_ack,
@@ -415,7 +415,12 @@ async def slack_event_webhook(
     # Save user message
     db.add(
         ChatMessage(
-            agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=session_conv_id
+            agent_id=agent_id,
+            tenant_id=agent_obj.tenant_id,
+            user_id=platform_user_id,
+            role="user",
+            content=user_text,
+            conversation_id=session_conv_id,
         )
     )
     sess.last_message_at = datetime.now(timezone.utc)
@@ -481,6 +486,7 @@ async def slack_event_webhook(
     db.add(
         ChatMessage(
             agent_id=agent_id,
+            tenant_id=agent_obj.tenant_id,
             user_id=platform_user_id,
             role="assistant",
             content=reply_text,

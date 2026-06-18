@@ -1514,19 +1514,9 @@ _POST_COMPACT_PER_FILE_CAP = 8000  # chars per file — was 5K
 # invocation, feeds observe(tool_names) each round, collects the transient
 # texts before each LLM call, and resets the scheduler after a compaction.
 def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
-    """Return the ``interactive_plan_seed`` from a ``needs_plan`` tool result
-    that asks to activate interactive Plan Mode, else ``None`` (Phase 5).
-    """
-    try:
-        data = json.loads(result_str)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    if data.get("status") != "needs_plan" or not data.get("activate_interactive_plan"):
-        return None
-    seed = data.get("interactive_plan_seed")
-    return seed if isinstance(seed, dict) else {}
+    """Legacy parser kept for compatibility; tool results never activate Plan Mode."""
+    _ = result_str
+    return None
 
 
 def _tool_result_requests_user_clarification(tool_name: str, result_str: str) -> bool:
@@ -1554,99 +1544,20 @@ def _tool_result_requests_user_clarification(tool_name: str, result_str: str) ->
 
 
 def _is_live_interactive_chat(session_context: Any | None) -> bool:
-    """True for a live interactive chat session — the only place a tool-intercept
-    may flip into interactive Plan Mode. Delegates to the shared boundary in
-    ``session.py`` so the kernel and the invoker tool-runtime gate never drift.
+    """True for a live interactive chat session.
+
+    Kept for explicit Plan Mode channel-boundary tests. Tool results no longer
+    use this to activate Plan Mode.
     """
     from app.runtime.session import is_interactive_plan_eligible
 
     return is_interactive_plan_eligible(session_context)
 
 
-def _latest_user_message(request: Any) -> str:
-    for msg in reversed(getattr(request, "messages", None) or []):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            content = msg.get("content")
-            if isinstance(content, str) and content.strip():
-                return content.strip()[:2000]
-    return ""
-
-
 def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: str) -> Any:
-    """Flip an agent run into main-loop Plan Mode when a blocked autonomous tool
-    returns an ``activate_interactive_plan`` signal (path-unification §5.3).
-
-    Two eligible run shapes share ONE Plan Mode runtime (read-only policy +
-    scheduler-driven transient reminder + exit_plan_mode); they differ only in confirmation
-    timing, recorded via ``PlanModeState.source``:
-
-    * **live chat** — synchronous confirmation; source ``"tool_intercept"``.
-    * **unattended** trigger/heartbeat — no live user stream, so the authored
-      plan lands awaiting_confirmation for async confirmation from the plan
-      queue; source ``"tool_intercept_unattended"``.
-
-    Path-unification cut ④ made this unconditional for eligible sources: the
-    staged-rollout flags are gone and main-loop Plan Mode is the only planning
-    path. A non-eligible source (delegation / runtime / an already-active
-    system_plan_run) does not activate here and its blocked gated tool returns a
-    static needs_plan block (fail-closed — it neither plans nor executes).
-
-    Writes typed state + the metadata mirror AND arms the interactive ContextVar
-    — both state sources must move together (the reminder reads typed state at
-    ``engine:1634``; the read-only gate reads the ContextVar at ``service:465``),
-    or the agent would be reminded but not constrained to read-only. Returns the
-    ContextVar token for the caller to reset on handle exit, or ``None`` if not
-    activated.
-    """
-    from app.runtime.session import PlanModeState, is_unattended_plan_eligible
-    from app.services.plan_mode_runtime_context import set_interactive_plan_mode
-
-    sc = getattr(request, "session_context", None)
-    if sc is None:
-        return None
-    if getattr(getattr(sc, "plan_mode", None), "active", False):
-        return None  # already in plan mode — do not re-activate / clobber
-    live = _is_live_interactive_chat(sc)
-    unattended = is_unattended_plan_eligible(sc)
-    if not (live or unattended):
-        return None
-    seed = _parse_interactive_plan_signal(result_str)
-    if seed is None:
-        return None
-    seed_artifact = seed.get("action_artifact")
-    state = PlanModeState(
-        active=True,
-        intent_type=seed.get("intent_type"),
-        action_kind=seed.get("action_kind"),
-        tool_name=seed.get("tool_name"),
-        action_artifact=seed_artifact if isinstance(seed_artifact, dict) else None,
-        original_request=seed.get("original_request") or _latest_user_message(request),
-        plan_id=seed.get("plan_id"),
-        source="tool_intercept" if live else "tool_intercept_unattended",
-    )
-    sc.plan_mode = state
-    sc.metadata["plan_mode"] = state.to_metadata()
-    return set_interactive_plan_mode(state.to_metadata())
-
-
-def _plan_mode_activation_notice(request: Any) -> str:
-    """Explicit notice injected right after tool-intercept Plan Mode activation.
-
-    B3 (docs/agent-lifecycle-cc-alignment.md 主题 B): without this the agent's
-    experience is "tools suddenly went read-only" — it must instead learn which
-    action was gated, why the mode flipped, and what the legitimate path is.
-    """
-    state = getattr(getattr(request, "session_context", None), "plan_mode", None)
-    tool = getattr(state, "tool_name", None) or "a gated tool"
-    intent = getattr(state, "intent_type", None)
-    intent_part = f" (intent: {intent})" if intent else ""
-    return (
-        f"[Plan Mode Activated] Your call to '{tool}'{intent_part} requires a confirmed plan "
-        "before it can execute, so the system switched this run into Plan Mode: tools are now "
-        "read-only while you design the approach. What to do now: explore/read what you need, "
-        "draft the plan, then submit it via exit_plan_mode. The blocked action is preserved as "
-        "the plan's action artifact — do NOT retry the gated tool directly."
-    )
+    """Tool results may block or ask for confirmation, but never enter Plan Mode."""
+    _ = (request, result_str)
+    return None
 
 
 def _build_restoration_context(
@@ -2674,12 +2585,6 @@ class AgentKernel:
             # full_toolset tracks expanded tools after deferred-schema discovery.
             # Intentionally persists across rounds — discovered tool schemas stay active once loaded.
             full_toolset = None
-            # Phase 5: ContextVar token if a live-chat tool-intercept activates
-            # interactive Plan Mode mid-loop. Reset in the finally below so the
-            # armed read-only state never leaks into a later invocation that may
-            # share this async task.
-            _interactive_plan_token = None
-
             try:
                 for round_i in range(max_rounds):
                     if request.cancel_event and request.cancel_event.is_set():
@@ -3532,16 +3437,6 @@ class AgentKernel:
                                             _callback_failure_count,
                                         )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
-                            plan_mode_activation_notice: str | None = None
-                            if _interactive_plan_token is None:
-                                _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
-                                    request, str(result)
-                                )
-                                if _interactive_plan_token is not None:
-                                    # B3: tell the model WHY it just entered Plan Mode.
-                                    # Keep the notice after the tool result message; OpenAI-compatible providers
-                                    # reject assistant tool_calls unless the matching tool messages are adjacent.
-                                    plan_mode_activation_notice = _plan_mode_activation_notice(request)
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
                                 logger.info(
@@ -3578,8 +3473,6 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
-                            if plan_mode_activation_notice is not None:
-                                api_messages.append(LLMMessage(role="system", content=plan_mode_activation_notice))
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
                     else:
@@ -3780,16 +3673,6 @@ class AgentKernel:
                                         )
                             collected_parts.append(build_tool_call_event(done_payload)["part"])
 
-                            plan_mode_activation_notice: str | None = None
-                            if _interactive_plan_token is None:
-                                _interactive_plan_token = _maybe_activate_interactive_plan_from_tool_result(
-                                    request, str(result)
-                                )
-                                if _interactive_plan_token is not None:
-                                    # B3: tell the model WHY it just entered Plan Mode.
-                                    # Keep the notice after the tool result message; OpenAI-compatible providers
-                                    # reject assistant tool_calls unless the matching tool messages are adjacent.
-                                    plan_mode_activation_notice = _plan_mode_activation_notice(request)
                             _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
                             if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
                                 logger.info(
@@ -3826,8 +3709,6 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
-                            if plan_mode_activation_notice is not None:
-                                api_messages.append(LLMMessage(role="system", content=plan_mode_activation_notice))
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
 
@@ -4018,10 +3899,6 @@ class AgentKernel:
                 )
             finally:
                 await client.close()
-                if _interactive_plan_token is not None:
-                    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
-
-                    reset_interactive_plan_mode(_interactive_plan_token)
         finally:
             if request.execution_identity:
                 if previous_identity:

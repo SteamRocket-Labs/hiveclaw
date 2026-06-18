@@ -66,6 +66,8 @@ class _SequenceDB:
         self.commits = 0
 
     async def execute(self, _stmt):
+        if "SET LOCAL" in str(_stmt):
+            return _ScalarResult(None)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)
@@ -113,6 +115,7 @@ def _make_config(agent_id=None, bot_token="123456:ABC-DEF1234ghIkl-zyx57W2v1u123
     return SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id or uuid4(),
+        tenant_id=uuid4(),
         channel_type="telegram",
         app_id="telegram",
         app_secret=bot_token,

@@ -485,6 +485,7 @@ async def websocket_chat(
                     now = _dt.now(_tz.utc)
                     _new_session = ChatSession(
                         agent_id=agent_id,
+                        tenant_id=agent.tenant_id,
                         user_id=user_id,
                         title=f"Session {now.strftime('%m-%d %H:%M')}",
                         source_channel="web",
@@ -545,7 +546,7 @@ async def websocket_chat(
             await websocket.send_json({"type": "done", "role": "assistant", "content": welcome_message})
 
         # Session idle detection: two-phase timeout
-        # Phase 1: After IDLE seconds of no input → SESSION_IDLE hook (T0 log + session summary)
+        # Phase 1: After IDLE seconds of no input → SESSION_IDLE hook (T0 segment boundary)
         # Phase 2: After WS_IDLE_TIMEOUT seconds total → SESSION_CLOSE + disconnect
         import asyncio as _aio_idle
 

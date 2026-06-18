@@ -51,6 +51,7 @@ class ApprovalService:
         db.add(
             AuditLog(
                 agent_id=agent.id,
+                tenant_id=agent.tenant_id,
                 action=f"approval_request:{action_type}",
                 details=details,
             )
@@ -58,6 +59,7 @@ class ApprovalService:
 
         approval = ApprovalRequest(
             agent_id=agent.id,
+            tenant_id=agent.tenant_id,
             action_type=action_type,
             details=details,
         )
@@ -87,6 +89,8 @@ class ApprovalService:
 
         agent_result = await db.execute(select(Agent).where(Agent.id == approval.agent_id))
         agent = agent_result.scalar_one_or_none()
+        if agent and getattr(approval, "tenant_id", None) is None:
+            approval.tenant_id = agent.tenant_id
         if agent and not _can_resolve_agent_approval(agent, user):
             raise ValueError("Only the agent creator, tenant org admin, or platform admin can resolve approvals")
 
@@ -107,6 +111,7 @@ class ApprovalService:
             AuditLog(
                 user_id=user.id,
                 agent_id=approval.agent_id,
+                tenant_id=getattr(approval, "tenant_id", None) or (agent.tenant_id if agent else None),
                 action=f"approval_{approval.status}",
                 details={"approval_id": str(approval.id), "action_type": approval.action_type},
             )

@@ -137,13 +137,13 @@ T3 memory    ← governed writes (Heartbeat, save_memory, session feedback, drea
    ↑                            feedback / knowledge / strategies / blocked / user
 T2 learnings ← extract_agent   (RESPONSE_COMPLETE hot path, PRE_COMPACTION drain, T0 replay)
    ↑                            fast reflection writes ledger/session candidates, not direct T3
-T0 raw logs  ← t0_logger       (behavior/system/artifacts, cursor-based lifecycle logs)
-               30-day behavior retention
+T0 ledger    ← session ledger  (append-only MD/XML events, segment-sealed resume boundaries)
+               30-day raw evidence retention
 ```
 
 | Layer | Where | Written by | What it holds |
 |-------|-------|-----------|---------------|
-| **T0** | `logs/YYYY-MM-DD/behavior/` | session hooks | Full conversation MD — every message, tool call, tool result |
+| **T0** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | web chat, task executor, runtime hooks | Append-only raw MD/XML events — user, assistant, tool, task, trigger, delegation, heartbeat, dream, and segment boundaries |
 | **T2** | `memory/learnings/*.md` | `extract_agent` hot path + backfill | Atomic learnings: facts, preferences, mistakes, patterns |
 | **T3** | `memory/{feedback,knowledge,strategies,blocked,user}.md` | governed T3 append path | Curated, deduplicated semantic memory with reinforcement counters in `lifecycle.json` |
 | **soul** | `soul.md` | Dream daemon, through promotion gates | Permanent identity — role, voice, boundaries |

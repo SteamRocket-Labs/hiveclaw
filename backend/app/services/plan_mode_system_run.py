@@ -1,25 +1,16 @@
-"""System-initiated Plan Mode run launcher (path-unification §12 / cut ③).
+"""System launcher for explicit Plan Mode authoring.
 
-The "no agent run" external entries — REST ``create``/``regenerate``/``revise``
-and Feishu classification — have no live user message stream to drive the agent
-main loop, yet the path-unification invariant (docs/plan-mode-path-unification.md
-§4) requires that *every* awaiting plan's ``plan_json`` come from the agent
-authoring it in its own main-loop Plan Mode, not from an isolated RPC planner.
+The explicit "no active agent run" entries — REST ``create``/``regenerate`` /
+``revise`` and accepted channel Plan Mode recommendations — have no existing
+live user message stream to drive the agent main loop. This launcher lets the
+agent author the draft plan in Plan Mode without executing the planned work.
 
-This module bridges that gap: given a freshly created **draft** plan, it
-pre-arms the SAME Plan Mode runtime used by live chat / unattended
-tool-intercept (read-only policy + scheduler reminder + ``exit_plan_mode``),
-seeds the loop with a guiding user prompt, and runs the agent. The agent
-explores read-only, then calls ``exit_plan_mode``, which — because the run was
-pre-armed with the draft's ``plan_id`` (cut ③a) — fills THAT draft and lands it
+Given a freshly created **draft** plan, it pre-arms the Plan Mode runtime
+(read-only policy + scheduler reminder + ``exit_plan_mode``), seeds the loop
+with a guiding user prompt, and runs the agent. The agent explores read-only,
+then calls ``exit_plan_mode``, which fills THAT draft and lands it
 ``awaiting_confirmation``. The id the entry point already returned to the
 frontend never changes.
-
-Difference from cut ② (unattended tool-intercept): cut ② activates Plan Mode
-*inside* an already-running kernel loop after a gated tool is blocked (no
-pre-created ``plan_id`` → ``exit_plan_mode`` creates a new plan). This launcher
-activates Plan Mode *before* the loop with the draft ``plan_id`` already set, so
-the existing draft is filled. Both reuse one Plan Mode runtime.
 
 Fail-closed: any launcher / agent / ``exit_plan_mode`` failure leaves the plan
 in a non-confirmable state (``planning_failed`` if the agent never submitted, or
@@ -169,7 +160,7 @@ async def launch_system_plan_run(
     # The metadata mirror + ContextVar must both carry the armed state (the
     # scheduler reads typed state for reminder eligibility/content; exit_plan_mode
     # + the read-only gate read the ContextVar) — same dual-source invariant as
-    # kernel activation.
+    # explicit Plan Mode runtime.
     session_context.metadata["plan_mode"] = state.to_metadata()
     token = set_interactive_plan_mode(state.to_metadata())
     try:

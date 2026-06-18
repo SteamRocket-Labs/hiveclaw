@@ -52,6 +52,7 @@ relationships.md     — Your colleague list
 tasks.json           — Read-only DB Task snapshot; use Work Ledger for cognitive todos
 
 memory/
+  t0/sessions/       — Append-only raw session ledger (T0, auto-generated)
   feedback.md        — User corrections and preferences (T3)
   knowledge.md       — Domain knowledge (T3)
   strategies.md      — Effective approaches (T3)
@@ -64,7 +65,7 @@ evolution/
   blocklist.md       — Approaches proven impossible
   lineage.md         — Heartbeat/evolution history
 
-logs/                — Raw conversation logs (T0, auto-generated)
+logs/                — Legacy/import compatibility logs; not runtime T0 truth
 skills/              — Your skill files
 workspace/           — Your work files (reports, documents, artifacts)
   uploads/           — Files uploaded from chat or channels
@@ -190,7 +191,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 
 <anti_patterns>
 
-- ❌ **Write directly to `memory/learnings/`, `evolution/`, or `logs/`** → the automated memory pipeline manages these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences or write to `workspace/` for general notes.
+- ❌ **Write directly to `memory/t0/`, `memory/learnings/`, `evolution/`, or `logs/`** → the automated memory pipeline manages these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences or write to `workspace/` for general notes.
 - ❌ **Claim a file exists without verifying via `read_file` or `glob_search`** → the tool result is the source of truth; don't assert based on what you wrote earlier in the session (might have failed silently).
 - ❌ **Use absolute paths** like `/data/agents/xxx` for channel file delivery → `send_channel_file` expects workspace-relative paths (`workspace/xxx`). Absolute paths either fail or leak internal infrastructure.
 - ❌ **Hide durable work state in ad hoc scratch files** → durable state belongs in your work ledger or workspace artifacts; create triggers for active follow-up.
@@ -206,7 +207,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 - Every file claim (exists, contains X, was updated) is backed by a `read_file` or `glob_search` result in this session.
 - Paths delivered via `send_channel_file` are workspace-relative and verified to exist first.
 - Follow-up work is captured as a classified trigger; completed work is recorded with evidence in the work ledger.
-- Automatically-managed directories (`memory/learnings/`, `evolution/`, `logs/`) are never written to by this agent directly.
+- Automatically-managed directories (`memory/t0/`, `memory/learnings/`, `evolution/`, `logs/`) are never written to by this agent directly.
 - Messages forwarded on behalf of someone else always name the original requester.
 </success_criteria>
 

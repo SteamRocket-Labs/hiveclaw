@@ -44,6 +44,9 @@ class _FakeDB:
 
     async def execute(self, _stmt):
         self.statements.append(_stmt)
+        sql = getattr(_stmt, "text", None) or str(_stmt)
+        if sql.lstrip().upper().startswith("SET LOCAL"):
+            return _ScalarResult([])
         if self._call_index < len(self._results):
             result = self._results[self._call_index]
             self._call_index += 1
@@ -132,9 +135,17 @@ def test_timeseries_returns_daily_cumulative_all_metrics():
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 2
-    token_queries = [str(client.fake_db.statements[2]), str(client.fake_db.statements[5])]
+    business_statements = [
+        str(stmt)
+        for stmt in client.fake_db.statements
+        if not (getattr(stmt, "text", None) or str(stmt)).lstrip().upper().startswith("SET LOCAL")
+    ]
+    token_queries = [stmt for stmt in business_statements if "token_usage_events" in stmt]
+    assert len(token_queries) == 2
     assert all("token_usage_events" in stmt for stmt in token_queries)
     assert all("agents.created_at" not in stmt.lower() for stmt in token_queries)
+    assert "SET LOCAL app.current_tenant_id = 'BYPASS'" in str(client.fake_db.statements[0])
+    assert "SET LOCAL app.current_tenant_id = ''" in str(client.fake_db.statements[-1])
 
     mar31 = data[0]
     assert mar31["date"] == "2026-03-31"
@@ -263,6 +274,8 @@ def test_leaderboards_returns_top_companies_and_agents():
     assert data["top_agents"][0]["name"] == "Agent-1"
     assert data["top_agents"][0]["company"] == "Acme Corp"
     assert data["top_agents"][0]["tokens"] == 30000
+    assert "SET LOCAL app.current_tenant_id = 'BYPASS'" in str(client.fake_db.statements[0])
+    assert "SET LOCAL app.current_tenant_id = ''" in str(client.fake_db.statements[-1])
 
 
 def test_leaderboards_handles_empty_data():

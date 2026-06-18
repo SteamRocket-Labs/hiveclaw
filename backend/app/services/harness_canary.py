@@ -300,6 +300,7 @@ async def run_harness_canary(
         db.add(RuntimeTask(
             id=runtime_task_id,
             task_type="harness_canary",
+            tenant_id=agent.tenant_id,
             parent_agent_id=agent.id,
             child_agent_id=None,
             child_agent_name=None,

@@ -2029,7 +2029,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         + repeated_feedback_contradicted,
     }
 
-    # Emit DREAM_END hook → T0 log + heartbeat session reset
+    # Emit DREAM_END hook → T0 session ledger + heartbeat session reset
     try:
         from app.runtime.hooks import HookEvent, emit_hook
 

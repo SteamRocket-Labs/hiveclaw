@@ -14,7 +14,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db, tenant_scoped_session
+from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.gateway_message import GatewayMessage
@@ -45,15 +45,21 @@ def _hash_key(key: str) -> str:
 async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     """Authenticate an OpenClaw agent by its API key."""
     key_hash = _hash_key(api_key)
-    result = await db.execute(
-        select(Agent).where(
-            Agent.api_key_hash == key_hash,
-            Agent.agent_type == "openclaw",
+    async with enter_rls_bypass(
+        db,
+        reason="gateway api-key agent lookup before tenant is known",
+    ) as bypass_db:
+        result = await bypass_db.execute(
+            select(Agent).where(
+                Agent.api_key_hash == key_hash,
+                Agent.agent_type == "openclaw",
+            )
         )
-    )
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
+    if agent.tenant_id:
+        await pin_rls_tenant_context(db, agent.tenant_id)
     return agent
 
 
@@ -233,6 +239,7 @@ async def report_result(
     if body.result and msg.conversation_id and msg.sender_user_id:
         assistant_msg = ChatMessage(
             agent_id=agent.id,
+            tenant_id=agent.tenant_id,
             user_id=msg.sender_user_id,
             role="assistant",
             content=body.result,
@@ -290,6 +297,7 @@ async def report_result(
             session.last_message_at = datetime.now(timezone.utc)
             gw_reply = GatewayMessage(
                 agent_id=msg.sender_agent_id,
+                tenant_id=agent.tenant_id,
                 sender_agent_id=agent.id,
                 content=body.result,
                 status="pending",
@@ -299,6 +307,7 @@ async def report_result(
             reply_db.add(
                 ChatMessage(
                     agent_id=session.agent_id,
+                    tenant_id=agent.tenant_id,
                     user_id=owner_user_id,
                     role="assistant",
                     content=body.result,
@@ -420,6 +429,7 @@ async def _send_to_agent_background(
             db.add(
                 ChatMessage(
                     agent_id=session_agent_id,
+                    tenant_id=uuid.UUID(str(target_tenant_id)) if target_tenant_id else None,
                     conversation_id=conv_id,
                     role="user",
                     content=user_msg,
@@ -461,6 +471,7 @@ async def _send_to_agent_background(
             db.add(
                 ChatMessage(
                     agent_id=session_agent_id,
+                    tenant_id=uuid.UUID(str(target_tenant_id)) if target_tenant_id else None,
                     conversation_id=conv_id,
                     role="assistant",
                     content=final_reply,
@@ -472,6 +483,7 @@ async def _send_to_agent_background(
             # Write reply to gateway_messages for source (OpenClaw) to poll
             gw_reply = GatewayMessage(
                 agent_id=source_agent_id,
+                tenant_id=uuid.UUID(str(target_tenant_id)) if target_tenant_id else None,
                 sender_agent_id=target_agent_id,
                 content=final_reply,
                 status="pending",
@@ -539,6 +551,7 @@ async def send_message(
             # OpenClaw-to-OpenClaw: write to gateway_messages directly
             gw_msg = GatewayMessage(
                 agent_id=target_agent.id,
+                tenant_id=getattr(target_agent, "tenant_id", None) or getattr(agent, "tenant_id", None),
                 sender_agent_id=agent.id,
                 content=content,
                 status="pending",
@@ -548,6 +561,7 @@ async def send_message(
             db.add(
                 ChatMessage(
                     agent_id=session.agent_id,
+                    tenant_id=getattr(target_agent, "tenant_id", None) or getattr(agent, "tenant_id", None),
                     user_id=target_agent.creator_id,
                     role="user",
                     content=content,

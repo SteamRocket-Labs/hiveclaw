@@ -1,28 +1,26 @@
-"""Code-level registry of Plan-Mode-gated tools (docs/plan-mode-design.md §9.2).
+"""Code-level registry of confirmation-gated tools.
 
-The Plan Mode tool gate is the largest slice of the *early-intercept* layer: it
-covers every autonomous-enabling tool the agent can call directly. Which tools
-those are, and which :data:`~app.services.plan_mode_core.ACTION_KINDS` each maps
-onto, is declared *on the tool itself* via ``ToolMeta.plan_gate_action_kind`` —
-an import-time, code-level fact, **not** ``Tool.config`` (the DB seeder leaves an
-already-non-empty config untouched, so it cannot be the governance source of
-truth, §9.2).
+The tool gate covers autonomous-enabling tools the agent can call directly. Which
+tools those are, and which :data:`~app.services.plan_mode_core.ACTION_KINDS`
+each maps onto, is declared *on the tool itself* via
+``ToolMeta.plan_gate_action_kind`` — an import-time, code-level fact, **not**
+``Tool.config``.
 
 This module is the read side of that tag: it scans the decorator registry and
 exposes a ``tool_name -> action_kind`` view the :class:`ToolRuntimeService` gate
 consults before executing a tool.
 
-Two flavours of tag exist (§9.2):
+Two flavours of tag exist:
 
 * A real :data:`~app.services.plan_mode_core.ACTION_KINDS` value — the tool is
-  *hard-gated*: the service calls ``PlanModeGate.check`` and refuses to execute
-  it without a confirmed plan (``set_trigger``, ``update_trigger``,
-  ``delegate_to_agent``, and ``start_workflow``).
+  *confirmation-gated*: the service calls ``PlanModeGate.check`` and refuses to
+  execute it without confirmed authorization (``set_trigger`` and
+  ``update_trigger``).
 * :data:`BRIDGE_SELF` — the tool is *registered* as plan-governed (visible,
   auditable, future-proof) but keeps its **own** confirmation gate; the service
-  must not double-block it. The sole MVP case is ``deep_research_start`` whose
-  ``plan_confirmed`` parameter already enforces user confirmation (§9.2:
-  "MVP 只桥接登记 PlanRequest,不重构").
+  must not double-block it. ``deep_research_start`` owns its ``user_confirmed``
+  parameter, while ``delegate_to_agent`` owns a runtime backstop that can inspect
+  whether the delegation came from a real user or an unattended agent wake.
 """
 
 from __future__ import annotations
@@ -43,7 +41,6 @@ _PLAN_GATED_TOOL_NAMES: frozenset[str] = frozenset(
         # start_long_task action_kind kept — REST api/tasks.py and manual trigger
         # still use it for the plan gate on human-initiated task creation.
         "deep_research_start",
-        "start_workflow",
     }
 )
 
@@ -99,7 +96,11 @@ def _set_trigger_action_kind(arguments: dict | None) -> str | None:
         return "create_enabled_trigger"
     trigger_type = str(arguments.get("type") or "").strip()
     trigger_class = _trigger_class_from_arguments(arguments)
-    return "create_enabled_trigger" if trigger_is_autonomous(trigger_type=trigger_type, trigger_class=trigger_class) else None
+    return (
+        "create_enabled_trigger"
+        if trigger_is_autonomous(trigger_type=trigger_type, trigger_class=trigger_class)
+        else None
+    )
 
 
 def _update_trigger_action_kind(arguments: dict | None) -> str | None:
@@ -121,34 +122,11 @@ def _update_trigger_action_kind(arguments: dict | None) -> str | None:
     trigger_class = _trigger_class_from_arguments(arguments)
     if not trigger_type:
         return None
-    return "create_enabled_trigger" if trigger_is_autonomous(trigger_type=trigger_type, trigger_class=trigger_class) else None
-
-
-def _start_workflow_action_kind(arguments: dict | None) -> str | None:
-    """Risk-graded gate for start_workflow (§9 P4, §10 decision 3).
-
-    LOW risk (read-only/workspace effects, small budget/fanout/waits) is the
-    same governance class as the agent calling its tools in sequence — no
-    plan gate. HIGH risk hard-gates. Anything we cannot compile or classify
-    gates too (fail-closed): a malformed definition must never slip through
-    as "unclassifiable"."""
-    if trusted_plan_mode_user_declined():
-        return None
-    if not isinstance(arguments, dict):
-        return "start_workflow"
-    definition = arguments.get("definition")
-    if not isinstance(definition, dict):
-        return "start_workflow"
-    try:
-        from app.runtime.workflow_compiler import compile_workflow
-        from app.services.workflow_launch import classify_workflow_risk
-
-        compiled = compile_workflow(definition)
-        args = arguments.get("args") if isinstance(arguments.get("args"), dict) else {}
-        assessment = classify_workflow_risk(compiled, args=args)
-    except Exception:
-        return "start_workflow"  # fail-closed
-    return "start_workflow" if assessment.level == "high" else None
+    return (
+        "create_enabled_trigger"
+        if trigger_is_autonomous(trigger_type=trigger_type, trigger_class=trigger_class)
+        else None
+    )
 
 
 def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str | None:
@@ -164,8 +142,6 @@ def hard_gated_action_kind(tool_name: str, arguments: dict | None = None) -> str
         return _set_trigger_action_kind(arguments)
     if tool_name == "update_trigger" and action_kind == "create_enabled_trigger":
         return _update_trigger_action_kind(arguments)
-    if tool_name == "start_workflow" and action_kind == "start_workflow":
-        return _start_workflow_action_kind(arguments)
     if action_kind and action_kind in ACTION_KINDS:
         return action_kind
     return None

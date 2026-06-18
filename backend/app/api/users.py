@@ -7,8 +7,9 @@ from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.user import User
 
@@ -53,8 +54,8 @@ async def list_users(
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
-    # Platform admins can view any tenant; org_admins only their own
-    tid = tenant_id if tenant_id and current_user.role == "platform_admin" else str(current_user.tenant_id)
+    # Platform admins can view any selected tenant; org_admins stay pinned to their own tenant.
+    tid = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
 
     # Filter users by tenant — platform_admins only shown in their own tenant
     result = await db.execute(
@@ -69,6 +70,7 @@ async def list_users(
         count_result = await db.execute(
             select(func.count()).select_from(Agent).where(
                 Agent.creator_id == u.id,
+                Agent.tenant_id == tid,
             )
         )
         agents_count = count_result.scalar() or 0
@@ -105,10 +107,21 @@ async def update_user_quota(
     if current_user.role not in ("platform_admin", "org_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    if current_user.role == "platform_admin":
+        async with enter_rls_bypass(
+            db,
+            reason=f"platform-admin user quota target lookup for {user_id}",
+            actor_id=str(getattr(current_user, "id", "")) or None,
+        ) as bypass_db:
+            result = await bypass_db.execute(select(User).where(User.id == user_id))
+    else:
+        result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user.role == "platform_admin" and user.tenant_id:
+        await pin_rls_tenant_context(db, user.tenant_id)
 
     if current_user.role != "platform_admin" and user.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Cannot modify users outside your organization")
@@ -122,7 +135,10 @@ async def update_user_quota(
     await db.refresh(user)
 
     count_result = await db.execute(
-        select(func.count()).select_from(Agent).where(Agent.creator_id == user.id)
+        select(func.count()).select_from(Agent).where(
+            Agent.creator_id == user.id,
+            Agent.tenant_id == user.tenant_id,
+        )
     )
     agents_count = count_result.scalar() or 0
 

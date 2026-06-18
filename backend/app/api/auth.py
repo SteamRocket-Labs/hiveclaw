@@ -4,12 +4,12 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_current_user, hash_password, verify_password
-from app.database import enter_rls_bypass, get_db
+from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.user import User
 from app.schemas.schemas import TokenResponse, UserLogin, UserOut, UserRegister, UserUpdate
 
@@ -64,11 +64,7 @@ async def _scope_public_login_session_to_user_tenant(db: AsyncSession, tenant_id
     the transaction should use that tenant scope instead of the anonymous
     fail-closed scope.
     """
-    if tenant_id:
-        validated = uuid.UUID(str(tenant_id))
-        await db.execute(text(f"SET LOCAL app.current_tenant_id = '{validated}'"))
-    else:
-        await db.execute(text("SET LOCAL app.current_tenant_id = ''"))
+    await pin_rls_tenant_context(db, tenant_id)
 
 
 @router.get("/registration-config")

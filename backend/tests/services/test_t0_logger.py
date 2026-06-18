@@ -386,6 +386,8 @@ class _BackfillSession:
 async def test_backfill_recent_chat_logs_creates_t0_files(
     agent_id: uuid.UUID, tmp_agent_dir: Path, monkeypatch
 ) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events
+
     session_id = uuid.uuid4()
     user_id = uuid.uuid4()
     session = type(
@@ -431,14 +433,18 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
         report = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=10)
 
     logs_root = tmp_agent_dir / str(agent_id) / "logs"
-    files = list(logs_root.rglob("chat-*.md"))
+    files = list((tmp_agent_dir / str(agent_id) / "memory" / "t0").rglob("source.md"))
 
     assert report["sessions_scanned"] == 1
     assert report["written"] == 1
     assert len(files) == 1
-    content = files[0].read_text(encoding="utf-8")
-    assert "请你把记忆系统收成 md-first" in content
-    assert "我会先从 session recall 和 T0 审计开始。" in content
+    assert not list(logs_root.rglob("chat-*.md"))
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_agent_dir)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("user_message", "user", "请你把记忆系统收成 md-first"),
+        ("assistant_message", "assistant", "我会先从 session recall 和 T0 审计开始。"),
+        ("segment_boundary", "system", "backfill_recent_chat_logs"),
+    ]
 
 
 # ── PR-1: behavior/ vs system/ split ──

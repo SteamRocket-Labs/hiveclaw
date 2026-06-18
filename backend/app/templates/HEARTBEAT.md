@@ -44,7 +44,7 @@ What this means for your output:
 - This is a tick in your persistent curation session.
 - Your previous curation decisions are in the conversation history above.
 - You only see NEW T2 entries since last tick (injected after `<tick>` tag).
-- `src=t0_backfill` means the entry was replayed from behavior T0 MD files
+- `src=t0_backfill` means the entry was replayed from legacy behavior T0 MD files
   (same provenance as the original user session, just processed later).
   Weight it exactly like the original session's source — the backfill path
   already maps it to the human bucket.

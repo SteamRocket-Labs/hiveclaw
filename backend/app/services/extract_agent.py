@@ -17,11 +17,12 @@ Aligned with Claude Code's extractMemories architecture:
 Pipeline: messages → LLM extract → append to learnings/{category}.md
 Fallback: messages → regex patterns → append to learnings/{category}.md
 
-T0 backfill (PR-4): when in-memory message extraction was skipped (process
-crash, hook misfire, or pre-extractor agents), behavior T0 MD files can be
-replayed back into messages and re-extracted into T2. The backfill cursor
-(learnings/.backfill_cursor.json) records which session_ids have already
-been processed so re-runs are idempotent.
+Legacy T0 backfill (PR-4): when in-memory message extraction was skipped before
+the append-only session ledger existed, legacy behavior T0 MD files can be
+replayed back into messages and re-extracted into T2. Current runtime T0 truth
+lives under memory/t0/sessions/<session_id>/segments/<segment_id>/source.md.
+The backfill cursor (learnings/.backfill_cursor.json) records which legacy
+session_ids have already been processed so re-runs are idempotent.
 """
 
 from __future__ import annotations
@@ -1182,7 +1183,7 @@ class ExtractAgent:
 extract_agent = ExtractAgent()
 
 
-# ── PR-4: T0 → T2 backfill ──
+# ── PR-4: legacy T0 → T2 backfill ──
 
 _BACKFILL_CURSOR_FILENAME = ".backfill_cursor.json"
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
@@ -1264,7 +1265,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
 
 
 def replay_messages_from_t0(t0_md_path: Path) -> dict[str, Any]:
-    """Inverse of _format_chat_log / _format_trigger_log / _format_delegation_log.
+    """Replay one legacy t0_logger MD file.
 
     Returns: {session_id, source, started, type, messages: list[dict]}.
     Empty messages list on parse failure (caller decides).
@@ -1391,7 +1392,7 @@ def _list_behavior_chat_files(agent_id: uuid.UUID, days: int) -> list[Path]:
 
 
 async def audit_extraction_completeness(agent_id: uuid.UUID, days: int = 7) -> dict[str, Any]:
-    """Report behavior T0 sessions vs the backfill cursor.
+    """Report legacy behavior T0 sessions vs the backfill cursor.
 
     Returns:
       {sessions_in_t0: int, extracted: int, missing: list[{path, session_id}]}
@@ -1425,7 +1426,7 @@ async def backfill_missing_extractions(
     tenant_id: uuid.UUID | None = None,
     agent_name: str = "Agent",
 ) -> dict[str, Any]:
-    """For each behavior T0 session not yet backfilled, replay + extract → T2.
+    """For each legacy behavior T0 session not yet backfilled, replay + extract → T2.
 
     Marks backfilled session_ids in the cursor so subsequent calls skip them.
     Errors on individual sessions are reported but do not stop the run.

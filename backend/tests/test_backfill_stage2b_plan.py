@@ -5,9 +5,9 @@ from __future__ import annotations
 from app.scripts.backfill_stage2b_tenant_id import BACKFILL_PLAN
 
 
-def test_plan_covers_18_distinct_tables():
-    assert len(BACKFILL_PLAN) == 18
-    assert len({s.table for s in BACKFILL_PLAN}) == 18
+def test_plan_covers_19_distinct_tables():
+    assert len(BACKFILL_PLAN) == 19
+    assert len({s.table for s in BACKFILL_PLAN}) == 19
 
 
 def test_task_logs_backfilled_after_tasks():
@@ -27,3 +27,5 @@ def test_special_and_standard_sources():
     # a representative standard table derives from agent_id → agents
     assert by_table["chat_messages"].source_table == "agents"
     assert by_table["chat_messages"].local_fk == "agent_id"
+    assert by_table["agent_plan_requests"].source_table == "agents"
+    assert by_table["agent_plan_requests"].local_fk == "agent_id"

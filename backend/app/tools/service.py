@@ -115,77 +115,36 @@ def _redact_args(arguments: Any) -> dict[str, Any]:
 
 
 def _plan_gate_action_artifact(tool_name: str, arguments: dict, action_kind: str) -> dict | None:
-    """Build the action payload that a confirmed plan must bind to.
+    """Build an exact action payload for confirmed-plan handoff checks.
 
-    Only high-risk ``start_workflow`` currently needs this extra binding: the
-    plan hash proves the user confirmed *a plan*, while the workflow definition
-    hash proves it was for *this exact structured definition*.
+    Workflow no longer uses PlanModeGate, so no current tool needs a separate
+    action artifact. Keep this seam for legacy confirmed-plan callers without
+    reintroducing risk-grade based Plan Mode routing.
     """
-    if tool_name != "start_workflow" or action_kind != "start_workflow":
-        return None
-    definition = arguments.get("definition")
-    if not isinstance(definition, dict):
-        return None
-    try:
-        from app.runtime.workflow_compiler import compile_workflow
-        from app.runtime.workflow_definition import compute_definition_hash
-        from app.services.workflow_launch import classify_workflow_risk
-
-        compiled = compile_workflow(definition)
-        args = arguments.get("args") if isinstance(arguments.get("args"), dict) else {}
-        risk = classify_workflow_risk(compiled, args=args)
-    except Exception:
-        return None
-    return {
-        "definition_hash": compiled.definition_hash,
-        "args_hash": compute_definition_hash(args),
-        "risk_reasons": risk.reasons,
-    }
+    _ = (tool_name, arguments, action_kind)
+    return None
 
 
-def _maybe_attach_interactive_signal(
-    payload: dict,
-    *,
-    action_kind: str,
-    tool_name: str,
-    arguments: dict,
-    enabled: bool = True,
-    action_artifact: dict | None = None,
-) -> dict:
-    """Tag a ``needs_plan`` envelope with ``activate_interactive_plan`` + an
-    ``interactive_plan_seed`` so the kernel can flip the run into main-loop Plan
-    Mode. The kernel (which holds the session_context) decides the live-chat /
-    unattended boundary and whether to actually activate; here we only carry the
-    flag + seed (the seed ``source`` stays ``"tool_intercept"`` — the kernel sets
-    the live vs unattended ``PlanModeState.source`` from the session_context).
-
-    ``enabled`` carries the gate's defer decision (the source is eligible for
-    main-loop Plan Mode). A non-eligible source passes ``enabled=False`` so the
-    envelope is left as a static ``needs_plan`` block (fail-closed — the agent
-    neither plans nor executes). Path-unification cut ④ removed the staged-rollout
-    flags, so a deferred source always activates.
-    """
-    if not enabled:
-        return payload
-    enriched = dict(payload)
-    enriched["activate_interactive_plan"] = True
-    seed: dict = {
-        "source": "tool_intercept",
-        "action_kind": action_kind,
-        "tool_name": tool_name,
-        "tool_args": _redact_args(arguments),
-        "plan_id": payload.get("plan_id"),
-        "plan_version": payload.get("plan_version"),
-        "plan_hash": payload.get("plan_hash"),
-    }
-    # The artifact is computed BEFORE redaction (hashes over the raw
-    # definition/args), so it must ride the seed — it cannot be recomputed
-    # from the redacted tool_args. exit_plan_mode lands it in the plan so the
-    # gate's confirmed-plan binding check can succeed.
-    if action_artifact is not None:
-        seed["action_artifact"] = action_artifact
-    enriched["interactive_plan_seed"] = seed
-    return enriched
+def _confirmation_required_payload(payload: dict | None) -> dict:
+    """Return an external confirmation block that cannot activate Plan Mode."""
+    source = dict(payload or {})
+    source["status"] = "requires_confirmation"
+    source["requires_confirmation"] = True
+    source.pop("activate_interactive_plan", None)
+    source.pop("interactive_plan_seed", None)
+    source.setdefault("ok", False)
+    source.setdefault(
+        "summary",
+        "Explicit user confirmation is required before this action can run.",
+    )
+    source.setdefault(
+        "next_action",
+        (
+            "STOP and ask the user for explicit confirmation. Do not enter Plan Mode unless the user "
+            "explicitly asks for Plan Mode or approves a Plan Mode entry request."
+        ),
+    )
+    return source
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -241,17 +200,14 @@ class ToolRuntimeService:
     coordination_runtime: CoordinationRuntime | None = None
     coordination_gateway: CoordinationGateway | None = None
     preflight_enabled: bool = True
-    # Plan Mode early-intercept gate (docs/plan-mode-design.md §9.2). The gate is
-    # read-only and stateless; the session factory opens a short-lived async
-    # session for the by-id plan lookup. Both are DI seams so tests can inject
-    # fakes (the gate is otherwise the shared singleton).
+    # Confirmation gate. The gate is read-only and stateless; the session factory
+    # opens a short-lived async session for the by-id plan lookup. Both are DI
+    # seams so tests can inject fakes (the gate is otherwise the shared singleton).
     plan_mode_gate: PlanModeGate | None = None
     plan_mode_session_factory: Callable[[], Any] | None = None
     # Plan Mode service handle (the shared singleton handoffs register on). DI
-    # seam kept for tests + future intake needs; the RPC intercept-then-create
-    # path that consumed it was removed in path-unification cut ④ (a blocked gated
-    # tool now flips an eligible source into main-loop Plan Mode, or returns a
-    # static needs_plan block for a non-eligible source).
+    # seam kept for tests + future intake needs; blocked gated tools now return
+    # ``requires_confirmation`` and never enter Plan Mode.
     plan_mode_service: Any | None = None
 
     def __post_init__(self) -> None:
@@ -623,9 +579,9 @@ class ToolRuntimeService:
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
     ) -> str | None:
-        """Return a ``needs_plan`` JSON block when Plan Mode forbids ``tool_name``.
+        """Return a confirmation-required JSON block when a gated action is blocked.
 
-        This is the §9.2 early-intercept tool gate, shared by every execution
+        This is the confirmation backstop, shared by every execution
         entrypoint (``execute`` / ``execute_direct`` / ``execute_approved``) so
         ``execute_approved`` cannot be used to bypass it. Only tools tagged with
         a real ``ACTION_KIND`` (``ToolMeta.plan_gate_action_kind``) are gated —
@@ -637,14 +593,11 @@ class ToolRuntimeService:
         ``confirmed_plan_hash``) through the tool arguments; they are forwarded
         to the gate so a confirmed handoff runs the tool.
 
-        When the gate blocks **and** no confirmed plan was claimed, this seeds a
-        confirmable awaiting :class:`AgentPlanRequest` from the tool's own
-        arguments (§9.2 "intercept-then-create") and embeds
-        ``plan_id`` / ``plan_json`` / ``plan_version`` / ``plan_hash`` into the
-        envelope, so the agent/UI can drive the user to confirm a concrete plan.
+        A block never activates Plan Mode. Plan Mode entry is explicit user/UI
+        state only; this gate may only refuse execution and ask for confirmation.
 
-        Returns ``None`` to proceed, or the JSON-serialised ``needs_plan``
-        envelope (mirroring the deep_research contract) to short-circuit.
+        Returns ``None`` to proceed, or the JSON-serialised
+        ``requires_confirmation`` envelope to short-circuit.
         """
         action_kind = hard_gated_action_kind(tool_name, arguments)
         if action_kind is None:
@@ -669,28 +622,8 @@ class ToolRuntimeService:
         if not decision.needs_plan:
             return None
 
-        payload = dict(decision.needs_plan_payload or {})
-        # Only flip into Plan Mode for a genuine "no confirmed plan" block. A
-        # failed *handoff* (the caller claimed a plan that didn't validate) must
-        # surface the gate's reason as-is, never re-enter planning.
-        if confirmed_plan_id is None:
-            # Path-unification cut ④: a blocked gated tool defers plan authoring to
-            # the agent's own kernel loop (main-loop Plan Mode) whenever the source
-            # is eligible — live chat OR unattended trigger/heartbeat. There is no
-            # longer an isolated RPC fallback: a NON-eligible source (delegation /
-            # runtime / already-active system_plan_run) leaves the envelope as a
-            # static needs_plan block, so the agent neither plans nor executes the
-            # blocked action (fail-closed). The kernel owns the live-vs-unattended
-            # boundary + activation; the gate only carries the flag + seed.
-            defer = bool(plan_mode_interactive_available or plan_mode_unattended_available)
-            payload = _maybe_attach_interactive_signal(
-                payload,
-                action_kind=action_kind,
-                tool_name=tool_name,
-                arguments=arguments,
-                enabled=defer,
-                action_artifact=action_artifact,
-            )
+        _ = (plan_mode_interactive_available, plan_mode_unattended_available, action_artifact)
+        payload = _confirmation_required_payload(decision.needs_plan_payload)
         return _json.dumps(payload, ensure_ascii=False, default=str)
 
     async def _preflight_tool_execution(

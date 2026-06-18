@@ -113,9 +113,9 @@ def _tenant_id(value: str | None) -> uuid.UUID | None:
 def _plan_uuid(value: Any) -> uuid.UUID | None:
     """Parse a pre-armed draft plan id from Plan Mode metadata (cut ③a).
 
-    Returns ``None`` for absent / malformed ids so the live-chat and unattended
-    tool-intercept paths (which never arm a ``plan_id``) keep creating a fresh
-    awaiting plan.
+    Returns ``None`` for absent / malformed ids so ordinary explicit Plan Mode
+    sessions without a pre-created ``plan_id`` keep creating a fresh awaiting
+    plan.
     """
     if not value:
         return None
@@ -280,9 +280,9 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     # Path-unification cut ③a — dual-state submission. A system_plan_run launcher
     # (REST create/regenerate/revise, Feishu classification) pre-creates a draft
     # plan and arms Plan Mode with its ``plan_id``; the agent fills THAT draft so
-    # the id the entry point already returned to the frontend stays stable. Live
-    # chat / unattended tool-intercept have no pre-created plan (plan_id absent),
-    # so they create a fresh awaiting plan. Both branches land the SAME
+    # the id the entry point already returned to the frontend stays stable.
+    # Ordinary explicit Plan Mode sessions have no pre-created plan
+    # (plan_id absent), so they create a fresh awaiting plan. Both branches land the SAME
     # agent-authored ``fill`` through the structured-fill path — the only
     # difference is whether the row already exists.
     existing_plan_id = _plan_uuid(metadata.get("plan_id"))

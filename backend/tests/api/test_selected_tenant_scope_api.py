@@ -34,9 +34,13 @@ class _FakeDB:
         self.deleted = []
         self.committed = False
         self.statements = []
+        self.sync_session = SimpleNamespace(info={})
 
     async def execute(self, _stmt):
         self.statements.append(_stmt)
+        sql = getattr(_stmt, "text", None) or str(_stmt)
+        if sql.lstrip().upper().startswith("SET LOCAL"):
+            return _ScalarResult(None)
         return self._results.pop(0)
 
     def add(self, value):
@@ -53,6 +57,54 @@ class _FakeDB:
 
     async def refresh(self, _value):
         return None
+
+    async def flush(self):
+        for value in self.added:
+            if getattr(value, "id", None) is None:
+                value.id = uuid4()
+
+
+def _first_business_statement(db: _FakeDB):
+    for stmt in db.statements:
+        sql = getattr(stmt, "text", None) or str(stmt)
+        if not sql.lstrip().upper().startswith("SET LOCAL"):
+            return stmt
+    raise AssertionError("No business statement executed")
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_list_users_pins_selected_tenant():
+    import app.api.users as users_api
+
+    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    target_user = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=target_tenant_id,
+        username="target-user",
+        email="target@example.com",
+        display_name="Target User",
+        role="member",
+        is_active=True,
+        quota_tokens_per_day=None,
+        quota_tokens_per_month=None,
+        tokens_used_today=0,
+        tokens_used_month=0,
+        tokens_used_total=0,
+        feishu_open_id=None,
+        created_at=datetime.now(timezone.utc),
+    )
+    db = _FakeDB([_ListResult([target_user]), _ScalarResult(3)])
+
+    result = await users_api.list_users(
+        tenant_id=str(target_tenant_id),
+        current_user=SimpleNamespace(role="platform_admin", tenant_id=own_tenant_id),
+        db=db,
+    )
+
+    assert result[0].id == target_user.id
+    assert result[0].agents_count == 3
+    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
 
 
 @pytest.mark.asyncio
@@ -86,6 +138,7 @@ async def test_platform_admin_can_update_selected_tenant_quotas():
 
 @pytest.mark.asyncio
 async def test_platform_admin_can_update_other_tenant_user_quota():
+    from app import database
     import app.api.users as users_api
 
     own_tenant_id = uuid4()
@@ -115,6 +168,8 @@ async def test_platform_admin_can_update_other_tenant_user_quota():
 
     assert result.quota_tokens_per_day == 50000
     assert user.quota_tokens_per_day == 50000
+    assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(target_tenant_id)
+    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
     assert db.committed is True
 
 
@@ -236,7 +291,55 @@ async def test_platform_admin_can_create_invitation_codes_for_selected_tenant():
     assert result["created"] == 2
     assert len(db.added) == 2
     assert {code.tenant_id for code in db.added} == {target_tenant_id}
+    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
     assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_create_agent_pins_selected_tenant(monkeypatch):
+    import app.api.agents as agents_api
+    from app.schemas.schemas import AgentCreate
+
+    own_tenant_id = uuid4()
+    target_tenant_id = uuid4()
+    target_tenant = SimpleNamespace(
+        id=target_tenant_id,
+        default_max_triggers=20,
+        min_poll_interval_floor=5,
+        max_webhook_rate_ceiling=5,
+    )
+    db = _FakeDB([_ScalarResult(target_tenant), _ListResult([])])
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    class _FakeAgentManager:
+        def _agent_dir(self, _agent_id):
+            from pathlib import Path
+
+            return Path("/tmp")
+
+        async def initialize_agent_files(self, *_args, **_kwargs):
+            return None
+
+        async def start_container(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(agents_api, "ensure_agent_identity", noop_async)
+    monkeypatch.setattr(agents_api, "_agent_out", lambda agent: SimpleNamespace(name=agent.name))
+    monkeypatch.setattr("app.services.tool_seeder.assign_default_tools_to_agent", noop_async)
+    monkeypatch.setattr("app.services.agent_manager.agent_manager", _FakeAgentManager())
+    monkeypatch.setattr("app.core.policy.write_audit_event", noop_async)
+
+    result = await agents_api.create_agent(
+        data=AgentCreate(name="投研助手", tenant_id=target_tenant_id),
+        current_user=SimpleNamespace(id=uuid4(), role="platform_admin", tenant_id=own_tenant_id),
+        db=db,
+    )
+
+    assert result.name == "投研助手"
+    assert db.added[0].tenant_id == target_tenant_id
+    assert any(f"SET LOCAL app.current_tenant_id = '{target_tenant_id}'" in str(stmt) for stmt in db.statements)
 
 
 @pytest.mark.asyncio
@@ -279,7 +382,7 @@ async def test_platform_admin_can_test_selected_tenant_llm_model(monkeypatch):
         db=db,
     )
 
-    params = db.statements[0].compile().params
+    params = _first_business_statement(db).compile().params
     assert target_tenant_id in params.values()
     assert own_tenant_id not in params.values()
     assert result["success"] is True
@@ -404,7 +507,7 @@ async def test_platform_admin_can_update_selected_tenant_llm_model(monkeypatch):
         db=db,
     )
 
-    params = db.statements[0].compile().params
+    params = _first_business_statement(db).compile().params
     assert target_tenant_id in params.values()
     assert own_tenant_id not in params.values()
     assert model.label == "Updated target model"
@@ -483,7 +586,7 @@ async def test_platform_admin_can_delete_selected_tenant_llm_model(monkeypatch):
         db=db,
     )
 
-    params = db.statements[0].compile().params
+    params = _first_business_statement(db).compile().params
     assert target_tenant_id in params.values()
     assert own_tenant_id not in params.values()
     assert db.deleted == [model]

@@ -104,7 +104,9 @@ class ResearchRequest:
         if not worker_topics:
             worker_topics = _topics_from_approved_plan(approved_plan)
         output_format = (
-            str(arguments.get("output_format") or _output_format_from_approved_plan(approved_plan) or "markdown").strip()
+            str(
+                arguments.get("output_format") or _output_format_from_approved_plan(approved_plan) or "markdown"
+            ).strip()
             or "markdown"
         )
         # F1 (RC1): the source budget must scale with depth, otherwise a deep run collapses
@@ -131,7 +133,7 @@ class ResearchRequest:
             deadline_seconds=deadline_seconds,
             output_format=output_format,
             output_language=str(arguments.get("output_language") or "").strip(),
-            plan_confirmed=bool(arguments.get("plan_confirmed") or False),
+            plan_confirmed=bool(arguments.get("user_confirmed") or arguments.get("plan_confirmed") or False),
             worker_topics=worker_topics,
             approved_plan=approved_plan,
             controller_mode=bool(arguments.get("controller_mode") or False),

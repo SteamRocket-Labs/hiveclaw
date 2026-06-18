@@ -175,7 +175,8 @@ async def create_trigger(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a trigger from the frontend without routing through the agent tool loop."""
-    await check_agent_access(db, current_user, agent_id)
+    access_result = await check_agent_access(db, current_user, agent_id)
+    agent = access_result[0] if isinstance(access_result, tuple) else access_result
     name = body.name.strip()
     reason = body.reason.strip()
     trigger_type = body.type.strip()
@@ -214,7 +215,7 @@ async def create_trigger(
         from app.services.workflow_trigger import validate_workflow_ref_for_trigger
 
         ref_error = await validate_workflow_ref_for_trigger(
-            tenant_id=current_user.tenant_id,
+            tenant_id=agent.tenant_id,
             agent_id=agent_id,
             ref=config["workflow_ref"],
         )
@@ -261,6 +262,7 @@ async def create_trigger(
 
     trigger = AgentTrigger(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         name=name,
         type=trigger_type,
         config=config,

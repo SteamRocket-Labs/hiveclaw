@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import get_db, pin_rls_tenant_context
 from app.models.user import User
 from app.schemas.schemas import TokenResponse, UserOut
 
@@ -49,6 +49,7 @@ async def get_oidc_config(
     if not tenant:
         return {"configured": False}
 
+    await pin_rls_tenant_context(db, tenant.id)
     result = await db.execute(
         select(TenantSetting).where(
             TenantSetting.tenant_id == tenant.id,
@@ -107,6 +108,8 @@ async def oidc_callback(
         if not tenant:
             raise HTTPException(status_code=400, detail="No default tenant found")
         tenant_uuid = tenant.id
+
+    await pin_rls_tenant_context(db, tenant_uuid)
 
     # Load OIDC config
     cfg = await get_tenant_oidc_config(db, tenant_uuid)

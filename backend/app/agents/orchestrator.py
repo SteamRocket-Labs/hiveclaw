@@ -323,6 +323,21 @@ def _execution_identity_from_metadata(value: Any) -> ExecutionIdentityRef | None
     )
 
 
+def _is_user_initiated_delegation(request: AgentDelegationRequest) -> bool:
+    """Return true when a real user is the execution principal for this delegation.
+
+    Current-channel IM/web turns enter the runtime with a ``delegated_user``
+    identity. Unattended agent wakes use ``agent_bot`` or no execution identity
+    and still need the Plan Mode backstop below.
+    """
+    identity = request.execution_identity
+    if identity is None:
+        return False
+    if identity.identity_type != "delegated_user":
+        return False
+    return _maybe_uuid(identity.identity_id) is not None
+
+
 async def _persist_delegation_event(
     *,
     task_id: str,
@@ -559,6 +574,8 @@ async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple
     """Final Plan Mode backstop for async delegation startup."""
     if request.interaction_type != "delegation":
         return True, None
+    if _is_user_initiated_delegation(request):
+        return True, "user_initiated_delegation"
     parent_agent_id = _maybe_uuid(request.parent_agent_id)
     if parent_agent_id is None:
         return False, "missing_parent_agent"

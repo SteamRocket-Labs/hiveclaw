@@ -362,14 +362,19 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
 
 
 async def _resolve_tenant_scope(
+    db: AsyncSession,
     current_user: User,
     tenant_id: str | None,
 ) -> uuid.UUID | None:
+    from app.database import pin_rls_tenant_context
+
     if tenant_id:
         parsed = uuid.UUID(tenant_id)
         if current_user.role != "platform_admin" and current_user.tenant_id != parsed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant access denied")
+        await pin_rls_tenant_context(db, parsed)
         return parsed
+    await pin_rls_tenant_context(db, current_user.tenant_id)
     return current_user.tenant_id
 
 
@@ -481,7 +486,7 @@ async def list_tools(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    scope_tenant_id = await _resolve_tenant_scope(current_user, tenant_id)
+    scope_tenant_id = await _resolve_tenant_scope(db, current_user, tenant_id)
     stmt = select(Tool)
     if scope_tenant_id:
         # Tenant-scoped tools + platform built-in tools (tenant_id IS NULL, non-MCP).
@@ -528,7 +533,7 @@ async def list_agent_installed_tools(
     current_user: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    scope_tenant_id = await _resolve_tenant_scope(current_user, tenant_id)
+    scope_tenant_id = await _resolve_tenant_scope(db, current_user, tenant_id)
     if not scope_tenant_id:
         return []
     result = await db.execute(
@@ -569,7 +574,7 @@ async def dedup_mcp_tools(
     Keeps the oldest Tool record, re-points AgentTool rows from duplicates
     to the keeper, then deletes the duplicate Tool rows.
     """
-    scope_tenant_id = await _resolve_tenant_scope(current_user, tenant_id)
+    scope_tenant_id = await _resolve_tenant_scope(db, current_user, tenant_id)
     if not scope_tenant_id:
         return {"merged": 0}
 
@@ -583,7 +588,8 @@ async def dedup_mcp_tools(
     # Falls back to display_name for legacy rows missing mcp_tool_name.
     groups: dict[tuple[str | None, str | None], list[Tool]] = {}
     for tool in all_mcp:
-        key = (tool.mcp_server_name, tool.mcp_tool_name) if tool.mcp_tool_name else (tool.display_name, None)
+        mcp_tool_name = getattr(tool, "mcp_tool_name", None)
+        key = (getattr(tool, "mcp_server_name", None), mcp_tool_name) if mcp_tool_name else (tool.display_name, None)
         groups.setdefault(key, []).append(tool)
 
     merged = 0
@@ -645,6 +651,7 @@ async def create_tool(
             db,
             agent_id=agent_id,
             tool_id=tool.id,
+            tenant_id=current_user.tenant_id,
             enabled=data.enabled,
             config=data.config or {},
             source="system",

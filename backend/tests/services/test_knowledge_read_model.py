@@ -313,6 +313,21 @@ def test_extractor_stale_when_behavior_unprocessed(tmp_path: Path) -> None:
     assert overview["distillers"]["extractor"]["state"] == "stale"
 
 
+def test_extractor_stale_when_t0_session_ledger_unprocessed(tmp_path: Path) -> None:
+    root = _seed_workspace(tmp_path)
+    source = root / "memory" / "t0" / "sessions" / "sess-1" / "segments" / "seg-1" / "source.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("# T0 Session Ledger\n\n<t0_event>fresh activity</t0_event>\n", encoding="utf-8")
+    learnings = root / "memory" / "learnings"
+    learnings.mkdir()
+    cursor = learnings / ".extract_cursor.json"
+    cursor.write_text("{}", encoding="utf-8")
+    _age(cursor, hours=30)  # > 24h grace behind fresh ledger source
+
+    overview = build_knowledge_overview(tmp_path, AGENT)
+    assert overview["distillers"]["extractor"]["state"] == "stale"
+
+
 def test_dream_stale_when_t3_outruns_state(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
     # strategies.md / feedback.md are written fresh by _seed_workspace (T3 input);

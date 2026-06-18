@@ -18,6 +18,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 
 from app.services.principal_context import PrincipalStack
@@ -127,7 +128,7 @@ def _distiller_status(
 def _build_distiller_statuses(root: Path) -> dict:
     """Per-pipeline freshness, each judged against its own input side.
 
-    extractor consumes T0 behavior logs, heartbeat consumes T2 learnings,
+    extractor consumes the append-only T0 session ledger, heartbeat consumes T2 learnings,
     dream consumes active T3 files. skill_distiller keeps the two-state
     contract: its real input is skill/workflow *candidates* inside T2, so a
     learnings-mtime anchor would false-positive on agents that learn without
@@ -138,7 +139,12 @@ def _build_distiller_statuses(root: Path) -> dict:
     from app.services.auto_dream import MIN_HOURS_BETWEEN_DREAMS
 
     mem_dir = root / "memory"
-    behavior_anchor = _newest_mtime((root / "logs").glob("*/behavior/*"))
+    behavior_anchor = _newest_mtime(
+        chain(
+            (mem_dir / "t0" / "sessions").glob("*/segments/*/source.md"),
+            (root / "logs").glob("*/behavior/*"),
+        )
+    )
     learnings_anchor = _newest_mtime((mem_dir / "learnings").glob("*.md"))
     t3_anchor = _newest_mtime(mem_dir / spec["filename"] for spec in T3_FILE_SPECS)
 

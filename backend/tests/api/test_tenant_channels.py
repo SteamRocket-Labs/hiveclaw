@@ -56,6 +56,8 @@ class _FakeDB:
         self._config = config
         self._user = user
         self._agent_id = agent_id
+        self.sync_session = SimpleNamespace(info={})
+        self.statements: list[str] = []
         self.added = []
         self.deleted = []
         self._call_idx = 0
@@ -63,6 +65,9 @@ class _FakeDB:
     async def execute(self, stmt):
         self._call_idx += 1
         stmt_str = str(stmt)
+        self.statements.append(stmt_str)
+        if "SET LOCAL app.current_tenant_id" in stmt_str:
+            return _SingleScalar(None)
         # List query (scalars().all())
         if "tenant_channel_configs" in stmt_str and self._call_idx == 1 and self._configs:
             return _ListScalars(self._configs)
@@ -175,6 +180,8 @@ def test_webhook_url():
 
 def test_webhook_challenge_response():
     """Feishu URL verification must echo challenge back."""
+    from app import database
+
     app = FastAPI()
     app.include_router(router)
     config = SimpleNamespace(
@@ -188,9 +195,10 @@ def test_webhook_challenge_response():
         extra_config={},
         is_active=True,
     )
+    fake_db = _FakeDB(config=config)
 
     async def override_db():
-        yield _FakeDB(config=config)
+        yield fake_db
 
     app.dependency_overrides[get_db] = override_db
     client = TestClient(app, raise_server_exceptions=False)
@@ -200,6 +208,8 @@ def test_webhook_challenge_response():
     })
     assert resp.status_code == 200
     assert resp.json()["challenge"] == "test_challenge_token"
+    assert fake_db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(_TENANT_ID)
+    assert any(f"SET LOCAL app.current_tenant_id = '{_TENANT_ID}'" in stmt for stmt in fake_db.statements)
 
 
 def test_webhook_routes_to_main_agent():

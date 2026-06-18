@@ -24,6 +24,8 @@ class _FakeDB:
 
     async def execute(self, statement):
         self.statements.append(statement)
+        if "SET LOCAL app.current_tenant_id" in str(statement):
+            return _ScalarResult(None)
         if not self._results:
             raise AssertionError("Unexpected execute() call")
         return self._results.pop(0)
@@ -193,7 +195,11 @@ async def test_enterprise_eval_runtime_sync_forwards_decrypted_model_server_side
         db=db,
     )
 
-    params = db.statements[0].compile().params
+    params = next(
+        statement.compile().params
+        for statement in db.statements
+        if "SET LOCAL app.current_tenant_id" not in str(statement)
+    )
     assert tenant_id in params.values()
     assert captured["url"] == "https://backend-eval.example/api/eval-ci/runtime/model"
     assert captured["headers"] == {"Authorization": "Bearer ci-token"}

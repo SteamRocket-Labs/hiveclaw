@@ -11,9 +11,10 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.channel_rls import load_public_agent_channel_config
 from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
-from app.database import get_db
+from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.api.channel_secrets import resolve_secret_value
 from app.channel_message_contracts import prefix_message_with_sender_label
 from app.models.channel_config import ChannelConfig
@@ -332,6 +333,19 @@ async def _resolve_feishu_oauth_authorize_config(db: AsyncSession, tenant_id: uu
     return app_id, redirect_uri
 
 
+async def _load_public_sso_scan_session(db: AsyncSession, session_id: uuid.UUID) -> SSOScanSession | None:
+    """Load a public SSO scan session by unguessable state and pin its tenant."""
+    async with enter_rls_bypass(
+        db,
+        reason=f"public feishu sso session lookup for {session_id}",
+    ) as bypass_db:
+        session = await bypass_db.get(SSOScanSession, session_id)
+
+    if session and session.tenant_id:
+        await pin_rls_tenant_context(db, session.tenant_id)
+    return session
+
+
 @router.get("/auth/feishu/sso/available")
 async def feishu_sso_available():
     """Check if Feishu SSO login is available (app configured)."""
@@ -350,6 +364,8 @@ async def feishu_sso_init(
     from datetime import datetime, timedelta, timezone
     from urllib.parse import urlencode
 
+    if tenant_id:
+        await pin_rls_tenant_context(db, tenant_id)
     app_id, redirect_uri = await _resolve_feishu_oauth_authorize_config(db, tenant_id)
 
     session = SSOScanSession(
@@ -378,7 +394,7 @@ async def feishu_sso_poll(
     db: AsyncSession = Depends(get_db),
 ):
     """Poll SSO session status. Returns token when completed."""
-    session = await db.get(SSOScanSession, session_id)
+    session = await _load_public_sso_scan_session(db, session_id)
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
@@ -439,7 +455,7 @@ async def feishu_oauth_callback_get(code: str, state: str, db: AsyncSession = De
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid scan session state") from exc
 
-    session = await db.get(SSOScanSession, session_id)
+    session = await _load_public_sso_scan_session(db, session_id)
     if not session:
         return HTMLResponse("<html><body>Invalid or expired SSO session.</body></html>", status_code=400)
 
@@ -482,6 +498,8 @@ async def feishu_oauth_callback(
 ):
     """Handle Feishu OAuth callback — exchange code for user session."""
     try:
+        if tenant_id:
+            await pin_rls_tenant_context(db, tenant_id)
         user, token = await feishu_auth_provider.authenticate_with_code(db, code=code, tenant_id=tenant_id)
         await db.commit()
     except Exception:
@@ -568,6 +586,7 @@ async def configure_channel(
 
     config = ChannelConfig(
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         channel_type=data.channel_type,
         app_id=app_id,
         app_secret=app_secret,
@@ -698,13 +717,7 @@ async def feishu_event_webhook(
 
     body = _json_wb.loads(body_str)
 
-    result = await db.execute(
-        select(ChannelConfig).where(
-            ChannelConfig.agent_id == agent_id,
-            ChannelConfig.channel_type == "feishu",
-        )
-    )
-    config = result.scalar_one_or_none()
+    config = await load_public_agent_channel_config(db, agent_id=agent_id, channel_type="feishu")
     if config and config.encrypt_key:
         sig = request.headers.get("X-Lark-Signature", "")
         ts = request.headers.get("X-Lark-Request-Timestamp", "")
@@ -772,14 +785,24 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         from app.models.audit import ApprovalRequest
 
         approval_uuid = uuid.UUID(approval_id_str)
-        approval_result = await db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_uuid))
-        approval_record = approval_result.scalar_one_or_none()
-        if not approval_record:
-            return {"toast": {"type": "error", "content": "Approval not found"}}
+        async with enter_rls_bypass(
+            db,
+            reason=f"public feishu card approval lookup for {approval_uuid}",
+        ) as bypass_db:
+            approval_result = await bypass_db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_uuid))
+            approval_record = approval_result.scalar_one_or_none()
+            if not approval_record:
+                return {"toast": {"type": "error", "content": "Approval not found"}}
 
-        agent_result = await db.execute(select(AgentModel).where(AgentModel.id == approval_record.agent_id))
-        agent = agent_result.scalar_one_or_none()
-        tenant_id = agent.tenant_id if agent else None
+            agent_result = await bypass_db.execute(select(AgentModel).where(AgentModel.id == approval_record.agent_id))
+            agent = agent_result.scalar_one_or_none()
+            tenant_id = getattr(approval_record, "tenant_id", None) or (agent.tenant_id if agent else None)
+
+        if tenant_id is None:
+            return {"toast": {"type": "error", "content": "Approval tenant not found"}}
+        await pin_rls_tenant_context(db, tenant_id)
+        if getattr(approval_record, "tenant_id", None) is None:
+            approval_record.tenant_id = tenant_id
 
         # Find the Feishu user who clicked the button
         open_id = body.get("open_id", "")
@@ -1065,6 +1088,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 _new_sess = await start_new_channel_session(
                     db=db,
                     agent_id=agent_id,
+                    tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
                     external_conv_id=conv_id,
                     source_channel="feishu",
@@ -1150,6 +1174,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _sess = await find_or_create_channel_session(
                 db=db,
                 agent_id=agent_id,
+                tenant_id=agent_tenant_id,
                 user_id=platform_user_id,
                 external_conv_id=conv_id,
                 source_channel="feishu",
@@ -1165,6 +1190,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             db.add(
                 ChatMessage(
                     agent_id=agent_id,
+                    tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
                     role="user",
                     content=user_text,
@@ -1680,6 +1706,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             db.add(
                 ChatMessage(
                     agent_id=agent_id,
+                    tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
                     role="assistant",
                     content=reply_text,
@@ -1839,6 +1866,7 @@ async def _handle_feishu_file(
         _sess = await find_or_create_channel_session(
             db=db,
             agent_id=agent_id,
+            tenant_id=_feishu_tenant_id,
             user_id=platform_user_id,
             external_conv_id=conv_id,
             source_channel="feishu",
@@ -1862,6 +1890,7 @@ async def _handle_feishu_file(
         db.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=_feishu_tenant_id,
                 user_id=platform_user_id,
                 role="user",
                 content=user_msg_content if msg_type != "image" else f"[file:{filename}]",
@@ -1988,6 +2017,7 @@ async def _handle_feishu_file(
             _db_save.add(
                 ChatMessage(
                     agent_id=agent_id,
+                    tenant_id=_feishu_tenant_id,
                     user_id=platform_user_id,
                     role="assistant",
                     content=reply_text,
@@ -2037,6 +2067,7 @@ async def _handle_feishu_file(
         db2.add(
             ChatMessage(
                 agent_id=agent_id,
+                tenant_id=_feishu_tenant_id,
                 user_id=platform_user_id,
                 role="assistant",
                 content=ack,

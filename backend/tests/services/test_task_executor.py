@@ -195,7 +195,8 @@ async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypatch):
+async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger(monkeypatch, tmp_path):
+    from app.memory.t0.ledger import replay_t0_session_events
     from app.services.task_executor import execute_task
 
     task_id = uuid4()
@@ -268,6 +269,10 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
     monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: sessions.pop(0))
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(
+        "app.memory.t0.ledger.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
 
     async def fake_log_activity(*args, **kwargs):
         return None
@@ -287,3 +292,12 @@ async def test_execute_task_persists_reflection_session_and_tool_calls(monkeypat
     assert '"name": "web_search"' in tool_call.content
     assert assistant_reply.conversation_id == str(created_session.id)
     assert "任务已完成" in assistant_reply.content
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=str(created_session.id), data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in events] == [
+        ("user_message", "user", user_prompt.content),
+        ("tool_result", "tool", tool_call.content),
+        ("assistant_message", "assistant", assistant_reply.content),
+        ("segment_boundary", "system", "task_complete"),
+    ]
+    assert events[0].metadata["task_id"] == str(task_id)

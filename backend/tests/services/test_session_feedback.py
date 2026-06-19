@@ -18,6 +18,15 @@ class _FakeDB:
         self.flushed = True
 
 
+def test_session_feedback_default_writer_is_explicit_overlay_not_t3_adapter() -> None:
+    from app.services.session_feedback import record_session_feedback
+
+    writer = record_session_feedback.__kwdefaults__["append_memory"]
+
+    assert writer.__name__ == "write_session_feedback_overlay"
+    assert writer.__module__ == "app.services.session_feedback"
+
+
 @pytest.mark.asyncio
 async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_path) -> None:
     from app.memory.t3_store import T3AppendResult
@@ -34,7 +43,12 @@ async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_pa
 
     async def fake_append_memory(*args, **kwargs):
         calls.append((args, kwargs))
-        return T3AppendResult(status="accepted", category="feedback", entry_id="t3-feedback-1", path="memory/feedback.md")
+        return T3AppendResult(
+            status="overlay",
+            category="feedback",
+            entry_id="explicit-feedback-1",
+            path="memory/explicit/entries/explicit-feedback-1.md",
+        )
 
     result = await record_session_feedback(
         db,
@@ -57,8 +71,8 @@ async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_pa
     assert calls[0][1]["data_root"] == tmp_path
     assert "deployment checklist" in calls[0][1]["content"]
     assert result["label"] == "useful"
-    assert result["calibration_result"]["t3_status"] == "accepted"
-    assert result["calibration_result"]["entry_id"] == "t3-feedback-1"
+    assert result["calibration_result"]["t3_status"] == "overlay"
+    assert result["calibration_result"]["entry_id"] == "explicit-feedback-1"
 
 
 @pytest.mark.asyncio
@@ -93,7 +107,7 @@ async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path
 
     async def fake_append_memory(*args, **kwargs):
         calls.append((args, kwargs))
-        return T3AppendResult(status="accepted", category="feedback", entry_id="t3-feedback-1")
+        return T3AppendResult(status="overlay", category="feedback", entry_id="explicit-feedback-1")
 
     result = await record_session_feedback(
         db,

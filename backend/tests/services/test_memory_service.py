@@ -596,10 +596,16 @@ async def test_build_memory_context_omits_pl3_for_non_owner(monkeypatch, tmp_pat
     owner_id = uuid4()
     viewer_id = uuid4()
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "knowledge.md").write_text(
-        "# Knowledge\n\n"
-        "- [2026-05-22][sensitivity=PL3_sensitive] Q3 salary planning requires owner-only handling\n"
-        "- [2026-05-22][sensitivity=PL1_public] Acme salary planning policy uses the approved budget template\n",
+    (mem_dir / "t3" / "user.md").write_text(
+        "# T3 User\n\n"
+        '<t3_user_memory id="salary-private" status="active" created_at="2026-05-22" sensitivity="PL3_sensitive">'
+        "<claim>Q3 salary planning requires owner-only handling</claim>"
+        "<evidence><source_ref>session:salary-private</source_ref></evidence>"
+        "</t3_user_memory>\n\n"
+        '<t3_user_memory id="salary-public" status="active" created_at="2026-05-22" sensitivity="PL1_public">'
+        "<claim>Acme salary planning policy uses the approved budget template</claim>"
+        "<evidence><source_ref>session:salary-public</source_ref></evidence>"
+        "</t3_user_memory>\n",
         encoding="utf-8",
     )
 

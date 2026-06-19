@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 # ── §1: Hooks system (Phase 0) ──
 
@@ -235,12 +237,12 @@ class TestPromptIntegration:
         assert "<phase_2_curate>" in template
         assert "<persistent_session_notes>" in template
 
-    def test_v17_dream_md_has_4_phases(self) -> None:
+    def test_v17_dream_md_has_soul_reconsolidation_boundary(self) -> None:
         template = (Path(__file__).parent.parent / "app" / "templates" / "DREAM.md").read_text()
-        assert "## Phase 1: ORIENT" in template
-        assert "## Phase 2: CONSOLIDATE" in template
-        assert "## Phase 3: PROMOTE" in template
-        assert "## Phase 4: INDEX + CLEANUP" in template
+        assert "Dream — Soul Reconsolidation Protocol" in template
+        assert "You are not the T3 writer" in template
+        assert "T3 Consolidator" in template
+        assert "Platform Gate" in template
 
 
 # ── §6: Heartbeat KAIROS (Phase 5) ──
@@ -300,13 +302,21 @@ class TestDreamIntegration:
 
         agent_id = uuid.uuid4()
         memory_dir = tmp_path / str(agent_id) / "memory"
-        memory_dir.mkdir(parents=True)
-        (memory_dir / "feedback.md").write_text("- [2026-04-06] a\n- [2026-04-06] b\n")
+        t3_dir = memory_dir / "t3"
+        t3_dir.mkdir(parents=True)
+        (t3_dir / "user.md").write_text(
+            "# T3 User\n\n"
+            '<t3_user_memory id="idx-a" status="active" created_at="2026-04-06">'
+            "<claim>a</claim><evidence><source_ref>session:a</source_ref></evidence>"
+            "</t3_user_memory>\n",
+            encoding="utf-8",
+        )
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
             _update_index_md(agent_id)
         index = (memory_dir / "INDEX.md").read_text()
-        assert "feedback.md" in index
+        assert "t3/user.md" in index
+        assert "idx-a" in index
 
     def test_v10_gate_expansion_ticks(self) -> None:
         from app.services.auto_dream import (
@@ -356,17 +366,20 @@ class TestFullPipeline:
             )
         assert written == 1
 
-    def test_t3_consolidation_dedup(self, tmp_path: Path) -> None:
-        """Phase 6: T3 dedup removes duplicates."""
+    def test_t3_consolidation_no_direct_dedup_write(self, tmp_path: Path) -> None:
+        """Accepted T3 dedup is committed by Platform Gate, not Dream helpers."""
         from app.services.auto_dream import _consolidate_t3_files, _write_t3_file
 
         agent_id = uuid.uuid4()
-        (tmp_path / str(agent_id) / "memory").mkdir(parents=True)
+        t3_dir = tmp_path / str(agent_id) / "memory" / "t3"
+        t3_dir.mkdir(parents=True)
+        (t3_dir / "user.md").write_text("# T3 User\n" + ("- [2026-04-06] Same entry\n" * 5), encoding="utf-8")
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
-            _write_t3_file(agent_id, "feedback.md", "# Feedback\n" + ("- [2026-04-06] Same entry\n" * 5))
+            with pytest.raises(RuntimeError, match="direct T3 write refused"):
+                _write_t3_file(agent_id, "t3/user.md", "# T3 User\n")
             stats = _consolidate_t3_files(agent_id)
-        assert stats["feedback.md"] == 4  # 5 identical → 1 kept, 4 removed
+        assert stats["t3/user.md"] == 0
 
     def test_t2_truncation(self, tmp_path: Path) -> None:
         """Phase 6: T2 retention archives only absorbed entries beyond cap."""

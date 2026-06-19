@@ -109,21 +109,21 @@ def test_t2_append_persists_container_candidate(tmp_path) -> None:
     assert entries[0]["container_candidate"] == "workflow_candidate"
 
 
-# ── Heartbeat: Memory Curator, not final skill/workflow writer ──
+# ── Heartbeat: T3 Consolidator, not final skill/workflow writer ──
 
 
 def test_heartbeat_template_is_memory_curator_contract() -> None:
     template = (PROJECT_ROOT / "backend" / "app" / "templates" / "HEARTBEAT.md").read_text(encoding="utf-8")
     prompt = _normalized(template)
 
-    assert "memory curator" in prompt
-    # Heartbeat curates candidates; it is not the final skill/workflow writer.
-    assert "not the final skill" in prompt
-    assert "container" in prompt
-    assert "skill_candidate" in prompt
-    assert "workflow_candidate" in prompt
-    # Curator must preserve container candidate markers when promoting to T3.
-    assert "[container=" in template
+    assert "t3 consolidator" in prompt
+    # Heartbeat authors semantic T3 job artifacts; it is not the final writer.
+    assert "not the physical committer" in prompt
+    assert "consolidation_pitch.md" in prompt
+    assert "revised_patch.md" in prompt
+    assert "memory gate" in prompt
+    assert "platform gate" in prompt
+    assert "do not create skill files or workflow json" in prompt
 
 
 # ── Dream: Reconsolidator + IdentityPromoter, not free identity editor ──

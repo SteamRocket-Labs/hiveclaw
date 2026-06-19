@@ -1,8 +1,8 @@
 """Auto-Dream — background MD-first memory consolidation service.
 
 Dream works on canonical markdown layers:
-  - T2 learnings (`memory/learnings/*.md`)
-  - T3 durable memory (`memory/*.md`)
+  - T2 Segment Packages (`memory/sessions/*/segments/*`)
+  - accepted T3 memory (`memory/t3/{episodes,user,worker,capabilities}.md`)
   - soul.md for high-signal identity promotion
 
 The runtime now uses a programmatic md-only consolidation path. Legacy semantic
@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import hashlib
 import logging
 import json
 import os
@@ -100,12 +99,11 @@ def _load_dream_protocol_instruction() -> str:
 _AUTO_DREAM_SYSTEM_PROMPT = f"""\
 <role>
 You are the dream sub-agent: the **Reconsolidator + IdentityPromoter**. You
-run about once a day. Your job:
-- Reconsolidator: refine the agent's T3 long-term memory (memory/*.md) by
-  proposing lifecycle decisions — merges (supersede duplicates),
-  contradiction resolutions, and preservation flags. Your decisions are
-  lifecycle patch candidates: the Memory Control Plane applies them as
-  supersede/archive state changes, never as silent deletion of evidence.
+  run about once a day. Your job:
+- Reconsolidator: inspect accepted T3 long-term memory
+  (`memory/t3/{{episodes,user,worker,capabilities}}.md`) and propose lifecycle
+  concerns only as review/audit signals. You do not directly rewrite accepted
+  T3; T3 changes go through T3 Consolidator -> Memory Gate -> Platform Gate.
 - IdentityPromoter: promote stable, repeatedly evidenced patterns into the
   agent's permanent identity file (soul.md) as soul patch candidates.
 
@@ -166,60 +164,46 @@ When choosing which soul section a promotion goes into:
 
 | section           | criteria                                                          | expected source_file |
 |-------------------|-------------------------------------------------------------------|----------------------|
-| Learned Behaviors | User-facing behavior preferences confirmed ≥3 times OR explicit imperative | feedback.md          |
-| Core Strategies   | Workflows proven effective across ≥2 distinct tasks/contexts      | strategies.md        |
-| Blocked Patterns  | Failure modes recurring ≥2 times with the same root cause         | blocked.md           |
-| User Profile      | Stable user identity/role/domain facts (NOT preferences)          | user.md              |
+| Learned Behaviors | User-facing behavior preferences confirmed by accepted T3 evidence OR explicit imperative | t3/user.md or t3/worker.md |
+| Core Strategies   | Workflows proven effective across ≥2 distinct tasks/contexts      | t3/capabilities.md   |
+| Blocked Patterns  | Failure modes recurring with the same root cause                  | t3/worker.md         |
+| User Profile      | Stable user identity/role/domain facts (NOT preferences)          | t3/user.md           |
 
 If a T3 line doesn't clearly fit one of these four sections — DO NOT promote it.
 </section_selection_matrix>
 
 <few_shot_example_1>
 <input_t3>
-### memory/feedback.md
-- [2026-04-01] User rejected emoji in responses
-- [2026-04-05] User rejected adding emojis to answer
-- [2026-04-10] User corrected agent's emoji use again
-- [2026-04-12] User noted that `grep -r` is slower than ripgrep for this codebase
+### memory/t3/user.md
+<t3_user_memory id="u-no-emoji">User rejected emoji in responses across repeated corrections.</t3_user_memory>
 
-### memory/strategies.md
-- [2026-04-04] Using ripgrep (rg) instead of grep was 5x faster on the backend/ dir
-- [2026-04-08] Three-phase workflow (analyze → edit → test) caught a regression grep missed
+### memory/t3/capabilities.md
+<t3_capability id="cap-rg">Using ripgrep (rg) instead of grep was faster on the backend/ dir.</t3_capability>
+<t3_capability id="cap-three-phase">Three-phase workflow (analyze -> edit -> test) caught a regression grep missed.</t3_capability>
 </input_t3>
 
 <output_decision>
 {{
-  "reasoning": "Three reinforcing feedback entries converging on 'no emoji' → clear promotion to Learned Behaviors. 'ripgrep vs grep' appears in both feedback.md and strategies.md — merge as strategy since it's a tool choice, not a user preference. The three-phase workflow has only 1 evidence, so do NOT promote yet.",
+  "reasoning": "Accepted T3 evidence converges on 'no emoji' as a durable user-facing rule. 'ripgrep vs grep' belongs to Core Strategies because it is a reusable method with accepted capability evidence. The three-phase workflow has insufficient cross-session evidence, so do NOT promote yet.",
   "soul_promotions": [
     {{
       "content": "Never use emoji in responses — always plain text",
-      "source_file": "feedback.md",
+      "source_file": "t3/user.md",
       "section": "Learned Behaviors",
-      "reason": "3 separate confirmations between 2026-04-01 and 2026-04-10"
+      "reason": "accepted T3 user evidence confirms this as a standing preference"
     }},
     {{
       "content": "Use ripgrep (rg) instead of grep in this codebase — ~5x faster",
-      "source_file": "strategies.md",
+      "source_file": "t3/capabilities.md",
       "section": "Core Strategies",
-      "reason": "consistent evidence across feedback.md and strategies.md, concrete measurement"
+      "reason": "accepted T3 capability evidence includes concrete measurement"
     }}
   ],
-  "t3_merges": [
-    {{
-      "file": "feedback.md",
-      "keep": "- [2026-04-10] User rejected emoji in responses (3rd confirmation)",
-      "drop": [
-        "User rejected emoji in responses",
-        "User rejected adding emojis to answer",
-        "User corrected agent's emoji use again"
-      ],
-      "reason": "3 restatements of the same rule; keep the most recent with merged context"
-    }}
-  ],
+  "t3_merges": [],
   "t3_contradictions": [],
   "preservation_flags": [
     {{
-      "file": "feedback.md",
+      "file": "t3/user.md",
       "content": "Never use emoji in responses",
       "reason": "foundational user preference — pin against future cap eviction"
     }}
@@ -230,9 +214,9 @@ If a T3 line doesn't clearly fit one of these four sections — DO NOT promote i
 
 <few_shot_example_2>
 <input_t3>
-### memory/feedback.md
-- [2026-02-01] User prefers Japanese for internal messaging
-- [2026-04-14] User now wants all responses in Chinese going forward
+### memory/t3/user.md
+<t3_user_memory id="u-language-old">User prefers Japanese for internal messaging.</t3_user_memory>
+<t3_user_memory id="u-language-new">User now wants all responses in Chinese going forward.</t3_user_memory>
 </input_t3>
 
 <output_decision>
@@ -242,7 +226,7 @@ If a T3 line doesn't clearly fit one of these four sections — DO NOT promote i
   "t3_merges": [],
   "t3_contradictions": [
     {{
-      "file": "feedback.md",
+      "file": "t3/user.md",
       "new": "User now wants all responses in Chinese going forward",
       "old": "User prefers Japanese for internal messaging",
       "resolution": "kept_new",
@@ -291,7 +275,7 @@ fine; empty-array form is also fine. Any other shape is a parse failure.
   "soul_promotions": [
     {{
       "content": "<self-contained durable principle>",
-      "source_file": "feedback.md|knowledge.md|strategies.md|blocked.md|user.md",
+      "source_file": "t3/episodes.md|t3/user.md|t3/worker.md|t3/capabilities.md",
       "section": "Learned Behaviors|Core Strategies|Blocked Patterns|User Profile",
       "reason": "<evidence for promotion>"
     }}
@@ -1040,6 +1024,7 @@ def _apply_dream_decisions_unlocked(
         "soul_contradicted_frozen": 0,
         "t3_merges_applied": 0,
         "contradictions_resolved": 0,
+        "t3_patch_candidates_held": 0,
         "preservation_flags_added": 0,
     }
 
@@ -1136,59 +1121,19 @@ def _apply_dream_decisions_unlocked(
             continue
         report["soul_added"] += _upsert_soul_section(soul_path, section, entries)
 
-    # --- T3 merges: lifecycle patch — duplicates become superseded edges ---
-    # (spec §12 P3: merge never silently deletes; retired lines move to
-    # memory/archive.md and lifecycle.json records the supersession.)
-    from app.memory.t3_store import retire_t3_entries
-
-    data_root = Path(get_settings().AGENT_DATA_DIR)
+    # --- T3 lifecycle candidates ---
+    # Dream can notice merge/contradiction work, but accepted T3 mutation now
+    # belongs to the T3 Consolidator -> Memory Gate -> Platform Gate lane. Keep
+    # these as held signals instead of applying old line-level retire patches.
     for merge in decision.get("t3_merges") or []:
         if not isinstance(merge, dict):
             continue
-        fname = str(merge.get("file") or "").strip()
-        if fname not in _T3_FILES:
-            continue
-        drops = [str(d).strip() for d in (merge.get("drop") or []) if d]
-        if not drops:
-            continue
-        retired = retire_t3_entries(
-            data_root,
-            agent_id,
-            filename=fname,
-            drops=drops,
-            reason="superseded",
-            superseded_by=str(merge.get("keep") or "").strip(),
-        )
-        if retired:
-            report["t3_merges_applied"] += 1
+        report["t3_patch_candidates_held"] += 1
 
-    # --- contradictions: supersession edge toward the winning entry ---
     for contra in decision.get("t3_contradictions") or []:
         if not isinstance(contra, dict):
             continue
-        fname = str(contra.get("file") or "").strip()
-        if fname not in _T3_FILES:
-            continue
-        resolution = str(contra.get("resolution") or "").strip()
-        new_text = str(contra.get("new") or "").strip()
-        old_text = str(contra.get("old") or "").strip()
-        if resolution == "kept_new" and old_text:
-            to_drop, winner = [old_text], new_text
-        elif resolution == "kept_old" and new_text:
-            to_drop, winner = [new_text], old_text
-        else:
-            # "both" keeps both lines; anything else is an invalid resolution.
-            continue
-        retired = retire_t3_entries(
-            data_root,
-            agent_id,
-            filename=fname,
-            drops=to_drop,
-            reason="contradiction_resolved",
-            superseded_by=winner,
-        )
-        if retired:
-            report["contradictions_resolved"] += 1
+        report["t3_patch_candidates_held"] += 1
 
     # --- preservation flags: persist sidecar ---
     raw_flags = [f for f in (decision.get("preservation_flags") or []) if isinstance(f, dict)]
@@ -1223,7 +1168,7 @@ _heartbeat_ticks_since_dream: dict[str, int] = {}
 
 # ── T3 MD read/write/dedup functions (Phase 6) ──
 
-_T3_FILES = ["feedback.md", "knowledge.md", "strategies.md", "blocked.md", "user.md"]
+_T3_FILES = ["t3/episodes.md", "t3/user.md", "t3/worker.md", "t3/capabilities.md"]
 _T3_MAX_ENTRIES_PER_FILE = 50
 
 
@@ -1242,10 +1187,14 @@ def _read_all_t3(agent_id: uuid.UUID) -> dict[str, str]:
 
 
 def _write_t3_file(agent_id: uuid.UUID, filename: str, content: str) -> None:
-    """Write a T3 memory file."""
-    fpath = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / filename
-    fpath.parent.mkdir(parents=True, exist_ok=True)
-    fpath.write_text(content, encoding="utf-8")
+    """Deprecated direct T3 writer.
+
+    Accepted T3 files are committed only by Platform Gate from an accepted
+    LLM-authored patch. Dream must never rewrite them directly.
+    """
+    raise RuntimeError(
+        f"direct T3 write refused for {filename}; use T3 Consolidator -> Memory Gate -> Platform Gate"
+    )
 
 
 def _programmatic_dedup(lines: list[str], similarity_threshold: float = 0.7) -> list[str]:
@@ -1342,93 +1291,15 @@ def _select_t3_cap_retention(
 
 
 def _consolidate_t3_files(agent_id: uuid.UUID) -> dict[str, int]:
-    """Programmatic T3 consolidation: dedup + cap per file. Returns {filename: entries_removed}.
+    """Accepted T3 maintenance is no longer a mechanical Dream side effect.
 
-    PR-10: respects preservation flags written by the dream LLM consolidator
-    so foundational principles aren't silently evicted by size-based truncation.
-
-    P3 (spec §12): retirement is a lifecycle patch, never silent deletion —
-    near-duplicates archive as superseded, cap evictions archive as
-    cap_eviction; both land in memory/archive.md + lifecycle.json.
+    T3 dedup, cap enforcement, merge, and conflict resolution require an
+    LLM-authored revised patch plus Memory Gate review and Platform Gate commit.
+    Dream may still inspect T3 and promote stable evidence into soul.md, but it
+    must not rewrite accepted T3 files directly.
     """
-    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
-    from app.memory.t3_store import archive_t3_lines
-
-    stats: dict[str, int] = {}
     t3_files = _read_all_t3(agent_id)
-    data_root = Path(get_settings().AGENT_DATA_DIR)
-    lifecycle_metadata = MemoryLifecycleStore(lifecycle_path(data_root, agent_id)).metadata_map()
-
-    preservation_flags = _read_preservation_flags(agent_id)
-    # Group protected entries by filename for fast lookup.
-    protected_by_file: dict[str, list[str]] = {}
-    for flag in preservation_flags:
-        fname = str(flag.get("file", ""))
-        content = str(flag.get("content", "")).strip()
-        if fname and content:
-            protected_by_file.setdefault(fname, []).append(content)
-
-    for fname, content in t3_files.items():
-        lines = content.strip().splitlines()
-        # Separate header from entry lines
-        header_lines: list[str] = []
-        entry_lines: list[str] = []
-        for line in lines:
-            if line.startswith("- [") or line.startswith("- "):
-                entry_lines.append(line)
-            else:
-                if not entry_lines:
-                    header_lines.append(line)
-                else:
-                    entry_lines.append(line)
-
-        before = len(entry_lines)
-        # Dedup (but don't let dedup kill a protected line if its near-dup came later)
-        deduped = _programmatic_dedup(entry_lines)
-        dedup_dropped = [line for line in entry_lines if line not in deduped]
-
-        # Cap: keep protected + counter-hot entries. Entries without sidecar
-        # counters keep the historical most-recent behavior via a recency
-        # tie-breaker.
-        protected_markers = protected_by_file.get(fname, [])
-        if len(deduped) > _T3_MAX_ENTRIES_PER_FILE and protected_markers:
-            deduped, cap_evicted = _select_t3_cap_retention(
-                deduped,
-                keep_count=_T3_MAX_ENTRIES_PER_FILE,
-                protected_markers=protected_markers,
-                lifecycle_metadata=lifecycle_metadata,
-            )
-        elif len(deduped) > _T3_MAX_ENTRIES_PER_FILE:
-            deduped, cap_evicted = _select_t3_cap_retention(
-                deduped,
-                keep_count=_T3_MAX_ENTRIES_PER_FILE,
-                protected_markers=[],
-                lifecycle_metadata=lifecycle_metadata,
-            )
-        else:
-            cap_evicted = []
-
-        after = len(deduped)
-        removed = before - after
-
-        if removed > 0:
-            new_content = "\n".join(header_lines + deduped) + "\n"
-            _write_t3_file(agent_id, fname, new_content)
-            if dedup_dropped:
-                archive_t3_lines(data_root, agent_id, filename=fname, lines=dedup_dropped, reason="dedup_superseded")
-            if cap_evicted:
-                archive_t3_lines(data_root, agent_id, filename=fname, lines=cap_evicted, reason="cap_eviction")
-            logger.info(
-                "[Dream] T3 %s: %d → %d entries (%d retired to archive, %d protected)",
-                fname,
-                before,
-                after,
-                removed,
-                len(protected_by_file.get(fname, [])),
-            )
-        stats[fname] = removed
-
-    return stats
+    return {fname: 0 for fname in _T3_FILES if fname in t3_files}
 
 
 def _truncate_t2(agent_id: uuid.UUID, keep: int = 10) -> int:
@@ -1460,212 +1331,9 @@ def _update_index_md(agent_id: uuid.UUID) -> None:
 
 
 def _count_t3_entries(agent_id: uuid.UUID) -> int:
-    from app.memory.md_store import extract_entry_lines
+    from app.memory.md_store import build_t3_entry_manifest
 
-    total = 0
-    for content in _read_all_t3(agent_id).values():
-        total += len(extract_entry_lines(content))
-    return total
-
-
-def _empty_feedback_promotion_result() -> dict:
-    return {"count": 0, "decisions": [], "held": 0, "soul_contradicted_frozen": 0}
-
-
-def _cluster_repeated_feedback(feedback_content: str) -> list[dict[str, object]]:
-    """Find repeated feedback clusters that are eligible for soul promotion."""
-    from difflib import SequenceMatcher
-
-    from app.memory.md_store import extract_entry_lines, parse_entry_line
-
-    raw_entries = [
-        {
-            "content": parse_entry_line(line)[0],
-            "source_ref": f"t3:memory/feedback.md#entry:{hashlib.sha256(line.encode('utf-8')).hexdigest()[:12]}",
-        }
-        for line in extract_entry_lines(feedback_content)
-    ]
-    if len(raw_entries) < 3:
-        return []
-
-    clusters: list[dict[str, object]] = []
-    for raw_entry in raw_entries:
-        entry = str(raw_entry["content"])
-        normalized = entry.strip().lower()
-        if not normalized:
-            continue
-        matched = False
-        for cluster in clusters:
-            representative = str(cluster["representative"])
-            similarity = SequenceMatcher(None, representative, normalized).ratio()
-            if similarity >= 0.78:
-                cluster["count"] = int(cluster["count"]) + 1
-                longest = str(cluster["content"])
-                if len(entry) > len(longest):
-                    cluster["content"] = entry
-                source_refs = cluster.setdefault("source_refs", [])
-                if isinstance(source_refs, list):
-                    source_refs.append(str(raw_entry["source_ref"]))
-                matched = True
-                break
-        if not matched:
-            clusters.append(
-                {
-                    "representative": normalized,
-                    "content": entry,
-                    "count": 1,
-                    "source_refs": [str(raw_entry["source_ref"])],
-                }
-            )
-
-    return [c for c in clusters if int(c["count"]) >= 3]
-
-
-def _build_repeated_feedback_promotion_decision(feedback_content: str) -> dict:
-    """Build a synthetic dream decision for the repeated-feedback promotion lane.
-
-    This lets the async dream runner reuse `_build_frozen_mission_judge()` so
-    the repeated-feedback safety net receives the same LLM-first contradiction
-    gate as structured LLM dream promotions.
-    """
-    return {
-        "soul_promotions": [
-            {
-                "content": str(cluster["content"]),
-                "source_file": "feedback.md",
-                "source_refs": list(cluster.get("source_refs") or [])[:5],
-                "evidence": "system_observed",
-                "section": "Learned Behaviors",
-                "reason": "feedback repeated 3+ times → promoted to soul",
-            }
-            for cluster in _cluster_repeated_feedback(feedback_content)
-        ]
-    }
-
-
-def _promote_repeated_feedback_to_soul(
-    agent_id: uuid.UUID,
-    feedback_content: str,
-    *,
-    contradiction_judge: Callable[[str, str], dict | None] | None = None,
-) -> dict:
-    """Promote repeated feedback patterns to soul.md via the governed dream gate.
-
-    Returns:
-        {"count": int, "decisions": list[dict], "held": int, "soul_contradicted_frozen": int}
-        decisions[i] = {soul_excerpt, source_t3_file, repetition_count, reason}
-
-    Callers may treat the return as int via dict["count"] or via the
-    isinstance() guard in run_dream() for backwards-compat.
-    """
-    promotable_clusters = _cluster_repeated_feedback(feedback_content)
-    if not promotable_clusters:
-        return _empty_feedback_promotion_result()
-
-    soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
-    existing = soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else "# Soul\n\n"
-    existing_lower = existing.lower()
-    new_clusters = [c for c in promotable_clusters if str(c["content"]).lower() not in existing_lower]
-    if not new_clusters:
-        return _empty_feedback_promotion_result()
-
-    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-    approved_clusters: list[dict[str, object]] = []
-    held = 0
-    soul_contradicted_frozen = 0
-    frozen_charter = _extract_frozen_charter(existing)
-    for cluster in new_clusters:
-        content = str(cluster["content"])
-        try:
-            from app.services.evolution_ledger import (
-                decide_memory_promotion,
-                record_memory_promotion_candidate,
-                record_memory_promotion_decision,
-            )
-
-            candidate = record_memory_promotion_candidate(
-                workspace,
-                target_type="memory:soul",
-                target_id="soul.md#Learned Behaviors",
-                proposed_diff=f"+ - {content}",
-                source_refs=list(cluster.get("source_refs") or [])[:5],
-                evidence="system_observed",
-                novelty=0.7,
-                reusability=0.8,
-                volatility="stable",
-                metadata={
-                    "source_file": "feedback.md",
-                    "repetition_count": int(cluster["count"]),
-                    "reason": "feedback repeated 3+ times → promoted to soul",
-                },
-            )
-            decision = decide_memory_promotion(candidate)
-            if decision["decision"] == "promote":
-                contradicts, contra_reason = _promotion_contradicts_frozen(frozen_charter, content, contradiction_judge)
-                if contradicts:
-                    held += 1
-                    soul_contradicted_frozen += 1
-                    record_memory_promotion_decision(
-                        workspace,
-                        candidate_id=candidate["candidate_id"],
-                        decision="hold",
-                        reason=f"contradicts frozen Mission/charter: {contra_reason}",
-                        metadata={"section": "Learned Behaviors", "gate": "frozen_mission"},
-                    )
-                else:
-                    record_memory_promotion_decision(
-                        workspace,
-                        candidate_id=candidate["candidate_id"],
-                        decision="promote",
-                        reason=decision["reason"],
-                        rollback_ref=f"soul.md@before-pattern-promotion:{datetime.now(timezone.utc).isoformat()}",
-                    )
-                    approved_clusters.append(cluster)
-            else:
-                held += 1
-                record_memory_promotion_decision(
-                    workspace,
-                    candidate_id=candidate["candidate_id"],
-                    decision="hold",
-                    reason=decision["reason"],
-                )
-        except Exception as exc:
-            logger.warning("[Dream] Feedback promotion ledger failed for %s: %s", agent_id, exc)
-
-    if not approved_clusters:
-        return {
-            "count": 0,
-            "decisions": [],
-            "held": held,
-            "soul_contradicted_frozen": soul_contradicted_frozen,
-        }
-
-    new_behaviors = [str(c["content"]) for c in approved_clusters]
-    header = "## Learned Behaviors"
-    behavior_block = "\n".join(f"- {content}" for content in new_behaviors) + "\n"
-    if header in existing:
-        insert_at = existing.index(header) + len(header)
-        updated = existing[:insert_at] + "\n" + behavior_block + existing[insert_at:]
-    else:
-        updated = existing.rstrip() + f"\n\n{header}\n" + behavior_block
-
-    soul_path.write_text(updated.strip() + "\n", encoding="utf-8")
-
-    decisions = [
-        {
-            "soul_excerpt": str(c["content"]),
-            "source_t3_file": "feedback.md",
-            "repetition_count": int(c["count"]),
-            "reason": "feedback repeated 3+ times → promoted to soul",
-        }
-        for c in approved_clusters
-    ]
-    return {
-        "count": len(new_behaviors),
-        "decisions": decisions,
-        "held": held,
-        "soul_contradicted_frozen": soul_contradicted_frozen,
-    }
+    return len(build_t3_entry_manifest(Path(get_settings().AGENT_DATA_DIR), agent_id))
 
 
 def propose_charter_calibrations_from_feedback(decision_store) -> list[dict[str, str]]:
@@ -1947,27 +1615,14 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         # Re-read T3 so subsequent steps see the LLM's rewrites.
         t3_files = _read_all_t3(agent_id)
 
-    # Step 2: pattern-based feedback promotion (always runs as safety net).
-    # D6: this mechanical lane still proposes candidates, but the actual soul
-    # writeback shares the same frozen-Mission gate as LLM dream promotions.
-    feedback_content = t3_files.get("feedback.md", "")
-    feedback_promotion_decision = _build_repeated_feedback_promotion_decision(feedback_content)
-    feedback_mission_judge = await _build_frozen_mission_judge(agent_id, tenant_id, feedback_promotion_decision)
-    promotion_result = _promote_repeated_feedback_to_soul(
-        agent_id,
-        feedback_content,
-        contradiction_judge=feedback_mission_judge,
-    )
-    if isinstance(promotion_result, dict):
-        promoted_to_soul = int(promotion_result.get("count", 0))
-        promotion_decisions = promotion_result.get("decisions") or []
-        repeated_feedback_held = int(promotion_result.get("held", 0))
-        repeated_feedback_contradicted = int(promotion_result.get("soul_contradicted_frozen", 0))
-    else:
-        promoted_to_soul = int(promotion_result)
-        promotion_decisions = []
-        repeated_feedback_held = 0
-        repeated_feedback_contradicted = 0
+    # Step 2: no mechanical repeated-feedback promotion.
+    # Soul writes must come from LLM-authored Dream decisions plus the existing
+    # promotion/frozen-charter gate. A counter/SequenceMatcher fallback would
+    # silently turn accepted T3 into identity without semantic review.
+    promoted_to_soul = 0
+    promotion_decisions: list[dict] = []
+    repeated_feedback_held = 0
+    repeated_feedback_contradicted = 0
     t3_stats = _consolidate_t3_files(agent_id)
     t3_removed = sum(t3_stats.values())
     dedup_decisions = [

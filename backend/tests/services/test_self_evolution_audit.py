@@ -18,9 +18,12 @@ def test_self_evolution_audit_reports_memory_evidence_gaps(tmp_path: Path) -> No
         encoding="utf-8",
     )
     memory_dir = workspace / "memory"
-    (memory_dir / "feedback.md").write_text(
-        "# Feedback\n"
-        "- [2026-05-02] T3 entry without source ref\n",
+    (memory_dir / "t3").mkdir(parents=True, exist_ok=True)
+    (memory_dir / "t3" / "user.md").write_text(
+        "# T3 User\n\n"
+        '<t3_user_memory id="missing-source" status="active" created_at="2026-05-02">'
+        "<claim>T3 entry without source ref</claim>"
+        "</t3_user_memory>\n",
         encoding="utf-8",
     )
     (workspace / "soul.md").write_text(
@@ -35,4 +38,3 @@ def test_self_evolution_audit_reports_memory_evidence_gaps(tmp_path: Path) -> No
     assert report["t3_entries_without_source_ref"] == 1
     assert report["soul_lines_without_promotion_record"] == 1
     assert Path(report["report_path"]).exists()
-

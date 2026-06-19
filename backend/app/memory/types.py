@@ -46,6 +46,9 @@ MEMORY_CATEGORIES = frozenset(
         "constraint",
         "strategy",
         "blocked_pattern",
+        "episode",
+        "worker",
+        "capability",
     }
 )
 

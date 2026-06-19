@@ -94,21 +94,21 @@ async def test_save_memory_rejects_english_paraphrase(tmp_path: Path, monkeypatc
         agent_id,
         {"content": "User prefers short replies without lists", "category": "feedback"},
     )
-    assert r1.startswith("Saved to long-term memory")
+    assert r1.startswith("Saved to explicit memory overlay")
 
     r2 = await save_memory(
         agent_id,
         {"content": "user likes short replies no lists", "category": "feedback"},
     )
     assert "[Skipped]" in r2
-    assert "similar memory already exists" in r2.lower()
+    assert "similar explicit memory already exists" in r2.lower()
 
     # Distinct fact is accepted
     r3 = await save_memory(
         agent_id,
         {"content": "Launch deadline is 2026-05-01", "category": "project"},
     )
-    assert r3.startswith("Saved to long-term memory")
+    assert r3.startswith("Saved to explicit memory overlay")
 
 
 def test_save_skill_rejects_near_duplicate_skill(tmp_path: Path):

@@ -42,8 +42,14 @@ def test_legacy_sqlite_store_no_longer_exists(data_root: Path) -> None:
 
 def _setup_t3_file(data_root: Path, agent_id: uuid.UUID, filename: str, content: str) -> None:
     memory_dir = data_root / str(agent_id) / "memory"
-    memory_dir.mkdir(parents=True, exist_ok=True)
-    (memory_dir / filename).write_text(content, encoding="utf-8")
+    target = memory_dir / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        existing = target.read_text(encoding="utf-8")
+        body = "\n".join(line for line in content.splitlines() if line.strip() and not line.startswith("#"))
+        target.write_text(existing.rstrip() + "\n" + body + "\n", encoding="utf-8")
+    else:
+        target.write_text(content, encoding="utf-8")
 
 
 def _activation_context(*, current_user_id: str = "owner-1", owner_id: str = "owner-1") -> ActivationContext:
@@ -67,8 +73,13 @@ async def test_retrieve_returns_t3_direct_layer(
     retriever: MemoryRetriever,
 ) -> None:
     """T3 md-backed semantic items are returned without a working-memory file projection."""
-    _setup_t3_file(data_root, agent_id, "feedback.md", "# Feedback\n- [2026-04-06] User prefers concise output\n")
-    _setup_t3_file(data_root, agent_id, "knowledge.md", "# Knowledge\n- [2026-04-06] Project uses FastAPI and React\n")
+    _setup_t3_file(data_root, agent_id, "t3/user.md", "# T3 User\n- [2026-04-06] User prefers concise output\n")
+    _setup_t3_file(
+        data_root,
+        agent_id,
+        "t3/capabilities.md",
+        "# T3 Capabilities\n- [2026-04-06] Project uses FastAPI and React\n",
+    )
 
     items = await retriever.retrieve(agent_id, "memory engine", session_id=None, tenant_id=None)
 
@@ -79,10 +90,10 @@ async def test_retrieve_returns_t3_direct_layer(
 
     assert working_items == []
     assert len(semantic_items) == 2
-    assert semantic_items[0].source == "memory/feedback.md"
-    assert semantic_items[1].source == "memory/knowledge.md"
-    assert "[feedback]" in semantic_items[0].content
-    assert "[knowledge]" in semantic_items[1].content
+    assert semantic_items[0].source == "memory/t3/user.md"
+    assert semantic_items[1].source == "memory/t3/capabilities.md"
+    assert "[user]" in semantic_items[0].content
+    assert "[capability]" in semantic_items[1].content
     assert episodic_items == []
     assert external_items == []
 
@@ -238,7 +249,7 @@ async def test_t3_direct_skips_heading_only_files(
     agent_id: uuid.UUID,
     retriever: MemoryRetriever,
 ) -> None:
-    _setup_t3_file(data_root, agent_id, "feedback.md", "# Feedback\n\nUser corrections and constraints.\n")
+    _setup_t3_file(data_root, agent_id, "t3/user.md", "# T3 User\n\nUser corrections and constraints.\n")
 
     items = await retriever.retrieve(agent_id, "", session_id=None, tenant_id=None)
     semantic_items = [i for i in items if i.kind == MemoryKind.SEMANTIC]
@@ -251,19 +262,20 @@ async def test_t3_direct_preserves_priority_order(
     agent_id: uuid.UUID,
     retriever: MemoryRetriever,
 ) -> None:
-    _setup_t3_file(data_root, agent_id, "knowledge.md", "# Knowledge\n- [2026-04-06] Knowledge entry\n")
-    _setup_t3_file(data_root, agent_id, "user.md", "# User\n- [2026-04-06] User entry\n")
-    _setup_t3_file(data_root, agent_id, "feedback.md", "# Feedback\n- [2026-04-06] Feedback entry\n")
+    _setup_t3_file(data_root, agent_id, "t3/capabilities.md", "# T3 Capabilities\n- [2026-04-06] Knowledge entry\n")
+    _setup_t3_file(data_root, agent_id, "t3/user.md", "# T3 User\n- [2026-04-06] User entry\n")
+    _setup_t3_file(data_root, agent_id, "t3/user.md", "# T3 User\n- [2026-04-06] Feedback entry\n")
 
     items = await retriever.retrieve(agent_id, "", session_id=None, tenant_id=None)
     semantic_items = [i for i in items if i.kind == MemoryKind.SEMANTIC]
 
     assert [item.source for item in semantic_items] == [
-        "memory/feedback.md",
-        "memory/knowledge.md",
-        "memory/user.md",
+        "memory/t3/user.md",
+        "memory/t3/user.md",
+        "memory/t3/capabilities.md",
     ]
-    assert semantic_items[0].score > semantic_items[1].score > semantic_items[2].score
+    assert semantic_items[0].score == semantic_items[1].score
+    assert semantic_items[1].score > semantic_items[2].score
 
 
 @pytest.mark.asyncio
@@ -273,12 +285,12 @@ async def test_t3_index_first_folds_p1_p2_and_keeps_p0_full(
 ) -> None:
     from app.memory.md_store import rebuild_index
 
-    _setup_t3_file(data_root, agent_id, "feedback.md", "# Feedback\n- [2026-05-28] User requires Chinese replies\n")
+    _setup_t3_file(data_root, agent_id, "t3/user.md", "# T3 User\n- [2026-05-28] User requires Chinese replies\n")
     _setup_t3_file(
         data_root,
         agent_id,
-        "knowledge.md",
-        "# Knowledge\n- [2026-05-28] Long P1 entry should be loaded by id before relying on full content\n",
+        "t3/capabilities.md",
+        "# T3 Capabilities\n- [2026-05-28] Long P1 entry should be loaded by id before relying on full content\n",
     )
     rebuild_index(data_root, agent_id)
 
@@ -290,8 +302,8 @@ async def test_t3_index_first_folds_p1_p2_and_keeps_p0_full(
     )
 
     semantic_items = [item for item in items if item.kind == MemoryKind.SEMANTIC]
-    p0 = next(item for item in semantic_items if item.source == "memory/feedback.md")
-    p1 = next(item for item in semantic_items if item.source == "memory/knowledge.md")
+    p0 = next(item for item in semantic_items if item.source == "memory/t3/user.md")
+    p1 = next(item for item in semantic_items if item.source == "memory/t3/capabilities.md")
 
     assert p0.metadata["source_type"] == "t3_full_entry"
     assert "User requires Chinese replies" in p0.content
@@ -310,8 +322,8 @@ async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
     _setup_t3_file(
         data_root,
         agent_id,
-        "knowledge.md",
-        "# Knowledge\n- [2026-05-22][sensitivity=PL3_sensitive] Q3 salary planning requires owner-only handling\n",
+        "t3/capabilities.md",
+        "# T3 Capabilities\n- [2026-05-22][sensitivity=PL3_sensitive] Q3 salary planning requires owner-only handling\n",
     )
 
     items = await retriever.retrieve(
@@ -334,8 +346,8 @@ async def test_activation_context_adds_reasons_and_updates_score(
     _setup_t3_file(
         data_root,
         agent_id,
-        "knowledge.md",
-        "# Knowledge\n"
+        "t3/capabilities.md",
+        "# T3 Capabilities\n"
         "- [2026-05-22][sensitivity=PL1_public][retention_score=0.5][confidence=0.9] "
         "Salary planning for Acme is an open loop for Alice\n",
     )
@@ -373,8 +385,8 @@ async def test_activation_context_joins_sidecar_access_telemetry_into_usage_heat
     _setup_t3_file(
         data_root,
         agent_id,
-        "knowledge.md",
-        "# Knowledge\n"
+        "t3/capabilities.md",
+        "# T3 Capabilities\n"
         "- [2026-05-22][entry_id=mem_hot] Legacy proxy timeout limit is still relevant\n"
         "- [2026-05-22][entry_id=mem_cold] Legacy proxy timeout limit is still relevant\n",
     )
@@ -426,8 +438,8 @@ async def test_retriever_suppresses_conflicted_and_revalidation_required_t3_entr
     _setup_t3_file(
         data_root,
         agent_id,
-        "knowledge.md",
-        "# Knowledge\n"
+        "t3/capabilities.md",
+        "# T3 Capabilities\n"
         "- [2026-05-22][entry_id=mem_conflict] Deploy cadence is daily\n"
         "- [2026-05-22][entry_id=mem_stale] API reference lives at old path\n"
         "- [2026-05-22][entry_id=mem_clean] Durable launch checklist remains valid\n",

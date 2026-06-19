@@ -19,8 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 def _write_strategies(root: Path, agent_id: uuid.UUID, body: str) -> Path:
     mem_dir = root / str(agent_id) / "memory"
-    mem_dir.mkdir(parents=True, exist_ok=True)
-    path = mem_dir / "strategies.md"
+    (mem_dir / "t3").mkdir(parents=True, exist_ok=True)
+    path = mem_dir / "t3" / "capabilities.md"
     path.write_text(body, encoding="utf-8")
     return path
 
@@ -45,7 +45,7 @@ async def test_heartbeat_executor_blocks_save_skill(monkeypatch) -> None:
 
     assert "save_skill" not in calls  # never reached real execution
     assert "BLOCKED" in out or "candidate" in out.lower()
-    assert "save_memory" in out  # redirect to the candidate signal lane
+    assert "T3 consolidation pitch" in out
 
     # Other tools still pass through.
     passthrough = await executor("read_file", {"path": "soul.md"})
@@ -66,12 +66,13 @@ def test_heartbeat_skill_opportunity_hint_records_candidate_signal() -> None:
     from app.services import heartbeat
 
     source = inspect.getsource(heartbeat._build_evolution_context)
-    # The opportunity nudge must route through save_memory candidate evidence,
+    # The opportunity nudge must route through T3 job artifact evidence,
     # not instruct the LLM to call the save_skill tool.
     assert "call `save_skill`" not in source
     assert "Skill Candidate Opportunity" in source
     assert "skill_candidate" in source
-    assert "save_memory" in source
+    assert "consolidation_pitch.md" in source
+    assert "save_memory" not in source
 
 
 # ── Memory candidate readers ──

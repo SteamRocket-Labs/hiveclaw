@@ -1,11 +1,12 @@
 """D5 (purity debt): save_memory lane gate — episodic scan/observation logs
 are runtime evidence (the extractor's `artifact_only` lane), not durable T3.
 
-Production symptom: an agent's `strategies.md` grew to 24KB of
+Production symptom: an agent's accepted T3 memory grew with
 `2026-06-04 17:00 midday_scan: 14 expos in window, no change` ledger lines —
 episodic observations the agent dumped into a durable lane via save_memory,
-which bypasses the extractor's LLM lane judge. D5 adds a mechanical backstop on
-the `agent_tool` lane only (extractor/heartbeat/dream already judged the lane),
+which bypasses the extractor's LLM lane judge. The compatibility adapter now
+writes explicit overlay instead of accepted T3, but D5 still adds a mechanical
+backstop on the `agent_tool` lane only (extractor/heartbeat/dream already judged the lane),
 deliberately conservative: it needs BOTH a routine-observation verb AND a
 null/count observation, so a real reusable strategy is never blocked.
 """
@@ -36,9 +37,8 @@ async def test_agent_tool_episodic_scan_log_is_refused(tmp_path: Path) -> None:
 
     assert result.status == "episodic"
     assert "workspace" in result.reason.lower() or "session log" in result.reason.lower()
-    # Nothing was written to durable T3.
-    strategies = tmp_path / str(agent_id) / "memory" / "strategies.md"
-    assert (not strategies.exists()) or "midday_scan" not in strategies.read_text(encoding="utf-8")
+    overlay = tmp_path / str(agent_id) / "memory" / "explicit" / "MEMORY.md"
+    assert (not overlay.exists()) or "midday_scan" not in overlay.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -69,7 +69,7 @@ async def test_agent_tool_durable_strategy_passes_lane_gate(tmp_path: Path) -> N
         data_root=tmp_path,
     )
 
-    assert result.status == "accepted"
+    assert result.status == "overlay"
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,7 @@ async def test_single_scan_verb_is_not_a_false_positive(tmp_path: Path) -> None:
         data_root=tmp_path,
     )
 
-    assert result.status == "accepted"
+    assert result.status == "overlay"
 
 
 @pytest.mark.asyncio
@@ -101,7 +101,7 @@ async def test_extractor_lane_is_exempt_from_episodic_gate(tmp_path: Path) -> No
         data_root=tmp_path,
     )
 
-    assert result.status == "accepted"
+    assert result.status == "overlay"
 
 
 @pytest.mark.asyncio

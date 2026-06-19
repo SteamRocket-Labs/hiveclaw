@@ -362,12 +362,12 @@ def test_apply_wiki_patch_refuses_held(tmp_path: Path) -> None:
 
 def _seed_t3(tmp_path: Path, agent_id: uuid.UUID, count: int) -> None:
     mem_dir = tmp_path / str(agent_id) / "memory"
-    mem_dir.mkdir(parents=True, exist_ok=True)
+    (mem_dir / "t3").mkdir(parents=True, exist_ok=True)
     lines = "\n".join(
         f"- [2026-06-0{(i % 4) + 1}][entry_id=mem_seed{i}][concept=strategy] curate scene tick fact {i} about lane {i}"
         for i in range(count)
     )
-    (mem_dir / "strategies.md").write_text("# Strategies\n\n" + lines + "\n", encoding="utf-8")
+    (mem_dir / "t3" / "capabilities.md").write_text("# Strategies\n\n" + lines + "\n", encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -378,8 +378,9 @@ async def test_curation_tick_skips_below_threshold(tmp_path: Path) -> None:
     _seed_t3(tmp_path, agent_id, 2)
 
     summary = await run_scene_wiki_curation_tick(agent_id, None, data_root=tmp_path)
-    assert summary["status"] == "skipped"
-    assert summary["new_entries"] == 2
+    assert summary["status"] == "disabled"
+    assert summary["reason"] == "t3_consolidation_lane_is_canonical"
+    assert summary["new_entries"] == 0
 
 
 @pytest.mark.asyncio
@@ -392,17 +393,14 @@ async def test_curation_tick_does_not_advance_cursor_on_infrastructure_hold(tmp_
     # tenant_id=None → no LLM caller → infrastructure hold. This must remain
     # retryable; only semantic/applied decisions are terminal cursor progress.
     summary = await run_scene_wiki_curation_tick(agent_id, None, data_root=tmp_path)
-    assert summary["status"] == "ran"
-    assert summary["scene"]["status"] == "held"
+    assert summary["status"] == "disabled"
+    assert summary["reason"] == "t3_consolidation_lane_is_canonical"
+    assert not (tmp_path / str(agent_id) / "memory" / "distillation_audit.jsonl").exists()
 
-    audit = (tmp_path / str(agent_id) / "memory" / "distillation_audit.jsonl").read_text(encoding="utf-8")
-    assert "scene_curation" in audit
-
-    # Second tick sees the same entries again because the missing LLM is a
-    # transient infrastructure failure, not a terminal semantic decision.
+    # The disabled side lane must remain inert on repeated ticks.
     again = await run_scene_wiki_curation_tick(agent_id, None, data_root=tmp_path)
-    assert again["status"] == "ran"
-    assert again["batch"] == 4
+    assert again["status"] == "disabled"
+    assert again["new_entries"] == 0
 
 
 @pytest.mark.asyncio
@@ -417,5 +415,5 @@ async def test_curation_tick_never_raises(tmp_path: Path, monkeypatch) -> None:
     _seed_t3(tmp_path, agent_id, 4)
 
     summary = await memory_curation.run_scene_wiki_curation_tick(agent_id, None, data_root=tmp_path)
-    assert summary["status"] == "error"
-    assert "RuntimeError" in summary["error"]
+    assert summary["status"] == "disabled"
+    assert summary["reason"] == "t3_consolidation_lane_is_canonical"

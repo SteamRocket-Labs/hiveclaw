@@ -181,12 +181,15 @@ Progressive-disclosure capability capsules. `SkillParser` → `WorkspaceSkillLoa
 MD files are the source of truth; the legacy SQLite/JSON shadow stores are retired and repaired through `memory/hygiene.py`.
 
 ```
-T0 (append-only session ledger, 30d)  →  T2 (learnings/*.md)  →  T3 (canonical MD + lifecycle sidecar)  →  soul.md
-     ↑ append                ↑ extract/candidate       ↑ governed append/curation          ↑ dream
-web_chat_runtime        RESPONSE_COMPLETE         Heartbeat/save_memory/feedback      24h + activity gate
-user/assistant/tool     PRE_COMPACTION drain       dream/manual, dedup counters        (or soft dream relief)
-events; idle/close
-seal segments
+T0 append-only session ledger
+  → T2 Segment Package (summary.md / labels.md / review.md / manifest.json)
+  → T3 Consolidation Batch (LLM pitch + Memory Gate review + Platform Gate commit)
+  → accepted T3 Markdown (episodes.md / user.md / worker.md / capabilities.md)
+  → soul.md (Dream soul reconsolidation)
+
+Explicit user-commanded memories enter memory/explicit/** immediately, then may
+be absorbed by the same T3 Consolidation Batch. They are not accepted T3 until
+the gate commits an LLM-authored T3 block.
 ```
 
 **Cadence configuration (P1-W2-5, current)**: the `evolution_daemon` dispatcher
@@ -195,8 +198,8 @@ on the platform-managed `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` cadence (default
 120 minutes), not per-agent UI cadence. Subsequent heartbeat ticks skip when
 there are no new T2 entries. Full Dream is gated by `MIN_HOURS_BETWEEN_DREAMS`
 (24h) plus either `MIN_SESSIONS_SINCE_DREAM` (3 sessions) or
-`MIN_HEARTBEAT_TICKS_SINCE_DREAM` (2 productive heartbeat ticks). Soft Dream is
-a 6h deterministic relief path when T3 is near the 100-entry pressure threshold.
+`MIN_HEARTBEAT_TICKS_SINCE_DREAM` (2 productive heartbeat ticks). Dream handles
+soul-level reconsolidation; it does not rewrite accepted T3 files.
 
 **T0 session layout (Claude Code transcript / Codex rollout aligned):**
 
@@ -210,25 +213,29 @@ memory/t0/sessions/<chat_session_id>/
 
 `logs/YYYY-MM-DD/**` is now legacy/import compatibility only. Old chat logs can be imported, but runtime chat, one-off task, trigger, delegation, heartbeat, and dream T0 truth is the append-only session ledger.
 
-**T2 extraction has two paths:**
+**T2 Segment Package layout:**
 
-1. **Hot path (primary)**: in-memory messages → `extract_agent` via
-   `RESPONSE_COMPLETE` hook → `learnings/*.md`. Per-agent cursor skips
-   already-processed messages.
-2. **Backfill path**: append-only T0 session ledger / replayed DB sessions
-   → same extractor → `learnings/*.md`. Gated by
-   `learnings/.backfill_cursor.json` (idempotent by `session_id`).
-   Triggered manually via `POST /api/admin/agents/{id}/backfill-t2`.
-   Lifespan startup replays the durable hot-path extract queue via
-   `extract_queue_replay`; full T0 backfill remains an explicit admin action.
+```
+memory/sessions/<session_id>/segments/<t2_segment_id>/
+  summary.md      ← LLM-authored session/segment summary with XML blocks
+  labels.md       ← LLM-authored event labels + quantified engineering labels
+  review.md       ← independent Memory Gate review/rubric output
+  manifest.json   ← platform evidence refs, source bundle refs, revisions, audit metadata
+```
+
+`memory/learnings/*.md` is a legacy compatibility/read-model surface only. New
+T0→T2 semantic truth is the Segment Package above. Build-time refs may exist
+under `memory/.staging/t2_jobs/<job_id>/source_bundle.json`; after commit,
+evidence pointers live in `manifest.json` and in-file `source_refs`.
 
 | Layer | Location | Written By | Read By |
 |-------|----------|-----------|---------|
 | **T0 session ledger** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | `web_chat_runtime` append points; `task_executor` one-off task events; runtime hook events for trigger/delegation/heartbeat/dream; `SESSION_IDLE/CLOSE` seal chat segments | replay/import/backfill; higher layers as evidence |
 | **T0 legacy/import logs** | `logs/YYYY-MM-DD/{behavior,system}/` | Legacy import/manual compatibility only; not a runtime T0 writer | legacy import/operators |
-| **T2** | `memory/learnings/*.md` | `extract_agent` (LLM hot path + pattern fallback) | Heartbeat curation |
-| **T3** | `memory/feedback.md`, `knowledge.md`, `strategies.md`, `blocked.md`, `user.md` | governed T3 append path: heartbeat, `save_memory`, session feedback, dream/manual | Prompt injection via `retriever.py`; metadata in `lifecycle.json` |
-| **soul.md** | Root workspace | Dream consolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |
+| **T2 Segment Package** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + independent review; Platform Gate commits package metadata | T3 Consolidator; residual T0 evidence lookup |
+| **Explicit Memory Overlay** | `memory/explicit/<scope>/...` | `save_memory` only for explicit user-commanded memory; write gate enforces sensitivity/privacy | Prompt activation immediately; later T3 absorption candidate |
+| **T3 Accepted Memory** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator submits pitch/revised patch; Memory Gate reviews; Platform Gate commits exact accepted XML blocks | Dynamic memory activation and Dream soul evidence |
+| **soul.md** | Root workspace | Dream soul reconsolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |
 
 The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Governance Layer:
 

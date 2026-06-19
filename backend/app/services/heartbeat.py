@@ -424,12 +424,12 @@ def _read_t3_summary(agent_id: uuid.UUID) -> str:
     """Read T3 memory files summary (reference for dedup during curation)."""
     from app.config import get_settings
 
-    memory_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory"
+    memory_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / "t3"
     if not memory_dir.exists():
-        return "(no memory files)"
+        return "(no accepted T3 files)"
 
     parts: list[str] = []
-    for fname in ["feedback.md", "knowledge.md", "strategies.md", "blocked.md", "user.md"]:
+    for fname in ["episodes.md", "user.md", "worker.md", "capabilities.md"]:
         fpath = memory_dir / fname
         if fpath.exists():
             try:
@@ -440,7 +440,7 @@ def _read_t3_summary(agent_id: uuid.UUID) -> str:
             except Exception as exc:
                 logger.debug("[Heartbeat] Failed to read T3 {}: {}", fpath, exc)
     return _truncate_heartbeat_text(
-        "\n\n".join(parts) if parts else "(no memory files)",
+        "\n\n".join(parts) if parts else "(no accepted T3 files)",
         _HEARTBEAT_T3_MAX_CHARS,
         "T3 summary",
     )
@@ -800,6 +800,14 @@ async def _route_heartbeat_reflection_learning(
 
 _SKILL_OPPORTUNITY_COOLDOWN_TICKS = 5  # ~3.75 hours at 45-minute ticks
 _SKILL_OPPORTUNITY_STATE_FILENAME = "skill_opportunity_cooldown.json"
+_SKILL_OPPORTUNITY_IGNORED_TOOLS = {
+    "read_file",
+    "write_file",
+    "list_files",
+    "edit_file",
+    "save_memory",
+    "search_memory",
+}
 
 
 def _load_skill_opportunity_state(ws_root) -> dict:
@@ -915,6 +923,31 @@ async def _build_evolution_context(
 
         # No fallback needed — _get_canonical_workspace already resolved the right path
 
+    try:
+        from app.config import get_settings
+        from app.memory.t3_consolidation import discover_pending_t3_sources, stage_pending_t3_consolidation_job
+
+        data_root = Path(get_settings().AGENT_DATA_DIR)
+        pending_t3 = discover_pending_t3_sources(agent_id=agent_id, data_root=data_root)
+        if pending_t3.has_sources:
+            t3_job = stage_pending_t3_consolidation_job(agent_id=agent_id, data_root=data_root)
+            if t3_job.status == "staged":
+                rel_job_dir = t3_job.job_dir.relative_to(data_root / str(agent_id)).as_posix()
+                parts.append(
+                    "\n---\n## T3 Consolidation Job Ready\n"
+                    f"- job_id: `{t3_job.job_id}`\n"
+                    f"- job_dir: `{rel_job_dir}`\n"
+                    f"- reviewed_t2_packages: {len(pending_t3.package_dirs)}\n"
+                    f"- active_explicit_overlay_entries: {len(pending_t3.explicit_entry_ids)}\n"
+                    "- read `source_bundle.json` and `t3_neighborhood.md`\n"
+                    "- submit `consolidation_pitch.md` with `submit_t3_consolidation_pitch`\n"
+                    "- submit `revised_patch.md` with `submit_t3_revised_patch` after the pitch is ready\n"
+                    "- Memory Gate must review the latest `revised_patch.md`; older reviews become stale if the patch changes\n"
+                    "- Platform Gate commits accepted T3 and marks sources absorbed only after fresh review validation\n"
+                )
+    except Exception as exc:
+        logger.warning("[Heartbeat] Failed to stage T3 consolidation job for {}: {}", agent_id, exc)
+
     # 2. Compute pattern summary from activity logs
     if recent_activities:
         error_count = sum(1 for a in recent_activities if a.action_type == "error")
@@ -991,8 +1024,7 @@ async def _build_evolution_context(
             frequent_tools = [
                 name
                 for name, count in Counter(tool_names).most_common(3)
-                if count >= _SKILL_THRESHOLD
-                and name not in ("read_file", "write_file", "list_files", "edit_file", "save_memory", "search_memory")
+                if count >= _SKILL_THRESHOLD and name not in _SKILL_OPPORTUNITY_IGNORED_TOOLS
             ]
 
             should_push = bool(frequent_tools)
@@ -1028,10 +1060,9 @@ async def _build_evolution_context(
                     "If the workflow around them is genuinely reusable, record it as a candidate "
                     "signal — you curate evidence; the skill distillation lane decides promotion:\n"
                     "1. FIRST call `tool_search` and `load_skill` to confirm no existing skill already covers this workflow\n"
-                    '2. If none covers it, call `save_memory` with category="strategy", '
-                    'container_candidate="skill_candidate", and a self-contained description of the '
-                    "workflow (tools in sequence, when to use it, how to verify success)\n"
-                    "3. Include `source_refs` pointing at the sessions/evidence where the workflow repeated\n"
+                    "2. If none covers it, include a `skill_candidate` capability block in the active "
+                    "`consolidation_pitch.md` or `revised_patch.md` through the T3 artifact submit tools\n"
+                    "3. Include source refs pointing at the sessions/evidence where the workflow repeated\n"
                     "4. A good candidate captures the *workflow* (multiple tools in sequence), not a single tool or one-off note\n"
                     "This counts as a high-value heartbeat action (score 7+)."
                 )
@@ -1443,13 +1474,12 @@ def _build_heartbeat_tool_executor(agent_id: uuid.UUID, creator_id: uuid.UUID):
         nonlocal plaza_posts_made, plaza_comments_made
 
         if tool_name == "save_skill":
-            # Spec §12 P4: the Memory Curator records candidate signals only;
-            # skill creation runs through the SkillDistiller candidate lane.
+            # Skill creation runs through the T3 capability consolidation lane.
+            # Heartbeat must not use save_memory as a hidden accepted-T3 writer.
             return (
-                "[BLOCKED] Heartbeat does not write skills directly. Record the evidence as a "
-                'candidate signal instead: save_memory(category="strategy", '
-                'container_candidate="skill_candidate", content="<the reusable workflow, '
-                'self-contained>", source_refs=[...]). The skill distillation lane consumes it.'
+                "[BLOCKED] Heartbeat does not write skills directly. Capture reusable workflow evidence in "
+                "the current T3 consolidation pitch or revised patch as a capability candidate. "
+                "Accepted capability memory is committed only after Memory Gate review and Platform Gate commit."
             )
 
         if tool_name == "plaza_create_post":

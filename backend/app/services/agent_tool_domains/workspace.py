@@ -782,15 +782,16 @@ _WRITE_PROTECTED = {
 # soul.md is append-only: heartbeat can add evolution notes but not overwrite identity
 _APPEND_ONLY = {"soul.md"}
 
-# memory/ is governed by the Memory Control Plane (spec §12 P2): durable T3
-# writes must run through save_memory → append_t3_memory_candidate (privacy
-# gate, dedup, lifecycle, index). Raw file writes would bypass the gate.
+# memory/ is governed by the Memory Control Plane: explicit memories must run
+# through save_memory -> Explicit Memory Overlay, and accepted T3 writes must
+# run through T3 Consolidation + Platform Gate. Raw file writes bypass audit.
 _GOVERNED_MEMORY_PREFIX = "memory/"
 _GOVERNED_MEMORY_MESSAGE = (
     "memory/ is managed by platform services and governed by the Memory Control Plane — "
     "direct file writes are not allowed. "
-    "Use the save_memory tool to add durable memory; it runs privacy/write-gate checks, "
-    "semantic dedup, lifecycle records, and index updates for you."
+    "Use save_memory for explicit user-commanded memories, or the T3 consolidation tools "
+    "for staged pitch/review/revised_patch artifacts. Accepted T3 files are committed only "
+    "by Platform Gate."
 )
 
 _PLATFORM_MANAGED_PREFIX_MESSAGES = {
@@ -897,7 +898,8 @@ def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_f
             "auth_or_permission",
             managed_message,
             actionable_hint=(
-                "Call save_memory with content + category (and optional container_candidate)."
+                "Use save_memory only for explicit user-commanded memory; use "
+                "submit_t3_consolidation_pitch / submit_t3_revised_patch for accepted T3 candidates."
                 if _is_governed_memory_path(rel_path)
                 else "Write deliverables under workspace/ unless a dedicated tool returns another writable path."
             ),
@@ -980,7 +982,8 @@ def _edit_file(
             "auth_or_permission",
             managed_message,
             actionable_hint=(
-                "Call save_memory with content + category (and optional container_candidate)."
+                "Use save_memory only for explicit user-commanded memory; use "
+                "submit_t3_consolidation_pitch / submit_t3_revised_patch for accepted T3 candidates."
                 if _is_governed_memory_path(rel_path)
                 else "Create or update normal work artifacts under workspace/ instead."
             ),

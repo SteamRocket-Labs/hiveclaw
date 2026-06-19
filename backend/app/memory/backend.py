@@ -127,14 +127,25 @@ class MDBackend:
         timestamp: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        from app.memory.md_store import append_t3_entry
+        from app.memory.explicit_overlay import write_explicit_memory_overlay
 
-        append_t3_entry(
-            self._data_root,
+        refs = []
+        if metadata:
+            raw_refs = metadata.get("source_refs") or metadata.get("evidence_refs") or []
+            if isinstance(raw_refs, str):
+                refs = [raw_refs]
+            elif isinstance(raw_refs, list):
+                refs = [str(ref) for ref in raw_refs if str(ref).strip()]
+        if timestamp:
+            refs.append(f"timestamp:{timestamp}")
+        await write_explicit_memory_overlay(
             agent_id,
             category=category,
             content=content,
-            timestamp=timestamp or None,
+            source_refs=refs,
+            data_root=self._data_root,
+            origin="memory_backend_store",
+            extra_metadata={str(key): str(value) for key, value in (metadata or {}).items() if value is not None},
         )
 
     async def reflect(

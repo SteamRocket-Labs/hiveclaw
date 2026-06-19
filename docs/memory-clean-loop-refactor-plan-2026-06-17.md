@@ -1428,7 +1428,7 @@ class MemoryCandidateEnvelope(TypedDict):
 | Fast Reflection Learning Brain | `backend/app/services/fast_reflection_learning_brain.py` | **迁移/收窄** | 不再作为 durable memory 分流主路；可降级为 Summary Agent / Learning Brain / Memory Gate Agents 的辅助候选生成或审计输入，不能独立写长期记忆 |
 | Fast Reflection Service | `backend/app/services/fast_reflection_service.py` | **保留为 adapter** | 只持久化短期 projection/candidate；机械 fallback 只能 audit/held candidate |
 | Reportable Reflection | `backend/app/services/reflection_service.py`、`memory/reflections/*.jsonl` | **迁移/降级** | 保留为失败审计和 source packet；当前直接 `append_t2_entries` 的路径要迁到 Segment Package candidate，经 Memory Gate Agents 复查后由 Platform Gate 原子提交 |
-| Session Feedback | `backend/app/services/session_feedback.py` | **保留** | owner useful/misleading 是高价值信号；当前直接 `append_t3_memory_candidate` 要改成 T2/T3 candidate，经 Memory Gate Agents + Platform Gate；T3 candidate 必须引用 T2/source refs |
+| Session Feedback | `backend/app/services/session_feedback.py` | **保留** | owner useful/misleading 是高价值信号；默认写入 Explicit Memory Overlay 并即时可激活，后续是否吸收到 accepted T3 必须经 T3 Consolidator、Memory Gate Agents 和 Platform Gate；T3 candidate 必须引用 T2/source refs |
 | Work Ledger / Todo Ledger | `backend/app/tools/handlers/work_ledger.py`、`backend/app/services/agent_work_ledger.py` | **保留** | 它是当前任务工作台和证据板，不是长期记忆；可作为 Summary Agent 的 source evidence |
 | Evolution Ledger / Manifest / View / Validation | `backend/app/services/evolution_ledger.py`、`evolution_manifest.py`、`evolution_view.py`、`evolution_validation.py`、`evolution_verification.py` | **保留** | 候选、评估、晋升、回滚真相源；不是语义记忆本体 |
 | `lineage.md` / `scorecard.md` / `blocklist.md` | heartbeat/evolution audit files | **保留但降级** | 只做人类可读审计和计数；不能作为模型学习的语义来源 |

@@ -29,7 +29,7 @@ async def test_save_memory_rejects_pl4_credential(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_save_memory_masks_pii_before_t3_write(tmp_path: Path) -> None:
+async def test_save_memory_masks_pii_before_explicit_overlay_write(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
@@ -45,10 +45,17 @@ async def test_save_memory_masks_pii_before_t3_write(tmp_path: Path) -> None:
         )
 
     user_path = tmp_path / str(agent_id) / "memory" / "user.md"
-    body = user_path.read_text(encoding="utf-8")
-    assert result.startswith("Saved to long-term memory")
+    overlay_path = tmp_path / str(agent_id) / "memory" / "explicit" / "MEMORY.md"
+    body = overlay_path.read_text(encoding="utf-8")
+    entry_body = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md")).read_text(
+        encoding="utf-8"
+    )
+    assert result.startswith("Saved to explicit memory overlay")
+    assert not user_path.exists()
     assert "alice@example.com" not in body
-    assert "<Email_1>" in body
+    assert "alice@example.com" not in entry_body
+    assert "&lt;Email_1&gt;" in entry_body
+    assert "&lt;Email_1&gt;" in body
 
 
 @pytest.mark.asyncio
@@ -69,4 +76,3 @@ async def test_save_memory_rejects_form_contract_violation(tmp_path: Path) -> No
 
     assert result.startswith("[Rejected]")
     assert "Form Contract violation" in result
-

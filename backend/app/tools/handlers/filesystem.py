@@ -57,7 +57,8 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         description=(
             "Read file contents from the workspace.\n\n"
             "Usage:\n"
-            "- Common files: soul.md (personality), memory/feedback.md or memory/knowledge.md (memory), "
+            "- Common files: soul.md (personality), memory/t3/user.md, memory/t3/worker.md, "
+            "memory/t3/episodes.md, memory/t3/capabilities.md, memory/explicit/MEMORY.md (memory), "
             "tasks.json (tasks), skills/<slug>/SKILL.md (skill files), enterprise_info/ (shared company info)\n"
             "- For large files, the output may be truncated. Check if the result ends with a truncation marker.\n"
             "- You can read office documents (PDF, Word, Excel) via the separate `read_document` tool.\n"
@@ -69,7 +70,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path, e.g.: tasks.json, soul.md, memory/knowledge.md, skills/my-skill/SKILL.md, enterprise_info/company_profile.md",
+                    "description": "File path, e.g.: tasks.json, soul.md, memory/t3/capabilities.md, skills/my-skill/SKILL.md, enterprise_info/company_profile.md",
                 }
             },
             "required": ["path"],
@@ -146,6 +147,7 @@ def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "- The `old_text` must be an exact match of text currently in the file — including whitespace and newlines.\n"
             "- The edit will FAIL if `old_text` is not found or matches multiple locations. Provide enough surrounding "
             "context to make your match unique, or use `replace_all: true` to change every occurrence.\n"
+            "- Governed paths: memory/, logs/, evolution/, and runtime_artifacts/ are platform-managed; direct edits there are refused.\n"
             "- Prefer this over `write_file` for existing files — it only changes what you specify, preserving the rest."
         ),
         parameters={

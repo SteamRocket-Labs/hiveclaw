@@ -8,7 +8,7 @@ import pytest
 
 from app.memory.t0.ledger import append_t0_session_event
 from app.runtime.hooks import HookContext, HookEvent
-from app.runtime.hooks_setup import _t0_session_close
+from app.runtime.hooks_setup import _t0_delegation_end, _t0_dream_end, _t0_heartbeat_tick_end, _t0_session_close, _t0_trigger_end
 
 
 def _patch_t0_root(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -59,6 +59,105 @@ async def test_session_close_seals_t0_segment_then_starts_canonical_t2_package(m
     assert calls[0]["session_id"] == session_id
     assert calls[0]["t0_segment_id"] == first.segment_id
     assert calls[0]["data_root"] == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_trigger_end_seals_runtime_t0_segment_then_starts_canonical_t2_package(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    calls: list[dict] = []
+
+    async def fake_build(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id="trigger-job")
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
+
+    await _t0_trigger_end(
+        HookContext(
+            event=HookEvent.TRIGGER_END,
+            agent_id=str(agent_id),
+            session_id=None,
+            source="trigger",
+            messages=[
+                {"role": "system", "content": "trigger fired"},
+                {"role": "assistant", "content": "完成了一次用户配置的定时调研。"},
+            ],
+            metadata={"tenant_id": str(tenant_id), "trigger_id": "daily-research", "trigger_name": "每日调研"},
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == agent_id
+    assert calls[0]["tenant_id"] == tenant_id
+    assert calls[0]["session_id"] == "trigger_run-daily-research"
+    assert calls[0]["t0_segment_id"].startswith("seg-")
+    assert calls[0]["data_root"] == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_delegation_end_seals_runtime_t0_segment_then_starts_canonical_t2_package(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    calls: list[dict] = []
+
+    async def fake_build(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id="delegation-job")
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
+
+    await _t0_delegation_end(
+        HookContext(
+            event=HookEvent.DELEGATION_END,
+            agent_id=str(agent_id),
+            session_id=None,
+            source="delegation",
+            messages=[
+                {"role": "assistant", "content": "子代理完成了用户要求的竞品资料整理。"},
+            ],
+            metadata={"tenant_id": str(tenant_id), "delegation_id": "worker-42"},
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == agent_id
+    assert calls[0]["tenant_id"] == tenant_id
+    assert calls[0]["session_id"] == "delegation_run-worker-42"
+    assert calls[0]["t0_segment_id"].startswith("seg-")
+    assert calls[0]["data_root"] == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_system_distiller_runtime_events_do_not_enter_t2(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+
+    async def fail_build(**_kwargs):
+        raise AssertionError("heartbeat/dream runtime ledgers are system audit sources and must not enter T2")
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fail_build)
+
+    await _t0_heartbeat_tick_end(
+        HookContext(
+            event=HookEvent.HEARTBEAT_TICK_END,
+            agent_id=str(agent_id),
+            source="heartbeat",
+            messages=[{"role": "system", "content": "heartbeat checked memory state"}],
+            metadata={"tick_id": "hb-1"},
+        )
+    )
+    await _t0_dream_end(
+        HookContext(
+            event=HookEvent.DREAM_END,
+            agent_id=str(agent_id),
+            source="dream",
+            messages=[{"role": "system", "content": "dream consolidation finished"}],
+            metadata={"dream_id": "dream-1"},
+        )
+    )
 
 
 def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:

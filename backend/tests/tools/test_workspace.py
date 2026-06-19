@@ -199,12 +199,17 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     assert (workspace / "workspace").is_dir()
     assert (workspace / "workspace" / "knowledge_base").is_dir()
     assert (workspace / "memory").is_dir()
-    assert (workspace / "memory" / "knowledge.md").exists()
-    assert (workspace / "memory" / "feedback.md").exists()
+    assert (workspace / "memory" / "t3" / "episodes.md").exists()
+    assert (workspace / "memory" / "t3" / "user.md").exists()
+    assert (workspace / "memory" / "t3" / "worker.md").exists()
+    assert (workspace / "memory" / "t3" / "capabilities.md").exists()
+    assert (workspace / "memory" / "explicit" / "MEMORY.md").exists()
     assert (workspace / "memory" / "learnings" / "insights.md").exists()
     assert (workspace / "evolution" / "skill_candidates.md").exists()
     assert (workspace / "evolution" / "skill_review.md").exists()
     assert not (workspace / "memory" / "memory.md").exists()
+    assert not (workspace / "memory" / "knowledge.md").exists()
+    assert not (workspace / "memory" / "feedback.md").exists()
     assert not (workspace / "memory" / "learnings" / "LEARNINGS.md").exists()
     soul_content = (workspace / "soul.md").read_text(encoding="utf-8")
     assert "# Soul — 投后助手" in soul_content
@@ -248,7 +253,9 @@ def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path
 
     assert not (workspace / "memory" / "memory.md").exists()
     assert not (workspace / "memory" / "learnings" / "LEARNINGS.md").exists()
-    assert "Keep the architecture md-first" in (workspace / "memory" / "knowledge.md").read_text(encoding="utf-8")
+    assert "Keep the architecture md-first" in (
+        workspace / "memory" / "t3" / "capabilities.md"
+    ).read_text(encoding="utf-8")
     assert (
         "Prefer weighted promotion over rigid layer upgrades."
         in (workspace / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
@@ -277,7 +284,8 @@ def test_migrate_all_workspaces_repairs_memory_hygiene(monkeypatch, tmp_path):
 
     migrate_all_workspaces()
 
-    feedback = (mem / "feedback.md").read_text(encoding="utf-8")
+    assert not (mem / "feedback.md").exists()
+    feedback = (mem / "t3" / "user.md").read_text(encoding="utf-8")
     assert feedback.strip().endswith("- [2026-06-04][entry_id=f1] keep vendor contacts private")
     assert "[sensitivity=" not in feedback
     assert not (workspace / "memory.sqlite3").exists()

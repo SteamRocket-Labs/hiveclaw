@@ -170,9 +170,10 @@ class TestReadT2Full:
 
 class TestReadT3Summary:
     def test_reads_memory_files(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        memory_dir = tmp_agent_dir / str(agent_id) / "memory"
-        (memory_dir / "feedback.md").write_text("- [2026-04-06] User prefers snake_case\n")
-        (memory_dir / "knowledge.md").write_text("- [2026-04-06] Project uses PostgreSQL\n")
+        memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "t3"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "user.md").write_text("- [2026-04-06] User prefers snake_case\n")
+        (memory_dir / "capabilities.md").write_text("- [2026-04-06] Project uses PostgreSQL\n")
 
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
@@ -185,7 +186,7 @@ class TestReadT3Summary:
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             result = _read_t3_summary(agent_id)
-        assert result == "(no memory files)"
+        assert result == "(no accepted T3 files)"
 
 
 # ── _read_incremental_t2 ──
@@ -260,18 +261,18 @@ class TestHeartbeatTemplate:
         from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH
 
         content = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
-        assert "CUR-" in content
+        assert "consolidation_pitch.md" in content
         assert "HB-" not in content
 
     def test_has_t2_to_t3_guidance(self) -> None:
-        # PR-12 replaced `w>=0.85` with decision-matrix rows (`≥ 0.85`).
         from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH
 
         content = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
-        assert "memory/feedback.md" in content
-        assert "memory/knowledge.md" in content
-        assert "memory/strategies.md" in content
-        assert "≥ 0.85" in content
+        assert "memory/t3/episodes.md" in content
+        assert "memory/t3/user.md" in content
+        assert "memory/t3/worker.md" in content
+        assert "memory/t3/capabilities.md" in content
+        assert ">= 0.85" in content
         assert "< 0.50" in content
 
     def test_has_external_instruction_filter(self) -> None:
@@ -292,10 +293,10 @@ class TestHeartbeatTemplate:
         from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH
 
         content = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
-        assert "do NOT create skills or workflows" in content
+        assert "Do not create Skill files or Workflow JSON" in content
         assert "skill_candidate" in content
         assert "save_skill" not in content
-        assert "Do NOT take external-facing autonomous actions" in content
+        assert "You do not send messages" in content
 
     def test_templates_explain_absorbed_t2_retention(self) -> None:
         from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH

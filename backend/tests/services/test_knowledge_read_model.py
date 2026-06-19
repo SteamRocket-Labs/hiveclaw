@@ -30,6 +30,7 @@ AGENT = uuid.uuid4()
 def _seed_workspace(tmp_path: Path) -> Path:
     root = tmp_path / str(AGENT)
     mem = root / "memory"
+    (mem / "t3").mkdir(parents=True)
     (mem / "wiki").mkdir(parents=True)
     (mem / "scenes").mkdir(parents=True)
     (root / "evolution").mkdir(parents=True)
@@ -39,15 +40,25 @@ def _seed_workspace(tmp_path: Path) -> Path:
     (root / "skills" / "market-research" / "SKILL.md").write_text("---\nname: market-research\n---\n", encoding="utf-8")
 
     recent = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    (mem / "strategies.md").write_text(
-        "# Strategies\n\n"
-        f"- [2026-06-01][entry_id=mem_s1][access_count=5][last_accessed={recent}][container=skill_candidate] "
-        "research → design → verify workflow\n"
-        "- [2026-06-02][entry_id=mem_s2][container=workflow_candidate] nightly digest pipeline with durable state\n",
+    (mem / "t3" / "capabilities.md").write_text(
+        "# T3 Capabilities\n\n"
+        f'<t3_capability id="mem_s1" status="active" created_at="2026-06-01" '
+        f'access_count="5" last_accessed="{recent}" container="skill_candidate">'
+        "<title>research → design → verify workflow</title>"
+        "<evidence><source_ref>session:research-design-verify</source_ref></evidence>"
+        "</t3_capability>\n\n"
+        '<t3_capability id="mem_s2" status="active" created_at="2026-06-02" container="workflow_candidate">'
+        "<title>nightly digest pipeline with durable state</title>"
+        "<evidence><source_ref>session:nightly-digest</source_ref></evidence>"
+        "</t3_capability>\n",
         encoding="utf-8",
     )
-    (mem / "feedback.md").write_text(
-        "# Feedback\n\n- [2026-06-03][entry_id=mem_f1][sensitivity=PL2_pii] user email is <Email_1>\n",
+    (mem / "t3" / "user.md").write_text(
+        "# T3 User\n\n"
+        '<t3_user_memory id="mem_f1" status="active" created_at="2026-06-03" sensitivity="PL2_pii">'
+        "<claim>user email is &lt;Email_1&gt;</claim>"
+        "<evidence><source_ref>session:user-email</source_ref></evidence>"
+        "</t3_user_memory>\n",
         encoding="utf-8",
     )
 
@@ -177,8 +188,13 @@ def test_entries_suppress_pl3_for_unauthorized_principal(tmp_path: Path) -> None
 
     _seed_workspace(tmp_path)
     mem_dir = tmp_path / str(AGENT) / "memory"
-    with (mem_dir / "knowledge.md").open("a", encoding="utf-8") as fh:
-        fh.write("- [2026-06-05][entry_id=mem_pl3][sensitivity=PL3_sensitive] salary planning is confidential\n")
+    with (mem_dir / "t3" / "user.md").open("a", encoding="utf-8") as fh:
+        fh.write(
+            '<t3_user_memory id="mem_pl3" status="active" created_at="2026-06-05" sensitivity="PL3_sensitive">'
+            "<claim>salary planning is confidential</claim>"
+            "<evidence><source_ref>session:salary-planning</source_ref></evidence>"
+            "</t3_user_memory>\n"
+        )
     owner = Principal(role=PrincipalRole.OWNER, id="owner-1")
     viewer = Principal(role=PrincipalRole.CURRENT_USER, id="viewer-1")
     stack = PrincipalStack(direct_owner=owner, current_user=viewer)
@@ -330,7 +346,7 @@ def test_extractor_stale_when_t0_session_ledger_unprocessed(tmp_path: Path) -> N
 
 def test_dream_stale_when_t3_outruns_state(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
-    # strategies.md / feedback.md are written fresh by _seed_workspace (T3 input);
+    # Canonical memory/t3/*.md files are written fresh by _seed_workspace (T3 input);
     # age the dream state past 3 × 24h full-dream cadence.
     _age(root / "memory" / "auto_dream_state.json", hours=80)
 

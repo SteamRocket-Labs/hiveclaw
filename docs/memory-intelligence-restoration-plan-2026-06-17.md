@@ -88,7 +88,7 @@ The following facts were verified against the current repository before writing 
 - `backend/app/services/fast_reflection_learning_brain.py` already has the right shape: a post-turn learning brain reads full context and emits a governed classification without writing durable memory directly.
 - `backend/app/services/session_learning.py` already has next-turn session projection, which is useful for fast learning without polluting durable memory.
 - `backend/app/memory/t2_store.py` already routes T2 writes through a governed write gate and source-weighted admission.
-- `backend/app/memory/t3_store.py` already routes durable memory writes through `append_t3_memory_candidate`.
+- `backend/app/memory/t3_store.py` is no longer the durable accepted-T3 writer. `append_t3_memory_candidate` is retained only as a compatibility adapter that routes legacy callers into the Explicit Memory Overlay / staged T3 consolidation path.
 
 ### 2.2 Current Breakpoints
 
@@ -178,8 +178,10 @@ User / trigger / workflow / delegation turn
   -> session_learning_projection and/or evolution candidate
   -> Extractor writes T2 atom candidates
   -> Heartbeat Curator reads T2 + T3 + relevant candidate digest
-  -> governed T3 write through save_memory / append_t3_memory_candidate
-  -> Dream reads T3 + candidate evidence + source refs
+  -> T3 Consolidator writes consolidation_pitch.md / revised_patch.md job artifacts
+  -> Memory Gate Agent reviews evidence, duplicates, conflicts, merge directives
+  -> Platform Gate commits exact LLM-authored XML blocks to accepted T3
+  -> Dream reads accepted T3 + candidate evidence + source refs
   -> promotion/hold/reject in evolution ledger
   -> soul / skill / workflow promotion only after gates
 ```
@@ -380,8 +382,8 @@ Required red tests:
 - `test_mechanical_lineage_summary_cannot_be_promoted_as_durable_memory`
   - A bare `lineage.md` counter/summary line must be rejected or low-signal if treated as input.
 
-- `test_t3_write_from_heartbeat_reflection_uses_write_gate`
-  - Durable promotion must go through `append_t3_memory_candidate` / write gate, not direct file mutation.
+- `test_t3_write_from_heartbeat_reflection_uses_t3_consolidation_gate`
+  - Durable promotion must go through T3 Consolidator artifacts, Memory Gate review, and Platform Gate commit; `append_t3_memory_candidate` is compatibility only.
 
 ### 6.5 Dream Candidate-Awareness Tests
 

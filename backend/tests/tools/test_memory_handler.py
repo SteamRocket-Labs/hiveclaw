@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,400 +8,172 @@ from types import SimpleNamespace
 import pytest
 
 
+def _write_t3_ready_package(root: Path, agent_id: uuid.UUID) -> Path:
+    package_dir = root / str(agent_id) / "memory" / "sessions" / "s1" / "segments" / "seg-1"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
+    (package_dir / "summary.md").write_text(
+        f"<t2_summary id=\"sum-1\" status=\"closed\"><summary>User prefers concise answers.</summary><source_refs><source_ref uri=\"{source_ref}\"/></source_refs></t2_summary>",
+        encoding="utf-8",
+    )
+    (package_dir / "labels.md").write_text(
+        f"<t2_labels id=\"lbl-1\"><package_status>closed</package_status><source_refs><source_ref uri=\"{source_ref}\"/></source_refs></t2_labels>",
+        encoding="utf-8",
+    )
+    (package_dir / "review.md").write_text(
+        f"<t2_review id=\"rev-1\"><decision>approved</decision><allowed_next>t3_intake</allowed_next><review_rubric schema_version=\"t2.review_rubric.v1\"><score name=\"summary_fidelity\" value=\"0.95\"/><score name=\"source_ref_coverage\" value=\"0.95\"/><score name=\"label_alignment\" value=\"0.90\"/><score name=\"safety_scope\" value=\"0.95\"/><score name=\"package_closure\" value=\"0.90\"/><review_score>0.95</review_score></review_rubric><source_refs><source_ref uri=\"{source_ref}\"/></source_refs></t2_review>",
+        encoding="utf-8",
+    )
+    (package_dir / "manifest.json").write_text(
+        '{"schema_version":"t2.segment-package.manifest.v1","package_status":"reviewed","source_refs":["t0://session/s1/segment/seg-1#seq=1..2"]}\n',
+        encoding="utf-8",
+    )
+    return package_dir
+
+
+def _accepted_t3_review() -> str:
+    return """<memory_gate_review id="r1" schema_version="t3.review.v1">
+  <decision>accept</decision>
+  <memory_gate_rubric schema_version="memory_gate_rubric.v1">
+    <score name="evidence_strength" value="4"><rationale>Source-backed.</rationale><source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs></score>
+    <score name="scope_clarity" value="4"><rationale>Narrow preference.</rationale><source_refs><source_ref>t2://session/s1/segment/seg-1#labels</source_ref></source_refs></score>
+    <score name="stability" value="3"><rationale>Stable enough.</rationale><source_refs><source_ref>t2://session/s1/segment/seg-1#review</source_ref></source_refs></score>
+    <score name="future_utility" value="4"><rationale>Useful for response style.</rationale><source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs></score>
+    <score name="conflict_safety" value="4"><rationale>No conflict.</rationale><source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs></score>
+    <decision>accept_new</decision>
+    <decision_rationale>Commit.</decision_rationale>
+    <required_followup>commit</required_followup>
+  </memory_gate_rubric>
+</memory_gate_review>"""
+
+
 @pytest.mark.asyncio
-async def test_save_memory_writes_t3_file_and_index(tmp_path: Path) -> None:
+async def test_save_memory_writes_explicit_overlay_not_accepted_t3(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        result = await save_memory(agent_id, {"content": "User prefers concise answers", "category": "feedback"})
 
+    memory_dir = tmp_path / str(agent_id) / "memory"
+    overlay_index = memory_dir / "explicit" / "MEMORY.md"
+
+    assert "Saved to explicit memory overlay [feedback]" in result
+    assert overlay_index.exists()
+    assert "User prefers concise answers" in overlay_index.read_text(encoding="utf-8")
+    assert not (memory_dir / "feedback.md").exists()
+    assert not (memory_dir / "t3" / "user.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_save_memory_rejects_pl4_credentials_before_overlay_write(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import save_memory
+
+    agent_id = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
         result = await save_memory(
             agent_id,
-            {
-                "content": "User prefers concise answers",
-                "category": "feedback",
-            },
+            {"content": "Production API key is sk-live-abcdef1234567890abcdef", "category": "reference"},
         )
 
-    feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
-    index_path = tmp_path / str(agent_id) / "memory" / "INDEX.md"
-
-    assert "Saved to long-term memory [feedback]" in result
-    assert feedback_path.exists()
-    assert "User prefers concise answers" in feedback_path.read_text(encoding="utf-8")
-    assert index_path.exists()
-    assert "feedback.md" in index_path.read_text(encoding="utf-8")
+    assert result.startswith("[Rejected]")
+    assert not (tmp_path / str(agent_id) / "memory" / "explicit" / "MEMORY.md").exists()
 
 
 @pytest.mark.asyncio
-async def test_save_memory_passes_tenant_id_to_memory_enhancement_sync(tmp_path: Path) -> None:
-    """Closure A3: agent-tool writes must carry tenant_id end-to-end.
-
-    The optional enhancement adapter is currently a no-op, but the governed
-    write path must still preserve tenant context for any future adapter.
-    """
-    from app.memory import enhancement
-    from app.tools.handlers.memory import save_memory
-
-    agent_id = uuid.uuid4()
-    tenant_id = uuid.uuid4()
-    seen: dict = {}
-
-    async def _capture(aid, tid, *, data_root=None):
-        seen["agent_id"] = aid
-        seen["tenant_id"] = tid
-        return enhancement.MemoryEnhancementSyncResult()
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        mp.setattr(enhancement, "sync_t3_to_memory_enhancement", _capture)
-
-        result = await save_memory(
-            agent_id,
-            {"content": "Tenant-scoped fact for sync", "category": "feedback"},
-            tenant_id,
-        )
-
-    assert "Saved to long-term memory" in result
-    assert seen["agent_id"] == agent_id
-    assert seen["tenant_id"] == tenant_id
-
-
-@pytest.mark.asyncio
-async def test_save_memory_adapter_string_tenant_reaches_enhancement_as_uuid(tmp_path: Path) -> None:
-    """The production agent_args adapter carries tenant_id as a string.
-
-    save_memory must normalize the adapter value before calling the governed
-    T3 append path and optional enhancement adapter boundary.
-    """
-    from app.memory import enhancement
-    from app.tools.adapters import adapt_and_call
-    from app.tools.handlers.memory import save_memory
-    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
-
-    agent_id = uuid.uuid4()
-    user_id = uuid.uuid4()
-    tenant_id = uuid.uuid4()
-    seen: dict = {}
-
-    async def _capture(aid, tid, *, data_root=None):
-        seen["agent_id"] = aid
-        seen["tenant_id"] = tid
-        seen["tenant_type"] = type(tid).__name__
-        return enhancement.MemoryEnhancementSyncResult()
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        mp.setattr(enhancement, "sync_t3_to_memory_enhancement", _capture)
-
-        result = await adapt_and_call(
-            save_memory.meta,
-            save_memory,
-            ToolExecutionRequest(
-                tool_name="save_memory",
-                arguments={"content": "Adapter tenant string is normalized", "category": "feedback"},
-                context=ToolExecutionContext(
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    tenant_id=str(tenant_id),
-                    workspace=tmp_path,
-                ),
-            ),
-        )
-
-    assert "Saved to long-term memory" in result
-    assert seen["agent_id"] == agent_id
-    assert seen["tenant_id"] == tenant_id
-    assert seen["tenant_type"] == "UUID"
-
-
-@pytest.mark.asyncio
-async def test_save_memory_persists_control_plane_metadata(tmp_path: Path) -> None:
-    from app.memory.lifecycle_store import MemoryLifecycleStore
-    from app.memory.md_store import parse_entry_record
-    from app.tools.handlers.memory import save_memory
-
-    agent_id = uuid.uuid4()
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-
-        result = await save_memory(
-            agent_id,
-            {
-                "content": "Owner Alice email is alice@example.com for vendor escalation.",
-                "category": "user",
-            },
-        )
-
-    user_path = tmp_path / str(agent_id) / "memory" / "user.md"
-    body = user_path.read_text(encoding="utf-8")
-    entry_line = next(line for line in body.splitlines() if line.startswith("- ["))
-    record = parse_entry_record(entry_line)
-
-    assert result.startswith("Saved to long-term memory [user]")
-    assert "alice@example.com" not in body
-    assert "<Email_1>" in body
-    # D2: prose carries only [date][entry_id]; sensitivity/status/version + the
-    # D1 telemetry all live in the lifecycle sidecar, never inlined into prose.
-    assert "[sensitivity=" not in entry_line
-    assert "[status=" not in entry_line
-    assert "[version=" not in entry_line
-    assert "[access_count" not in entry_line
-    assert "[last_accessed" not in entry_line
-    assert record.metadata["entry_id"]
-    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
-    lifecycle_entry = lifecycle.get(record.metadata["entry_id"])
-    assert lifecycle_entry.metadata.get("sensitivity") == "PL2_pii"
-    assert lifecycle_entry.content == "Owner Alice email is <Email_1> for vendor escalation."
-    assert lifecycle_entry.status == "active"
-    assert lifecycle_entry.access_count == 0
-    assert lifecycle_entry.last_accessed is None
-
-
-@pytest.mark.asyncio
-async def test_save_memory_maps_project_to_knowledge(tmp_path: Path) -> None:
-    from app.tools.handlers.memory import save_memory
-
-    agent_id = uuid.uuid4()
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        await save_memory(
-            agent_id,
-            {
-                "content": "Project deadline is 2026-04-15",
-                "category": "project",
-            },
-        )
-
-    knowledge_path = tmp_path / str(agent_id) / "memory" / "knowledge.md"
-    assert knowledge_path.exists()
-    assert "Project deadline is 2026-04-15" in knowledge_path.read_text(encoding="utf-8")
-
-
-@pytest.mark.asyncio
-async def test_search_memory_reads_saved_t3_shadow_index(tmp_path: Path) -> None:
-    import re
-
+async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -> None:
     from app.tools.handlers.memory import load_memory, save_memory, search_memory
 
     agent_id = uuid.uuid4()
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        await save_memory(
-            agent_id,
-            {
-                "content": "Use snake_case for Python variable names",
-                "category": "feedback",
-            },
-        )
-        result = await search_memory(
-            agent_id,
-            {
-                "query": "snake_case",
-                "scope": "facts",
-            },
-        )
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        await save_memory(agent_id, {"content": "Use snake_case for Python variable names", "category": "feedback"})
+        result = await search_memory(agent_id, {"query": "snake_case", "scope": "facts"})
 
-        assert "## Semantic Memory" in result
+        assert "## Explicit Memory Overlay" in result
         assert "snake_case" in result
-        assert "load_memory" in result
         match = re.search(r"id=([a-zA-Z0-9_-]+)", result)
         assert match
 
         loaded = load_memory(agent_id, {"ids": [match.group(1)]})
 
-        assert "## Loaded Memory" in loaded
-        assert "Use snake_case for Python variable names" in loaded
-        assert "source=memory/feedback.md" in loaded
+    assert "## Loaded Explicit Memory Overlay" in loaded
+    assert "Use snake_case for Python variable names" in loaded
+    assert "source=memory/explicit/entries/" in loaded
 
 
 @pytest.mark.asyncio
-async def test_update_memory_supersedes_old_entry_through_write_gate(tmp_path: Path) -> None:
-    from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore
-    from app.memory.md_store import parse_entry_record
+async def test_update_memory_supersedes_explicit_overlay_entry(tmp_path: Path) -> None:
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
     from app.tools.handlers.memory import save_memory, update_memory
 
     agent_id = uuid.uuid4()
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        await save_memory(
-            agent_id,
-            {
-                "content": "User prefers short replies without lists",
-                "category": "feedback",
-            },
-        )
-        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
-        old_line = next(line for line in feedback_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ["))
-        old_entry_id = parse_entry_record(old_line).metadata["entry_id"]
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        await save_memory(agent_id, {"content": "User prefers short replies", "category": "feedback"})
+        old_entry = load_explicit_overlay_entries(tmp_path, agent_id)[0]
 
         result = await update_memory(
             agent_id,
             {
-                "memory_id": old_entry_id,
-                "content": "User prefers short replies without lists, but include concrete examples when useful",
+                "memory_id": old_entry.entry_id,
+                "content": "User prefers short replies, but include concrete examples when useful",
                 "category": "feedback",
-                "reason": "explicit user correction",
             },
         )
+        entries = load_explicit_overlay_entries(tmp_path, agent_id)
 
-    body = feedback_path.read_text(encoding="utf-8")
-    archive = (tmp_path / str(agent_id) / "memory" / "archive.md").read_text(encoding="utf-8")
-    new_line = next(line for line in body.splitlines() if line.startswith("- ["))
-    new_entry_id = parse_entry_record(new_line).metadata["entry_id"]
-    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
-
-    assert result.startswith("Updated memory")
-    assert old_entry_id not in body
-    assert "include concrete examples when useful" in body
-    assert "User prefers short replies without lists" in archive
-    assert f"[superseded_by={new_entry_id}]" in archive
-    old_lifecycle = lifecycle.get(old_entry_id)
-    new_lifecycle = lifecycle.get(new_entry_id)
-    assert old_lifecycle.status == LifecycleStatus.SUPERSEDED
-    assert old_lifecycle.superseded_by == new_entry_id
-    assert new_lifecycle.status == LifecycleStatus.ACTIVE
-    assert new_lifecycle.parent_id == old_entry_id
-    assert new_lifecycle.supersedes == [old_entry_id]
-    assert new_lifecycle.metadata["supersedes"] == old_entry_id
+    assert result.startswith(f"Updated explicit memory {old_entry.entry_id} ->")
+    assert {entry.status for entry in entries} == {"retired", "active"}
+    assert any("include concrete examples" in entry.content and entry.status == "active" for entry in entries)
 
 
 @pytest.mark.asyncio
-async def test_retire_memory_archives_entry_without_deleting_evidence(tmp_path: Path) -> None:
-    from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore
-    from app.memory.md_store import parse_entry_record
+async def test_retire_memory_deactivates_explicit_overlay_entry(tmp_path: Path) -> None:
+    from app.memory.explicit_overlay import load_explicit_overlay_entries
     from app.tools.handlers.memory import retire_memory, save_memory, search_memory
 
     agent_id = uuid.uuid4()
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
         await save_memory(
             agent_id,
-            {
-                "content": "Temporary preference for blue buttons during prototype review",
-                "category": "feedback",
-            },
+            {"content": "Temporary preference for blue buttons during prototype review", "category": "feedback"},
         )
-        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
-        entry_line = next(line for line in feedback_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ["))
-        entry_id = parse_entry_record(entry_line).metadata["entry_id"]
-
-        result = await retire_memory(
-            agent_id,
-            {
-                "memory_id": entry_id,
-                "reason": "obsolete",
-            },
-        )
+        entry = load_explicit_overlay_entries(tmp_path, agent_id)[0]
+        result = await retire_memory(agent_id, {"memory_id": entry.entry_id, "reason": "obsolete"})
         search_result = await search_memory(agent_id, {"query": "blue buttons", "scope": "facts"})
+        entries = load_explicit_overlay_entries(tmp_path, agent_id)
 
-    body = feedback_path.read_text(encoding="utf-8")
-    archive = (tmp_path / str(agent_id) / "memory" / "archive.md").read_text(encoding="utf-8")
-    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
-
-    assert result.startswith("Retired memory")
-    assert "blue buttons" not in body
-    assert "blue buttons" in archive
-    assert "[reason=obsolete]" in archive
-    assert lifecycle.get(entry_id).status == LifecycleStatus.ARCHIVED
+    assert result == f"Retired explicit memory {entry.entry_id}: obsolete"
+    assert entries[0].status == "retired"
     assert "No memory found" in search_result
 
 
-@pytest.mark.asyncio
-async def test_search_memory_reads_t3_markdown_without_shadow_index(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
-    from app.tools.handlers.memory import search_memory
-
-    agent_id = uuid.uuid4()
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "feedback.md").write_text(
-        "# Feedback\n\n- [2026-04-09] 用户要求所有回答都先给结论再展开\n",
-        encoding="utf-8",
-    )
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        result = await search_memory(
-            agent_id,
-            {
-                "query": "先给结论",
-                "scope": "facts",
-            },
-        )
-
-    assert "## Semantic Memory" in result
-    assert "id=" in result
-    assert "先给结论再展开" in result
-
-
-def test_load_memory_reports_missing_ids(tmp_path: Path) -> None:
-    from app.tools.handlers.memory import load_memory
-
-    agent_id = uuid.uuid4()
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        result = load_memory(agent_id, {"ids": ["missing-id"]})
-
-    assert "No memory entries found" in result
-    assert "missing-id" in result
-
-
-def test_load_memory_suppresses_pl3_by_default(tmp_path: Path) -> None:
+def test_load_memory_suppresses_pl3_accepted_t3_by_default(tmp_path: Path) -> None:
     from app.memory.md_store import ensure_t3_layout
     from app.tools.handlers.memory import load_memory
 
     agent_id = uuid.uuid4()
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "knowledge.md").write_text(
-        "# Knowledge\n\n"
-        "- [2026-06-05][entry_id=mem_public][sensitivity=PL1_public] public deployment note\n"
-        "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
+    (mem_dir / "t3" / "capabilities.md").write_text(
+        "# T3 Capabilities\n\n"
+        '<t3_capability id="mem_public" sensitivity="PL1_public" created_at="2026-06-05">'
+        "public deployment note</t3_capability>\n"
+        '<t3_capability id="mem_salary" sensitivity="PL3_sensitive" created_at="2026-06-05">'
+        "salary planning is confidential</t3_capability>\n",
         encoding="utf-8",
     )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
         result = load_memory(agent_id, {"ids": ["mem_public", "mem_salary"]})
 
     assert "public deployment note" in result
@@ -408,40 +181,30 @@ def test_load_memory_suppresses_pl3_by_default(tmp_path: Path) -> None:
     assert "salary planning is confidential" not in result
     assert "Suppressed entries: 1" in result
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        suppressed_only = load_memory(agent_id, {"ids": ["mem_salary"]})
-
-    assert "mem_salary" not in suppressed_only
-    assert "No visible memory entries found." in suppressed_only
-    assert "Suppressed entries: 1" in suppressed_only
-
 
 @pytest.mark.asyncio
-async def test_search_memory_suppresses_pl3_by_default(tmp_path: Path) -> None:
+async def test_accepted_t3_update_and_retire_require_t3_patch(tmp_path: Path) -> None:
     from app.memory.md_store import ensure_t3_layout
-    from app.tools.handlers.memory import search_memory
+    from app.tools.handlers.memory import retire_memory, update_memory
 
     agent_id = uuid.uuid4()
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    (mem_dir / "knowledge.md").write_text(
-        "# Knowledge\n\n"
-        "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
+    (mem_dir / "t3" / "user.md").write_text(
+        "# T3 User\n\n"
+        '<t3_user_memory id="u-style" sensitivity="PL1_public" created_at="2026-06-05">'
+        "User prefers concise answers.</t3_user_memory>\n",
         encoding="utf-8",
     )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
-        result = await search_memory(agent_id, {"query": "salary", "scope": "facts"})
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        update_result = await update_memory(agent_id, {"memory_id": "u-style", "content": "User prefers detailed answers"})
+        retire_result = await retire_memory(agent_id, {"memory_id": "u-style", "reason": "obsolete"})
 
-    assert "salary planning is confidential" not in result
-    assert "mem_salary" not in result
+    assert update_result.startswith("[Needs T3 Patch]")
+    assert "Platform Gate" in update_result
+    assert retire_result.startswith("[Needs T3 Patch]")
+    assert "Platform Gate" in retire_result
 
 
 @pytest.mark.asyncio
@@ -459,68 +222,90 @@ async def test_search_memory_suppresses_sensitive_wiki_page_even_when_preview_is
     )
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.config.get_settings",
-            lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-        )
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
         result = await search_memory(agent_id, {"query": "public context", "scope": "facts"})
 
     assert "Comp Plan" not in result
     assert "salary planning is confidential" not in result
 
 
-@pytest.mark.asyncio
-async def test_search_memory_session_scope_formats_recalled_sessions() -> None:
-    from app.tools.handlers.memory import search_memory
+def test_submit_t3_revised_patch_after_existing_review_requires_fresh_review(tmp_path: Path) -> None:
+    from app.memory.md_store import ensure_t3_layout
+    from app.memory.t3_consolidation import build_t3_consolidation_batch
+    from app.memory.t3_platform_gate import file_sha256
+    from app.tools.handlers.memory import submit_t3_memory_gate_review, submit_t3_revised_patch
 
     agent_id = uuid.uuid4()
-
-    fake_hits = [
-        {
-            "session_id": "sess-1",
-            "source": "web",
-            "started_at": "2026-04-09",
-            "headline": "讨论了 memory-system-redesign",
-            "summary": "用户强调 t0 md 是基石，并要求三个蒸馏器职责严格分离。",
-            "transcript_window": "User: 你强调 t0 md 是整个系统的基石\nAssistant: 我们讨论了三个蒸馏器的职责边界",
-            "snippets": [
-                "你强调 t0 md 是整个系统的基石",
-                "我们讨论了三个蒸馏器的职责边界",
-            ],
-        },
-        {
-            "session_id": "sess-2",
-            "source": "feishu",
-            "started_at": "2026-04-08",
-            "headline": "确认要做 md-first 架构收敛",
-            "summary": "用户要求彻底收口 legacy memory path，只保留 md 真源。",
-            "snippets": [
-                "用户要求彻底收口 legacy memory path",
-            ],
-        },
-    ]
-
-    async def fake_search(*_args, **_kwargs):
-        return fake_hits
+    package_dir = _write_t3_ready_package(tmp_path, agent_id)
+    mem_dir = ensure_t3_layout(tmp_path, agent_id)
+    result = build_t3_consolidation_batch(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        package_dirs=[package_dir],
+        job_id="job-tool-commit",
+    )
+    target = mem_dir / "t3" / "user.md"
+    base_sha = file_sha256(target)
+    patch = f"""<t3_consolidation_patch id="p1" schema_version="t3.consolidation_patch.v1">
+  <base_revisions><base_revision path="memory/t3/user.md" sha256="{base_sha}"/></base_revisions>
+  <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>
+  <target_files><target_file path="memory/t3/user.md"/></target_files>
+  <target_view_labels><target_view>user</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.90</cue_strength><stability>stable</stability><behavior_impact>response_style</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
+  <proposed_changes><append_block target="memory/t3/user.md" block_id="usr_concise"><block_content><![CDATA[<t3_user_memory id="usr_concise" status="active"><claim>User prefers concise answers.</claim><source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs></t3_user_memory>]]></block_content></append_block></proposed_changes>
+  <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></evidence>
+</t3_consolidation_patch>"""
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "app.tools.handlers.memory.search_session_history",
-            fake_search,
-        )
-        result = await search_memory(
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        review_result = submit_t3_memory_gate_review(agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()})
+        patch_result = submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
+
+    assert "Submitted T3 job artifact" in review_result
+    assert "waiting for fresh Memory Gate review" in patch_result
+    assert "usr_concise" not in target.read_text(encoding="utf-8")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        final_review_result = submit_t3_memory_gate_review(
             agent_id,
-            {
-                "query": "md-first",
-                "scope": "sessions",
-                "limit": 5,
-            },
+            {"job_id": result.job_id, "content": _accepted_t3_review()},
         )
 
-    assert "## Session Recall" in result
-    assert "(2026-04-09 [web]) 讨论了 memory-system-redesign" in result
-    assert "Summary: 用户强调 t0 md 是基石" in result
-    assert "Context:" in result
-    assert "User: 你强调 t0 md 是整个系统的基石" in result
-    assert "t0 md 是整个系统的基石" in result
-    assert "(2026-04-08 [feishu]) 确认要做 md-first 架构收敛" in result
+    assert "Platform Gate committed" in final_review_result
+    assert "usr_concise" in target.read_text(encoding="utf-8")
+
+
+def test_submit_t3_memory_gate_review_triggers_platform_gate_when_patch_ready(tmp_path: Path) -> None:
+    from app.memory.md_store import ensure_t3_layout
+    from app.memory.t3_consolidation import build_t3_consolidation_batch
+    from app.memory.t3_platform_gate import file_sha256
+    from app.tools.handlers.memory import submit_t3_memory_gate_review, submit_t3_revised_patch
+
+    agent_id = uuid.uuid4()
+    package_dir = _write_t3_ready_package(tmp_path, agent_id)
+    mem_dir = ensure_t3_layout(tmp_path, agent_id)
+    result = build_t3_consolidation_batch(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        package_dirs=[package_dir],
+        job_id="job-tool-review-last",
+    )
+    target = mem_dir / "t3" / "worker.md"
+    base_sha = file_sha256(target)
+    patch = f"""<t3_consolidation_patch id="p2" schema_version="t3.consolidation_patch.v1">
+  <base_revisions><base_revision path="memory/t3/worker.md" sha256="{base_sha}"/></base_revisions>
+  <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>
+  <target_files><target_file path="memory/t3/worker.md"/></target_files>
+  <target_view_labels><target_view>worker</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.90</cue_strength><stability>stable</stability><behavior_impact>tool_policy</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
+  <proposed_changes><append_block target="memory/t3/worker.md" block_id="wrk_discuss_first"><block_content><![CDATA[<t3_worker_rule id="wrk_discuss_first" status="active"><rule>Discuss memory architecture changes before implementation.</rule><source_refs><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></source_refs></t3_worker_rule>]]></block_content></append_block></proposed_changes>
+  <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref></evidence>
+</t3_consolidation_patch>"""
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        patch_result = submit_t3_revised_patch(agent_id, {"job_id": result.job_id, "content": patch})
+        review_result = submit_t3_memory_gate_review(agent_id, {"job_id": result.job_id, "content": _accepted_t3_review()})
+
+    assert "Submitted T3 job artifact" in patch_result
+    assert "Platform Gate committed" in review_result
+    assert "wrk_discuss_first" in target.read_text(encoding="utf-8")

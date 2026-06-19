@@ -27,8 +27,9 @@ def _coerce_tenant_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
     ToolMeta(
         name="save_memory",
         description=(
-            "Persist a fact to your long-term memory so it is available in future conversations. "
-            "This is the ONLY write path for durable memory — direct file edits under memory/ are refused.\n\n"
+            "Persist an explicit user-commanded memory so it is available in future conversations. "
+            "This writes to the Explicit Memory Overlay immediately; accepted T3 files are updated later "
+            "by the T3 Consolidation Batch and Platform Gate. Direct file edits under memory/ are refused.\n\n"
             "Use this tool when you encounter information worth remembering across sessions:\n"
             "- User corrections or preferences (category: feedback)\n"
             "- Important project decisions or deadlines (category: project)\n"
@@ -44,8 +45,9 @@ def _coerce_tenant_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
             "durable rule behind them instead (not 'today's scan found no changes' but "
             "'this scan cadence catches changes fastest'). "
             "Do NOT store raw tool output or debugging logs.\n"
-            "When the fact is promotion-lane evidence (a proven reusable method, an identity-level "
-            "rule), pass container_candidate so the promotion lanes can find it later."
+            "Do NOT use save_memory to submit skill/workflow/soul/T3 candidates. "
+            "Those must be LLM-authored T3 Consolidator artifacts submitted through "
+            "submit_t3_consolidation_pitch or submit_t3_revised_patch."
         ),
         parameters={
             "type": "object",
@@ -82,9 +84,10 @@ def _coerce_tenant_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
                         "artifact_only",
                     ],
                     "description": (
-                        "Optional promotion-lane hint. Use skill_candidate / workflow_candidate for "
-                        "proven reusable strategies, soul_candidate for repeated identity-level rules. "
-                        "The promotion gates decide — this is evidence, not a command."
+                        "Deprecated compatibility hint; do not use for new skill/workflow/soul/T3 "
+                        "candidate routing. New candidates belong in T3 Consolidator pitch/revised_patch "
+                        "artifacts, not save_memory. If supplied by legacy callers, this is stored only "
+                        "as explicit-overlay metadata and does not command promotion."
                     ),
                 },
                 "source_refs": {
@@ -108,7 +111,9 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
     # Closure A3: the third positional parameter makes the agent_args adapter
     # pass request.context.tenant_id so governed memory writes retain tenant
     # context for the optional enhancement adapter boundary.
-    from app.memory.t3_store import append_t3_memory_candidate
+    from app.config import get_settings
+    from app.memory.explicit_overlay import write_explicit_memory_overlay
+    from app.memory.t3_store import looks_episodic_observation
 
     content = (arguments.get("content") or "").strip()
     if not content:
@@ -118,38 +123,242 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
     source_refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
     source_refs.append("tool:save_memory")
 
-    result = await append_t3_memory_candidate(
+    if looks_episodic_observation(content):
+        return (
+            "[Skipped] This reads as an episodic observation (routine scan / no-change log). "
+            "It belongs in the T0/session ledger or workspace notes, not explicit long-term memory."
+        )
+
+    result = await write_explicit_memory_overlay(
         agent_id,
         category=arguments.get("category", "general"),
         content=content,
         source_refs=source_refs,
-        proposed_by="agent_tool",
-        container_candidate=arguments.get("container_candidate"),
         tenant_id=_coerce_tenant_uuid(tenant_id),
+        data_root=Path(get_settings().AGENT_DATA_DIR),
     )
-
-    if result.status == "episodic":
-        return f"[Skipped] {result.reason}"
 
     if result.status == "rejected":
         return f"[Rejected] {result.sensitivity}: {result.reason}"
-
-    if result.status == "duplicate" and result.similar:
-        hit = result.similar
-        ts = f" ({hit['timestamp']})" if hit.get("timestamp") else ""
+    if result.status == "duplicate":
         return (
-            f"[Skipped] A similar memory already exists (similarity={hit['similarity']:.2f}):\n"
-            f"  [{hit['category']}]{ts} {hit['content']}\n"
-            f"If this new fact is intentionally distinct (different scope, newer value, "
-            f"explicit correction), re-call save_memory with content that makes the "
-            f"difference explicit (e.g. include the date or the delta)."
+            f"[Skipped] Similar explicit memory already exists ({result.entry_id}) "
+            f"in {result.target_hint}: {result.content[:80]}"
         )
 
     saved = content[:80]
-    return f"Saved to long-term memory [{result.category}]: {saved}{'...' if len(content) > 80 else ''}"
+    return (
+        f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): "
+        f"{saved}{'...' if len(content) > 80 else ''}"
+    )
 
 
 # -- update_memory / retire_memory -------------------------------------------
+
+
+def _t3_job_artifact_result(path: Path) -> str:
+    return f"Submitted T3 job artifact: {path.relative_to(path.parents[4]).as_posix() if len(path.parents) > 4 else path.as_posix()}"
+
+
+_T3_REVIEW_STALE_MARKER = ".review_stale_after_patch"
+
+
+def _maybe_apply_t3_platform_gate(*, agent_id: uuid.UUID, data_root: Path, job_id: str) -> str | None:
+    from app.memory.md_store import memory_dir
+    from app.memory.t3_platform_gate import apply_t3_consolidation_patch
+
+    job_dir = memory_dir(data_root, agent_id) / ".staging" / "t3_jobs" / job_id
+    review_path = job_dir / "review.md"
+    patch_path = job_dir / "revised_patch.md"
+    if not review_path.exists() or not patch_path.exists():
+        return None
+    if (job_dir / _T3_REVIEW_STALE_MARKER).exists():
+        return f"Platform Gate waiting for fresh Memory Gate review after revised_patch for T3 job {job_id}."
+    review_md = review_path.read_text(encoding="utf-8", errors="replace")
+    patch_md = patch_path.read_text(encoding="utf-8", errors="replace")
+    if "<memory_gate_review" not in review_md or "<t3_consolidation_patch" not in patch_md:
+        return None
+    result = apply_t3_consolidation_patch(
+        agent_id=agent_id,
+        data_root=data_root,
+        job_id=job_id,
+        revised_patch_md=patch_md,
+        review_md=review_md,
+    )
+    if result.status == "committed":
+        return (
+            f"Platform Gate committed T3 job {job_id}: "
+            f"paths={list(result.committed_paths)} blocks={list(result.committed_blocks)}"
+        )
+    if result.status == "rebase_required":
+        return f"Platform Gate requires rebase for T3 job {job_id}: {', '.join(result.issues)}"
+    return f"Platform Gate held T3 job {job_id}: {', '.join(result.issues)}"
+
+
+@tool(
+    ToolMeta(
+        name="submit_t3_consolidation_pitch",
+        description=(
+            "Submit the LLM-authored consolidation_pitch.md for a staged T3 consolidation job. "
+            "This writes only to memory/.staging/t3_jobs/<job_id>/consolidation_pitch.md; "
+            "it never writes accepted T3 files."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "T3 consolidation job id."},
+                "content": {"type": "string", "description": "Full Markdown pitch content."},
+            },
+            "required": ["job_id", "content"],
+        },
+        category="memory",
+        display_name="Submit T3 Consolidation Pitch",
+        icon="\U0001f9e0",
+        read_only=False,
+        parallel_safe=False,
+        governance="sensitive",
+        adapter="agent_args",
+    )
+)
+def submit_t3_consolidation_pitch(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+    from app.config import get_settings
+    from app.memory.t3_consolidation import write_t3_job_artifact
+
+    del tenant_id
+    job_id = (arguments.get("job_id") or "").strip()
+    content = (arguments.get("content") or "").strip()
+    if not job_id:
+        return "[Error] job_id is required."
+    if not content:
+        return "[Error] content is required."
+    try:
+        data_root = Path(get_settings().AGENT_DATA_DIR)
+        path = write_t3_job_artifact(
+            agent_id=agent_id,
+            data_root=data_root,
+            job_id=job_id,
+            filename="consolidation_pitch.md",
+            content=content,
+        )
+    except Exception as exc:
+        return f"[Error] submit_t3_consolidation_pitch failed: {exc}"
+    return _t3_job_artifact_result(path)
+
+
+@tool(
+    ToolMeta(
+        name="submit_t3_memory_gate_review",
+        description=(
+            "Submit the Memory Gate Agent review.md for a staged T3 consolidation job. "
+            "Use this for accept/revise/hold/reject review artifacts and rubric scores. "
+            "This must review the latest revised_patch.md before accepted T3 can be committed. "
+            "If revised_patch.md is already ready, Platform Gate is attempted immediately."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "T3 consolidation job id."},
+                "content": {"type": "string", "description": "Full Markdown review artifact."},
+            },
+            "required": ["job_id", "content"],
+        },
+        category="memory",
+        display_name="Submit T3 Memory Gate Review",
+        icon="\U0001f9e0",
+        read_only=False,
+        parallel_safe=False,
+        governance="sensitive",
+        adapter="agent_args",
+    )
+)
+def submit_t3_memory_gate_review(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+    from app.config import get_settings
+    from app.memory.t3_consolidation import write_t3_job_artifact
+
+    del tenant_id
+    job_id = (arguments.get("job_id") or "").strip()
+    content = (arguments.get("content") or "").strip()
+    if not job_id:
+        return "[Error] job_id is required."
+    if not content:
+        return "[Error] content is required."
+    try:
+        data_root = Path(get_settings().AGENT_DATA_DIR)
+        path = write_t3_job_artifact(
+            agent_id=agent_id,
+            data_root=data_root,
+            job_id=job_id,
+            filename="review.md",
+            content=content,
+        )
+        stale_marker = path.parent / _T3_REVIEW_STALE_MARKER
+        if stale_marker.exists():
+            stale_marker.unlink()
+    except Exception as exc:
+        return f"[Error] submit_t3_memory_gate_review failed: {exc}"
+    gate_result = _maybe_apply_t3_platform_gate(agent_id=agent_id, data_root=data_root, job_id=job_id)
+    if gate_result:
+        return f"{_t3_job_artifact_result(path)}\n{gate_result}"
+    return _t3_job_artifact_result(path)
+
+
+@tool(
+    ToolMeta(
+        name="submit_t3_revised_patch",
+        description=(
+            "Submit the final LLM-authored revised_patch.md for a staged T3 consolidation job. "
+            "Submitting or changing revised_patch.md makes any older Memory Gate review stale; "
+            "a fresh review must follow before Platform Gate can atomically apply the exact XML blocks."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "T3 consolidation job id."},
+                "content": {"type": "string", "description": "Full Markdown revised patch content."},
+            },
+            "required": ["job_id", "content"],
+        },
+        category="memory",
+        display_name="Submit T3 Revised Patch",
+        icon="\U0001f9e0",
+        read_only=False,
+        parallel_safe=False,
+        governance="sensitive",
+        adapter="agent_args",
+    )
+)
+def submit_t3_revised_patch(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
+    from app.config import get_settings
+    from app.memory.t3_consolidation import write_t3_job_artifact
+
+    del tenant_id
+    job_id = (arguments.get("job_id") or "").strip()
+    content = (arguments.get("content") or "").strip()
+    if not job_id:
+        return "[Error] job_id is required."
+    if not content:
+        return "[Error] content is required."
+    try:
+        data_root = Path(get_settings().AGENT_DATA_DIR)
+        path = write_t3_job_artifact(
+            agent_id=agent_id,
+            data_root=data_root,
+            job_id=job_id,
+            filename="revised_patch.md",
+            content=content,
+        )
+        review_path = path.parent / "review.md"
+        if review_path.exists():
+            (path.parent / _T3_REVIEW_STALE_MARKER).write_text(
+                "Memory Gate review predates revised_patch; submit a fresh review before Platform Gate commit.\n",
+                encoding="utf-8",
+            )
+    except Exception as exc:
+        return f"[Error] submit_t3_revised_patch failed: {exc}"
+    gate_result = _maybe_apply_t3_platform_gate(agent_id=agent_id, data_root=data_root, job_id=job_id)
+    if gate_result:
+        return f"{_t3_job_artifact_result(path)}\n{gate_result}"
+    return _t3_job_artifact_result(path)
 
 
 async def _sync_memory_enhancement_after_memory_mutation(
@@ -233,7 +442,12 @@ def _load_visible_t3_entry(data_root: Path, agent_id: uuid.UUID, entry_id: str):
 )
 async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
     from app.config import get_settings
-    from app.memory.t3_store import append_t3_memory_candidate, retire_t3_entries_by_id
+    from app.memory.explicit_overlay import (
+        load_explicit_overlay_entries_by_ids,
+        update_explicit_overlay_status,
+        write_explicit_memory_overlay,
+    )
+    from app.memory.t3_platform_gate import ACCEPTED_T3_TARGETS
 
     memory_id = (arguments.get("memory_id") or arguments.get("id") or "").strip()
     content = (arguments.get("content") or "").strip()
@@ -245,62 +459,44 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
     data_root = Path(get_settings().AGENT_DATA_DIR)
     old_entry = _load_visible_t3_entry(data_root, agent_id, memory_id)
     if old_entry is None:
+        explicit_entries = load_explicit_overlay_entries_by_ids(data_root, agent_id, [memory_id])
+        explicit_entry = explicit_entries[0] if explicit_entries else None
+        if explicit_entry is not None and explicit_entry.status == "active":
+            raw_refs = arguments.get("source_refs")
+            source_refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
+            source_refs.extend([f"memory:{memory_id}", "tool:update_memory"])
+            result = await write_explicit_memory_overlay(
+                agent_id,
+                category=arguments.get("category") or explicit_entry.category or "general",
+                content=content,
+                source_refs=source_refs,
+                tenant_id=_coerce_tenant_uuid(tenant_id),
+                data_root=data_root,
+                target_hint=explicit_entry.target_hint,
+                origin="explicit_user_correction",
+            )
+            if result.status == "rejected":
+                return f"[Rejected] {result.sensitivity}: {result.reason}"
+            update_explicit_overlay_status(
+                data_root,
+                agent_id,
+                memory_id,
+                status="retired",
+                reason=f"superseded_by:{result.entry_id}",
+                accepted_blocks=[],
+            )
+            return f"Updated explicit memory {memory_id} -> {result.entry_id} [{result.category}]: {content[:80]}"
+    if old_entry is None:
         return f"[Error] Memory entry not found or not visible: {memory_id}"
-
-    raw_refs = arguments.get("source_refs")
-    source_refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
-    source_refs.extend([f"memory:{memory_id}", "tool:update_memory"])
-    reason = (arguments.get("reason") or "explicit correction").strip()
-    if reason:
-        source_refs.append(f"reason:{reason[:80]}")
-
-    result = await append_t3_memory_candidate(
-        agent_id,
-        category=arguments.get("category") or old_entry.category or "general",
-        content=content,
-        source_refs=source_refs,
-        proposed_by="agent_tool",
-        tenant_id=_coerce_tenant_uuid(tenant_id),
-        data_root=data_root,
-        parent_id=memory_id,
-        supersedes=[memory_id],
-        dedup_exclude_entry_ids=[memory_id],
-    )
-    if result.status == "episodic":
-        return f"[Skipped] {result.reason}"
-    if result.status == "rejected":
-        return f"[Rejected] {result.sensitivity}: {result.reason}"
-    if result.status == "duplicate" and result.similar:
-        hit = result.similar
+    if old_entry.source in ACCEPTED_T3_TARGETS:
         return (
-            f"[Skipped] Replacement is still similar to another memory "
-            f"(similarity={hit['similarity']:.2f}): {hit['content']}"
+            f"[Needs T3 Patch] Accepted T3 memory {memory_id} lives in {old_entry.source}. "
+            "Create a T3 Consolidation revised_patch with replace_block/supersede evidence; "
+            "Platform Gate must commit accepted T3 changes."
         )
-    if result.status != "accepted" or not result.entry_id:
-        return f"[Error] Replacement was not accepted: {result.reason or result.status}"
-
-    retired = retire_t3_entries_by_id(
-        data_root,
-        agent_id,
-        entry_ids=[memory_id],
-        reason="superseded",
-        superseded_by=result.entry_id,
-    )
-    if retired == 0:
-        retire_t3_entries_by_id(
-            data_root,
-            agent_id,
-            entry_ids=[result.entry_id],
-            reason="discarded_update_rollback",
-        )
-        await _sync_memory_enhancement_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
-        return f"[Error] Replacement written but old memory could not be retired; rolled back replacement {result.entry_id}."
-
-    await _sync_memory_enhancement_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
-    saved = content[:80]
     return (
-        f"Updated memory {memory_id} -> {result.entry_id} [{result.category}]: "
-        f"{saved}{'...' if len(content) > 80 else ''}"
+        f"[Needs T3 Patch] Memory {memory_id} is not an explicit overlay entry. "
+        "Use the T3 consolidation lane for accepted memory corrections."
     )
 
 
@@ -338,7 +534,8 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
 )
 async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID | str | None = None) -> str:
     from app.config import get_settings
-    from app.memory.t3_store import retire_t3_entries_by_id
+    from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids, update_explicit_overlay_status
+    from app.memory.t3_platform_gate import ACCEPTED_T3_TARGETS
 
     memory_id = (arguments.get("memory_id") or arguments.get("id") or "").strip()
     reason = (arguments.get("reason") or "").strip().lower()
@@ -350,19 +547,22 @@ async def retire_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
     data_root = Path(get_settings().AGENT_DATA_DIR)
     old_entry = _load_visible_t3_entry(data_root, agent_id, memory_id)
     if old_entry is None:
+        explicit_entries = load_explicit_overlay_entries_by_ids(data_root, agent_id, [memory_id])
+        explicit_entry = explicit_entries[0] if explicit_entries else None
+        if explicit_entry is not None and explicit_entry.status == "active":
+            update_explicit_overlay_status(data_root, agent_id, memory_id, status="retired", reason=reason)
+            return f"Retired explicit memory {memory_id}: {reason}"
+    if old_entry is None:
         return f"[Error] Memory entry not found or not visible: {memory_id}"
-
-    retired = retire_t3_entries_by_id(
-        data_root,
-        agent_id,
-        entry_ids=[memory_id],
-        reason=reason,
+    if old_entry.source in ACCEPTED_T3_TARGETS:
+        return (
+            f"[Needs T3 Patch] Accepted T3 memory {memory_id} lives in {old_entry.source}. "
+            "Retirement requires a T3 revised_patch with retire_block/supersede evidence and Platform Gate commit."
+        )
+    return (
+        f"[Needs T3 Patch] Memory {memory_id} is not an explicit overlay entry. "
+        "Use the T3 consolidation lane for accepted memory retirement."
     )
-    if retired == 0:
-        return f"[Error] Memory entry could not be retired: {memory_id}"
-
-    await _sync_memory_enhancement_after_memory_mutation(agent_id, tenant_id, data_root=data_root)
-    return f"Retired memory {memory_id}: {reason}"
 
 
 # -- load_memory ---------------------------------------------------------------
@@ -399,6 +599,7 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
     from pathlib import Path
 
     from app.config import get_settings
+    from app.memory.explicit_overlay import load_explicit_overlay_entries_by_ids
     from app.memory.md_store import load_t3_entries_by_ids
 
     raw_ids = arguments.get("ids") or []
@@ -411,8 +612,11 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         return "[Error] ids is required and cannot be empty."
 
     settings = get_settings()
-    entries = load_t3_entries_by_ids(Path(settings.AGENT_DATA_DIR), agent_id, ids)
-    if not entries:
+    data_root = Path(settings.AGENT_DATA_DIR)
+    explicit_entries = load_explicit_overlay_entries_by_ids(data_root, agent_id, ids)
+    explicit_ids = {entry.entry_id for entry in explicit_entries}
+    entries = load_t3_entries_by_ids(data_root, agent_id, [entry_id for entry_id in ids if entry_id not in explicit_ids])
+    if not entries and not explicit_entries:
         return f"No memory entries found for ids: {', '.join(ids)}"
 
     visible_entries = []
@@ -423,11 +627,21 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         else:
             suppressed_ids.append(entry.entry_id)
 
-    found_ids = {entry.entry_id for entry in visible_entries}
-    if not visible_entries:
+    found_ids = {entry.entry_id for entry in visible_entries} | explicit_ids
+    if not visible_entries and not explicit_entries:
         lines = ["No visible memory entries found."]
     else:
         lines = ["## Loaded Memory"]
+    if explicit_entries:
+        lines.append("## Loaded Explicit Memory Overlay")
+        for entry in explicit_entries:
+            if entry.status != "active":
+                continue
+            lines.append(
+                f"- id={entry.entry_id} source=memory/explicit/entries/{entry.entry_id}.md "
+                f"category={entry.category} target_hint={entry.target_hint}"
+            )
+            lines.append(f"  {entry.content}")
     for entry in visible_entries:
         ts = f" timestamp={entry.timestamp}" if entry.timestamp else ""
         lines.append(f"- id={entry.entry_id} source={entry.source} category={entry.category}{ts}")
@@ -514,6 +728,27 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
 
     # --- Semantic facts search ---
     if scope in ("facts", "all"):
+        from app.memory.explicit_overlay import search_explicit_overlay_entries
+
+        overlay_facts = search_explicit_overlay_entries(
+            Path(settings.AGENT_DATA_DIR),
+            agent_id,
+            query,
+            limit=limit,
+        )
+        overlay_facts = [fact for fact in overlay_facts if _memory_fact_visible(fact)]
+        if overlay_facts:
+            results.append("## Explicit Memory Overlay")
+            for f in overlay_facts:
+                entry_id = f.get("id", "")
+                cat = f.get("category", "general")
+                preview = f.get("preview") or f.get("content", "")
+                target_hint = f.get("target_hint", "unknown")
+                results.append(
+                    f"- id={entry_id} [{cat}] source=explicit_overlay target={target_hint} "
+                    f"{preview} load_memory(ids=[\"{entry_id}\"])"
+                )
+
         facts = search_t3_facts(
             Path(settings.AGENT_DATA_DIR),
             agent_id,

@@ -411,13 +411,48 @@ async def test_build_evolution_context_suggests_skill_candidate_for_repeated_wor
 
     result = await _build_evolution_context(agent_id, activities)
 
-    # P4 candidate lane: the nudge records evidence via save_memory; the
-    # skill distillation lane owns creation.
+    # P4 candidate lane: the nudge records evidence through T3 job artifacts;
+    # the skill distillation lane owns creation.
     assert "Skill Candidate Opportunity" in result
-    assert "save_memory" in result
+    assert "consolidation_pitch.md" in result
     assert "skill_candidate" in result
     assert "load_skill" in result
     assert "workflow" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_build_evolution_context_stages_pending_t3_consolidation_job(tmp_path, monkeypatch):
+    from app.services.heartbeat import _build_evolution_context
+
+    agent_id = uuid4()
+    package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / "s1" / "segments" / "seg-1"
+    package_dir.mkdir(parents=True)
+    (package_dir / "summary.md").write_text("<t2_summary id=\"sum-1\" status=\"closed\"/>", encoding="utf-8")
+    (package_dir / "labels.md").write_text("<t2_labels id=\"lbl-1\"><package_status>closed</package_status></t2_labels>", encoding="utf-8")
+    (package_dir / "review.md").write_text(
+        "<t2_review id=\"rev-1\"><decision>approved</decision><allowed_next>t3_intake</allowed_next></t2_review>",
+        encoding="utf-8",
+    )
+    (package_dir / "manifest.json").write_text(
+        '{"schema_version":"t2.segment-package.manifest.v1","package_status":"reviewed","source_refs":["t0://session/s1/segment/seg-1#seq=1..2"]}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    result = await _build_evolution_context(
+        agent_id,
+        [
+            SimpleNamespace(action_type="chat_reply", summary="Done", detail_json={}),
+            SimpleNamespace(action_type="chat_reply", summary="Done", detail_json={}),
+            SimpleNamespace(action_type="chat_reply", summary="Done", detail_json={}),
+        ],
+    )
+
+    assert "T3 Consolidation Job Ready" in result
+    assert "source_bundle.json" in result
+    assert "t3_neighborhood.md" in result
+    assert "submit_t3_consolidation_pitch" in result
+    assert (tmp_path / str(agent_id) / "memory" / ".staging" / "t3_jobs").exists()
 
 
 @pytest.mark.asyncio

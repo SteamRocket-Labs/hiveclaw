@@ -360,19 +360,23 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         if not lpath.exists():
             lpath.write_text(learnings_seed, encoding="utf-8")
 
-    # Pre-create T3 semantic memory files so heartbeat/dream don't need to create them
+    # Pre-create accepted T3 semantic memory files and explicit overlay index.
     for t3_file, t3_seed in [
-        ("memory/feedback.md", "# Feedback\n\nUser corrections, preferences, and constraints.\n"),
-        ("memory/knowledge.md", "# Knowledge\n\nProject and domain knowledge.\n"),
-        ("memory/strategies.md", "# Strategies\n\nEffective approaches and patterns.\n"),
-        ("memory/blocked.md", "# Blocked Patterns\n\nFailed approaches — do not retry.\n"),
-        ("memory/user.md", "# User Profile\n\nUser characteristics and working style.\n"),
+        ("memory/t3/episodes.md", "# T3 Episodes\n\n"),
+        ("memory/t3/user.md", "# T3 User\n\n"),
+        ("memory/t3/worker.md", "# T3 Worker\n\n"),
+        ("memory/t3/capabilities.md", "# T3 Capabilities\n\n"),
+        (
+            "memory/explicit/MEMORY.md",
+            "# Explicit Memory Overlay\n\nImmediate user-commanded memories awaiting T3 consolidation. Not accepted T3 truth.\n",
+        ),
     ]:
         t3_path = ws / t3_file
         if not t3_path.exists():
+            t3_path.parent.mkdir(parents=True, exist_ok=True)
             t3_path.write_text(t3_seed, encoding="utf-8")
 
-    # Pre-create INDEX.md (T3 memory index)
+    # Pre-create derived T3 memory index (root INDEX.md remains compatibility read model)
     index_path = ws / "memory" / "INDEX.md"
     if not index_path.exists():
         rebuild_index(WORKSPACE_ROOT, agent_id)

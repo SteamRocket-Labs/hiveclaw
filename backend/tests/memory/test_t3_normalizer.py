@@ -18,6 +18,7 @@ from app.memory.md_store import ensure_t3_layout, validate_and_normalize_t3
 
 def _seed(mem_dir: Path, filename: str, body: str) -> Path:
     path = mem_dir / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     # Force a recent mtime so the normalizer sees it.
     os.utime(path, None)
@@ -39,29 +40,33 @@ class TestNormalizerRepairs:
         mem_dir = tmp_path / str(agent_id) / "memory"
         _seed(
             mem_dir,
-            "feedback.md",
+            "t3/user.md",
             "# Feedback\n\n* user prefers concise output\n* always ask before sending\n",
         )
 
         report = _run(tmp_path, agent_id)
 
-        content = (mem_dir / "feedback.md").read_text(encoding="utf-8")
+        content = (mem_dir / "t3" / "user.md").read_text(encoding="utf-8")
         today = _today()
         assert f"- [{today}] user prefers concise output" in content
         assert f"- [{today}] always ask before sending" in content
         assert "*" not in content  # every star bullet repaired
         assert report["fixed"] == 2
-        assert "feedback.md" in report["files_touched"]
+        assert "t3/user.md" in report["files_touched"]
 
     def test_fixes_numbered_bullets(self, tmp_path: Path) -> None:
         agent_id = uuid.uuid4()
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
-        _seed(mem_dir, "strategies.md", "# Strategies\n\n1. break down into subtasks\n2. verify after each step\n")
+        _seed(
+            mem_dir,
+            "t3/capabilities.md",
+            "# Strategies\n\n1. break down into subtasks\n2. verify after each step\n",
+        )
 
         report = _run(tmp_path, agent_id)
 
-        content = (mem_dir / "strategies.md").read_text(encoding="utf-8")
+        content = (mem_dir / "t3" / "capabilities.md").read_text(encoding="utf-8")
         today = _today()
         assert f"- [{today}] break down into subtasks" in content
         assert f"- [{today}] verify after each step" in content
@@ -71,11 +76,11 @@ class TestNormalizerRepairs:
         agent_id = uuid.uuid4()
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
-        _seed(mem_dir, "knowledge.md", "# Knowledge\n\n- this is a real durable observation\n")
+        _seed(mem_dir, "t3/capabilities.md", "# Knowledge\n\n- this is a real durable observation\n")
 
         report = _run(tmp_path, agent_id)
 
-        content = (mem_dir / "knowledge.md").read_text(encoding="utf-8")
+        content = (mem_dir / "t3" / "capabilities.md").read_text(encoding="utf-8")
         today = _today()
         assert f"- [{today}] this is a real durable observation" in content
         assert report["fixed"] == 1
@@ -85,11 +90,11 @@ class TestNormalizerRepairs:
         agent_id = uuid.uuid4()
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
-        _seed(mem_dir, "blocked.md", "# Blocked Patterns\n\n- short\n")
+        _seed(mem_dir, "t3/worker.md", "# Blocked Patterns\n\n- short\n")
 
         report = _run(tmp_path, agent_id)
 
-        content = (mem_dir / "blocked.md").read_text(encoding="utf-8")
+        content = (mem_dir / "t3" / "worker.md").read_text(encoding="utf-8")
         assert content.count(f"- [{_today()}]") == 0
         assert report["fixed"] == 0
 
@@ -99,11 +104,11 @@ class TestNormalizerSafety:
         agent_id = uuid.uuid4()
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
-        _seed(mem_dir, "user.md", "# User Profile\n\nHello world.\n")
+        _seed(mem_dir, "t3/user.md", "# User Profile\n\nHello world.\n")
 
         report = _run(tmp_path, agent_id)
 
-        content = (mem_dir / "user.md").read_text(encoding="utf-8")
+        content = (mem_dir / "t3" / "user.md").read_text(encoding="utf-8")
         assert "Hello world." in content  # not deleted
         assert any("Hello world." in w for w in report["warnings"])
         assert report["fixed"] == 0
@@ -113,11 +118,11 @@ class TestNormalizerSafety:
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
         body = "# Feedback\n\n## Some section heading\n\n* need normalization here long enough\n"
-        _seed(mem_dir, "feedback.md", body)
+        _seed(mem_dir, "t3/user.md", body)
 
         _run(tmp_path, agent_id)
 
-        content = (mem_dir / "feedback.md").read_text(encoding="utf-8")
+        content = (mem_dir / "t3" / "user.md").read_text(encoding="utf-8")
         assert content.startswith("# Feedback")
         assert "## Some section heading" in content
 
@@ -126,7 +131,7 @@ class TestNormalizerSafety:
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
         body = "# Feedback\n\n- [2026-04-15] already canonical\n- [2026-04-15] also canonical\n"
-        path = _seed(mem_dir, "feedback.md", body)
+        path = _seed(mem_dir, "t3/user.md", body)
         original = path.read_text(encoding="utf-8")
 
         first = _run(tmp_path, agent_id)
@@ -140,7 +145,7 @@ class TestNormalizerSafety:
         agent_id = uuid.uuid4()
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
-        path = _seed(mem_dir, "feedback.md", "# Feedback\n\n* drifted line long enough to trigger repair\n")
+        path = _seed(mem_dir, "t3/user.md", "# Feedback\n\n* drifted line long enough to trigger repair\n")
         # Backdate far beyond the default 1-hour window.
         old_ts = time.time() - 7200
         os.utime(path, (old_ts, old_ts))
@@ -161,10 +166,10 @@ class TestNormalizerReportShape:
         agent_id = uuid.uuid4()
         ensure_t3_layout(tmp_path, agent_id)
         mem_dir = tmp_path / str(agent_id) / "memory"
-        _seed(mem_dir, "feedback.md", "# Feedback\n\n* needs normalization to be longer than ten chars\n")
-        _seed(mem_dir, "knowledge.md", "# Knowledge\n\n- [2026-04-15] clean entry\n")
+        _seed(mem_dir, "t3/user.md", "# Feedback\n\n* needs normalization to be longer than ten chars\n")
+        _seed(mem_dir, "t3/capabilities.md", "# Knowledge\n\n- [2026-04-15] clean entry\n")
 
         report = _run(tmp_path, agent_id)
 
-        assert report["files_touched"] == ["feedback.md"]
+        assert report["files_touched"] == ["t3/user.md"]
         assert report["fixed"] == 1

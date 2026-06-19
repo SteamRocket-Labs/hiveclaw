@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.memory.md_store import append_t3_entry, ensure_t3_layout
+from app.memory.md_store import append_t3_entry, ensure_t3_layout, parse_entry_record
 from app.memory.t2_store import append_t2_entries, ensure_t2_layout
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,13 @@ _LEGACY_T2_FILES: dict[str, str] = {
     "LEARNINGS.md": "general",
     "ERRORS.md": "error",
     "FEATURE_REQUESTS.md": "request",
+}
+_LEGACY_T3_FILES: dict[str, str] = {
+    "feedback.md": "feedback",
+    "knowledge.md": "general",
+    "strategies.md": "strategy",
+    "blocked.md": "blocked_pattern",
+    "user.md": "user",
 }
 _SKIP_LINES = (
     "record operation failures here for review during heartbeat.",
@@ -85,6 +92,40 @@ def _extract_legacy_entries(content: str) -> list[str]:
     return deduped
 
 
+def _extract_legacy_t3_records(content: str) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    paragraph_entries: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line == "---":
+            continue
+        if line.startswith("-"):
+            record = parse_entry_record(line)
+            if record.content and not _should_skip(record.content):
+                records.append(
+                    {
+                        "content": record.content,
+                        "timestamp": record.timestamp,
+                        "metadata": record.metadata,
+                    }
+                )
+            continue
+        paragraph_entries.append(line)
+
+    for entry in _extract_legacy_entries("\n".join(paragraph_entries)):
+        records.append({"content": entry, "timestamp": None, "metadata": {}})
+
+    deduped: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for record in records:
+        key = str(record.get("content") or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(record)
+    return deduped
+
+
 def migrate_legacy_memory_tree(data_root: Path, agent_id: uuid.UUID) -> dict[str, int]:
     """Migrate legacy memory files into canonical T2/T3 files.
 
@@ -127,6 +168,16 @@ def migrate_legacy_memory_tree(data_root: Path, agent_id: uuid.UUID) -> dict[str
         path.unlink()
         removed_legacy_files += 1
 
+    legacy_t3_records: list[dict[str, object]] = []
+    for filename, category in _LEGACY_T3_FILES.items():
+        path = memory_dir / filename
+        if not path.exists():
+            continue
+        for record in _extract_legacy_t3_records(path.read_text(encoding="utf-8", errors="replace")):
+            legacy_t3_records.append({**record, "category": category})
+        path.unlink()
+        removed_legacy_files += 1
+
     ensure_t3_layout(data_root, agent_id)
     ensure_t2_layout(data_root, agent_id)
 
@@ -145,6 +196,16 @@ def migrate_legacy_memory_tree(data_root: Path, agent_id: uuid.UUID) -> dict[str
             agent_id,
             category="general",
             content=entry,
+        )
+        migrated_t3_entries += 1
+    for record in legacy_t3_records:
+        append_t3_entry(
+            data_root,
+            agent_id,
+            category=str(record.get("category") or "general"),
+            content=str(record.get("content") or ""),
+            timestamp=record.get("timestamp") if isinstance(record.get("timestamp"), str) else None,
+            metadata=record.get("metadata") if isinstance(record.get("metadata"), dict) else None,
         )
         migrated_t3_entries += 1
 

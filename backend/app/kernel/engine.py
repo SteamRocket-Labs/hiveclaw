@@ -1669,14 +1669,16 @@ def _build_restoration_context(
                 logger.warning("[Kernel] post-compaction restore failed for %s: %s", label, exc)
                 continue
 
-    # ── 2.5: T3 high-priority memory files (feedback + blocked) ──
-    # These are P0 — must survive compaction regardless of memory retriever state.
+    # ── 2.5: Canonical memory files that must survive compaction ──
+    # Accepted T3 is restricted to four MD files. Explicit user saves live in
+    # the overlay until the T3 consolidation lane absorbs them.
     if _resolved_ws and parts:
         for rel_path, label in [
-            ("memory/feedback.md", "Memory: Feedback & Constraints"),
-            ("memory/blocked.md", "Memory: Blocked Patterns"),
-            ("memory/knowledge.md", "Memory: Knowledge"),
-            ("memory/strategies.md", "Memory: Strategies"),
+            ("memory/explicit/MEMORY.md", "Explicit Memory Overlay"),
+            ("memory/t3/user.md", "Memory: User"),
+            ("memory/t3/worker.md", "Memory: Worker Rules"),
+            ("memory/t3/episodes.md", "Memory: Episodes"),
+            ("memory/t3/capabilities.md", "Memory: Capabilities"),
         ]:
             fpath = _resolved_ws / rel_path
             if not fpath.exists():

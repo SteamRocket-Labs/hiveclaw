@@ -8,12 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.memory.md_store import extract_entry_lines
+from app.memory.md_store import build_t3_entry_manifest
 from app.memory.t2_store import load_t2_entries
 from app.services.evolution_ledger import load_evolution_ledger
-
-
-_T3_FILES = ("feedback.md", "blocked.md", "knowledge.md", "strategies.md", "user.md")
 
 
 def _has_source_ref_text(line: str) -> bool:
@@ -47,15 +44,11 @@ def run_self_evolution_audit(
         if not entry.get("evidence") or not entry.get("source_refs")
     ]
 
-    memory_dir = workspace / "memory"
     t3_without_refs = 0
-    for filename in _T3_FILES:
-        path = memory_dir / filename
-        if not path.exists():
-            continue
-        for line in extract_entry_lines(path.read_text(encoding="utf-8", errors="replace")):
-            if not _has_source_ref_text(line):
-                t3_without_refs += 1
+    for entry in build_t3_entry_manifest(Path(data_root), agent_id):
+        refs = entry.metadata.get("source_refs") or entry.metadata.get("evidence_refs") or ""
+        if not refs and not _has_source_ref_text(entry.content):
+            t3_without_refs += 1
 
     ledger_entries = load_evolution_ledger(workspace)
     promoted_candidate_ids = {
@@ -95,4 +88,3 @@ def run_self_evolution_audit(
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report["report_path"] = str(report_path)
     return report
-

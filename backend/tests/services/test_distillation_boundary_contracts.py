@@ -95,15 +95,14 @@ def test_dream_prompts_do_not_promote_operational_autonomy_state_to_soul() -> No
     assert "focus.md projection" not in combined
 
 
-def test_dream_template_preserves_t2_retention_provenance() -> None:
+def test_dream_template_requires_source_refs_without_owning_t2_retention() -> None:
     dream_template = _normalized((PROJECT_ROOT / "backend" / "app" / "templates" / "DREAM.md").read_text(encoding="utf-8"))
 
-    assert "status=absorbed" in dream_template
-    assert "memory/archive.md" in dream_template
-    assert "original t2 line" in dream_template
-    assert "entry id" in dream_template
-    assert "recoverable" in dream_template
-    assert "do not archive referenced t2" not in dream_template
+    assert "source references are precise enough" in dream_template
+    assert "include source refs for every soul promotion" in dream_template
+    assert "the next t3 consolidation batch" in dream_template
+    assert "status=absorbed" not in dream_template
+    assert "archive referenced t2" not in dream_template
 
 
 def test_dream_template_does_not_instruct_direct_writes_to_platform_managed_evolution_files() -> None:
@@ -117,7 +116,7 @@ def test_dream_template_does_not_instruct_direct_writes_to_platform_managed_evol
     ]
     for phrase in forbidden_phrases:
         assert phrase not in dream_template
-    assert "runtime records dream-cycle outcomes into `evolution/`" in dream_template
+    assert "Do not write `memory/t3/**` directly" in dream_template
 
 
 def test_skill_distiller_prompt_rejects_goal_and_wake_policy_as_skills() -> None:

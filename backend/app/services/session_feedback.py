@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.memory.t3_store import T3AppendResult, append_t3_memory_candidate
+from app.memory.explicit_overlay import ExplicitMemoryOverlayResult, write_explicit_memory_overlay
 from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.models.chat_session import ChatSession
@@ -16,7 +16,7 @@ from app.models.session_feedback import SessionFeedbackEvent
 from app.models.user import User
 from app.services.decision_trace import DecisionTraceStore, decision_id_from_ref, normalize_decision_ref
 
-AppendMemory = Callable[..., Awaitable[T3AppendResult]]
+AppendMemory = Callable[..., Awaitable[Any]]
 
 _LABELS = {"useful", "misleading"}
 
@@ -56,18 +56,55 @@ def _feedback_polarity(label: str) -> str:
     return "negative" if label == "misleading" else "positive"
 
 
-def _result_payload(result: T3AppendResult) -> dict[str, Any]:
+async def write_session_feedback_overlay(
+    agent_id: uuid.UUID,
+    *,
+    category: str,
+    content: str,
+    source_refs: list[str] | tuple[str, ...] | str | None = None,
+    evidence: str = "",
+    confidence: float | str | None = None,
+    proposed_by: str = "owner_feedback",
+    tenant_id: uuid.UUID | str | None = None,
+    data_root: Path,
+    **_: Any,
+) -> ExplicitMemoryOverlayResult:
+    """Persist owner feedback as explicit overlay, not accepted T3 truth."""
+
+    return await write_explicit_memory_overlay(
+        agent_id,
+        category=category,
+        content=content,
+        source_refs=source_refs,
+        tenant_id=tenant_id,
+        data_root=data_root,
+        origin="session_feedback",
+        extra_metadata={
+            "evidence": evidence,
+            "confidence": "" if confidence is None else str(confidence),
+            "proposed_by": proposed_by,
+        },
+    )
+
+
+def _result_payload(result: Any) -> dict[str, Any]:
+    status = getattr(result, "status", "")
     payload: dict[str, Any] = {
-        "t3_status": result.status,
-        "category": result.category,
-        "entry_id": result.entry_id,
-        "reason": result.reason,
+        # Keep t3_status for API compatibility, but the default writer now means
+        # "explicit overlay status", not accepted T3 commit status.
+        "t3_status": status,
+        "memory_status": status,
+        "category": getattr(result, "category", ""),
+        "entry_id": getattr(result, "entry_id", ""),
+        "reason": getattr(result, "reason", ""),
     }
-    if result.path:
-        payload["path"] = result.path
-    if result.similar:
-        payload["similar"] = result.similar
-        counter_delta = result.similar.get("counter_delta")
+    path = getattr(result, "path", "")
+    if path:
+        payload["path"] = path
+    similar = getattr(result, "similar", None)
+    if similar:
+        payload["similar"] = similar
+        counter_delta = similar.get("counter_delta") if isinstance(similar, dict) else None
         if isinstance(counter_delta, dict):
             payload["counter_delta"] = counter_delta
     return payload
@@ -84,10 +121,10 @@ async def record_session_feedback(
     message_id: uuid.UUID | None = None,
     decision_id: str | None = None,
     data_root: Path | None = None,
-    append_memory: AppendMemory = append_t3_memory_candidate,
+    append_memory: AppendMemory = write_session_feedback_overlay,
     decision_trace_store: DecisionTraceStore | None = None,
 ) -> dict[str, Any]:
-    """Persist a Useful/Misleading event and route it to governed T3 calibration."""
+    """Persist a Useful/Misleading event and route it to explicit memory overlay."""
 
     normalized_label = _normalize_label(label)
     if data_root is None:

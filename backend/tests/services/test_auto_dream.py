@@ -287,16 +287,16 @@ class TestApplyDreamDecisions:
             "soul_promotions": [
                 {
                     "content": "always prefer concise output",
-                    "source_file": "feedback.md",
-                    "source_refs": ["t3:memory/feedback.md#entry:a", "t3:memory/feedback.md#entry:b"],
+                    "source_file": "t3/user.md",
+                    "source_refs": ["t3:memory/t3/user.md#entry:a", "t3:memory/t3/user.md#entry:b"],
                     "evidence": "system_observed",
                     "section": "Learned Behaviors",
                     "reason": "repeated 4x",
                 },
                 {
                     "content": "break problems into 3 phases",
-                    "source_file": "strategies.md",
-                    "source_refs": ["t3:memory/strategies.md#entry:a", "t3:memory/strategies.md#entry:b"],
+                    "source_file": "t3/capabilities.md",
+                    "source_refs": ["t3:memory/t3/capabilities.md#entry:a", "t3:memory/t3/capabilities.md#entry:b"],
                     "evidence": "system_observed",
                     "section": "Core Strategies",
                     "reason": "applied across tasks",
@@ -316,18 +316,20 @@ class TestApplyDreamDecisions:
 
     def test_t3_merges_drop_duplicate_lines(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
-        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
+        feedback_path = tmp_path / str(agent_id) / "memory" / "t3" / "user.md"
+        feedback_path.parent.mkdir(parents=True, exist_ok=True)
         feedback_path.write_text(
-            "# Feedback\n\n"
+            "# T3 User\n\n"
             "- [2026-04-10] user prefers concise output\n"
             "- [2026-04-12] prefers concise output please\n"
             "- [2026-04-14] wants concise answers\n",
             encoding="utf-8",
         )
+        original_content = feedback_path.read_text(encoding="utf-8")
         decision = {
             "t3_merges": [
                 {
-                    "file": "feedback.md",
+                    "file": "t3/user.md",
                     "keep": "[2026-04-10] user prefers concise output",
                     "drop": [
                         "prefers concise output please",
@@ -342,28 +344,27 @@ class TestApplyDreamDecisions:
             report = _apply_dream_decisions(agent_id, decision)
 
         new_content = feedback_path.read_text(encoding="utf-8")
-        assert "user prefers concise output" in new_content
-        assert "prefers concise output please" not in new_content
-        assert "wants concise answers" not in new_content
-        assert report["t3_merges_applied"] == 1
+        assert new_content == original_content
+        assert report["t3_merges_applied"] == 0
+        assert report["t3_patch_candidates_held"] == 1
 
-    def test_t3_merge_writes_synthesized_keep_when_absent(self, tmp_path: Path) -> None:
-        """Regression: the dream prompt teaches a SYNTHESIZED keep line that may not
-        exist verbatim. Dropping all variants must not erase the rule — the canonical
-        keep is written so the consolidated rule survives (audit-memory finding 1)."""
+    def test_t3_merge_concern_is_held_when_keep_is_synthesized(self, tmp_path: Path) -> None:
+        """Dream may detect a synthesized merge, but it must not write accepted T3."""
         agent_id = self._scaffold(tmp_path)
-        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
+        feedback_path = tmp_path / str(agent_id) / "memory" / "t3" / "user.md"
+        feedback_path.parent.mkdir(parents=True, exist_ok=True)
         feedback_path.write_text(
-            "# Feedback\n\n"
+            "# T3 User\n\n"
             "- [2026-04-10] User rejected emoji in responses\n"
             "- [2026-04-12] User rejected adding emojis to answer\n"
             "- [2026-04-14] User corrected agent's emoji use again\n",
             encoding="utf-8",
         )
+        original_content = feedback_path.read_text(encoding="utf-8")
         decision = {
             "t3_merges": [
                 {
-                    "file": "feedback.md",
+                    "file": "t3/user.md",
                     # Synthesized canonical keep — NOT present verbatim in the file.
                     "keep": "- [2026-04-14] User rejected emoji in responses (3rd confirmation)",
                     "drop": [
@@ -380,23 +381,26 @@ class TestApplyDreamDecisions:
             report = _apply_dream_decisions(agent_id, decision)
 
         new_content = feedback_path.read_text(encoding="utf-8")
-        # The synthesized canonical rule survived (was written, not erased).
-        assert "User rejected emoji in responses (3rd confirmation)" in new_content
-        assert report["t3_merges_applied"] == 1
+        assert new_content == original_content
+        assert "User rejected emoji in responses (3rd confirmation)" not in new_content
+        assert report["t3_merges_applied"] == 0
+        assert report["t3_patch_candidates_held"] == 1
 
     def test_contradictions_kept_new_drops_old(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
-        feedback_path = tmp_path / str(agent_id) / "memory" / "feedback.md"
+        feedback_path = tmp_path / str(agent_id) / "memory" / "t3" / "user.md"
+        feedback_path.parent.mkdir(parents=True, exist_ok=True)
         feedback_path.write_text(
-            "# Feedback\n\n"
+            "# T3 User\n\n"
             "- [2026-04-10] use Japanese for responses\n"
             "- [2026-04-14] please respond in Chinese always\n",
             encoding="utf-8",
         )
+        original_content = feedback_path.read_text(encoding="utf-8")
         decision = {
             "t3_contradictions": [
                 {
-                    "file": "feedback.md",
+                    "file": "t3/user.md",
                     "new": "respond in Chinese always",
                     "old": "use Japanese for responses",
                     "resolution": "kept_new",
@@ -409,16 +413,16 @@ class TestApplyDreamDecisions:
             report = _apply_dream_decisions(agent_id, decision)
 
         new_content = feedback_path.read_text(encoding="utf-8")
-        assert "respond in Chinese always" in new_content
-        assert "use Japanese" not in new_content
-        assert report["contradictions_resolved"] == 1
+        assert new_content == original_content
+        assert report["contradictions_resolved"] == 0
+        assert report["t3_patch_candidates_held"] == 1
 
     def test_preservation_flags_persisted_to_sidecar(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
         decision = {
             "preservation_flags": [
                 {
-                    "file": "feedback.md",
+                    "file": "t3/user.md",
                     "content": "Never skip verification — founding principle",
                     "reason": "foundational principle from day one",
                 }
@@ -431,14 +435,14 @@ class TestApplyDreamDecisions:
 
         assert report["preservation_flags_added"] == 1
         assert len(flags) == 1
-        assert flags[0]["file"] == "feedback.md"
+        assert flags[0]["file"] == "t3/user.md"
         assert "Never skip verification" in flags[0]["content"]
 
     def test_preservation_flags_dedup_on_reapply(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
         decision = {
             "preservation_flags": [
-                {"file": "feedback.md", "content": "principle A", "reason": "x"},
+                {"file": "t3/user.md", "content": "principle A", "reason": "x"},
             ]
         }
         with patch("app.services.auto_dream.get_settings") as mock_settings:
@@ -489,10 +493,10 @@ class TestDreamFrozenMissionGate:
             "soul_promotions": [
                 {
                     "content": content,
-                    "source_file": "strategies.md",
+                    "source_file": "t3/capabilities.md",
                     "source_refs": [
-                        "t3:memory/strategies.md#entry:a",
-                        "t3:memory/strategies.md#entry:b",
+                        "t3:memory/t3/capabilities.md#entry:a",
+                        "t3:memory/t3/capabilities.md#entry:b",
                     ],
                     "evidence": "system_observed",
                     "section": "Learned Behaviors",
@@ -563,36 +567,35 @@ class TestDreamFrozenMissionGate:
         assert report["soul_added"] == 0
         assert report["soul_contradicted_frozen"] == 1
 
-    def test_repeated_feedback_promotion_contradicting_frozen_mission_is_held(self, tmp_path: Path) -> None:
-        from app.services.auto_dream import _promote_repeated_feedback_to_soul
+    @pytest.mark.asyncio
+    async def test_repeated_feedback_is_not_mechanically_promoted_to_soul(self, tmp_path: Path) -> None:
+        from app.services.auto_dream import run_dream
 
         agent_id = self._scaffold(tmp_path)
+        tenant_id = uuid.uuid4()
+        t3_path = tmp_path / str(agent_id) / "memory" / "t3" / "user.md"
+        t3_path.parent.mkdir(parents=True, exist_ok=True)
         feedback = (
-            "# Feedback\n\n"
+            "# T3 User\n\n"
             "- [2026-06-01] Disable the three-times-daily scan; scan only once per week on Friday.\n"
             "- [2026-06-02] Disable the three-times-daily scan; scan only once per week on Friday.\n"
             "- [2026-06-03] Disable the three-times-daily scan; scan only once per week on Friday.\n"
         )
-        seen: dict[str, str] = {}
+        t3_path.write_text(feedback, encoding="utf-8")
 
-        def judge(frozen_charter: str, content: str) -> dict:
-            seen["frozen_charter"] = frozen_charter
-            seen["content"] = content
-            return {"contradicts": True, "reason": "candidate disables the mandated three-times-daily scan"}
-
-        with patch("app.services.auto_dream.get_settings") as mock_settings:
+        with (
+            patch("app.services.auto_dream.get_settings") as mock_settings,
+            patch("app.services.auto_dream._dream_llm_consolidate", return_value=None),
+            patch("app.services.auto_dream._build_frozen_mission_judge") as mock_judge_builder,
+        ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
-            result = _promote_repeated_feedback_to_soul(agent_id, feedback, contradiction_judge=judge)
+            result = await run_dream(agent_id, tenant_id)
 
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
         assert "once per week on Friday" not in soul
-        assert result["count"] == 0
-        assert result["held"] == 1
-        assert result["soul_contradicted_frozen"] == 1
-        assert "three times daily" in seen["frozen_charter"].lower()
-        ledger = (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").read_text(encoding="utf-8")
-        assert "contradicts frozen Mission/charter" in ledger
-        assert '"gate": "frozen_mission"' in ledger
+        assert result["added"] == 0
+        assert result["repeated_feedback_held"] == 0
+        mock_judge_builder.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_production_llm_judge_is_built_and_applied(self, tmp_path: Path) -> None:
@@ -642,13 +645,15 @@ class TestConsolidateRespectsPreservation:
         lines = [protected_line]
         for i in range(60):
             lines.append(f"- [2026-04-{(i % 28) + 1:02d}] routine observation {i}")
-        (mem_dir / "feedback.md").write_text("# Feedback\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        t3_path = mem_dir / "t3" / "user.md"
+        t3_path.parent.mkdir(parents=True, exist_ok=True)
+        t3_path.write_text("# T3 User\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
         # Write preservation sidecar flagging the foundational line.
         import json
 
         (mem_dir / ".preservation.json").write_text(
-            json.dumps({"protected": [{"file": "feedback.md", "content": "foundational principle"}]}),
+            json.dumps({"protected": [{"file": "t3/user.md", "content": "foundational principle"}]}),
             encoding="utf-8",
         )
 
@@ -656,7 +661,7 @@ class TestConsolidateRespectsPreservation:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             _consolidate_t3_files(agent_id)
 
-        final = (mem_dir / "feedback.md").read_text(encoding="utf-8")
+        final = t3_path.read_text(encoding="utf-8")
         assert "foundational principle: never ship without tests" in final
 
     def test_no_preservation_sidecar_means_default_cap(self, tmp_path: Path) -> None:
@@ -674,15 +679,18 @@ class TestConsolidateRespectsPreservation:
         for i in range(60):
             unique = rnd.randbytes(12).hex()
             lines.append(f"- [2026-04-{(i % 28) + 1:02d}] {unique}")
-        (mem_dir / "feedback.md").write_text("# Feedback\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        t3_path = mem_dir / "t3" / "user.md"
+        t3_path.parent.mkdir(parents=True, exist_ok=True)
+        t3_path.write_text("# T3 User\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
+        original_content = t3_path.read_text(encoding="utf-8")
 
         with patch("app.services.auto_dream.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
-            _consolidate_t3_files(agent_id)
+            stats = _consolidate_t3_files(agent_id)
 
-        final = (mem_dir / "feedback.md").read_text(encoding="utf-8")
-        # Without a preservation flag the oldest entry gets capped out.
-        assert "canary-entry foundational principle" not in final
+        final = t3_path.read_text(encoding="utf-8")
+        assert final == original_content
+        assert stats["t3/user.md"] == 0
 
 
 @pytest.mark.asyncio
@@ -694,16 +702,16 @@ class TestRunDreamIntegration:
         agent_id = uuid.uuid4()
         tenant_id = uuid.uuid4()
         mem_dir = tmp_path / str(agent_id) / "memory"
-        mem_dir.mkdir(parents=True)
+        (mem_dir / "t3").mkdir(parents=True)
         (tmp_path / str(agent_id) / "soul.md").write_text("# Soul\n\n## Identity\n", encoding="utf-8")
-        (mem_dir / "feedback.md").write_text("# Feedback\n\n- [2026-04-10] prefer concise\n", encoding="utf-8")
+        (mem_dir / "t3" / "user.md").write_text("# T3 User\n\n- [2026-04-10] prefer concise\n", encoding="utf-8")
 
         with (
             patch("app.services.auto_dream.get_settings") as mock_settings,
             patch("app.services.auto_dream._dream_llm_consolidate", return_value=None) as mock_llm,
             patch(
                 "app.services.auto_dream._read_all_t3",
-                return_value={"feedback.md": "# Feedback\n\n- [2026-04-10] prefer concise\n"},
+                return_value={"t3/user.md": "# T3 User\n\n- [2026-04-10] prefer concise\n"},
             ),
         ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
@@ -720,10 +728,10 @@ class TestRunDreamIntegration:
         agent_id = uuid.uuid4()
         tenant_id = uuid.uuid4()
         mem_dir = tmp_path / str(agent_id) / "memory"
-        mem_dir.mkdir(parents=True)
+        (mem_dir / "t3").mkdir(parents=True)
         (tmp_path / str(agent_id) / "soul.md").write_text("# Soul\n\n## Identity\n", encoding="utf-8")
-        (mem_dir / "feedback.md").write_text(
-            "# Feedback\n\n- [2026-04-10] user always prefers concise output\n",
+        (mem_dir / "t3" / "user.md").write_text(
+            "# T3 User\n\n- [2026-04-10] user always prefers concise output\n",
             encoding="utf-8",
         )
 
@@ -732,8 +740,8 @@ class TestRunDreamIntegration:
             "soul_promotions": [
                 {
                     "content": "always prefer concise output",
-                    "source_file": "feedback.md",
-                    "source_refs": ["t3:memory/feedback.md#entry:a", "t3:memory/feedback.md#entry:b"],
+                    "source_file": "t3/user.md",
+                    "source_refs": ["t3:memory/t3/user.md#entry:a", "t3:memory/t3/user.md#entry:b"],
                     "evidence": "system_observed",
                     "section": "Learned Behaviors",
                     "reason": "repeated across sessions",
@@ -755,46 +763,36 @@ class TestRunDreamIntegration:
         assert "## Learned Behaviors" in soul
         assert "- always prefer concise output" in soul
 
-    async def test_run_dream_builds_frozen_judge_for_repeated_feedback_lane(self, tmp_path: Path) -> None:
+    async def test_run_dream_does_not_build_frozen_judge_without_llm_decision(self, tmp_path: Path) -> None:
         from app.services.auto_dream import run_dream
 
         agent_id = uuid.uuid4()
         tenant_id = uuid.uuid4()
         agent_dir = tmp_path / str(agent_id)
         mem_dir = agent_dir / "memory"
-        mem_dir.mkdir(parents=True)
+        (mem_dir / "t3").mkdir(parents=True)
         (agent_dir / "soul.md").write_text(TestDreamFrozenMissionGate._MISSION_SOUL, encoding="utf-8")
         feedback = (
-            "# Feedback\n\n"
+            "# T3 User\n\n"
             "- [2026-06-01] Disable the three-times-daily scan; scan only once per week on Friday.\n"
             "- [2026-06-02] Disable the three-times-daily scan; scan only once per week on Friday.\n"
             "- [2026-06-03] Disable the three-times-daily scan; scan only once per week on Friday.\n"
         )
-        (mem_dir / "feedback.md").write_text(feedback, encoding="utf-8")
-        captured: dict[str, dict] = {}
-
-        async def fake_build_judge(_agent_id, _tenant_id, decision):
-            captured["decision"] = decision
-
-            def judge(_frozen_charter: str, _content: str) -> dict:
-                return {"contradicts": True, "reason": "candidate disables the mandated three-times-daily scan"}
-
-            return judge
+        (mem_dir / "t3" / "user.md").write_text(feedback, encoding="utf-8")
 
         with (
             patch("app.services.auto_dream.get_settings") as mock_settings,
             patch("app.services.auto_dream._dream_llm_consolidate", return_value=None),
-            patch("app.services.auto_dream._build_frozen_mission_judge", side_effect=fake_build_judge),
+            patch("app.services.auto_dream._build_frozen_mission_judge") as mock_judge_builder,
         ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             result = await run_dream(agent_id, tenant_id)
 
-        assert captured["decision"]["soul_promotions"][0]["source_file"] == "feedback.md"
-        assert "once per week on Friday" in captured["decision"]["soul_promotions"][0]["content"]
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
         assert "once per week on Friday" not in soul
-        assert result["repeated_feedback_held"] == 1
-        assert result["soul_contradicted_frozen"] == 1
+        assert result["added"] == 0
+        assert result["soul_contradicted_frozen"] == 0
+        mock_judge_builder.assert_not_called()
 
 
 # ── PR-13: dream prompt best-practices (XML + few-shot + anti-patterns) ──
@@ -820,9 +818,9 @@ class TestDreamSystemPromptStructure:
         )
 
     def test_system_prompt_loads_dream_protocol_template(self) -> None:
-        assert "Dream — Memory Consolidation Protocol" in _AUTO_DREAM_SYSTEM_PROMPT
-        assert "procedural file-maintenance side" in _AUTO_DREAM_SYSTEM_PROMPT
-        assert "Memory Control Plane" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "Dream — Soul Reconsolidation Protocol" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "You are not the T3 writer" in _AUTO_DREAM_SYSTEM_PROMPT
+        assert "Platform Gate" in _AUTO_DREAM_SYSTEM_PROMPT
 
     def test_system_prompt_excludes_legacy_worker_output_tag(self) -> None:
         assert "[DREAM:complete]" not in _AUTO_DREAM_SYSTEM_PROMPT
@@ -899,7 +897,7 @@ class TestDreamUserPromptTemplateStructure:
 
     def test_source_file_enum_is_complete(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
-        assert "feedback.md|knowledge.md|strategies.md|blocked.md|user.md" in t
+        assert "t3/episodes.md|t3/user.md|t3/worker.md|t3/capabilities.md" in t
 
     def test_hard_rules_preserve_prompt_injection_guardrail(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
@@ -923,8 +921,8 @@ class TestDreamUserPromptBuilder:
             "Alice",
             "# Soul\n\n## Identity\n- Name: Alice",
             {
-                "feedback.md": "# Feedback\n\n- [2026-04-10] prefers concise output",
-                "strategies.md": "# Strategies\n\n- [2026-04-11] TDD-first",
+                "t3/user.md": "# T3 User\n\n- [2026-04-10] prefers concise output",
+                "t3/capabilities.md": "# T3 Capabilities\n\n- [2026-04-11] TDD-first",
             },
         )
         assert "Agent: Alice" in out
@@ -939,7 +937,7 @@ class TestDreamUserPromptBuilder:
         out = _build_dream_consolidation_user_prompt(
             "Alice",
             "# Soul\n",
-            {"strategies.md": "- [2026-06-17] Use governed memory writes"},
+            {"t3/capabilities.md": "- [2026-06-17] Use governed memory writes"},
             candidate_evidence=[
                 {
                     "candidate_id": "cand-heartbeat-1",
@@ -965,7 +963,7 @@ class TestDreamUserPromptBuilder:
         the total fits the input budget. Per-section caps engage only over
         budget (same philosophy as compaction P0 / heartbeat C1)."""
         soul = "S" * 5_000  # over the old per-section cap (3K), under total budget
-        t3 = {"feedback.md": "F" * 6_000}  # over the old per-file cap (4K)
+        t3 = {"t3/user.md": "F" * 6_000}  # over the old per-file cap (4K)
 
         out = _build_dream_consolidation_user_prompt("A", soul, t3)
 
@@ -977,7 +975,7 @@ class TestDreamUserPromptBuilder:
         from app.services.auto_dream import _DREAM_INPUT_TOTAL_BUDGET_CHARS
 
         big = "X" * (_DREAM_INPUT_TOTAL_BUDGET_CHARS + 10_000)
-        out = _build_dream_consolidation_user_prompt("A", "soul", {"feedback.md": big})
+        out = _build_dream_consolidation_user_prompt("A", "soul", {"t3/user.md": big})
 
         assert "truncated" in out  # observable marker
         assert len(out) < len(big)  # actually bounded
@@ -993,7 +991,7 @@ def test_dream_consolidator_template_is_loaded_into_prompt() -> None:
     out = _build_dream_consolidation_user_prompt(
         "Alice",
         "# Soul\n",
-        {"feedback.md": "- [2026-05-02] User requires evidence-tagged memory"},
+        {"t3/user.md": "- [2026-05-02] User requires evidence-tagged memory"},
     )
 
     assert "memory_promotion_candidate" in out

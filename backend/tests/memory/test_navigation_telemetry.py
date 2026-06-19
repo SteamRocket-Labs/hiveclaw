@@ -20,7 +20,8 @@ def _seed(tmp_path: Path, agent_id: uuid.UUID) -> Path:
     mem_dir.mkdir(parents=True, exist_ok=True)
     recent = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     old = (datetime.now(UTC) - timedelta(days=90)).isoformat()
-    (mem_dir / "knowledge.md").write_text(
+    (mem_dir / "t3").mkdir(parents=True, exist_ok=True)
+    (mem_dir / "t3" / "capabilities.md").write_text(
         "# Knowledge\n\n"
         f"- [2026-05-01][entry_id=mem_hot1][access_count=9][last_accessed={recent}] hot fact about deploy pipeline\n"
         f"- [2026-01-01][entry_id=mem_cold1][access_count=0][last_accessed={old}] cold fact about legacy proxy\n"
@@ -71,8 +72,8 @@ def test_memory_navigation_suppresses_pl3_without_authorized_principal(tmp_path:
 
     agent_id = uuid.uuid4()
     mem_dir = tmp_path / str(agent_id) / "memory"
-    mem_dir.mkdir(parents=True)
-    (mem_dir / "knowledge.md").write_text(
+    (mem_dir / "t3").mkdir(parents=True)
+    (mem_dir / "t3" / "capabilities.md").write_text(
         "# Knowledge\n\n"
         "- [2026-06-05][entry_id=mem_public][sensitivity=PL1_public] public deployment note\n"
         "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
@@ -93,8 +94,8 @@ def test_memory_navigation_allows_pl3_for_direct_owner(tmp_path: Path) -> None:
 
     agent_id = uuid.uuid4()
     mem_dir = tmp_path / str(agent_id) / "memory"
-    mem_dir.mkdir(parents=True)
-    (mem_dir / "knowledge.md").write_text(
+    (mem_dir / "t3").mkdir(parents=True)
+    (mem_dir / "t3" / "capabilities.md").write_text(
         "# Knowledge\n\n"
         "- [2026-06-05][entry_id=mem_salary][sensitivity=PL3_sensitive] salary planning is confidential\n",
         encoding="utf-8",
@@ -162,7 +163,7 @@ def test_dream_prompt_includes_retirement_candidates() -> None:
     prompt = _build_dream_consolidation_user_prompt(
         "Agent",
         "soul body",
-        {"knowledge.md": "- [2026-01-01] cold fact"},
+        {"t3/capabilities.md": "- [2026-01-01] cold fact"},
         retirement_candidates=[
             {
                 "entry_id": "mem_cold1",

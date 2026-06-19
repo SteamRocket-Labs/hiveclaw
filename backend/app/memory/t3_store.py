@@ -1,16 +1,9 @@
-"""Governed T3 append API — the single write path for durable T3 memory.
+"""Compatibility adapter for pre-consolidation durable-memory candidates.
 
-Spec: docs/agent-memory-md-first-spec.md §12 P2. Every durable T3 write —
-agent ``save_memory`` tool, heartbeat curation, dream, manual ops — flows
-through :func:`append_t3_memory_candidate`:
-
-    prepare_memory_write        (privacy / form / lifecycle metadata gate)
-      -> find_similar_t3_entries (semantic near-dedup)
-      -> append_t3_entry         (MD write + lifecycle record + index rebuild)
-      -> sync_t3_to_memory_enhancement (optional no-op adapter boundary)
-
-Raw ``write_file`` / ``edit_file`` access under ``memory/`` is refused at the
-workspace tool layer, so no caller can bypass this gate.
+Accepted T3 truth is now written only by the T3 Consolidation Platform Gate.
+This legacy API remains for callers that still submit single memory candidates;
+it write-gates the candidate and stores it in the Explicit Memory Overlay so a
+later T3 Consolidation Batch can absorb/reinforce/contest it.
 """
 
 from __future__ import annotations
@@ -28,11 +21,8 @@ from app.memory.lifecycle_store import (
     lifecycle_path,
 )
 from app.memory.md_store import (
-    MEMORY_DEDUP_THRESHOLD,
     T3_FILE_SPECS,
     _stable_entry_id,
-    append_t3_entry,
-    find_similar_t3_entries,
     memory_dir,
     parse_entry_record,
     rebuild_index,
@@ -62,8 +52,9 @@ _SUPERSEDE_REASONS = frozenset({"superseded", "dedup_superseded", "contradiction
 
 # D5: episodic-observation lane gate (agent_tool lane only). Routine scan/poll
 # logs ("14 expos in window, no change") are runtime evidence — the extractor
-# routes these to its `artifact_only` lane via an LLM judge, but the agent_tool
-# write path bypasses that judge, so episodic logs pile into durable strategies.md.
+# routes these to its `artifact_only` lane via an LLM judge. The compatibility
+# save path now writes explicit overlay instead of accepted T3, but this guard
+# remains so routine scan logs do not become durable overlay noise.
 # This mechanical backstop refuses the clearest episodic logs. It deliberately
 # requires BOTH a routine-observation verb AND a null/count observation so a real
 # reusable strategy ("scan three times daily works best") is never a false
@@ -159,7 +150,7 @@ def _increment_reinforcement_counters(
 class T3AppendResult:
     """Outcome of a governed T3 append attempt."""
 
-    status: str  # accepted | rejected | duplicate | episodic
+    status: str  # overlay | rejected | duplicate | episodic
     category: str
     entry_id: str = ""
     path: str = ""
@@ -185,12 +176,11 @@ async def append_t3_memory_candidate(
     superseded_by: str | None = None,
     dedup_exclude_entry_ids: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> T3AppendResult:
-    """Append one memory candidate to T3 through the full write gate.
+    """Store one memory candidate in the Explicit Memory Overlay.
 
     ``proposed_by`` identifies the distiller lane (``extractor`` /
     ``heartbeat`` / ``dream`` / ``agent_tool`` / ``manual``) and is stamped
-    into entry metadata for audit. Returns a structured result; never raises
-    on gate rejection or duplicates — those are decisions, not errors.
+    into entry metadata for audit. This function no longer writes accepted T3.
     """
     if data_root is None:
         from app.config import get_settings
@@ -251,90 +241,52 @@ async def append_t3_memory_candidate(
             sensitivity=decision.sensitivity,
         )
 
-    # 2. Semantic near-dedup against the target T3 file.
-    similar = find_similar_t3_entries(
-        data_root,
-        agent_id,
-        content=decision.content,
-        category=decision.category,
-        threshold=MEMORY_DEDUP_THRESHOLD,
-        limit=1,
-    )
-    excluded_ids = {str(entry_id).strip() for entry_id in (dedup_exclude_entry_ids or []) if str(entry_id).strip()}
-    if excluded_ids:
-        similar = [hit for hit in similar if str(hit.get("id") or "").strip() not in excluded_ids]
-    if similar:
-        reinforced = dict(similar[0])
-        counter_delta = _increment_reinforcement_counters(
-            data_root,
-            agent_id,
-            entry_id=str(reinforced["id"]),
-            content=str(reinforced.get("content") or decision.content),
-            category=decision.category,
-            evidence=evidence,
-            proposed_by=proposed_by,
-        )
-        reinforced["counter_delta"] = counter_delta
-        return T3AppendResult(
-            status="duplicate",
-            category=decision.category,
-            entry_id=str(reinforced["id"]),
-            reason=f"similar entry reinforced (similarity={reinforced['similarity']:.2f})",
-            sensitivity=decision.sensitivity,
-            similar=reinforced,
-        )
+    from app.memory.explicit_overlay import write_explicit_memory_overlay
 
-    # 3. Stamp lane + routing metadata, then append (append_t3_entry records
-    #    the lifecycle entry and rebuilds INDEX.md).
-    metadata = dict(decision.metadata)
-    now_iso = datetime.now(timezone.utc).isoformat()
-    metadata["proposed_by"] = (proposed_by or "manual").strip().lower() or "manual"
-    metadata.update(
-        {
-            key: value
-            for key, value in _counter_seed_metadata(
-                category=decision.category,
-                content=decision.content,
-                evidence=evidence,
-                proposed_by=proposed_by,
-                now=now_iso,
-            ).items()
-            if key not in metadata
-        }
-    )
+    overlay_metadata = {
+        "proposed_by": (proposed_by or "manual").strip().lower() or "manual",
+    }
     normalized_container = (container_candidate or "").strip().lower()
     if normalized_container in CONTAINER_CANDIDATES:
-        metadata["container"] = normalized_container
+        overlay_metadata["container"] = normalized_container
     if evidence.strip():
-        metadata.setdefault("ev", evidence.strip().lower())
+        overlay_metadata["evidence"] = evidence.strip().lower()
     if confidence is not None:
-        metadata.setdefault("conf", f"{max(0.0, min(1.0, float(confidence))):.2f}")
-
-    path = append_t3_entry(
-        data_root,
+        overlay_metadata["confidence"] = f"{max(0.0, min(1.0, float(confidence))):.2f}"
+    overlay_result = await write_explicit_memory_overlay(
         agent_id,
         category=decision.category,
         content=decision.content,
-        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        metadata=metadata,
+        source_refs=source_refs,
+        tenant_id=tenant_id,
+        data_root=data_root,
+        origin=f"compat_{(proposed_by or 'manual').strip().lower() or 'manual'}",
+        extra_metadata=overlay_metadata,
     )
-
-    # 4. Optional enhancement adapter boundary — best effort, never blocks the write.
-    try:
-        from app.memory.enhancement import sync_t3_to_memory_enhancement
-
-        await sync_t3_to_memory_enhancement(agent_id, tenant_id, data_root=data_root)
-    except Exception as exc:  # noqa: BLE001 - optional enhancement must not fail durable truth
-        logger.warning("[T3Store] memory enhancement sync failed (non-fatal) for %s: %s", agent_id, exc)
-
-    spec = t3_spec_for_category(decision.category)
+    if overlay_result.status == "rejected":
+        return T3AppendResult(
+            status="rejected",
+            category=overlay_result.category,
+            reason=overlay_result.reason,
+            sensitivity=overlay_result.sensitivity,
+        )
+    if overlay_result.status == "duplicate":
+        return T3AppendResult(
+            status="duplicate",
+            category=overlay_result.category,
+            entry_id=overlay_result.entry_id,
+            path=overlay_result.path,
+            reason=overlay_result.reason or "similar explicit memory already exists",
+            sensitivity=overlay_result.sensitivity,
+            similar={"id": overlay_result.entry_id, "content": overlay_result.content},
+        )
     return T3AppendResult(
-        status="accepted",
-        category=decision.category,
-        entry_id=metadata.get("entry_id", ""),
-        path=str(path),
-        reason=f"appended to memory/{spec['filename']} by {metadata['proposed_by']}",
-        sensitivity=decision.sensitivity,
+        status="overlay",
+        category=overlay_result.category,
+        entry_id=overlay_result.entry_id,
+        path=overlay_result.path,
+        reason="stored in explicit memory overlay for T3 consolidation",
+        sensitivity=overlay_result.sensitivity,
     )
 
 

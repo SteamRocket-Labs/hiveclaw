@@ -28,11 +28,12 @@ class TestMemorySectionProperties:
         assert "load_memory" in out
         assert "id=" in out
 
-    def test_save_memory_warns_about_bypass(self) -> None:
-        """Prompt must call save_memory an escape hatch that bypasses curation."""
+    def test_save_memory_is_explicit_overlay_not_accepted_t3(self) -> None:
+        """Prompt must explain save_memory writes overlay, not accepted T3."""
         out = build_memory_section()
-        assert "Escape hatch" in out or "escape hatch" in out
-        assert "bypass" in out.lower()
+        assert "Explicit memory only" in out
+        assert "memory/explicit/" in out
+        assert "not accepted T3" in out
 
     def test_save_memory_lists_imperative_triggers(self) -> None:
         """Give agents concrete user signals so they know WHEN to invoke it."""

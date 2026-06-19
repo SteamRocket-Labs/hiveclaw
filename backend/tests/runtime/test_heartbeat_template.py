@@ -48,10 +48,9 @@ class TestTemplateStructure:
     def test_template_documents_upstream_and_downstream(self, template_text: str) -> None:
         assert "Upstream" in template_text
         assert "T2 Segment Package" in template_text
-        assert "derived compatibility view" in template_text
+        assert "source_bundle.json" in template_text
         assert "extract_agent" not in template_text
         assert "Downstream" in template_text
-        assert "dream" in template_text.lower()
         assert "soul.md" in template_text
 
 
@@ -63,17 +62,16 @@ class TestDecisionMatrix:
         assert "| action" in template_text
 
     def test_matrix_covers_all_weight_tiers(self, template_text: str) -> None:
-        assert "≥ 0.85" in template_text
+        assert ">= 0.85" in template_text or "≥ 0.85" in template_text
         assert "0.50–0.85" in template_text or "0.50-0.85" in template_text
         assert "< 0.50" in template_text
 
     def test_matrix_maps_each_category_to_file(self, template_text: str) -> None:
         for target in [
-            "memory/feedback.md",
-            "memory/blocked.md",
-            "memory/strategies.md",
-            "memory/knowledge.md",
-            "memory/user.md",
+            "memory/t3/episodes.md",
+            "memory/t3/user.md",
+            "memory/t3/worker.md",
+            "memory/t3/capabilities.md",
         ]:
             assert target in template_text
 
@@ -111,26 +109,23 @@ class TestCurationExamples:
     def test_examples_show_before_after_rewrite(self, template_text: str) -> None:
         # The "rewrite for long-term reusability" section must show good/bad pair.
         assert "User rejects emoji" in template_text  # canonical good-rewrite example
-        # Promotions are expressed as governed save_memory calls (spec §12 P2).
-        assert "save_memory(" in template_text
+        assert "t3_user_memory" in template_text
 
 
 class TestT3EntryRules:
-    def test_format_is_owned_by_save_memory_runtime(self, template_text: str) -> None:
-        # The curator passes clean content; the governed API stamps the
-        # `- [YYYY-MM-DD]` format, entry id, and lifecycle record.
-        assert "- [YYYY-MM-DD] description" in template_text
-        assert "save_memory" in template_text
+    def test_format_is_owned_by_platform_gate_runtime(self, template_text: str) -> None:
+        assert "XML-block based" in template_text
+        assert "<t3_consolidation_patch" in template_text
 
     def test_template_forbids_raw_memory_file_writes(self, template_text: str) -> None:
         # Direct write_file/edit_file under memory/ is refused by the runtime;
         # the template must say so to prevent the curator from drifting back.
         assert "refused" in template_text
-        assert "ONLY write path" in template_text or "only write path" in template_text.lower()
+        assert "Platform Gate owns physical commit" in template_text
 
     def test_template_instructs_to_drop_t2_metadata(self, template_text: str) -> None:
         assert "Drop T2 metadata" in template_text or "drop the T2 metadata" in template_text.lower()
-        assert "[w=]" in template_text
+        assert "source refs" in template_text
 
     def test_template_says_dedup_is_tool_enforced(self, template_text: str) -> None:
         assert "Dedup is enforced by the tool" in template_text or "[Skipped]" in template_text

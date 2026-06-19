@@ -54,11 +54,12 @@ tasks.json           — Read-only DB Task snapshot; use Work Ledger for cogniti
 memory/
   t0/sessions/       — Append-only raw session ledger (T0, auto-generated)
   sessions/          — Reviewed T2 Segment Packages (auto-generated)
-  feedback.md        — User corrections and preferences (T3)
-  knowledge.md       — Domain knowledge (T3)
-  strategies.md      — Effective approaches (T3)
-  blocked.md         — Failed approaches to avoid (T3)
-  user.md            — User profile info (T3)
+  explicit/          — Explicit user saves, active before accepted T3 absorption
+  t3/
+    episodes.md      — Scenario-first episodic anchors (accepted T3)
+    user.md          — Stable user/principal model (accepted T3)
+    worker.md        — Agent rules, redlines, failure modes (accepted T3)
+    capabilities.md  — Reusable methods, SOPs, skill seeds (accepted T3)
   learnings/         — Legacy/derived compatibility view for T2, auto-managed
 
 evolution/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,6 +49,23 @@ def test_legacy_tenant_backend_preference_is_ignored(monkeypatch: pytest.MonkeyP
         tenant_backend_pref="external",
     )
     assert isinstance(backend, MDBackend)
+
+
+@pytest.mark.asyncio
+async def test_md_backend_store_writes_explicit_overlay_not_accepted_t3(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    backend = MDBackend(data_root=tmp_path)
+    agent_id = uuid.uuid4()
+
+    await backend.store(agent_id, "User prefers concise answers", "feedback")
+
+    memory_dir = tmp_path / str(agent_id) / "memory"
+    assert (memory_dir / "explicit" / "MEMORY.md").exists()
+    assert not (memory_dir / "feedback.md").exists()
+    assert not (memory_dir / "t3" / "user.md").exists()
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,8 @@ def test_evolution_directory_is_audit_not_semantic_memory_source() -> None:
 
     assert "evolution/lineage.md stores policy-level learning" not in combined
     assert "semantic memory body" in combined
-    assert "direct file writes, edits, and deletes are not allowed" in combined
+    assert "direct writes are refused" in combined
+    assert "Do not write `memory/explicit/**` directly" in combined
 
 
 def test_no_model_reflection_is_reduced_to_scorecard_only() -> None:

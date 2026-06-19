@@ -95,15 +95,18 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         "cancel_trigger",
         "send_channel_file",
         "check_async_task",
-        "cancel_async_task",
-        "list_async_tasks",
-        "save_skill",
-        "save_memory",
-        "update_memory",
-        "retire_memory",
-        "search_memory",
-        "load_memory",
-    )
+            "cancel_async_task",
+            "list_async_tasks",
+            "save_skill",
+            "search_memory",
+            "load_memory",
+            "save_memory",
+            "update_memory",
+            "retire_memory",
+            "submit_t3_consolidation_pitch",
+            "submit_t3_memory_gate_review",
+            "submit_t3_revised_patch",
+        )
     assert request.max_tool_rounds == 7
     assert "A2A_SUFFIX" in request.system_prompt_suffix
     # F-1: slim worker prompt — isolation_contract + tool_policy remain; forced

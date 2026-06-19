@@ -18,39 +18,32 @@ from app.memory.lifecycle_store import (
 
 T3_FILE_SPECS = (
     {
-        "filename": "feedback.md",
-        "header": "# Feedback",
-        "categories": ("feedback", "constraint"),
-        "load": "P0 always",
-        "shadow_category": "feedback",
+        "filename": "t3/episodes.md",
+        "header": "# T3 Episodes",
+        "categories": ("episode", "episodic"),
+        "load": "P1 dynamic",
+        "shadow_category": "episode",
     },
     {
-        "filename": "knowledge.md",
-        "header": "# Knowledge",
-        "categories": ("project", "reference", "general"),
-        "load": "P1 on-demand",
-        "shadow_category": "project",
-    },
-    {
-        "filename": "strategies.md",
-        "header": "# Strategies",
-        "categories": ("strategy",),
-        "load": "P1 on-demand",
-        "shadow_category": "strategy",
-    },
-    {
-        "filename": "blocked.md",
-        "header": "# Blocked Patterns",
-        "categories": ("blocked_pattern",),
-        "load": "P0 always",
-        "shadow_category": "blocked_pattern",
-    },
-    {
-        "filename": "user.md",
-        "header": "# User Profile",
-        "categories": ("user",),
-        "load": "P2 optional",
+        "filename": "t3/user.md",
+        "header": "# T3 User",
+        "categories": ("user", "feedback"),
+        "load": "P0 if relevant",
         "shadow_category": "user",
+    },
+    {
+        "filename": "t3/worker.md",
+        "header": "# T3 Worker",
+        "categories": ("worker", "constraint", "blocked_pattern"),
+        "load": "P0 if relevant",
+        "shadow_category": "worker",
+    },
+    {
+        "filename": "t3/capabilities.md",
+        "header": "# T3 Capabilities",
+        "categories": ("capability", "strategy", "project", "reference", "general"),
+        "load": "P1 dynamic",
+        "shadow_category": "capability",
     },
 )
 
@@ -63,6 +56,11 @@ _ENTRY_WITH_DATE_RE = re.compile(
 )
 _ENTRY_BARE_RE = re.compile(r"^- (?P<content>.+?)\s*$")
 _META_TOKEN_RE = re.compile(r"\[([^\]=]+)=([^\]]+)\]")
+_T3_XML_BLOCK_RE = re.compile(
+    r"<(?P<tag>t3_[A-Za-z0-9_]+)\b[^>]*>.*?</(?P=tag)>|<(?P<tag_self>t3_[A-Za-z0-9_]+)\b[^>]*/>",
+    re.DOTALL,
+)
+_XML_ATTR_RE = re.compile(r"([A-Za-z_:][A-Za-z0-9_.:-]*)=[\"']([^\"']*)[\"']")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +84,14 @@ class T3MemoryEntry:
     is_p0: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedT3XmlBlock:
+    block_id: str
+    content: str
+    metadata: dict[str, str]
+    raw: str
+
+
 def memory_dir(data_root: Path, agent_id: uuid.UUID) -> Path:
     return Path(data_root) / str(agent_id) / "memory"
 
@@ -100,6 +106,7 @@ def ensure_t3_layout(data_root: Path, agent_id: uuid.UUID) -> Path:
     for spec in T3_FILE_SPECS:
         path = mem_dir / spec["filename"]
         if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{spec['header']}\n\n", encoding="utf-8")
     return mem_dir
 
@@ -138,6 +145,61 @@ def parse_entry_record(line: str) -> ParsedMemoryEntry:
 def parse_entry_line(line: str) -> tuple[str, str | None]:
     record = parse_entry_record(line)
     return record.content, record.timestamp
+
+
+def extract_t3_xml_blocks(content: str) -> list[str]:
+    return [match.group(0).strip() for match in _T3_XML_BLOCK_RE.finditer(content or "")]
+
+
+def parse_t3_xml_block(block: str) -> ParsedT3XmlBlock | None:
+    raw = (block or "").strip()
+    if not raw:
+        return None
+    try:
+        import xml.etree.ElementTree as ET
+
+        node = ET.fromstring(raw)
+    except Exception:
+        return None
+    attrs = {str(key): str(value) for key, value in node.attrib.items() if value is not None}
+    block_id = attrs.get("id") or _stable_entry_id("t3_xml_block", raw)
+    source_refs = [
+        (ref.text or "").strip()
+        for ref in node.findall(".//source_ref")
+        if (ref.text or "").strip()
+    ]
+    if source_refs:
+        attrs["source_refs"] = ",".join(source_refs)
+        attrs.setdefault("evidence_refs", ",".join(source_refs))
+    text = _xml_block_content(node)
+    return ParsedT3XmlBlock(
+        block_id=block_id,
+        content=text or block_id,
+        metadata=attrs,
+        raw=raw,
+    )
+
+
+def _xml_block_content(node) -> str:
+    texts: list[str] = []
+    priority_tags = (
+        "title",
+        "claim",
+        "rule",
+        "name",
+        "scene_context",
+        "what_happened",
+        "why_it_matters",
+        "when_to_use",
+        "applies_when",
+    )
+    for tag in priority_tags:
+        found = node.find(f".//{tag}")
+        if found is not None and "".join(found.itertext()).strip():
+            texts.append(" ".join("".join(found.itertext()).split()))
+    if not texts:
+        texts.append(" ".join(" ".join(node.itertext()).split()))
+    return " ".join(part for part in texts if part).strip()
 
 
 def _normalize_entry_content(content: str) -> str:
@@ -225,8 +287,8 @@ def find_similar_t3_entries(
 ) -> list[dict]:
     """Return T3 facts whose Jaccard similarity to `content` exceeds threshold.
 
-    When `category` is given, limits to facts routed to the same T3 file
-    (so 'feedback' content is only compared against feedback.md entries).
+    When `category` is given, limits to facts routed to the same canonical T3
+    target file.
     """
     if not content.strip():
         return []
@@ -244,6 +306,24 @@ def find_similar_t3_entries(
         if not path.exists():
             continue
         body = path.read_text(encoding="utf-8", errors="replace")
+        for block in extract_t3_xml_blocks(body):
+            parsed = parse_t3_xml_block(block)
+            if parsed is None or not parsed.content:
+                continue
+            sim = jaccard_similarity(content, parsed.content)
+            if sim >= threshold:
+                hits.append(
+                    (
+                        sim,
+                        {
+                            "id": parsed.block_id,
+                            "content": parsed.content,
+                            "category": spec["shadow_category"],
+                            "timestamp": parsed.metadata.get("created_at", ""),
+                            "similarity": round(sim, 3),
+                        },
+                    )
+                )
         for line in extract_entry_lines(body):
             record = parse_entry_record(line)
             existing_content = record.content
@@ -528,12 +608,16 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
         path = mem_dir / spec["filename"]
         content = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
         entries = extract_entry_lines(content)
+        xml_blocks = extract_t3_xml_blocks(content)
         last_updated = "-"
         if entries:
             _entry_content, parsed_ts = parse_entry_line(entries[-1])
             last_updated = parsed_ts or updated_at.split(" ")[0]
+        elif xml_blocks:
+            parsed = parse_t3_xml_block(xml_blocks[-1])
+            last_updated = (parsed.metadata.get("created_at", "")[:10] if parsed else "") or updated_at.split(" ")[0]
         lines.append(
-            f"| {spec['filename']} | {', '.join(spec['categories'])} | {len(entries)} | {last_updated} | {spec['load']} |"
+            f"| {spec['filename']} | {', '.join(spec['categories'])} | {len(entries) + len(xml_blocks)} | {last_updated} | {spec['load']} |"
         )
 
     # D7: INDEX is a lightweight nav (id/path/short summary/heat), not a
@@ -568,8 +652,13 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
             + " |"
         )
 
-    index_path = mem_dir / "INDEX.md"
-    index_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    derived_dir = mem_dir / ".derived"
+    derived_dir.mkdir(parents=True, exist_ok=True)
+    index_path = derived_dir / "t3_index.md"
+    rendered = "\n".join(lines) + "\n"
+    index_path.write_text(rendered, encoding="utf-8")
+    # Compatibility read model for older UI/tests. Not semantic truth.
+    (mem_dir / "INDEX.md").write_text(rendered, encoding="utf-8")
     return index_path
 
 
@@ -587,6 +676,42 @@ def build_t3_entry_manifest(data_root: Path, agent_id: uuid.UUID) -> list[T3Memo
         if not path.exists():
             continue
         content = path.read_text(encoding="utf-8", errors="replace")
+        for block in extract_t3_xml_blocks(content):
+            parsed = parse_t3_xml_block(block)
+            if parsed is None or not parsed.content:
+                continue
+            entry_id = parsed.block_id
+            timestamp = parsed.metadata.get("created_at", "")
+            source = f"memory/{spec['filename']}"
+            joined_metadata = {
+                **parsed.metadata,
+                **sidecar_meta.get(entry_id, {}),
+                "entry_id": entry_id,
+                "xml_block": "true",
+                **telemetry.get(entry_id, {}),
+            }
+            _stamp_ttl_metadata(joined_metadata)
+            _stamp_reference_metadata(data_root, agent_id, joined_metadata)
+            if "confidence" not in joined_metadata and joined_metadata.get("conf"):
+                joined_metadata["confidence"] = joined_metadata["conf"]
+            if "retention_score" not in joined_metadata:
+                heat = compute_entry_heat(joined_metadata)
+                if heat > 0:
+                    joined_metadata["retention_score"] = f"{min(1.0, heat / 5.0):.2f}"
+            entries.append(
+                T3MemoryEntry(
+                    entry_id=entry_id,
+                    content=parsed.content,
+                    category=spec["shadow_category"],
+                    timestamp=timestamp,
+                    metadata=joined_metadata,
+                    source=source,
+                    filename=spec["filename"],
+                    load=spec["load"],
+                    preview=_entry_preview(parsed.content),
+                    is_p0=spec["load"].startswith("P0"),
+                )
+            )
         for line in extract_entry_lines(content):
             record = parse_entry_record(line)
             if not record.content:

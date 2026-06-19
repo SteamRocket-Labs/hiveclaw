@@ -1,20 +1,9 @@
-"""Memory curation runtime — wires scene/wiki curators into the heartbeat tick.
+"""Deprecated scene/wiki curation runtime.
 
-Spec §12 P5: the curators are pure modules with injected LLMs; this module is
-their live entry point. Each heartbeat tick it:
-
-1. Reads the curation cursor (memory/.curation_cursor.json) and collects new
-   knowledge/strategy T3 entries since the last run.
-2. Below the batch threshold → skip (cheap no-op).
-3. Builds the tenant's summary-model LLM caller and runs scene consolidation
-   over the new atoms; a proposed patch is applied through the governed
-   write (`apply_scene_patch`).
-4. Picks the dominant concept among the new entries and runs wiki
-   consolidation for it; proposed patches apply via `apply_wiki_patch`.
-5. Advances the cursor. Held candidates stay visible in
-   memory/distillation_audit.jsonl — a hold is a decision, not a retry loop.
-
-All failures are contained: curation must never break the heartbeat tick.
+The accepted T3 path has been narrowed to four MD files plus the
+T3 Consolidator -> Memory Gate -> Platform Gate lane. The older scene/wiki
+curators remain importable for compatibility tests and future migration work,
+but the live heartbeat tick no longer builds a second memory system from T3.
 """
 
 from __future__ import annotations
@@ -34,7 +23,7 @@ logger = logging.getLogger(__name__)
 _CURSOR_FILENAME = ".curation_cursor.json"
 _MIN_NEW_ENTRIES = 3
 _MAX_BATCH = 8
-_CURATED_FILES = {"knowledge.md", "strategies.md"}
+_CURATED_FILES: set[str] = set()
 _RETRYABLE_HOLD_MARKERS = (
     "no llm",
     "llm output invalid",
@@ -127,6 +116,8 @@ async def run_scene_wiki_curation_tick(
 ) -> dict:
     """One curation pass. Returns a summary dict; never raises."""
     try:
+        return {"status": "disabled", "reason": "t3_consolidation_lane_is_canonical", "new_entries": 0}
+
         if data_root is None:
             from app.config import get_settings
 

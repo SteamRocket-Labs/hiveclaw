@@ -9,8 +9,8 @@ from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
 def _seed_dirty_workspace(data_root: Path, agent_id: uuid.UUID) -> Path:
     workspace = data_root / str(agent_id)
     mem = workspace / "memory"
-    mem.mkdir(parents=True)
-    (mem / "feedback.md").write_text(
+    (mem / "t3").mkdir(parents=True)
+    (mem / "t3" / "user.md").write_text(
         "# Feedback\n\n"
         "- [2026-06-04][entry_id=f1][sensitivity=PL2_pii][status=active][version=1]"
         "[access_count=7][last_accessed=2026-06-04T17:00:00+00:00] vendor contact lives in CRM\n",
@@ -38,7 +38,7 @@ def test_agent_memory_hygiene_dry_run_reports_without_mutating(tmp_path: Path) -
     assert report["entries_migrated"] == 1
     assert {item["path"] for item in report["retired_artifacts"]} == {"memory.sqlite3", "memory/memory.json"}
     assert {item["path"] for item in report["dead_stubs"]} == {"reflections.md", "memory/reflections.md"}
-    assert "[access_count=7]" in (workspace / "memory" / "feedback.md").read_text(encoding="utf-8")
+    assert "[access_count=7]" in (workspace / "memory" / "t3" / "user.md").read_text(encoding="utf-8")
     assert (workspace / "memory.sqlite3").exists()
     assert (workspace / "memory" / "memory.json").exists()
     assert (workspace / "reflections.md").exists()
@@ -62,7 +62,7 @@ def test_agent_memory_hygiene_apply_backfills_and_quarantines(tmp_path: Path) ->
     assert not (workspace / "memory" / "reflections.md").exists()
     assert (workspace / "memory" / "reflections" / "kept.jsonl").exists()
 
-    feedback = (workspace / "memory" / "feedback.md").read_text(encoding="utf-8")
+    feedback = (workspace / "memory" / "t3" / "user.md").read_text(encoding="utf-8")
     assert feedback.strip().endswith("- [2026-06-04][entry_id=f1] vendor contact lives in CRM")
     assert "[sensitivity=" not in feedback
     assert "[access_count=" not in feedback

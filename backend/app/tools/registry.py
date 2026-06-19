@@ -54,7 +54,16 @@ _FILE_SYSTEM = {
 }
 _SKILLS = {"load_skill", "save_skill", "pin_skill", "tool_search", "discover_resources", "import_mcp_server"}
 _SCHEDULED = {"set_trigger", "update_trigger", "cancel_trigger", "list_triggers"}
-_MEMORY = {"search_memory", "load_memory", "save_memory", "update_memory", "retire_memory"}
+_MEMORY = {
+    "search_memory",
+    "load_memory",
+    "save_memory",
+    "update_memory",
+    "retire_memory",
+    "submit_t3_consolidation_pitch",
+    "submit_t3_memory_gate_review",
+    "submit_t3_revised_patch",
+}
 _CHANNEL = {
     "send_feishu_message",
     "send_web_message",

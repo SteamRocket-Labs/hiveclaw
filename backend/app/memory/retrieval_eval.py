@@ -181,9 +181,10 @@ def evaluate_memory_retrieval(*, data_root: Path) -> dict:
 
 def _seed_retirement_corpus(data_root: Path, agent_id: uuid.UUID) -> Path:
     mem_dir = Path(data_root) / str(agent_id) / "memory"
-    mem_dir.mkdir(parents=True, exist_ok=True)
+    t3_dir = mem_dir / "t3"
+    t3_dir.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# Knowledge",
+        "# T3 Capabilities",
         "",
         # Protected foundational principle — cold but preservation-flagged.
         "- [2026-01-01][entry_id=mem_protected][access_count=0][last_accessed=never] "
@@ -198,7 +199,7 @@ def _seed_retirement_corpus(data_root: Path, agent_id: uuid.UUID) -> Path:
         "- [2026-01-02][entry_id=mem_cold1][access_count=0][last_accessed=never] legacy proxy port mapping",
         "- [2026-01-03][entry_id=mem_cold2][access_count=0][last_accessed=never] deprecated webhook retry table",
     ]
-    (mem_dir / "knowledge.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (t3_dir / "capabilities.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return mem_dir
 
 
@@ -249,7 +250,7 @@ def evaluate_retirement_safety(*, data_root: Path) -> dict:
     retired = retire_t3_entries(
         data_root,
         agent_id,
-        filename="knowledge.md",
+        filename="t3/capabilities.md",
         drops=["legacy proxy port mapping", "deprecated webhook retry table"],
         reason="cap_eviction",
     )
@@ -273,7 +274,7 @@ def evaluate_retirement_safety(*, data_root: Path) -> dict:
         }
     )
 
-    active_after = (mem_dir / "knowledge.md").read_text(encoding="utf-8")
+    active_after = (mem_dir / "t3" / "capabilities.md").read_text(encoding="utf-8")
     checks.append(
         {
             "name": "active_file_keeps_protected_and_hot",

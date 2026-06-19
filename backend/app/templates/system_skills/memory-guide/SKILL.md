@@ -1,147 +1,184 @@
 ---
 name: Memory Guide
-description: "Use when you need to decide whether information should become durable memory, save explicit user preferences, avoid transient memory pollution, and route memory updates safely."
+description: "Use when you need to save explicit user memory, recall past work, or route memory updates without corrupting the T0/T2/T3 pipeline."
 tools:
   - save_memory
   - update_memory
   - retire_memory
   - search_memory
   - load_memory
+  - submit_t3_consolidation_pitch
+  - submit_t3_memory_gate_review
+  - submit_t3_revised_patch
 is_system: true
 ---
 
 # Memory Guide
 
 <role>
-Use this skill whenever you must **explicitly** write to or read from
-long-term memory. Most memory work happens automatically — you do not
-need to curate T0 → T2 → T3 yourself. This skill tells you the few
-situations where manual intervention is correct, and the exact way to
-perform it. Writing to memory without these rules corrupts the pipeline.
+Use this skill whenever you must explicitly read or write durable memory.
+Most memory work is automatic. Manual memory actions are limited to explicit
+user saves, correction/retirement of recalled memories, and T3 consolidation
+job artifacts. Writing memory outside these paths corrupts the pipeline.
 </role>
+
+<design_law>
+LLM 负责判断、提炼、反思、归纳、候选生成。
+平台负责证据引用、权限、去重、回滚、审计、最终落盘。
+</design_law>
 
 <when_to_use>
 - The user issues a direct imperative: "记住", "remember this", "never do X again", "from now on always Y".
-- The user delivers a critical correction you must not lose even if the heartbeat later deems it low-signal.
+- The user delivers a critical correction that must be active immediately.
 - A loaded memory entry is wrong, stale, or contradicted by a newer explicit correction.
-- You need to recall a fact, decision, or past session — call `search_memory` first, then `load_memory(ids=[...])` for any fact preview you will rely on.
-- You are starting a task and a past session likely contains the exact answer ("last time we did X…", "resuming yesterday's work").
+- You need to recall a fact or past session: call `search_memory` first, then `load_memory(ids=[...])`.
+- You are the T3 Consolidator or Memory Gate Agent working inside a T3 job.
 </when_to_use>
 
 <do_not_use_when>
-- The information will be in the T0 session ledger automatically (conversation turns, one-off background tasks, tool results, trigger runs, delegation runs, heartbeat ticks, and dream runs are append-logged without your intervention).
-- The fact is a transient task detail, intermediate tool output, or debug note — goal state belongs in the work ledger and working notes belong in workspace files, not memory.
-- You are about to write code patterns, file paths, or debugging steps — those live in the workspace.
-- You already called `save_memory` for the same fact in this session (it is idempotent at character level, but repeated calls still waste turns).
-- You want to update `memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, or `logs/` directly — forbidden. The automated pipeline owns these paths.
+- The information is normal conversation, tool output, trigger output, delegation output, heartbeat output, or dream output. T0 append-only session ledger records these automatically.
+- The fact is task-local or intermediate debug state. Put it in the Work Ledger or `workspace/`, not memory.
+- You want to edit `memory/t0/`, `memory/sessions/`, `memory/t3/`, `memory/explicit/`, `evolution/`, or `logs/` directly. These paths are platform-managed.
+- You want to update `soul.md` directly. Dream and the promotion gate own identity changes.
 </do_not_use_when>
 
-## The 4-Layer Pyramid
+## The Pyramid
 
 <pyramid>
 ```
-T0 (memory/t0/sessions/<session_id>/segments/<segment_id>/source.md)
-   append-only raw session ledger
-   written as user/assistant/tool events are accepted; idle/close only seal segments
-         │  sealed source range -> Summary Agent -> Learning Brain -> Memory Gate -> Platform Gate
-         ▼
-T2 (memory/sessions/<session_id>/segments/<segment_id>/{summary.md,labels.md,review.md,manifest.json})
-   reviewed Segment Packages; legacy memory/learnings/*.md may exist only as a derived compatibility view
-   curated every ~2 h by heartbeat
-         │  heartbeat curation (T2 → T3)
-         ▼
-T3 (memory/feedback.md, knowledge.md, strategies.md, blocked.md, user.md)
-   long-term semantic memory — injected into your prompt every session
-         │  dream consolidation (about once a day)
-         ▼
-soul.md
-   permanent identity, frozen prefix of your prompt
-```
+T0
+  memory/t0/sessions/<session_id>/segments/<segment_id>/source.md
+  append-only raw session ledger; no LLM prompt, no summary, no manual edits
 
-**You never write to T0, T2, or `soul.md`.** The pipeline owns them.
-**You may change T3** — but **only** through `save_memory`, `update_memory`,
-or `retire_memory`, and **only** under the rules below. `save_memory` is the
-escape hatch around heartbeat filtering; `update_memory` and `retire_memory`
-are the governed correction paths that preserve archive/lifecycle evidence.
+T2
+  memory/sessions/<session_id>/segments/<segment_id>/
+    summary.md
+    labels.md
+    review.md
+    manifest.json
+  one reviewed Segment Package per sealed T0 segment
+
+T3
+  memory/t3/episodes.md
+  memory/t3/user.md
+  memory/t3/worker.md
+  memory/t3/capabilities.md
+  cross-session accepted memory, written only by Platform Gate from an accepted
+  LLM-authored revised patch
+
+Explicit Overlay
+  memory/explicit/entries/<explicit_id>.md
+  memory/explicit/MEMORY.md
+  immediate active memory for user-commanded "remember this"; later absorbed by T3
+
+soul.md
+  permanent identity; updated only by Dream/promotion governance
+```
 </pyramid>
+
+## Accepted T3 Targets
+
+<accepted_t3_targets>
+Accepted T3 has exactly four writable semantic files:
+
+- `memory/t3/episodes.md`
+- `memory/t3/user.md`
+- `memory/t3/worker.md`
+- `memory/t3/capabilities.md`
+
+Do not create or write:
+
+- `memory/t3/index.md`
+- `memory/t3/relations.md`
+- `memory/t3/contradictions.md`
+- `memory/t3/chapters/**`
+- `memory/feedback.md`
+- `memory/knowledge.md`
+- `memory/strategies.md`
+- `memory/blocked.md`
+
+Derived views may exist under `memory/.derived/**`; they are rebuildable read
+models, not semantic truth.
+</accepted_t3_targets>
 
 ## Tool Reference
 
 <tool_reference>
 
+| Tool | Use |
+|------|-----|
+| `save_memory` | Write explicit user-commanded memory to the overlay only. |
+| `search_memory` | Find explicit overlay, accepted T3, and past-session recall candidates. |
+| `load_memory` | Load exact memory ids before relying on them. |
+| `update_memory` | Correct or supersede explicit overlay entries; accepted T3 requires a patch. |
+| `retire_memory` | Retire explicit overlay entries; accepted T3 requires a patch. |
+| `submit_t3_consolidation_pitch` | Store the Consolidator's pitch artifact for a T3 job. |
+| `submit_t3_memory_gate_review` | Store the Memory Gate review artifact for a T3 job. |
+| `submit_t3_revised_patch` | Store the Consolidator's revised patch for Platform Gate validation. |
+
 ### `save_memory(content, category, subject?)`
 
-Writes a single fact directly to a T3 markdown file, bypassing heartbeat
-curation. Idempotent at character level (writing the same content twice
-produces one entry), **not** idempotent at semantic level (two paraphrases
-of the same fact produce two entries).
+Writes an explicit user-commanded memory to `memory/explicit/`, not to accepted
+T3. It is an immediate overlay so the next prompt can activate it before the
+T3 consolidation lane absorbs or rejects it.
 
-**Category → T3 file routing** (important — several categories share files):
+Use only for explicit user memory commands or critical corrections. One fact
+per call. Convert relative dates to absolute dates. Include why when the memory
+is a rule.
 
-| `category` | Written to | Prompt load priority |
-|------------|-----------|----------------------|
-| `feedback` | `memory/feedback.md` | **P0 always** |
-| `constraint` | `memory/feedback.md` | **P0 always** |
-| `blocked_pattern` | `memory/blocked.md` | **P0 always** |
-| `strategy` | `memory/strategies.md` | P1 on-demand |
-| `project` | `memory/knowledge.md` | P1 on-demand |
-| `reference` | `memory/knowledge.md` | P1 on-demand |
-| `general` | `memory/knowledge.md` | P1 on-demand |
-| `user` | `memory/user.md` | P2 optional |
+Category still describes retrieval intent:
 
-Choose the category that best matches **how future-you should retrieve it**, not how the content was generated.
-
-- User says "我喜欢简短的回复" → `category="feedback"` (it is a standing correction)
-- User says "Our product launches 2026-05-01" → `category="project"`
-- A plan that worked well → `category="strategy"`
-- An approach that failed repeatedly → `category="blocked_pattern"`
-- User profile ("user is a senior backend engineer") → `category="user"`
-- Grafana dashboard URL → `category="reference"`
-
-Content rules:
-- **One fact per call.** Do not batch multiple unrelated facts in one `content` string.
-- **Under 200 characters is ideal, 2000 is a hard cap (truncated silently).**
-- **Include the why** when the fact is a rule: "避免用 Feishu 长消息 — 超过 1k 字被截断（2026-03 用户反馈）"。
-- **Use absolute dates**, never relative ("yesterday", "last week" rot).
+| `category` | Intent |
+|------------|--------|
+| `feedback` | direct user preference or correction |
+| `constraint` | standing rule or boundary |
+| `blocked_pattern` | failed approach to avoid |
+| `strategy` | reusable method candidate |
+| `project` | project/domain fact |
+| `reference` | durable pointer or external reference |
+| `general` | only if no specific category fits |
+| `user` | stable user profile fact |
+| `episode` | scenario-first recall anchor |
+| `worker` | agent operating principle |
+| `capability` | capability/SOP/skill-seed candidate |
 
 ### `update_memory(memory_id, content, category?, reason?)`
 
-Replaces an existing T3 entry by stable id. This is for explicit corrections,
-not routine edits. Always `search_memory`/`load_memory` first so you know the
-exact entry you are replacing.
-
-The replacement runs through the same write gate as `save_memory`; the old
-entry leaves active recall and is preserved in `memory/archive.md` with a
-superseded-by lifecycle edge.
-
-Use when:
-- The user corrects a stored preference or project fact.
-- A loaded memory is now stale but should be replaced by a newer durable fact.
-- A previous memory is too broad and the user gives a narrower standing rule.
+Corrects an explicit overlay entry or stages a governed replacement. Always
+`search_memory`/`load_memory` first so the target id is known.
 
 ### `retire_memory(memory_id, reason)`
 
-Archives an existing T3 entry without replacement. It removes the entry from
-active recall, but does not delete evidence.
-
-Use when:
-- The user says a remembered preference/rule no longer applies.
-- A loaded fact is obsolete, incorrect, private, or should not influence future work.
-- You cannot write a correct replacement yet, but the old entry is unsafe to keep active.
+Archives or deactivates an explicit overlay entry, or requests retirement of an
+accepted memory through governed lifecycle handling. Never physically delete
+memory files.
 
 ### `search_memory(query, scope?, limit?)`
 
-Searches T3 markdown files and past ChatSession transcripts.
+Searches explicit overlay, accepted T3, and past session recall. Use it before
+answering "do you remember..." questions.
 
-- `scope="all"` (default) — T3 facts + past session recall combined.
-- `scope="facts"` — T3 only, fastest.
-- `scope="sessions"` — only past ChatSession transcripts (useful for "what did we decide last Thursday").
+### `load_memory(ids=[...])`
 
-Scoring is **token-frequency + character overlap**. This is **not a query language**:
-- ❌ No boolean operators (`AND`, `OR`, `NOT`).
-- ❌ No phrase quoting, wildcards, or regex.
-- ✅ Use specific nouns and verbs from the question.
-- ✅ Retry with different phrasings if the first query returns nothing.
+Loads the exact memory entries returned by search. Do not rely on preview text
+when the answer depends on precision.
+
+### `submit_t3_consolidation_pitch(job_id, content)`
+
+For the T3 Consolidator only. Writes the LLM-authored `consolidation_pitch.md`
+artifact into the active T3 job. It does not commit accepted T3.
+
+### `submit_t3_memory_gate_review(job_id, content)`
+
+For the Memory Gate Agent only. Writes `review.md` with rubric scores,
+evidence checks, semantic dedup, conflict review, and merge directives. It does
+not commit accepted T3.
+
+### `submit_t3_revised_patch(job_id, content)`
+
+For the T3 Consolidator only after Memory Gate feedback. Writes
+`revised_patch.md`. Platform Gate performs hard validation and final physical
+commit.
 
 </tool_reference>
 
@@ -152,133 +189,63 @@ Scoring is **token-frequency + character overlap**. This is **not a query langua
 ### A — User Issues a Hard Correction
 
 ```
-User: "以后别再用 delete_file 自动清理工作区了，我上次丢了三小时工作。"
-→ save_memory(
-    category="feedback",
-    content="禁止自动用 delete_file 清理 workspace — 曾丢失用户 3 小时工作 (2026-04-15)",
-    subject="workspace-hygiene"
-  )
-→ Also update the relevant work ledger item or workspace artifact if this correction changes active work.
+User: "以后别再自动 delete_file 清理 workspace，我上次丢了三小时工作。"
+-> save_memory(
+     category="constraint",
+     subject="workspace-hygiene",
+     content="禁止自动用 delete_file 清理 workspace；曾导致用户丢失 3 小时工作（2026-06-18 明确纠正）"
+   )
 ```
 
-If `search_memory`/`load_memory` reveals an older conflicting entry, replace it:
+### B — Recalling Past Work
 
 ```
-→ update_memory(
-    memory_id="mem_...",
-    category="feedback",
-    content="禁止自动用 delete_file 清理 workspace — 曾丢失用户 3 小时工作 (2026-04-15)",
-    reason="explicit user correction"
-  )
+User: "我们上次怎么处理 auth 中间件？"
+-> search_memory(query="auth middleware", scope="all", limit=5)
+-> load_memory(ids=[...])
+-> answer using loaded evidence, or say no matching memory was found.
 ```
 
-### B — Recalling Past Work Before Starting a Task
+### C — T3 Consolidation Job
 
 ```
-User: "继续上次那个 auth 中间件的修复"
-→ search_memory(query="auth middleware fix", scope="all", limit=5)
-→ If session recall returns a transcript window, cite it explicitly before acting.
-→ If nothing found, say so: "search_memory 没有找到 auth middleware 相关记录，先做什么？"
-```
+T3 Consolidator:
+  read source_bundle.json + t3_neighborhood.md + prior review.md if present
+  submit_t3_consolidation_pitch(...)
 
-### C — User Declares a Standing Preference
+Memory Gate:
+  inspect pitch + T2 evidence + current T3
+  submit_t3_memory_gate_review(...)
 
-```
-User: "回复保持简短，不用列表"
-→ save_memory(
-    category="feedback",
-    content="用户偏好：回复保持简短，避免使用列表格式",
-    subject="response-style"
-  )
-```
+T3 Consolidator:
+  revise according to review
+  submit_t3_revised_patch(...)
 
-### D — Project Constraint from Stakeholder
-
-```
-Boss: "这周五之后不再合并非关键 PR，移动端要剪发布分支"
-→ save_memory(
-    category="project",
-    content="Merge freeze starts 2026-04-18 for mobile release cut — flag any non-critical PR after that date",
-    subject="merge-freeze"
-  )
+Platform Gate:
+  validates paths, schema, rubric, source refs, permissions, base revisions
+  commits exact LLM-authored block content if accepted
 ```
 
 </workflows>
 
-## Examples
-
-<examples>
-
-### Example A — Good save_memory (single fact, clear category, absolute date)
-
-```python
-save_memory(
-  category="blocked_pattern",
-  content="Feishu webhook with interactive cards fails silently when tenant_access_token expires — must refresh proactively at 90% TTL (2026-03-22 incident #4712)",
-  subject="feishu-webhook-token"
-)
-```
-
-### Example B — Bad save_memory (multi-fact, relative date, wrong category)
-
-```python
-save_memory(
-  category="general",
-  content="User likes short answers. Deadline is next Friday. Avoid feishu_base_record_delete. Use Asia/Shanghai timezone.",
-)
-# ❌ four unrelated facts in one entry
-# ❌ "next Friday" will be meaningless in 2 weeks
-# ❌ the first belongs to feedback, second to project, third to blocked_pattern, fourth to reference — none is general
-```
-
-Correct: four separate `save_memory` calls with the right category each.
-
-### Example C — search_memory before answering
-
-```
-User: "我们之前怎么处理的并发登录？"
-
-# ✅ Good
-→ search_memory(query="concurrent login session handling", scope="all", limit=5)
-→ Quote the matched transcript window + T3 fact, then answer.
-
-# ❌ Bad
-→ Answer from compressed recollection: "我记得是用了 Redis 锁…"
-  (No search, invented continuity — will contradict real past decisions.)
-```
-
-</examples>
-
-## Anti-patterns
+## Anti-Patterns
 
 <anti_patterns>
-
-- ❌ **Calling `save_memory` for every interesting thing** → the automated pipeline already handles salient extraction; manual save for everything bypasses heartbeat's low-signal filter and bloats T3. Save only escape-hatch facts.
-- ❌ **Saving a correction as a second fact when the old fact is known** → use `update_memory(memory_id, ...)` so the old entry leaves active recall and gets a supersession edge.
-- ❌ **Physically editing or deleting `memory/*.md`** → use `update_memory` or `retire_memory`; archive/lifecycle evidence must survive.
-- ❌ **Writing multiple unrelated facts in one `content`** → makes `search_memory` retrieval imprecise and cannot route to one category file cleanly.
-- ❌ **Using relative dates** ("yesterday", "next Friday") → after the session ends, the anchor is lost. Always convert to absolute ISO dates.
-- ❌ **Picking `category="general"` by default** → routes to `knowledge.md`, load priority P1 on-demand, may not inject into the prompt when most needed. Choose the most specific category that matches retrieval intent.
-- ❌ **Skipping `search_memory` before answering questions about the past** → produces invented continuity that contradicts real past decisions.
-- ❌ **Using `search_memory` like SQL** (`"user AND (feedback OR correction)"`) → scoring is token-frequency, operators are treated as literal terms and lower the score.
-- ❌ **Writing directly to `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`, or `soul.md`** → forbidden; the pipeline owns these. Use `save_memory` or `workspace/` instead.
-- ❌ **Re-saving a correction already saved this session** → character-level idempotency catches exact duplicates, but paraphrased duplicates still accumulate. Check your working context before re-saving.
-
+- Do not call `save_memory` for every interesting fact. The automatic T0/T2/T3 pipeline handles normal salience.
+- Do not treat `save_memory` as accepted T3. It writes only the explicit overlay.
+- Do not physically edit or delete `memory/t3/**`, `memory/explicit/**`, `memory/sessions/**`, `memory/t0/**`, `evolution/**`, or `logs/**`.
+- Do not write old T3 files: `memory/feedback.md`, `memory/knowledge.md`, `memory/strategies.md`, `memory/blocked.md`.
+- Do not use relative dates in durable memory.
+- Do not answer past-session questions from vague recollection; search first.
+- Do not let Memory Gate rewrite accepted blocks. It reviews and gives merge directives; Consolidator writes the revised patch.
 </anti_patterns>
 
 ## Success Criteria
 
 <success_criteria>
-- Every `save_memory` call contains exactly one fact, with an appropriate `category` chosen from the routing table.
-- Dates in memory content are absolute (YYYY-MM-DD), not relative.
-- Before answering any question about past sessions or prior decisions, `search_memory` has been called at least once.
-- You do NOT write to `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`, or `soul.md`.
-- When the user issues an imperative correction ("记住…", "remember this…", "never do X"), `save_memory` is called in the same response, with `category="feedback"` or `category="blocked_pattern"` as appropriate.
+- Explicit "remember this" requests call `save_memory` once with one precise fact.
+- Accepted T3 changes go only through T3 job artifacts and Platform Gate.
+- Every numeric score in a review uses the documented rubric and includes rationale plus source refs.
+- Every accepted T3 block has XML structure, stable metadata, target-view labels, and source refs.
+- No prompt, tool description, or live service routes agents to old T3 files.
 </success_criteria>
-
-## Bundled Resources
-
-Load resources by need, not by default:
-
-- `references/memory-routing.md`: read only when this request needs its detailed rules, schemas, examples, or domain playbook.
-- `templates/memory-entry.md`: use as the output scaffold when creating this artifact type.

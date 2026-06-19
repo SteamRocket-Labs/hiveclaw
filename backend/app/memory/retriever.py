@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.memory.activation import ActivationContext, ActivationScorer, memory_lifecycle_suppression_reason
+from app.memory.explicit_overlay import search_explicit_overlay_entries
 from app.memory.md_store import build_t3_entry_manifest
 from app.memory.t2_store import HIGH_PRIORITY_THRESHOLD, load_t2_entries
 from app.memory.types import MemoryItem, MemoryKind
@@ -233,6 +234,7 @@ class MemoryRetriever:
                 Dict with keys: provider, api_key, model, base_url (for create_llm_client).
         """
         items: list[MemoryItem] = []
+        items.extend(self._retrieve_explicit_overlay(agent_id, query=query) or [])
         if self.use_t3_index_first:
             items.extend(self._retrieve_t3_index_first(agent_id, query=query) or [])
         else:
@@ -492,11 +494,10 @@ class MemoryRetriever:
     # P1/P2 files are scored per-entry by relevance to the current query.
     _T3_FILES: list[tuple[str, str, float, bool]] = [
         #  (path, category, base_score, is_p0)
-        ("memory/feedback.md", "feedback", 0.95, True),  # P0
-        ("memory/blocked.md", "blocked_pattern", 0.95, True),  # P0
-        ("memory/knowledge.md", "knowledge", 0.80, False),  # P1
-        ("memory/strategies.md", "strategy", 0.80, False),  # P1
-        ("memory/user.md", "user", 0.70, False),  # P2
+        ("memory/t3/user.md", "user", 0.95, True),  # P0 if relevant
+        ("memory/t3/worker.md", "worker", 0.95, True),  # P0 if relevant
+        ("memory/t3/episodes.md", "episode", 0.85, False),  # P1
+        ("memory/t3/capabilities.md", "capability", 0.80, False),  # P1
     ]
     _T3_SCORE_BY_SOURCE = {
         rel_path: (category, base_score, is_p0) for rel_path, category, base_score, is_p0 in _T3_FILES
@@ -544,6 +545,28 @@ class MemoryRetriever:
             source=entry.source,
             metadata=metadata,
         )
+
+    def _retrieve_explicit_overlay(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
+        items: list[MemoryItem] = []
+        for fact in search_explicit_overlay_entries(self.data_root, agent_id, query, limit=8):
+            metadata = {
+                "entry_id": fact.get("id", ""),
+                "category": fact.get("category", "general"),
+                "target_hint": fact.get("target_hint", "unknown"),
+                "source_type": "explicit_overlay",
+                "sensitivity": fact.get("sensitivity", "PL1_public"),
+                "timestamp": fact.get("timestamp", ""),
+            }
+            items.append(
+                MemoryItem(
+                    kind=MemoryKind.SEMANTIC,
+                    content=f"[explicit_overlay][{metadata['category']}] {fact.get('content', '')}",
+                    score=0.98,
+                    source=str(fact.get("source", "")),
+                    metadata=metadata,
+                )
+            )
+        return items
 
     def _retrieve_t3_direct(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
         """Read T3 memory/*.md files — per-entry granularity with query-aware scoring.
@@ -641,22 +664,22 @@ class MemoryRetriever:
         direct_p0 = {
             item.metadata.get("entry_id") or item.content
             for item in direct
-            if item.source in {"memory/feedback.md", "memory/blocked.md"}
+            if item.source in {"memory/t3/user.md", "memory/t3/worker.md"}
         }
         index_p0 = {
             item.metadata.get("entry_id") or item.content
             for item in index_first
-            if item.source in {"memory/feedback.md", "memory/blocked.md"}
+            if item.source in {"memory/t3/user.md", "memory/t3/worker.md"}
         }
         direct_p1p2 = {
             item.metadata.get("entry_id") or item.content
             for item in direct
-            if item.source not in {"memory/feedback.md", "memory/blocked.md"}
+            if item.source not in {"memory/t3/user.md", "memory/t3/worker.md"}
         }
         index_p1p2 = {
             item.metadata.get("entry_id") or item.content
             for item in index_first
-            if item.source not in {"memory/feedback.md", "memory/blocked.md"}
+            if item.source not in {"memory/t3/user.md", "memory/t3/worker.md"}
         }
         overlap = len(direct_p1p2 & index_p1p2)
         miss_count = max(0, len(direct_p1p2 - index_p1p2))

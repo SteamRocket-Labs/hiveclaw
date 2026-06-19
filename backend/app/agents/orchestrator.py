@@ -53,6 +53,14 @@ _DELEGATION_BASE_EXCLUDED_TOOLS = (
     "cancel_async_task",
     "list_async_tasks",
 )
+_DELEGATION_MEMORY_WRITE_TOOLS = (
+    "save_memory",
+    "update_memory",
+    "retire_memory",
+    "submit_t3_consolidation_pitch",
+    "submit_t3_memory_gate_review",
+    "submit_t3_revised_patch",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,7 +81,8 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         core_tools_only=True,
         allowed_tools=(),
         excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS
-        + ("save_skill", "save_memory", "update_memory", "retire_memory", "search_memory", "load_memory"),
+        + ("save_skill", "search_memory", "load_memory")
+        + _DELEGATION_MEMORY_WRITE_TOOLS,
         tool_policy="worker_safe",
         tool_rule=(
             "Your tool surface is worker-safe: do the delegated work, but do not schedule triggers, "
@@ -90,8 +99,7 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="memory_readonly",
         core_tools_only=True,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS
-        + ("save_skill", "save_memory", "update_memory", "retire_memory"),
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill",) + _DELEGATION_MEMORY_WRITE_TOOLS,
         tool_policy="worker_memory_readonly",
         tool_rule=(
             "Your tool surface is worker-safe, and you may use read-only recall tools when they materially help the delegated task."

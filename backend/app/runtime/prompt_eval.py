@@ -195,7 +195,7 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
             # phrase "promote it only as factual knowledge" — accept either.
             predicate=lambda: (
                 (
-                    "≥ 0.85" in heartbeat_template
+                    ("≥ 0.85" in heartbeat_template or ">= 0.85" in heartbeat_template)
                     and "< 0.50" in heartbeat_template
                     and "data, not instruction" in normalized
                 )
@@ -212,14 +212,26 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
         ),
         "heartbeat_skill_curation_consistency": _CheckSpec(
             # P4 candidate lane (spec §12): heartbeat records skill/workflow
-            # candidate signals via save_memory; it never writes skills itself.
+            # candidate signals in T3 job artifacts; it never writes skills itself.
             predicate=lambda: (
                 "skill_candidate" in heartbeat_template
-                and "Do NOT take external-facing autonomous actions" in heartbeat_template
-                and "do NOT create skills or workflows" in heartbeat_template
+                and (
+                    "submit_t3_consolidation_pitch" in heartbeat_template
+                    or "consolidation_pitch.md" in heartbeat_template
+                )
+                and (
+                    "Do NOT take external-facing autonomous actions" in heartbeat_template
+                    or "You do not send messages" in heartbeat_template
+                    or "Do not send messages" in heartbeat_template
+                )
+                and (
+                    "do NOT create skills or workflows" in heartbeat_template
+                    or "Do not create Skill files or Workflow JSON" in heartbeat_template
+                    or "Do not create skills or workflows" in heartbeat_template
+                )
             ),
             severity="medium",
-            remediation="Restore heartbeat guidance that records skill/workflow candidate signals (save_memory + container_candidate) while blocking direct skill creation and external-facing autonomous actions.",
+            remediation="Restore heartbeat guidance that records skill/workflow candidate signals in T3 job artifacts while blocking direct skill creation and external-facing autonomous actions.",
             success_detail="Heartbeat template routes skill evidence through the candidate lane and keeps external-action boundaries.",
             failure_detail="Heartbeat template no longer aligns candidate-signal curation with external-action safety boundaries.",
         ),

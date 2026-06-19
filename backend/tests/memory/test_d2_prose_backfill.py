@@ -20,28 +20,33 @@ import pytest
 
 from app.memory.md_store import append_t3_entry, build_t3_entry_manifest
 from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
-from app.memory.t3_store import append_t3_memory_candidate, backfill_t3_prose
+from app.memory.t3_store import backfill_t3_prose
 
 
 @pytest.mark.asyncio
 async def test_write_keeps_only_date_and_entry_id_in_prose(tmp_path: Path) -> None:
     agent_id = uuid.uuid4()
-    result = await append_t3_memory_candidate(
+    entry_id = "f1"
+    append_t3_entry(
+        tmp_path,
         agent_id,
         category="feedback",
         content="User requires plain-text answers, no emoji",
-        proposed_by="agent_tool",
-        data_root=tmp_path,
+        metadata={
+            "entry_id": entry_id,
+            "sensitivity": "PL1_public",
+            "status": "active",
+            "version": "1",
+        },
     )
-    assert result.status == "accepted"
 
     line = next(
         ln
-        for ln in (tmp_path / str(agent_id) / "memory" / "feedback.md").read_text(encoding="utf-8").splitlines()
+        for ln in (tmp_path / str(agent_id) / "memory" / "t3" / "user.md").read_text(encoding="utf-8").splitlines()
         if ln.startswith("- [")
     )
     # Prose carries the date + the entry_id join key, nothing else inline.
-    assert f"[entry_id={result.entry_id}]" in line
+    assert f"[entry_id={entry_id}]" in line
     assert "[sensitivity=" not in line
     assert "[status=" not in line
     assert "[version=" not in line
@@ -50,7 +55,7 @@ async def test_write_keeps_only_date_and_entry_id_in_prose(tmp_path: Path) -> No
 
     # The stripped metadata is in the sidecar instead.
     lifecycle = json.loads((tmp_path / str(agent_id) / "memory" / "lifecycle.json").read_text(encoding="utf-8"))
-    record = next(r for r in lifecycle if r["id"] == result.entry_id)
+    record = next(r for r in lifecycle if r["id"] == entry_id)
     assert record["metadata"].get("sensitivity")
     assert record["status"] == "active"
 
@@ -62,13 +67,13 @@ def test_manifest_joins_metadata_from_sidecar_when_prose_is_bare(tmp_path: Path)
     append_t3_entry(
         tmp_path,
         agent_id,
-        category="knowledge",
+        category="general",
         content="vendor escalation contact lives in the ops runbook",
         timestamp="2026-05-10",
         metadata={"entry_id": "bare1", "sensitivity": "PL2_pii", "status": "active", "version": "1"},
     )
     # Rewrite the prose to the bare D2 target form (strip everything but entry_id).
-    kpath = tmp_path / str(agent_id) / "memory" / "knowledge.md"
+    kpath = tmp_path / str(agent_id) / "memory" / "t3" / "capabilities.md"
     kpath.write_text(
         "# Knowledge\n\n- [2026-05-10][entry_id=bare1] vendor escalation contact lives in the ops runbook\n",
         encoding="utf-8",
@@ -84,9 +89,9 @@ def test_backfill_strips_inline_metadata_and_preserves_sensitivity(tmp_path: Pat
     """The safety-critical test: a dirty PL3 line keeps PL3 after backfill."""
     agent_id = uuid.uuid4()
     mem = tmp_path / str(agent_id) / "memory"
-    mem.mkdir(parents=True)
+    (mem / "t3").mkdir(parents=True)
     # 05-25 dirty format with inline telemetry + a sensitive marker.
-    (mem / "knowledge.md").write_text(
+    (mem / "t3" / "capabilities.md").write_text(
         "# Knowledge\n\n"
         "- [2026-06-04][entry_id=k1][sensitivity=PL3_confidential][status=active][version=1]"
         "[access_count=97][last_accessed=2026-06-04T17:00] acquisition target shortlist\n",
@@ -101,7 +106,9 @@ def test_backfill_strips_inline_metadata_and_preserves_sensitivity(tmp_path: Pat
     assert report["entries_migrated"] >= 1
 
     # Prose is now clean.
-    line = next(ln for ln in (mem / "knowledge.md").read_text(encoding="utf-8").splitlines() if ln.startswith("- ["))
+    line = next(
+        ln for ln in (mem / "t3" / "capabilities.md").read_text(encoding="utf-8").splitlines() if ln.startswith("- [")
+    )
     assert line.strip() == "- [2026-06-04][entry_id=k1] acquisition target shortlist"
 
     # SAFETY: sensitivity survived — no silent access-control downgrade.
@@ -124,14 +131,14 @@ def test_backfill_strips_inline_metadata_and_preserves_sensitivity(tmp_path: Pat
 def test_backfill_dry_run_does_not_write(tmp_path: Path) -> None:
     agent_id = uuid.uuid4()
     mem = tmp_path / str(agent_id) / "memory"
-    mem.mkdir(parents=True)
+    (mem / "t3").mkdir(parents=True)
     dirty = "# Strategies\n\n- [2026-06-04][entry_id=s1][sensitivity=PL1_public][access_count=5] scan cadence works\n"
-    (mem / "strategies.md").write_text(dirty, encoding="utf-8")
+    (mem / "t3" / "capabilities.md").write_text(dirty, encoding="utf-8")
 
     report = backfill_t3_prose(tmp_path, agent_id, dry_run=True)
 
     # Nothing on disk changed.
-    assert (mem / "strategies.md").read_text(encoding="utf-8") == dirty
+    assert (mem / "t3" / "capabilities.md").read_text(encoding="utf-8") == dirty
     assert not (mem / "archive.md").exists()
     # The dry-run still reports what WOULD change, with a visible diff.
     assert report["entries_migrated"] >= 1
@@ -143,8 +150,8 @@ def test_backfill_is_idempotent_on_clean_prose(tmp_path: Path) -> None:
     """Already-clean lines are a no-op — backfill never double-archives."""
     agent_id = uuid.uuid4()
     mem = tmp_path / str(agent_id) / "memory"
-    mem.mkdir(parents=True)
-    (mem / "feedback.md").write_text(
+    (mem / "t3").mkdir(parents=True)
+    (mem / "t3" / "user.md").write_text(
         "# Feedback\n\n- [2026-06-04][entry_id=f1] user prefers terse replies\n", encoding="utf-8"
     )
 

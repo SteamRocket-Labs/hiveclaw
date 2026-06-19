@@ -270,7 +270,7 @@ def _append_and_seal_runtime_t0_event(
     event_type: str,
     boundary_reason: str,
     fallback_content: str,
-) -> None:
+) -> tuple[str, str | None]:
     session_id = _runtime_event_session_id(ctx, event_type)
     source = ctx.source or event_type
     append_t0_session_event(
@@ -283,11 +283,27 @@ def _append_and_seal_runtime_t0_event(
         source=source,
         metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
     )
-    seal_t0_session_segment(
+    sealed = seal_t0_session_segment(
         agent_id=agent_id,
         session_id=session_id,
         reason=boundary_reason,
         metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
+    )
+    return session_id, sealed.segment_id if sealed else None
+
+
+def _with_t0_runtime_session(ctx: HookContext, session_id: str) -> HookContext:
+    return HookContext(
+        event=ctx.event,
+        agent_id=ctx.agent_id,
+        session_id=session_id,
+        tool_name=ctx.tool_name,
+        tool_args=ctx.tool_args,
+        tool_result=ctx.tool_result,
+        error=ctx.error,
+        metadata=ctx.metadata,
+        messages=ctx.messages,
+        source=ctx.source,
     )
 
 
@@ -402,33 +418,45 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
 
 
 async def _t0_trigger_end(ctx: HookContext) -> None:
-    """TRIGGER_END → append and seal a T0 runtime-session ledger."""
+    """TRIGGER_END → append/seal T0 runtime-session ledger, then build canonical T2."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] TRIGGER_END: agent=%s trigger=%s", ctx.agent_id, ctx.metadata.get("trigger_name", "?"))
-    _append_and_seal_runtime_t0_event(
+    session_id, segment_id = _append_and_seal_runtime_t0_event(
         agent_id=agent_id,
         ctx=ctx,
         event_type="trigger_run",
         boundary_reason="trigger_end",
         fallback_content="trigger_end",
     )
+    if segment_id:
+        await _build_t2_for_sealed_segment(
+            ctx=_with_t0_runtime_session(ctx, session_id),
+            agent_id=agent_id,
+            segment_id=segment_id,
+        )
 
 
 async def _t0_delegation_end(ctx: HookContext) -> None:
-    """DELEGATION_END → append and seal a T0 runtime-session ledger."""
+    """DELEGATION_END → append/seal T0 runtime-session ledger, then build canonical T2."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] DELEGATION_END: agent=%s", ctx.agent_id)
-    _append_and_seal_runtime_t0_event(
+    session_id, segment_id = _append_and_seal_runtime_t0_event(
         agent_id=agent_id,
         ctx=ctx,
         event_type="delegation_run",
         boundary_reason="delegation_end",
         fallback_content="delegation_end",
     )
+    if segment_id:
+        await _build_t2_for_sealed_segment(
+            ctx=_with_t0_runtime_session(ctx, session_id),
+            agent_id=agent_id,
+            segment_id=segment_id,
+        )
 
 
 async def _t0_heartbeat_tick_end(ctx: HookContext) -> None:

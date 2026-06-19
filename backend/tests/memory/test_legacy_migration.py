@@ -53,11 +53,11 @@ def test_migrate_legacy_memory_md_imports_lines_into_knowledge(tmp_path: Path) -
 
     report = migrate_legacy_memory_tree(tmp_path, agent_id)
 
-    knowledge = (memory_dir / "knowledge.md").read_text(encoding="utf-8")
+    capabilities = (memory_dir / "t3" / "capabilities.md").read_text(encoding="utf-8")
 
     assert report["migrated_t3_entries"] == 2
-    assert "系统现在采用 md-first 记忆架构" in knowledge
-    assert "dream 只负责 T3 consolidate" in knowledge
+    assert "系统现在采用 md-first 记忆架构" in capabilities
+    assert "dream 只负责 T3 consolidate" in capabilities
     assert not legacy_path.exists()
 
 

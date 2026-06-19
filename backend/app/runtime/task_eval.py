@@ -159,7 +159,7 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
     ),
     "self_evolution": _ScenarioSpec(
         query="save this repeated successful workflow as a reusable skill",
-        required_tools=("save_skill", "load_skill", "save_memory"),
+        required_tools=("save_skill", "load_skill", "submit_t3_consolidation_pitch"),
         prompt_checks=(
             "skill_evolution_guidance",
             "skill_patch_instead_of_duplicate_guidance",

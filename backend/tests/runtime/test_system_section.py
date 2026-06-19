@@ -122,7 +122,8 @@ class TestMemoryIntegration:
         # Cadences match config: heartbeat ~2h, dream ~daily (were stale 45 min / 4 h).
         assert "2 h" in prompt_text
         assert "once a day" in prompt_text or "daily" in prompt_text
-        assert "after each response" in prompt_text.lower()
+        assert "sealed t0 session segment" in prompt_text.lower()
+        assert "t2 segment package" in prompt_text.lower()
 
     def test_save_memory_escape_hatch_rule(self, prompt_text: str) -> None:
         assert "save_memory" in prompt_text

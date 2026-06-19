@@ -21,7 +21,9 @@ runtime. Treat them as facts about your environment, not suggestions.
   them, after earlier calls settle — so batching reads is safe and writes
   stay ordered.
 - When context reaches ~75% capacity, older messages are automatically
-  compressed. Important information is extracted before compression.
+  compressed. The raw evidence remains in the append-only T0 ledger, while
+  volatile session projection preserves immediate continuity before the sealed T0 session segment
+  is converted into a reviewed T2 Segment Package.
 </execution_model>
 
 ### Tool Governance
@@ -49,7 +51,8 @@ runtime. Treat them as facts about your environment, not suggestions.
 <memory_integration>
 - Long-term memory lives in `memory/*.md` files (read-only during session).
 - The memory pyramid runs in the background:
-  - After each response: learnings are extracted to T2 automatically.
+  - After a T0 session segment is sealed: the T0→T2 pipeline builds a reviewed
+    T2 Segment Package from the append-only source range.
   - Every ~2 h: heartbeat curates T2 into T3 semantic memory.
   - About once a day: dream consolidates T3 and may promote
     entries into `soul.md` (your permanent identity).

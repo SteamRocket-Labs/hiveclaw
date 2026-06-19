@@ -1,4 +1,12 @@
-"""Extractor — T0→T2 atom extraction sub-agent.
+"""Legacy extractor compatibility layer.
+
+Canonical T0→T2 is now implemented by ``app.memory.t2.segment_package``:
+sealed append-only T0 session segment -> source_bundle.json ->
+LLM-authored summary.md / labels.md / review.md -> Platform Gate atomic commit.
+
+This module remains only for legacy admin backfill, compatibility tests, and
+derived/read-model migration work. Default runtime hooks must not call
+``schedule_extract`` or write canonical T2 through ``memory/learnings/*.md``.
 
 Role contract (docs/agent-memory-md-first-spec.md §5): the Extractor performs
 fast ATOM EXTRACTION from messages / T0 / Work Ledger into T2 candidates. It
@@ -7,15 +15,8 @@ Each atom may carry a `container_candidate` hint (memory_append /
 soul_candidate / skill_candidate / workflow_candidate / artifact_only) that
 the PromotionRouter and Memory Control Plane adjudicate downstream.
 
-Aligned with Claude Code's extractMemories architecture:
-- Fire-and-forget from RESPONSE_COMPLETE hook
-- Per-agent cursor (only process new messages since last extraction)
-- Mutual exclusion + coalescing (concurrent safety)
-- LLM primary extraction → pattern-based fallback
-- Writes to T2 learnings/*.md (MD bullets), not SQLite
-
-Pipeline: messages → LLM extract → append to learnings/{category}.md
-Fallback: messages → regex patterns → append to learnings/{category}.md
+Legacy pipeline: messages → LLM extract → append to learnings/{category}.md
+Legacy fallback: messages → regex patterns → append to learnings/{category}.md
 
 Legacy T0 backfill (PR-4): when in-memory message extraction was skipped before
 the append-only session ledger existed, legacy behavior T0 MD files can be

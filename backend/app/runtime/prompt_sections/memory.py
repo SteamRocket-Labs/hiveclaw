@@ -7,11 +7,13 @@ You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 
 ### Layers
 - **T0** (`memory/t0/sessions/<session_id>/segments/<segment_id>/source.md`): append-only raw session ledger, 30-day retention
-- **T2** (learnings/): recent observations, curated by heartbeat every ~2 h
+- **T2** (`memory/sessions/<session_id>/segments/<segment_id>/`): reviewed Segment Packages
+  (`summary.md`, `labels.md`, `review.md`, `manifest.json`) built from sealed T0 session segments
 - **T3** (memory/*.md + soul.md): long-term knowledge, refined by dream about once a day
 
-Your conversations and runtime events automatically produce T0 ledger events and T2 extractions. \
-The heartbeat curates T2 → T3. The dream refines T3 and promotes patterns to soul.md.
+Your conversations and runtime events automatically produce T0 ledger events. \
+When a T0 segment is sealed, the T0→T2 pipeline builds a reviewed Segment Package. \
+The heartbeat curates reviewed T2 packages → T3. The dream refines T3 and promotes patterns to soul.md.
 
 ### Using Memory Tools
 - `search_memory(query, scope?)` — Search your long-term memory (T3 files) and past session \
@@ -24,8 +26,8 @@ memory index. Prefer this over asking for broad memory dumps.
 bypassing the heartbeat curation that normally filters low-signal content. Use ONLY when:
   * The user issues a direct imperative ("记住", "remember this", "never do X again")
   * You must override something heartbeat would otherwise drop
-  Everything else flows automatically: conversation/runtime event → T0 ledger → extractor picks salient bits \
-into T2 → heartbeat curates T2 into T3. Do not pre-empt that pipeline.
+  Everything else flows automatically: conversation/runtime event → T0 ledger → sealed T0 session segment \
+→ reviewed T2 Segment Package → heartbeat curates T2 into T3. Do not pre-empt that pipeline.
 - `update_memory(memory_id, content, category?)` — Use when a loaded T3 fact is wrong or stale \
 and the user gives an explicit correction. The replacement is write-gated, and the old entry is \
 archived with a supersession edge.

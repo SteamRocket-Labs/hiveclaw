@@ -465,7 +465,12 @@ Return one Markdown document containing exactly one <t2_summary> XML block.
   </events>
 
   <facts>
-    <fact confidence="0.90">用户以场景和事件回忆方法，而不是直接说方法名。</fact>
+    <fact evidence_strength="source_backed">
+      用户以场景和事件回忆方法，而不是直接说方法名。
+      <evidence_refs>
+        <source_ref uri="t0://session/...#seq=3..5"/>
+      </evidence_refs>
+    </fact>
   </facts>
 
   <decisions>
@@ -509,6 +514,7 @@ Return one Markdown document containing exactly one <t2_summary> XML block.
 4. 事实和方法分开：事实写 `<facts>`，过程写 `<method_trace>`。
 5. 开放状态显式写出：未闭合内容进入 `<short_term_carryover>`。
 6. 不承载重标签：受控标签放到 `labels.md`。
+7. 不在 `summary.md` 正文中写裸数值 confidence / score；需要数值判断时必须写入 `labels.md` 的工程标签或 `review.md` 的 rubric。
 
 禁止：
 
@@ -689,7 +695,14 @@ Return one Markdown document containing exactly one <t2_review> XML block.
 <t2_review schema_version="t2.review.v1" package_id="t2pkg-..." reviewer="memory_gate_agent">
   <decision>approved</decision>
   <allowed_next>t3_intake</allowed_next>
-  <score>0.91</score>
+  <review_rubric schema_version="t2.review_rubric.v1">
+    <score name="summary_fidelity" value="0.95"/>
+    <score name="source_ref_coverage" value="0.92"/>
+    <score name="label_alignment" value="0.85"/>
+    <score name="safety_scope" value="1.00"/>
+    <score name="package_closure" value="0.80"/>
+    <review_score>0.90</review_score>
+  </review_rubric>
   <evidence_coverage>complete</evidence_coverage>
   <hallucination_risk>low</hallucination_risk>
   <label_quality>pass</label_quality>
@@ -722,7 +735,77 @@ archive_recall_only
 none
 ```
 
-### 8.4 Agent 协作编排和接力保证
+### 8.4 T2 Memory Gate Review Rubric
+
+只要 `review.md` 里出现分数、阈值、置信度或晋升级别判断，就必须使用统一 rubric。Memory Gate Agent 负责语义评分；Platform Gate 只校验 hard gate、字段完整、分值范围、source refs 和阈值一致性，不能用机械分数替代 Memory Gate 判断。
+
+先做 hard gate。hard gate 失败时不进入 review score：
+
+| Hard gate | 失败结果 |
+| --- | --- |
+| `distillation_scope != semantic_candidate` 作为 primary source | `rejected` |
+| heartbeat / dream / distiller / eval / platform background job 作为 primary source | `rejected` |
+| PL4、secret、credential、private key、token 出现在 summary / labels / review 正文 | `rejected` |
+| 缺 source refs，或 source refs 无法追溯到 T0 ledger / source_bundle | `rejected` |
+| tenant / company / principal scope 越界 | `rejected` |
+| XML malformed、manifest 缺 hash / source range、target path 非 canonical T2 package | `needs_revision` 或 `held_candidate` |
+
+hard gate 通过后，Memory Gate 必须输出 5 个 0.00-1.00 分项，并按公式生成 `review_score`。每个 score 必须能被 `source_refs_checked` 或具体 issue 支撑，不能只写总分。
+
+```text
+review_score = round_to_0_05(clamp(
+  0.35 * summary_fidelity
+  + 0.25 * source_ref_coverage
+  + 0.20 * label_alignment
+  + 0.10 * safety_scope
+  + 0.10 * package_closure
+  - review_penalties,
+  0.00,
+  1.00
+))
+```
+
+评分锚点：
+
+| 维度 | 1.00 | 0.75 | 0.50 | 0.25 | 0.00 |
+| --- | --- | --- | --- | --- | --- |
+| `summary_fidelity` | summary 的 key events / facts / decisions / corrections 全部忠于 T0，无遗漏反证 | 有小幅概括或措辞偏宽，但不改变语义 | 存在非关键遗漏或轻微过度推断 | 关键事实缺失、顺序错误或把推断写成事实 | summary 与 T0 明显矛盾或主要内容幻觉 |
+| `source_ref_coverage` | 所有 high/critical item 都有精确 source refs，refs 可读且 hash/range 有效 | 关键项有 refs，少量 low/medium item refs 偏宽 | 部分关键项 refs 偏宽，但仍能追溯 | 多个关键项缺 refs 或 refs 不可读 | 无合法 refs 或 refs 指向错误 source |
+| `label_alignment` | labels 与 summary 事件边界、event_type、risk_flags、principal_scope 完全一致 | 少量标签偏宽但不影响治理 | 标签能检索但有明显泛化或遗漏 | 标签与 summary 多处不一致，可能误导 T3 | labels 与 summary 冲突或承载了不存在的叙事 |
+| `safety_scope` | sensitivity、principal、tenant、PL 等边界清楚且合规 | 有轻微不确定，但不影响当前 package 落盘 | scope 部分未知，需要后续复查 | scope 不清且可能影响可见性或权限 | 越权、PL4/secret、跨 tenant 或安全违规 |
+| `package_closure` | segment 语义闭合，可进入 T3 intake | 大体闭合，但仍有低风险 open question | rolling / evolving，只适合 carryover 或 recall | 高度碎片化，需要继续等待上下文 | 无法形成可审查 segment package |
+
+扣分项可叠加：
+
+| 条件 | penalty |
+| --- | --- |
+| 存在 unresolved contested point | `0.15` |
+| 用户/系统纠正没有被 summary 或 labels 反映 | `0.20` |
+| prompt injection / external instruction 未隔离 | `0.20` |
+| `principal_scope=unknown` 且内容可能影响可见性 | `0.10` |
+| `hallucination_risk=medium` | `0.15` |
+| `hallucination_risk=high` | `0.35` |
+
+决策阈值：
+
+| decision / allowed_next | 必要条件 |
+| --- | --- |
+| `approved` / `t3_intake` | hard gate pass；`summary_fidelity >= 0.85`；`source_ref_coverage >= 0.85`；`label_alignment >= 0.75`；`safety_scope >= 0.85`；`package_closure >= 0.75`；`review_score >= 0.80`；`package_status != rolling_checkpoint` |
+| `approved` / `short_term_carryover` | hard gate pass；summary 忠实；`package_closure < 0.75` 或 segment 仍在继续；不得进入 T3 intake |
+| `hold_recall_only` / `archive_recall_only` | 有召回价值但 `future T3 utility` 或 closure 不足；仍需 source refs 和 safety pass |
+| `needs_revision` / `none` | hard gate 未拒绝，但任一关键维度低于阈值且可修复 |
+| `rejected` / `none` | hard gate rejected，或 summary/labels 出现不可修复幻觉、越权、PL4、非法 source |
+
+Platform Gate 校验规则：
+
+1. 缺任意 score、score 超出 0.00-1.00、缺 `review_score`，review 无效。
+2. 阈值不满足但 decision 仍为 `approved`，Platform Gate 必须 hold。
+3. hard gate rejected 时，review_score 不能覆盖拒绝结果。
+4. `approved/t3_intake` 必须引用 `source_refs_checked`，且 refs 可追溯到 T0 source range。
+5. `rolling_checkpoint` 只能 `short_term_carryover` 或 `archive_recall_only`，不能 `t3_intake`。
+6. Platform Gate 不能因为 keyword、长度、风格或单一 score 自行改写 Memory Gate 语义结论；只能 hard hold。
+
+### 8.5 Agent 协作编排和接力保证
 
 T0 -> T2 不是三个 Agent 并行抢写同一个文件。它必须是一个 durable state machine，由平台编排，由 LLM 执行智能步骤。
 
@@ -1220,7 +1303,8 @@ Memory Gate Prompt 重点：
 3. 检查 labels 是否过度推断。
 4. 检查 source refs 是否覆盖关键结论。
 5. 输出 `approved` / `needs_revision` / `rejected` / `hold_recall_only`。
-6. 不允许靠 score 自动决定 Platform Gate。
+6. 输出 `review_rubric`，所有分数必须按 8.4 的锚点和公式给出。
+7. 不允许靠无标准 score 自动决定 Platform Gate。
 
 ### 11.5 Prompt 文件和测试要求
 
@@ -1465,7 +1549,8 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
 7. Prompt 必须禁止机械补写缺失事实。
 8. Prompt 必须拒绝 `distillation_scope != semantic_candidate` 的 primary source。
 9. Prompt 必须禁止把 heartbeat/dream/distiller/eval/platform background job 当作可进化语料。
-10. Prompt 修改必须有 snapshot / fixture / redline tests。
+10. Prompt 中任何 score / confidence / threshold 都必须引用明确 rubric、公式或枚举边界。
+11. Prompt 修改必须有 snapshot / fixture / redline tests。
 
 ### 16.4 数据红线
 
@@ -1484,6 +1569,7 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
 4. Platform Gate 不能把 score 当语义判断替代 Memory Gate。
 5. Platform Gate 拒绝时不能删除 staging candidate。
 6. 任何 fallback 必须可观测：`fallback_reason`、`fallback_stage`、`retryable`、`held_candidate_path`。
+7. 任何未绑定 rubric 的 score / confidence / threshold 不能参与 canonical T2 decision。
 
 ## 17. 实现顺序
 

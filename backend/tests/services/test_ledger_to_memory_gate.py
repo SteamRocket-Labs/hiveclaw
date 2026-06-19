@@ -11,6 +11,7 @@ gate rather than bypassing it.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -32,6 +33,24 @@ def _settings_patch(mp: pytest.MonkeyPatch, tmp_path: Path) -> None:
     mp.setattr("app.services.agent_work_ledger.get_settings", fake)
     mp.setattr("app.services.extract_agent.get_settings", fake)
     mp.setattr("app.memory.t0.ledger.get_settings", fake)
+    mp.setattr("app.config.get_settings", fake)
+    mp.setattr("app.runtime.hooks_setup.get_settings", fake, raising=False)
+
+
+def _approved_review_xml(*, package_id: str, ref: str) -> str:
+    return f"""<t2_review schema_version="t2.review.v1" package_id="{package_id}" reviewer="memory_gate_agent">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <review_rubric schema_version="t2.review_rubric.v1">
+    <score name="summary_fidelity" value="0.95"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="label_alignment" value="0.90"/>
+    <score name="safety_scope" value="1.00"/>
+    <score name="package_closure" value="0.90"/>
+    <review_score>0.95</review_score>
+  </review_rubric>
+  <source_refs_checked><source_ref uri="{ref}"/></source_refs_checked>
+</t2_review>"""
 
 
 # ── pure mapper ──────────────────────────────────────────────────────────────
@@ -266,7 +285,7 @@ def test_consolidation_is_idempotent_on_dedup(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkeypatch):
-    """The SESSION_CLOSE handler runs ledger→T2 consolidation through the real gate."""
+    """SESSION_CLOSE puts verified ledger findings into the canonical T2 source bundle."""
     from app.memory.t2_store import load_t2_entries
     from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events
     from app.runtime.hooks import HookContext, HookEvent
@@ -274,6 +293,7 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
     from app.services.agent_work_ledger import append_agent_work_ledger_finding
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     _settings_patch(monkeypatch, tmp_path)
     # The handler also updates session memory; keep the test focused on the
     # ledger→T2 path. T0 itself should seal the session ledger, not call the
@@ -285,6 +305,7 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
         event_type="user_message",
         role="user",
         content="thanks",
+        tenant_id=tenant_id,
         data_root=tmp_path,
     )
 
@@ -298,6 +319,26 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
         data_root=tmp_path,
     )
 
+    async def fake_model_config(_tenant_id):
+        return {"provider": "fake", "model": "fake"}
+
+    async def fake_run_agent(**kwargs):
+        payload = kwargs["payload"]
+        source_bundle = payload if kwargs["phase"] == "summary" else payload["source_bundle"]
+        ref = source_bundle["source_refs"][0]["uri"]
+        package_id = source_bundle["package_id"]
+        if kwargs["phase"] == "summary":
+            assert source_bundle["work_ledger"]["findings"][0]["summary"] == (
+                "Webhook retries use exponential backoff capped at 5 minutes"
+            )
+            return f"<t2_summary schema_version='t2.summary.v1' package_id='{package_id}'><source_refs><source_ref uri='{ref}'/></source_refs></t2_summary>"
+        if kwargs["phase"] == "labels":
+            return f"<t2_labels schema_version='t2.labels.v1' package_id='{package_id}'><source_refs><source_ref uri='{ref}'/></source_refs></t2_labels>"
+        return _approved_review_xml(package_id=package_id, ref=ref)
+
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_model_config)
+    monkeypatch.setattr("app.memory.t2.segment_package._run_t2_llm_agent", fake_run_agent)
+
     await _t0_session_close(
         HookContext(
             event=HookEvent.SESSION_CLOSE,
@@ -305,12 +346,18 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
             session_id="sess-close-1",
             source="web",
             messages=[{"role": "user", "content": "thanks"}],
-            metadata={"reason": "client_close"},
+            metadata={"reason": "client_close", "tenant_id": str(tenant_id)},
         )
     )
 
     entries, _ = load_t2_entries(tmp_path, agent_id)
-    assert any("exponential backoff capped at 5 minutes" in e["content"] for e in entries)
+    assert entries == []
     t0_events = replay_t0_session_events(agent_id=agent_id, session_id="sess-close-1", data_root=tmp_path)
     assert [event.event_type for event in t0_events] == ["user_message", "segment_boundary"]
     assert not list((tmp_path / str(agent_id) / "logs").glob("**/chat-*.md"))
+    package_root = tmp_path / str(agent_id) / "memory" / "sessions" / "sess-close-1" / "segments"
+    package_dir = next(package_root.iterdir())
+    assert (package_dir / "summary.md").exists()
+    staging_bundle = next((tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs").glob("*/source_bundle.json"))
+    source_bundle = json.loads(staging_bundle.read_text(encoding="utf-8"))
+    assert source_bundle["work_ledger"]["source_refs"] == ["workspace/webhook-notes.md"]

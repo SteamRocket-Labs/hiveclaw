@@ -1,9 +1,15 @@
-"""Startup replay for the durable extraction queue (P0-2b).
+"""Manual replay for the legacy durable extraction queue.
+
+This is no longer invoked from application startup. Canonical T0→T2 now starts
+from sealed append-only T0 session segments and commits Segment Packages under
+``memory/sessions/<session_id>/segments/<segment_id>/``. Replaying this legacy
+queue may still write ``memory/learnings/*.md`` and is only for explicit
+operator-led migration or compatibility repair.
 
 When a process dies between `extract_queue.enqueue` and the corresponding
 `mark_done` (deploy restart, OOM, crash mid-LLM call, drain timeout) the
-payload remains on disk. On the next startup `replay_pending_extractions`
-scans the queue and re-schedules each surviving entry through the normal
+payload remains on disk. `replay_pending_extractions`
+scans the queue and re-schedules each surviving entry through the legacy
 `extract_agent.schedule_extract` path.
 
 The old entry is removed only after `schedule_extract(require_durable_enqueue=True)`

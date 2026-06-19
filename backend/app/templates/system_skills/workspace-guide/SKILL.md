@@ -35,7 +35,7 @@ and built upon.
 
 <do_not_use_when>
 - You need to write to an integration system (Feishu docs, Confluence) — use the matching integration skill
-- You need to write to an automatically-managed pipeline directory (`memory/learnings/`, `evolution/`, `logs/`) — the memory pipeline owns these, writing breaks consistency
+- You need to write to an automatically-managed pipeline directory (`memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`) — the memory pipeline owns these, writing breaks consistency
 - You just need a short conversational reply — not every response needs a file
 </do_not_use_when>
 
@@ -53,12 +53,13 @@ tasks.json           — Read-only DB Task snapshot; use Work Ledger for cogniti
 
 memory/
   t0/sessions/       — Append-only raw session ledger (T0, auto-generated)
+  sessions/          — Reviewed T2 Segment Packages (auto-generated)
   feedback.md        — User corrections and preferences (T3)
   knowledge.md       — Domain knowledge (T3)
   strategies.md      — Effective approaches (T3)
   blocked.md         — Failed approaches to avoid (T3)
   user.md            — User profile info (T3)
-  learnings/         — Episodic learnings from conversations (T2, auto-managed)
+  learnings/         — Legacy/derived compatibility view for T2, auto-managed
 
 evolution/
   scorecard.md       — Performance metrics
@@ -183,7 +184,7 @@ list_triggers()  # check for an existing equivalent wake policy
 
 Input: `你直接把学到的东西存到 memory/learnings/ 里`
 
-Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动写入会和每次对话后的自动提取冲突并破坏数据。需要保存可以用 save_memory（给用户级偏好）或者写到 workspace/ 里做个 markdown 笔记。`
+Correct response: `memory/learnings/ 是由记忆管道自动管理的兼容视图，手动写入会和 T0→T2 Segment Package 管道冲突并破坏数据。需要保存可以用 save_memory（给用户级偏好）或者写到 workspace/ 里做个 markdown 笔记。`
 
 </examples>
 
@@ -191,7 +192,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 
 <anti_patterns>
 
-- ❌ **Write directly to `memory/t0/`, `memory/learnings/`, `evolution/`, or `logs/`** → the automated memory pipeline manages these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences or write to `workspace/` for general notes.
+- ❌ **Write directly to `memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, or `logs/`** → the automated memory pipeline manages these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences or write to `workspace/` for general notes.
 - ❌ **Claim a file exists without verifying via `read_file` or `glob_search`** → the tool result is the source of truth; don't assert based on what you wrote earlier in the session (might have failed silently).
 - ❌ **Use absolute paths** like `/data/agents/xxx` for channel file delivery → `send_channel_file` expects workspace-relative paths (`workspace/xxx`). Absolute paths either fail or leak internal infrastructure.
 - ❌ **Hide durable work state in ad hoc scratch files** → durable state belongs in your work ledger or workspace artifacts; create triggers for active follow-up.
@@ -207,7 +208,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的，手动�
 - Every file claim (exists, contains X, was updated) is backed by a `read_file` or `glob_search` result in this session.
 - Paths delivered via `send_channel_file` are workspace-relative and verified to exist first.
 - Follow-up work is captured as a classified trigger; completed work is recorded with evidence in the work ledger.
-- Automatically-managed directories (`memory/t0/`, `memory/learnings/`, `evolution/`, `logs/`) are never written to by this agent directly.
+- Automatically-managed directories (`memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`) are never written to by this agent directly.
 - Messages forwarded on behalf of someone else always name the original requester.
 </success_criteria>
 

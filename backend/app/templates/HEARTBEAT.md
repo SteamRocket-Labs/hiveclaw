@@ -14,10 +14,11 @@ permission or a wake policy, not heartbeat.
 </role>
 
 <pipeline_context>
-**Upstream** — `extract_agent` wrote T2 atom candidates from recent
-conversations. Each entry carries metadata:
+**Upstream** — reviewed T2 Segment Packages are built from sealed append-only
+T0 session segments. During migration, you may also see a derived compatibility view
+that renders selected package facts in the old weighted-line style:
 `[w=N.NN][repeat=N][src=X][cat=Y] content`, optionally with
-`[container=...]` — the extractor's advisory routing hint
+`[container=...]` — the package's advisory routing hint
 (`memory_append | soul_candidate | skill_candidate | workflow_candidate |
 artifact_only`).
 

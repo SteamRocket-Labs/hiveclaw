@@ -4,7 +4,8 @@ Phase 0: logging-only for SESSION_START, POST_COMPACTION, MEMORY_EXTRACTED.
 Phase 1: T0 session ledger segment boundaries for SESSION_CLOSE/IDLE, plus
          runtime-session ledger events for TRIGGER_END, DELEGATION_END,
          HEARTBEAT_TICK_END, DREAM_END.
-Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION, SESSION_CLOSE drain.
+Phase 2: session projection on RESPONSE_COMPLETE/PRE_COMPACTION; canonical
+         T0->T2 Segment Package build after T0 segment seal.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from app.runtime.hooks import (
     load_registration_specs,
 )
 from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
-from app.services.extract_agent import extract_agent
 from app.services.pending_reply_service import OUTBOUND_TOOL_NAMES
 from app.services.session_memory import (
     build_session_memory_payload_from_messages,
@@ -46,10 +46,6 @@ async def _log_session_start(ctx: HookContext) -> None:
         ctx.source,
         model,
     )
-    # Reset extractor cursor on new session
-    agent_id = _parse_agent_id(ctx)
-    if agent_id:
-        extract_agent.reset_cursor(agent_id)
 
 
 async def _log_post_compaction(ctx: HookContext) -> None:
@@ -75,29 +71,24 @@ async def _log_memory_extracted(ctx: HookContext) -> None:
     logger.info("[Hooks] MEMORY_EXTRACTED: agent=%s", ctx.agent_id)
 
 
-# ── Extractor handlers (Phase 2) ──
+# ── Session projection handlers (Phase 2) ──
 
 
-async def _extract_on_response(ctx: HookContext) -> None:
-    """RESPONSE_COMPLETE → fire-and-forget extraction to T2."""
+async def _project_on_response(ctx: HookContext) -> None:
+    """RESPONSE_COMPLETE → update volatile session projection only.
+
+    Durable T2 is now built only from sealed T0 segments. This avoids the old
+    direct messages -> learnings/*.md path and keeps T2 one-to-one with T0
+    segment source ranges.
+    """
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     turn = ctx.metadata.get("turn_count", "?")
-    logger.info("[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s", ctx.agent_id, ctx.source, turn)
+    logger.info("[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s projection_only=true", ctx.agent_id, ctx.source, turn)
     update_session_memory(
         agent_id,
         build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
-    )
-    # Fire-and-forget: don't block the response (tracked for drain at SESSION_CLOSE)
-    tenant_id = ctx.metadata.get("tenant_id")
-    agent_name = ctx.metadata.get("agent_name", "Agent")
-    extract_agent.schedule_extract(
-        agent_id=agent_id,
-        messages=ctx.messages,
-        source=ctx.source or "web",
-        tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
-        agent_name=agent_name,
     )
 
 
@@ -189,26 +180,25 @@ async def _fast_reflection_on_response(ctx: HookContext) -> None:
     )
 
 
-async def _extract_on_pre_compaction(ctx: HookContext) -> None:
-    """PRE_COMPACTION → synchronous extraction before context is lost."""
+async def _project_on_pre_compaction(ctx: HookContext) -> None:
+    """PRE_COMPACTION → update volatile session projection before compaction.
+
+    It must not write durable T2. The raw evidence remains T0; the sealed
+    segment builder later summarizes the fixed source range.
+    """
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     trigger = ctx.metadata.get("trigger", "?")
-    logger.info("[Hooks] PRE_COMPACTION: agent=%s trigger=%s msgs=%d", ctx.agent_id, trigger, len(ctx.messages or []))
+    logger.info(
+        "[Hooks] PRE_COMPACTION: agent=%s trigger=%s msgs=%d projection_only=true",
+        ctx.agent_id,
+        trigger,
+        len(ctx.messages or []),
+    )
     update_session_memory(
         agent_id,
         build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
-    )
-    # Synchronous: must finish before compaction discards messages
-    tenant_id = ctx.metadata.get("tenant_id")
-    agent_name = ctx.metadata.get("agent_name", "Agent")
-    await extract_agent.extract(
-        agent_id=agent_id,
-        messages=ctx.messages,
-        source="compaction",
-        tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
-        agent_name=agent_name,
     )
 
 
@@ -302,7 +292,7 @@ def _append_and_seal_runtime_t0_event(
 
 
 async def _t0_session_close(ctx: HookContext) -> None:
-    """SESSION_CLOSE → drain extractor + seal the append-only T0 session segment."""
+    """SESSION_CLOSE → seal the append-only T0 segment and start canonical T2 packaging."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
@@ -313,26 +303,6 @@ async def _t0_session_close(ctx: HookContext) -> None:
         agent_id,
         build_session_memory_payload_from_messages(messages, metadata=ctx.metadata),
     )
-    # Drain pending extractions before session ends
-    await extract_agent.drain(agent_id, timeout_s=10.0)
-    # 切口④: settle the session's verified ledger findings into durable T2 memory.
-    # Runtime settlement uses the LLM-primary write gate; a missing tenant/model
-    # context is recorded as a regex_fallback decision by the gate. Best-effort:
-    # a consolidation failure must not abort SESSION_CLOSE T0 segment sealing below.
-    try:
-        from app.services.extract_agent import consolidate_ledger_findings_to_t2_with_llm
-
-        tenant_id_raw = ctx.metadata.get("tenant_id")
-        written = await consolidate_ledger_findings_to_t2_with_llm(
-            agent_id,
-            tenant_id=uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None,
-            session_id=ctx.session_id,
-            source="work_ledger",
-        )
-        if written:
-            logger.info("[Hooks] SESSION_CLOSE: agent=%s ledger→T2 settled %d entries", agent_id, written)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[Hooks] SESSION_CLOSE: ledger→T2 consolidation skipped for %s: %s", agent_id, exc)
     if ctx.session_id:
         sealed = seal_t0_session_segment(
             agent_id=agent_id,
@@ -348,6 +318,7 @@ async def _t0_session_close(ctx: HookContext) -> None:
                 sealed.segment_id,
                 sealed.sequence,
             )
+            await _build_t2_for_sealed_segment(ctx=ctx, agent_id=agent_id, segment_id=sealed.segment_id)
     if _is_reportable_session(messages, ctx.metadata):
         try:
             from app.config import get_settings
@@ -368,9 +339,9 @@ async def _t0_session_close(ctx: HookContext) -> None:
 async def _t0_session_idle(ctx: HookContext) -> None:
     """SESSION_IDLE → seal the active T0 segment as a resume boundary.
 
-    Extraction is NOT triggered here — RESPONSE_COMPLETE already extracts
-    after every agent response. SESSION_IDLE only creates a ledger boundary;
-    it does not summarize or rewrite historical T0 events.
+    RESPONSE_COMPLETE only updates volatile session projection. Durable T2 is
+    built here from the sealed T0 source range; no historical T0 events are
+    rewritten.
     """
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
@@ -393,6 +364,41 @@ async def _t0_session_idle(ctx: HookContext) -> None:
             sealed.segment_id,
             sealed.sequence,
         )
+        await _build_t2_for_sealed_segment(ctx=ctx, agent_id=agent_id, segment_id=sealed.segment_id)
+
+
+async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID, segment_id: str) -> None:
+    """Kick canonical T0 -> T2 package creation for a sealed semantic session segment."""
+
+    if not ctx.session_id:
+        return
+    source = (ctx.source or "web").strip().lower()
+    if source in {"heartbeat", "dream", "distiller", "eval", "platform"}:
+        logger.info("[Hooks] T0->T2 skipped non-semantic source=%s segment=%s", source, segment_id)
+        return
+    tenant_id_raw = ctx.metadata.get("tenant_id")
+    tenant_id = uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None
+    try:
+        from app.memory.t2.segment_package import build_t2_segment_package_with_llm
+
+        result = await build_t2_segment_package_with_llm(
+            data_root=_agent_data_root(),
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=str(ctx.session_id),
+            t0_segment_id=segment_id,
+        )
+        logger.info(
+            "[Hooks] T0->T2 package %s agent=%s session=%s segment=%s job=%s path=%s",
+            result.status,
+            agent_id,
+            ctx.session_id,
+            segment_id,
+            result.job_id,
+            result.package_dir,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Hooks] T0->T2 package build failed for agent=%s segment=%s: %s", agent_id, segment_id, exc)
 
 
 async def _t0_trigger_end(ctx: HookContext) -> None:
@@ -544,7 +550,7 @@ def register_memory_hooks() -> None:
     Called from main.py lifespan during startup.
     Phase 0: logging-only for SESSION_START, POST_COMPACTION, MEMORY_EXTRACTED.
     Phase 1: T0 session-ledger boundaries and runtime-session ledger events.
-    Phase 2: Extractor for RESPONSE_COMPLETE, PRE_COMPACTION; drain on SESSION_CLOSE.
+    Phase 2: session projection for RESPONSE_COMPLETE/PRE_COMPACTION; canonical T0->T2 after seal.
     Phase 3: Pending reply capture for outbound messages.
     """
     from app.runtime import hooks as hooks_mod
@@ -556,7 +562,7 @@ def register_memory_hooks() -> None:
     registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
     logger.info(
-        "[Hooks] Memory hooks registered: %d handlers (3 log + 2 extract + 1 fast_reflection + 6 T0 + 1 pending_reply)",
+        "[Hooks] Memory hooks registered: %d handlers (3 log + 2 projection + 1 fast_reflection + 6 T0 + 1 pending_reply)",
         len(_MEMORY_HOOK_REGISTRATIONS),
     )
 
@@ -574,9 +580,9 @@ _MEMORY_HOOK_HANDLERS = {
     "log_session_start": _log_session_start,
     "log_post_compaction": _log_post_compaction,
     "log_memory_extracted": _log_memory_extracted,
-    "extract_on_response": _extract_on_response,
+    "project_on_response": _project_on_response,
     "fast_reflection_on_response": _fast_reflection_on_response,
-    "extract_on_pre_compaction": _extract_on_pre_compaction,
+    "project_on_pre_compaction": _project_on_pre_compaction,
     "t0_session_close": _t0_session_close,
     "t0_session_idle": _t0_session_idle,
     "t0_trigger_end": _t0_trigger_end,
@@ -600,8 +606,8 @@ _MEMORY_HOOK_CONFIGURATION = [
     },
     {
         "event": HookEvent.RESPONSE_COMPLETE.value,
-        "handler": "extract_on_response",
-        "key": "memory.response_complete.extract",
+        "handler": "project_on_response",
+        "key": "memory.response_complete.session_projection",
     },
     {
         "event": HookEvent.RESPONSE_COMPLETE.value,
@@ -610,8 +616,8 @@ _MEMORY_HOOK_CONFIGURATION = [
     },
     {
         "event": HookEvent.PRE_COMPACTION.value,
-        "handler": "extract_on_pre_compaction",
-        "key": "memory.pre_compaction.extract",
+        "handler": "project_on_pre_compaction",
+        "key": "memory.pre_compaction.session_projection",
     },
     {"event": HookEvent.SESSION_CLOSE.value, "handler": "t0_session_close", "key": "memory.session_close.t0"},
     {"event": HookEvent.SESSION_IDLE.value, "handler": "t0_session_idle", "key": "memory.session_idle.t0"},

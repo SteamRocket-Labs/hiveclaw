@@ -47,7 +47,9 @@ class TestTemplateStructure:
 
     def test_template_documents_upstream_and_downstream(self, template_text: str) -> None:
         assert "Upstream" in template_text
-        assert "extract_agent" in template_text
+        assert "T2 Segment Package" in template_text
+        assert "derived compatibility view" in template_text
+        assert "extract_agent" not in template_text
         assert "Downstream" in template_text
         assert "dream" in template_text.lower()
         assert "soul.md" in template_text

@@ -1,4 +1,8 @@
-"""Durable queue for failed/in-flight T0→T2 extractions (P0-2a).
+"""Legacy durable queue for failed/in-flight extractor jobs (P0-2a).
+
+This queue belongs to the pre-Segment-Package extractor path. It is not the
+canonical T0→T2 route anymore; new runtime memory flow starts from sealed T0
+session ledger segments and writes T2 Segment Packages.
 
 The hot path (`extract_agent.schedule_extract` invoked from
 RESPONSE_COMPLETE) is fire-and-forget: if the underlying task fails (LLM

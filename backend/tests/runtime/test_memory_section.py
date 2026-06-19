@@ -45,6 +45,8 @@ class TestMemorySectionProperties:
         out = build_memory_section()
         # T0 → T2 → T3 pipeline description.
         assert "T0" in out and "T2" in out and "T3" in out
+        assert "Segment Package" in out
+        assert "sealed T0 session segment" in out
         assert "heartbeat" in out.lower()
 
     def test_renders_embedded_snapshot(self) -> None:
@@ -63,6 +65,8 @@ class TestMemorySectionRegressionAgainstOldWording:
     OLD_PHRASES = [
         "Search T3 via FTS5",
         "Directly write to T3 (use sparingly, heartbeat handles most curation)",
+        "extractor picks salient bits",
+        "T2 extractions",
     ]
 
     @pytest.mark.parametrize("phrase", OLD_PHRASES)

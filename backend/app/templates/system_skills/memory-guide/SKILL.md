@@ -33,7 +33,7 @@ perform it. Writing to memory without these rules corrupts the pipeline.
 - The fact is a transient task detail, intermediate tool output, or debug note — goal state belongs in the work ledger and working notes belong in workspace files, not memory.
 - You are about to write code patterns, file paths, or debugging steps — those live in the workspace.
 - You already called `save_memory` for the same fact in this session (it is idempotent at character level, but repeated calls still waste turns).
-- You want to update `memory/t0/`, `memory/learnings/`, `evolution/`, or `logs/` directly — forbidden. The automated pipeline owns these paths.
+- You want to update `memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, or `logs/` directly — forbidden. The automated pipeline owns these paths.
 </do_not_use_when>
 
 ## The 4-Layer Pyramid
@@ -43,10 +43,10 @@ perform it. Writing to memory without these rules corrupts the pipeline.
 T0 (memory/t0/sessions/<session_id>/segments/<segment_id>/source.md)
    append-only raw session ledger
    written as user/assistant/tool events are accepted; idle/close only seal segments
-         │  extract_agent (hot path: after each response; backfill: from T0)
+         │  sealed source range -> Summary Agent -> Learning Brain -> Memory Gate -> Platform Gate
          ▼
-T2 (memory/learnings/*.md)
-   recent salient observations
+T2 (memory/sessions/<session_id>/segments/<segment_id>/{summary.md,labels.md,review.md,manifest.json})
+   reviewed Segment Packages; legacy memory/learnings/*.md may exist only as a derived compatibility view
    curated every ~2 h by heartbeat
          │  heartbeat curation (T2 → T3)
          ▼
@@ -261,7 +261,7 @@ User: "我们之前怎么处理的并发登录？"
 - ❌ **Picking `category="general"` by default** → routes to `knowledge.md`, load priority P1 on-demand, may not inject into the prompt when most needed. Choose the most specific category that matches retrieval intent.
 - ❌ **Skipping `search_memory` before answering questions about the past** → produces invented continuity that contradicts real past decisions.
 - ❌ **Using `search_memory` like SQL** (`"user AND (feedback OR correction)"`) → scoring is token-frequency, operators are treated as literal terms and lower the score.
-- ❌ **Writing directly to `memory/learnings/`, `evolution/`, `logs/`, or `soul.md`** → forbidden; the pipeline owns these. Use `save_memory` or `workspace/` instead.
+- ❌ **Writing directly to `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`, or `soul.md`** → forbidden; the pipeline owns these. Use `save_memory` or `workspace/` instead.
 - ❌ **Re-saving a correction already saved this session** → character-level idempotency catches exact duplicates, but paraphrased duplicates still accumulate. Check your working context before re-saving.
 
 </anti_patterns>
@@ -272,7 +272,7 @@ User: "我们之前怎么处理的并发登录？"
 - Every `save_memory` call contains exactly one fact, with an appropriate `category` chosen from the routing table.
 - Dates in memory content are absolute (YYYY-MM-DD), not relative.
 - Before answering any question about past sessions or prior decisions, `search_memory` has been called at least once.
-- You do NOT write to `memory/learnings/`, `evolution/`, `logs/`, or `soul.md`.
+- You do NOT write to `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`, or `soul.md`.
 - When the user issues an imperative correction ("记住…", "remember this…", "never do X"), `save_memory` is called in the same response, with `category="feedback"` or `category="blocked_pattern"` as appropriate.
 </success_criteria>
 

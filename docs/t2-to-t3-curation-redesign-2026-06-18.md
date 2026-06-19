@@ -93,7 +93,7 @@ active Explicit Memory Overlay entries
 
 1. T0 append-only session ledger 的实现细节。
 2. T0 -> T2 Summary Agent / Learning Brain / Segment Package 生成细节。
-3. T3 -> `soul.md` / optional `source.md` 的 Dream / Soul Writer 流程。
+3. T3 -> `soul.md` 的 Dream / Soul Writer 流程；最高层不存在 optional `source.md` identity 文件。
 4. Skill 文件生成、Skill eval、Skill 安装。
 5. Workflow JSON 设计、Dynamic Workflow 生成、workflow runtime。
 6. OpenViking、Handside、vector DB、graph DB 等外部增强记忆系统。
@@ -169,7 +169,7 @@ memory/t3/**/<topic>/**
 这些内容如果需要，只能作为 derived read model：
 
 ```text
-memory/.derived/t3_index.md
+memory/wiki_map.md                   # single generated Memory Wiki map / persistent navigation read model
 memory/.derived/relation_graph.md
 memory/.derived/contradictions.md
 ```
@@ -181,6 +181,7 @@ Derived read model 的规则：
 3. 不能成为 semantic truth。
 4. 不能被 Heartbeat / Dream 当作 primary evidence。
 5. 不能在 derived 文件里新增 accepted memory。
+6. Platform Gate 每次 accepted T3 commit 后必须重建唯一 generated map `memory/wiki_map.md`，并清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`；运行时 prompt 仍优先消费实时 T3 entry manifest / Memory Navigation。
 
 ## 6. T2 -> T3 运行流程
 
@@ -1097,7 +1098,7 @@ Tool Context
 3. T3 是 long-term dynamic memory，按 relevance / owner / company / sensitivity / prompt priority 动态激活。
 4. T2 仍可进入 prompt，但只限新近、未吸收、高优先级、与当前任务相关的 Segment Package。
 5. `rolling_checkpoint` 是短期 carryover，不是 T3。
-6. `memory/.derived/t3_index.md` 这类导航可以作为 optional memory navigation，但不能常驻 prompt。
+6. `memory/wiki_map.md` 这类导航可以作为 optional memory navigation，但不能常驻 prompt。
 7. prompt builder 只能读，不允许产生写副作用。
 
 ## 16. 旧路径迁移

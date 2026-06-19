@@ -16,7 +16,12 @@ def test_fast_reflection_candidate_records_user_correction_without_durable_memor
             {"role": "assistant", "content": "I will always use yarn for this repo."},
             {"role": "user", "content": "不是，用这个项目时以后都用 npm，不要用 yarn。"},
         ],
-        metadata={"tenant_id": str(uuid.uuid4()), "final_response": "收到。"},
+        metadata={
+            "tenant_id": str(uuid.uuid4()),
+            "final_response": "收到。",
+            "fast_reflection_signal": "用这个项目时以后都用 npm，不要用 yarn。",
+            "skill_candidate_loop_enabled": False,
+        },
     )
 
     assert result["status"] == "candidate_created"
@@ -33,6 +38,25 @@ def test_fast_reflection_candidate_records_user_correction_without_durable_memor
     assert candidate["metadata"]["signal_type"] == "user_preference_correction"
     assert not (workspace / "memory" / "t2").exists()
     assert not (workspace / "skills").exists()
+
+
+def test_fast_reflection_marker_fallback_is_not_a_learning_candidate(tmp_path) -> None:
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    agent_id = uuid.uuid4()
+    result = create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-marker",
+        messages=[
+            {"role": "assistant", "content": "I will always use yarn for this repo."},
+            {"role": "user", "content": "不是，用这个项目时以后都用 npm，不要用 yarn。"},
+        ],
+        metadata={},
+    )
+
+    assert result == {"status": "skipped", "reason": "low_signal"}
+    assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
 
 
 def test_fast_reflection_skips_low_signal_chatter(tmp_path) -> None:
@@ -178,7 +202,11 @@ def test_repeated_workflow_signal_bridges_to_skill_candidate(tmp_path) -> None:
         if entry.get("event") == "candidate"
     }
     assert {"fast_reflection", "skill_candidate"} <= candidate_targets
-    assert (workspace / "evolution" / "skill_candidates" / skill["candidate_id"] / "SKILL.md").exists()
+    candidate_dir = workspace / "evolution" / "skill_candidates" / skill["candidate_id"]
+    assert (candidate_dir / "candidate_signal.md").exists()
+    assert not (candidate_dir / "SKILL.md.draft").exists()
+    assert (candidate_dir / "manifest.json").exists()
+    assert not (candidate_dir / "SKILL.md").exists()
 
 
 def test_skill_candidate_loop_flag_disables_skill_bridge_only(tmp_path) -> None:
@@ -230,7 +258,10 @@ def test_user_preference_correction_does_not_bridge_to_skill(tmp_path) -> None:
         agent_id=agent_id,
         session_id="session-pref",
         messages=[{"role": "user", "content": "以后不要用 emoji"}],
-        metadata={},
+        metadata={
+            "fast_reflection_signal": "以后不要用 emoji",
+            "skill_candidate_loop_enabled": True,
+        },
     )
 
     assert result["status"] == "candidate_created"

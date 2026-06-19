@@ -36,7 +36,14 @@ def _seed_workspace(tmp_path: Path) -> Path:
     (root / "evolution").mkdir(parents=True)
     (root / "skills" / "market-research").mkdir(parents=True)
 
-    (root / "soul.md").write_text("# Soul\n\n## Identity\n\nagent\n\n## Learned Behaviors\n\n- x\n", encoding="utf-8")
+    (root / "soul.md").write_text(
+        "---\n"
+        "schema: hive.soul.v2\n"
+        "---\n\n"
+        '<soul_identity id="identity" status="active" frozen="true"><claim>agent</claim></soul_identity>\n'
+        '<soul_user_model id="user-model" status="active"><claim>x</claim></soul_user_model>\n',
+        encoding="utf-8",
+    )
     (root / "skills" / "market-research" / "SKILL.md").write_text("---\nname: market-research\n---\n", encoding="utf-8")
 
     recent = (datetime.now(UTC) - timedelta(days=1)).isoformat()

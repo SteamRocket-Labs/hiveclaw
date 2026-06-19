@@ -11,7 +11,6 @@ import pytest
 from app.memory.retriever import MemoryRetriever, _score_relevance
 from app.memory.types import MemoryKind
 from app.memory.activation import ActivationContext
-from app.memory.understanding_store import UnderstandingStore
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
 
@@ -99,7 +98,7 @@ async def test_retrieve_returns_t3_direct_layer(
 
 
 @pytest.mark.asyncio
-async def test_retrieve_includes_high_priority_t2_feedback(
+async def test_retrieve_excludes_legacy_high_priority_t2_by_default(
     data_root: Path,
     agent_id: uuid.UUID,
     retriever: MemoryRetriever,
@@ -123,13 +122,39 @@ async def test_retrieve_includes_high_priority_t2_feedback(
     items = await retriever.retrieve(agent_id, "salary planning", session_id=None, tenant_id=None)
 
     t2_items = [item for item in items if item.metadata.get("lane") == "t2_high_priority"]
-    assert len(t2_items) == 1
-    assert t2_items[0].kind == MemoryKind.SEMANTIC
-    assert t2_items[0].metadata["entry_id"] == "t2-feedback-1"
+    assert t2_items == []
 
 
 @pytest.mark.asyncio
-async def test_high_priority_t2_preserves_activation_metadata(
+async def test_legacy_high_priority_t2_is_not_prompt_memory_even_when_enabled(
+    data_root: Path,
+    agent_id: uuid.UUID,
+) -> None:
+    from app.memory.t2_store import ensure_t2_layout, format_t2_entry
+
+    root = ensure_t2_layout(data_root, agent_id)
+    (root / "insights.md").write_text(
+        "# Insights\n"
+        + format_t2_entry(
+            category="feedback",
+            content="User wants salary planning answers to include owner approval constraints.",
+            source="web",
+            weight=0.95,
+            metadata={"entry_id": "t2-feedback-1", "sensitivity": "PL1_public"},
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    retriever = MemoryRetriever(data_root=data_root, include_legacy_sources=True)
+    items = await retriever.retrieve(agent_id, "salary planning", session_id=None, tenant_id=None)
+
+    t2_items = [item for item in items if item.metadata.get("lane") == "t2_high_priority"]
+    assert t2_items == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_high_priority_t2_activation_metadata_is_not_recalled(
     data_root: Path,
     agent_id: uuid.UUID,
     retriever: MemoryRetriever,
@@ -156,7 +181,8 @@ async def test_high_priority_t2_preserves_activation_metadata(
         encoding="utf-8",
     )
 
-    items = await retriever.retrieve(
+    legacy_retriever = MemoryRetriever(data_root=data_root, include_legacy_sources=True)
+    items = await legacy_retriever.retrieve(
         agent_id,
         "Railway incident summaries",
         session_id=None,
@@ -164,8 +190,7 @@ async def test_high_priority_t2_preserves_activation_metadata(
         activation_context=_activation_context(),
     )
 
-    t2_item = next(item for item in items if item.metadata.get("lane") == "t2_high_priority")
-    assert {"open_loop_pressure", "retention_score", "confidence_weight"} <= set(t2_item.metadata["activation_reasons"])
+    assert [item for item in items if item.metadata.get("lane") == "t2_high_priority"] == []
 
 
 @pytest.mark.asyncio
@@ -490,22 +515,38 @@ async def test_retriever_suppresses_conflicted_and_revalidation_required_t3_entr
 
 
 @pytest.mark.asyncio
-async def test_retrieve_includes_relationship_understandings(
+async def test_retrieve_excludes_legacy_relationship_understandings(
     data_root: Path,
     agent_id: uuid.UUID,
-    retriever: MemoryRetriever,
 ) -> None:
-    store = UnderstandingStore(data_root / str(agent_id) / "memory")
-    store.record(
-        subject="agent_a",
-        object_="agent_b",
-        relation_type="collaborator",
-        current_understanding="Agent B is reliable for research but needs an explicit output schema.",
-        evidence_refs=["decision/abc123"],
-        confidence=0.9,
+    memory_dir = data_root / str(agent_id) / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "understandings.md").write_text(
+        "<!-- understanding\n"
+        "entry_id: legacy-relation\n"
+        "subject: agent_a\n"
+        "object: agent_b\n"
+        "relation_type: collaborator\n"
+        "evidence_refs: decision/abc123\n"
+        "confidence: 0.9\n"
+        "last_confirmed_at: 2026-06-19T00:00:00+00:00\n"
+        "-->\n"
+        "Agent B is reliable for research but needs an explicit output schema.\n",
+        encoding="utf-8",
     )
 
-    items = await retriever.retrieve(
+    items = await MemoryRetriever(data_root=data_root).retrieve(
+        agent_id,
+        "agent b research schema",
+        session_id=None,
+        tenant_id=None,
+        activation_context=_activation_context(),
+    )
+
+    assert [item for item in items if item.metadata.get("source_type") == "understanding_store"] == []
+
+    derived_retriever = MemoryRetriever(data_root=data_root, include_derived_sources=True)
+    items = await derived_retriever.retrieve(
         agent_id,
         "agent b research schema",
         session_id=None,
@@ -514,14 +555,7 @@ async def test_retrieve_includes_relationship_understandings(
     )
 
     understanding_items = [item for item in items if item.metadata.get("source_type") == "understanding_store"]
-    assert len(understanding_items) == 1
-    item = understanding_items[0]
-    assert item.source == "memory/understandings.md"
-    assert "agent_a -[collaborator]-> agent_b" in item.content
-    assert "explicit output schema" in item.content
-    assert item.metadata["category"] == "understanding"
-    assert item.metadata["evidence_refs"] == "decision/abc123"
-    assert item.metadata["confidence"] == "0.9"
+    assert understanding_items == []
 
 
 def _setup_wiki_page(data_root: Path, agent_id: uuid.UUID, slug: str, body: str) -> None:
@@ -534,7 +568,6 @@ def _setup_wiki_page(data_root: Path, agent_id: uuid.UUID, slug: str, body: str)
 async def test_retrieve_includes_ppr_wiki_pages_in_prompt_memory(
     data_root: Path,
     agent_id: uuid.UUID,
-    retriever: MemoryRetriever,
 ) -> None:
     _setup_wiki_page(
         data_root,
@@ -552,7 +585,17 @@ async def test_retrieve_includes_ppr_wiki_pages_in_prompt_memory(
         "## Current Claim\n\nRe-pin the previous image digest during failed deployments.\n",
     )
 
-    items = await retriever.retrieve(agent_id, "canary release rollout", session_id=None, tenant_id=None)
+    items = await MemoryRetriever(data_root=data_root).retrieve(
+        agent_id,
+        "canary release rollout",
+        session_id=None,
+        tenant_id=None,
+    )
+
+    assert [item for item in items if item.metadata.get("source_type") == "wiki_ppr"] == []
+
+    derived_retriever = MemoryRetriever(data_root=data_root, include_derived_sources=True)
+    items = await derived_retriever.retrieve(agent_id, "canary release rollout", session_id=None, tenant_id=None)
 
     ppr_items = [item for item in items if item.metadata.get("source_type") == "wiki_ppr"]
     assert any(item.source == "memory/wiki/rollback-procedure.md" for item in ppr_items)

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.memory.md_store import ensure_t3_layout
+from app.memory.md_store import ensure_t3_layout, rebuild_index
 
 ACCEPTED_T3_TARGETS: tuple[str, ...] = (
     "memory/t3/episodes.md",
@@ -203,6 +203,35 @@ def apply_t3_consolidation_patch(
         if not is_accepted_t3_target(target) or not block_id:
             issues.append("retire_block missing canonical target/block_id")
             continue
+        existing = _find_block(updated_contents.get(target, ""), block_id)
+        if existing is None:
+            issues.append(f"retire_block target block missing in {target}: {block_id}")
+            continue
+        expected_old_hash = str(change.attrib.get("expected_old_hash") or "").replace("sha256:", "").strip()
+        current_block_hash = hashlib.sha256(existing.strip().encode("utf-8")).hexdigest()
+        if expected_old_hash and expected_old_hash != current_block_hash:
+            conflict_path = _write_conflict_bundle(
+                job_dir=job_dir,
+                target=target,
+                expected_sha=expected_old_hash,
+                current_sha=current_block_hash,
+                current_content=existing,
+            )
+            return _write_manifest_result(
+                job_dir,
+                status="rebase_required",
+                job_id=job_id,
+                issues=[f"block revision changed for {target}#{block_id}"],
+                conflict_bundle_path=conflict_path,
+            )
+        updated_contents[target] = updated_contents[target].replace(
+            existing,
+            _retire_block(
+                existing,
+                job_id=job_id,
+                reason=str(change.attrib.get("reason") or "").strip(),
+            ),
+        )
         committed_blocks.append(block_id)
 
     for change in patch.findall("./proposed_changes/reinforce_block"):
@@ -211,20 +240,25 @@ def apply_t3_consolidation_patch(
         if not is_accepted_t3_target(target) or not block_id:
             issues.append("reinforce_block missing canonical target/block_id")
             continue
+        if _find_block(updated_contents.get(target, ""), block_id) is None:
+            issues.append(f"reinforce_block target block missing in {target}: {block_id}")
+            continue
         committed_blocks.append(block_id)
 
     if issues:
         return _write_manifest_result(job_dir, status="held", job_id=job_id, issues=issues)
 
+    resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
     _atomic_write_targets(mem_dir, updated_contents)
     source_updates = _apply_source_lifecycle_updates(
         root=root,
-        agent_id=uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id,
+        agent_id=resolved_agent_id,
         job_id=job_id,
         patch=patch,
         review=review,
         committed_blocks=tuple(committed_blocks),
     )
+    rebuild_index(root, resolved_agent_id)
     return _write_manifest_result(
         job_dir,
         status="committed",
@@ -526,6 +560,16 @@ def _block_exists(content: str, block_id: str) -> bool:
 def _append_block(existing: str, block_content: str) -> str:
     base = existing.rstrip()
     return f"{base}\n\n{block_content.strip()}\n" if base else f"{block_content.strip()}\n"
+
+
+def _retire_block(existing: str, *, job_id: str, reason: str) -> str:
+    block = ET.fromstring(existing)
+    block.set("status", "retired")
+    block.set("retired_by", job_id)
+    block.set("retired_at", _now())
+    if reason:
+        block.set("retire_reason", reason)
+    return ET.tostring(block, encoding="unicode").strip()
 
 
 def _atomic_write_targets(mem_dir: Path, contents: dict[str, str]) -> None:

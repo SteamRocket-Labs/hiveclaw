@@ -469,8 +469,8 @@ def retire_t3_entries(
     """Remove matching entry lines from an active T3 file and archive them.
 
     ``drops`` use substring matching against entry lines (the dream decision
-    contract). Returns the number of entries retired. Rebuilds INDEX.md when
-    anything moved so de-indexing is immediate.
+    contract). Returns the number of entries retired. Rebuilds the derived T3
+    index when anything moved so de-indexing is immediate.
     """
     needles = [str(d).strip() for d in drops if str(d).strip()]
     if not needles:

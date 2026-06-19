@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+
+from app.services.skill_candidate_package import write_skill_candidate_package
 
 
 def record_skill_lifecycle_event(
@@ -48,6 +52,21 @@ def _candidate_path(workspace: Path) -> Path:
     evolution_dir = workspace / "evolution"
     evolution_dir.mkdir(parents=True, exist_ok=True)
     return evolution_dir / "skill_candidates.md"
+
+
+def _candidate_package_root(workspace: Path) -> Path:
+    return workspace / "evolution" / "skill_candidates"
+
+
+def _candidate_id_for_workflow(workflow_signature: str) -> str:
+    normalized = (workflow_signature or "unknown_workflow").strip().lower()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"lifecycle-{digest}"
+
+
+def _safe_skill_slug(skill_name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", (skill_name or "candidate-skill").strip()).strip("-").lower()
+    return slug or "candidate-skill"
 
 
 def _review_path(workspace: Path) -> Path:
@@ -199,6 +218,33 @@ def _load_candidates(path: Path) -> dict[str, SkillCandidateRecord]:
     return records
 
 
+def _load_candidate_packages(workspace: Path) -> dict[str, SkillCandidateRecord]:
+    root = _candidate_package_root(workspace)
+    if not root.exists():
+        return {}
+    records: dict[str, SkillCandidateRecord] = {}
+    for manifest_path in sorted(root.glob("*/manifest.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+        workflow_signature = str(metadata.get("workflow_signature") or manifest.get("candidate_id") or "").strip()
+        if not workflow_signature:
+            continue
+        records[workflow_signature] = SkillCandidateRecord(
+            skill_name=str(manifest.get("skill_name") or metadata.get("skill_name") or workflow_signature),
+            workflow_signature=workflow_signature,
+            promote_candidates=[str(item) for item in metadata.get("recent_successes") or []],
+            patch_candidates=[str(item) for item in metadata.get("recent_patch_signals") or []],
+            last_status=str(metadata.get("last_status") or manifest.get("status") or ""),
+            last_note=str(metadata.get("last_note") or manifest.get("status_reason") or ""),
+            blocker=str(metadata.get("blocker") or ""),
+            last_updated_at=str(metadata.get("last_updated_at") or manifest.get("updated_at") or manifest.get("created_at") or ""),
+        )
+    return records
+
+
 def _write_candidates(path: Path, records: dict[str, SkillCandidateRecord]) -> None:
     lines = ["# Skill Candidates", ""]
     for workflow_signature in sorted(records):
@@ -223,7 +269,68 @@ def _write_candidates(path: Path, records: dict[str, SkillCandidateRecord]) -> N
 
 
 def load_skill_candidates(workspace: Path) -> dict[str, SkillCandidateRecord]:
+    packaged = _load_candidate_packages(workspace)
+    if packaged:
+        return packaged
     return _load_candidates(_candidate_path(workspace))
+
+
+def _render_lifecycle_skill_draft(record: SkillCandidateRecord, *, status: str) -> str:
+    return (
+        "---\n"
+        f"name: {_safe_skill_slug(record.skill_name)}\n"
+        f"description: Candidate package generated from repeated runtime evidence for {record.workflow_signature}.\n"
+        "hive_status: inactive_candidate\n"
+        "hive_source: skill_lifecycle\n"
+        "---\n\n"
+        f"# {record.skill_name}\n\n"
+        "<skill_candidate_summary>\n"
+        f"<workflow_signature>{record.workflow_signature}</workflow_signature>\n"
+        f"<status>{status}</status>\n"
+        f"<promote_candidate_count>{len(record.promote_candidates)}</promote_candidate_count>\n"
+        f"<patch_candidate_count>{len(record.patch_candidates)}</patch_candidate_count>\n"
+        f"<last_status>{record.last_status}</last_status>\n"
+        f"<blocker>{record.blocker or 'none'}</blocker>\n"
+        "</skill_candidate_summary>\n\n"
+        "<writer_instruction>\n"
+        "This inactive package is telemetry evidence for the Skill Writer. Before any active skill is created, "
+        "the Skill Writer must inspect the source refs, draft a full SKILL.md, and pass the Skill Gate review.\n"
+        "</writer_instruction>\n"
+    )
+
+
+def _write_candidate_package(workspace: Path, record: SkillCandidateRecord, *, status: str) -> dict[str, Any]:
+    candidate_id = _candidate_id_for_workflow(record.workflow_signature)
+    metadata = {
+        "workflow_signature": record.workflow_signature,
+        "skill_name": record.skill_name,
+        "promote_candidate_count": len(record.promote_candidates),
+        "patch_candidate_count": len(record.patch_candidates),
+        "recent_successes": list(record.promote_candidates),
+        "recent_patch_signals": list(record.patch_candidates),
+        "last_status": record.last_status,
+        "last_note": record.last_note,
+        "blocker": record.blocker,
+        "last_updated_at": record.last_updated_at,
+    }
+    source_refs = ["evolution/skill_usage.jsonl", "evolution/skill_promotion_evidence.jsonl"]
+    if record.workflow_signature:
+        source_refs.append(f"workflow_signature:{record.workflow_signature}")
+    return write_skill_candidate_package(
+        workspace=workspace,
+        candidate_id=candidate_id,
+        rendered_markdown=_render_lifecycle_skill_draft(record, status=status),
+        skill_name=record.skill_name,
+        package_type="skill_lifecycle",
+        target_path=f"skills/{_safe_skill_slug(record.skill_name)}/SKILL.md",
+        source_refs=source_refs,
+        reason=record.last_note or "Repeated runtime evidence generated a skill candidate.",
+        declared_tools=[],
+        declared_packs=[],
+        status=status,
+        extra_metadata=metadata,
+        draft_filename="candidate_signal.md",
+    )
 
 
 def update_skill_candidate_record(
@@ -237,7 +344,7 @@ def update_skill_candidate_record(
     last_updated_at: str | None = None,
 ) -> SkillCandidateRecord:
     path = _candidate_path(workspace)
-    records = _load_candidates(path)
+    records = load_skill_candidates(workspace)
     record = records.get(
         workflow_signature,
         SkillCandidateRecord(
@@ -262,7 +369,9 @@ def update_skill_candidate_record(
     if last_updated_at is not None:
         record.last_updated_at = last_updated_at
     records[workflow_signature] = record
-    _write_candidates(path, records)
+    _write_candidate_package(workspace, record, status=record.last_status or "candidate")
+    if path.exists():
+        path.unlink()
     return record
 
 
@@ -277,12 +386,11 @@ def record_skill_execution(
     blocker: str | None = None,
     occurred_at: str | None = None,
 ) -> dict[str, Any]:
-    candidates_path = _candidate_path(workspace)
     review_path = _review_path(workspace)
     if not review_path.exists():
         review_path.write_text("# Skill Review\n\n", encoding="utf-8")
 
-    records = _load_candidates(candidates_path)
+    records = load_skill_candidates(workspace)
     record = records.get(
         workflow_signature,
         SkillCandidateRecord(
@@ -308,8 +416,6 @@ def record_skill_execution(
     record.last_note = note.strip()
     record.blocker = (blocker or "").strip()
     record.last_updated_at = stamp
-    records[workflow_signature] = record
-    _write_candidates(candidates_path, records)
 
     decision = "candidate"
     if used_skill and len(record.patch_candidates) >= _PATCH_THRESHOLD:
@@ -335,6 +441,10 @@ def record_skill_execution(
             status="candidate",
             note=note,
         )
+    _write_candidate_package(workspace, record, status=decision)
+    legacy_path = _candidate_path(workspace)
+    if legacy_path.exists():
+        legacy_path.unlink()
 
     return {
         "decision": decision,

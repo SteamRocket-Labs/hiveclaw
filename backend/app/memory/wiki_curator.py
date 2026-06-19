@@ -1,7 +1,12 @@
-"""Wiki curator — semantic concept-page consolidation (spec §4.5 / §12 P5 MVP).
+"""Deprecated wiki-page curator for derived/compat concept pages.
 
-Wiki pages live as Markdown under ``memory/wiki/<concept>.md`` and hold the
-agent's semantic claims:
+Accepted T3 truth is now restricted to ``memory/t3/episodes.md``,
+``user.md``, ``worker.md``, and ``capabilities.md``. Wiki pages under
+``memory/wiki/<concept>.md`` are derived/compat read-model pages only; the live
+curation lane is T3 Consolidator -> Memory Gate -> Platform Gate.
+
+When used by migration/eval paths, a wiki page holds a derived view of semantic
+claims:
 
     ## Current Claim / ## Scope / ## Evidence / ## Contradictions
     / ## Changes / ## Retrieval Tags

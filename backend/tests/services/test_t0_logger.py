@@ -224,14 +224,19 @@ class TestFormatDreamLog:
                 "deduped": 3,
                 "promoted_to_soul": 1,
                 "dedup_summary": "Merged 3 feedback entries",
-                "soul_promotions": ["Core value: quality"],
+                "soul_candidate": {
+                    "target": "soul.md",
+                    "source_refs": ["t3:memory/t3/worker.md#quality"],
+                    "review": {"recommendation": "promote"},
+                },
                 "cleanup_summary": "T2 truncated to 10",
             },
         )
         assert "type: dream" in result
         assert "t3_processed: 5" in result
         assert "Merged 3 feedback entries" in result
-        assert "Core value: quality" in result
+        assert "## Soul Candidate" in result
+        assert "t3:memory/t3/worker.md#quality" in result
 
 
 # ── write_t0_log ──
@@ -841,14 +846,14 @@ class TestHeartbeatLogReasoning:
     def test_omits_reasoning_section_when_empty(self) -> None:
         result = _format_heartbeat_log([], {"tick": 1})
         assert "## Decision Reasoning" not in result
-        assert "## New T2 Entries" in result  # other sections still emitted
+        assert "## T3 Intake Candidates" in result  # other sections still emitted
 
     def test_includes_t2_inputs_section(self) -> None:
         result = _format_heartbeat_log(
             [],
             {"tick": 1, "t2_inputs": ["entry A", "entry B"]},
         )
-        assert "## T2 Inputs Considered" in result
+        assert "## T3 Source Inputs Considered" in result
         assert "- entry A" in result
         assert "- entry B" in result
 
@@ -899,7 +904,7 @@ class TestDreamLogDecisions:
                 ],
             },
         )
-        assert "## Soul Promotions" in result
+        assert "## Legacy Soul Promotion Audit" in result
         assert "respond in Chinese" in result
         assert "repeated 5x" in result
         assert "feedback.md" in result
@@ -916,7 +921,7 @@ class TestDreamLogDecisions:
         assert "Merged 3 feedback entries" in result
         assert "Core value: quality" in result
         assert "## Dedup Decisions" not in result
-        assert "## Soul Promotions" not in result
+        assert "## Legacy Soul Promotion Audit" in result
 
     def test_renders_dream_reasoning_when_provided(self) -> None:
         result = _format_dream_log(

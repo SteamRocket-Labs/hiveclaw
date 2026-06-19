@@ -297,7 +297,7 @@ class TestDreamIntegration:
         # heartbeat should own T2→T3. We verify the new MD consolidation is present.
         assert "_consolidate_t3_files" in source
 
-    def test_v23_index_md_update(self, tmp_path: Path) -> None:
+    def test_v23_wiki_map_update(self, tmp_path: Path) -> None:
         from app.services.auto_dream import _update_index_md
 
         agent_id = uuid.uuid4()
@@ -314,9 +314,12 @@ class TestDreamIntegration:
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
             _update_index_md(agent_id)
-        index = (memory_dir / "INDEX.md").read_text()
+        index = (memory_dir / "wiki_map.md").read_text()
         assert "t3/user.md" in index
         assert "idx-a" in index
+        assert not (memory_dir / "INDEX.md").exists()
+        assert not (memory_dir / "index.md").exists()
+        assert not (memory_dir / ".derived" / "t3_index.md").exists()
 
     def test_v10_gate_expansion_ticks(self) -> None:
         from app.services.auto_dream import (

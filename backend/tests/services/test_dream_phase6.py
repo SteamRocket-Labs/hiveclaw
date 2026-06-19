@@ -117,7 +117,7 @@ class TestTruncateT2:
 
 
 class TestUpdateIndexMd:
-    def test_generates_derived_index_from_canonical_t3(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+    def test_generates_wiki_map_from_canonical_t3(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         memory_dir = tmp_agent_dir / str(agent_id) / "memory" / "t3"
         (memory_dir / "user.md").write_text("# T3 User\n- [2026-04-06] user fact\n", encoding="utf-8")
         (memory_dir / "capabilities.md").write_text("# T3 Capabilities\n- [2026-04-06] capability fact\n", encoding="utf-8")
@@ -126,7 +126,7 @@ class TestUpdateIndexMd:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             _update_index_md(agent_id)
 
-        index = (tmp_agent_dir / str(agent_id) / "memory" / ".derived" / "t3_index.md").read_text(encoding="utf-8")
+        index = (tmp_agent_dir / str(agent_id) / "memory" / "wiki_map.md").read_text(encoding="utf-8")
         assert "t3/user.md" in index
         assert "t3/capabilities.md" in index
 
@@ -176,7 +176,7 @@ async def test_run_dream_does_not_mechanically_rewrite_accepted_t3(
 
     assert result["t3_deduped"] == 0
     assert (t3_dir / "user.md").read_text(encoding="utf-8") == before
-    assert (memory_dir / ".derived" / "t3_index.md").exists()
+    assert (memory_dir / "wiki_map.md").exists()
 
 
 class TestDreamTemplate:
@@ -191,4 +191,6 @@ class TestDreamTemplate:
         content = _DREAM_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert "Soul Reconsolidation Protocol" in content
         assert "You are not the T3 writer" in content
-        assert "source refs for every soul promotion" in content
+        assert "soul_candidate" in content
+        assert "source_refs" in content
+        assert "soul.md.next" in content

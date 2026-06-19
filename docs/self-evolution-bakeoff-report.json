@@ -158,9 +158,9 @@
             "detail": "{\"decision\": \"patch\", \"last_status\": \"workaround\", \"patch_candidate_count\": 2, \"promote_candidate_count\": 0, \"workflow_signature\": \"incident-response\"}"
           },
           {
-            "id": "candidate_file_written",
+            "id": "candidate_package_written",
             "passed": true,
-            "detail": "/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/hive-self-evolution-bakeoff-alhpnghg/eeb4fff9-bf79-43a5-8537-b28449b95159/evolution/skill_candidates.md"
+            "detail": "/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/hive-self-evolution-bakeoff-alhpnghg/eeb4fff9-bf79-43a5-8537-b28449b95159/evolution/skill_candidates/"
           }
         ],
         "passed_checks": 3,
@@ -317,9 +317,9 @@
           "detail": "{\"decision\": \"patch\", \"last_status\": \"workaround\", \"patch_candidate_count\": 2, \"promote_candidate_count\": 0, \"workflow_signature\": \"incident-response\"}"
         },
         {
-          "id": "candidate_file_written",
+          "id": "candidate_package_written",
           "passed": true,
-          "detail": "/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/hive-self-evolution-bakeoff-alhpnghg/eeb4fff9-bf79-43a5-8537-b28449b95159/evolution/skill_candidates.md"
+          "detail": "/var/folders/cm/zpwxmr512rq1qz4_0_ryz8t80000gn/T/hive-self-evolution-bakeoff-alhpnghg/eeb4fff9-bf79-43a5-8537-b28449b95159/evolution/skill_candidates/"
         }
       ],
       "hermes_source": "unavailable"

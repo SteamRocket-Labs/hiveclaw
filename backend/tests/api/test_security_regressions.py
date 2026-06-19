@@ -359,14 +359,17 @@ async def test_agent_files_refuses_invalid_skill_package_paths(monkeypatch, tmp_
             )
         assert write_exc.value.status_code == 403
 
-    await files_api.write_file(
-        agent_id=agent_id,
-        path="skills/deploy-checklist/SKILL.md",
-        data=files_api.FileWrite(content="---\nname: deploy-checklist\n---\n"),
-        current_user=current_user,
-        db=object(),
-    )
-    assert (tmp_path / str(agent_id) / "skills" / "deploy-checklist" / "SKILL.md").exists()
+    with pytest.raises(HTTPException) as canonical_skill_exc:
+        await files_api.write_file(
+            agent_id=agent_id,
+            path="skills/deploy-checklist/SKILL.md",
+            data=files_api.FileWrite(content="---\nname: deploy-checklist\n---\n"),
+            current_user=current_user,
+            db=object(),
+        )
+    assert canonical_skill_exc.value.status_code == 403
+    assert "Platform Skill Gate" in str(canonical_skill_exc.value.detail)
+    assert not (tmp_path / str(agent_id) / "skills" / "deploy-checklist" / "SKILL.md").exists()
 
     with pytest.raises(HTTPException) as upload_exc:
         await files_api.upload_file_to_workspace(
@@ -376,7 +379,7 @@ async def test_agent_files_refuses_invalid_skill_package_paths(monkeypatch, tmp_
             current_user=current_user,
             db=object(),
         )
-    assert upload_exc.value.status_code == 403
+    assert upload_exc.value.status_code in {400, 403}
 
 
 def test_agent_files_safe_path_rejects_sibling_prefix_escape(monkeypatch, tmp_path):

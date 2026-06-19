@@ -1,9 +1,10 @@
-"""D7: INDEX.md is a lightweight nav, not a full-content mirror.
+"""D7: the generated T3 index is a lightweight nav, not semantic truth.
 
 The Entry Manifest table must carry a short summary (not the 160-char
-preview that bloated production INDEX.md to 38KB) plus a `Heat` column that
-reuses the D1 sidecar telemetry via `compute_entry_heat`. The orphan second
-index `MEMORY_INDEX.md` must never be written.
+preview that bloated the old production INDEX.md to 38KB) plus a `Heat`
+column that reuses the D1 sidecar telemetry via `compute_entry_heat`.
+Legacy root `INDEX.md` and orphan second index `MEMORY_INDEX.md` must never be
+written.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ def test_entry_manifest_row_uses_short_summary_not_full_preview(tmp_path: Path) 
 
     agent_id, mem_dir, long_content = _seed_long_entry(tmp_path)
     rebuild_index(tmp_path, agent_id)
-    index = (mem_dir / "INDEX.md").read_text(encoding="utf-8")
+    index = (mem_dir / "wiki_map.md").read_text(encoding="utf-8")
 
     # The full 160-char preview must NOT be mirrored into the nav index.
     assert long_content not in index
@@ -62,7 +63,7 @@ def test_entry_manifest_carries_heat_column(tmp_path: Path) -> None:
     bump_access(tmp_path, agent_id, file_relpath="memory/knowledge.md", entry_id="knowledge-long-1")
 
     rebuild_index(tmp_path, agent_id)
-    index = (mem_dir / "INDEX.md").read_text(encoding="utf-8")
+    index = (mem_dir / "wiki_map.md").read_text(encoding="utf-8")
 
     assert "| ID | File | Category | Date | Load | Heat | Summary |" in index
 
@@ -75,10 +76,14 @@ def test_entry_manifest_carries_heat_column(tmp_path: Path) -> None:
     assert heat_cell == str(expected_heat)
 
 
-def test_rebuild_index_does_not_write_orphan_second_index(tmp_path: Path) -> None:
+def test_rebuild_index_writes_only_canonical_derived_index(tmp_path: Path) -> None:
     from app.memory.md_store import rebuild_index
 
     agent_id, mem_dir, _ = _seed_long_entry(tmp_path)
     rebuild_index(tmp_path, agent_id)
 
+    assert (mem_dir / "wiki_map.md").exists()
+    assert not (mem_dir / "INDEX.md").exists()
+    assert not (mem_dir / "index.md").exists()
+    assert not (mem_dir / ".derived" / "t3_index.md").exists()
     assert not (mem_dir / "MEMORY_INDEX.md").exists()

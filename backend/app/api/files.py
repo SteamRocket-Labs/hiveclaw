@@ -89,9 +89,13 @@ def _managed_system_path_message(path: str) -> str | None:
     return messages.get(top_level)
 
 
-_ROOT_FILE_WRITE_ALLOWLIST = {"soul.md"}
+_ROOT_FILE_WRITE_ALLOWLIST: set[str] = set()
 _ROOT_PREFIX_WRITE_ALLOWLIST = {"workspace", "skills", "subagents", "enterprise_info"}
 _ROOT_MANAGED_FILE_MESSAGES = {
+    "soul.md": (
+        "soul.md is governed by Dream/Soul promotion; direct file API writes are refused. "
+        "Dream must produce soul.md.next and the promotion gate performs the audited commit."
+    ),
     "relationships.md": "relationships.md is generated from the Relationships control plane; update relationships through the Relationships UI/API.",
     "HEARTBEAT.md": "HEARTBEAT.md is a platform template; heartbeat protocol updates must ship through system templates.",
     "DREAM.md": "DREAM.md is a platform template; dream protocol updates must ship through system templates.",
@@ -123,20 +127,12 @@ def _skill_package_path_guard_message(path: str, *, operation: str) -> str | Non
     normalized = _normalized_rel_path(path)
     if not normalized.startswith("skills/"):
         return None
-    tail = normalized[len("skills/") :].strip("/")
-    if not tail:
-        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
-    parts = [part for part in tail.split("/") if part]
-    if not parts:
-        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
-    slug = parts[0]
-    if slug.startswith(".") or "." in slug:
-        return "Skill packages must be folders named by slug. Use skills/<slug>/SKILL.md."
-    if any(part.startswith(".") and part != ".gitkeep" for part in parts[1:]):
-        return "Hidden skill sidecars are platform-managed. Use skills/<slug>/SKILL.md and visible package resources."
-    if len(parts) == 1 and operation != "delete":
-        return "Skill definitions must be files under a skill folder. Use skills/<slug>/SKILL.md."
-    return None
+    del operation
+    return (
+        "Active skill packages are governed by Skill promotion. Direct file API writes, edits, uploads, "
+        "and deletes under skills/ are refused; use save_skill to submit an activation candidate, or let "
+        "Skill Distiller promote a verified SKILL.md.draft through Platform Skill Gate."
+    )
 
 
 def _raise_managed_path_write_guard(path: str) -> None:
@@ -464,8 +460,8 @@ async def upload_file_to_workspace(
     await check_agent_access(db, current_user, agent_id)
 
     # Validate path prefix
-    if not path.startswith(("workspace/", "skills/")):
-        raise HTTPException(status_code=400, detail="只能上传到 workspace/ 或 skills/ 目录")
+    if not path.startswith("workspace/"):
+        raise HTTPException(status_code=400, detail="只能上传到 workspace/ 目录；skills/ 需要走 Skill Gate")
 
     base = _agent_base_dir(agent_id)
     target_dir = (base / path).resolve()

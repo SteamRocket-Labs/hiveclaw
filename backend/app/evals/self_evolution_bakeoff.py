@@ -314,7 +314,7 @@ def _score_hive(repo_root: Path) -> dict[str, Any]:
             blocker="missing rollback guidance",
             occurred_at="2026-04-05T10:00:00Z",
         )
-        skill_candidates_path = workspace / "evolution" / "skill_candidates.md"
+        skill_candidates_dir = workspace / "evolution" / "skill_candidates"
         scenarios["skill_candidate_creation"] = _behavior_result(
             cases["skill_candidate_creation"],
             checks=[
@@ -329,9 +329,15 @@ def _score_hive(repo_root: Path) -> dict[str, Any]:
                     json.dumps(patch_result, ensure_ascii=False, sort_keys=True),
                 ),
                 _behavior_check(
-                    "candidate_file_written",
-                    skill_candidates_path.exists() and "deploy-checklist" in _safe_read(skill_candidates_path),
-                    str(skill_candidates_path),
+                    "candidate_package_written",
+                    skill_candidates_dir.exists()
+                    and any(
+                        (package / "candidate_signal.md").exists()
+                        and "deploy-checklist" in _safe_read(package / "manifest.json")
+                        for package in skill_candidates_dir.iterdir()
+                        if package.is_dir()
+                    ),
+                    str(skill_candidates_dir),
                 ),
             ],
             transcript={"promote_result": promote_result, "patch_result": patch_result},

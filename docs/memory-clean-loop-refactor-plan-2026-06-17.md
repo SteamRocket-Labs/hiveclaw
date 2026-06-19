@@ -50,7 +50,7 @@ Agent Markdown Wiki / Learning Vault =
   Segment Packages = ChatSession-anchored T0 raw evidence + T2 segment summary/labels/review
   + T3 accepted views = cross-session accepted memory surfaces
   + source_refs-backed residual evidence verification
-  + soul.md / source.md identity layer
+  + soul.md identity layer
   + Skill capability candidates
   + Memory Gate Agent review
   + Platform Gate write/read governance
@@ -60,7 +60,7 @@ Agent Markdown Wiki / Learning Vault =
 
 - **整个 vault 才是 Wiki**：Agent Markdown Wiki / Learning Vault 包含 T0 evidence stream、T2 segment packages、T3 semantic layer、`soul.md`、skills、evolution/audit sidecars。T3 只是其中的语义收敛层，不是 Wiki 的全部。
 - **Markdown 是语义真相源**：T2、T3、soul、Skill 都必须能以 Markdown 形式被人和 LLM 直接读取。T0 raw evidence 也属于 Wiki 的 evidence area，但 T0 的 raw body 不承载语义结论。Graph、vector、search index、UI read model、关系图谱都只能是派生物，必须可从 Markdown + runtime artifacts 重建。
-- **统一候选包 / patch envelope 模式**：T0 -> T2、T2 -> T3、T3 -> soul/source、T3 -> Skill 都遵守同一条权责原则：LLM Writer 生成完整语义候选，独立 LLM Referee 做最新候选复查，Platform Gate 只做硬阻拦、审计、rollback 和原子提交。不同层级的文件形态可以不同：T2 是 Segment Package，T3 是 Consolidation Patch Envelope，soul 是 Soul Patch Candidate，Skill 是 eval-backed Skill Candidate Package。
+- **统一候选包 / patch envelope 模式**：T0 -> T2、T2 -> T3、T3 -> soul、T3 -> Skill 都遵守同一条权责原则：LLM Writer 生成完整语义候选，独立 LLM Referee 做最新候选复查，Platform Gate 只做硬阻拦、审计、rollback 和原子提交。不同层级的文件形态可以不同：T2 是 Segment Package，T3 是 Consolidation Patch Envelope，soul 是 Soul Patch Candidate，Skill 是 eval-backed Skill Candidate Package。
 - **主梯度不可旁路**：`T0 -> T2 -> T3 -> soul.md` 是唯一主链路。T0 不能直接进入 T3，T3 也不能直接从 runtime logs 生成长期结论。
 - **残差不是一层记忆**：残差只是一种 curation 读法。T3 curator 先读 T2，再沿 T2 的 `source_refs` 回到 T0 或原始 artifact 复核证据，避免错误总结被继续放大。
 - **T3 的长期形态是跨 T2 的长期综述层**：T3 不再理解成几个孤立平铺文件，也不是整个 Wiki，而是对多个 T2 session summaries 的长期聚合、总领和稳定结论。T3 最终只收敛为四个 accepted memory files：`episodes.md`、`user.md`、`worker.md`、`capabilities.md`。导航、关系图、冲突视图只能是 T3 外部派生索引，不能放进 `memory/t3/`。
@@ -95,7 +95,6 @@ memory/
   lifecycle.json                    # sidecar, not semantic truth
   distillation_audit.jsonl          # audit, not semantic truth
 soul.md                             # highest identity / behavioral constitution
-# source.md                         # optional future naming alias; not decided here
 memory/
   t0/
     sessions/
@@ -192,7 +191,6 @@ T2      = 单个 ChatSession 内 segment 的结构化 summary、独立 labels、
 T3      = 跨多个 T2 后形成的长期综述、总领和稳定结论
 Index   = 目录 / 导航 / 检索入口
 soul.md = 纲领 / 宪法 / 世界观 / 长期人格原则
-source.md = 若后续改名，可作为最高层文件别名；当前文档仍以 soul.md 为准
 ```
 
 这个类比的边界是：
@@ -208,7 +206,7 @@ source.md = 若后续改名，可作为最高层文件别名；当前文档仍�
 | T0 | 原始行为证据、系统审计、可回放上下文 | `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md`、DB `ChatMessage`、`invocation_spans`、runtime artifacts | 不做语义结论；当前实现是 append-only session ledger，chat/one-off task/trigger/delegation/heartbeat/dream 都写 ledger；idle/close 只 seal segment；`logs/...` 是 legacy/import compatibility，不是 runtime session truth；不能直接写 T3 |
 | T2 | 一个 ChatSession 内 segment 对应一个 Segment Package | `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md` | `summary.md` 只放 XML-style structured summary；`labels.md` 单独放轻量标签；`review.md` 放裁判结论；Platform Gate 只负责格式、权限、证据、去重和原子提交 |
 | T3 | 稳定长期语义记忆 / converged semantic layer | `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md` | `memory/t3/` 只保存这四个最终 accepted memory files；不保存 index、chapter、关系索引、冲突索引、curation package；T3 patch 只能由 T2 Segment Packages 推导，并用 `source_refs` 回溯 T0 验证；必须经 Memory Gate Agent 复查，再由 Platform Gate 原子提交 |
-| Soul / Source | 身份、使命、长期人格与不可轻易变更的行为原则 | `soul.md`；`source.md` 仅作为待定命名别名 | 必须由 Dream / Soul Writer Agent 产出语义 patch，经 Memory Gate Agent 复查，再由 Platform Gate 原子提交；平台不能机械生成或改写内容 |
+| Soul | 身份、使命、长期人格与不可轻易变更的行为原则 | `soul.md` | 必须由 Dream / Soul Writer Agent 产出语义 patch，经 Memory Gate Agent 复查，再由 Platform Gate 原子提交；平台不能机械生成或改写内容 |
 
 ### 2.1 ChatSession、T0 Raw Stream 与 T2 Segment Package
 
@@ -782,7 +780,7 @@ T3 标签采用“继承 + 升维”，不是完全复用 T2，也不是随机�
 | `freshness` | source date range / last verified at | 结论的新鲜度 |
 | `rollback_sensitivity` | `low`、`medium`、`high` | 错误写入后的回滚敏感度 |
 
-T3 审核通过只代表对应 patch 可以进入 T3 accepted views。它不能自动改 `soul.md` / `source.md`。如果 T3 结论具有身份或长期行为原则价值，它只能在 accepted view 中标记 `soul_candidate`，再交给 Dream / Soul Writer Agent 进入最高层流程。
+T3 审核通过只代表对应 patch 可以进入 T3 accepted views。它不能自动改 `soul.md`。如果 T3 结论具有身份或长期行为原则价值，它只能在 accepted view 中标记 `soul_candidate`，再交给 Dream / Soul Writer Agent 进入最高层流程。
 
 #### 2.3.1 T3 文件级格式
 
@@ -909,14 +907,30 @@ Memory Gate Agent 对 T3 Patch Envelope 的 review 默认结构：
 2. **Active Long-Term Memory**：按目标相关性、owner/company scope、敏感级、lifecycle 选取 T3 的 `episodes.md` / `user.md` / `worker.md` / `capabilities.md` 片段。
 3. **Active Summary Memory**：选取尚未被 T3 吸收、刚被用户纠正、或比 T3 更新鲜的 T2 summary packages / package segments。
 4. **Session Working Memory**：当前会话、session projection、runtime recovery context；只做短期上下文，不是 durable truth。
-5. **Navigation Map**：由读取层从四个 T3 文件生成的 compact navigation snapshot，只在需要探索记忆空间、检索失败、或 agent 需要决定加载哪个文件时进入 prompt；不默认全文进入。
+5. **Navigation Map**：由读取层从四个 T3 文件实时生成 T3 entry manifest / Memory Navigation；只在需要探索记忆空间、检索失败、或 agent 需要决定加载哪个 entry 时进入 prompt；不默认全文进入。唯一持久 Memory Wiki map 是 `memory/wiki_map.md`，它是 generated/read-model，不是 semantic truth。旧 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 已退役；不使用 lower-case `index.md` 是为了避免在大小写不敏感文件系统上和旧 `INDEX.md` 冲突。
 6. **Relation / Conflict Read Models**：由读取层从四个 T3 文件和 source refs 生成，只在 disambiguation、冲突复核、关系跳转时注入，不默认作为长期记忆正文进入 prompt。
 7. **Residual Evidence**：T0 原文只在 T3 curation、debug、replay、争议复核时按 `source_refs` targeted load；普通 prompt 不加载 T0 raw body。
+
+运行时自动召回的实际顺序：
+
+```text
+Kernel dynamic suffix
+  -> build_memory_context(query = latest user message)
+  -> MemoryRetriever(use_t3_index_first=True)
+     1. Explicit Overlay (`memory/explicit/`)：用户显式“记住”的内容，立即可激活
+     2. Accepted T3：从四个 T3 files 实时构建 entry manifest；P0 user/worker 近期条目优先全文，P1 episodes/capabilities 按 query 展开，其他作为 preview + load_memory hint
+     3. Episodic Session Recall：当前 / 最近 ChatSession summary
+     4. Semantic backend / external hooks：当前默认空实现；不能成为外部增强记忆真相源
+     5. Optional LLM rerank：只在候选池复杂且有 rerank model 时重排 semantic candidates
+     6. Activation Gate：principal / sensitivity / lifecycle / relevance / heat 过滤和排序
+  -> MemoryAssembler：按 score 去重、分组、预算裁剪
+  -> Memory Navigation：独立动态导航表，按 heat 展示 id/file/category/preview/load_memory hint
+```
 
 结论：
 
 - `soul.md` 是 identity 必选项。
-- navigation snapshot 是读取层 read model，不是 identity；它不应默认常驻 prompt，只能作为 compact map 动态注入。
+- navigation snapshot 是读取层 read model，不是 identity；它不应默认常驻 prompt，只能作为 compact map 动态注入。Platform Gate 每次 accepted T3 commit 后必须重建唯一持久地图 `memory/wiki_map.md`，并清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`。
 - 长期记忆默认来自 T3 四个主 accepted views 的选中片段：先用 `episodes.md` 做场景召回，再按链接补 `capabilities.md`、`user.md`、`worker.md`；必要时补充高价值 T2 blocks。
 - 短期记忆来自 session projection / current run state，并带 TTL。
 
@@ -944,7 +958,7 @@ save_memory
 | Overview | 健康度、最近变更、主要 T3 摘要、held candidates | 不展示 raw file dump 作为默认入口 |
 | Evidence / T0 | source packets、行为证据、artifact refs、trace refs | 不做语义结论 |
 | Summary / T2 | per-segment summary packages、XML-style structured summary、工程标签、事件/事实标签、review、source_refs | 不绕过 T3 直接改 soul/skill |
-| Wiki / T3 | `episodes.md`、`user.md`、`worker.md`、`capabilities.md` 的 Markdown 渲染；关系图和冲突视图由读取层现场生成 | 不退回 `canon.md` 大杂烩，不在 `memory/` 下生成 derived Markdown 文件，不在 `memory/t3/` 下生成 index、relations、contradictions 或大量 topic folders |
+| Wiki / T3 | `episodes.md`、`user.md`、`worker.md`、`capabilities.md` 的 Markdown 渲染；Memory Navigation 来自实时 T3 entry manifest；`memory/wiki_map.md` 是可重建持久导航读模型；关系图和冲突视图由读取层现场生成 | 不退回 `canon.md` 大杂烩，不在 `memory/t3/` 下生成 index、relations、contradictions 或大量 topic folders；除唯一 generated `memory/wiki_map.md` 外，不把 derived Markdown 当 semantic truth |
 | Prompt Context | 当前进入 prompt 的 `soul.md`、T3 snippets、T2 blocks、session projection 和 activation reasons | 不写记忆 |
 | Held / Candidate Review | held / contested / duplicate / explicit-memory absorption / promotion candidates | 不替代治理层落盘 |
 | Raw / Audit | advanced raw Markdown、lifecycle、distillation audit、invocation refs | 不作为普通用户默认知识视图 |
@@ -1005,7 +1019,7 @@ T3 -> Skill:
 | T3 Curator / Heartbeat Curator | 把多个成熟 Segment Packages 聚合成跨 session 的 T3 semantic candidate | Segment Packages、T2 source_refs 指向的 T0 evidence、当前 T3 accepted memory files、runtime/db read models | T3 Patch Envelope candidate | 不能让 T0 直达 T3；不能写 `memory/t3/`；不能顺手跑 skill/workflow/dream |
 | Dream / Soul Writer Agent | 慢速全局重组、identity/soul 候选、最高层行为原则 patch | 稳定 T3、soul、候选 ledger、历史证据 | `soul_pitch.md` / `soul_patch.md` candidate；必要时输出 held T3 concern | 不能绕过 Soul Memory Gate Agent 和 Platform Soul Gate 直接改 soul；不能借 Dream 路径直接改 T3 |
 | Skill Distiller / Skill Writer Agent | 从 T3 `capabilities.md` 的 capability / skill_seed 和 evidence 中形成可验证能力胶囊 | `capabilities.md`、Segment Packages、eval reports、failure cases | skill candidate package / eval report / promotion proposal | 不能把 Skill 写成 T3 页面；不能无 eval 晋升 active skill |
-| Platform Gate | 权限、source_refs 存在性、去重、审计、rollback、原子提交 | reviewed candidates、source refs、principal context | Session/T3/soul/source/lifecycle/archive/evolution decision record | 不能替 LLM 做主观评分、语义晋升判断或内容改写 |
+| Platform Gate | 权限、source_refs 存在性、去重、审计、rollback、原子提交 | reviewed candidates、source refs、principal context | Session/T3/soul/lifecycle/archive/evolution decision record | 不能替 LLM 做主观评分、语义晋升判断或内容改写 |
 
 ### 3.1 Review 问题
 
@@ -1239,7 +1253,7 @@ T3 Curator 可以给出的结论：
 | `patch_worker` | 写入或更新 agent 条件化工作原则 |
 | `patch_capabilities` | 写入或更新 procedural memory / skill seed |
 | `read_model_refresh` | 刷新 T3 外部 read model，不写 Markdown memory |
-| `soul_candidate_after_t3` | 先进入 T3，再由 Dream 判断是否上升到 soul/source |
+| `soul_candidate_after_t3` | 先进入 T3，再由 Dream 判断是否上升到 soul |
 
 ```text
 T3 curation tick
@@ -1290,7 +1304,7 @@ Dream scheduled job
        frozen mission
        rollback ref
        owner/company boundary
-  -> 接受：原子提交 soul.md / optional source.md patch
+  -> 接受：原子提交 soul.md patch
   -> 如发现需要修改 T3：写 held T3 concern，回流到下一轮 T3 Consolidation Batch；不能借 Dream 路径直接改 T3
   -> 拒绝/搁置：保留在 ledger 中，不能偷偷落盘
 ```
@@ -1331,7 +1345,6 @@ class MemoryCandidateEnvelope(TypedDict):
         "session_package_t2",
         "t3_chapter_candidate",
         "soul_candidate",
-        "source_candidate",
         "skill_candidate",
         "workflow_reference_hint",
         "lifecycle_patch",
@@ -1352,7 +1365,7 @@ class MemoryCandidateEnvelope(TypedDict):
 
 - `target="session_package_t2"` 只能来自 Summary Agent / Learning Brain / 明确 owner instruction。
 - `target="t3_chapter_candidate"` 必须引用 Segment Package 的 T2 summary/labels 或 T2-derived candidate。
-- `soul_candidate` / `source_candidate` 必须来自 Dream / Soul Writer Agent 或明确 owner instruction。
+- `soul_candidate` 必须来自 Dream / Soul Writer Agent 或明确 owner instruction；最高层不存在 `source_candidate`。
 - `skill_candidate` 是 capability lane，不是 T3 写入；`workflow_reference_hint` 只能移交 Workflow 系统，不属于 memory write target。
 - 机械 fallback 只能产出 `artifact_only` 或 held candidate，不能直接 durable write。
 
@@ -1368,9 +1381,9 @@ class MemoryCandidateEnvelope(TypedDict):
 | Learning Brain | thin T2 engineering labels + lightweight event/fact labels | T0 source range、Summary、source refs | Segment Package 的 `labels.md` candidate | 不能直接落盘；不能做最终晋升裁决 |
 | Memory Gate Agents | T2/T3/soul/skill candidate review, scoring, promotion advice | Segment Package、T0 refs、existing T3 accepted files、soul patch、skill candidate、promotion rules | `review.md` / promotion decision / feedback directives | 不能最终提交；不能绕过 Platform Gate；不能用旧 review 授权新 patch |
 | T3 Curator / Heartbeat Curator | T2 -> T3 semantic layer LLM curation；在 T3 Patch Envelope 内生成 target-view labels 和 source coverage | Segment Packages、T2 source_refs 指向的 T0 evidence、T3 accepted memory files、runtime/db read models | T3 Patch Envelope candidate、heartbeat audit | 不能做总调度器；不能让 T0 直达 T3；不能拆出单独的 T3 标签写入路径；不能直接写 `memory/t3/` |
-| Dream Reconsolidator / Soul Writer Agent | T3 重组、矛盾处理、soul/source patch 提案 | T3、soul/source、候选 ledger | `soul_pitch.md` / `soul_patch.md` candidate；held T3 concern | 不能绕过 Soul Memory Gate Agent 和 Platform Soul Gate 直接写；不能借 Dream 路径直接改 T3 |
+| Dream Reconsolidator / Soul Writer Agent | T3 重组、矛盾处理、soul patch 提案 | T3、soul、候选 ledger | `soul_pitch.md` / `soul_patch.md` candidate；held T3 concern | 不能绕过 Soul Memory Gate Agent 和 Platform Soul Gate 直接写；不能借 Dream 路径直接改 T3 |
 | Skill Distiller / Skill Writer / Skill Review | skill 候选验证、eval、晋升建议 | `capabilities.md` skill_seed、Segment Package refs、eval reports | skill candidate package / eval report / promotion ledger | 不能和 memory lane 抢同一个信号；不能不经 eval 和 Platform Skill Gate 写 active skill |
-| Platform Gate | 权限、证据、去重、回滚、审计、原子提交 | reviewed candidate requests、source refs、principal context | Session/T3/soul/source/skill/lifecycle/archive/evolution decision record | 不能替模型做语义学习、主观评分或内容改写 |
+| Platform Gate | 权限、证据、去重、回滚、审计、原子提交 | reviewed candidate requests、source refs、principal context | Session/T3/soul/skill/lifecycle/archive/evolution decision record | 不能替模型做语义学习、主观评分或内容改写 |
 | Retriever / Activation | principal-aware recall | T3、高优先级 T2、session projection、runtime/db read models | access telemetry | 不能修改语义记忆 |
 | Prompt Builder | 渲染当前 prompt context | identity、memory snapshot、session learning | final system prompt | 不能创建新记忆状态 |
 
@@ -1389,8 +1402,8 @@ class MemoryCandidateEnvelope(TypedDict):
 | 短期 session projection | runtime session memory、`runtime_artifacts/session_learning_projection.jsonl` | 只允许 TTL / session scoped；不是 durable semantic truth |
 | T2 Segment Package | `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md`、`manifest.json` | `memory/t2/**`、`memory/learnings/*.md` compatibility views |
 | T3 accepted memory files | `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md` | Compatibility `memory/wiki/**/*.md`、`memory/*.md` T3 files；旧 `canon.md`、`relations.md`、`contradictions.md` 只作为迁移输入或 read-only compatibility view |
-| T3 派生读模型 | 无 canonical source；只能从四个 T3 accepted memory files 和 source refs 重建 | runtime/db cache、graph/vector/index、UI read model；不写入 `memory/` 文件树 |
-| 身份记忆 | `soul.md`；`source.md` 仅作为待定别名 | dream reasoning、promotion candidates、rollback snapshots |
+| T3 派生读模型 | `memory/wiki_map.md` 是唯一 canonical persistent navigation read model，但可从四个 T3 accepted memory files 和 lifecycle/source refs 重建；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役 | runtime/db cache、graph/vector/关系/冲突/UI read model；不属于 semantic truth |
+| 身份记忆 | `soul.md` | dream reasoning、promotion candidates、rollback snapshots |
 | 候选/评估/晋升/回滚 | `evolution/evolution_ledger.jsonl` | ActivityLog UI timeline |
 | heartbeat 计数和历史 | `evolution/scorecard.md`、`lineage.md`、`blocklist.md` | 不是语义记忆 |
 | 读取可见性 | `ActivationContext` + `PrincipalStack` + lifecycle metadata | prompt preview |
@@ -1407,10 +1420,10 @@ class MemoryCandidateEnvelope(TypedDict):
 | `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md` / `labels.md` / `review.md` / `manifest.json` | Platform Gate atomically commits LLM-authored Summary Agent + Learning Brain + Memory Gate outputs plus mechanical manifest |
 | `memory/t2/index.md` / `memory/t2/summary.md` / 兼容 `memory/learnings/*.md` | Derived/rebuildable views from Segment Packages |
 | `memory/t3/episodes.md` / `user.md` / `worker.md` / `capabilities.md` | Platform Gate atomically commits LLM-authored T3 patch after fresh Memory Gate review of the latest patch |
-| T3 navigation / relation / conflict read models | Derived index builder writes runtime/db cache only; rebuildable from T3 accepted memory files and source refs |
+| T3 navigation / relation / conflict read models | Platform Gate / rebuild job 只写 `memory/wiki_map.md`；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 必须被清理；其他 relation / conflict / graph / vector / UI read model 只能写 runtime/db cache 或 derived 面，且必须可从 T3 accepted memory files 和 source refs 重建 |
 | `memory/archive.md` | Platform Gate lifecycle patch |
 | `memory/lifecycle.json` | Platform Gate |
-| `soul.md` / optional `source.md` learned behavior sections | Platform Soul Gate atomically commits Dream / Soul Writer authored patch after fresh Soul Memory Gate review of the latest patch；frozen charter / identity-protected sections fail closed |
+| `soul.md` learned behavior / constitution sections | Platform Soul Gate atomically commits Dream / Soul Writer authored patch after fresh Soul Memory Gate review of the latest patch；frozen charter / identity-protected sections fail closed |
 | `evolution/skill_candidates/<candidate_id>/**` | Skill Candidate Builder writes LLM-authored candidate package, eval inputs, failure cases, and review artifacts through Platform Skill Gate staging |
 | `skills/<name>/SKILL.md` and skill package files | Platform Skill Gate atomically promotes eval-backed Skill Writer authored package after Skill Review; active skill files are not written by T3 Curator or Dream |
 | `evolution/evolution_ledger.jsonl` | Candidate/eval/promotion services through ledger API |
@@ -1438,7 +1451,7 @@ class MemoryCandidateEnvelope(TypedDict):
 | Recovery Manifest | `backend/app/runtime/recovery_manifest.py` | **保留** | 从 session memory 组装恢复线索；属于 runtime recovery，不属于 memory distillation |
 | Session Learning Projection | `backend/app/services/session_learning.py`、`evolution/session_learning_projections.jsonl` | **保留但限权** | 只服务下一轮/当前 session/T3 curation 的上下文辅助；有 TTL/状态；不直接进入 T3 |
 | Fast Reflection Learning Brain | `backend/app/services/fast_reflection_learning_brain.py` | **迁移/收窄** | 不再作为 durable memory 分流主路；可降级为 Summary Agent / Learning Brain / Memory Gate Agents 的辅助候选生成或审计输入，不能独立写长期记忆 |
-| Fast Reflection Service | `backend/app/services/fast_reflection_service.py` | **保留为 adapter** | 只持久化短期 projection/candidate；机械 fallback 只能 audit/held candidate |
+| Fast Reflection Service | `backend/app/services/fast_reflection_service.py` | **保留为 adapter** | 只消费 explicit metadata、LLM classification、或结构化 repeated-workflow metadata；文本 marker/regex 不得作为学习候选生成路径，机械部分只能成为 evidence/audit 输入 |
 | Reportable Reflection | `backend/app/services/reflection_service.py`、`memory/reflections/*.jsonl` | **已降级为 artifact-only** | 保留为失败审计和 source packet；不再直接 `append_t2_entries`，也不写 `memory/learnings/*.md`。如需进入长期记忆，只能被后续 T0/T2 Segment Package 或 T3 Consolidation 作为 evidence 引用 |
 | Session Feedback | `backend/app/services/session_feedback.py` | **保留** | owner useful/misleading 是高价值信号；默认写入 Explicit Memory Overlay 并即时可激活，后续是否吸收到 accepted T3 必须经 T3 Consolidator、Memory Gate Agents 和 Platform Gate；T3 candidate 必须引用 T2/source refs |
 | Work Ledger / Todo Ledger | `backend/app/tools/handlers/work_ledger.py`、`backend/app/services/agent_work_ledger.py` | **保留** | 它是当前任务工作台和证据板，不是长期记忆；可作为 Summary Agent 的 source evidence |
@@ -1505,7 +1518,7 @@ class MemoryCandidateEnvelope(TypedDict):
   - 交给 Platform Gate 做硬校验、审计、rollback ref、原子提交到四个 T3 accepted memory files；
   - 已记录结果后再 mark T2 absorbed；
   - 写 heartbeat audit。
-- Skill distillation、derived graph/index rebuild、独立 scene/wiki maintenance sweep、Dream scheduling 迁到 `EvolutionScheduler` 或独立 daemon tick；derived graph/index rebuild 不能写 `memory/` 文件树。
+- Skill distillation、derived graph/index rebuild、独立 scene/wiki maintenance sweep、Dream scheduling 迁到 `EvolutionScheduler` 或独立 daemon tick；T3 navigation 只允许写唯一 generated map `memory/wiki_map.md`，其他 derived graph/index rebuild 不能把派生 Markdown 当 semantic truth 写入 `memory/`。
 - T2 -> T3 semantic layer 的主 curation 属于 T3 Curator / Heartbeat Curator，但它不拥有最终写权。
 
 ### R4. Dream 只返回 soul candidate + held T3 concern
@@ -1514,11 +1527,10 @@ class MemoryCandidateEnvelope(TypedDict):
 
 目标：
 
-- Dream / Soul Writer Agent 返回 LLM-authored `DreamDecision`、`soul_pitch.md` 和 `soul.md` / optional `source.md` patch candidate。
-- Soul Memory Gate Agent 对最新 soul/source patch 做 Dream Review；如果 review 要求改写，必须退回 Dream / Soul Writer Agent 生成新 patch，旧 review 立即失效。
+- Dream / Soul Writer Agent 返回 LLM-authored `DreamDecision`、`soul_pitch.md` 和 `soul.md` patch candidate。
+- Soul Memory Gate Agent 对最新 soul patch 做 Dream Review；如果 review 要求改写，必须退回 Dream / Soul Writer Agent 生成新 patch，旧 review 立即失效。
 - Platform Soul Gate 只能原子提交：
   - `soul_patch_candidate`
-  - optional `source_patch_candidate`
   - preservation / rollback / audit metadata
 - 所有 patch 都有 candidate id、decision id、source refs、rollback ref。
 - 如果 Dream 发现 T3 中存在重复、冲突、过期或需要合并的内容，只能写 held T3 concern / next T3 consolidation input；`t3_merge_patch`、`t3_contradiction_patch`、T3 lifecycle patch 必须回到 T3 Consolidator + Memory Gate + Platform Gate 路径，不能由 Dream 路径直接提交。
@@ -1572,7 +1584,7 @@ class PlatformGate:
 
 1. 添加 architecture guard tests，覆盖写入边界和外围组件去留。
 2. 建立 ChatSession -> source_bundle -> Segment Package schema、one-segment-one-Segment-Package invariant、受控 tag taxonomy、`source_refs` / residual evidence backreference contract。
-3. 建立 Agent Markdown Wiki schema + T3 accepted memory file schema：`_meta/schema.md`、`tags.md`、`index.md`、`log.md`、frontmatter、wikilinks、source refs、contradiction markers；`memory/t3/` 只允许四个文件。
+3. 建立 Agent Markdown Wiki schema + T3 accepted memory file schema：T3 accepted truth 只允许 `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md`；T3 runtime navigation 来自 entry manifest / Memory Navigation；持久派生导航只允许唯一 generated map `memory/wiki_map.md`。
 4. 建立 Summary Agent output schema：只写 `# Session Summary` 内的 XML-style semantic body，不做晋升裁决。
 5. 建立 Learning Brain T2 labeling schema：独立 `labels.md` 内的 thin `# Engineering Labels`、lightweight `# Event / Fact Labels`。
 6. 建立 open / rolling checkpoint contract：`completeness`、`short_term_carryover`、`continues_from`、禁止未闭合 package 晋升 T3。
@@ -1678,8 +1690,8 @@ pytest tests/services/test_auto_dream.py tests/services/test_evolution_ledger.py
 
 - Dream decisions 写成 candidates/patches 后才能 writeback。
 - Soul promotion 必须有 source refs、verified evidence、frozen mission gate、rollback ref。
-- repeated-feedback mechanical fallback 只能提出 candidate，不能直接改 identity。
-- Dream / Soul Writer Agent 必须可以产出 `soul.md` / optional `source.md` patch，否则 Dream 无法完成最高层收敛。
+- repeated-feedback deterministic safety signal 只能提出 candidate / audit evidence，不能直接改 identity，也不能替代 LLM 判断。
+- Dream / Soul Writer Agent 必须可以产出 `soul.md` patch，否则 Dream 无法完成最高层收敛。
 - Dream patch 必须先有 Memory Gate review，再由 Platform Gate atomic apply。
 - Platform Gate 不允许机械生成或改写 Dream patch 内容；需要改动时必须退回 Dream / Soul Writer Agent。
 
@@ -1740,7 +1752,7 @@ pytest tests/runtime/test_prompt_sections.py tests/runtime/test_system_prompt_bu
 6. Memory Gate Agents 是独立裁判层，负责 review、score、promotion recommendation。
 7. Platform Gate 只有 hard check + atomic commit 权限，没有内容作者权。
 8. T3 Curator / Heartbeat 只是 T2 -> T3 curator，不再是 evolution orchestrator。
-9. Dream / Soul Writer Agent 是 `soul.md` / optional `source.md` 的语义 patch 作者；它不能自由直写，但必须能在 fresh Soul Memory Gate review 和 Platform Soul Gate 通过后更新最高层文件。
+9. Dream / Soul Writer Agent 是 `soul.md` 的语义 patch 作者；它不能自由直写，但必须能在 fresh Soul Memory Gate review 和 Platform Soul Gate 通过后更新最高层文件。
 10. 所有候选和晋升决策都有 source refs，必要时有 rollback refs；T3/soul/skill 的 review 必须覆盖最新 patch/candidate。
 11. audit / candidate / semantic / trace / derived / review 在 UI 和日志上可区分。
 12. Prompt assembly 没有写副作用。
@@ -1765,9 +1777,9 @@ turn
   -> T3 Patch Envelope with target-view labels and proposed accepted-memory-file patch
   -> Memory Gate Agents T3 promotion review
   -> Platform Gate atomic commit to memory/t3/{episodes.md,user.md,worker.md,capabilities.md}
-  -> Dream / Soul Writer Agent soul-source patch candidate
+  -> Dream / Soul Writer Agent soul patch candidate
   -> Soul Referee / Memory Gate review
-  -> Platform Gate atomic commit for soul.md / source.md
+  -> Platform Gate atomic commit for soul.md
   -> prompt recall
 ```
 
@@ -1780,7 +1792,7 @@ turn
 - **重新定位**Learning Brain 为 T2 标签和结构化智能；T3 target-view labels 由 T3 Curator 写入 Patch Envelope，不新增 T3 标签文件或章节结构；
 - **新增明确概念**Memory Gate Agents，负责独立复查、打分、晋升建议；
 - **保留并改名**治理和提交层为 Platform Gate；它只做 hard check、审计、rollback 和原子提交，不做内容作者；
-- **明确**Dream / Soul Writer Agent 是 `soul.md` / optional `source.md` 的语义 patch 作者，review 通过后可以更新最高层文件；
+- **明确**Dream / Soul Writer Agent 是 `soul.md` 的语义 patch 作者，review 通过后可以更新最高层文件；
 - **保留但隔离**Session Memory、Team Memory、Work Ledger、OpenViking KB、scene/wiki、eval/metrics；
 - **迁移**feedback/reflection/direct-store 这类绕过路径；
 - **退役**T3 外部增强系统、机械 durable fallback、重复语义判断者；

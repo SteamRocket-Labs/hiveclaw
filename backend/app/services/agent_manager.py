@@ -5,6 +5,7 @@ import os
 import shutil
 import uuid
 from datetime import datetime, timezone
+from html import escape as _xml_escape
 from pathlib import Path
 
 import docker
@@ -35,6 +36,13 @@ def _markdown_bullets(lines: list[str], fallback: list[str] | None = None) -> st
     if not items:
         return "- None specified"
     return "\n".join(f"- {item}" for item in items)
+
+
+def _xml_items(lines: list[str], fallback: list[str] | None = None) -> str:
+    items = lines or (fallback or [])
+    if not items:
+        return "<item>None specified</item>"
+    return "\n".join(f"<item>{_xml_escape(str(item), quote=False)}</item>" for item in items)
 
 
 def _list_from_blueprint(value: object) -> list[str]:
@@ -87,33 +95,47 @@ def _render_agent_soul_from_blueprint(
     ]
 
     parts = [
-        f"# Soul — {agent_name}",
+        "---",
+        "schema: hive.soul.v2",
+        "role: agent_identity",
+        "---",
         "",
-        "## Identity & Mission",
-        f"- **Name**: {agent_name}",
-        f"- **Role**: {mission}",
-        f"- **Creator**: {creator_name}",
-        f"- **Created**: {created_at}",
+        f"# Soul — {_xml_escape(agent_name, quote=False)}",
         "",
-        "## First-Person Accountability",
+        '<soul_identity frozen="true">',
+        f"<name>{_xml_escape(agent_name, quote=False)}</name>",
+        f"<mission>{_xml_escape(mission, quote=False)}</mission>",
+        f"<creator>{_xml_escape(creator_name, quote=False)}</creator>",
+        f"<created_at>{_xml_escape(created_at, quote=False)}</created_at>",
+        f"<company>{_xml_escape(company_name, quote=False)}</company>",
+        f"<owner>{_xml_escape(owner_name, quote=False)}</owner>",
+        "</soul_identity>",
+        "",
+        '<soul_principle id="first-person-accountability" stability="seed" frozen="true">',
         (
-            f"我是 {company_name} 的精英员工型 agent，直接支持 {owner_name}。"
-            f"我负责把“{mission}”这项使命推进成可审阅、可追踪、可交付的结果，"
-            f"同时守住 {company_name} 的公司边界、数据边界和长期声誉。"
+            f"我是 {_xml_escape(company_name, quote=False)} 的精英员工型 agent，直接支持 "
+            f"{_xml_escape(owner_name, quote=False)}。我负责把“{_xml_escape(mission, quote=False)}”"
+            "这项使命推进成可审阅、可追踪、可交付的结果，同时守住公司边界、数据边界和长期声誉。"
         ),
+        "<source_refs>",
+        '<source_ref ref="blueprint:agent_creation#identity" />',
+        "</source_refs>",
+        "<applies_when>All user-facing and autonomous work.</applies_when>",
+        "<does_not_apply_when>A higher-priority owner/company approval explicitly changes this contract.</does_not_apply_when>",
+        "</soul_principle>",
         "",
-        "## Frozen Company Charter",
-        "**Company Goals**",
-        _markdown_bullets(
+        '<soul_redline id="frozen-company-charter" stability="seed" frozen="true">',
+        "<company_goals>",
+        _xml_items(
             company_goals,
             fallback=[
                 f"Protect {company_name}'s data boundaries, compliance posture, and reputation.",
                 "Support cross-team work without bypassing platform governance.",
             ],
         ),
-        "",
-        "**Company Boundaries**",
-        _markdown_bullets(
+        "</company_goals>",
+        "<company_boundaries>",
+        _xml_items(
             company_boundaries,
             fallback=[
                 "Do not share credentials, secrets, or PL4 material.",
@@ -121,45 +143,54 @@ def _render_agent_soul_from_blueprint(
                 "Do not expose PL3/PL4 sensitive data outside authorized channels.",
             ],
         ),
-        "",
-        "**Company Escalation**",
-        _markdown_bullets(
+        "</company_boundaries>",
+        "<company_escalation>",
+        _xml_items(
             company_escalation,
             fallback=["Escalate owner/company conflicts to a company admin or the explicit approval path."],
         ),
+        "</company_escalation>",
+        "<source_refs>",
+        '<source_ref ref="blueprint:agent_creation#company_charter" />',
+        "</source_refs>",
+        "</soul_redline>",
         "",
-        "## Frozen Owner Agency Charter",
-        "**Full Authority**",
-        _markdown_bullets(
+        '<soul_redline id="frozen-owner-agency-charter" stability="seed" frozen="true">',
+        "<full_authority>",
+        _xml_items(
             full_authority,
             fallback=[
                 "Prepare local drafts, research briefs, summaries, and options.",
                 "Run read-only checks and organize evidence for the owner.",
             ],
         ),
-        "",
-        "**Confirm First**",
-        _markdown_bullets(
+        "</full_authority>",
+        "<confirm_first>",
+        _xml_items(
             confirm_first,
             fallback=[
                 "Send external messages or represent the owner/company to third parties.",
                 "Make production, budget, legal, customer, or irreversible changes.",
             ],
         ),
-        "",
-        "**Never Do**",
-        _markdown_bullets(
+        "</confirm_first>",
+        "<never_do>",
+        _xml_items(
             never_do,
             fallback=[
                 "Share credentials or secrets.",
                 "Bypass company policy, audit, or approval gates.",
             ],
         ),
+        "</never_do>",
+        "<source_refs>",
+        '<source_ref ref="blueprint:agent_creation#owner_agency_charter" />',
+        "</source_refs>",
+        "</soul_redline>",
         "",
-        "_These charter sections are frozen. Dream and heartbeat may propose updates, but active changes require explicit owner/admin approval._",
-        "",
-        "## What Good Looks Like",
-        _markdown_bullets(
+        '<soul_quality_bar id="what-good-looks-like" stability="seed">',
+        "<quality_standards>",
+        _xml_items(
             quality_standards,
             fallback=[
                 f"Every output directly supports the mission: {mission}.",
@@ -167,50 +198,48 @@ def _render_agent_soul_from_blueprint(
                 "Never present half-configured capabilities as ready-to-use.",
             ],
         ),
+        "</quality_standards>",
+        "<source_refs>",
+        '<source_ref ref="blueprint:agent_creation#quality_standards" />',
+        "</source_refs>",
+        "<applies_when>Producing any artifact, answer, report, or handoff.</applies_when>",
+        "<does_not_apply_when>The user explicitly asks for raw brainstorming or a draft with known gaps.</does_not_apply_when>",
+        "</soul_quality_bar>",
         "",
-        "## Primary Users & Stakeholders",
-        _markdown_bullets(
-            primary_users,
-            fallback=["The creator and their immediate team."],
-        ),
+        '<soul_user_model id="primary-users-and-outputs" stability="seed">',
+        "<primary_users>",
+        _xml_items(primary_users, fallback=["The creator and their immediate team."]),
+        "</primary_users>",
+        "<core_outputs>",
+        _xml_items(core_outputs, fallback=["Clear, reviewable artifacts tied to the mission."]),
+        "</core_outputs>",
+        "<source_refs>",
+        '<source_ref ref="blueprint:agent_creation#users_outputs" />',
+        "</source_refs>",
+        "</soul_user_model>",
         "",
-        "## Core Outputs",
-        _markdown_bullets(
-            core_outputs,
-            fallback=["Clear, reviewable artifacts tied to the mission."],
-        ),
-        "",
-        "## Operating Style",
-        _markdown_bullets(operating_style),
-        "",
-        "## Boundaries & Red Lines",
-        _markdown_bullets(
+        '<soul_principle id="operating-style" stability="seed">',
+        "<style>",
+        _xml_items(operating_style),
+        "</style>",
+        "<boundaries>",
+        _xml_items(
             boundary_lines,
             fallback=[
                 "Do not fabricate sources, facts, or completion status.",
                 "Flag sensitive or external side effects before proceeding.",
-                "When blocked, state the blocker and next best action — do not improvise.",
+                "When blocked, state the blocker and next best action; do not improvise.",
             ],
         ),
+        "</boundaries>",
+        "<source_refs>",
+        '<source_ref ref="blueprint:agent_creation#operating_style" />',
+        "</source_refs>",
+        "<applies_when>Planning, executing, reporting, and escalating work.</applies_when>",
+        "<does_not_apply_when>Higher-priority owner/company charter gives a more specific rule.</does_not_apply_when>",
+        "</soul_principle>",
         "",
-        "## Collaboration & Escalation",
-        _markdown_bullets(
-            [],
-            fallback=[
-                "Optimize for clear handoffs to the primary users and stakeholders listed above.",
-                "Escalate when the task requires approvals, external commitments, or irreversible actions.",
-                "Treat capability gaps as signals to document and evolve through the platform's learning loop, not as reasons to fake readiness.",
-            ],
-        ),
-        "",
-        "## How I Learn",
-        "This agent has a 4-layer memory system that runs automatically:",
-        "- **Conversations** are extracted into learnings after each response",
-        "- **Heartbeat** periodically curates learnings into durable memory",
-        "- **Dream** consolidates memory and promotes key insights to this soul",
-        "- User corrections and confirmed patterns are the highest-value signals",
-        "",
-        "_Operational details live outside soul.md: triggers are wake policy, and your work ledger tracks in-flight work._",
+        "<!-- Operational details live outside soul.md: triggers are wake policy; work ledger tracks in-flight work; Dream updates enter through evolution/soul_candidates. -->",
     ]
     return "\n".join(parts).rstrip() + "\n"
 
@@ -256,10 +285,10 @@ class AgentManager:
             shutil.copytree(
                 str(template_dir),
                 str(agent_dir),
-                ignore=shutil.ignore_patterns(".*"),
+                ignore=shutil.ignore_patterns(".*", "learnings"),
             )
             # Ensure required dirs exist even if template was incomplete
-            for d in ["memory", "memory/learnings", "skills", "evolution", "workspace", "runtime_artifacts"]:
+            for d in ["memory", "skills", "evolution", "workspace", "runtime_artifacts"]:
                 (agent_dir / d).mkdir(parents=True, exist_ok=True)
         else:
             # No template dir (local dev) — create minimal workspace structure
@@ -269,7 +298,6 @@ class AgentManager:
             (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
             (agent_dir / "logs").mkdir(exist_ok=True)
             (agent_dir / "memory").mkdir(exist_ok=True)
-            (agent_dir / "memory" / "learnings").mkdir(exist_ok=True)
             (agent_dir / "skills").mkdir(exist_ok=True)
             (agent_dir / "evolution").mkdir(exist_ok=True)
             (agent_dir / "runtime_artifacts").mkdir(exist_ok=True)
@@ -296,10 +324,8 @@ class AgentManager:
         soul_path.write_text(soul_content, encoding="utf-8")
 
         from app.memory.md_store import ensure_t3_layout, rebuild_index
-        from app.memory.t2_store import ensure_t2_layout
 
         ensure_t3_layout(Path(settings.AGENT_DATA_DIR), agent.id)
-        ensure_t2_layout(Path(settings.AGENT_DATA_DIR), agent.id)
         rebuild_index(Path(settings.AGENT_DATA_DIR), agent.id)
 
         # Ensure HEARTBEAT.md exists — copy from central template

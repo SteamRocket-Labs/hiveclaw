@@ -188,17 +188,14 @@ async def seed_default_agents():
             (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
             (agent_dir / "logs").mkdir(exist_ok=True)
             (agent_dir / "memory").mkdir(exist_ok=True)
-            (agent_dir / "memory" / "learnings").mkdir(exist_ok=True)
             (agent_dir / "runtime_artifacts").mkdir(exist_ok=True)
 
             # Soul
             (agent_dir / "soul.md").write_text(soul_content.strip() + "\n", encoding="utf-8")
 
             from app.memory.md_store import ensure_t3_layout, rebuild_index
-            from app.memory.t2_store import ensure_t2_layout
 
             ensure_t3_layout(Path(settings.AGENT_DATA_DIR), agent.id)
-            ensure_t2_layout(Path(settings.AGENT_DATA_DIR), agent.id)
             rebuild_index(Path(settings.AGENT_DATA_DIR), agent.id)
 
             # Heartbeat — copy from central template

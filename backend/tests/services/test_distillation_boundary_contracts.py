@@ -99,7 +99,9 @@ def test_dream_template_requires_source_refs_without_owning_t2_retention() -> No
     dream_template = _normalized((PROJECT_ROOT / "backend" / "app" / "templates" / "DREAM.md").read_text(encoding="utf-8"))
 
     assert "source references are precise enough" in dream_template
-    assert "include source refs for every soul promotion" in dream_template
+    assert "soul_candidate" in dream_template
+    assert "source_refs" in dream_template
+    assert "soul.md.next" in dream_template
     assert "the next t3 consolidation batch" in dream_template
     assert "status=absorbed" not in dream_template
     assert "archive referenced t2" not in dream_template

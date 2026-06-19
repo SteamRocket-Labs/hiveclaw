@@ -167,9 +167,9 @@ tags: [memory, architecture]
 
 → **Hive 落地**：T3 文件可引入这套 observation/relation 微语法，把"知识"从散文 bullet 升级为**可机械解析的图节点**，且**完全不离开 Markdown**。`[[wikilink]]` 解决 §9 的"记忆间无显式关联"，前向引用解决"写时不知道链到哪"。
 
-### D.3 索引导航层 — Tencent 的"索引转正"答案（解 ④孤儿）
+### D.3 索引导航层 — Tencent 的"索引转正"答案（④已由 Memory Navigation 收口）
 
-Hive `INDEX.md` 是孤儿（无消费方）。Tencent 给出闭环范本：
+Hive 旧 `INDEX.md` 曾经是孤儿（无消费方）。当前收口后，运行时消费的是 T3 entry manifest / Memory Navigation，唯一持久 Memory Wiki map 是 `memory/wiki_map.md`；旧 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 已退役。Tencent 给出的是这个方向的范本：
 
 ```
 L2 scene_blocks/*.md（MD 源，含 META: created/updated/summary/heat）

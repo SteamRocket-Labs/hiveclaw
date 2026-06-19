@@ -17,7 +17,6 @@ from typing import Any
 from app.memory.activation import ActivationContext, ActivationScorer, memory_lifecycle_suppression_reason
 from app.memory.explicit_overlay import search_explicit_overlay_entries
 from app.memory.md_store import build_t3_entry_manifest
-from app.memory.t2_store import HIGH_PRIORITY_THRESHOLD, load_t2_entries
 from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget
 
@@ -210,9 +209,18 @@ class MemoryRetriever:
     DB-dependent layers degrade gracefully with logging.
     """
 
-    def __init__(self, *, data_root: Path, use_t3_index_first: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: Path,
+        use_t3_index_first: bool = False,
+        include_legacy_sources: bool = False,
+        include_derived_sources: bool = False,
+    ) -> None:
         self.data_root = Path(data_root)
         self.use_t3_index_first = use_t3_index_first
+        self.include_legacy_sources = include_legacy_sources
+        self.include_derived_sources = include_derived_sources
 
     async def retrieve(
         self,
@@ -239,19 +247,22 @@ class MemoryRetriever:
             items.extend(self._retrieve_t3_index_first(agent_id, query=query) or [])
         else:
             items.extend(self._retrieve_t3_direct(agent_id, query=query) or [])
-        items.extend(self._retrieve_understandings(agent_id, query=query) or [])
-        items.extend(self._retrieve_high_priority_t2(agent_id, query=query) or [])
+        if self.include_derived_sources:
+            items.extend(self._retrieve_understandings(agent_id, query=query) or [])
+        if self.include_legacy_sources:
+            items.extend(self._retrieve_high_priority_t2(agent_id, query=query) or [])
         episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
         external_limit = retrieval_profile.external_limit if retrieval_profile else 5
         semantic_limit = retrieval_profile.semantic_limit if retrieval_profile else 5
-        del limit  # prompt memory is sourced entirely from T3 markdown files.
-        items.extend(self._retrieve_wiki_pages(agent_id, query=query, limit=semantic_limit) or [])
+        del limit  # default prompt memory is sourced from accepted T3/explicit overlay + episodic recall.
+        if self.include_derived_sources:
+            items.extend(self._retrieve_wiki_pages(agent_id, query=query, limit=semantic_limit) or [])
 
         items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
 
-        # T3 markdown is the only long-term memory source injected into the prompt.
-        # Other retrieval paths run independently and must not merge into prompt
-        # assembly, avoiding dual-source drift.
+        # Default prompt memory is explicit overlay + accepted T3 markdown +
+        # episodic recall. Legacy and derived stores require explicit opt-in to
+        # avoid dual-source drift.
 
         items.extend(
             await self._retrieve_semantic_backend(
@@ -295,54 +306,23 @@ class MemoryRetriever:
         return items
 
     def _retrieve_high_priority_t2(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
-        entries, _mtimes = load_t2_entries(self.data_root, agent_id)
-        items: list[MemoryItem] = []
-        for entry in entries:
-            category = str(entry.get("category") or "").lower()
-            if category not in {"feedback", "constraint"}:
-                continue
-            if str(entry.get("status") or "active").lower() not in {"", "active"}:
-                continue
-            weight = float(entry.get("weight") or 0.0)
-            if weight < HIGH_PRIORITY_THRESHOLD:
-                continue
-            content = str(entry.get("content") or "").strip()
-            if not content:
-                continue
-            relevance = _score_relevance(content, query) if query else 1.0
-            if query and relevance <= 0:
-                continue
-            source_file = str(entry.get("file") or "insights.md")
-            metadata = {
-                "entry_id": str(entry.get("entry_id") or ""),
-                "category": category,
-                "source_type": "t2_high_priority",
-                "lane": "t2_high_priority",
-                "weight": str(weight),
-                "sensitivity": str(entry.get("sensitivity") or "PL1_public"),
-            }
-            for key in ("confidence", "conf", "retention_score", "open_loop", "reaction", "polarity", "decision_ref"):
-                value = entry.get(key)
-                if value is not None and str(value).strip():
-                    metadata[key] = str(value)
-            items.append(
-                MemoryItem(
-                    kind=MemoryKind.SEMANTIC,
-                    content=f"[t2:{category}] {content}",
-                    score=round(min(1.0, max(weight, 0.75 + (0.2 * relevance))), 4),
-                    source=f"memory/learnings/{source_file}",
-                    metadata=metadata,
-                )
-            )
-        return sorted(items, key=lambda item: item.score, reverse=True)[:5]
+        """Retired legacy T2 read model.
+
+        `memory/learnings/*.md` may still exist for compatibility repair and
+        migration audit, but it is no longer a prompt memory source. Accepted
+        semantic memory is recalled from explicit overlay, accepted T3 Wiki, and
+        episodic T0/T2 session packages.
+        """
+
+        del agent_id, query
+        return []
 
     def _retrieve_wiki_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
-        """Retrieve wiki/scene pages through the PPR-backed Markdown graph.
+        """Retrieve derived wiki/scene pages through the PPR-backed Markdown graph.
 
-        Wiki and scene pages are T3/T9 Markdown truth sources, but they live
-        under memory/wiki and memory/scenes rather than the legacy flat T3
-        files. They must therefore join the main prompt-memory retrieval path
-        explicitly; otherwise the PPR graph remains an offline experiment.
+        These pages are not accepted T3 truth. They are available only when the
+        caller opts into derived sources for migration, eval, or offline graph
+        analysis.
         """
         if not query:
             return []
@@ -390,60 +370,14 @@ class MemoryRetriever:
         return items
 
     def _retrieve_understandings(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
-        """Read relationship-shaped understandings as semantic candidates.
+        """Legacy no-op for retired relationship projection.
 
-        `understandings.md` is not a replacement for T3. It is a first-class
-        relationship graph projection that can now compete in the same
-        activation path as semantic facts.
+        `understandings.md` is not a semantic memory source. Relationship-shaped
+        memory must be authored through the canonical T2/T3 Wiki lane, so this
+        compatibility hook intentionally returns no prompt items.
         """
-        try:
-            from app.memory.understanding_store import UnderstandingStore
-        except ImportError:
-            return []
-
-        store = UnderstandingStore(self.data_root / str(agent_id) / "memory")
-        items: list[MemoryItem] = []
-        for entry in store.query():
-            rendered = (
-                f"[understanding] {entry.subject} -[{entry.relation_type}]-> {entry.object_}: "
-                f"{entry.current_understanding}"
-            )
-            relevance_text = " ".join(
-                [
-                    entry.subject,
-                    entry.object_,
-                    entry.relation_type,
-                    entry.current_understanding,
-                    " ".join(entry.evidence_refs),
-                    " ".join(entry.boundaries),
-                    " ".join(entry.open_questions),
-                ]
-            )
-            relevance = _score_relevance(relevance_text, query) if query else 1.0
-            if query and relevance <= 0:
-                continue
-            confidence = max(0.0, min(float(entry.confidence), 1.0))
-            score = round(min(1.0, 0.55 + (0.3 * relevance) + (0.15 * confidence)), 4)
-            items.append(
-                MemoryItem(
-                    kind=MemoryKind.SEMANTIC,
-                    content=rendered,
-                    score=score,
-                    source="memory/understandings.md",
-                    metadata={
-                        "entry_id": entry.entry_id,
-                        "category": "understanding",
-                        "source_type": "understanding_store",
-                        "subject": entry.subject,
-                        "object": entry.object_,
-                        "relation_type": entry.relation_type,
-                        "confidence": str(entry.confidence),
-                        "evidence_refs": ",".join(entry.evidence_refs),
-                        "sensitivity": "PL1_public",
-                    },
-                )
-            )
-        return items
+        del agent_id, query
+        return []
 
     def _apply_activation(
         self,

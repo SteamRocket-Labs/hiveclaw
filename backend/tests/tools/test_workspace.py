@@ -16,6 +16,21 @@ def test_tasks_json_protected_write_points_to_work_ledger(tmp_path):
     assert "read_ledger" in result
 
 
+def test_soul_md_direct_write_and_edit_are_rejected(tmp_path):
+    from app.services.agent_tool_domains.workspace import _edit_file, _write_file
+
+    (tmp_path / "soul.md").write_text("# Soul\n\n<identity>stable</identity>\n", encoding="utf-8")
+
+    write_result = _write_file(tmp_path, "soul.md", "# Soul\n\n<identity>mutated</identity>\n")
+    edit_result = _edit_file(tmp_path, "soul.md", "stable", "mutated")
+
+    for result in (write_result, edit_result):
+        assert "soul.md is governed by Dream/Soul promotion" in result
+        assert "soul.md.next" in result
+
+    assert (tmp_path / "soul.md").read_text(encoding="utf-8") == "# Soul\n\n<identity>stable</identity>\n"
+
+
 def test_root_writes_are_rejected_except_governed_entrypoints(tmp_path):
     from app.services.agent_tool_domains.workspace import _write_file
 
@@ -26,19 +41,23 @@ def test_root_writes_are_rejected_except_governed_entrypoints(tmp_path):
         assert not (tmp_path / rel_path).exists()
 
 
-def test_skill_writes_require_folder_skill_md_shape(tmp_path):
-    from app.services.agent_tool_domains.workspace import _write_file
+def test_skill_direct_write_edit_and_delete_are_rejected(tmp_path):
+    from app.services.agent_tool_domains.workspace import _delete_file, _edit_file, _write_file
 
-    for rel_path in ("skills/MCP_INSTALLER.md", "skills/.usage.json", "skills/flat-skill"):
-        result = _write_file(tmp_path, rel_path, "raw bypass")
+    skill_path = tmp_path / "skills" / "deploy-checklist" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: deploy-checklist\n---\n", encoding="utf-8")
 
-        assert "skills/<slug>/SKILL.md" in result
-        assert not (tmp_path / rel_path).exists()
+    write_result = _write_file(tmp_path, "skills/deploy-checklist/SKILL.md", "---\nname: bypass\n---\n")
+    edit_result = _edit_file(tmp_path, "skills/deploy-checklist/SKILL.md", "deploy-checklist", "bypass")
+    delete_result = _delete_file(tmp_path, "skills/deploy-checklist/SKILL.md")
 
-    ok = _write_file(tmp_path, "skills/deploy-checklist/SKILL.md", "---\nname: deploy-checklist\n---\n")
+    for result in (write_result, edit_result, delete_result):
+        assert "Active skill packages are governed by Skill promotion" in result
+        assert "save_skill" in result
+        assert "Platform Skill Gate" in result
 
-    assert "Written" in ok
-    assert (tmp_path / "skills" / "deploy-checklist" / "SKILL.md").exists()
+    assert skill_path.read_text(encoding="utf-8") == "---\nname: deploy-checklist\n---\n"
 
 
 def test_evolution_write_guard_points_to_platform_bookkeeping_not_missing_tool(tmp_path):
@@ -204,8 +223,10 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     assert (workspace / "memory" / "t3" / "worker.md").exists()
     assert (workspace / "memory" / "t3" / "capabilities.md").exists()
     assert (workspace / "memory" / "explicit" / "MEMORY.md").exists()
-    assert (workspace / "memory" / "learnings" / "insights.md").exists()
-    assert (workspace / "evolution" / "skill_candidates.md").exists()
+    assert (workspace / "memory" / "wiki_map.md").exists()
+    assert not (workspace / "memory" / "learnings").exists()
+    assert not (workspace / "evolution" / "skill_candidates.md").exists()
+    assert (workspace / "evolution").is_dir()
     assert (workspace / "evolution" / "skill_review.md").exists()
     assert not (workspace / "memory" / "memory.md").exists()
     assert not (workspace / "memory" / "knowledge.md").exists()
@@ -214,7 +235,6 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     soul_content = (workspace / "soul.md").read_text(encoding="utf-8")
     assert "# Soul — 投后助手" in soul_content
     assert "负责投后分析" in soul_content
-
     enterprise_dir = tmp_path / "enterprise_info_tenant-1"
     assert (enterprise_dir / "knowledge_base").is_dir()
     assert (enterprise_dir / "company_profile.md").exists()
@@ -229,6 +249,83 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
         workspace / "evolution" / "reflections.md",
     ):
         assert not reflections_path.exists(), f"dead stub created: {reflections_path}"
+
+
+@pytest.mark.asyncio
+async def test_ensure_workspace_rebuilds_canonical_t3_index_without_legacy_index(monkeypatch, tmp_path):
+    from app.tools.workspace import ensure_workspace
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    legacy_index = workspace / "memory" / "INDEX.md"
+    legacy_index.parent.mkdir(parents=True)
+    legacy_index.write_text("# Legacy Index\n", encoding="utf-8")
+
+    class _FakeScalarResult:
+        def scalar_one_or_none(self):
+            return SimpleNamespace(name="索引测试", role_description="验证派生索引")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _query):
+            return _FakeScalarResult()
+
+    async def fake_sync_tasks(_agent_id_arg, _workspace):
+        return None
+
+    monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr("app.tools.workspace.async_session", lambda: _FakeSession())
+    monkeypatch.setattr("app.tools.workspace._sync_tasks_to_file", fake_sync_tasks)
+
+    await ensure_workspace(agent_id, tenant_id="tenant-1")
+
+    wiki_map = workspace / "memory" / "wiki_map.md"
+    assert wiki_map.exists()
+    assert "Memory Index" in wiki_map.read_text(encoding="utf-8")
+    assert not legacy_index.exists()
+    assert not (workspace / "memory" / "index.md").exists()
+    assert not (workspace / "memory" / ".derived" / "t3_index.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_ensure_workspace_does_not_precreate_legacy_learnings_files(monkeypatch, tmp_path):
+    from app.tools.workspace import ensure_workspace
+
+    agent_id = uuid4()
+
+    class _FakeScalarResult:
+        def scalar_one_or_none(self):
+            return SimpleNamespace(name="学习测试", role_description="验证 legacy memory cleanup")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _query):
+            return _FakeScalarResult()
+
+    async def fake_sync_tasks(_agent_id_arg, _workspace):
+        return None
+
+    monkeypatch.setattr("app.tools.workspace.WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr("app.tools.workspace.async_session", lambda: _FakeSession())
+    monkeypatch.setattr("app.tools.workspace._sync_tasks_to_file", fake_sync_tasks)
+
+    await ensure_workspace(agent_id, tenant_id="tenant-1")
+
+    workspace = tmp_path / str(agent_id)
+    assert not (workspace / "memory" / "learnings").exists()
+    assert not (workspace / "memory" / "learnings" / "insights.md").exists()
+    assert not (workspace / "memory" / "learnings" / "errors.md").exists()
+    assert not (workspace / "memory" / "learnings" / "requests.md").exists()
 
 
 def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path):

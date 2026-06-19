@@ -108,9 +108,9 @@ async def _run_fast_reflection_learning_brain(
 ) -> dict[str, object] | None:
     """Use the post-turn learning brain for fast-reflection signal routing.
 
-    Failure returns None so the synchronous service can use its observable
-    mechanical fallback. This hook runs after RESPONSE_COMPLETE in a background
-    task, so it does not add latency to the user response.
+    Failure returns None and leaves the synchronous service without a learning
+    candidate. This hook runs after RESPONSE_COMPLETE in a background task, so
+    it does not add latency to the user response.
     """
     from app.services.fast_reflection_learning_brain import classify_fast_reflection_signal_with_learning_brain
 
@@ -388,9 +388,9 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
 
     if not ctx.session_id:
         return
-    source = (ctx.source or "web").strip().lower()
-    if source in {"heartbeat", "dream", "distiller", "eval", "platform"}:
-        logger.info("[Hooks] T0->T2 skipped non-semantic source=%s segment=%s", source, segment_id)
+    eligible, reason = _t0_segment_t2_eligible(ctx)
+    if not eligible:
+        logger.info("[Hooks] T0->T2 skipped segment=%s reason=%s", segment_id, reason)
         return
     tenant_id_raw = ctx.metadata.get("tenant_id")
     tenant_id = uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None
@@ -415,6 +415,25 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Hooks] T0->T2 package build failed for agent=%s segment=%s: %s", agent_id, segment_id, exc)
+
+
+def _t0_segment_t2_eligible(ctx: HookContext) -> tuple[bool, str]:
+    """Return whether a sealed T0 segment should enter semantic T2 packaging."""
+
+    explicit = ctx.metadata.get("semantic_memory_eligible")
+    if explicit is not None:
+        if isinstance(explicit, bool):
+            return explicit, "explicit_semantic_memory_eligible" if explicit else "explicit_non_semantic"
+        normalized = str(explicit).strip().lower()
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False, "explicit_non_semantic"
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True, "explicit_semantic"
+
+    source = (ctx.source or "web").strip().lower()
+    if source in {"heartbeat", "dream", "distiller", "eval", "platform"}:
+        return False, f"system_source:{source}"
+    return True, f"source:{source or 'web'}"
 
 
 async def _t0_trigger_end(ctx: HookContext) -> None:

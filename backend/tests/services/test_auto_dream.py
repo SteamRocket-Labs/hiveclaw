@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +25,6 @@ from app.services.auto_dream import (
     _read_preservation_flags,
     _sessions_since_dream,
     _simple_dedup,
-    _upsert_soul_section,
     record_session_end,
     record_heartbeat_tick,
     should_dream,
@@ -214,7 +214,7 @@ class TestSimpleDedup:
 
 class TestParseDreamDecision:
     def test_parses_raw_json(self) -> None:
-        raw = '{"reasoning": "merged 2 duplicates", "soul_promotions": []}'
+        raw = '{"reasoning": "merged 2 duplicates", "soul_candidate": null}'
         result = _parse_dream_decision(raw)
         assert result is not None
         assert result["reasoning"] == "merged 2 duplicates"
@@ -246,31 +246,62 @@ class TestParseDreamDecision:
         assert _parse_dream_decision("") is None
 
 
-class TestUpsertSoulSection:
-    def test_creates_new_section(self, tmp_path: Path) -> None:
-        soul_path = tmp_path / "soul.md"
-        soul_path.write_text("# Soul\n\n## Identity\n- Name: Alice\n", encoding="utf-8")
-        added = _upsert_soul_section(soul_path, "Core Strategies", ["break down into subtasks"])
-        assert added == 1
-        content = soul_path.read_text(encoding="utf-8")
-        assert "## Core Strategies" in content
-        assert "- break down into subtasks" in content
+class TestSoulCandidatePackage:
+    @staticmethod
+    def passing_candidate(*, soul_next: str, source_refs: list[str] | None = None) -> dict:
+        refs = source_refs or ["t3:memory/t3/worker.md#block:soul-principle-1"]
+        candidate = {
+            "target": "soul.md",
+            "soul_pitch_md": "# Soul Pitch\n\nPromote a stable verification principle from accepted T3 evidence.\n",
+            "soul_patch_md": (
+                "# Soul Patch\n\n"
+                "<soul_principle id=\"verification-loop\" stability=\"stable\">\n"
+                "Always verify after material changes.\n"
+                "<source_refs>\n"
+                f"<source_ref ref=\"{refs[0]}\" />\n"
+                "</source_refs>\n"
+                "</soul_principle>\n"
+            ),
+            "soul_md_next": soul_next,
+            "source_refs": refs,
+            "requires_owner_approval": False,
+            "memory_gate_review": {
+                "candidate_id": "",
+                "reviewer": "soul_memory_gate_agent",
+                "source": "independent_llm",
+                "recommendation": "promote",
+                "evidence_strength": {"score": 4, "rationale": "multiple accepted T3 refs support it"},
+                "stability": {"score": 4, "rationale": "stable across sessions"},
+                "identity_fit": {"score": 3, "rationale": "affects always-on quality behavior"},
+                "conflict_safety": {"score": 4, "rationale": "does not alter frozen charter"},
+                "prompt_blast_radius": {"score": 3, "rationale": "bounded verification rule"},
+            },
+        }
+        from app.services.auto_dream import _soul_candidate_id
 
-    def test_appends_to_existing_section(self, tmp_path: Path) -> None:
-        soul_path = tmp_path / "soul.md"
-        soul_path.write_text("# Soul\n\n## Learned Behaviors\n- always ask first\n", encoding="utf-8")
-        added = _upsert_soul_section(soul_path, "Learned Behaviors", ["verify after each step"])
-        assert added == 1
-        content = soul_path.read_text(encoding="utf-8")
-        assert "- always ask first" in content
-        assert "- verify after each step" in content
+        candidate["memory_gate_review"]["candidate_id"] = _soul_candidate_id(candidate)
+        return candidate
 
-    def test_dedup_skips_existing_entry(self, tmp_path: Path) -> None:
-        soul_path = tmp_path / "soul.md"
-        soul_path.write_text("# Soul\n\n## Learned Behaviors\n- Always Ask First\n", encoding="utf-8")
-        added = _upsert_soul_section(soul_path, "Learned Behaviors", ["always ask first"])
-        # Case-insensitive dedup: nothing new.
-        assert added == 0
+    @staticmethod
+    def soul_v2_with_principle(name: str = "Test") -> str:
+        return (
+            "---\n"
+            "schema: hive.soul.v2\n"
+            "role: agent_identity\n"
+            "---\n\n"
+            f"# Soul — {name}\n\n"
+            "<soul_identity frozen=\"true\">\n"
+            f"<name>{name}</name>\n"
+            "</soul_identity>\n\n"
+            "<soul_principle id=\"verification-loop\" stability=\"stable\">\n"
+            "Always verify after material changes.\n"
+            "<source_refs>\n"
+            "<source_ref ref=\"t3:memory/t3/worker.md#block:soul-principle-1\" />\n"
+            "</source_refs>\n"
+            "<applies_when>Code, docs, prompt, or memory behavior changed.</applies_when>\n"
+            "<does_not_apply_when>User explicitly asks for discussion only.</does_not_apply_when>\n"
+            "</soul_principle>\n"
+        )
 
 
 class TestApplyDreamDecisions:
@@ -281,8 +312,57 @@ class TestApplyDreamDecisions:
         (agent_dir / "soul.md").write_text("# Soul\n\n## Identity\n- Name: Test\n", encoding="utf-8")
         return agent_id
 
-    def test_writes_soul_promotions_into_targeted_sections(self, tmp_path: Path) -> None:
+    def test_commits_reviewed_soul_candidate_package_as_exact_next_file(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
+        next_soul = TestSoulCandidatePackage.soul_v2_with_principle()
+        decision = {
+            "reasoning": "identity-grade verification rule",
+            "soul_candidate": TestSoulCandidatePackage.passing_candidate(soul_next=next_soul),
+        }
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            report = _apply_dream_decisions(agent_id, decision)
+
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert soul == next_soul
+        assert report["soul_candidate_committed"] == 1
+        assert report["soul_added"] == 1
+
+        candidate_root = tmp_path / str(agent_id) / "evolution" / "soul_candidates"
+        candidate_dirs = list(candidate_root.iterdir())
+        assert len(candidate_dirs) == 1
+        candidate_dir = candidate_dirs[0]
+        assert (candidate_dir / "soul_pitch.md").exists()
+        assert (candidate_dir / "soul_patch.md").exists()
+        assert (candidate_dir / "soul.md.next").read_text(encoding="utf-8") == next_soul
+        manifest = json.loads((candidate_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["schema"] == "soul_candidate_package.v1"
+        assert manifest["status"] == "committed"
+        assert manifest["target_path"] == "soul.md"
+        assert manifest["memory_gate_review"]["recommendation"] == "promote"
+        assert manifest["memory_gate_review"]["reviewer"] == "soul_memory_gate_agent"
+
+    def test_self_reviewed_soul_candidate_is_held(self, tmp_path: Path) -> None:
+        agent_id = self._scaffold(tmp_path)
+        before = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        next_soul = TestSoulCandidatePackage.soul_v2_with_principle()
+        candidate = TestSoulCandidatePackage.passing_candidate(soul_next=next_soul)
+        candidate["review"] = candidate.pop("memory_gate_review")
+        candidate["review"]["source"] = "dream_writer_self_review"
+        decision = {"reasoning": "self-reviewed candidate must not commit", "soul_candidate": candidate}
+
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            report = _apply_dream_decisions(agent_id, decision)
+
+        soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
+        assert soul == before
+        assert report["soul_candidate_committed"] == 0
+        assert report["soul_candidate_held"] == 1
+
+    def test_legacy_soul_promotions_are_held_not_written(self, tmp_path: Path) -> None:
+        agent_id = self._scaffold(tmp_path)
+        before = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
         decision = {
             "soul_promotions": [
                 {
@@ -291,16 +371,8 @@ class TestApplyDreamDecisions:
                     "source_refs": ["t3:memory/t3/user.md#entry:a", "t3:memory/t3/user.md#entry:b"],
                     "evidence": "system_observed",
                     "section": "Learned Behaviors",
-                    "reason": "repeated 4x",
-                },
-                {
-                    "content": "break problems into 3 phases",
-                    "source_file": "t3/capabilities.md",
-                    "source_refs": ["t3:memory/t3/capabilities.md#entry:a", "t3:memory/t3/capabilities.md#entry:b"],
-                    "evidence": "system_observed",
-                    "section": "Core Strategies",
-                    "reason": "applied across tasks",
-                },
+                    "reason": "legacy schema must not write soul",
+                }
             ]
         }
         with patch("app.services.auto_dream.get_settings") as mock_settings:
@@ -308,11 +380,10 @@ class TestApplyDreamDecisions:
             report = _apply_dream_decisions(agent_id, decision)
 
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
-        assert "## Learned Behaviors" in soul
-        assert "- always prefer concise output" in soul
-        assert "## Core Strategies" in soul
-        assert "- break problems into 3 phases" in soul
-        assert report["soul_added"] == 2
+        assert soul == before
+        assert "always prefer concise output" not in soul
+        assert report["legacy_soul_promotions_held"] == 1
+        assert report["soul_added"] == 0
 
     def test_t3_merges_drop_duplicate_lines(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
@@ -488,22 +559,48 @@ class TestDreamFrozenMissionGate:
         (agent_dir / "soul.md").write_text(self._MISSION_SOUL, encoding="utf-8")
         return agent_id
 
-    def _promotion(self, content: str) -> dict:
-        return {
-            "soul_promotions": [
-                {
-                    "content": content,
-                    "source_file": "t3/capabilities.md",
-                    "source_refs": [
-                        "t3:memory/t3/capabilities.md#entry:a",
-                        "t3:memory/t3/capabilities.md#entry:b",
-                    ],
-                    "evidence": "system_observed",
-                    "section": "Learned Behaviors",
-                    "reason": "observed twice",
-                }
-            ]
-        }
+    def _candidate_decision(self, content: str) -> dict:
+        next_soul = (
+            "---\n"
+            "schema: hive.soul.v2\n"
+            "role: agent_identity\n"
+            "---\n\n"
+            "# Soul — Radar\n\n"
+            "<soul_identity frozen=\"true\">\n"
+            "<name>Radar</name>\n"
+            "<mission>Scan the exhibition floor three times daily and proactively push fresh leads.</mission>\n"
+            "</soul_identity>\n\n"
+            "<soul_principle id=\"lead-brief-rule\" stability=\"stable\">\n"
+            f"{content}\n"
+            "<source_refs>\n"
+            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:a\" />\n"
+            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:b\" />\n"
+            "</source_refs>\n"
+            "<applies_when>Preparing lead briefs.</applies_when>\n"
+            "<does_not_apply_when>The owner explicitly changes the scan cadence.</does_not_apply_when>\n"
+            "</soul_principle>\n"
+        )
+        candidate = TestSoulCandidatePackage.passing_candidate(
+            soul_next=next_soul,
+            source_refs=[
+                "t3:memory/t3/capabilities.md#entry:a",
+                "t3:memory/t3/capabilities.md#entry:b",
+            ],
+        )
+        candidate["soul_patch_md"] = (
+            "# Soul Patch\n\n"
+            "<soul_principle id=\"lead-brief-rule\" stability=\"stable\">\n"
+            f"{content}\n"
+            "<source_refs>\n"
+            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:a\" />\n"
+            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:b\" />\n"
+            "</source_refs>\n"
+            "</soul_principle>\n"
+        )
+        from app.services.auto_dream import _soul_candidate_id
+
+        candidate["memory_gate_review"]["candidate_id"] = _soul_candidate_id(candidate)
+        return {"reasoning": "candidate patch", "soul_candidate": candidate}
 
     def test_promotion_contradicting_frozen_mission_is_held(self, tmp_path: Path) -> None:
         from app.services.auto_dream import _apply_dream_decisions_unlocked
@@ -518,7 +615,7 @@ class TestDreamFrozenMissionGate:
             seen["content"] = content
             return {"contradicts": True, "reason": "candidate disables the mandated three-times-daily scan"}
 
-        decision = self._promotion("Disable the three-times-daily scan; scan only once per week on Friday.")
+        decision = self._candidate_decision("Disable the three-times-daily scan; scan only once per week on Friday.")
         with patch("app.services.auto_dream.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             report = _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=judge)
@@ -526,6 +623,7 @@ class TestDreamFrozenMissionGate:
         # The judge must have received the FROZEN Mission/charter, not T3.
         assert "three times daily" in seen["frozen_charter"].lower()
         assert "Frozen Owner Agency Charter" in seen["frozen_charter"]
+        assert "once per week on Friday" in seen["content"]
         # Contradicting candidate must NOT land in soul.
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
         assert "once per week on Friday" not in soul
@@ -540,15 +638,16 @@ class TestDreamFrozenMissionGate:
         def judge(frozen_charter: str, content: str) -> dict:
             return {"contradicts": False, "reason": "aligns with proactive lead delivery"}
 
-        decision = self._promotion("Always include a one-line summary at the top of each lead brief.")
+        decision = self._candidate_decision("Always include a one-line summary at the top of each lead brief.")
         with patch("app.services.auto_dream.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             report = _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=judge)
 
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
-        assert "- Always include a one-line summary at the top of each lead brief." in soul
+        assert "Always include a one-line summary at the top of each lead brief." in soul
         assert report["soul_added"] == 1
         assert report["soul_contradicted_frozen"] == 0
+        assert report["soul_candidate_committed"] == 1
 
     def test_mechanical_fallback_blocks_negated_mission_when_judge_unavailable(self, tmp_path: Path) -> None:
         # No judge injected → mechanical overlap backstop (observable fallback,
@@ -557,7 +656,7 @@ class TestDreamFrozenMissionGate:
         from app.services.auto_dream import _apply_dream_decisions_unlocked
 
         agent_id = self._scaffold(tmp_path)
-        decision = self._promotion("Disable the three-times-daily scan; only scan once weekly on Friday.")
+        decision = self._candidate_decision("Disable the three-times-daily scan; only scan once weekly on Friday.")
         with patch("app.services.auto_dream.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             report = _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=None)
@@ -601,12 +700,12 @@ class TestDreamFrozenMissionGate:
     async def test_production_llm_judge_is_built_and_applied(self, tmp_path: Path) -> None:
         # Proves the AI-Native L1 path is wired: _build_frozen_mission_judge runs
         # the per-item LLM judge in the async layer, and the resulting verdict is
-        # what _apply_dream_decisions enforces — not the mechanical fallback.
+        # what _apply_dream_decisions enforces — not the safety blocker fallback.
         from app.services.auto_dream import _apply_dream_decisions, _build_frozen_mission_judge
 
         agent_id = self._scaffold(tmp_path)
         tenant_id = uuid.uuid4()
-        decision = self._promotion("Switch the cadence to monthly reviews only.")
+        decision = self._candidate_decision("Switch the cadence to monthly reviews only.")
         judged: list[tuple[str, str]] = []
 
         async def fake_judge(model_config, frozen_charter, content):
@@ -628,7 +727,7 @@ class TestDreamFrozenMissionGate:
 
         # The per-item LLM judge saw the frozen charter + candidate (L1 visibility).
         assert judged and "three times daily" in judged[0][0].lower()
-        assert judged[0][1] == "Switch the cadence to monthly reviews only."
+        assert "Switch the cadence to monthly reviews only." in judged[0][1]
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
         assert "monthly reviews only" not in soul
         assert report["soul_contradicted_frozen"] == 1
@@ -736,17 +835,26 @@ class TestRunDreamIntegration:
         )
 
         fake_decision = {
-            "reasoning": "clear repeated preference, promoting",
-            "soul_promotions": [
-                {
-                    "content": "always prefer concise output",
-                    "source_file": "t3/user.md",
-                    "source_refs": ["t3:memory/t3/user.md#entry:a", "t3:memory/t3/user.md#entry:b"],
-                    "evidence": "system_observed",
-                    "section": "Learned Behaviors",
-                    "reason": "repeated across sessions",
-                }
-            ],
+            "reasoning": "clear repeated preference, promoting through candidate package",
+            "soul_candidate": TestSoulCandidatePackage.passing_candidate(
+                soul_next=(
+                    "---\n"
+                    "schema: hive.soul.v2\n"
+                    "role: agent_identity\n"
+                    "---\n\n"
+                    "# Soul — Test\n\n"
+                    "<soul_user_model id=\"concise-output\" stability=\"stable\">\n"
+                    "Always prefer concise output.\n"
+                    "<source_refs>\n"
+                    "<source_ref ref=\"t3:memory/t3/user.md#entry:a\" />\n"
+                    "<source_ref ref=\"t3:memory/t3/user.md#entry:b\" />\n"
+                    "</source_refs>\n"
+                    "<applies_when>User asks for status, implementation summaries, or next steps.</applies_when>\n"
+                    "<does_not_apply_when>User explicitly asks for exhaustive detail.</does_not_apply_when>\n"
+                    "</soul_user_model>\n"
+                ),
+                source_refs=["t3:memory/t3/user.md#entry:a", "t3:memory/t3/user.md#entry:b"],
+            ),
         }
 
         async def fake_llm(*_args, **_kwargs):
@@ -760,8 +868,8 @@ class TestRunDreamIntegration:
             await run_dream(agent_id, tenant_id)
 
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
-        assert "## Learned Behaviors" in soul
-        assert "- always prefer concise output" in soul
+        assert "schema: hive.soul.v2" in soul
+        assert "Always prefer concise output." in soul
 
     async def test_run_dream_does_not_build_frozen_judge_without_llm_decision(self, tmp_path: Path) -> None:
         from app.services.auto_dream import run_dream
@@ -846,11 +954,11 @@ class TestDreamUserPromptTemplateStructure:
 
     def test_template_has_section_selection_matrix(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
-        # All four target soul sections are explicitly listed.
-        assert "Learned Behaviors" in t
-        assert "Core Strategies" in t
-        assert "Blocked Patterns" in t
-        assert "User Profile" in t
+        # Soul v2 block targets are explicitly listed; old section buckets are not the write contract.
+        assert "soul_principle" in t
+        assert "soul_user_model" in t
+        assert "soul_quality_bar" in t
+        assert "soul_redline" in t
         # Matrix carries the criteria column.
         assert "criteria" in t
 
@@ -877,23 +985,29 @@ class TestDreamUserPromptTemplateStructure:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
         assert "<anti_patterns>" in t
         assert "DO NOT promote" in t
-        assert "DO NOT merge" in t
+        assert "DO NOT rewrite T3" in t
         assert "DO NOT flag for preservation" in t
 
-    def test_json_schema_lists_all_four_output_keys(self) -> None:
+    def test_json_schema_lists_canonical_soul_candidate_artifacts(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
         for key in (
             '"reasoning"',
-            '"soul_promotions"',
-            '"t3_merges"',
-            '"t3_contradictions"',
+            '"soul_candidate"',
+            '"soul_pitch_md"',
+            '"soul_patch_md"',
+            '"soul_md_next"',
+            '"t3_patch_concerns"',
             '"preservation_flags"',
         ):
             assert key in t, f"schema missing key: {key}"
+        assert '"review"' not in t
+        assert "Do not review, approve, or score your own soul_candidate" in t
+        assert '"soul_promotions"' not in t
+        assert '"section"' not in t
 
-    def test_section_enum_is_complete(self) -> None:
+    def test_soul_block_type_enum_is_complete(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
-        assert "Learned Behaviors|Core Strategies|Blocked Patterns|User Profile" in t
+        assert "soul_principle|soul_user_model|soul_quality_bar|soul_redline" in t
 
     def test_source_file_enum_is_complete(self) -> None:
         t = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE

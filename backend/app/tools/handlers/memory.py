@@ -783,23 +783,6 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                 load_hint = f' load_memory(ids=["{entry_id}"])' if entry_id else ""
                 results.append(f"- {id_display}[{cat}]{ts_display}{source_display} {preview}{load_hint}")
 
-        # P9: wiki/scene concept pages — PPR multi-hop over the wikilink
-        # network surfaces linked pages plain keyword search cannot reach.
-        try:
-            from app.memory.wiki_retrieval import search_wiki_pages
-
-            wiki_hits = search_wiki_pages(Path(settings.AGENT_DATA_DIR), agent_id, query, limit=min(limit, 5))
-        except Exception:  # noqa: BLE001 — wiki layer is an accelerator; facts/sessions still answer
-            wiki_hits = []
-        wiki_hits = [hit for hit in wiki_hits if _wiki_hit_visible(Path(settings.AGENT_DATA_DIR), agent_id, hit)]
-        if wiki_hits:
-            results.append("## Knowledge Pages")
-            for hit in wiki_hits:
-                results.append(
-                    f"- [{hit['kind']}] {hit['title']} — {hit['preview'][:120]} "
-                    f'(read_file("{hit["source_ref"]}") for the full page)'
-                )
-
     # --- Cross-session recall ---
     if scope in ("sessions", "all"):
         try:

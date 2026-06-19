@@ -438,7 +438,7 @@ def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str
         }
     )
 
-    new_t2_entries = metadata.get("new_t2_entries", [])
+    t3_intake_candidates = metadata.get("t3_intake_candidates", metadata.get("new_t2_entries", []))
     distillation = metadata.get("distillation", [])
     action = metadata.get("action", "none")
     reasoning = (metadata.get("reasoning") or "").strip()
@@ -450,13 +450,13 @@ def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str
         sections.append(f"## Decision Reasoning\n{_truncate(reasoning, 2000)}")
     if t2_inputs:
         rendered_inputs = "\n".join(f"- {_truncate(str(item), 200)}" for item in t2_inputs)
-        sections.append(f"## T2 Inputs Considered\n{rendered_inputs}")
+        sections.append(f"## T3 Source Inputs Considered\n{rendered_inputs}")
     if messages:
         sections.append("## Tool Calls\n" + _render_messages_with_tools(messages, start_with_user_turn=False))
 
-    t2_section = "\n".join(f"- {e}" for e in new_t2_entries) if new_t2_entries else "(none)"
+    t3_intake_section = "\n".join(f"- {e}" for e in t3_intake_candidates) if t3_intake_candidates else "(none)"
     distill_section = "\n".join(f"- {d}" for d in distillation) if distillation else "(none)"
-    sections.append(f"## New T2 Entries\n{t2_section}")
+    sections.append(f"## T3 Intake Candidates\n{t3_intake_section}")
     sections.append(f"## Distillation\n{distill_section}")
     sections.append(f"## Action\n{_truncate(str(action), 2000)}")
 
@@ -503,6 +503,7 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
     dedup_decisions = metadata.get("dedup_decisions") or []
     promotion_decisions = metadata.get("promotion_decisions") or []
     legacy_dedup_summary = metadata.get("dedup_summary", "")
+    soul_candidate = metadata.get("soul_candidate")
     legacy_promotions = metadata.get("soul_promotions", []) or []
     cleanup = metadata.get("cleanup_summary", "")
 
@@ -525,8 +526,23 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
     else:
         sections.append(f"## Dedup\n{_truncate(legacy_dedup_summary, 2000) if legacy_dedup_summary else '(none)'}")
 
-    # Promotion section: prefer structured decisions, fall back to legacy list.
-    if promotion_decisions:
+    # Soul candidate section: prefer the reviewed candidate package, fall back to legacy audit list.
+    if isinstance(soul_candidate, dict):
+        target = str(soul_candidate.get("target") or "soul.md")
+        refs = ", ".join(str(ref) for ref in (soul_candidate.get("source_refs") or [])[:5])
+        review = (
+            soul_candidate.get("memory_gate_review")
+            if isinstance(soul_candidate.get("memory_gate_review"), dict)
+            else {}
+        )
+        recommendation = str(review.get("recommendation") or "unknown")
+        sections.append(
+            "## Soul Candidate\n"
+            f"- target: {target}\n"
+            f"- recommendation: {recommendation}\n"
+            f"- source_refs: {refs or '(none)'}"
+        )
+    elif promotion_decisions:
         lines = []
         for p in promotion_decisions:
             if not isinstance(p, dict):
@@ -536,10 +552,10 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
             repetition = p.get("repetition_count", 0)
             reason = str(p.get("reason", ""))
             lines.append(f'- "{excerpt}" ← {source} (repeated {repetition}x: {reason})')
-        sections.append("## Soul Promotions\n" + ("\n".join(lines) if lines else "(none)"))
+        sections.append("## Legacy Soul Promotion Audit\n" + ("\n".join(lines) if lines else "(none)"))
     else:
         promo_section = "\n".join(f"- {p}" for p in legacy_promotions) if legacy_promotions else "(none)"
-        sections.append(f"## Soul Promotion\n{promo_section}")
+        sections.append(f"## Legacy Soul Promotion Audit\n{promo_section}")
 
     sections.append(f"## Cleanup\n{_truncate(cleanup, 2000) if cleanup else '(none)'}")
 

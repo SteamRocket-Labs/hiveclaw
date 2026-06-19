@@ -4,11 +4,12 @@ Spec §11 / §12 P7: the frontend stops parsing raw file layout; this service
 assembles stable, structured read models from the MD truth source and its
 sidecars. Pure read side — zero writes, zero LLM calls.
 
-Sources: soul.md, T3 entry manifest, memory/lifecycle.json,
-memory/distillation_audit.jsonl, memory/wiki/, memory/scenes/,
-memory/auto_dream_state.json, evolution/ ledgers, learnings cursors, and
-skill/workflow candidate markers. Raw Markdown stays available through the
-existing workspace file APIs as the advanced view.
+Sources: soul.md, T3 entry manifest, generated memory/wiki_map.md,
+memory/lifecycle.json, memory/distillation_audit.jsonl, derived/compat
+memory/wiki/ and memory/scenes/ pages, memory/auto_dream_state.json,
+evolution/ ledgers, legacy learnings cursors, and skill/workflow candidate
+markers. Raw Markdown stays available through the existing workspace file APIs
+as the advanced view.
 """
 
 from __future__ import annotations
@@ -183,7 +184,13 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
 
     root = _agent_root(data_root, agent_id)
     soul_text = _read_text(root / "soul.md")
-    soul_sections = sum(1 for line in soul_text.splitlines() if line.startswith("## "))
+    soul_blocks = [
+        line.strip()
+        for line in soul_text.splitlines()
+        if line.strip().lower().startswith("<soul_")
+    ]
+    soul_sections = len(soul_blocks) or sum(1 for line in soul_text.splitlines() if line.startswith("## "))
+    frozen_sections = sum(1 for line in soul_blocks if 'frozen="true"' in line.lower())
 
     manifest = build_t3_entry_manifest(data_root, agent_id)
     sensitive_suppressed = sum(
@@ -213,7 +220,7 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
     return {
         "identity": {
             "sections": soul_sections,
-            "frozenSections": 0,
+            "frozenSections": frozen_sections,
             "pendingSoulCandidates": pending_soul,
             "lastUpdated": _file_mtime_iso(root / "soul.md"),
         },

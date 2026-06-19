@@ -22,12 +22,7 @@ from sqlalchemy import select
 
 from app.core.events import get_redis
 from app.database import enter_rls_bypass, tenant_scoped_session
-from app.memory.t2_store import (
-    load_incremental_t2_entries,
-    load_t2_entries,
-    mark_t2_entries_absorbed,
-    render_t2_snapshot,
-)
+from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
 from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -407,14 +402,14 @@ def _clear_heartbeat_checkpoint(agent_id: uuid.UUID) -> None:
 
 
 def _read_t2_full(agent_id: uuid.UUID) -> str:
-    """Read all T2 learnings files (full content) for first tick initialization."""
+    """Read canonical T2 Segment Packages for first tick initialization."""
     from app.config import get_settings
 
-    entries, current_mtimes = load_t2_entries(Path(get_settings().AGENT_DATA_DIR), agent_id)
+    snapshots, current_mtimes = load_t2_package_snapshots(Path(get_settings().AGENT_DATA_DIR), agent_id, limit=12)
     _t2_mtimes[agent_id] = current_mtimes
-    snapshot = render_t2_snapshot(entries)
+    snapshot = render_t2_package_snapshots(snapshots)
     return _truncate_heartbeat_text(
-        snapshot or "(no learnings yet)",
+        snapshot or "(no canonical T2 segment packages yet)",
         _HEARTBEAT_T2_FULL_MAX_CHARS,
         "T2 full snapshot",
     )
@@ -446,18 +441,52 @@ def _read_t3_summary(agent_id: uuid.UUID) -> str:
     )
 
 
+def _read_pending_t3_intake(agent_id: uuid.UUID) -> str:
+    """Stage/read canonical pending T3 intake from Segment Packages and explicit overlay."""
+    from app.config import get_settings
+    from app.memory.t3_consolidation import discover_pending_t3_sources, stage_pending_t3_consolidation_job
+
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+    pending_t3 = discover_pending_t3_sources(agent_id=agent_id, data_root=data_root)
+    if not pending_t3.has_sources:
+        return ""
+    t3_job = stage_pending_t3_consolidation_job(agent_id=agent_id, data_root=data_root)
+    try:
+        rel_job_dir = t3_job.job_dir.relative_to(data_root / str(agent_id)).as_posix()
+    except ValueError:
+        rel_job_dir = t3_job.job_dir.as_posix()
+    lines = [
+        "## T3 Consolidation Job Ready",
+        f"- job_id: `{t3_job.job_id}`",
+        f"- job_status: `{t3_job.status}`",
+        f"- job_dir: `{rel_job_dir}`",
+        f"- reviewed_t2_packages: {len(pending_t3.package_dirs)}",
+        f"- active_explicit_overlay_entries: {len(pending_t3.explicit_entry_ids)}",
+        "- read `source_bundle.json` and `t3_neighborhood.md`",
+        "- submit `consolidation_pitch.md` with `submit_t3_consolidation_pitch`",
+        "- submit `revised_patch.md` with `submit_t3_revised_patch` after the pitch is ready",
+        "- Memory Gate must review the latest `revised_patch.md`; older reviews become stale if the patch changes",
+        "- Platform Gate commits accepted T3 and marks sources absorbed only after fresh review validation",
+    ]
+    if t3_job.issues:
+        lines.append("- issues:")
+        lines.extend(f"  - {issue}" for issue in t3_job.issues)
+    return "\n".join(lines)
+
+
 def _read_incremental_t2(agent_id: uuid.UUID) -> str:
-    """Read only new T2 entries since last tick (via mtime comparison)."""
+    """Read only changed canonical T2 Segment Packages since last tick."""
     from app.config import get_settings
 
-    entries, current_mtimes = load_incremental_t2_entries(
+    snapshots, current_mtimes = load_t2_package_snapshots(
         Path(get_settings().AGENT_DATA_DIR),
         agent_id,
-        _t2_mtimes.get(agent_id, {}),
+        known_mtimes=_t2_mtimes.get(agent_id, {}),
+        limit=8,
     )
     _t2_mtimes[agent_id] = current_mtimes
     return _truncate_heartbeat_text(
-        render_t2_snapshot(entries),
+        render_t2_package_snapshots(snapshots),
         _HEARTBEAT_T2_INCREMENTAL_MAX_CHARS,
         "incremental T2 snapshot",
     )
@@ -924,27 +953,9 @@ async def _build_evolution_context(
         # No fallback needed — _get_canonical_workspace already resolved the right path
 
     try:
-        from app.config import get_settings
-        from app.memory.t3_consolidation import discover_pending_t3_sources, stage_pending_t3_consolidation_job
-
-        data_root = Path(get_settings().AGENT_DATA_DIR)
-        pending_t3 = discover_pending_t3_sources(agent_id=agent_id, data_root=data_root)
-        if pending_t3.has_sources:
-            t3_job = stage_pending_t3_consolidation_job(agent_id=agent_id, data_root=data_root)
-            if t3_job.status == "staged":
-                rel_job_dir = t3_job.job_dir.relative_to(data_root / str(agent_id)).as_posix()
-                parts.append(
-                    "\n---\n## T3 Consolidation Job Ready\n"
-                    f"- job_id: `{t3_job.job_id}`\n"
-                    f"- job_dir: `{rel_job_dir}`\n"
-                    f"- reviewed_t2_packages: {len(pending_t3.package_dirs)}\n"
-                    f"- active_explicit_overlay_entries: {len(pending_t3.explicit_entry_ids)}\n"
-                    "- read `source_bundle.json` and `t3_neighborhood.md`\n"
-                    "- submit `consolidation_pitch.md` with `submit_t3_consolidation_pitch`\n"
-                    "- submit `revised_patch.md` with `submit_t3_revised_patch` after the pitch is ready\n"
-                    "- Memory Gate must review the latest `revised_patch.md`; older reviews become stale if the patch changes\n"
-                    "- Platform Gate commits accepted T3 and marks sources absorbed only after fresh review validation\n"
-                )
+        pending_t3_intake = _read_pending_t3_intake(agent_id)
+        if pending_t3_intake:
+            parts.append("\n---\n" + pending_t3_intake)
     except Exception as exc:
         logger.warning("[Heartbeat] Failed to stage T3 consolidation job for {}: {}", agent_id, exc)
 
@@ -1758,10 +1769,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 if evolution_context:
                     heartbeat_instruction += "\n\n" + evolution_context
 
-                # Inject T2 learnings (full) + T3 memory (reference for dedup)
-                t2_content = _read_t2_full(agent_id)
+                # Inject accepted T3 memory only as dedup/reference. Pending T3 intake
+                # already comes from canonical Segment Packages inside evolution_context.
                 t3_summary = _read_t3_summary(agent_id)
-                heartbeat_instruction += f"\n\n## Current T2 Learnings\n{t2_content}"
                 heartbeat_instruction += f"\n\n## Current T3 Memory (reference — don't duplicate these)\n{t3_summary}"
 
                 runtime_messages = _compact_heartbeat_runtime_messages(
@@ -1805,11 +1815,10 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 )
                 logger.info("[Heartbeat] Tick #{} (full init) for {}", tick_count, agent.name)
             else:
-                # ═══ Subsequent tick: <tick> + incremental T2 ═══
-                new_t2 = _read_incremental_t2(agent_id)
-                if not new_t2:
-                    # Idle protection: no new T2 entries → skip this tick
-                    logger.info("[Heartbeat] Skip tick #{} for {}: no new T2 entries", tick_count, agent.name)
+                # ═══ Subsequent tick: <tick> + canonical pending T3 intake ═══
+                pending_t3_intake = _read_pending_t3_intake(agent_id)
+                if not pending_t3_intake:
+                    logger.info("[Heartbeat] Skip tick #{} for {}: no pending canonical T3 intake", tick_count, agent.name)
                     await _release_heartbeat_lease_async(agent_id)
                     await _touch_last_heartbeat(agent_id, tenant_id)
                     return
@@ -1818,10 +1827,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 heartbeat_session_id = str(session_id)
                 runtime_messages = _heartbeat_contexts[agent_id]
 
-                tick_msg = (
-                    f"<tick>{datetime.now(timezone.utc).isoformat()} tick #{tick_count}</tick>\n\n"
-                    f"## New T2 Entries\n{new_t2}"
-                )
+                tick_msg = f"<tick>{datetime.now(timezone.utc).isoformat()} tick #{tick_count}</tick>"
+                if evolution_context:
+                    tick_msg += "\n\n" + evolution_context
+                else:
+                    tick_msg += "\n\n" + pending_t3_intake
                 runtime_messages.append({"role": "user", "content": tick_msg})
 
                 # Save tick message to DB session
@@ -1845,9 +1855,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     t2_mtimes=_t2_mtimes.get(agent_id, {}),
                 )
                 logger.info(
-                    "[Heartbeat] Tick #{} (incremental, {} new entries) for {}",
+                    "[Heartbeat] Tick #{} (canonical T3 intake ready) for {}",
                     tick_count,
-                    new_t2.count("\n") + 1,
                     agent.name,
                 )
 
@@ -1934,30 +1943,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     "[Heartbeat] Session cache for {} was reset during execution; not restoring stale context",
                     agent_id,
                 )
-
-            try:
-                from app.config import get_settings
-
-                data_root = Path(get_settings().AGENT_DATA_DIR)
-                absorbed = mark_t2_entries_absorbed(
-                    data_root,
-                    agent_id,
-                    filenames=list((_t2_mtimes.get(agent_id) or {}).keys()) or None,
-                )
-                if absorbed:
-                    _entries, current_mtimes = load_t2_entries(data_root, agent_id)
-                    _t2_mtimes[agent_id] = current_mtimes
-                    if _heartbeat_session_ids.get(agent_id) == session_id:
-                        _save_heartbeat_checkpoint(
-                            agent_id,
-                            session_id=session_id,
-                            tick_count=tick_count,
-                            runtime_messages=_heartbeat_contexts.get(agent_id, runtime_messages),
-                            t2_mtimes=current_mtimes,
-                        )
-                    logger.info("[Heartbeat] Marked {} T2 entries absorbed for {}", absorbed, agent_id)
-            except Exception as _t2_absorb_err:
-                logger.warning("[Heartbeat] Failed to mark T2 entries absorbed for {}: {}", agent_id, _t2_absorb_err)
 
             # Save assistant reply to Reflection Session
             assistant_message_id: str | None = None

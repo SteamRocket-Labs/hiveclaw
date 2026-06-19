@@ -135,9 +135,8 @@ Hive 的 skill 是 capability 激活的入口（`invoker.py:563-602`），Mercur
 ### Hive（`prompt_sections/identity.py` + `workspace/soul.md`）
 
 - **soul.md**（frozen prefix）：
-  - Identity / Mission / Personality
-  - **User Profile / Learned Behaviors / Core Strategies / Blocked Patterns**（dream 自动写入）
-  - Boundaries / How I Learn
+  - `hive.soul.v2` XML blocks：`soul_identity`（frozen）、`soul_user_model`、`soul_quality_bar`、`soul_redline`
+  - Dream / Soul Writer 只能提交 Soul Candidate Package，经 Soul Gate 后 atomic commit `soul.md`
 - **focus.md**（dynamic suffix）：当前任务/目标投影
 
 ### 关键差异

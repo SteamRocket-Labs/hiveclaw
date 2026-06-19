@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+
+def _skill_candidate_packages(workspace: Path) -> list[Path]:
+    root = workspace / "evolution" / "skill_candidates"
+    if not root.exists():
+        return []
+    return sorted(path for path in root.iterdir() if path.is_dir())
 
 
 def test_record_skill_lifecycle_event_appends_review_log(tmp_path: Path) -> None:
@@ -59,13 +67,22 @@ def test_record_skill_execution_promotes_candidate_after_three_recent_successes(
         occurred_at="2026-04-09T10:00:00Z",
     )
 
-    candidates = (tmp_path / "evolution" / "skill_candidates.md").read_text(encoding="utf-8")
     review = (tmp_path / "evolution" / "skill_review.md").read_text(encoding="utf-8")
+    packages = _skill_candidate_packages(tmp_path)
+    manifests = [json.loads((package / "manifest.json").read_text(encoding="utf-8")) for package in packages]
 
     assert first["decision"] == "candidate"
     assert second["decision"] == "candidate"
     assert third["decision"] == "promote"
-    assert "workflow_signature: deploy-checklist" in candidates
+    assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
+    assert {manifest["skill_name"] for manifest in manifests} == {"deploy-checklist"}
+    assert manifests[0]["status"] == "promote"
+    assert manifests[0]["metadata"]["workflow_signature"] == "deploy-checklist"
+    assert (packages[0] / "candidate_signal.md").exists()
+    assert not (packages[0] / "SKILL.md.draft").exists()
+    assert (packages[0] / "skill_pitch.md").exists()
+    assert (packages[0] / "eval_plan.md").exists()
+    assert (packages[0] / "failure_cases.md").exists()
     assert "[promote] deploy-checklist" in review
 
 
@@ -93,12 +110,16 @@ def test_record_skill_execution_marks_patch_candidate_after_repeated_loaded_fail
         occurred_at="2026-04-03T10:00:00Z",
     )
 
-    candidates = (tmp_path / "evolution" / "skill_candidates.md").read_text(encoding="utf-8")
     review = (tmp_path / "evolution" / "skill_review.md").read_text(encoding="utf-8")
+    packages = _skill_candidate_packages(tmp_path)
+    manifest = json.loads((packages[0] / "manifest.json").read_text(encoding="utf-8"))
 
     assert first["decision"] == "candidate"
     assert second["decision"] == "patch"
-    assert "patch_candidate_count: 2" in candidates
+    assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
+    assert manifest["skill_name"] == "incident-response"
+    assert manifest["status"] == "patch"
+    assert manifest["metadata"]["patch_candidate_count"] == 2
     assert "[patch] incident-response" in review
 
 
@@ -129,14 +150,16 @@ def test_record_skill_runtime_usage_derives_workflow_and_patch_signal(tmp_path: 
     )
 
     usage_log = (tmp_path / "evolution" / "skill_usage.jsonl").read_text(encoding="utf-8")
-    candidates = (tmp_path / "evolution" / "skill_candidates.md").read_text(encoding="utf-8")
+    packages = _skill_candidate_packages(tmp_path)
+    manifest = json.loads((packages[0] / "manifest.json").read_text(encoding="utf-8"))
 
     assert first["decision"] == "candidate"
     assert second["decision"] == "patch"
     assert first["workflow_signature"] == second["workflow_signature"] == "load_skill+read_file+write_file"
     assert '"source": "web_chat"' in usage_log
     assert '"session_id": "session-1"' in usage_log
-    assert "patch_candidate_count: 2" in candidates
+    assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
+    assert manifest["metadata"]["patch_candidate_count"] == 2
 
 
 def test_record_skill_runtime_usage_writes_promotion_evidence_for_patch(tmp_path: Path) -> None:

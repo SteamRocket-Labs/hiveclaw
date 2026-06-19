@@ -23,7 +23,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory / self-evolution boundary law:** LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。Any memory, heartbeat, dream, skill, workflow, or evolution path that replaces model judgment with counters, regexes, truncated summaries, or platform-authored "semantic" text is an AI-native violation. Any path that lets the model bypass governed write surfaces for durable memory/evolution/soul files is a governance violation.
 
-**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/index.md` is a navigation map, not always-on prompt memory.
+**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/wiki_map.md` is the single generated navigation map, not always-on prompt memory.
 
 **Review lens — apply to every subsystem:** ① Is the LLM's input visibility complete? ② Is its output budget sufficient? ③ Is the prompt engineered to benchmark quality? ④ Does mechanical processing appear only as an observable fallback?
 
@@ -223,10 +223,11 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/
   manifest.json   ← platform evidence refs, source bundle refs, revisions, audit metadata
 ```
 
-`memory/learnings/*.md` is a legacy compatibility/read-model surface only. New
-T0→T2 semantic truth is the Segment Package above. Build-time refs may exist
-under `memory/.staging/t2_jobs/<job_id>/source_bundle.json`; after commit,
-evidence pointers live in `manifest.json` and in-file `source_refs`.
+`memory/learnings/*.md` is a legacy migration/audit surface only and must not be
+used as prompt semantic memory. New T0→T2 semantic truth is the Segment Package
+above. Build-time refs may exist under
+`memory/.staging/t2_jobs/<job_id>/source_bundle.json`; after commit, evidence
+pointers live in `manifest.json` and in-file `source_refs`.
 
 | Layer | Location | Written By | Read By |
 |-------|----------|-----------|---------|
@@ -266,7 +267,7 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | `services/session_feedback.py` | Persists useful/misleading feedback and writes calibrated memory through governed paths. |
 | `memory/hygiene.py` | Retires legacy shadow stores, quarantines dead stubs, and backfills lifecycle metadata with dry-run/apply reports. |
 | `memory/retriever.py` | Read T3 into prompt. High-priority files are injected directly where policy allows; knowledge/strategy/user entries are scored against query. |
-| `memory/md_store.py` | Maintains Markdown T3 stores and `memory/index.md`; the index is a navigation artifact, not the primary retriever route. |
+| `memory/md_store.py` | Maintains Markdown T3 stores and generated `memory/wiki_map.md`; the map is a navigation artifact, not the primary retriever route. |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)

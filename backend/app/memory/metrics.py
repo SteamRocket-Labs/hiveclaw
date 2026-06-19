@@ -61,9 +61,10 @@ class LatencyWindow:
 _recall_latency: dict[tuple[str, str], LatencyWindow] = defaultdict(LatencyWindow)
 
 
-# ── Extraction pipeline counters (P0-2c) ─────────────────────
-# The hot-path RESPONSE_COMPLETE → schedule_extract → durable queue path
-# fails silently in several ways that operators previously couldn't see:
+# ── Legacy extraction pipeline counters (P0-2c) ─────────────────────
+# The old RESPONSE_COMPLETE → schedule_extract → durable queue path is no
+# longer the canonical runtime route. These counters remain for explicitly
+# enabled migration/repair jobs and their replay queue:
 #  - enqueue itself fails (FS full / permission denied)
 #  - scheduled task raises after pattern fallback (kept on disk for replay)
 #  - drain timeout cancels in-flight work

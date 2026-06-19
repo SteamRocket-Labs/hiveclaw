@@ -33,8 +33,9 @@ LLM负责判断、提炼、反思、归纳、候选生成；平台负责证据�
 The runtime records the heartbeat outcome into `evolution/`; do not write
 `evolution/` yourself. `t0_backfill` is a human bucket provenance note: treat it
 as imported raw evidence that must be checked through T2 refs before promotion.
-After eligible T2 inputs are consumed, runtime may mark them `status=absorbed`
-for T2 retention bookkeeping; do not edit T2 files directly.
+After eligible T2 inputs are consumed, Platform Gate marks source packages or
+explicit overlay entries `absorbed` / `reinforced`; heartbeat itself must not
+edit T2 files directly.
 </pipeline_context>
 
 <session_context>

@@ -777,10 +777,11 @@ _WRITE_PROTECTED = {
         "tasks.json is a read-only DB Task snapshot. Use track_todo/read_ledger for the agent work board; "
         "use the Tasks UI or REST task API for DB-backed task execution."
     ),
+    "soul.md": (
+        "soul.md is governed by Dream/Soul promotion. Direct write_file/edit_file is refused; "
+        "Dream must write a soul.md.next candidate and the promotion gate performs the audited commit."
+    ),
 }
-
-# soul.md is append-only: heartbeat can add evolution notes but not overwrite identity
-_APPEND_ONLY = {"soul.md"}
 
 # memory/ is governed by the Memory Control Plane: explicit memories must run
 # through save_memory -> Explicit Memory Overlay, and accepted T3 writes must
@@ -810,7 +811,7 @@ _PLATFORM_MANAGED_PREFIX_MESSAGES = {
     ),
 }
 
-_ROOT_WRITE_ALLOWLIST = {"soul.md"}
+_ROOT_WRITE_ALLOWLIST: set[str] = set()
 _ROOT_PREFIX_ALLOWLIST = {"workspace", "skills", "subagents", "enterprise_info"}
 _ROOT_MANAGED_FILE_MESSAGES = {
     "relationships.md": "relationships.md is generated from the Relationships control plane; update relationships through the Relationships UI/API.",
@@ -853,7 +854,7 @@ def _root_write_guard_message(rel_path: str) -> str | None:
     if top_level not in _ROOT_PREFIX_ALLOWLIST and not _managed_system_path_message(normalized):
         return (
             f"{top_level}/ is not a writable agent file namespace. Use workspace/ for deliverables, "
-            "skills/<slug>/SKILL.md for skills, or a dedicated platform API."
+            "save_skill for skill activation candidates, or a dedicated platform API."
         )
     return None
 
@@ -862,20 +863,12 @@ def _skill_package_path_guard_message(rel_path: str, *, operation: str) -> str |
     normalized = rel_path.strip("/").replace("\\", "/")
     if not normalized.startswith("skills/"):
         return None
-    tail = normalized[len("skills/") :].strip("/")
-    if not tail:
-        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
-    parts = [part for part in tail.split("/") if part]
-    if not parts:
-        return "skills/ is a package root. Use skills/<slug>/SKILL.md for skill definitions."
-    slug = parts[0]
-    if slug.startswith(".") or "." in slug:
-        return "Skill packages must be folders named by slug. Use skills/<slug>/SKILL.md."
-    if any(part.startswith(".") and part != ".gitkeep" for part in parts[1:]):
-        return "Hidden skill sidecars are platform-managed. Use skills/<slug>/SKILL.md and visible package resources."
-    if len(parts) == 1 and operation != "delete":
-        return "Skill definitions must be files under a skill folder. Use skills/<slug>/SKILL.md."
-    return None
+    del operation
+    return (
+        "Active skill packages are governed by Skill promotion. Direct file writes, edits, and deletes under "
+        "skills/ are refused; use save_skill to submit an activation candidate, or let Skill Distiller promote "
+        "a verified SKILL.md.draft through Platform Skill Gate."
+    )
 
 
 def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_file") -> str:
@@ -920,40 +913,8 @@ def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_f
             tool_name,
             "auth_or_permission",
             skill_guard_message,
-            actionable_hint="Create skills as skills/<slug>/SKILL.md with optional visible resource folders.",
+            actionable_hint="Use save_skill to submit a skill activation candidate; active skills require Platform Skill Gate.",
         )
-
-    # soul.md is append-only: new content is appended under an evolution section
-    _APPEND_ONLY_MAX_CHARS = 16000
-    if rel_path.strip("/") in _APPEND_ONLY:
-        target = ws / rel_path.strip("/")
-        if target.exists():
-            existing = target.read_text(encoding="utf-8", errors="replace")
-            if content.strip() in existing:
-                return f"✅ {rel_path} already contains this content."
-            # Enforce size cap — trim oldest evolution entries by boundary (### HB-)
-            if len(existing) + len(content) > _APPEND_ONLY_MAX_CHARS:
-                separator = "\n\n---\n## Evolution Notes (heartbeat-appended)\n\n"
-                if separator.rstrip() in existing:
-                    identity, _, evo_notes = existing.partition(separator.rstrip())
-                    # Split by entry boundaries (### HB-) and drop oldest entries
-                    import re as _re
-
-                    entries = _re.split(r"(?=### HB-)", evo_notes)
-                    while (
-                        entries
-                        and len(identity) + len(separator) + sum(len(e) for e in entries) + len(content)
-                        > _APPEND_ONLY_MAX_CHARS
-                    ):
-                        entries.pop(0)  # drop oldest entry
-                    existing = identity + separator.rstrip() + "".join(entries)
-            separator = "\n\n---\n## Evolution Notes (heartbeat-appended)\n\n"
-            if separator.rstrip() in existing:
-                target.write_text(existing.rstrip() + "\n\n" + content.strip() + "\n", encoding="utf-8")
-            else:
-                target.write_text(existing.rstrip() + separator + content.strip() + "\n", encoding="utf-8")
-            return f"✅ Appended evolution notes to {rel_path} (identity section preserved)."
-        # If file doesn't exist yet, fall through to normal write
 
     file_path = (ws / rel_path).resolve()
     if not _is_within_path(file_path, ws):
@@ -1002,7 +963,7 @@ def _edit_file(
             tool_name,
             "auth_or_permission",
             skill_guard_message,
-            actionable_hint="Edit canonical skill package files such as skills/<slug>/SKILL.md.",
+            actionable_hint="Submit a new save_skill candidate or let Skill Distiller patch through Platform Skill Gate.",
         )
     file_path = (ws / rel_path).resolve()
     if not _is_within_path(file_path, ws):
@@ -1217,7 +1178,7 @@ def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file") -> str
             tool_name,
             "auth_or_permission",
             skill_guard_message,
-            actionable_hint="Delete whole skill folders or visible files inside a canonical skill package.",
+            actionable_hint="Use skill lifecycle controls such as pin/unpin or governed promotion review; do not delete active skills directly.",
         )
 
     file_path = (ws / rel_path).resolve()

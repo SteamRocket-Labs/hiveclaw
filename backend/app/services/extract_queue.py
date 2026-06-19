@@ -4,12 +4,11 @@ This queue belongs to the pre-Segment-Package extractor path. It is not the
 canonical T0→T2 route anymore; new runtime memory flow starts from sealed T0
 session ledger segments and writes T2 Segment Packages.
 
-The hot path (`extract_agent.schedule_extract` invoked from
-RESPONSE_COMPLETE) is fire-and-forget: if the underlying task fails (LLM
-error, OOM, drain timeout, process crash) the message batch is silently
-lost. Pattern fallback inside `extract_agent.extract` only mitigates LLM
-failures — it does not cover the cases where the task itself never
-finishes or the process dies before draining.
+There is no default runtime hot path into this queue anymore. Legacy
+`extract_agent.schedule_extract` is reserved for explicitly enabled migration
+or repair work; if that operator-led task fails (LLM error, OOM, drain timeout,
+process crash) this queue keeps the payload visible instead of silently losing
+it.
 
 This module provides a tiny on-disk queue:
   - `enqueue(payload)`: persist payload before extraction begins.

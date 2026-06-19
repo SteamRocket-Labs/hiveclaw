@@ -15,37 +15,12 @@ from app.services.session_learning import record_session_learning_projection
 logger = logging.getLogger(__name__)
 
 
-_CORRECTION_MARKERS = (
-    "错了",
-    "不是",
-    "不对",
-    "下次",
-    "以后",
-    "不要",
-    "别再",
-    "wrong",
-    "incorrect",
-    "next time",
-    "from now on",
-    "do not",
-    "don't",
-    "instead",
-)
-_WORKFLOW_MARKERS = ("workflow", "流程", "步骤", "procedure", "sop")
-_TOOL_FAILURE_MARKERS = ("tool failed", "工具失败", "traceback", "exception", "pytest", "ruff", "failed")
 _SIGNAL_TYPES = {
     "user_preference_correction",
     "workflow_correction",
     "verification_failure",
     "repeated_task_pattern",
 }
-
-
-def _latest_user_content(messages: list[dict[str, Any]]) -> str:
-    for message in reversed(messages):
-        if str(message.get("role") or "").lower() == "user":
-            return str(message.get("content") or "").strip()
-    return ""
 
 
 def _message_digest(messages: list[dict[str, Any]]) -> str:
@@ -89,6 +64,7 @@ def _classification_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | 
 
 
 def _classify_signal(messages: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any] | None:
+    del messages
     classifier_result = _classification_from_metadata(metadata)
     if classifier_result is not None:
         if classifier_result["signal_type"] == "low_signal":
@@ -96,31 +72,12 @@ def _classify_signal(messages: list[dict[str, Any]], metadata: dict[str, Any]) -
         return classifier_result
 
     explicit = str(metadata.get("fast_reflection_signal") or metadata.get("user_correction") or "").strip()
-    latest_user = _latest_user_content(messages)
-    haystack = "\n".join([explicit, latest_user, str(metadata.get("error") or ""), str(metadata.get("test_artifacts") or "")])
-    lowered = haystack.lower()
-
     if explicit:
         return {
             "signal_type": "user_preference_correction",
             "lesson": explicit[:1000],
             "method": "explicit_metadata",
             "confidence": 1.0,
-        }
-    if any(marker in lowered for marker in _CORRECTION_MARKERS):
-        signal = "workflow_correction" if any(marker in lowered for marker in _WORKFLOW_MARKERS) else "user_preference_correction"
-        return {
-            "signal_type": signal,
-            "lesson": latest_user[:1000],
-            "method": "mechanical_fallback",
-            "confidence": 0.0,
-        }
-    if metadata.get("verification_failed") or any(marker in lowered for marker in _TOOL_FAILURE_MARKERS):
-        return {
-            "signal_type": "verification_failure",
-            "lesson": haystack[:1000],
-            "method": "mechanical_fallback",
-            "confidence": 0.0,
         }
     if metadata.get("repeated_workflow_signature"):
         return {

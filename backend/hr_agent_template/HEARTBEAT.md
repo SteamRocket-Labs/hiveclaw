@@ -25,8 +25,9 @@ Accepted T3 truth is only:
 - `memory/t3/worker.md`
 - `memory/t3/capabilities.md`
 
-After a successful tick, runtime marks consumed T2 rows as `[status=absorbed]`.
-This is T2 retention bookkeeping; do not edit T2 files directly.
+After a successful Platform Gate commit, source Segment Packages or explicit
+overlay entries are marked `absorbed` / `reinforced` by Platform Gate. Heartbeat
+does not edit T2 files directly.
 </pipeline_context>
 
 <domain_focus>

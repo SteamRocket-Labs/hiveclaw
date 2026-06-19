@@ -76,7 +76,7 @@ def test_memory_promotion_requires_source_refs_and_rollback(tmp_path):
     candidate = record_memory_promotion_candidate(
         workspace,
         target_type="memory:soul",
-        target_id="soul.md#Learned Behaviors",
+        target_id="soul.md#soul_user_model",
         proposed_diff="+ - I keep memory writes evidence-tagged",
         source_refs=["t2:learnings/insights.md:12", "t0:behavior/chat.md#L3-L9"],
         evidence="user_stated",
@@ -110,7 +110,7 @@ def test_memory_promotion_holds_inferred_or_ephemeral_candidates(tmp_path):
     candidate = record_memory_promotion_candidate(
         workspace,
         target_type="memory:soul",
-        target_id="soul.md#Learned Behaviors",
+        target_id="soul.md#soul_user_model",
         proposed_diff="+ inferred behavior",
         source_refs=["t2:learnings/insights.md:12"],
         evidence="inferred",
@@ -132,7 +132,7 @@ def test_soul_promotion_requires_multiple_refs_for_system_observed(tmp_path):
     candidate = record_memory_promotion_candidate(
         workspace,
         target_type="memory:soul",
-        target_id="soul.md#Learned Behaviors",
+        target_id="soul.md#soul_user_model",
         proposed_diff="+ system observed behavior",
         source_refs=["t3:memory/feedback.md"],
         evidence="system_observed",

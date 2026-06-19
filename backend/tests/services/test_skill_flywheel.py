@@ -24,7 +24,14 @@ def test_skill_flywheel_creates_candidate_draft_from_repeated_fast_reflection(tm
     assert reflection["status"] == "candidate_created"
     assert result["status"] == "skill_candidate_created"
     assert result["route"] == "new_class_skill"
-    assert (workspace / "evolution" / "skill_candidates" / result["candidate_id"] / "SKILL.md").exists()
+    candidate_dir = workspace / "evolution" / "skill_candidates" / result["candidate_id"]
+    assert (candidate_dir / "candidate_signal.md").exists()
+    assert not (candidate_dir / "SKILL.md.draft").exists()
+    assert not (candidate_dir / "SKILL.md").exists()
+    assert (candidate_dir / "skill_pitch.md").exists()
+    assert (candidate_dir / "eval_plan.md").exists()
+    assert (candidate_dir / "failure_cases.md").exists()
+    assert (candidate_dir / "manifest.json").exists()
     assert not (workspace / "skills").exists()
 
     entries = load_evolution_ledger(workspace)
@@ -49,7 +56,10 @@ def test_skill_flywheel_prefers_loaded_skill_patch_route(tmp_path) -> None:
         agent_id=agent_id,
         session_id="session-2",
         messages=[{"role": "user", "content": "下次这个流程先补 rollback 检查。"}],
-        metadata={"loaded_skill_name": "incident-response"},
+        metadata={
+            "loaded_skill_name": "incident-response",
+            "fast_reflection_signal": "下次这个流程先补 rollback 检查。",
+        },
     )
     workspace = tmp_path / str(agent_id)
     fast_candidate = load_evolution_ledger(workspace)[0]

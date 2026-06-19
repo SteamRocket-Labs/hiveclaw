@@ -1,6 +1,6 @@
-"""Durable understanding store (§10.3, §16.1).
+"""Read-only legacy understanding projection (§10.3, §16.1).
 
-A first-class home for relationship-shaped knowledge:
+This file used to be a first-class home for relationship-shaped knowledge:
 
     subject — relation_type → object
 
@@ -8,15 +8,15 @@ with evidence_refs, confidence, last_confirmed_at, contradiction_history,
 open_questions, and boundaries. Entries persist as a YAML-fronted
 `understandings.md` so owners can review them alongside T3 memory files.
 
-This module is intentionally storage-light: it owns the file format and the
-in-memory contradiction graph, but does not yet wire into retriever or
-dream. Those integrations are gradual; the store is the substrate.
+The unified memory path is now T0 session ledger -> T2 Segment Package -> T3
+Wiki -> soul/skill gates. `understandings.md` is therefore read-only legacy
+derived projection, not semantic truth. record() is disabled. contradict() is
+disabled. New relationship memory must be authored through the T2/T3 LLM lane.
 """
 
 from __future__ import annotations
 
 import re
-import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,11 +48,10 @@ class UnderstandingEntry:
 class UnderstandingStore:
     """Markdown-backed understanding store.
 
-    `record()` creates a new entry. `contradict()` introduces a contradicting
-    entry while keeping the original visible (down-ranked confidence + linked
-    via `contradiction_history`). `query()` filters by subject / object /
-    relation. `decayed_confidence()` returns a stale-window-adjusted view of
-    confidence without mutating the persisted value.
+    `query()` filters by subject / object / relation for old projection files.
+    `decayed_confidence()` returns a stale-window-adjusted view of confidence
+    without mutating the persisted value. Writes are intentionally refused to
+    prevent a second semantic truth source beside T3.
     """
 
     def __init__(self, base_dir: Path) -> None:
@@ -74,21 +73,8 @@ class UnderstandingStore:
         open_questions: list[str] | None = None,
         boundaries: list[str] | None = None,
     ) -> UnderstandingEntry:
-        entry = UnderstandingEntry(
-            entry_id=uuid.uuid4().hex,
-            subject=subject.strip(),
-            object_=object_.strip(),
-            relation_type=relation_type.strip(),
-            current_understanding=current_understanding.strip(),
-            evidence_refs=list(evidence_refs or []),
-            confidence=float(confidence),
-            last_confirmed_at=datetime.now(timezone.utc),
-            open_questions=list(open_questions or []),
-            boundaries=list(boundaries or []),
-        )
-        self._entries[entry.entry_id] = entry
-        self._flush()
-        return entry
+        del subject, object_, relation_type, current_understanding, evidence_refs, confidence, open_questions, boundaries
+        raise RuntimeError("understandings.md writes are disabled; use T2/T3 memory gates")
 
     def get(self, entry_id: str) -> UnderstandingEntry | None:
         return self._entries.get(entry_id)
@@ -101,25 +87,8 @@ class UnderstandingStore:
         evidence_refs: list[str] | None = None,
         confidence: float = 0.5,
     ) -> UnderstandingEntry:
-        original = self._entries.get(entry_id)
-        if original is None:
-            raise KeyError(f"Unknown understanding entry: {entry_id}")
-        new_entry = UnderstandingEntry(
-            entry_id=uuid.uuid4().hex,
-            subject=original.subject,
-            object_=original.object_,
-            relation_type=original.relation_type,
-            current_understanding=new_understanding.strip(),
-            evidence_refs=list(evidence_refs or []),
-            confidence=float(confidence),
-            last_confirmed_at=datetime.now(timezone.utc),
-            contradiction_history=[original.entry_id],
-        )
-        original.contradiction_history = list({*original.contradiction_history, new_entry.entry_id})
-        original.confidence = max(0.0, original.confidence * 0.5)
-        self._entries[new_entry.entry_id] = new_entry
-        self._flush()
-        return new_entry
+        del entry_id, new_understanding, evidence_refs, confidence
+        raise RuntimeError("understandings.md writes are disabled; use T2/T3 memory gates")
 
     def query(
         self,

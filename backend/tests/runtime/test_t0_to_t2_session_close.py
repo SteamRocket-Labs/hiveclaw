@@ -160,6 +160,32 @@ async def test_system_distiller_runtime_events_do_not_enter_t2(monkeypatch, tmp_
     )
 
 
+@pytest.mark.asyncio
+async def test_runtime_t0_can_explicitly_opt_out_of_t2_packaging(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+
+    async def fail_build(**_kwargs):
+        raise AssertionError("non-semantic runtime ledger must not enter T2")
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fail_build)
+
+    await _t0_trigger_end(
+        HookContext(
+            event=HookEvent.TRIGGER_END,
+            agent_id=str(agent_id),
+            session_id=None,
+            source="trigger",
+            messages=[{"role": "system", "content": "health check completed"}],
+            metadata={
+                "tenant_id": str(uuid4()),
+                "trigger_id": "health-check",
+                "semantic_memory_eligible": False,
+            },
+        )
+    )
+
+
 def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
     from app.runtime.hooks_setup import export_memory_hook_plan
 

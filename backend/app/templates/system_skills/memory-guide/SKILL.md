@@ -98,7 +98,10 @@ Do not create or write:
 - `memory/blocked.md`
 
 Derived views may exist under `memory/.derived/**`; they are rebuildable read
-models, not semantic truth.
+models, not semantic truth. The single persistent Memory Wiki map is the
+generated read model `memory/wiki_map.md`. Legacy root indexes
+`memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are
+retired and must not be recreated or written by agents.
 </accepted_t3_targets>
 
 ## Tool Reference

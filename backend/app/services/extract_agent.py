@@ -6,14 +6,16 @@ LLM-authored summary.md / labels.md / review.md -> Platform Gate atomic commit.
 
 This module remains only for legacy admin backfill, compatibility tests, and
 derived/read-model migration work. Default runtime hooks must not call
-``schedule_extract`` or write canonical T2 through ``memory/learnings/*.md``.
+``schedule_extract``; canonical T2 belongs only to reviewed Segment Packages,
+never to ``memory/learnings/*.md``.
 
-Role contract (docs/agent-memory-md-first-spec.md §5): the Extractor performs
-fast ATOM EXTRACTION from messages / T0 / Work Ledger into T2 candidates. It
-does NOT promote — it never writes T3, soul, skills, or workflows directly.
-Each atom may carry a `container_candidate` hint (memory_append /
-soul_candidate / skill_candidate / workflow_candidate / artifact_only) that
-the PromotionRouter and Memory Control Plane adjudicate downstream.
+Legacy role contract (docs/agent-memory-md-first-spec.md §5): this Extractor
+can perform fast ATOM EXTRACTION from messages / legacy T0 / Work Ledger into
+compatibility candidate lines. It does NOT promote — it never writes canonical
+T2 Segment Packages, T3, soul, skills, or workflows directly. Each atom may
+carry a `container_candidate` hint (memory_append / soul_candidate /
+skill_candidate / workflow_candidate / artifact_only) that downstream migration
+or review tooling may inspect.
 
 Legacy pipeline: messages → LLM extract → append to learnings/{category}.md
 Legacy fallback: messages → regex patterns → append to learnings/{category}.md
@@ -31,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -46,31 +49,43 @@ logger = logging.getLogger(__name__)
 _LOW_SIGNAL_TOOL_NAMES = frozenset({"list_files", "get_current_time", "list_triggers", "tool_search"})
 
 
+def _legacy_t2_backfill_enabled() -> bool:
+    return os.getenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", "").strip().lower() in {"1", "true", "yes"}
+
+
 # ── Extraction prompt (aligned with Claude Code extractMemories) ──
 
 EXTRACT_PROMPT = """\
 <role>
 You are the ATOM EXTRACTION sub-agent for {agent_name}. You feed the T2 layer
-of a 4-stage memory pyramid: messages → T2 → T3 → soul.md.
+only in legacy backfill / compatibility mode. The canonical runtime path is:
+T0 append-only session segment → source_bundle.json → LLM-authored
+summary.md / labels.md / review.md → reviewed T2 Segment Package → T3
+Consolidation Batch → soul.md / Skill lanes.
 
-You produce atom CANDIDATES — self-contained evidence units. You do not
-promote: do not promote anything to soul, skills, or workflows yourself. Your
-`container` hint is advisory routing evidence for the downstream
-PromotionRouter; the Memory Control Plane owns the final write decision.
+You produce legacy atom CANDIDATES — self-contained evidence units for manual
+repair/backfill only. You do not promote: do not promote anything to T3, soul,
+skills, or workflows yourself. Your `container` hint is advisory routing
+evidence for downstream review; the Memory Control Plane owns the final write
+decision.
 </role>
 
 <pipeline_context>
 Downstream:
-- heartbeat (every ~2h) — the Memory Curator — reads your T2 atom
-  candidates and decides which to promote into T3 long-term memory. It uses
-  the category AND the source weight (w=) to rank them, and reads your
-  `container` hint when routing strategy evidence.
-- dream (daily, given real activity) reads T3 and promotes stable patterns into
-  soul.md, the agent's permanent identity.
+- Canonical T2 is not this legacy line format. Canonical T2 is a reviewed
+  Segment Package with `summary.md`, `labels.md`, `review.md`, and
+  `manifest.json`.
+- heartbeat/T3 Consolidator do not read `memory/learnings/*.md` as primary
+  truth. They consume reviewed Segment Packages and explicit overlay entries.
+- `w=` and `container` remain legacy compatibility metadata only; they may help
+  migration tooling route evidence, but they are not a promotion decision.
+- dream (daily, given real activity) reads accepted T3 and proposes stable
+  identity candidates for soul.md through Dream/Soul promotion governance.
 
 What this means for your output:
-- Each extraction must be **SELF-CONTAINED**. Heartbeat sees only your line,
-  never the full conversation. "User disagreed with my approach" is useless.
+- Each extraction must be **SELF-CONTAINED** because migration/review tooling
+  may see only your line, never the full conversation. "User disagreed with my
+  approach" is useless.
   "User rejected regex for HTML parsing; requires BeautifulSoup instead" is
   useful.
 - Prefer concrete nouns. Replace "this", "that", "the issue", "it" with the
@@ -1443,6 +1458,17 @@ async def backfill_missing_extractions(
             "errors": [],
             "scanned": audit["sessions_in_t0"],
             "missing_session_ids": [m["session_id"] for m in audit["missing"]],
+        }
+
+    if not _legacy_t2_backfill_enabled():
+        return {
+            "extracted": 0,
+            "would_extract": len(audit["missing"]),
+            "errors": [],
+            "scanned": audit["sessions_in_t0"],
+            "missing_session_ids": [m["session_id"] for m in audit["missing"]],
+            "disabled": 1,
+            "reason": "legacy T0->T2 learnings backfill disabled; canonical T2 is Segment Package only",
         }
 
     cursor = _read_backfill_cursor(agent_id)

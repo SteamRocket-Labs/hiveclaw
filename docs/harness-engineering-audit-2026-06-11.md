@@ -121,10 +121,10 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 - 整改状态(2026-06-12):已把 `llm_rubric` 改为 fail-closed 非可执行 verifier;新增 `skill_guard` verifier 并接入 `skill_flywheel` 与 `skill_distiller`。`skill_distiller` 晋升顺序已改为 candidate → `skill_guard` verification → verification eval → promotion decision → save,危险草稿不会落盘。证据见 §12.3。后续如果要把 lint/load-smoke/human confirmation 纳入更强 verifier matrix,应作为增强项新增,不能再用 LLM confidence 冒充通过。
 
 **P0-M2 fast_reflection 全链机械化(L1 违例)且终端产物无消费者**
-- 现状:信号分类 = 字符串 marker 匹配为主路径(含「不是」/「failed」等中文高频词,`fast_reflection_service.py:18-35`),无 LLM 参与;技能草稿 = Python 模板渲染;产出的 `evolution/skill_candidates/<id>/SKILL.md` **全仓无读取方**。链路有效产物只剩 60min TTL 的 session projection。
+- 现状:信号分类 = 字符串 marker 匹配为主路径(含「不是」/「failed」等中文高频词,`fast_reflection_service.py:18-35`),无 LLM 参与;机械技能草稿曾被错误写成 Skill draft;2026-06-19 已升级为 Skill Candidate Package：机械 fast-reflection/lifecycle 信号写 `candidate_signal.md`，只有 Skill Writer / Distiller LLM 生成的语义草稿才写 `SKILL.md.draft`。
 - 基准:hermes 每回合 fork 完整 LLM agent(继承 prompt cache)用高质量 prompt 判断「该学什么」(`background_review.py:34-145`)。
 - 修复:分类步换小模型侧查询(与 retriever rerank 同模式),机械 marker 降级为可观测兜底;死草稿目录砍掉或接通消费者。
-- 整改状态(2026-06-12):已把 RESPONSE_COMPLETE hook 接入 tenant summary model classifier,输出 `fast_reflection_classification` 后再进入同步 candidate writer;`fast_reflection_service` 优先消费该分类结果,marker/regex 仅作为 `mechanical_fallback`。`evolution/skill_candidates/<id>/SKILL.md` 草稿已通过 `load_flywheel_skill_candidate_drafts()` 注入 skill distiller drafting prompt,不再是无消费者死产物。证据见 §12.5。
+- 整改状态(2026-06-12, 2026-06-19 路径升级):已把 RESPONSE_COMPLETE hook 接入 tenant summary model classifier,输出 `fast_reflection_classification` 后再进入同步 candidate writer;`fast_reflection_service` 现在只接受 explicit metadata、LLM classification、或结构化 repeated-workflow metadata。marker/regex 兜底已移除；marker-only 文本按 low-signal 处理，不再生成学习候选。`candidate_signal.md` 只作为 evidence 注入 Skill Writer / Distiller prompt；`SKILL.md.draft` 必须由 LLM-authored Skill Candidate Package 产生，不允许平台模板冒充语义草稿。证据见 §12.5。
 
 **P0-M3 DREAM.md 模板死线 + 测试钉死幽灵**
 - 现状:`_DREAM_TEMPLATE_PATH` 定义后从未被 read_text(`auto_dream.py:1099`);生产 dream 走 `_AUTO_DREAM_SYSTEM_PROMPT` + `DREAM_CONSOLIDATOR.md`。而 `tests/runtime/test_dream_template.py` 专门钉 DREAM.md 内容、CLAUDE.md 宣称它有效;且模板教 agent 对 memory/ 用 write_file——与运行时铁律相悖,即便活着也走不通。
@@ -172,8 +172,8 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 | P1-1 | **预算 enforcement 已接入(2026-06-12)**:`invoke_agent()` 入口现在先执行 user token quota admission gate;显式 `request.user_id` 优先,后台运行回落 agent owner/creator。quota denied 或 quota 检查异常都不会进入 kernel。证据见 §12.12 | `runtime/invoker.py` / `quota_guard.py` | 后续可扩展 tenant-level quota,但 user-level token gate 不再是死代码 |
 | P1-2 | **运行中 steering 已接入(2026-06-12)**:active web-chat run 下新用户输入会写入 `ChatMessage`,追加到 active `RuntimeTask.metadata_json.pending_user_messages`;kernel 每轮开头 drain 为真实 user message。REST 返回 202 queued,WS 发 `user_message_queued`,不再丢输入。证据见 §12.14 | `web_chat_runtime.py` / `kernel/contracts.py` / `kernel/engine.py` / `api/chat_sessions.py` / `api/websocket.py` | 单次长 streaming final answer 仍只能在下一轮/下一次调用看见 steering;工具轮之间已对齐 CC mid-turn drain |
 | P1-3 | **输出 cap continuation 已接入(2026-06-12)**:kernel 现在读取 `finish_reason in {"length","max_tokens"}`,在无 tool_call 时用 assistant partial + resume prompt 续写,最多 3 次,续写 cap 65536;普通工具轮次/PTL fallback/max_output_tokens 回归已覆盖。证据见 §12.13 | `kernel/engine.py` / `tests/kernel/test_engine.py` | 后续可把 continuation attempt 写入 runtime event/trace;不再静默截断最终回答 |
-| P1-4 | **高权重 T2 检索已接入(2026-06-12)**:`MemoryRetriever` 现在读取 `memory/learnings/*.md`,筛选 active 且 `w>=0.85` 的 `feedback/constraint` 条目作为 semantic 候选,metadata 标 `lane=t2_high_priority`。证据见 §12.18 | `memory/retriever.py` / `memory/t2_store.py` / `tests/memory/test_retrieval_pipeline.py` | 低权重/非反馈约束 T2 仍等待 heartbeat 晋升,避免把临时噪声全量注入 prompt |
-| P1-5 | **技能 patch 通路已接入(2026-06-12)**:`skill_distiller` 的 patch 决策现在进入 `skill_patch` candidate → `skill_guard` verification → eval → promotion decision → `_save_skill(overwrite=True)`,不再停在人工建议。证据见 §12.19 | `skill_distiller.py` / `evolution_validation.py` / `tests/services/test_skill_distiller.py` | patch 终态纳入 ledger validator 的 promoted 类终态;仍由 `skill_guard` 和 promotion decision gate 阻断不安全草稿 |
+| P1-4 | **旧 T2/understanding prompt lane 已退役(2026-06-19)**:`MemoryRetriever` 不再读取 `memory/learnings/*.md` 或 `understandings.md` 作为 prompt semantic memory；`include_legacy_sources` / `include_derived_sources` 不能把这些兼容面重新注入主 prompt。canonical prompt memory 走 explicit overlay + accepted T3 + episodic recall + generated navigation map。 | `memory/retriever.py` / `memory/t2_store.py` / `memory/understanding_store.py` / `tests/memory/test_retrieval_pipeline.py` / `tests/memory/test_understanding_store.py` | 避免旧 compatibility view、relationship projection 和 Segment Package/T3 双源漂移 |
+| P1-5 | **技能 patch 通路已接入并去平台重渲染(2026-06-12, 2026-06-19 收紧)**:`skill_distiller` 的 patch 决策现在进入 `skill_patch` candidate → `skill_guard` verification → eval → promotion decision → exact LLM-authored `SKILL.md.draft` commit,不再停在人工建议,也不再由平台 `_save_skill()` 重组语义正文。证据见 §12.19 | `skill_distiller.py` / `evolution_validation.py` / `tests/services/test_skill_distiller.py` | patch 终态纳入 ledger validator 的 promoted 类终态;仍由 `skill_guard` 和 promotion decision gate 阻断不安全草稿 |
 | P1-6 | **错误记忆纠正工具已接入(2026-06-12)**:新增 governed `update_memory`/`retire_memory`;update 通过 write gate 写新 T3,再按 entry_id 退休旧 T3 并记录 supersedes/superseded_by;retire 只归档不物理删除。证据见 §12.20 | `tools/handlers/memory.py` / `memory/t3_store.py` / `memory/lifecycle_store.py` / `capability_gate.py` | 两个工具进入 CORE tool surface 和 `agent.memory.write` 能力门;`memory-guide`/prompt section 已同步 |
 | P1-7 | **once trigger ack 语义已接入(2026-06-12)**:tick 不再预先递增 `fire_count` 或禁用 once;只写 `config._fire_inflight`。成功 invocation ack 后才更新 `last_fired_at/fire_count/is_enabled`;失败 path 清理 inflight 并走 backoff。证据见 §12.15 | `trigger_daemon.py` / `tests/services/test_trigger_daemon.py` | fresh inflight 会抑制重复触发;stale inflight 超时后可重试,不再静默蒸发 |
 | P1-8 | **web chat startup resume 已接入(2026-06-12)**:startup 现在调用 `resume_persisted_web_chat_runs()`,把仍处 active 的 `web_chat_turn` 重新调度,并将 resumed ids 传给 orphan reconciler 排除,避免刚恢复即标 failed。证据见 §12.16 | `web_chat_runtime.py` / `main.py` / `runtime_task_service.py` | queued plan handoff 的 terminal cleanup 已由恢复后的 `execute_web_chat_run()` 继续执行;不再永久卡死 |
@@ -185,7 +185,7 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 | P1-14 | **HITL 审批结果回流已接入(2026-06-12)**:approval request 现在携带 origin session;批准执行后写 `ChatMessage(role=tool_call)` 并在 active web-chat run 上追加 `pending_user_messages`,让 kernel 下一轮 drain 继续推理。证据见 §12.24 | `approval_service.py` / `tools/governance.py` / `tools/governance_resolver.py` | Checkpoint 与 ApprovalRequest 的长期模型统一仍可继续收敛;当前不再是批准后结果脱离原会话 |
 | P1-15 | **多实例防双跑 fail-closed 已接入(2026-06-12)**:trigger fire 与 heartbeat 的 Redis lease 异常不再本地放行;web chat active-run 互斥补上数据库 partial unique index,并在唯一冲突时回退为 durable queued message。证据见 §12.25 | `trigger_daemon.py` / `heartbeat.py` / `web_chat_runtime.py` / `runtime_task.py` / `web_chat_active_run_unique_0612.py` | 迁移会先把历史重复 active web-chat run 标 failed,再建唯一索引;非租约语义测试显式 stub lease,避免本地无 Redis 掩盖生产 fail-closed |
 
-其余 P1(摘要):**OpenAI-compatible 流式中断 tombstone 已接入(2026-06-12,见 §12.26)**;**round aggregate tool-result spill 已接入(2026-06-12,见 §12.27)**;**prompt cache hit-rate metrics 已接入(2026-06-12,见 §12.28)**;**记忆双检索双注入已收敛为 memory/runtime/knowledge 三路单注入(2026-06-12,见 §12.29)**;**assembler 分数感知裁剪不再被二层 ratio 截断覆盖(2026-06-12,见 §12.30)**;**D6 repeated-feedback lane 已接入 frozen-Mission 矛盾门(2026-06-12,见 §12.31)**;**activation 死权重已接通(conf alias/open_loop bool/retention_score 派生/T2 metadata 透传,2026-06-12,见 §12.32)**;**PPR wiki/scene 检索已进主 MemoryRetriever 且 memory retrieval/retirement eval 进 CI(2026-06-12,见 §12.33)**;**health 已从恒真改为 daemon-aware degraded 状态,Prometheus 导出 daemon liveness(2026-06-12,见 §12.34)**;**IM 通道轮次已统一进入 durable web-chat runtime wrapper,并补齐 Slack/DingTalk/Discord/Microsoft Teams 完成回投(2026-06-12,见 §12.35)**。
+其余 P1(摘要):**OpenAI-compatible 流式中断 tombstone 已接入(2026-06-12,见 §12.26)**;**round aggregate tool-result spill 已接入(2026-06-12,见 §12.27)**;**prompt cache hit-rate metrics 已接入(2026-06-12,见 §12.28)**;**记忆双检索双注入已收敛为 memory/runtime/knowledge 三路单注入(2026-06-12,见 §12.29)**;**assembler 分数感知裁剪不再被二层 ratio 截断覆盖(2026-06-12,见 §12.30)**;**D6 repeated-feedback lane 已接入 frozen-Mission 矛盾门(2026-06-12,见 §12.31)**;**activation 死权重已接通(conf alias/open_loop bool/retention_score 派生/T2 metadata 透传,2026-06-12,见 §12.32)**;**PPR wiki/scene 检索已保留为显式 derived/eval 能力，但 2026-06-19 后不再默认进入主 prompt MemoryRetriever，避免和 accepted T3 四文件双源漂移**;**health 已从恒真改为 daemon-aware degraded 状态,Prometheus 导出 daemon liveness(2026-06-12,见 §12.34)**;**IM 通道轮次已统一进入 durable web-chat runtime wrapper,并补齐 Slack/DingTalk/Discord/Microsoft Teams 完成回投(2026-06-12,见 §12.35)**。
 
 ---
 
@@ -209,7 +209,7 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 
 真超越的五个维度(CC 源码核实其一概没有):写入纯净(write_gate/PL 分级/lane/lifecycle sidecar)、可逆生命周期(heat/退役/cap/archive)、审计(ledger/rollback_ref)、蒸馏 SOP 质量(HEARTBEAT.md 与 dream prompt 的 few-shot+反模式+决策矩阵明显优于 CC extractMemories 朴素 prompt)、多租户。D1-D10 纯净化债的旧快照已过期:截至 2026-06-13，D1/D2/D8/D10 不再是「代码就绪待生产执行」,已接 `app.memory.hygiene` + startup `migrate_all_workspaces()` 可逆 quarantine/backfill 路径；D5/D6 也已从旁路状态收口到 agent-tool lane gate 与 frozen-Mission gate。证据见 `docs/agent-memory-purity-spec.md` v0.4 与第二轮报告 §12.18。
 
-落后的两个体感维度已从「断线」收敛为「质量差距」:①**学习时延**——高权重 T2 已可次回合检索,但 CC 回合末 forked agent 直写 durable、下场即可见;Hive 仍需区分 T2 快反馈与 T3/soul/skill 慢沉淀。②**读侧智能**——PPR wiki/scene 多跳已接入主 `MemoryRetriever`,activation 权重已有真实 metadata 来源,但 CC 主路径仍是 Sonnet manifest 选择器(LLM 判断);Hive 主路径仍以确定性 scoring+窄条件 LLM rerank 为主。此前 DREAM.md 死模板、verification 同义反复、retrieval_eval 无调用、activation 死权重等断点已按 §12.18/§12.23/§12.31-§12.33 修掉;剩余差距必须靠持续 eval 与 live Hermes baseline 继续量化。
+落后的两个体感维度已从「断线」收敛为「质量差距」:①**学习时延**——explicit overlay 可立即激活，canonical T2/T3 仍按 reviewed Segment Package 和 T3 Gate 慢沉淀；旧 high-weight T2 只保留显式 legacy opt-in。②**读侧智能**——PPR wiki/scene 多跳保留为 derived/eval 能力，但默认 prompt memory 已收敛为 explicit overlay + accepted T3 + episodic recall；CC 主路径仍是 Sonnet manifest 选择器(LLM 判断)，Hive 主路径仍以确定性 scoring+窄条件 LLM rerank 为主。此前 DREAM.md 死模板、verification 同义反复、retrieval_eval 无调用、activation 死权重等断点已按 §12.18/§12.23/§12.31-§12.33 修掉;剩余差距必须靠持续 eval 与 live Hermes baseline 继续量化。
 
 对 hermes:平台治理碾压(hermes 几乎零治理);单 agent 智能体验仍有差距,但闭环最后一跳已有实质推进——①T2 高权重反馈已可次回合检索 ②技能已可经验证后 patch ③错误记忆已可 governed update/retire ④「该学什么」已从字符串 marker 升级为 LLM classifier+fallback ⑤P1-13 已把 Hive 侧 bakeoff 改为行为场景,旧 `deterministic_checks/92 vs 85` 报告已更新为 `behavior_assertions` ⑥PPR 多跳 read model 已进入主检索并有 CI eval 守门。**剩余关键证据集中在外部 Hermes live CLI 环境化复跑、LLM manifest/rerank 主路化收益验证;做完前不要宣称「已超越」——当前 CI baseline 是显式 fixture,不是外部 Hermes 实时跑分。**
 
@@ -417,7 +417,7 @@ pytest tests/services/test_workflow_completion_signal_gateway.py -q
 **代码证据**
 - `backend/app/services/evolution_verification.py`:新增 `_run_skill_guard_check()`;`_run_llm_rubric_check()` 改为 fail-closed;`record_verification_eval()` 保留完整 `verification_report`。
 - `backend/app/services/skill_flywheel.py`:candidate draft 的 grader 从自证 `state_check` 改为 `{"type":"skill_guard","path":...}`。
-- `backend/app/services/skill_distiller.py`:promotion 顺序改为 `record_evolution_candidate()` → `run_evolution_verification(skill_guard)` → `record_verification_eval(dataset="skill_distiller.verified_skill_guard")` → `decide_verified_promotion()` → `_save_skill()`;verification failed 时只记录 held decision,不写入 `skills/`。
+- `backend/app/services/skill_distiller.py`:promotion 顺序改为 `record_evolution_candidate()` → `run_evolution_verification(skill_guard)` → `record_verification_eval(dataset="skill_distiller.verified_skill_guard")` → `decide_verified_promotion()` → exact LLM-authored `SKILL.md.draft` commit；verification failed 时只记录 held decision,不写入 `skills/`。
 - `backend/tests/services/test_evolution_verification.py`:覆盖 `skill_guard` 正/反例与 `llm_rubric` fail-closed 行为。
 - `backend/tests/services/test_skill_flywheel.py`:断言 flywheel eval report 的唯一 check 是 `skill_guard`。
 - `backend/tests/services/test_skill_distiller.py`:断言 distiller ledger 保存 `skill_guard` verification report;危险 `curl ... | bash` 草稿返回 deferred 且 skill 文件不存在。
@@ -509,15 +509,15 @@ pytest tests/services/test_auto_dream.py::TestDreamSystemPromptStructure \
 **范围**
 - fast reflection 信号分类从 marker-first 改为 classifier-first;机械 marker 保留为失败/无模型时的可观测 fallback。
 - RESPONSE_COMPLETE 后台 hook 尝试用 tenant summary model 输出 `fast_reflection_classification` JSON,不阻塞用户响应;失败返回 None,由同步 service fallback。
-- `evolution/skill_candidates/<id>/SKILL.md` 不再是死目录;skill distiller 会扫描 inactive drafts 并把它们作为 drafting evidence 注入 LLM prompt。
+- `candidate_signal.md` / LLM-authored `SKILL.md.draft` 不再是死目录;skill distiller 会扫描 inactive Skill Candidate Packages 并把它们作为 drafting evidence 注入 LLM prompt。
 
 **代码证据**
 - `backend/app/runtime/hooks_setup.py`:新增 `_classify_fast_reflection_signal_with_llm()` 与 `_parse_fast_reflection_classifier_json()`;`_fast_reflection_on_response()` 将 classifier 结果写入 metadata 后再 schedule candidate。
-- `backend/app/services/fast_reflection_service.py`:新增 `fast_reflection_classification` metadata 优先路径;ledger metadata 记录 `classification_method` / `classification_confidence`;marker 路径标记为 `mechanical_fallback`,结构化 repeated workflow metadata 标记为 `structured_metadata`。
+- `backend/app/services/fast_reflection_service.py`:新增 `fast_reflection_classification` metadata 优先路径;ledger metadata 记录 `classification_method` / `classification_confidence`;marker/regex fallback 已退役，结构化 repeated workflow metadata 标记为 `structured_metadata`，纯文本 marker 不再生成候选。
 - `backend/app/services/skill_distiller.py`:新增 `load_flywheel_skill_candidate_drafts()`;`_draft_skill_with_llm()` 新增 `flywheel_skill_candidate_drafts` prompt block;`run_skill_distillation_cycle()` 将草稿传入 drafting 阶段。
 - `backend/tests/services/test_fast_reflection_candidate.py`:覆盖 LLM classifier 覆盖 marker、LLM low_signal 抑制 marker fallback。
 - `backend/tests/runtime/test_fast_reflection_hook.py`:覆盖 hook 将 classifier 结果透传到 scheduler metadata。
-- `backend/tests/services/test_skill_distiller.py`:覆盖 distiller 读取 `evolution/skill_candidates/<id>/SKILL.md` 并传给 `_draft_skill_with_llm()`。
+- `backend/tests/services/test_skill_distiller.py`:覆盖 distiller 读取 `evolution/skill_candidates/<id>/candidate_signal.md` 或 LLM-authored `SKILL.md.draft` 并传给 `_draft_skill_with_llm()`。
 
 **回归测试**
 
@@ -1009,7 +1009,7 @@ ruff check app/services/workflow_runtime_service.py app/services/workflow_launch
 
 **范围**
 - T2 feedback/constraint 不再必须等待 heartbeat 晋升 T3 才能进入 prompt retrieval。
-- `MemoryRetriever` 新增 high-priority T2 lane:读取 `memory/learnings/{insights,errors,requests}.md`,筛选 active 且 `w>=0.85` 的 `feedback/constraint`。
+- `MemoryRetriever` 的 high-priority legacy T2 lane 已退役：prompt memory 不读取 `memory/learnings/{insights,errors,requests}.md`；`include_legacy_sources=True` 仅保留参数兼容，不再把旧 compatibility files 注入主提示词。
 - 返回项为 `MemoryKind.SEMANTIC`,source 指向原 T2 文件,metadata 标 `lane=t2_high_priority` / `source_type=t2_high_priority`。
 
 **代码证据**
@@ -1047,7 +1047,7 @@ ruff check app/memory/retriever.py tests/memory/test_retrieval_pipeline.py
 - `skill_distiller` 的 patch 决策不再只写 `patch_recommended` 事件后返回;现在会实际进入可审计 self-evolution 通路。
 - patch 目标解析优先使用已有 skill 名称/冲突解析结果,并保持原 workspace 路径,避免同义 skill 被另存为新目录。
 - patch 候选使用 `target_type="skill_patch"`、`target_id=<existing skill relative path>`、`baseline_version=<existing skill relative path>`,写入 `evolution_ledger.jsonl`。
-- patch 通过 `run_evolution_verification(skill_guard)` 与 `record_verification_eval(dataset="skill_distiller.verified_skill_guard")`;只有 `decide_verified_promotion()` 通过后才调用 `_save_skill(overwrite=True)`。
+- patch 通过 `run_evolution_verification(skill_guard)` 与 `record_verification_eval(dataset="skill_distiller.verified_skill_guard")`;只有 `decide_verified_promotion()` 通过后才提交 exact LLM-authored `SKILL.md.draft` 覆盖目标 skill。
 - `evolution_validation` 将 `patched` 纳入 promoted 类终态,要求 rollback_ref 与无 critical regression,因此 patch 不是 ledger 的未知状态。
 
 **代码证据**
@@ -1086,7 +1086,7 @@ ruff check app/services/skill_distiller.py app/services/evolution_validation.py 
 **范围**
 - Agent tool 面新增 `update_memory` 与 `retire_memory`,与 `save_memory/search_memory/load_memory` 一起作为 core memory surface 首轮可见。
 - `update_memory(memory_id, content, category?, reason?)` 先加载旧 T3 entry 并校验可见性;replacement 通过 `append_t3_memory_candidate()` 的 privacy/form/write gate 写入;随后按 exact `entry_id` 退休旧 entry,写入 `memory/archive.md` 和 `memory/lifecycle.json` 的 `supersedes/superseded_by` 边。
-- `retire_memory(memory_id, reason)` 按 exact `entry_id` 把旧 entry 从活跃 T3 文件移入 archive;不物理删除 evidence,并立即 rebuild `INDEX.md`。
+- `retire_memory(memory_id, reason)` 按 exact `entry_id` 把旧 entry 从活跃 T3 文件移入 archive;不物理删除 evidence,并立即 rebuild 唯一 generated map `memory/wiki_map.md`，同时清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`。
 - `append_t3_memory_candidate()` 支持 `parent_id/supersedes/superseded_by/dedup_exclude_entry_ids`,让显式 correction 不会被“与旧 entry 相似”误拦。
 - `CapabilityGate` 把 `update_memory/retire_memory` 映射到 `agent.memory.write`;tool registry/catalog 把它们归入 Memory 分组;runtime memory section 与 `memory-guide` system skill 已同步。
 
@@ -1620,17 +1620,16 @@ ruff check backend/app/runtime/prompt_builder.py backend/app/runtime/prompt_sect
 
 当前结果:prompt-builder/memory-section 回归 22 passed,11 warnings;编译通过;ruff `All checks passed!`。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
 
-### 12.31 2026-06-12 第三十一批:D6 repeated-feedback lane 接入 frozen-Mission gate
+### 12.31 2026-06-12 第三十一批:D6 repeated-feedback lane 接入 frozen-Mission gate（2026-06-19 被 Soul Candidate Package 取代）
 
 **范围**
-- `auto_dream._apply_dream_decisions()` 的 LLM promotion path 之前已有 frozen Mission/charter gate,但 pattern-based repeated-feedback safety net 仍能机械地把 3+ 次 feedback 直接写进 `soul.md#Learned Behaviors`。
-- repeated-feedback lane 现在复用同一套 `_promotion_contradicts_frozen()` gate:LLM judge verdict 优先,judge 缺失/abstain 时才走机械 negation-overlap fallback。
-- `run_dream()` 在异步层为 repeated-feedback clusters 生成 synthetic `soul_promotions` decision,调用 `_build_frozen_mission_judge()`,再把预计算 judge 传给同步 `_promote_repeated_feedback_to_soul()`。
-- 被 frozen Mission/charter 判为冲突的 repeated-feedback candidate 不写 soul,而是写 `memory_promotion_decision` hold 事件,metadata 标 `gate=frozen_mission`。
+- 这段记录描述的是 2026-06-12 的旧中间态：当时 repeated-feedback lane 仍会生成 synthetic `soul_promotions`，再靠 frozen-Mission gate 阻拦。
+- 2026-06-19 后 canonical 路径已改为 `soul_candidate` / Soul Candidate Package：Dream / Soul Writer 生成 `soul_pitch.md`、`soul_patch.md`、`soul.md.next`、`review.md`、`manifest.json`，平台只做 hard check / rollback / audit / atomic commit。
+- 旧 `soul_promotions` 仅作为 stale-output compatibility 被 hold 和审计，不再允许写入 `soul.md`。
 
 **代码证据**
-- `backend/app/services/auto_dream.py`:新增 `_cluster_repeated_feedback()` 与 `_build_repeated_feedback_promotion_decision()`;`_promote_repeated_feedback_to_soul(..., contradiction_judge=...)` 增加 frozen gate、hold 计数与 ledger hold 决策;`run_dream()` 将 repeated-feedback synthetic decision 接到 `_build_frozen_mission_judge()`。
-- `backend/tests/services/test_auto_dream.py`:新增 `test_repeated_feedback_promotion_contradicting_frozen_mission_is_held`,覆盖 repeated-feedback 直接函数路径;新增 `test_run_dream_builds_frozen_judge_for_repeated_feedback_lane`,覆盖 production `run_dream()` wiring。
+- `backend/app/services/auto_dream.py`: `_apply_dream_decisions_unlocked()` 只提交通过 review rubric 的 `soul_candidate`；legacy `soul_promotions` 增加 `legacy_soul_promotions_held`，不再写 `soul.md`。
+- `backend/tests/services/test_auto_dream.py`: 覆盖 reviewed Soul Candidate Package exact commit、legacy `soul_promotions` hold、prompt schema 禁止旧字段。
 
 **回归测试**
 
@@ -1706,7 +1705,7 @@ ruff check backend/app/memory/activation.py backend/app/memory/md_store.py \
 
 **范围**
 - `memory/wiki` 与 `memory/scenes` 的 KG/PPR read model 不再只是离线 `wiki_retrieval` 实验;主 `MemoryRetriever.retrieve()` 现在把 `search_wiki_pages(..., method=DEFAULT_WIKI_METHOD)` 的结果作为 `MemoryKind.SEMANTIC` 候选注入 prompt memory。
-- wiki/scene hit 保留 Markdown source truth:`source=memory/wiki/<slug>.md` 或 `memory/scenes/<slug>.md`,metadata 记录 `page_id/title/page_kind/source_type=wiki_ppr/method/source_ref/sensitivity`。
+- wiki/scene hit 保留 Markdown derived/eval source:`source=memory/wiki/<slug>.md` 或 `memory/scenes/<slug>.md`,metadata 记录 `page_id/title/page_kind/source_type=wiki_ppr/method/source_ref/sensitivity`；默认 prompt memory 不再注入这些派生页。
 - `app.memory.retrieval_eval` 增加可执行 CLI,同时跑 retrieval quality 与 retirement safety,并校验 `wiki_retrieval.DEFAULT_WIKI_METHOD` 必须等于 eval verdict。
 - Harness CI 现在显式运行 `python -m app.memory.retrieval_eval --data-root /tmp/hive-memory-eval`,PPR 默认与退役安全不再靠人工记忆复跑。
 

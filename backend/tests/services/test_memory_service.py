@@ -220,7 +220,7 @@ async def test_maybe_compress_does_not_use_cumulative_usage_anchor_as_context_pr
 @pytest.mark.asyncio
 async def test_summary_breaker_opens_after_consecutive_failures(monkeypatch, caplog, _clean_breaker):
     """3 consecutive LLM failures open the breaker: the 4th compression skips the
-    LLM entirely (CC autoCompact breaker philosophy) and the fallback emits a metric."""
+    LLM entirely (CC autoCompact breaker philosophy) and the hold path emits a metric."""
 
     tenant_id = uuid4()
     llm_calls: list = []
@@ -228,7 +228,7 @@ async def test_summary_breaker_opens_after_consecutive_failures(monkeypatch, cap
     with caplog.at_level("WARNING"):
         for _ in range(3):
             result = await _compress_once(monkeypatch, tenant_id, llm_calls, fail=True)
-            assert result[0]["role"] == "system"  # extraction fallback still compresses
+            assert result[0]["role"] == "system"  # degraded marker still compresses
 
         assert len(llm_calls) == 3
 
@@ -237,7 +237,7 @@ async def test_summary_breaker_opens_after_consecutive_failures(monkeypatch, cap
     assert len(llm_calls) == 3  # breaker open — no 4th LLM attempt
     assert result[0]["role"] == "system"
     metrics = [getattr(r, "metric", None) for r in caplog.records]
-    assert "compaction_llm_fallback" in metrics  # P1-3 degradation metric
+    assert "compaction_llm_hold" in metrics  # P1-3 degradation metric
     assert "compaction_llm_breaker_open" in metrics
 
 
@@ -421,6 +421,26 @@ def test_extract_summary_ignores_llm_error_assistant_messages():
 
     assert "AI 模型服务方已限流" not in summary
     assert "查一下日程" in summary
+
+
+@pytest.mark.asyncio
+async def test_generate_session_summary_holds_without_llm_instead_of_mechanical_fallback(monkeypatch):
+    from app.services import memory_service
+
+    async def no_summary_model(_tenant_id, **_kwargs):
+        return None
+
+    monkeypatch.setattr(memory_service, "_get_summary_model_config", no_summary_model)
+
+    summary = await memory_service._generate_session_summary(
+        [
+            {"role": "user", "content": "记住我喜欢 npm"},
+            {"role": "assistant", "content": "收到"},
+        ],
+        uuid4(),
+    )
+
+    assert summary is None
 
 
 @pytest.mark.asyncio

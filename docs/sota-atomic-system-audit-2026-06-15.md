@@ -176,7 +176,7 @@ npm run test -- AgentDetailSections.test.tsx
 
 1. 跑一次真实 Railway eval backend 的 `hive_live_runner`，覆盖 provisional baseline，保留 behavior report artifact。
 2. 同场景跑 Hermes live baseline，产出 Hive-vs-Hermes delta。
-3. 保留真实 agent workspace 的 `skill_runtime_usage.jsonl`、`skill_candidates.md`、promotion report，证明 organic skill telemetry 能驱动 patch/promote。
+3. 保留真实 agent workspace 的 `skill_runtime_usage.jsonl`、`evolution/skill_candidates/<candidate_id>/` Candidate Package、promotion report，证明 organic skill telemetry 能驱动 patch/promote。
 4. 给 mutating subagent/delegation 增加 step-level journal/idempotency/reconciliation contract，或明确把该 lane 排除在 durable SOTA claim 外。
 5. 补全 Feishu/Drive/Office 等 source connector 的 authoritative ACL ingest + prompt prefilter + generation recheck fixture。
 6. 生产持续运行 `python -m app.scripts.probe_code_execution_sandbox --persist --confirm`，保存 Vercel microVM probe trend。

@@ -57,6 +57,57 @@ class _FakeSession:
         return None
 
 
+def test_read_t2_full_uses_canonical_segment_packages_not_legacy_learnings(tmp_path, monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    legacy_dir = tmp_path / str(agent_id) / "memory" / "learnings"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "insights.md").write_text("- legacy should not appear\n", encoding="utf-8")
+
+    package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / "s1" / "segments" / "seg-1"
+    package_dir.mkdir(parents=True)
+    (package_dir / "summary.md").write_text("<t2_summary>canonical summary</t2_summary>", encoding="utf-8")
+    (package_dir / "labels.md").write_text("<t2_labels>canonical label</t2_labels>", encoding="utf-8")
+    (package_dir / "review.md").write_text(
+        "<t2_review><decision>approved</decision><allowed_next>t3_intake</allowed_next></t2_review>",
+        encoding="utf-8",
+    )
+    (package_dir / "manifest.json").write_text(
+        '{"schema_version":"t2.segment-package.manifest.v1","package_status":"reviewed",'
+        '"source_refs":["t0://session/s1/segment/seg-1#seq=1..2"]}\n',
+        encoding="utf-8",
+    )
+
+    heartbeat._t2_mtimes.pop(agent_id, None)
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    snapshot = heartbeat._read_t2_full(agent_id)
+
+    assert "canonical summary" in snapshot
+    assert "canonical label" in snapshot
+    assert "legacy should not appear" not in snapshot
+    assert heartbeat._t2_mtimes[agent_id]
+
+
+def test_read_incremental_t2_ignores_legacy_learnings_when_no_canonical_package(tmp_path, monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    legacy_dir = tmp_path / str(agent_id) / "memory" / "learnings"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "errors.md").write_text("- legacy error should not appear\n", encoding="utf-8")
+
+    heartbeat._t2_mtimes.pop(agent_id, None)
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    snapshot = heartbeat._read_incremental_t2(agent_id)
+
+    assert snapshot == ""
+    assert "legacy error should not appear" not in snapshot
+    assert heartbeat._t2_mtimes[agent_id] == {}
+
+
 # ─── _parse_heartbeat_outcome ───────────────────────────────────
 
 

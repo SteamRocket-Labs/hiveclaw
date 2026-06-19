@@ -15,7 +15,6 @@ from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.memory.hygiene import repair_agent_memory_hygiene
 from app.memory.legacy_migration import migrate_legacy_memory_tree
 from app.memory.md_store import ensure_t3_layout, rebuild_index
-from app.memory.t2_store import ensure_t2_layout
 from app.models.agent import Agent
 from app.models.task import Task
 
@@ -71,14 +70,6 @@ The next heartbeat reads this to avoid repeating failures and to build on succes
 (no entries yet)
 """
 
-_EVOLUTION_SKILL_CANDIDATES_SEED = """\
-# Skill Candidates
-
-Repeated workflows that may graduate into reusable skills after enough evidence.
-
-(none yet)
-"""
-
 _EVOLUTION_SKILL_REVIEW_SEED = """\
 # Skill Review
 
@@ -94,13 +85,18 @@ def _bootstrap_evolution_files(ws: Path) -> None:
         "evolution/scorecard.md": _EVOLUTION_SCORECARD_SEED,
         "evolution/blocklist.md": _EVOLUTION_BLOCKLIST_SEED,
         "evolution/lineage.md": _EVOLUTION_LINEAGE_SEED,
-        "evolution/skill_candidates.md": _EVOLUTION_SKILL_CANDIDATES_SEED,
         "evolution/skill_review.md": _EVOLUTION_SKILL_REVIEW_SEED,
     }
     for rel_path, content in seeds.items():
         fpath = ws / rel_path
         if not fpath.exists():
             fpath.write_text(content, encoding="utf-8")
+    legacy_candidates = ws / "evolution" / "skill_candidates.md"
+    if legacy_candidates.exists():
+        _move_legacy_file_if_needed(
+            legacy_candidates,
+            ws / "evolution" / "legacy" / "skill_candidates.md",
+        )
 
 
 # PR-12: rewrote the template with XML sections + a decision matrix. Use one
@@ -329,12 +325,10 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
         _nested_ws.rmdir()
     (ws / "logs").mkdir(exist_ok=True)
     (ws / "memory").mkdir(exist_ok=True)
-    (ws / "memory" / "learnings").mkdir(exist_ok=True)
     (ws / "evolution").mkdir(exist_ok=True)
     (ws / "runtime_artifacts").mkdir(exist_ok=True)
     _migrate_workspace_runtime_artifacts(ws)
     ensure_t3_layout(WORKSPACE_ROOT, agent_id)
-    ensure_t2_layout(WORKSPACE_ROOT, agent_id)
 
     if tenant_id:
         enterprise_dir = WORKSPACE_ROOT / f"enterprise_info_{tenant_id}"
@@ -349,16 +343,6 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
             "# Company Profile\n\n_Edit company information here. All digital employees can access this._\n\n## Basic Info\n- Company Name:\n- Industry:\n- Founded:\n\n## Business Overview\n\n## Organization Structure\n\n## Company Culture\n",
             encoding="utf-8",
         )
-
-    # Pre-create canonical learnings files so heartbeat/skills don't waste tool calls on missing files.
-    for learnings_file, learnings_seed in [
-        ("memory/learnings/insights.md", "# Insights\n\nUser corrections, preferences, and agent discoveries.\n"),
-        ("memory/learnings/errors.md", "# Errors\n\nExecution failures and blocked approaches.\n"),
-        ("memory/learnings/requests.md", "# Requests\n\nCapability gaps and user wishes.\n"),
-    ]:
-        lpath = ws / learnings_file
-        if not lpath.exists():
-            lpath.write_text(learnings_seed, encoding="utf-8")
 
     # Pre-create accepted T3 semantic memory files and explicit overlay index.
     for t3_file, t3_seed in [
@@ -376,8 +360,9 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
             t3_path.parent.mkdir(parents=True, exist_ok=True)
             t3_path.write_text(t3_seed, encoding="utf-8")
 
-    # Pre-create derived T3 memory index (root INDEX.md remains compatibility read model)
-    index_path = ws / "memory" / "INDEX.md"
+    # Pre-create the single generated Memory Wiki map. Root memory/INDEX.md,
+    # lower-case memory/index.md, and the old .derived/t3_index.md path are retired.
+    index_path = ws / "memory" / "wiki_map.md"
     if not index_path.exists():
         rebuild_index(WORKSPACE_ROOT, agent_id)
 

@@ -102,9 +102,10 @@ def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
             "- For modifying existing files, prefer `edit_file` instead — it only changes a specific snippet "
             "without rewriting the entire file, which is safer and preserves content you didn't intend to change.\n"
             "- Use `write_file` when creating new files or when the entire file content needs to be replaced.\n"
-            "- Common targets: workspace/*.md (reports/documents), skills/<slug>/SKILL.md (new skills). Use the work ledger for durable goal state.\n"
+            "- Common targets: workspace/*.md (reports/documents). Use `save_skill` for skill activation candidates, and the work ledger for durable goal state.\n"
             "- Governed paths: memory/, logs/, evolution/, and runtime_artifacts/ are platform-managed; direct writes there are refused.\n"
-            "- Protected paths: soul.md can be written but should only be modified carefully as it defines your personality.\n"
+            "- Skill paths: skills/** are active capability packages; direct writes are refused and promotion must go through Skill Gate.\n"
+            "- Protected paths: soul.md is updated only through Dream/Soul candidate promotion; direct writes are refused.\n"
             "- This tool overwrites the file completely — if you only need to change part of a file, use `edit_file`."
         ),
         parameters={
@@ -148,6 +149,7 @@ def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -
             "- The edit will FAIL if `old_text` is not found or matches multiple locations. Provide enough surrounding "
             "context to make your match unique, or use `replace_all: true` to change every occurrence.\n"
             "- Governed paths: memory/, logs/, evolution/, and runtime_artifacts/ are platform-managed; direct edits there are refused.\n"
+            "- Skill paths: skills/** are active capability packages; direct edits are refused and promotion must go through Skill Gate.\n"
             "- Prefer this over `write_file` for existing files — it only changes what you specify, preserving the rest."
         ),
         parameters={

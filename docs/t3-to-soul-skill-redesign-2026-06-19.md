@@ -2,11 +2,11 @@
 
 日期：2026-06-19
 
-状态：初步讨论文档。本文只定义 T3 以上的原则、责任边界、候选包形态和流程关系，不表示代码已经完成。
+状态：整改设计文档。本文只定义 T3 以上的原则、责任边界、候选包形态和流程关系，不表示代码已经完成。
 
 范围：
 
-- 覆盖 `T3 -> soul.md` / optional `source.md`。
+- 覆盖 `T3 -> soul.md`。
 - 覆盖 `T3 -> Skill candidate -> skills/<name>/SKILL.md`。
 - 不重新定义 T0 -> T2；以 `docs/t0-to-t2-segment-package-redesign-2026-06-18.md` 为准。
 - 不重新定义 T2 -> T3；以 `docs/t2-to-t3-curation-redesign-2026-06-18.md` 为准。
@@ -30,7 +30,7 @@ T3 -> Soul:
   -> soul_pitch.md + soul_patch.md
   -> Soul Memory Gate Agent fresh review
   -> Platform Soul Gate atomic commit
-  -> soul.md / optional source.md
+  -> soul.md
 
 T3 -> Skill:
   accepted T3 capability / skill_seed evidence
@@ -47,7 +47,7 @@ T3 -> Skill:
 |---|---|---|
 | 目标 | always-on identity / constitution | progressive capability capsule |
 | 主要输入 | `worker.md`、少量 `user.md`、极少 `episodes.md` / `capabilities.md` 的原则性信号 | `capabilities.md` skill_seed，辅以 `episodes.md` examples、`worker.md` failure modes |
-| 输出 | `soul_patch.md`，最终进入 `soul.md` | `SKILL.md.draft` + eval / review，最终进入 `skills/<name>/SKILL.md` |
+| 输出 | `soul_patch.md`，最终进入 `soul.md` | LLM-authored `SKILL.md.draft` + eval / review，最终进入 `skills/<name>/SKILL.md`；机械 fast-reflection/lifecycle 信号只能写 `candidate_signal.md` |
 | 是否常驻 prompt | 是，`soul.md` 进入 frozen identity 区 | 否。Skill 只在 catalog / relevant load 时进入上下文 |
 | 验证强度 | 很强，因污染每一次未来 prompt | 很强，因会固化成可复用能力和工具操作引导 |
 | 常见失败 | 把 T3 细节塞进 Soul，导致 identity 噪音 | 把未验证方法固化成 Skill，导致错误 SOP |
@@ -77,8 +77,8 @@ Platform Gate 负责校验和事务提交这份 Agent-authored content。
 |---|---|---|
 | T2 | `summary.md`、`labels.md`、`review.md` candidate | 校验 refs / XML / 权限，然后把完整 package 原子提交 |
 | T3 | `revised_patch.md`，其中包含 target file、base revision、精确 append/replace/retire/reinforce 操作和 XML block 原文 | 校验 base revision、refs、路径、review，然后按 Agent-authored patch 原子提交 |
-| Soul | 默认生成完整 `soul.md.next` / optional `source.md.next`；必要时也可生成精确 block patch | 校验 frozen sections、base revision、refs、权限、rollback，然后 atomic replace 或 exact patch apply |
-| Skill | 完整 Skill Candidate Package，包括 `SKILL.md.draft` 和必要 assets/evals | 校验 eval、路径、权限、rollback，然后 atomic promote 整个 package |
+| Soul | 默认生成完整 `soul.md.next`；必要时也可生成精确 block patch | 校验 frozen sections、base revision、refs、权限、rollback，然后 atomic replace 或 exact patch apply |
+| Skill | 完整 Skill Candidate Package；`SKILL.md.draft` 必须由 Skill Writer / Distiller LLM 生成，机械信号只能作为 `candidate_signal.md` evidence | 校验 eval、路径、权限、rollback，然后 atomic promote 整个 package |
 
 因此，Soul 不是平台“把一段内容插到某个地方”。Soul 的上下文顺序、块归属、旧内容如何保留、哪些内容被改写，都必须由 Dream / Soul Writer Agent 在候选文件里明确完成。
 
@@ -223,8 +223,18 @@ updated_at: "..."
 - Markdown 是容器，XML block 是可审查、可回滚、可引用的语义单元。
 - Frozen sections 默认不可由 Dream 修改；需要 owner/company 级确认。
 - 非 frozen blocks 也必须有 source refs、stability、applies_when、does_not_apply_when。
-- Soul 不保存导航索引；`memory/index.md` 仍是导航，不进入 frozen identity。
+- Soul 不保存导航索引；运行时导航来自 `build_t3_entry_manifest()` / Memory Navigation，唯一持久 Memory Wiki 地图是 generated/read-model `memory/wiki_map.md`，不进入 frozen identity。旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役。
 - Soul 不保存完整方法步骤；方法步骤走 `capabilities.md` / Skill。
+- 不存在 `source.md` 作为最高层 identity 文件；T3 -> Soul 只允许更新 `soul.md`。T0 segment 里的 `source.md` 是原始事件账本，和最高层 Soul 没有命名关系。
+
+### 4.1 Soul 模板迁移策略
+
+实现时采用 `hive.soul.v2` 作为唯一目标格式：
+
+1. 新建 agent 直接使用 `hive.soul.v2` 模板。
+2. 现有旧四段式 `soul.md` 不由机械脚本直接重写语义；第一次进入 Soul Candidate Batch 时，由 Dream / Soul Writer Agent 读取旧 `soul.md`，生成完整 `soul.md.next`，再由 Soul Memory Gate + Platform Soul Gate 迁移。
+3. 旧 `Learned Behaviors`、`Core Strategies`、`Blocked Patterns`、`User Profile` 只作为 migration input，不再作为新增写入目标。
+4. 迁移必须保留 frozen identity / authority boundary，不得把旧 T3 细节机械倒入 Soul。
 
 ## 5. T3 -> Soul 写入路径
 
@@ -243,7 +253,6 @@ evolution/soul_candidates/<candidate_id>/
   soul_pitch.md
   soul_patch.md
   soul.md.next
-  source.md.next          # optional, only if source.md is adopted later
   manifest.json
 ```
 
@@ -298,7 +307,7 @@ Dream / Soul Candidate Batch
 | 验证强度 | 中高 | 极高 |
 | Review 关注 | 语义去重、合并、稳定性、target file selection | identity 污染、权限漂移、frozen charter、prompt blast radius |
 | 失败默认 | hold T3 candidate | hold Soul candidate |
-| 可修改目标 | `memory/t3/{episodes,user,worker,capabilities}.md` | `soul.md` / optional `source.md` only |
+| 可修改目标 | `memory/t3/{episodes,user,worker,capabilities}.md` | `soul.md` only |
 
 ## 6. Soul Memory Gate Rubric 草案
 
@@ -325,6 +334,41 @@ Dream / Soul Candidate Batch
 
 任何涉及 frozen identity、authority expansion、company boundary 的 patch，即使分数达标，也需要 owner/company gate。
 
+### 6.1 Soul 自动晋升 / 人工确认分级
+
+默认只允许低风险 active Soul block 自动晋升：
+
+```text
+auto-commit 条件：
+  - 不修改 frozen identity / authority boundary
+  - 不扩大权限、工具能力、外部可见动作范围
+  - 不改变 owner/company/principal 边界
+  - 不包含敏感个人信息、凭证、商业机密原文
+  - latest Soul Memory Gate review 全部分项 >= 3
+  - patch 只写 active soul_principle / soul_user_model / soul_quality_bar / soul_redline
+```
+
+以下情况一律 `needs_owner_or_company_approval`：
+
+- 修改 frozen identity、mission、charter、authority boundary。
+- 扩大 agent 权限、改变审批要求、改变公司/owner 归属边界。
+- 写入跨租户、跨公司、跨用户可见的长期行为规则。
+- Soul Memory Gate 认为语义上成立但 blast radius 过大。
+- explicit memory overlay 中用户指令与现有 Soul / charter 存在冲突。
+
+### 6.2 Soul manifest / rollback
+
+不为每个 Soul block 建独立 `manifest.json`。证据和回滚统一放在：
+
+```text
+evolution/soul_candidates/<candidate_id>/manifest.json
+evolution_ledger.jsonl
+soul_patch.md 内部 source_refs
+Platform Soul Gate rollback snapshot
+```
+
+XML block 内必须保留 `source_refs`、`stability`、`applies_when`、`does_not_apply_when`；Platform Soul Gate 只校验这些字段存在且可解析，不替 Agent 补语义字段。
+
 ## 7. T3 -> Skill 写入路径
 
 ### 7.1 谁负责写
@@ -340,7 +384,8 @@ Skill Distiller / Skill Writer Agent
 ```text
 evolution/skill_candidates/<candidate_id>/
   skill_pitch.md
-  SKILL.md.draft
+  SKILL.md.draft        # only when generated by Skill Writer / Distiller LLM
+  candidate_signal.md   # optional mechanical evidence; never an active draft
   eval_plan.md
   failure_cases.md
   manifest.json
@@ -359,7 +404,7 @@ Skill Review Agent
 Platform Skill Gate
 ```
 
-Platform Skill Gate 只做权限、文件路径、命名、eval pass、rollback、audit 和 atomic promotion。它不能替 Skill Writer 改写 `SKILL.md.draft` 的语义内容，也不能拆开候选包自行拼装 active skill。
+Platform Skill Gate 只做权限、文件路径、命名、eval pass、rollback、audit 和 atomic promotion。它不能替 Skill Writer 改写 `SKILL.md.draft` 的语义内容，也不能把 `candidate_signal.md` 当成可激活 Skill 草稿，不能拆开候选包自行拼装 active skill。
 
 ### 7.2 流程
 
@@ -370,6 +415,7 @@ Skill Candidate Batch
   -> read existing skills catalog
   -> Skill Distiller writes skill_pitch.md
   -> Skill Writer writes SKILL.md.draft + references/templates/scripts/evals if needed
+  -> mechanical candidate_signal.md may be used only as evidence
   -> Skill Eval Runner executes eval_plan / smoke tests when applicable
   -> Skill Review Agent reviews:
        evidence
@@ -406,6 +452,20 @@ Skill Candidate Batch
 | 是否需要 eval | 通常不需要外部 eval | 必须有 eval_plan；可执行能力必须有 eval / smoke test |
 | Prompt 进入方式 | 动态 memory activation | progressive disclosure：catalog 先出现，full body 通过 `load_skill` 加载 |
 | 风险 | 记忆污染 | 错误能力被复用、工具边界被误导 |
+
+### 7.4 Skill eval 分级标准
+
+所有 Skill Candidate 都必须有 `eval_plan.md` 和 `failure_cases.md`。最低门槛按能力类型分级：
+
+| Skill 类型 | 最低 eval 门槛 | 必须失败的情况 |
+|---|---|---|
+| Prompt-only skill | LLM-authored `SKILL.md.draft` parse 成功；Skill Review rubric 全部分项 >= 3；至少 2 个 usage example / failure case；`candidate_signal.md` 不能替代 draft | 指令过宽、无触发条件、和现有 skill 高重叠 |
+| Reference skill | Prompt-only 门槛 + references 可解析、路径合法、无敏感原文泄漏 | 引用不存在、引用不可追溯、引用包含 secrets |
+| Template skill | Reference 门槛 + 模板变量 smoke render | 模板缺变量、渲染后破坏格式、输出越权 |
+| Script skill | Template 门槛 + sandbox smoke test + artifact gate pass | 脚本访问未授权路径、网络/凭证越权、不可重复执行 |
+| Tool-governance skill | Script 门槛 + ActionPreflight / policy simulation pass | 绕过审批、扩大工具权限、暗示直接执行敏感动作 |
+
+Platform Skill Gate 只读取 eval 结果并 fail-closed；它不能补写 eval，也不能把未通过 eval 的候选“部分安装”。
 
 ## 8. T3 -> Soul 与 T3 -> Skill 的分流规则
 
@@ -452,17 +512,18 @@ Skill 不常驻。默认只进入 skill catalog / tool-search surface。完整 `
 - Frozen identity / authority boundary 默认 fail-closed。
 - T3 `capabilities.md` 的 skill_seed 不能直接创建 active Skill。
 - Skill active promotion 必须有 candidate package、eval_plan、review、Platform Skill Gate decision。
+- Skill eval 门槛必须按 prompt/reference/template/script/tool-governance 类型分级；缺 eval 或 eval 不通过 fail-closed。
 - Skill 文件不能由 Dream / T3 Consolidator 直接写。
 - Skill catalog 可以动态刷新，但不能进入 frozen identity prefix。
 
-## 11. 待讨论问题
+## 11. 已定策略点
 
-1. `source.md` 是否真的需要作为 `soul.md` 的 future alias，还是先不引入，避免双真相源。
-2. Soul block 是否需要独立 `manifest.json`，还是统一依赖 evolution ledger / rollback snapshot。
-3. Soul promotion 是否需要 owner approval 的分级规则：哪些可以自动，哪些必须确认。
-4. Skill eval 的最低标准是什么：纯 prompt skill、reference skill、script skill、tool-governance skill 是否用不同 eval 门槛。
-5. 现有 `backend/agent_template/soul.md` 是否直接升级为 `hive.soul.v2`，以及现有 agent 如何迁移。
-6. Dream 当前 JSON-only runtime contract 是否保留，还是改为显式提交 `soul_pitch.md` / `soul_patch.md` artifacts。
+1. 不引入最高层 `source.md`。T3 -> Soul 只写 `soul.md`。
+2. `soul.md` 目标格式升级为 `hive.soul.v2`；新 agent 直接使用 v2，旧 agent 由 Soul Candidate Batch 通过 Agent-authored `soul.md.next` 迁移。
+3. Soul block 不做独立 manifest；使用 Soul Candidate Package manifest、evolution ledger、XML `source_refs` 和 Platform Soul Gate rollback snapshot。
+4. Soul promotion 分为 auto-commit 和 owner/company approval；涉及 frozen identity、authority expansion、company boundary、敏感长期规则，一律确认。
+5. Skill eval 按 prompt/reference/template/script/tool-governance 分级；所有候选必须有 `eval_plan.md` 和 `failure_cases.md`。
+6. Dream 当前 JSON-only runtime contract 退役为 compatibility wrapper。canonical contract 是显式提交 `soul_pitch.md`、`soul_patch.md`、`soul.md.next`、`manifest.json` artifacts；wrapper 如果仍需要 JSON，只能承载 artifact path 和 status，不能承载最终语义插入逻辑。
 
 ## 12. 本文当前结论
 

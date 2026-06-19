@@ -22,6 +22,7 @@ can inspect or purge them via ``extract_queue.purge_older_than``.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 
 from app.services import extract_queue
@@ -44,6 +45,9 @@ async def replay_pending_extractions(
     Caller (main.py lifespan) treats failures as non-fatal — entries that
     couldn't be re-scheduled stay on disk for the next attempt.
     """
+    if os.getenv("HIVE_ENABLE_LEGACY_EXTRACT_REPLAY", "").strip().lower() not in {"1", "true", "yes"}:
+        return {"scheduled": 0, "skipped_stale": 0, "failed": 0, "disabled": 1}
+
     # Imported lazily so unit tests for this module can monkeypatch the
     # extract_agent singleton without pulling in its full DB-touching graph.
     from app.services.extract_agent import extract_agent

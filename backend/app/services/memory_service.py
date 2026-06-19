@@ -30,7 +30,7 @@ from app.models.tenant_setting import TenantSetting
 from app.models.user import User
 from app.runtime.context_budget import ContextBudget, compute_context_budget
 from app.services.agency_charter import AgentAccountabilityContext, build_default_accountability_context
-from app.services.conversation_summarizer import estimate_tokens, _extract_summary
+from app.services.conversation_summarizer import estimate_tokens, _extract_summary as _extract_summary
 
 logger = logging.getLogger(__name__)
 
@@ -464,12 +464,12 @@ async def maybe_compress_messages(
         else None
     )
     if summary_model and tenant_id is not None and _summary_breaker_is_open(tenant_id):
-        logger.warning(
-            "[Memory] LLM summary breaker open for tenant %s — skipping LLM, using extraction",
-            tenant_id,
-            extra={"metric": "compaction_llm_breaker_open", "tenant_id": str(tenant_id)},
-        )
-        summary_model = None
+            logger.warning(
+                "[Memory] LLM summary breaker open for tenant %s — skipping semantic compaction summary",
+                tenant_id,
+                extra={"metric": "compaction_llm_breaker_open", "tenant_id": str(tenant_id)},
+            )
+            summary_model = None
     if summary_model:
         try:
             import app.services.conversation_summarizer as _summarizer
@@ -500,36 +500,23 @@ async def maybe_compress_messages(
             if tenant_id is not None:
                 _summary_breaker_record_failure(tenant_id)
             logger.warning(
-                "LLM summarization returned empty, falling back to extraction",
-                extra={"metric": "compaction_llm_fallback", "tenant_id": str(tenant_id), "reason": "empty"},
+                "LLM summarization returned empty; holding semantic compaction summary",
+                extra={"metric": "compaction_llm_hold", "tenant_id": str(tenant_id), "reason": "empty"},
             )
         except Exception as e:
             if tenant_id is not None:
                 _summary_breaker_record_failure(tenant_id)
             logger.warning(
-                "LLM summarization failed, falling back to extraction: %s",
+                "LLM summarization failed; holding semantic compaction summary: %s",
                 e,
-                extra={"metric": "compaction_llm_fallback", "tenant_id": str(tenant_id), "reason": "error"},
+                extra={"metric": "compaction_llm_hold", "tenant_id": str(tenant_id), "reason": "error"},
             )
 
-    # Fallback: text extraction
-    summary = _extract_summary(old_messages)
-    if not summary:
-        # G4: Last-resort trim — drop old messages with a marker, keep recent
-        logger.warning("[Memory] Both LLM and extraction summaries empty — last-resort trim")
-        marker = {"role": "system", "content": "[Older messages trimmed to fit context window]"}
-        return [marker] + recent_messages
-    if on_compaction:
-        maybe_result = on_compaction(
-            {
-                "summary": summary,
-                "original_message_count": len(messages),
-                "kept_message_count": len(recent_messages) + 1,
-            }
-        )
-        if maybe_result is not None:
-            await maybe_result
-    return [_wrap_compressed_summary(summary)] + recent_messages
+    # No mechanical semantic summary fallback. Keep the prompt honest: the model
+    # sees that older context was omitted instead of a platform-inferred summary.
+    logger.warning("[Memory] Semantic compaction summary unavailable — using degraded trim marker")
+    marker = {"role": "system", "content": "[Older messages omitted: LLM semantic compaction summary unavailable]"}
+    return [marker] + recent_messages
 
 
 async def on_conversation_end(
@@ -797,7 +784,12 @@ async def _generate_session_summary(
     agent_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
 ) -> str | None:
-    """Generate a summary for the session using LLM or fallback extraction."""
+    """Generate a session summary using LLM only.
+
+    ChatSession.summary is user-related semantic memory. If the summary LLM is
+    unavailable or fails, hold the write instead of persisting a mechanical
+    extraction as a second memory path.
+    """
     summary_model = await _get_summary_model_config(tenant_id)
     if summary_model:
         try:
@@ -812,9 +804,10 @@ async def _generate_session_summary(
                 user_id=user_id,
             )
         except Exception as e:
-            logger.warning("LLM session summary failed, using extraction: %s", e)
+            logger.warning("LLM session summary failed; holding summary write: %s", e)
 
-    return _extract_summary(messages)
+    logger.info("Session summary held because no summary LLM was available")
+    return None
 
 
 def _parse_session_uuid(session_id: str | None) -> uuid.UUID | None:

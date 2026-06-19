@@ -8,6 +8,7 @@ from typing import Any
 
 from app.services.evolution_ledger import record_evolution_candidate
 from app.services.evolution_verification import record_verification_eval, run_evolution_verification
+from app.services.skill_candidate_package import write_skill_candidate_package
 from app.services.skill_guard import scan_skill_files
 from app.services.skill_lifecycle import record_skill_lifecycle_event, update_skill_candidate_record
 
@@ -79,7 +80,7 @@ def propose_skill_candidate_from_fast_reflection(
 
     skill_name = _skill_name(metadata, lesson)
     draft = _render_candidate_skill(skill_name=skill_name, route=route, lesson=lesson, signal_type=signal_type)
-    guard = scan_skill_files([{"path": "SKILL.md", "content": draft}], source="fast_reflection")
+    guard = scan_skill_files([{"path": "candidate_signal.md", "content": draft}], source="fast_reflection")
     if not guard.allowed:
         record_skill_lifecycle_event(
             workspace,
@@ -99,7 +100,7 @@ def propose_skill_candidate_from_fast_reflection(
         baseline_version="skill-candidate@draft",
         metadata={
             "schema": "skill_candidate_manifest.v1",
-            "source_candidate_id": fast_candidate.get("candidate_id"),
+            "fast_reflection_candidate_id": fast_candidate.get("candidate_id"),
             "route": route,
             "signal_type": signal_type,
             "guard": guard.to_dict(),
@@ -107,15 +108,26 @@ def propose_skill_candidate_from_fast_reflection(
                 "kind": "candidate_summary",
                 "summary": lesson[:240],
                 "declared_tools": [],
-                "support_files": ["SKILL.md"],
+                "support_files": ["candidate_signal.md"],
             },
         },
     )
 
-    candidate_dir = workspace / "evolution" / "skill_candidates" / candidate["candidate_id"]
-    candidate_dir.mkdir(parents=True, exist_ok=True)
-    draft_path = candidate_dir / "SKILL.md"
-    draft_path.write_text(draft, encoding="utf-8")
+    manifest = write_skill_candidate_package(
+        workspace=workspace,
+        candidate_id=candidate["candidate_id"],
+        rendered_markdown=draft,
+        skill_name=skill_name,
+        package_type=route,
+        target_path=f"skills/{_slug(skill_name)}/SKILL.md" if route == "new_class_skill" else f"skills/{_slug(skill_name)}/SKILL.md",
+        source_refs=source_attempt_ids,
+        reason=lesson or f"Created from fast reflection route={route}",
+        declared_tools=[],
+        declared_packs=[],
+        status="candidate",
+        extra_metadata={"fast_reflection_candidate_id": fast_candidate.get("candidate_id"), "signal_type": signal_type},
+        draft_filename="candidate_signal.md",
+    )
 
     verification_report = run_evolution_verification(
         workspace=workspace,
@@ -123,7 +135,7 @@ def propose_skill_candidate_from_fast_reflection(
         graders=[
             {
                 "type": "skill_guard",
-                "path": str(draft_path.relative_to(workspace)),
+                "path": manifest["candidate_signal_path"],
             }
         ],
     )

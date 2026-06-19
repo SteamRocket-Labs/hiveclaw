@@ -304,9 +304,10 @@ def test_auto_dream_prompt_distinguishes_memory_from_evolution_policy() -> None:
     # User-prompt template enumerates decision schema and section selection.
     assert "<section_selection_matrix>" in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
     assert "<anti_patterns>" in _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE
-    assert "learned behaviors" in user_lower
-    assert "core strategies" in user_lower
-    assert "blocked patterns" in user_lower
+    assert "soul_user_model" in user_lower
+    assert "soul_quality_bar" in user_lower
+    assert "soul_redline" in user_lower
+    assert "learned behaviors" not in user_lower
 
 
 def test_runtime_templates_no_longer_reference_jina() -> None:

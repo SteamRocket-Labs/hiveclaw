@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from app.services.heartbeat import (
     _heartbeat_tick_counts,
     _restore_heartbeat_checkpoint,
     _save_heartbeat_checkpoint,
+    _read_pending_t3_intake,
     _read_incremental_t2,
     _read_t2_full,
     _read_t3_summary,
@@ -40,10 +42,41 @@ def _clean_state(agent_id: uuid.UUID):
 
 @pytest.fixture
 def tmp_agent_dir(tmp_path: Path, agent_id: uuid.UUID) -> Path:
-    """Create a temp agent data dir with learnings/ and memory/."""
+    """Create a temp agent data dir."""
     agent_dir = tmp_path / str(agent_id)
     (agent_dir / "memory" / "learnings").mkdir(parents=True)
     return tmp_path
+
+
+def _write_t2_package(
+    root: Path,
+    agent_id: uuid.UUID,
+    *,
+    session_id: str = "s1",
+    segment_id: str = "seg-1",
+    summary: str = "<t2_summary>canonical summary</t2_summary>",
+    labels: str = "<t2_labels>canonical label</t2_labels>",
+    review: str = "<t2_review><decision>approved</decision><allowed_next>t3_intake</allowed_next></t2_review>",
+    source_refs: list[str] | None = None,
+) -> Path:
+    package_dir = root / str(agent_id) / "memory" / "sessions" / session_id / "segments" / segment_id
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "summary.md").write_text(summary, encoding="utf-8")
+    (package_dir / "labels.md").write_text(labels, encoding="utf-8")
+    (package_dir / "review.md").write_text(review, encoding="utf-8")
+    (package_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "t2.segment-package.manifest.v1",
+                "package_status": "reviewed",
+                "source_refs": source_refs or [f"t0://session/{session_id}/segment/{segment_id}#seq=1..2"],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return package_dir
 
 
 # ── _reset_heartbeat_session ──
@@ -120,12 +153,12 @@ class TestHeartbeatCheckpoint:
 
 class TestReadT2Full:
     def test_reads_all_files(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
-        (learnings / "insights.md").write_text(
-            "# Insights\n- [2026-04-06][w=1.00][src=web][cat=feedback] User likes concise output\n"
-        )
-        (learnings / "errors.md").write_text(
-            "# Errors\n- [2026-04-06][w=0.70][src=trigger][cat=error] web_search timeout\n"
+        _write_t2_package(
+            tmp_agent_dir,
+            agent_id,
+            summary="<t2_summary>User likes concise output</t2_summary>",
+            labels="<t2_labels><event_label>feedback</event_label></t2_labels>",
+            review="<t2_review><decision>approved</decision><note>web_search timeout</note></t2_review>",
         )
 
         with patch("app.config.get_settings") as mock:
@@ -134,26 +167,24 @@ class TestReadT2Full:
 
         assert "User likes concise" in result
         assert "web_search timeout" in result
-        assert "## High Priority" in result
-        assert "## Medium Priority" in result
-        assert "[w=1.00][repeat=1][src=web][cat=feedback]" in result
+        assert "sessions/s1/segments/seg-1" in result
+        assert "source_refs" in result
 
     def test_initializes_mtimes(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
-        (learnings / "insights.md").write_text("# Insights\n- [2026-04-06] data\n")
+        _write_t2_package(tmp_agent_dir, agent_id, summary="<t2_summary>data</t2_summary>")
 
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             _read_t2_full(agent_id)
 
         assert agent_id in _t2_mtimes
-        assert "insights.md" in _t2_mtimes[agent_id]
+        assert "sessions/s1/segments/seg-1" in _t2_mtimes[agent_id]
 
     def test_empty_learnings(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             result = _read_t2_full(agent_id)
-        assert result == "(no learnings yet)"
+        assert result == "(no canonical T2 segment packages yet)"
 
     def test_skips_header_only_files(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
@@ -162,7 +193,7 @@ class TestReadT2Full:
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             result = _read_t2_full(agent_id)
-        assert result == "(no learnings yet)"
+        assert result == "(no canonical T2 segment packages yet)"
 
 
 # ── _read_t3_summary ──
@@ -194,36 +225,33 @@ class TestReadT3Summary:
 
 class TestReadIncrementalT2:
     def test_detects_new_entries(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
-        (learnings / "insights.md").write_text("# Insights\n- [2026-04-06][w=1.00][src=web][cat=feedback] entry1\n")
+        package_dir = _write_t2_package(
+            tmp_agent_dir,
+            agent_id,
+            summary="<t2_summary>entry1</t2_summary>",
+        )
 
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             # First read: initialize mtimes
             _read_t2_full(agent_id)
 
-            # Modify file
-            (learnings / "insights.md").write_text(
-                "# Insights\n"
-                "- [2026-04-06][w=1.00][src=web][cat=feedback] entry1\n"
-                "- [2026-04-06][w=1.00][src=web][cat=feedback] entry2\n"
-            )
+            # Modify canonical package
+            (package_dir / "summary.md").write_text("<t2_summary>entry1\nentry2</t2_summary>", encoding="utf-8")
             # Force mtime change (some filesystems have 1s resolution)
             import os
             import time
 
             future = time.time() + 2
-            os.utime(learnings / "insights.md", (future, future))
+            os.utime(package_dir / "summary.md", (future, future))
 
             result = _read_incremental_t2(agent_id)
 
         assert "entry2" in result
-        assert "## High Priority" in result
-        assert "[w=1.00][repeat=1][src=web][cat=feedback]" in result
+        assert "sessions/s1/segments/seg-1" in result
 
     def test_returns_empty_when_unchanged(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
-        learnings = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
-        (learnings / "insights.md").write_text("# Insights\n- [2026-04-06] entry1\n")
+        _write_t2_package(tmp_agent_dir, agent_id, summary="<t2_summary>entry1</t2_summary>")
 
         with patch("app.config.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
@@ -231,6 +259,42 @@ class TestReadIncrementalT2:
             result = _read_incremental_t2(agent_id)
 
         assert result == ""
+
+
+class TestReadPendingT3Intake:
+    def test_reads_reviewed_segment_packages_not_legacy_learnings(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        package_dir = tmp_agent_dir / str(agent_id) / "memory" / "sessions" / "session-1" / "segments" / "seg-1"
+        package_dir.mkdir(parents=True)
+        (package_dir / "summary.md").write_text("# Summary\n\n<session_summary>important durable user preference</session_summary>\n", encoding="utf-8")
+        (package_dir / "labels.md").write_text("# Labels\n", encoding="utf-8")
+        (package_dir / "review.md").write_text(
+            "# Review\n\n<allowed_next>t3_intake</allowed_next>\n",
+            encoding="utf-8",
+        )
+        (package_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "package_status": "reviewed",
+                    "session_id": "session-1",
+                    "t0_segment_id": "seg-1",
+                }
+            ),
+            encoding="utf-8",
+        )
+        legacy = tmp_agent_dir / str(agent_id) / "memory" / "learnings"
+        (legacy / "insights.md").write_text(
+            "# Insights\n- [2026-04-06][w=1.00][src=web][cat=feedback] stale legacy entry\n",
+            encoding="utf-8",
+        )
+
+        with patch("app.config.get_settings") as mock:
+            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            result = _read_pending_t3_intake(agent_id)
+
+        assert "T3 Consolidation Job Ready" in result
+        assert "reviewed_t2_packages: 1" in result
+        assert "source_bundle.json" in result
+        assert "stale legacy entry" not in result
 
     def test_no_learnings_dir(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with patch("app.config.get_settings") as mock:
@@ -308,5 +372,7 @@ class TestHeartbeatTemplate:
 
         for content in (main_template, hr_template):
             lowered = content.lower()
-            assert "status=absorbed" in lowered
-            assert "t2 retention" in lowered
+            assert "platform gate" in lowered
+            assert "absorbed" in lowered
+            assert "reinforced" in lowered
+            assert "edit t2 files directly" in lowered

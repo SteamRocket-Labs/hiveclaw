@@ -25,22 +25,19 @@ def test_render_agent_soul_from_blueprint_includes_operating_contract_sections()
         },
     )
 
-    assert "## Identity & Mission" in soul
-    assert "## What Good Looks Like" in soul
-    assert "## Primary Users & Stakeholders" in soul
-    assert "## Core Outputs" in soul
-    assert "## Operating Style" in soul
-    assert "## Boundaries & Red Lines" in soul
-    assert "## First-Person Accountability" in soul
-    assert "## Frozen Company Charter" in soul
-    assert "## Frozen Owner Agency Charter" in soul
-    assert "## Collaboration & Escalation" in soul
-    assert "## How I Learn" in soul
+    assert "schema: hive.soul.v2" in soul
+    assert '<soul_identity frozen="true">' in soul
+    assert '<soul_principle id="first-person-accountability" stability="seed" frozen="true">' in soul
+    assert '<soul_redline id="frozen-company-charter" stability="seed" frozen="true">' in soul
+    assert '<soul_redline id="frozen-owner-agency-charter" stability="seed" frozen="true">' in soul
+    assert '<soul_quality_bar id="what-good-looks-like" stability="seed">' in soul
+    assert '<soul_user_model id="primary-users-and-outputs" stability="seed">' in soul
+    assert '<soul_principle id="operating-style" stability="seed">' in soul
     assert "直接支持 Rocky" in soul
     assert "Acme Capital" in soul
-    assert "Full Authority" in soul
-    assert "Confirm First" in soul
-    assert "Never Do" in soul
+    assert "full_authority" in soul
+    assert "confirm_first" in soul
+    assert "never_do" in soul
     assert "投资团队" in soul
     assert "行业日报" in soul
     assert "严谨" in soul
@@ -49,5 +46,4 @@ def test_render_agent_soul_from_blueprint_includes_operating_contract_sections()
     assert "## Tool Preferences" not in soul
     assert "## Operating Cadence" not in soul
     assert "## Early Focus" not in soul
-
 

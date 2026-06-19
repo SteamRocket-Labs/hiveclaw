@@ -685,9 +685,11 @@ Session Working Memory:
   with TTL / session scope only
 
 Navigation Map:
-  compact memory/index.md or t3/index.md excerpt only when retrieval needs
-  exploration, when no relevant memory is found, or when the agent must decide
-  which page to load next
+  compact T3 entry manifest / Memory Navigation excerpt only when retrieval
+  needs exploration, when no relevant memory is found, or when the agent must
+  decide which entry to load next. Persistent derived navigation is
+  memory/wiki_map.md. Legacy `memory/INDEX.md`, lower-case
+  `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
 
 Residual Evidence:
   targeted T0 source refs only for curation, replay, debug, or dispute checks
@@ -930,7 +932,7 @@ Pure taxonomy differences belong in controlled tags, wikilinks, and derived inde
 
 ## 8. Index And Navigation
 
-`memory/index.md` should not be an orphan, but it is a navigation map, not always-on prompt memory.
+The T3 entry manifest should not be an orphan: prompt assembly consumes it through Memory Navigation. The single persistent generated navigation map is `memory/wiki_map.md`. Legacy `memory/INDEX.md`, lower-case `memory/index.md`, and `memory/.derived/t3_index.md` are retired. The map is not always-on prompt memory.
 
 Recommended first form:
 
@@ -1104,10 +1106,10 @@ GET /api/agents/{agent_id}/knowledge/candidates
 Initial data sources:
 
 - `soul.md`
-- `memory/index.md`
+- runtime T3 entry manifest / Memory Navigation
 - `memory/t2/summary.md`
 - accepted T3 files: `memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`
-- derived T3 views when present: `memory/.derived/t3_index.md`, relation graph, contradiction/staleness views
+- derived T3 views when present: `memory/wiki_map.md` (single generated persistent navigation map), relation graph, contradiction/staleness views. Legacy `memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
 - `build_t3_entry_manifest()`
 - `memory/lifecycle.json`
 - `memory/access_log.jsonl`
@@ -1163,7 +1165,7 @@ type AgentKnowledgeOverview = {
 >
 > **2026-06-17 convergence note:** P0-P10 below preserve historical
 > implementation evidence. Paths such as `memory/wiki/**`,
-> `memory/learnings/**`, and legacy `memory/INDEX.md` should now be read as
+> `memory/learnings/**`, and legacy root indexes should now be read as
 > compatibility surfaces unless the current blueprint above explicitly keeps
 > them. The current target is the append-only T0 session ledger, canonical T2
 > Segment Packages (`summary.md`, `labels.md`, `review.md`, `manifest.json`),
@@ -1347,7 +1349,7 @@ Evidence:
 - `_consolidate_t3_files`: dedup drops archive as `dedup_superseded`, cap
   evictions archive as `cap_eviction`; preservation flags still sticky.
 - De-index is structural: `archive.md` is not in `T3_FILE_SPECS`, so
-  manifest, INDEX.md, BM25 search, and prompt injection all see only active
+  manifest, `wiki_map.md`, BM25 search, and prompt injection all see only active
   entries (pinned by test).
 - Tests: `backend/tests/services/test_dream_lifecycle_patch.py` (5 —
   merge edges, contradiction edges, archival completeness on consolidation,
@@ -1455,7 +1457,7 @@ Evidence:
 
 Acceptance:
 
-- `memory/index.md` or manifest has consumer in prompt assembly.
+- T3 entry manifest has a consumer in prompt assembly via Memory Navigation; `memory/wiki_map.md` is rebuilt as the single persistent generated map. Legacy `memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
 - Entry-level `recall_count` and `last_recalled_at` are updated.
 - Heat drives navigation order and retirement candidates.
 - Activated memory includes activation reasons.
@@ -1600,11 +1602,13 @@ Evidence:
   promoted entries never become candidates, cold ranks before hot,
   cap-eviction archives every removed line (lifecycle `archived` records),
   protected + hot entries survive the pass.
-- Consumers (no orphans): `search_memory` tool appends a "Knowledge Pages"
-  section (PPR-ranked, `read_file` hint to the Markdown source);
-  `get_knowledge_page` read model returns `links.outgoing/incoming`; the
-  frontend Knowledge → Pages detail renders clickable linked-page chips
-  (forward references shown as not-yet-created, unclickable).
+- Consumers (no orphans): PPR wiki/scene remains an explicit derived/eval
+  capability, but `search_memory` no longer appends "Knowledge Pages" to default
+  fact results; accepted prompt memory is explicit overlay + accepted T3 +
+  episodic recall. `get_knowledge_page` read model returns
+  `links.outgoing/incoming`; the frontend Knowledge → Pages detail renders
+  clickable linked-page chips (forward references shown as not-yet-created,
+  unclickable).
 - Tests: `backend/tests/memory/test_graph_ppr_eval.py` (13 — typed/inline
   edge parsing, forward references, zero-persistence pin, links_for both
   directions, PPR multi-hop + empty-input, BM25 direct hit, PPR reaches a

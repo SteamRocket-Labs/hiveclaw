@@ -1,7 +1,11 @@
-"""Scene curator — episode/scene consolidation (spec §4.4 / §12 P5 MVP).
+"""Deprecated scene curator for derived/compat episodic pages.
 
-Scenes live as Markdown under ``memory/scenes/<slug>.md``. The curator is the
-first concrete home for the episode-consolidation lifecycle stage:
+Accepted T3 truth is now restricted to ``memory/t3/episodes.md``,
+``user.md``, ``worker.md``, and ``capabilities.md``. Scene pages under
+``memory/scenes/<slug>.md`` are derived/compat read-model pages only; the live
+curation lane is T3 Consolidator -> Memory Gate -> Platform Gate.
+
+When used by migration/eval paths:
 
 - LLM primary (injected async callable): decides update vs create vs hold,
   with anti-proliferation bias (prefer updating an existing scene).

@@ -917,6 +917,25 @@ class TestAuditAndBackfill:
             mock_append.assert_not_called()
             assert _read_backfill_cursor(agent_id) == set()
 
+    async def test_backfill_write_is_disabled_by_default(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
+        with patch("app.services.extract_agent.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            agent_dir = tmp_path / str(agent_id)
+            _write_chat_md(
+                agent_dir,
+                session_id="sess-disabled",
+                body="## Turn 1\n**User**: please prefer concise answers\n**Agent**: noted\n",
+            )
+
+            with patch("app.services.extract_agent._append_to_learnings_with_llm") as mock_append:
+                report = await backfill_missing_extractions(agent_id, days=30)
+
+            assert report["disabled"] == 1
+            assert report["would_extract"] == 1
+            assert report["extracted"] == 0
+            mock_append.assert_not_called()
+            assert _read_backfill_cursor(agent_id) == set()
+
     async def test_backfill_writes_t2_and_updates_cursor(self, tmp_path: Path, agent_id: uuid.UUID) -> None:
         with patch("app.services.extract_agent.get_settings") as mock_settings:
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
@@ -934,6 +953,7 @@ class TestAuditAndBackfill:
                     return_value=fake_extractions,
                 ),
                 patch("app.services.extract_agent._append_to_learnings_with_llm", return_value=1) as mock_append,
+                patch.dict("os.environ", {"HIVE_ENABLE_LEGACY_T2_BACKFILL": "1"}),
             ):
                 report = await backfill_missing_extractions(agent_id, days=30)
 

@@ -20,6 +20,7 @@ def queue_root(tmp_path, monkeypatch):
     from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("HIVE_ENABLE_LEGACY_EXTRACT_REPLAY", "1")
     qroot = tmp_path / ".failed_extractions"
     qroot.mkdir(parents=True, exist_ok=True)
     yield qroot
@@ -39,6 +40,19 @@ def _plant_entry(queue_root: Path, *, entry_id: str, age_seconds: int = 0, **ove
     path = queue_root / f"{entry_id}.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
+
+
+@pytest.mark.asyncio
+async def test_replay_is_disabled_by_default(queue_root, monkeypatch):
+    from app.services.extract_queue_replay import replay_pending_extractions
+
+    _plant_entry(queue_root, entry_id="disabled")
+    monkeypatch.delenv("HIVE_ENABLE_LEGACY_EXTRACT_REPLAY", raising=False)
+
+    result = await replay_pending_extractions()
+
+    assert result == {"scheduled": 0, "skipped_stale": 0, "failed": 0, "disabled": 1}
+    assert (queue_root / "disabled.json").exists()
 
 
 @pytest.mark.asyncio

@@ -336,7 +336,7 @@ memory/sessions/<session_id>/
 legacy compatibility / derived view only
 ```
 
-迁移完成后，runtime 不允许把 canonical T2 写到 `memory/learnings/*.md`。如果前端或 heartbeat 仍需要旧格式，应由 read model 从 Segment Package 派生。
+迁移完成后，runtime 不允许把 canonical T2 写到 `memory/learnings/*.md`。如果前端或 operator 工具仍需要旧格式，应由显式 compatibility read model 从 Segment Package 派生；Heartbeat 不读取该视图。
 
 ## 5. Source Ref 标准
 
@@ -1494,7 +1494,7 @@ Heartbeat 是 T2 -> T3，不属于本文实现范围。
 closed + reviewed T2 Segment Packages
 ```
 
-在迁移期，如果 Heartbeat 仍读取 `memory/learnings/*.md`，必须由 compatibility read model 从 reviewed Segment Packages 派生，而不是让 runtime 继续双写旧 learnings 文件。
+当前修复后 Heartbeat 不再读取 `memory/learnings/*.md`；如果未来某个兼容工具需要读取旧格式，必须由 operator/migration 显式启用 compatibility read model，而不是让 runtime 继续双写旧 learnings 文件。
 
 Heartbeat 不应读取：
 
@@ -1582,7 +1582,7 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
 7. 把 Work Ledger、legacy import 并入 source bundle。
 8. 给 heartbeat/dream/distiller/eval/platform background job 加 `distillation_scope=audit_only` 红线。
 9. 停止 runtime canonical writes to `memory/learnings/*.md`。
-10. 从 reviewed packages 派生 legacy `memory/learnings/*.md` read model，供迁移期 Heartbeat 使用。
+10. legacy `memory/learnings/*.md` 只保留为迁移/人工兼容视图；Heartbeat 不再依赖它，T3 intake 直接读取 reviewed Segment Package 和 active Explicit Overlay。
 11. 补红线测试。
 12. 跑 full memory regression。
 

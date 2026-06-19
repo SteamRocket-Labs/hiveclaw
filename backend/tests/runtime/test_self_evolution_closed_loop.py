@@ -29,7 +29,14 @@ def test_memory_loop_capture_makes_lesson_visible_next_turn(tmp_path) -> None:
             {"role": "assistant", "content": "I'll send the report in a marketing tone."},
             {"role": "user", "content": "不对，以后这个报告不要用营销口吻，要按审计格式列证据。"},
         ],
-        metadata={"final_response": "明白。"},
+        metadata={
+            "final_response": "明白。",
+            "fast_reflection_classification": {
+                "signal_type": "user_preference_correction",
+                "lesson": "以后这个报告不要用营销口吻，要按审计格式列证据。",
+                "confidence": 0.96,
+            },
+        },
     )
     assert result["status"] == "candidate_created"
 
@@ -73,8 +80,12 @@ def test_skill_loop_repeated_workflow_creates_verified_skill_candidate(tmp_path)
     assert any(
         e.get("event") == "candidate" and e.get("target_type") == "skill_candidate" for e in entries
     )
-    # the durable skill draft is written under candidates, never auto-activated
-    assert (workspace / "evolution" / "skill_candidates" / skill["candidate_id"] / "SKILL.md").exists()
+    # mechanical flywheel evidence is staged under candidates, never as an activated skill draft
+    candidate_dir = workspace / "evolution" / "skill_candidates" / skill["candidate_id"]
+    assert (candidate_dir / "candidate_signal.md").exists()
+    assert not (candidate_dir / "SKILL.md.draft").exists()
+    assert (candidate_dir / "manifest.json").exists()
+    assert not (candidate_dir / "SKILL.md").exists()
     assert not (workspace / "skills").exists()
 
 
@@ -101,7 +112,13 @@ async def test_scheduled_fast_reflection_lands_candidate(tmp_path) -> None:
         agent_id=agent_id,
         session_id="loop-hook",
         messages=[{"role": "user", "content": "下次别再用 yarn 了，这个项目以后都用 pnpm。"}],
-        metadata={},
+        metadata={
+            "fast_reflection_classification": {
+                "signal_type": "user_preference_correction",
+                "lesson": "这个项目以后都用 pnpm，不要用 yarn。",
+                "confidence": 0.95,
+            },
+        },
     )
     assert res["status"] == "scheduled"
 

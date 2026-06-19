@@ -25,12 +25,16 @@ from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
-from app.services.agent_tool_domains.workspace import _normalize_skill_folder_name, _render_skill_markdown, _save_skill
+from app.services.agent_tool_domains.workspace import _normalize_skill_folder_name
 from app.services.skill_lifecycle import (
     load_skill_candidates,
     record_skill_execution,
     record_skill_lifecycle_event,
     update_skill_candidate_record,
+)
+from app.services.skill_candidate_package import (
+    update_skill_candidate_package_status,
+    write_skill_candidate_package,
 )
 from app.skills import SkillParser, WorkspaceSkillLoader
 from app.tools.collector import collect_tools
@@ -114,6 +118,7 @@ class DistilledSkillDraft:
     declared_packs: tuple[str, ...]
     reason: str
     consumed_memory_candidate_ids: tuple[str, ...] = ()
+    skill_markdown: str = ""
 
 
 @dataclass(slots=True)
@@ -217,13 +222,20 @@ def load_memory_workflow_candidates(data_root: Path, agent_id: uuid.UUID) -> lis
 
 
 def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) -> list[dict[str, str]]:
-    """Read inactive skill draft files produced by the fast-reflection flywheel."""
+    """Read inactive skill candidate evidence produced by flywheel/lifecycle loops."""
     root = workspace / "evolution" / "skill_candidates"
     if not root.exists():
         return []
 
     drafts: list[dict[str, str]] = []
-    for skill_path in sorted(root.glob("*/SKILL.md"), key=lambda path: path.stat().st_mtime, reverse=True):
+    candidate_files = [
+        path
+        for package_dir in root.iterdir()
+        if package_dir.is_dir()
+        for path in ((package_dir / "SKILL.md.draft"), (package_dir / "candidate_signal.md"))
+        if path.exists()
+    ]
+    for skill_path in sorted(candidate_files, key=lambda path: path.stat().st_mtime, reverse=True):
         try:
             content = skill_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -377,6 +389,8 @@ def validate_distilled_skill(
         errors.append("description is required")
     if not draft.instructions_markdown.strip():
         errors.append("instructions are required")
+    if draft.decision in {"promote", "patch"} and not rendered_markdown.strip():
+        errors.append("LLM-authored complete SKILL.md draft is required")
 
     available_tools = _available_tool_names()
     unknown_tools = sorted({tool for tool in draft.declared_tools if tool not in available_tools})
@@ -399,6 +413,10 @@ def validate_distilled_skill(
         errors.append("parsed frontmatter is missing name")
     if not parsed.metadata.description.strip():
         errors.append("parsed frontmatter is missing description")
+    if parsed.metadata.name.strip() and parsed.metadata.name.strip() != draft.name.strip():
+        errors.append("SKILL.md draft frontmatter name does not match the LLM decision")
+    if parsed.metadata.description.strip() and parsed.metadata.description.strip() != draft.description.strip():
+        errors.append("SKILL.md draft frontmatter description does not match the LLM decision")
 
     combined_text = "\n".join([draft.description, draft.instructions_markdown])
     for pattern in _TIME_SENSITIVE_PATTERNS:
@@ -407,6 +425,61 @@ def validate_distilled_skill(
             break
 
     return errors
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _commit_skill_markdown_exact(
+    *,
+    workspace: Path,
+    target_relative_path: str,
+    rendered_markdown: str,
+    skill_name: str,
+    overwrite: bool,
+    status: str,
+) -> str:
+    """Commit the LLM-authored SKILL.md draft exactly after all gates pass."""
+
+    target = (workspace / target_relative_path).resolve()
+    skills_dir = (workspace / "skills").resolve()
+    if not _is_relative_to(target, skills_dir):
+        return f"❌ skill commit failed: target outside skills/: {target_relative_path}"
+    if target.exists() and not overwrite:
+        return f"❌ skill commit failed: target already exists: {target_relative_path}"
+
+    from app.services.skill_guard import scan_skill_files
+
+    guard_report = scan_skill_files([{"path": target_relative_path, "content": rendered_markdown}], source="skill_distiller")
+    if not guard_report.allowed:
+        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
+        return f"❌ skill commit failed: SkillGuard blocked draft: {categories}"
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered_markdown.rstrip() + "\n", encoding="utf-8")
+    try:
+        record_skill_lifecycle_event(
+            workspace,
+            skill_name=skill_name,
+            status=status,
+            note=f"Committed exact LLM-authored SKILL.md draft to {target_relative_path}",
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must not break commit
+        logger.warning("[SkillDistiller] Failed to record skill lifecycle for %s: %s", skill_name, exc)
+    try:
+        from app.services.skill_curator import mark_skill_created
+
+        slug = Path(target_relative_path).parts[1] if len(Path(target_relative_path).parts) >= 2 else ""
+        if slug:
+            mark_skill_created(workspace, slug, created_by="skill_distiller")
+    except Exception as exc:  # pragma: no cover - telemetry must not break commit
+        logger.debug("[SkillDistiller] curator created mark failed for %s: %s", skill_name, exc)
+    return f"✅ committed exact skill draft at {target_relative_path}"
 
 
 _SKILL_ARTIFACT_OK = "HIVE_SKILL_ARTIFACT_OK"
@@ -829,8 +902,8 @@ async def _draft_skill_with_llm(
         "skill_candidate — a workflow signature that recurred ≥2 times across\n"
         "sessions, with recent session evidence attached.\n"
         "Downstream: your JSON decision drives an automated action —\n"
-        "  - promote → new SKILL.md is written and registered\n"
-        "  - patch   → an existing SKILL.md is updated\n"
+        "  - promote → your complete skill_markdown is staged, verified, then committed exactly\n"
+        "  - patch   → your complete skill_markdown replaces an existing SKILL.md exactly after gates pass\n"
         "  - defer   → wait for more evidence (no file change)\n"
         "  - reject  → mark this signature as not-skill-worthy\n"
         "The caller parses your JSON directly. Any extra prose, markdown fences,\n"
@@ -877,6 +950,8 @@ async def _draft_skill_with_llm(
         "Return raw JSON only. No markdown fences. No prose outside the JSON.\n"
         "All keys must be present; use empty strings / empty arrays when a\n"
         "field does not apply (e.g., declared_tools=[] for a pure-reasoning skill).\n"
+        "For promote or patch, skill_markdown must be a complete SKILL.md file:\n"
+        "YAML frontmatter plus body. Do not rely on the platform to assemble it.\n"
         "</output_contract>"
     )
     evidence_lines = []
@@ -904,7 +979,7 @@ async def _draft_skill_with_llm(
         for candidate in (skill_candidate_drafts or [])[:3]
     ]
     draft_block = (
-        "flywheel_skill_candidate_drafts (inactive SKILL.md drafts; use as evidence, not as activated skills):\n"
+        "flywheel_skill_candidate_evidence (inactive candidate_signal.md evidence or LLM-authored SKILL.md drafts; use as evidence, not as activated skills):\n"
         f"{chr(10).join(draft_lines)}\n\n"
         if draft_lines
         else ""
@@ -934,6 +1009,7 @@ async def _draft_skill_with_llm(
         '"declared_tools":["..."],'
         '"declared_packs":["..."],'
         '"consumed_memory_candidate_ids":["..."],'
+        '"skill_markdown":"---\\nname: ...\\ndescription: ...\\ntools: [...]\\npacks: [...]\\n---\\n# ...",'
         '"reason":"..."'
         "}"
     )
@@ -1016,6 +1092,7 @@ async def _draft_skill_with_llm(
             for item in payload.get("consumed_memory_candidate_ids", [])
             if str(item).strip() in known_candidate_ids
         ),
+        skill_markdown=str(payload.get("skill_markdown", "")).strip(),
     )
 
 
@@ -1220,14 +1297,7 @@ async def run_skill_distillation_cycle(
         else draft
     )
 
-    rendered = _render_skill_markdown(
-        name=effective_draft.name,
-        description=effective_draft.description,
-        instructions=effective_draft.instructions_markdown,
-        declared_tools=effective_draft.declared_tools,
-        declared_packs=effective_draft.declared_packs
-        or infer_static_runtime_tool_group_names(list(effective_draft.declared_tools)),
-    )
+    rendered = effective_draft.skill_markdown.strip().rstrip() + "\n" if effective_draft.skill_markdown.strip() else ""
     validation_errors = validate_distilled_skill(workspace=workspace, draft=effective_draft, rendered_markdown=rendered)
     if validation_errors:
         note = "; ".join(validation_errors)
@@ -1304,6 +1374,21 @@ async def run_skill_distillation_cycle(
                 **({"behavior_report": behavior_report} if behavior_report is not None else {}),
             },
         )
+        write_skill_candidate_package(
+            workspace=workspace,
+            candidate_id=candidate["candidate_id"],
+            rendered_markdown=rendered,
+            skill_name=effective_draft.name,
+            package_type="patch",
+            target_path=patch_relative_path,
+            source_refs=[item.session_id for item in evidence_for_candidate],
+            reason=effective_draft.reason or conflict.reason or "Patch existing skill after repeated evidence.",
+            declared_tools=effective_draft.declared_tools,
+            declared_packs=effective_draft.declared_packs
+            or infer_static_runtime_tool_group_names(list(effective_draft.declared_tools)),
+            status="candidate",
+            extra_metadata={"workflow_signature": record.workflow_signature},
+        )
         verification_report = run_evolution_verification(
             workspace=workspace,
             candidate=candidate,
@@ -1325,9 +1410,10 @@ async def run_skill_distillation_cycle(
         regression_report = _skill_behavior_regression_report(behavior_report)
         artifact_gate_report = None
         if verification_report.get("passed"):
+            package_draft_path = f"evolution/skill_candidates/{candidate['candidate_id']}/SKILL.md.draft"
             artifact_gate_report = await _run_skill_artifact_gate(
                 rendered_markdown=rendered,
-                candidate_path=patch_relative_path,
+                candidate_path=package_draft_path,
             )
         promotion_decision = decide_behavior_gated_promotion(
             candidate,
@@ -1365,6 +1451,12 @@ async def run_skill_distillation_cycle(
                 status="defer",
                 note=promotion_decision["reason"],
             )
+            update_skill_candidate_package_status(
+                workspace=workspace,
+                candidate_id=candidate["candidate_id"],
+                status="held",
+                reason=promotion_decision["reason"],
+            )
             return {
                 "status": "deferred",
                 "processed_sessions": processed,
@@ -1374,15 +1466,13 @@ async def run_skill_distillation_cycle(
                 "regression_report": regression_report,
             }
 
-        save_result = _save_skill(
-            workspace,
-            name=effective_draft.name,
-            description=effective_draft.description,
-            instructions=effective_draft.instructions_markdown,
-            declared_tools=effective_draft.declared_tools,
-            declared_packs=effective_draft.declared_packs
-            or infer_static_runtime_tool_group_names(list(effective_draft.declared_tools)),
+        save_result = _commit_skill_markdown_exact(
+            workspace=workspace,
+            target_relative_path=patch_relative_path,
+            rendered_markdown=rendered,
+            skill_name=effective_draft.name,
             overwrite=True,
+            status="patched",
         )
         if "✅" not in save_result:
             record_promotion_decision(
@@ -1408,6 +1498,12 @@ async def run_skill_distillation_cycle(
                 last_note=save_result,
                 last_updated_at=datetime.now(timezone.utc).isoformat(),
             )
+            update_skill_candidate_package_status(
+                workspace=workspace,
+                candidate_id=candidate["candidate_id"],
+                status="held",
+                reason="patch save failed after verification",
+            )
             return {
                 "status": "deferred",
                 "processed_sessions": processed,
@@ -1430,6 +1526,13 @@ async def run_skill_distillation_cycle(
                 regression_report=regression_report,
                 extra={"save_result": save_result[:500]},
             ),
+        )
+        update_skill_candidate_package_status(
+            workspace=workspace,
+            candidate_id=candidate["candidate_id"],
+            status="patched",
+            reason=promotion_decision["reason"],
+            extra_metadata={"target_path": patch_relative_path},
         )
         from app.services.evolution_validation import validate_evolution_ledger
 
@@ -1497,6 +1600,21 @@ async def run_skill_distillation_cycle(
             **({"behavior_report": behavior_report} if behavior_report is not None else {}),
         },
     )
+    rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
+    write_skill_candidate_package(
+        workspace=workspace,
+        candidate_id=candidate["candidate_id"],
+        rendered_markdown=rendered,
+        skill_name=draft.name,
+        package_type="promote",
+        target_path=rollback_ref,
+        source_refs=[item.session_id for item in evidence_for_candidate],
+        reason=draft.reason or "Promote repeated workflow into a reusable skill.",
+        declared_tools=draft.declared_tools,
+        declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
+        status="candidate",
+        extra_metadata={"workflow_signature": record.workflow_signature},
+    )
     verification_report = run_evolution_verification(
         workspace=workspace,
         candidate=candidate,
@@ -1518,9 +1636,10 @@ async def run_skill_distillation_cycle(
     regression_report = _skill_behavior_regression_report(behavior_report)
     artifact_gate_report = None
     if verification_report.get("passed"):
+        package_draft_path = f"evolution/skill_candidates/{candidate['candidate_id']}/SKILL.md.draft"
         artifact_gate_report = await _run_skill_artifact_gate(
             rendered_markdown=rendered,
-            candidate_path="SKILL.md",
+            candidate_path=package_draft_path,
         )
     promotion_decision = decide_behavior_gated_promotion(
         candidate,
@@ -1529,7 +1648,6 @@ async def run_skill_distillation_cycle(
         regression_report=regression_report,
         artifact_gate_report=artifact_gate_report,
     )
-    rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
     if promotion_decision["decision"] != "promote":
         record_promotion_decision(
             workspace,
@@ -1558,6 +1676,12 @@ async def run_skill_distillation_cycle(
             status="defer",
             note=promotion_decision["reason"],
         )
+        update_skill_candidate_package_status(
+            workspace=workspace,
+            candidate_id=candidate["candidate_id"],
+            status="held",
+            reason=promotion_decision["reason"],
+        )
         return {
             "status": "deferred",
             "processed_sessions": processed,
@@ -1567,14 +1691,13 @@ async def run_skill_distillation_cycle(
             "regression_report": regression_report,
         }
 
-    save_result = _save_skill(
-        workspace,
-        name=draft.name,
-        description=draft.description,
-        instructions=draft.instructions_markdown,
-        declared_tools=draft.declared_tools,
-        declared_packs=draft.declared_packs or infer_static_runtime_tool_group_names(list(draft.declared_tools)),
+    save_result = _commit_skill_markdown_exact(
+        workspace=workspace,
+        target_relative_path=rollback_ref,
+        rendered_markdown=rendered,
+        skill_name=draft.name,
         overwrite=False,
+        status="promoted",
     )
     if "✅" not in save_result:
         record_promotion_decision(
@@ -1599,6 +1722,12 @@ async def run_skill_distillation_cycle(
             last_note=save_result,
             last_updated_at=datetime.now(timezone.utc).isoformat(),
         )
+        update_skill_candidate_package_status(
+            workspace=workspace,
+            candidate_id=candidate["candidate_id"],
+            status="held",
+            reason="save failed after verification",
+        )
         return {
             "status": "deferred",
             "processed_sessions": processed,
@@ -1621,6 +1750,13 @@ async def run_skill_distillation_cycle(
             regression_report=regression_report,
             extra={"save_result": save_result[:500]},
         ),
+    )
+    update_skill_candidate_package_status(
+        workspace=workspace,
+        candidate_id=candidate["candidate_id"],
+        status="promoted",
+        reason=promotion_decision["reason"],
+        extra_metadata={"target_path": rollback_ref},
     )
     from app.services.evolution_validation import validate_evolution_ledger
 

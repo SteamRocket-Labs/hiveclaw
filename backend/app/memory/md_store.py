@@ -652,13 +652,18 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
             + " |"
         )
 
-    derived_dir = mem_dir / ".derived"
-    derived_dir.mkdir(parents=True, exist_ok=True)
-    index_path = derived_dir / "t3_index.md"
+    index_path = mem_dir / "wiki_map.md"
     rendered = "\n".join(lines) + "\n"
     index_path.write_text(rendered, encoding="utf-8")
-    # Compatibility read model for older UI/tests. Not semantic truth.
-    (mem_dir / "INDEX.md").write_text(rendered, encoding="utf-8")
+
+    # Retire historical mirrors. The single persistent Memory Wiki map is
+    # memory/wiki_map.md; the prompt/runtime still builds its own live manifest
+    # from accepted T3 files instead of treating this generated map as semantic
+    # truth. Avoid lower-case index.md because it collides with retired
+    # INDEX.md on case-insensitive filesystems.
+    for legacy_index in (mem_dir / "INDEX.md", mem_dir / "index.md", mem_dir / ".derived" / "t3_index.md"):
+        if legacy_index.is_file():
+            legacy_index.unlink()
     return index_path
 
 

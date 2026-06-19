@@ -13,8 +13,16 @@ def test_self_evolution_audit_reports_memory_evidence_gaps(tmp_path: Path) -> No
     learnings.mkdir(parents=True)
     (learnings / "insights.md").write_text(
         "# Insights\n"
-        "- [2026-05-02][w=1.00][src=web][cat=feedback] Legacy entry without evidence\n"
-        "- [2026-05-02][w=1.00][src=web][cat=feedback][ev=user_stated][refs=t0:chat.md#L1-L2] Tagged entry\n",
+        "- [2026-05-02][w=1.00][src=web][cat=feedback] Legacy entry without evidence must be ignored\n",
+        encoding="utf-8",
+    )
+    package_dir = workspace / "memory" / "sessions" / "s1" / "segments" / "seg-1"
+    package_dir.mkdir(parents=True)
+    (package_dir / "summary.md").write_text("<t2_summary>Canonical package without refs</t2_summary>", encoding="utf-8")
+    (package_dir / "labels.md").write_text("<t2_labels/>", encoding="utf-8")
+    (package_dir / "review.md").write_text("<t2_review><decision>approved</decision></t2_review>", encoding="utf-8")
+    (package_dir / "manifest.json").write_text(
+        '{"schema_version":"t2.segment-package.manifest.v1","package_status":"reviewed","source_refs":[]}\n',
         encoding="utf-8",
     )
     memory_dir = workspace / "memory"
@@ -27,7 +35,12 @@ def test_self_evolution_audit_reports_memory_evidence_gaps(tmp_path: Path) -> No
         encoding="utf-8",
     )
     (workspace / "soul.md").write_text(
-        "# Soul\n\n## Learned Behaviors\n- I prefer evidence-tagged memory writes\n",
+        "---\n"
+        "schema: hive.soul.v2\n"
+        "---\n\n"
+        '<soul_user_model id="audit-gap" status="active">\n'
+        "<claim>I prefer evidence-tagged memory writes</claim>\n"
+        "</soul_user_model>\n",
         encoding="utf-8",
     )
 

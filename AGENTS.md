@@ -23,7 +23,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory / self-evolution boundary law:** LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。Any memory, heartbeat, dream, skill, workflow, or evolution path that replaces model judgment with counters, regexes, truncated summaries, or platform-authored "semantic" text is an AI-native violation. Any path that lets the model bypass governed write surfaces for durable memory/evolution/soul files is a governance violation.
 
-**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown summary blocks, a converged T3 semantic layer (`memory/t3/canon.md`, `relations.md`, `contradictions.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from memory evidence, not a T3 page. Graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/index.md` is a navigation map, not always-on prompt memory.
+**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/index.md` is a navigation map, not always-on prompt memory.
 
 **Review lens — apply to every subsystem:** ① Is the LLM's input visibility complete? ② Is its output budget sufficient? ③ Is the prompt engineered to benchmark quality? ④ Does mechanical processing appear only as an observable fallback?
 
@@ -37,7 +37,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, and an owner/company-aware Memory Governance Layer.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, and owner/company-aware Memory Gate + Platform Gate governance.
 
 - **Version:** 1.7.0 (tracked in `backend/VERSION` and `frontend/VERSION`)
 - **License:** Apache 2.0
@@ -155,14 +155,14 @@ Social: `PlazaPost`, `PlazaComment`, `PlazaLike`
 | Office / docs | `office_document_service`, `officecli_adapter`, `text_extractor` |
 | Other | `pack_service`, `skill_creator_content`, `token_tracker`, `objective_service`, `autonomy_repair_plan` |
 
-### Memory Governance Layer
+### Memory Gate + Platform Gate
 
-Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is governed by a Memory Governance Layer. This layer decides what can be stored, what can be activated, and which actions require owner/company confirmation.
+Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is governed by an LLM Memory Gate plus a mechanical Platform Gate. Memory Gate reviews semantic candidates; Platform Gate enforces permissions, evidence refs, dedupe, rollback, audit, and atomic commit.
 
 | Capability | Primary code paths | Runtime invariant |
 |------------|--------------------|-------------------|
 | Principal + charter context | `services/agency_charter.py`, `services/principal_context.py` | Memory/action decisions must know direct owner, company, creator/current user, and delegation context when available. |
-| Write safety | `memory/write_gate.py`, `memory/t2_store.py`, `tools/handlers/memory.py` | New durable memories must pass privacy/sensitivity classification before T2/T3 persistence; PL4 credentials are rejected. |
+| Write safety | `memory/write_gate.py`, `memory/t2/segment_package.py`, `memory/t3_platform_gate.py`, `memory/explicit_overlay.py`, `tools/handlers/memory.py` | T2/T3 semantic files must be agent-authored candidates reviewed by Memory Gate and committed by Platform Gate; PL4 credentials are rejected. Legacy `memory/t2_store.py` is compatibility/repair only. |
 | Memory hygiene | `memory/hygiene.py`, `tools/workspace.py`, `scripts/repair_memory_hygiene.py` | Legacy shadow stores and dead stubs are retired through reversible quarantine/backfill paths; no ad hoc workspace surgery. |
 | Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is selected by owner/company/goal/open-loop relevance and sensitivity access, not by static file inclusion alone. |
 | Decision trace + preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, sensitive, irreversible, or company-conflicting tool calls must pass preflight before execution. |

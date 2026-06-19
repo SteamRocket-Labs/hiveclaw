@@ -23,7 +23,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory / self-evolution boundary law:** LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。Any memory, heartbeat, dream, skill, workflow, or evolution path that replaces model judgment with counters, regexes, truncated summaries, or platform-authored "semantic" text is an AI-native violation. Any path that lets the model bypass governed write surfaces for durable memory/evolution/soul files is a governance violation.
 
-**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown summary blocks, a converged T3 semantic layer (`memory/t3/canon.md`, `relations.md`, `contradictions.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from memory evidence, not a T3 page. Graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/index.md` is a navigation map, not always-on prompt memory.
+**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/index.md` is a navigation map, not always-on prompt memory.
 
 **Review lens — apply to every subsystem:** ① Is the LLM's input visibility complete? ② Is its output budget sufficient? ③ Is the prompt engineered to benchmark quality? ④ Does mechanical processing appear only as an observable fallback?
 
@@ -37,7 +37,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 ## Project Overview
 
-Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, durable web chat runs, Office workbench editing, and an owner/company-aware Memory Governance Layer. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
+Hive is an open-source **multi-agent collaboration platform** — enterprise "digital employees" with persistent identity, long-term memory, private workspaces, autonomous trigger-driven execution, governed self-evolution, durable web chat runs, Office workbench editing, and owner/company-aware Memory Gate + Platform Gate governance. Built with FastAPI (Python) backend + React 19 (TypeScript) frontend.
 
 **Version:** tracked in `backend/VERSION` and `frontend/VERSION` (currently 1.7.0).
 
@@ -176,7 +176,7 @@ Tools follow a registry + executor + governance pattern:
 
 Progressive-disclosure capability capsules. `SkillParser` → `WorkspaceSkillLoader` → `SkillRegistry`. Skills load progressively: catalog metadata in prompt, full body via `load_skill`. A folder-based Skill may carry instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions. Loading a Skill does not execute side effects or unlock schemas; workflows still run through `preview_workflow`/`start_workflow`, subagents through `spawn_subagent`/`delegate_to_agent`, scripts through the approved sandbox/code execution path, and missing schemas through `tool_search`.
 
-### Memory System — 4-Layer MD Pyramid + Memory Governance Layer
+### Memory System — 4-Layer MD Pyramid + Memory Gate / Platform Gate
 
 MD files are the source of truth; the legacy SQLite/JSON shadow stores are retired and repaired through `memory/hygiene.py`.
 
@@ -237,15 +237,15 @@ evidence pointers live in `manifest.json` and in-file `source_refs`.
 | **T3 Accepted Memory** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator submits pitch/revised patch; Memory Gate reviews; Platform Gate commits exact accepted XML blocks | Dynamic memory activation and Dream soul evidence |
 | **soul.md** | Root workspace | Dream soul reconsolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |
 
-The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Governance Layer:
+The pyramid is the storage and distillation path. Runtime behavior is governed by the owner/company-aware Memory Gate / Platform Gate split:
 
 | Capability | Code paths | Rule |
 |------------|------------|------|
 | Principal + charter context | `services/agency_charter.py`, `services/principal_context.py` | Agent memory/action decisions must preserve direct owner, company, creator/current user, and delegating agent context when available. |
-| Memory write safety | `memory/write_gate.py`, `memory/t2_store.py`, `tools/handlers/memory.py` | Do not persist new durable T2/T3 memory without privacy/sensitivity classification and lifecycle/evidence metadata. PL4 credentials are rejected. |
+| Memory write safety | `memory/write_gate.py`, `memory/t2/segment_package.py`, `memory/t3_platform_gate.py`, `memory/explicit_overlay.py`, `tools/handlers/memory.py` | T2/T3 semantic files must be agent-authored candidates reviewed by Memory Gate and committed by Platform Gate. PL4 credentials are rejected; legacy `memory/t2_store.py` is compatibility/repair only. |
 | Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is activated by objective, owner/company relevance, open-loop pressure, retention/confidence, and sensitivity access. |
 | Decision trace + action preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, irreversible, sensitive, or company-conflicting actions must pass preflight before tool execution. |
-| Feedback learning | `services/extract_agent.py`, `memory/t2_store.py`, `services/auto_dream.py` | Owner feedback should carry reaction/polarity and link back to `decision/<id>` when possible; dream may propose calibration, not silently mutate charter. |
+| Feedback learning | `services/session_feedback.py`, `memory/explicit_overlay.py`, `memory/t2/segment_package.py`, `services/auto_dream.py` | Owner feedback should carry reaction/polarity and link back to `decision/<id>` when possible; explicit feedback enters the overlay immediately and is absorbed into accepted T3 only through the consolidation lane. |
 | Session calibration | `services/session_feedback.py`, `models/session_feedback.py`, `api/chat_sessions.py` | Useful/misleading session feedback is persisted and re-enters durable memory only through governed write paths. |
 | Memory hygiene | `memory/hygiene.py`, `tools/workspace.py`, `scripts/repair_memory_hygiene.py` | Legacy shadow stores, dead stubs, and missing lifecycle metadata are repaired through reversible shared reports. |
 | Coordination runtime | `agents/coordination.py`, `agents/orchestrator.py` | Delegation uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel emits Signal or Checkpoint for trigger-like open loops. |
@@ -257,9 +257,10 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 |------|---------|
 | `memory/t0/ledger.py` | Append-only T0 session ledger writer, sealer, replay, and legacy import |
 | `services/t0_logger.py` | Legacy T0 formatter/import compatibility; runtime hooks no longer call it; chat backfill writes the session ledger |
-| `services/extract_agent.py` | LLM extraction T0→T2 (cursor-based, per-response via RESPONSE_COMPLETE hook). T2 entries carry `[w=][src=][cat=]` metadata; source bucket weights live in `memory/t2_store.py`. |
+| `memory/t2/segment_package.py` | Canonical T0→T2 builder: sealed T0 segment -> source_bundle.json -> LLM-authored `summary.md` / `labels.md` / `review.md` -> Platform Gate atomic Segment Package commit. |
+| `services/extract_agent.py` / `memory/t2_store.py` | Legacy compatibility, admin backfill, and migration/read-model helpers only. They must not be reconnected to runtime canonical T0→T2 hooks. |
 | `services/heartbeat.py` | Platform-managed T2→T3 curation and self-evolution tick (KAIROS persistent session, 120min default eligibility, no-new-T2 skip). Loads `templates/HEARTBEAT.md`; per-agent `workspace/HEARTBEAT.md` overrides via `_load_heartbeat_instruction` — **already SOP-driven** |
-| `services/auto_dream.py` | T3→soul consolidation (24h plus 3 sessions or 2 productive heartbeat ticks; soft dream is 6h T3-pressure maintenance). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback is applied by the Memory Governance Layer/internal dream service, not by direct `write_file` under `memory/`. |
+| `services/auto_dream.py` | T3→soul consolidation (24h plus 3 sessions or 2 productive heartbeat ticks; soft dream is 6h T3-pressure maintenance). Runtime system prompt now loads `templates/DREAM.md` as dream protocol guidance while preserving the JSON-only consolidator contract; durable memory/soul writeback must go through Soul Memory Gate + Platform Soul Gate, not direct `write_file` under `memory/`. |
 | `services/evolution_ledger.py` | `evolution_ledger.jsonl` — candidate → eval (with `traces`) → promotion audit chain for automatic prompt/skill/policy changes. Distinct from per-invocation runtime trace. |
 | `services/invocation_trace.py` | Per-invocation runtime trace: file-backed JSONL compatibility plus PostgreSQL `invocation_spans` canonical query surface. |
 | `services/session_feedback.py` | Persists useful/misleading feedback and writes calibrated memory through governed paths. |

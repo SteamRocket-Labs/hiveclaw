@@ -1,4 +1,9 @@
-"""Reportable reflection artifacts and distilled T2 projections."""
+"""Reportable reflection artifacts.
+
+Reportable reflections are audit/source artifacts only. Canonical T2 is built
+from sealed T0 segments by the Segment Package pipeline; this service must not
+project reflections into legacy ``memory/learnings/*.md``.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,6 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-from app.memory.t2_store import append_t2_entries
-
 
 def _message_digest(messages: list[dict[str, Any]]) -> str:
     snippets = []
@@ -50,29 +52,13 @@ def create_reportable_reflection(
     }
     report_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
 
-    trace_ref = str(payload.get("trace_ref") or f"reflection:{report_path.name}")
-    t2_projected = append_t2_entries(
-        Path(data_root),
-        agent_id,
-        extractions=[
-            {
-                "category": "blocked_pattern",
-                "content": f"Reportable reflection required after {reason}; review trace before repeating the same pattern",
-                "evidence": "system_observed",
-                "source_refs": [trace_ref],
-                "volatility": "stable",
-                "confidence": 0.80,
-                "novelty": 0.70,
-                "reusability": 0.80,
-            }
-        ],
-        source="system",
-        timestamp=now.strftime("%Y-%m-%d"),
-    )
-
     return {
         "report_path": str(report_path),
-        "t2_projected": t2_projected,
-        "trace_ref": trace_ref,
+        # Back-compat signal for callers that used to inspect the old projection
+        # count. New canonical T2 packages are created from sealed T0 segments,
+        # not from this reflection artifact.
+        "t2_projected": 0,
+        "canonical_t2_projected": False,
+        "projection_status": "reflection_artifact_only",
+        "trace_ref": str(payload.get("trace_ref") or f"reflection:{report_path.name}"),
     }
-

@@ -103,53 +103,53 @@ T0 禁止：
 
 ### 2.2 当前 T2 的事实
 
-当前 T2 仍然是旧结构：
+当前 canonical T2 已经是 Segment Package：
 
 ```text
-memory/learnings/
-  insights.md
-  errors.md
-  requests.md
-  .extract_cursor.json
-  .backfill_cursor.json
+memory/sessions/<session_id>/segments/<segment_id>/
+  summary.md
+  labels.md
+  review.md
+  manifest.json
 ```
 
 当前主链路：
 
 ```text
-RESPONSE_COMPLETE
-  -> extract_agent.schedule_extract(...)
-  -> ExtractAgent.extract(...)
-  -> _llm_extract(messages)
-  -> _parse_extractions(...)
-  -> append_t2_entries_with_llm(...)
-  -> memory/learnings/{insights,errors,requests}.md
+SESSION_CLOSE / SESSION_IDLE / TRIGGER_END / DELEGATION_END
+  -> seal_t0_session_segment(...)
+  -> build_t2_segment_package_with_llm(...)
+  -> Summary Agent writes summary.md candidate
+  -> Learning Brain writes labels.md candidate
+  -> Memory Gate Agent writes review.md candidate
+  -> Platform Gate validates XML / source_refs / rubric
+  -> atomic Segment Package commit
 ```
 
-当前 T2 bullet line 示例：
+当前 T2 package 的 semantic 文件示例：
 
 ```text
-- [2026-06-18][w=0.80][src=web][cat=strategy][concept=strategy][container=skill_candidate][ev=user_stated][conf=0.85][refs=...] Research -> design -> verify workflow is preferred.
+summary.md      # one <t2_summary schema_version="t2.summary.v1"> block
+labels.md       # one <t2_labels schema_version="t2.labels.v1"> block
+review.md       # one <t2_review schema_version="t2.review.v1"> block with review_rubric
+manifest.json   # platform source refs, hashes, prompt versions, audit metadata
 ```
 
-当前实现里的好部分可以保留为参考：
+当前已经完成的边界：
 
-1. LLM-first extraction prompt 已经存在，而且强调 self-contained、source evidence、skip ephemeral。
-2. `prepare_memory_write_with_llm` 已经是 LLM-primary write gate。
-3. T2 行有 metadata：`w`、`src`、`cat`、`concept`、`container`、`ev`、`conf`、`vol`、`refs`、`nov`、`reuse`。
-4. `extract_queue` 已经解决 fire-and-forget 的丢失窗口。
-5. `SESSION_CLOSE` 会 drain in-flight extractor。
+1. `RESPONSE_COMPLETE` 只更新 volatile session projection，不写 durable T2。
+2. `SESSION_CLOSE` / `SESSION_IDLE` 基于 sealed T0 segment 触发 canonical T2 package builder。
+3. trigger / delegation 这类用户工作完成事件先写 T0 runtime-session ledger，再触发同一套 package builder。
+4. heartbeat / dream / distiller / eval / platform background 的运行日志只保留 T0 audit/provenance，不进入 canonical T2。
+5. `summary.md` / `labels.md` / `review.md` 都由 LLM agent 输出；Platform Gate 只做硬校验和原子提交。
+6. `memory/learnings/*.md` 仍可作为 legacy compatibility / migration / repair / derived view，但不能是 canonical runtime T2 truth。
 
-当前实现里的断点：
+当前仍需持续防守的残留面：
 
-1. Durable T2 仍直接从 in-memory messages 生成，不以 T0 ledger sealed segment 为唯一输入。
-2. T2 canonical write path 仍是 `memory/learnings/*.md`，不是 Session Package。
-3. T2 仍以 atom bullet 为主，不是一个 segment 对应一个 summary package。
-4. `RESPONSE_COMPLETE` 直接写 durable T2，导致 T2 边界和 T0 segment 边界不统一。
-5. 机械 pattern fallback 仍可进入 durable T2，这是 AI-Native L1 风险。
-6. Summary、Learning Brain、Memory Gate Agent 的职责还没有文件级分离。
-7. `refs` 可以是自由字符串，缺少统一的 T0 seq range / hash 校验。
-8. Work Ledger -> T2 consolidation 是旁路，应并回同一套 Segment Package。
+1. `services/extract_agent.py` / `memory/t2_store.py` 仍作为 legacy compatibility、admin backfill、tests 和 migration helper 存在；不得重新接回 runtime canonical hooks。
+2. `memory/legacy_migration.py` 可以迁移旧数据，但迁移结果必须标记为 legacy/import/read-model，不得伪装成新 Segment Package。
+3. 任何新入口如果需要进入 durable T2，必须先落 T0 source range，再走 `build_t2_segment_package_with_llm(...)`。
+4. 失败/反思/短期 projection 可以写 `memory/reflections/**` 或 runtime projection，但不能直接投影进 `memory/learnings/*.md`。
 
 ## 3. 目标边界
 
@@ -1107,7 +1107,7 @@ T0 只接受 runtime 已经确认的事件，并把它们 append 到 `memory/t0/
 
 ### 11.2 当前 T2 Prompt 债务
 
-当前旧 T2 prompt 是 `extract_agent.EXTRACT_PROMPT`，它的定位是 atom extraction：
+旧 T2 prompt 是 `extract_agent.EXTRACT_PROMPT`，它现在只属于 legacy compatibility / migration helper，不是 canonical T2 prompt。旧定位是 atom extraction：
 
 ```text
 messages -> atom candidates -> memory/learnings/*.md
@@ -1121,15 +1121,13 @@ messages -> atom candidates -> memory/learnings/*.md
 4. 明确不直接写 soul / skill / workflow。
 5. 要求跳过纯运行态噪音。
 
-必须退役或重写的部分：
+已经从 canonical 主链退役或必须继续隔离的部分：
 
-1. 输入仍是 in-memory messages，而不是 replayed T0 source range。
-2. 输出仍是 atom line，不是 Segment Package。
-3. Prompt 把 heartbeat/dream 作为旧下游叙述，和新 T2 package / T3 intake 不对齐。
-4. category/container hint 过重，容易提前把 T2 写成 T3 routing。
-5. 没有 Summary Agent、Learning Brain、Memory Gate Agent 的文件级职责分离。
-6. 没有 `distillation_scope` 边界，不能阻止 heartbeat/dream/distiller 自引用进入 T2。
-7. fallback 失败后仍可能进入 pattern extraction，和 canonical T2 红线冲突。
+1. 旧输入是 in-memory messages；canonical input 必须是 replayed T0 source range / source_bundle。
+2. 旧输出是 atom line；canonical output 必须是 Segment Package。
+3. 旧 prompt 把 heartbeat/dream 作为旧下游叙述；canonical prompt 使用 Summary Agent / Learning Brain / Memory Gate Agent 三套 prompt。
+4. category/container hint 只能作为 migration reference，不能替代 T2 标签或 T3 晋升判断。
+5. pattern fallback 可以做 audit/held/retry，不能 durable write canonical T2。
 
 所以旧 `EXTRACT_PROMPT` 只能作为迁移参考，不能继续作为 canonical T2 prompt。
 
@@ -1428,7 +1426,7 @@ final closure
 
 Work Ledger 不是 T2 旁路。
 
-当前 `ledger_findings_to_extractions(...) -> append_t2_entries(...)` 的目标应改为：
+`ledger_findings_to_extractions(...) -> append_t2_entries(...)` 是旧 compatibility helper；canonical 目标是：
 
 ```text
 Work Ledger verified findings
@@ -1454,11 +1452,11 @@ T0 source range + runtime evidence bundle
 
 | 当前旁路 | 目标 |
 |---|---|
-| `extract_agent` direct append to `memory/learnings/*.md` | 改为 package builder adapter |
-| Work Ledger direct consolidation | 改为 source bundle evidence |
-| heartbeat/dream/distiller run log extraction | 改为 audit/provenance T0 event，不进入 canonical T2 |
-| legacy T0 backfill to learnings | 改为 legacy T0 import + package builder |
-| pattern fallback extraction | 改为 held candidate / retry / audit，不能 durable write |
+| `extract_agent` direct append to `memory/learnings/*.md` | 已降级为 legacy compatibility / admin backfill / tests；不得作为 runtime canonical hook |
+| Work Ledger direct consolidation | source bundle evidence；由 Summary Agent / Learning Brain / Memory Gate 处理 |
+| heartbeat/dream/distiller run log extraction | audit/provenance T0 event，不进入 canonical T2 |
+| legacy T0 backfill to learnings | legacy import / migration helper；新语义 package 必须走 package builder |
+| pattern fallback extraction | held candidate / retry / audit，不能 durable write canonical T2 |
 
 ## 14. 和当前 `extract_agent` 的关系
 

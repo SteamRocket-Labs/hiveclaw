@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 
-def test_reportable_reflection_writes_artifact_and_t2_projection(tmp_path: Path) -> None:
+def test_reportable_reflection_writes_artifact_without_legacy_t2_projection(tmp_path: Path) -> None:
     from app.services.reflection_service import create_reportable_reflection
 
     agent_id = uuid.uuid4()
@@ -18,11 +18,11 @@ def test_reportable_reflection_writes_artifact_and_t2_projection(tmp_path: Path)
     )
 
     report_path = Path(report["report_path"])
-    projection_path = tmp_path / str(agent_id) / "memory" / "learnings" / "errors.md"
+    legacy_projection_dir = tmp_path / str(agent_id) / "memory" / "learnings"
 
     assert report_path.exists()
-    assert report["t2_projected"] == 1
+    assert report["canonical_t2_projected"] is False
+    assert report["projection_status"] == "reflection_artifact_only"
     assert "loop_guard_triggered" in report_path.read_text(encoding="utf-8")
-    assert "[ev=system_observed]" in projection_path.read_text(encoding="utf-8")
-    assert "logs/2026-05-02/traces/s-1.jsonl" in projection_path.read_text(encoding="utf-8")
-
+    assert "logs/2026-05-02/traces/s-1.jsonl" in report_path.read_text(encoding="utf-8")
+    assert not legacy_projection_dir.exists()

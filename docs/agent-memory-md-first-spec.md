@@ -2,7 +2,9 @@
 
 > Merged specification from `docs/agent-memory-research.md` and `docs/archive/legacy-docs/agent-memory-md-first-research-codex.md`.
 > Date: 2026-06-04.
-> Scope: Hive agent memory architecture, MD-first source of truth, distillation boundaries, Memory Governance Layer, and AgentDetail presentation.
+> Scope: Hive agent memory architecture, MD-first source of truth, distillation boundaries, historical Memory Governance Layer wording, and AgentDetail presentation.
+>
+> Supersession note (2026-06-19): this older merged spec remains useful for MD-first source-of-truth and lifecycle principles, but the T3 canonical target, T2 package shape, explicit-memory path, and governance naming have been superseded by `docs/memory-clean-loop-refactor-plan-2026-06-17.md`, `docs/t0-to-t2-segment-package-redesign-2026-06-18.md`, and `docs/t2-to-t3-curation-redesign-2026-06-18.md`. Current accepted T3 files are `memory/t3/episodes.md`, `user.md`, `worker.md`, and `capabilities.md`; old `canon.md`, `relations.md`, and `contradictions.md` references are historical or derived/read-only compatibility views unless a newer document explicitly says otherwise. When this file conflicts with those newer redesign docs, the newer redesign docs win.
 
 ## 0. Executive Position
 
@@ -33,7 +35,7 @@ The second rule is:
 
 ```text
 Distillers produce candidates.
-The Memory Governance Layer decides writes, activation, promotion, retirement, and audit.
+Current wording splits the old Memory Governance Layer into LLM Memory Gate review and mechanical Platform Gate commit.
 ```
 
 The third rule is:
@@ -49,12 +51,12 @@ The current target prototype is:
 ```text
 Agent Markdown Wiki / Learning Vault =
   T0 raw evidence
-  + T2 tagged Markdown summary blocks
-  + T3 converged semantic layer
+  + T2 tagged Markdown Segment Packages
+  + T3 converged semantic layer: episodes.md / user.md / worker.md / capabilities.md
   + residual evidence backreferences from T3 curation to T2/T0 source_refs
   + soul.md identity layer
   + skill capability candidates
-  + Memory Governance Layer governance
+  + Memory Gate / Platform Gate governance
 ```
 
 This is intentionally close to the LLM Wiki pattern: the whole vault is the Wiki, raw sources stay immutable, semantic pages are Markdown, pages link with `[[wikilinks]]`, provenance is explicit, contradictions are marked instead of hidden, and indexes/graphs/search surfaces are derived.
@@ -62,12 +64,12 @@ This is intentionally close to the LLM Wiki pattern: the whole vault is the Wiki
 The directory and relationship contract should borrow the useful minimum from Google's Open Knowledge Format (OKF):
 
 - The vault is a knowledge bundle: a directory tree of Markdown files.
-- T2 summary blocks and T3 semantic sections are concept documents: controlled metadata plus Markdown body.
+- T2 Segment Packages and T3 semantic sections are concept documents: controlled metadata plus Markdown/XML body.
 - `index.md` files support progressive disclosure and should list only the current directory's contents and descriptions.
 - `log.md` files record scope-local update history where auditability matters.
 - Directory hierarchy is not the full ontology. Markdown links and frontmatter express graph relationships across directories.
 - Consumers must tolerate unknown `type` values, unknown frontmatter fields, missing optional fields, missing `index.md`, and broken links. These are growth states, not fatal schema errors.
-- Citations/source refs are first-class: stable claims should link back to T2 summary blocks, T0 source packets, artifacts, or external references.
+- Citations/source refs are first-class: stable claims should link back to T2 Segment Packages, T0 source packets, artifacts, or external references.
 
 ## 1. Honest Scientific Position
 
@@ -669,8 +671,10 @@ Frozen Identity:
   soul.md identity / frozen charters
 
 Active Long-Term Memory:
-  selected T3 sections from memory/t3/canon.md, relations.md, contradictions.md
+  selected accepted T3 XML blocks from memory/t3/episodes.md, user.md,
+  worker.md, and capabilities.md
   by relevance, recency, lifecycle, owner/company scope, and sensitivity access
+  with derived relation / contradiction / index views used only as navigation aids
 
 Active Summary Memory:
   selected T2 summary blocks when they are newer than T3, not yet absorbed,
@@ -880,10 +884,10 @@ Workflow-shaped evidence is handed off to the Workflow system as a reference hin
 Target T3 files:
 
 ```text
-memory/t3/index.md
-memory/t3/canon.md
-memory/t3/relations.md
-memory/t3/contradictions.md
+memory/t3/episodes.md
+memory/t3/user.md
+memory/t3/worker.md
+memory/t3/capabilities.md
 ```
 
 Compatibility files:
@@ -893,7 +897,10 @@ feedback.md
 blocked.md
 knowledge.md
 strategies.md
-user.md
+canon.md
+relations.md
+contradictions.md
+index.md
 memory/wiki/**
 ```
 
@@ -1099,7 +1106,8 @@ Initial data sources:
 - `soul.md`
 - `memory/index.md`
 - `memory/t2/summary.md`
-- `memory/t3/canon.md`, `relations.md`, `contradictions.md`
+- accepted T3 files: `memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`
+- derived T3 views when present: `memory/.derived/t3_index.md`, relation graph, contradiction/staleness views
 - `build_t3_entry_manifest()`
 - `memory/lifecycle.json`
 - `memory/access_log.jsonl`
@@ -1157,9 +1165,11 @@ type AgentKnowledgeOverview = {
 > implementation evidence. Paths such as `memory/wiki/**`,
 > `memory/learnings/**`, and legacy `memory/INDEX.md` should now be read as
 > compatibility surfaces unless the current blueprint above explicitly keeps
-> them. The current target is `t0/`, tagged `t2/summary.md`, converged
-> `t3/canon.md` / `relations.md` / `contradictions.md`, controlled tags,
-> and dynamic prompt assembly.
+> them. The current target is the append-only T0 session ledger, canonical T2
+> Segment Packages (`summary.md`, `labels.md`, `review.md`, `manifest.json`),
+> and converged accepted T3 files under `memory/t3/episodes.md`, `user.md`,
+> `worker.md`, and `capabilities.md`. `relations`, `contradictions`,
+> graph/vector/search/UI views are derived and rebuildable, not semantic truth.
 
 ### P0: Freeze Terms And Prompt Contracts
 

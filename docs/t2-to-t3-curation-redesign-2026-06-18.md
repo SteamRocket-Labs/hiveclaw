@@ -4,7 +4,7 @@
 
 范围：只定义 T2 -> T3。T0 -> T2 已由 `docs/t0-to-t2-segment-package-redesign-2026-06-18.md` 约束；T3 -> `soul.md`、Skill 晋升、Workflow 设计不在本文落地范围内。
 
-状态：整改前设计契约。本文用于统一 T2 -> T3 的目标链路、文件结构、Prompt 边界、写入路径、平台审核和红线测试；不表示当前代码已经完成。
+状态：主链路已实装并作为当前契约。本文用于统一 T2 -> T3 的目标链路、文件结构、Prompt 边界、写入路径、平台审核和红线测试；legacy adapter 只能作为迁移/兼容面存在，不能回到 canonical runtime path。
 
 ## 1. 核心结论
 
@@ -18,8 +18,9 @@ T0 -> T2 的特点是单 segment 对应单 Segment Package；T2 -> T3 的特点�
 reviewed/closed Segment Packages
   -> T3 Consolidation Batch Builder 组装 source bundle + T3 neighborhood
   -> T3 Consolidator / Heartbeat Agent 生成 consolidation_pitch.md
-  -> Memory Gate Agent 作为 reviewer/editor 复查并给出 merge directives
-  -> T3 Consolidator 生成 revised_patch.md
+  -> Memory Gate Agent 可给出 editorial feedback / merge directives
+  -> T3 Consolidator 生成或修订 revised_patch.md
+  -> Memory Gate Agent final-review 最新 revised_patch.md
   -> Platform Gate hard check + atomic commit
   -> memory/t3/{episodes.md,user.md,worker.md,capabilities.md}
   -> mark consumed Segment Packages as absorbed
@@ -47,27 +48,42 @@ memory/t3/
 
 ## 2. 当前代码事实
 
-当前代码仍停留在旧 T3 模型，和本文目标不一致：
-
-1. `backend/app/memory/md_store.py` 里的 `T3_FILE_SPECS` 仍是旧文件：
+当前 canonical T3 主链路已经切到 Consolidation Batch：
 
 ```text
-feedback.md
-knowledge.md
-strategies.md
-blocked.md
-user.md
+reviewed / closed Segment Packages
+active Explicit Memory Overlay entries
+  -> stage_pending_t3_consolidation_job(...)
+  -> memory/.staging/t3_jobs/<job_id>/
+       source_bundle.json
+       t3_neighborhood.md
+       consolidation_pitch.md
+       review.md
+       revised_patch.md
+       manifest.json
+  -> submit_t3_consolidation_pitch(...)
+  -> submit_t3_revised_patch(...)
+  -> submit_t3_memory_gate_review(...)
+  -> apply_t3_consolidation_patch(...)
+  -> memory/t3/{episodes.md,user.md,worker.md,capabilities.md}
 ```
 
-2. `backend/app/memory/t3_store.py` 仍以 `append_t3_memory_candidate()` 作为 durable T3 append API。它会经过 write gate、dedup、`append_t3_entry()`、lifecycle/index rebuild，但本质仍是“单条事实 -> 旧 T3 文件”的直写模型；它没有做 batch-level semantic consolidation。
+当前已完成的边界：
 
-3. `backend/app/tools/handlers/memory.py` 的 `save_memory` 当前会直接调用 `append_t3_memory_candidate()`。目标状态下，`save_memory` 不能绕过 governance 直接写 accepted T3；它应写入 T3 级别的 Explicit Memory Overlay，使用户显式“记住”立即进入可激活上下文，再由 T3 Consolidation Batch 吸收进 accepted T3。
+1. `backend/app/memory/md_store.py` 的 accepted T3 file specs 已收敛为 `episodes.md`、`user.md`、`worker.md`、`capabilities.md`。
+2. `backend/app/memory/t3_consolidation.py` 只组装 source bundle、T3 neighborhood 和 staging artifact，不生成语义结论，也不写 accepted T3。
+3. `backend/app/templates/HEARTBEAT.md` / `T3_CONSOLIDATOR.md` 要求 Heartbeat/T3 Consolidator 先提交 `consolidation_pitch.md`，再提交 `revised_patch.md`。
+4. `backend/app/templates/T3_MEMORY_GATE.md` 要求 Memory Gate 作为 editor/reviewer 给出证据、去重、合并和打分判断；它不能替 Consolidator 改写 accepted block。
+5. `backend/app/memory/t3_platform_gate.py` 只校验 XML、target、source refs、base revision、review rubric 和安全阈值，再按 Agent-authored patch exact apply。
+6. `backend/app/tools/handlers/memory.py` 的 `save_memory` 只写 Explicit Memory Overlay；accepted T3 只能由 T3 Consolidation Batch 吸收。
+7. 普通 `write_file` / `edit_file` / `delete_file` 写 `memory/` 被 workspace guard 拒绝。
 
-4. `backend/app/templates/HEARTBEAT.md` 当前仍按旧 weighted-line T2 模型工作：读取兼容 T2 条目，根据 weight/category 决策后调用 `save_memory`。目标状态下 Heartbeat 必须变成 T3 Consolidator：批量读取 reviewed Segment Packages 和当前 T3 neighborhood，生成 consolidation pitch / revised patch，不直接写 T3。
+当前仍需防守的残留面：
 
-5. `docs/agent-memory-md-first-spec.md` 中早期写过 `index.md/canon.md/relations.md/contradictions.md` 作为 T3 target。这个结论已被后续 clean-loop 和 T0 -> T2 决策修正：canonical T3 accepted files 只保留 `episodes.md`、`user.md`、`worker.md`、`capabilities.md`。
-
-因此，本次 T2 -> T3 改造不是在旧 `save_memory` 上继续补丁，也不是新增一个单条 patch 门禁，而是把 T3 重新定义为 LLM Wiki-style consolidation loop：整理者、审稿人、提交器分工清晰，但语义整理主权仍在 LLM。
+1. `append_t3_memory_candidate()` 是 compatibility adapter，只能把单条候选放进 Explicit Memory Overlay，不能写 accepted T3。
+2. `md_store.append_t3_entry()` 仍服务 legacy tests、manifest/index/retrieval compatibility 和 migration repair；不得被新 runtime semantic write path 直接调用。
+3. `memory/learnings/*.md` 只能作为 legacy/derived compatibility view，不能作为 T3 primary input；T3 intake 必须来自 reviewed Segment Package 或 active Explicit Memory Overlay。
+4. `memory/.derived/**`、relation graph、contradiction views、index views 只能从 accepted T3 重建，不能成为 semantic truth。
 
 ## 3. 不在本文范围内
 
@@ -711,7 +727,8 @@ You must:
 - Use residual T0 evidence only through T2 source_refs.
 - Read the T3 neighborhood before creating new blocks.
 - Produce consolidation_pitch.md first.
-- After Memory Gate review, produce revised_patch.md.
+- Produce revised_patch.md only after the pitch is complete and any Memory Gate feedback has been addressed.
+- Require a fresh Memory Gate final review after the latest revised_patch.md; any review that predates the current patch is stale and cannot authorize commit.
 - Use only these target files:
   memory/t3/episodes.md
   memory/t3/user.md
@@ -1328,7 +1345,7 @@ git diff --check docs/t2-to-t3-curation-redesign-2026-06-18.md
 
 T2 -> T3 改造完成的判定：
 
-1. T3 主梯度只接受 `reviewed/closed Segment Packages -> Consolidation Batch -> Consolidator pitch -> Memory Gate review -> revised patch -> Platform Gate Commit`。
+1. T3 主梯度只接受 `reviewed/closed Segment Packages -> Consolidation Batch -> Consolidator pitch -> optional Memory Gate feedback -> revised patch -> fresh Memory Gate final review -> Platform Gate Commit`。
 2. T0 不能直接进入 T3；只能作为 residual evidence。
 3. T3 accepted files 只剩四个：`episodes.md`、`user.md`、`worker.md`、`capabilities.md`。
 4. T3 文件内部 block 使用 XML。

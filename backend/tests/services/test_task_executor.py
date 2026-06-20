@@ -197,6 +197,7 @@ async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger(monkeypatch, tmp_path):
     from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.services.task_executor import execute_task
 
     task_id = uuid4()
@@ -287,11 +288,31 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
     assistant_reply = next(item for item in final_session.added if getattr(item, "role", None) == "assistant")
 
     assert created_session.title.startswith("🧾 Task:")
+    assert created_session.session_kind == "user_task"
+    assert created_session.actor_type == "agent"
+    assert created_session.runtime_source == "runtime_task"
+    assert created_session.visibility_scope == "agent_owner"
+    assert created_session.listed_surface == "task_updates"
     assert user_prompt.conversation_id == str(created_session.id)
     assert "准备竞品分析" in user_prompt.content
     assert '"name": "web_search"' in tool_call.content
     assert assistant_reply.conversation_id == str(created_session.id)
     assert "任务已完成" in assistant_reply.content
+
+    transcript_events = [
+        item
+        for session in (prepare_session, tool_call_session, final_session)
+        for item in session.added
+        if isinstance(item, ChatTranscriptEvent)
+    ]
+    assert [(event.event_type, event.actor_type, event.message_id) for event in transcript_events] == [
+        ("user_message", "user", user_prompt.id),
+        ("tool_result", "agent", tool_call.id),
+        ("assistant_message", "assistant", assistant_reply.id),
+    ]
+    assert all(event.session_id == created_session.id for event in transcript_events)
+    assert all(event.listed_surface == "task_updates" for event in transcript_events)
+    assert transcript_events[0].metadata_json["task_id"] == str(task_id)
 
     events = replay_t0_session_events(agent_id=agent_id, session_id=str(created_session.id), data_root=tmp_path)
     assert [(event.event_type, event.role, event.content) for event in events] == [

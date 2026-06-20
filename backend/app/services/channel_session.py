@@ -17,6 +17,14 @@ def _archived_external_conv_id(external_conv_id: str, session_id: _uuid.UUID) ->
     return f"{external_conv_id[: max(0, 200 - len(suffix))]}{suffix}"
 
 
+def _apply_channel_session_contract(session: ChatSession) -> None:
+    session.session_kind = "human_chat"
+    session.actor_type = "user"
+    session.runtime_source = "channel_chat"
+    session.visibility_scope = "direct_user"
+    session.listed_surface = "chat"
+
+
 async def find_or_create_channel_session(
     db: AsyncSession,
     agent_id: _uuid.UUID,
@@ -87,6 +95,7 @@ async def find_or_create_channel_session(
                         legacy_session.title = first_message_title[:40]
                     if delivery_target:
                         legacy_session.delivery_target_json = delivery_target
+                    _apply_channel_session_contract(legacy_session)
                     await db.flush()
                     return legacy_session
 
@@ -97,6 +106,11 @@ async def find_or_create_channel_session(
             user_id=user_id,
             title=first_message_title[:40],
             source_channel=source_channel,
+            session_kind="human_chat",
+            actor_type="user",
+            runtime_source="channel_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
             external_conv_id=external_conv_id,
             delivery_target_json=delivery_target,
             created_at=now,
@@ -110,6 +124,7 @@ async def find_or_create_channel_session(
         if delivery_target:
             session.delivery_target_json = delivery_target
 
+    _apply_channel_session_contract(session)
     return session
 
 
@@ -146,6 +161,11 @@ async def start_new_channel_session(
         user_id=user_id,
         title=(title or "New Session")[:40],
         source_channel=source_channel,
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="channel_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
         external_conv_id=external_conv_id,
         delivery_target_json=delivery_target,
         created_at=now,
@@ -155,4 +175,5 @@ async def start_new_channel_session(
     if delivery_target is not None:
         delivery_target["session_id"] = str(session.id)
         session.delivery_target_json = delivery_target
+    _apply_channel_session_contract(session)
     return session

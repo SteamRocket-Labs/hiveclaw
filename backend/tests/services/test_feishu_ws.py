@@ -262,6 +262,50 @@ async def test_start_client_binds_lark_sdk_receive_loop_to_running_loop(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_start_client_passes_lark_global_domain_to_sdk(monkeypatch):
+    import app.services.feishu_ws as feishu_ws
+
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        def __init__(self, app_id, app_secret, **kwargs):
+            captured["app_id"] = app_id
+            captured["app_secret"] = app_secret
+            captured["domain"] = kwargs.get("domain")
+
+        def _receive_message_loop(self):
+            return None
+
+    async def fake_run():
+        return None
+
+    created_tasks = []
+
+    def fake_create_task(coro, name=None):
+        created_tasks.append((coro, name))
+        coro.close()
+        return SimpleNamespace(done=lambda: False, cancel=lambda: None)
+
+    monkeypatch.setattr(feishu_ws, "_HAS_LARK", True)
+    monkeypatch.setattr(feishu_ws, "_PROXY_PATCH_AVAILABLE", False, raising=False)
+    monkeypatch.setattr(feishu_ws, "lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="info")))
+    monkeypatch.setattr(feishu_ws, "ws", SimpleNamespace(Client=_FakeClient))
+    monkeypatch.setattr(feishu_ws.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(feishu_ws.FeishuWSManager, "_create_event_handler", lambda self, agent_id: object())
+
+    manager = feishu_ws.FeishuWSManager()
+    await manager.start_client(
+        uuid4(),
+        "cli_lark",
+        "secret",
+        extra_config={"platform_region": "lark_global"},
+    )
+
+    assert captured["domain"] == "https://open.larksuite.com"
+    assert created_tasks
+
+
+@pytest.mark.asyncio
 async def test_start_client_disables_sdk_auto_reconnect(monkeypatch):
     import app.services.feishu_ws as feishu_ws
 

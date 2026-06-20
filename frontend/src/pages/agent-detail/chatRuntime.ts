@@ -1,5 +1,5 @@
 import type { SessionRuntimeSummary } from '../../api/domains/chat';
-import type { ToolCallMeta } from './toolResultEnvelope';
+import { normalizeToolCallResult, type ToolCallMeta } from './toolResultEnvelope';
 
 export const MIN_COMPOSER_HEIGHT = 44;
 export const MAX_COMPOSER_HEIGHT = 160;
@@ -49,6 +49,17 @@ export interface AgentChatMessage {
   activatedToolGroupCount?: number;
   skillName?: string;
   triggerTool?: string;
+  artifacts?: ChatArtifactPart[];
+}
+
+export interface ChatArtifactPart {
+  id?: string;
+  name: string;
+  path: string;
+  previewKind?: string;
+  mimeType?: string;
+  size?: number;
+  source?: string;
 }
 
 export type ChatRuntimeSummary = SessionRuntimeSummary;
@@ -59,6 +70,21 @@ export type StreamingChunkEvent = {
   reset?: boolean;
 };
 
+export type ChatTranscriptEventPayload = {
+  id?: string;
+  sequence?: number;
+  type?: string;
+  event_type?: string;
+  actor_type?: string;
+  role?: AgentChatMessage['role'] | string;
+  content?: string;
+  parts?: Array<Record<string, unknown>>;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  timestamp?: string;
+  message_id?: string | null;
+};
+
 export interface SessionRunState {
   runId: string;
   status: string;
@@ -67,6 +93,12 @@ export interface SessionRunState {
 export interface SessionUiState {
   isWaiting: boolean;
   isStreaming: boolean;
+}
+
+export interface TranscriptReplayState {
+  messages: AgentChatMessage[];
+  ui: SessionUiState;
+  seenEventIds: Set<string>;
 }
 
 export function applySessionActiveRunState(
@@ -88,8 +120,34 @@ export function applySessionActiveRunState(
   return { activeRuns: nextActiveRuns, uiStates: nextUiStates };
 }
 
+export function applySessionActiveRunObservedState(
+  activeRuns: Record<string, SessionRunState>,
+  uiStates: Record<string, SessionUiState>,
+  key: string,
+  run: SessionRunState,
+): { activeRuns: Record<string, SessionRunState>; uiStates: Record<string, SessionUiState> } {
+  const currentUi = uiStates[key];
+  return {
+    activeRuns: { ...activeRuns, [key]: run },
+    uiStates: {
+      ...uiStates,
+      [key]: currentUi?.isStreaming
+        ? currentUi
+        : { isWaiting: true, isStreaming: false },
+    },
+  };
+}
+
 export function buildChatSocketKeepaliveMessage(): { type: 'ping' } {
   return { type: 'ping' };
+}
+
+export function createEmptyTranscriptReplayState(): TranscriptReplayState {
+  return {
+    messages: [],
+    ui: { isWaiting: false, isStreaming: false },
+    seenEventIds: new Set<string>(),
+  };
 }
 
 export function applyStreamingChunkEvent(
@@ -108,6 +166,242 @@ export function applyStreamingChunkEvent(
     return [...messages.slice(0, -1), { ...last, content: last.content + content } as any];
   }
   return [...messages, { role: 'assistant', content, _streaming: true } as any];
+}
+
+function isStreamingAssistantPlaceholder(message: AgentChatMessage | undefined): boolean {
+  return Boolean(
+    message
+      && message.role === 'assistant'
+      && (message as any)._streaming
+      && !String(message.content || '').trim(),
+  );
+}
+
+function isTerminalToolCard(message: AgentChatMessage): boolean {
+  if (message.role !== 'tool_call' || message.toolStatus !== 'done') return false;
+  const kind = message.toolMeta?.kind;
+  return kind === 'user_clarification'
+    || kind === 'plan_needs_confirmation'
+    || kind === 'plan_mode_request'
+    || kind === 'create_employee_success';
+}
+
+export function appendToolCallMessage(
+  messages: AgentChatMessage[],
+  toolMessage: AgentChatMessage,
+): AgentChatMessage[] {
+  const terminalCard = isTerminalToolCard(toolMessage);
+  let base = messages;
+  const last = base[base.length - 1];
+  if (terminalCard && isStreamingAssistantPlaceholder(last)) {
+    base = base.slice(0, -1);
+  }
+
+  const lastIdx = base.length - 1;
+  const currentLast = base[lastIdx];
+  if (
+    toolMessage.toolStatus === 'done'
+    && currentLast
+    && currentLast.role === 'tool_call'
+    && currentLast.toolName === toolMessage.toolName
+    && currentLast.toolStatus === 'running'
+  ) {
+    return [...base.slice(0, lastIdx), toolMessage];
+  }
+  if (
+    currentLast
+    && currentLast.role === 'tool_call'
+    && currentLast.toolName === toolMessage.toolName
+    && currentLast.toolStatus === toolMessage.toolStatus
+    && currentLast.toolResult === toolMessage.toolResult
+  ) {
+    return base;
+  }
+  return [...base, toolMessage];
+}
+
+export function applyRuntimeDoneEvent(
+  messages: AgentChatMessage[],
+  event: any,
+): AgentChatMessage[] {
+  const content = typeof event?.content === 'string' ? event.content : '';
+  const artifacts = extractArtifactParts(event);
+  const last = messages[messages.length - 1];
+
+  if (!content.trim() && artifacts.length === 0) {
+    if (isStreamingAssistantPlaceholder(last)) {
+      return messages.slice(0, -1);
+    }
+    return messages;
+  }
+
+  const assistantMessage: AgentChatMessage = {
+    role: 'assistant',
+    content,
+    thinking: (last && last.role === 'assistant' && (last as any)._streaming) ? last.thinking : undefined,
+    artifacts: artifacts.length > 0 ? artifacts : undefined,
+    timestamp: new Date().toISOString(),
+  };
+  if (last && last.role === 'assistant' && (last as any)._streaming) {
+    return [...messages.slice(0, -1), assistantMessage];
+  }
+  if (
+    last
+    && last.role === 'assistant'
+    && !((last as any)._streaming)
+    && last.content === assistantMessage.content
+    && JSON.stringify(last.artifacts || []) === JSON.stringify(assistantMessage.artifacts || [])
+  ) {
+    return messages;
+  }
+  return [...messages, assistantMessage];
+}
+
+function transcriptEventKey(event: ChatTranscriptEventPayload): string | null {
+  if (typeof event.id === 'string' && event.id.trim()) return `id:${event.id}`;
+  if (typeof event.sequence === 'number') return `seq:${event.sequence}`;
+  return null;
+}
+
+function transcriptEventType(event: ChatTranscriptEventPayload): string {
+  return String(event.event_type || event.type || '');
+}
+
+function isBlockingToolMessage(message: AgentChatMessage): boolean {
+  const toolMeta = message.toolMeta as (ToolCallMeta & { blocking?: boolean }) | null | undefined;
+  return message.role === 'tool_call'
+    && Boolean(toolMeta?.blocking || isTerminalToolCard(message));
+}
+
+function toolNameFromTranscriptEvent(event: ChatTranscriptEventPayload): string | undefined {
+  const metadataName = event.metadata?.tool_name;
+  return typeof metadataName === 'string' && metadataName.trim()
+    ? metadataName.trim()
+    : undefined;
+}
+
+export function applyTranscriptEvent(
+  state: TranscriptReplayState,
+  event: ChatTranscriptEventPayload,
+): TranscriptReplayState {
+  const key = transcriptEventKey(event);
+  if (key && state.seenEventIds.has(key)) return state;
+
+  const seenEventIds = new Set(state.seenEventIds);
+  if (key) seenEventIds.add(key);
+  const eventType = transcriptEventType(event);
+  const timestamp = event.created_at || event.timestamp;
+  const content = event.content || '';
+
+  if (eventType === 'run_started') {
+    return {
+      messages: state.messages,
+      seenEventIds,
+      ui: { isWaiting: true, isStreaming: false },
+    };
+  }
+
+  if (eventType === 'run_completed' || eventType === 'done') {
+    return {
+      messages: state.messages,
+      seenEventIds,
+      ui: { isWaiting: false, isStreaming: false },
+    };
+  }
+
+  if (eventType === 'thinking') {
+    return {
+      messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content: '' }).map((message, index, arr) => {
+        if (index !== arr.length - 1 || message.role !== 'assistant') return message;
+        return { ...message, thinking: `${message.thinking || ''}${content}`, timestamp } as AgentChatMessage;
+      }),
+      seenEventIds,
+      ui: { isWaiting: false, isStreaming: true },
+    };
+  }
+
+  if (eventType === 'assistant_delta' || eventType === 'chunk') {
+    return {
+      messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content }),
+      seenEventIds,
+      ui: { isWaiting: false, isStreaming: true },
+    };
+  }
+
+  if (eventType === 'user_message' || event.role === 'user') {
+    return {
+      messages: [
+        ...state.messages,
+        {
+          role: 'user',
+          content,
+          timestamp,
+          id: event.message_id || event.id,
+        },
+      ],
+      seenEventIds,
+      ui: state.ui,
+    };
+  }
+
+  if (eventType === 'tool_result' || eventType === 'tool_call' || event.role === 'tool_call') {
+    const toolName = toolNameFromTranscriptEvent(event);
+    const normalized = normalizeToolCallResult(toolName, content);
+    const toolMessage: AgentChatMessage = {
+      role: 'tool_call',
+      content: '',
+      toolName,
+      toolStatus: 'done',
+      toolResult: normalized.displayResult,
+      toolRawResult: normalized.raw,
+      toolMeta: normalized.toolMeta,
+      timestamp,
+      id: event.message_id || event.id,
+    };
+    return {
+      messages: appendToolCallMessage(state.messages, toolMessage),
+      seenEventIds,
+      ui: isBlockingToolMessage(toolMessage)
+        ? { isWaiting: false, isStreaming: false }
+        : { isWaiting: false, isStreaming: state.ui.isStreaming },
+    };
+  }
+
+  if (eventType === 'assistant_message' || event.role === 'assistant') {
+    const messages = applyRuntimeDoneEvent(state.messages, {
+      type: 'done',
+      content,
+      parts: event.parts,
+      created_at: timestamp,
+    });
+    return {
+      messages: messages.map((message, index, arr) => (
+        index === arr.length - 1 && message.role === 'assistant'
+          ? { ...message, timestamp, id: event.message_id || event.id }
+          : message
+      )),
+      seenEventIds,
+      ui: { isWaiting: false, isStreaming: false },
+    };
+  }
+
+  const runtimeEvent = getRuntimeEventMessage({ ...event, type: eventType, timestamp });
+  if (runtimeEvent) {
+    return {
+      messages: [...state.messages, runtimeEvent],
+      seenEventIds,
+      ui: { isWaiting: false, isStreaming: false },
+    };
+  }
+
+  return { ...state, seenEventIds };
+}
+
+export function replayTranscriptEvents(events: ChatTranscriptEventPayload[]): TranscriptReplayState {
+  return events.reduce(
+    (state, event) => applyTranscriptEvent(state, event),
+    createEmptyTranscriptReplayState(),
+  );
 }
 
 type ActiveModelSummary = {
@@ -193,6 +487,42 @@ function getEventPart(payload: any): EventPart | undefined {
     return payload.parts.find((part: EventPart) => part?.type === 'event');
   }
   return undefined;
+}
+
+function normalizeArtifactPart(part: any): ChatArtifactPart | null {
+  if (!part || typeof part !== 'object') return null;
+  if (part.type && part.type !== 'artifact') return null;
+  const path = typeof part.path === 'string' ? part.path.trim() : '';
+  if (!path) return null;
+  const fallbackName = path.split('/').filter(Boolean).pop() || path;
+  const size = typeof part.size === 'number' && Number.isFinite(part.size) ? part.size : undefined;
+  return {
+    id: typeof part.id === 'string' ? part.id : (typeof part.artifact_id === 'string' ? part.artifact_id : undefined),
+    name: typeof part.name === 'string' && part.name.trim() ? part.name.trim() : fallbackName,
+    path,
+    previewKind: typeof part.previewKind === 'string' ? part.previewKind : (typeof part.preview_kind === 'string' ? part.preview_kind : undefined),
+    mimeType: typeof part.mimeType === 'string' ? part.mimeType : (typeof part.mime_type === 'string' ? part.mime_type : undefined),
+    size,
+    source: typeof part.source === 'string' ? part.source : undefined,
+  };
+}
+
+export function extractArtifactParts(payload: any): ChatArtifactPart[] {
+  const candidates = [
+    ...(Array.isArray(payload?.artifacts) ? payload.artifacts : []),
+    ...(Array.isArray(payload?.parts) ? payload.parts.filter((part: any) => part?.type === 'artifact') : []),
+  ];
+  const artifacts: ChatArtifactPart[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const artifact = normalizeArtifactPart(candidate);
+    if (!artifact) continue;
+    const key = `${artifact.id || ''}:${artifact.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    artifacts.push(artifact);
+  }
+  return artifacts;
 }
 
 function countActivatedToolGroups(
@@ -415,17 +745,20 @@ export function normalizeRuntimeEventMessage(payload: any): AgentChatMessage | n
 export function normalizeStoredChatMessage(payload: any): AgentChatMessage {
   const eventMessage = normalizeRuntimeEventMessage(payload);
   if (eventMessage) return eventMessage;
+  const artifacts = extractArtifactParts(payload);
 
   if (payload?.role === 'tool_call') {
+    const normalized = normalizeToolCallResult(payload?.toolName, payload?.toolRawResult ?? payload?.toolResult);
+    const toolMeta = payload?.toolMeta ?? normalized.toolMeta;
     return {
       role: 'tool_call',
       content: payload?.content || '',
       toolName: payload?.toolName,
       toolArgs: payload?.toolArgs,
       toolStatus: payload?.toolStatus,
-      toolResult: payload?.toolResult,
-      toolRawResult: payload?.toolRawResult ?? payload?.toolResult,
-      toolMeta: payload?.toolMeta ?? null,
+      toolResult: normalized.toolMeta ? normalized.displayResult : payload?.toolResult,
+      toolRawResult: payload?.toolRawResult ?? payload?.toolResult ?? normalized.raw,
+      toolMeta,
       thinking: payload?.thinking,
       timestamp: payload?.created_at || payload?.timestamp,
       sender_name: payload?.sender_name,
@@ -437,6 +770,7 @@ export function normalizeStoredChatMessage(payload: any): AgentChatMessage {
   return {
     role: payload?.role === 'assistant' ? 'assistant' : 'user',
     content: payload?.content || '',
+    artifacts: artifacts.length > 0 ? artifacts : undefined,
     thinking: payload?.thinking,
     timestamp: payload?.created_at || payload?.timestamp,
     sender_name: payload?.sender_name,

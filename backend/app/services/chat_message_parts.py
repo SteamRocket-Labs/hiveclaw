@@ -48,9 +48,40 @@ def _build_event_part(
     return part
 
 
-def serialize_chat_message(message, sender_name: str | None = None) -> dict[str, Any]:
+def _normalize_artifact_part(artifact: dict[str, Any]) -> dict[str, Any]:
+    part = {
+        "type": "artifact",
+        "artifact_id": str(artifact.get("artifact_id") or artifact.get("id") or ""),
+        "path": artifact.get("path"),
+        "name": artifact.get("name"),
+        "mime_type": artifact.get("mime_type"),
+        "size": artifact.get("size"),
+        "modified_at": artifact.get("modified_at"),
+        "preview_kind": artifact.get("preview_kind", "download"),
+        "source": artifact.get("source", "workspace_write"),
+        "runtime_task_id": artifact.get("runtime_task_id"),
+        "created_at": artifact.get("created_at"),
+    }
+    return {key: value for key, value in part.items() if value is not None}
+
+
+def _append_artifact_parts(entry: dict[str, Any], artifacts: list[dict[str, Any]] | None) -> None:
+    artifact_parts = [_normalize_artifact_part(artifact) for artifact in (artifacts or [])]
+    if not artifact_parts:
+        return
+    entry.setdefault("parts", [])
+    entry["parts"].extend(artifact_parts)
+    entry["artifacts"] = artifact_parts
+
+
+def serialize_chat_message(
+    message,
+    sender_name: str | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Serialize a ChatMessage ORM object into API output with structured parts."""
     entry: dict[str, Any] = {
+        "id": str(message.id) if getattr(message, "id", None) else None,
         "role": message.role,
         "content": message.content,
         "created_at": message.created_at.isoformat() if getattr(message, "created_at", None) else None,
@@ -157,6 +188,7 @@ def serialize_chat_message(message, sender_name: str | None = None) -> dict[str,
     if sender_name:
         entry["sender_name"] = sender_name
 
+    _append_artifact_parts(entry, artifacts)
     return entry
 
 
@@ -317,9 +349,15 @@ def build_tool_group_activation_event(data: dict[str, Any]) -> dict[str, Any]:
     return event
 
 
-def build_done_event(content: str, thinking: str | None = None) -> dict[str, Any]:
+def build_done_event(
+    content: str,
+    thinking: str | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     parts = _build_text_parts(content, thinking)
-    return {
+    artifact_parts = [_normalize_artifact_part(artifact) for artifact in (artifacts or [])]
+    parts.extend(artifact_parts)
+    event = {
         "type": "done",
         "role": "assistant",
         "content": content,
@@ -327,3 +365,6 @@ def build_done_event(content: str, thinking: str | None = None) -> dict[str, Any
         # Also include singular "part" for schema consistency with chunk/tool_call events
         "part": parts[0] if parts else {"type": "text", "text": content},
     }
+    if artifact_parts:
+        event["artifacts"] = artifact_parts
+    return event

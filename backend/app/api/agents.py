@@ -617,18 +617,18 @@ async def get_agent_evolution(
 ):
     """Read-only view of an agent's self-evolution activity.
 
-    Surfaces skill lifecycle state + the candidate→eval→promotion audit chain
-    from the agent workspace. Pure read; never mutates agent state. Missing or
-    corrupt files degrade to an empty structure.
+    Surfaces Memory/Soul/Skill ecosystem/Skill tuning lanes from the agent
+    workspace. Pure read; never mutates agent state. Missing or corrupt files
+    degrade to an empty structure.
     """
     await check_agent_access(db, current_user, agent_id)
 
     from pathlib import Path
 
-    from app.services.evolution_view import build_evolution_view
+    from app.services.agent_evolution_view import build_agent_evolution_view
 
     workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-    return build_evolution_view(workspace)
+    return build_agent_evolution_view(workspace)
 
 
 @router.get("/{agent_id}/capability-installs")

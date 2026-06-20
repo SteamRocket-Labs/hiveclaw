@@ -33,6 +33,7 @@ else:
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.channel_config import ChannelConfig
+from app.services.feishu_platform import resolve_feishu_platform
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from sqlalchemy import select
 
@@ -449,6 +450,7 @@ class FeishuWSManager:
         app_id: str,
         app_secret: str,
         stop_existing: bool = True,
+        extra_config: dict | None = None,
     ):
         """Spawns a WebSocket client fully asynchronously inside FastAPI's loop."""
         if not _HAS_LARK:
@@ -479,6 +481,7 @@ class FeishuWSManager:
             app_secret,
             event_handler=event_handler,
             log_level=lark.LogLevel.INFO,
+            domain=resolve_feishu_platform(extra_config).open_api_domain,
             auto_reconnect=False,
         )
         _patch_lark_receive_loop_for_supervised_reconnect(client, agent_id)
@@ -596,7 +599,13 @@ class FeishuWSManager:
             mode = extra.get("connection_mode", "webhook")
             if mode == "websocket":
                 if config.app_id and config.app_secret:
-                    await self.start_client(config.agent_id, config.app_id, config.app_secret, stop_existing=False)
+                    await self.start_client(
+                        config.agent_id,
+                        config.app_id,
+                        config.app_secret,
+                        stop_existing=False,
+                        extra_config=config.extra_config,
+                    )
                 else:
                     logger.warning(f"[Feishu WS] Skipping agent {config.agent_id}: missing credentials")
 

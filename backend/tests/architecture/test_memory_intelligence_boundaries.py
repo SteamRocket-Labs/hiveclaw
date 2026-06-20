@@ -23,15 +23,21 @@ def test_evolution_directory_is_audit_not_semantic_memory_source() -> None:
     assert "Do not write `memory/explicit/**` directly" in combined
 
 
-def test_no_model_reflection_is_reduced_to_scorecard_only() -> None:
+def test_heartbeat_reflection_routes_to_memory_hooks_not_legacy_scorecard() -> None:
     heartbeat_service = _read("app/services/heartbeat.py")
 
     assert "_route_heartbeat_reflection_learning" in heartbeat_service
     assert '"source": "heartbeat_reflection"' in heartbeat_service
-    assert "_update_evolution_files" in heartbeat_service
-    assert heartbeat_service.index("_route_heartbeat_reflection_learning") < heartbeat_service.rindex(
-        "_update_evolution_files"
-    )
+    assert "_update_evolution_files" not in heartbeat_service
+    assert "HEARTBEAT_TICK_END" in heartbeat_service
+
+
+def test_trigger_daemon_uses_trigger_end_hook_not_legacy_evolution_feedback() -> None:
+    trigger_daemon = _read("app/services/trigger_daemon.py")
+
+    assert "_update_evolution_files" not in trigger_daemon
+    assert "HookEvent.TRIGGER_END" in trigger_daemon
+    assert 'source="trigger"' in trigger_daemon
 
 
 def test_semantic_memory_lanes_hold_when_llm_semantics_are_unavailable() -> None:
@@ -84,7 +90,7 @@ def test_skill_creation_has_single_candidate_package_path() -> None:
 def test_charter_approval_stages_soul_candidate_instead_of_direct_soul_write() -> None:
     charter_proposals = _read("app/services/charter_proposals.py")
 
-    assert "evolution\" / \"soul_candidates\"" in charter_proposals
+    assert '"memory" / ".staging" / "soul_candidates"' in charter_proposals
     assert "pending_soul_writer" in charter_proposals
     assert "soul_path.write_text" not in charter_proposals
     assert "soul.md` directly" in charter_proposals

@@ -7,9 +7,8 @@ sidecars. Pure read side — zero writes, zero LLM calls.
 Sources: soul.md, T3 entry manifest, generated memory/wiki_map.md,
 memory/lifecycle.json, memory/distillation_audit.jsonl, derived/compat
 memory/wiki/ and memory/scenes/ pages, memory/auto_dream_state.json,
-evolution/ ledgers, legacy learnings cursors, and skill/workflow candidate
-markers. Raw Markdown stays available through the existing workspace file APIs
-as the advanced view.
+legacy learnings cursors, and skill/workflow candidate markers. Raw Markdown
+stays available through the existing workspace file APIs as the advanced view.
 """
 
 from __future__ import annotations
@@ -60,6 +59,40 @@ def _read_jsonl(path: Path, limit: int) -> list[dict]:
     except OSError:
         return []
     return records[-limit:]
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_soul_candidate_manifests(root: Path) -> list[dict]:
+    manifests: list[dict] = []
+    candidate_root = root / "memory" / ".staging" / "soul_candidates"
+    if not candidate_root.exists():
+        return manifests
+    for manifest_path in sorted(candidate_root.glob("*/manifest.json")):
+        manifest = _read_json(manifest_path)
+        if not manifest:
+            continue
+        manifest.setdefault("candidate_id", manifest_path.parent.name)
+        manifests.append(manifest)
+    return manifests
+
+
+def _soul_candidate_audit_by_id(root: Path) -> dict[str, dict]:
+    by_id: dict[str, dict] = {}
+    for record in _read_jsonl(root / "memory" / "distillation_audit.jsonl", 500):
+        if record.get("stage") != "soul_candidate":
+            continue
+        detail = record.get("detail") if isinstance(record.get("detail"), dict) else {}
+        candidate_id = str(detail.get("candidate_id") or record.get("candidate_id") or "")
+        if candidate_id:
+            by_id[candidate_id] = record
+    return by_id
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
@@ -204,10 +237,11 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
         if status in lifecycle_counts:
             lifecycle_counts[status] += 1
 
-    pending_soul = 0
-    for record in _read_jsonl(root / "evolution" / "evolution_ledger.jsonl", 500):
-        if record.get("event") == "memory_promotion_decision" and record.get("decision") == "hold":
-            pending_soul += 1
+    pending_soul = sum(
+        1
+        for manifest in _load_soul_candidate_manifests(root)
+        if str(manifest.get("status") or "").lower() not in {"committed", "rejected", "archived"}
+    )
 
     skills_dir = root / "skills"
     skills_count = len(list(skills_dir.glob("*/SKILL.md"))) if skills_dir.exists() else 0
@@ -409,7 +443,7 @@ def list_knowledge_candidates(data_root: Path, agent_id: uuid.UUID) -> dict:
 
     held: list[dict] = []
     for record in _read_jsonl(root / "memory" / "distillation_audit.jsonl", 200):
-        if record.get("outcome") == "held":
+        if record.get("outcome") == "held" and record.get("stage") != "soul_candidate":
             held.append(
                 {
                     "at": str(record.get("at", "")),
@@ -420,15 +454,22 @@ def list_knowledge_candidates(data_root: Path, agent_id: uuid.UUID) -> dict:
             )
 
     soul_candidates: list[dict] = []
-    for record in _read_jsonl(root / "evolution" / "evolution_ledger.jsonl", 500):
-        if record.get("event") == "memory_promotion_decision" and record.get("decision") == "hold":
-            soul_candidates.append(
-                {
-                    "candidateId": str(record.get("candidate_id", "")),
-                    "reason": str(record.get("reason", "")),
-                    "at": str(record.get("at") or record.get("recorded_at") or ""),
-                }
-            )
+    audit_by_id = _soul_candidate_audit_by_id(root)
+    for manifest in _load_soul_candidate_manifests(root):
+        status = str(manifest.get("status") or "").lower()
+        if status in {"committed", "rejected", "archived"}:
+            continue
+        candidate_id = str(manifest.get("candidate_id") or "")
+        audit = audit_by_id.get(candidate_id) or {}
+        soul_candidates.append(
+            {
+                "candidateId": candidate_id,
+                "reason": str(manifest.get("reason") or audit.get("reason") or ""),
+                "at": str(manifest.get("created_at") or audit.get("at") or ""),
+                "status": status or "candidate",
+                "targetPath": str(manifest.get("target_path") or "soul.md"),
+            }
+        )
 
     return {
         "skillCandidates": load_memory_skill_candidates(data_root, agent_id),

@@ -10,10 +10,70 @@ import {
   getRuntimeEventMessage,
   getTransportNotice,
   applySessionActiveRunState,
+  applySessionActiveRunObservedState,
+  appendToolCallMessage,
+  applyRuntimeDoneEvent,
+  extractArtifactParts,
   normalizeStoredChatMessage,
+  applyTranscriptEvent,
+  createEmptyTranscriptReplayState,
 } from './chatRuntime';
 
 describe('chatRuntime helpers', () => {
+  it('replays durable transcript events idempotently across history and websocket', () => {
+    const initial = createEmptyTranscriptReplayState();
+    const event = {
+      id: 'evt-1',
+      sequence: 10,
+      type: 'assistant_message',
+      event_type: 'assistant_message',
+      actor_type: 'assistant',
+      role: 'assistant',
+      content: 'Report is ready.',
+      parts: [{ type: 'text', text: 'Report is ready.' }],
+      created_at: '2026-06-20T12:00:00Z',
+    };
+
+    const fromHistory = applyTranscriptEvent(initial, event);
+    const fromSocket = applyTranscriptEvent(fromHistory, event);
+
+    expect(fromHistory.messages).toHaveLength(1);
+    expect(fromSocket.messages).toEqual(fromHistory.messages);
+    expect(fromSocket.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
+  it('treats blocking tool-card transcript events as terminal user-awaiting states', () => {
+    const state = {
+      ...createEmptyTranscriptReplayState(),
+      messages: [{ role: 'assistant' as const, content: '', thinking: 'Need more input', _streaming: true } as any],
+      ui: { isWaiting: true, isStreaming: true },
+    };
+
+    const next = applyTranscriptEvent(state, {
+      id: 'evt-tool',
+      sequence: 11,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'agent',
+      role: 'tool_call',
+      content: JSON.stringify({
+        status: 'awaiting_user_clarification',
+        blocking: true,
+        questions: [{ question: 'Cadence?', options: [{ label: 'Weekly' }] }],
+      }),
+      metadata: { tool_name: 'ask_user_question' },
+      created_at: '2026-06-20T12:00:01Z',
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      role: 'tool_call',
+      toolName: 'ask_user_question',
+      toolMeta: { kind: 'user_clarification', blocking: true },
+    });
+    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
   it('keeps websocket sessions alive while a user is waiting for output', () => {
     expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeGreaterThan(0);
     expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeLessThanOrEqual(30_000);
@@ -42,6 +102,18 @@ describe('chatRuntime helpers', () => {
 
     expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
     expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: true, isStreaming: false } });
+  });
+
+  it('does not let active-run polling overwrite an already streaming transcript', () => {
+    const result = applySessionActiveRunObservedState(
+      {},
+      { 'agent-1:session-1': { isWaiting: false, isStreaming: true } },
+      'agent-1:session-1',
+      { runId: 'run-1', status: 'running' },
+    );
+
+    expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
+    expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: false, isStreaming: true } });
   });
 
   it('resets the streaming assistant when a chunk tombstone arrives', () => {
@@ -165,6 +237,148 @@ describe('chatRuntime helpers', () => {
       keptMessageCount: 8,
       timestamp: '2026-04-02T10:00:00Z',
     });
+  });
+
+  it('extracts artifact parts from persisted assistant payloads', () => {
+    const artifacts = extractArtifactParts({
+      role: 'assistant',
+      content: 'Report is ready.',
+      artifacts: [
+        {
+          id: 'artifact-root',
+          type: 'artifact',
+          name: 'root-report.md',
+          path: 'workspace/root-report.md',
+          preview_kind: 'markdown',
+        },
+      ],
+      parts: [
+        { type: 'text', text: 'Report is ready.' },
+        {
+          type: 'artifact',
+          artifact_id: 'artifact-part',
+          name: 'report.md',
+          path: 'workspace/report.md',
+          preview_kind: 'markdown',
+          source: 'workspace_write',
+        },
+      ],
+    });
+
+    expect(artifacts).toEqual([
+      {
+        id: 'artifact-root',
+        name: 'root-report.md',
+        path: 'workspace/root-report.md',
+        previewKind: 'markdown',
+        source: undefined,
+        mimeType: undefined,
+        size: undefined,
+      },
+      {
+        id: 'artifact-part',
+        name: 'report.md',
+        path: 'workspace/report.md',
+        previewKind: 'markdown',
+        source: 'workspace_write',
+        mimeType: undefined,
+        size: undefined,
+      },
+    ]);
+
+    expect(normalizeStoredChatMessage({
+      role: 'assistant',
+      content: 'Report is ready.',
+      parts: [
+        {
+          type: 'artifact',
+          id: 'artifact-part',
+          name: 'report.md',
+          path: 'workspace/report.md',
+          preview_kind: 'markdown',
+        },
+      ],
+    })).toMatchObject({
+      role: 'assistant',
+      artifacts: [
+        {
+          id: 'artifact-part',
+          name: 'report.md',
+          path: 'workspace/report.md',
+          previewKind: 'markdown',
+        },
+      ],
+    });
+  });
+
+  it('rebuilds structured tool cards from persisted tool_call history', () => {
+    const message = normalizeStoredChatMessage({
+      id: 'tool-1',
+      role: 'tool_call',
+      content: '',
+      toolName: 'ask_user_question',
+      toolStatus: 'done',
+      toolResult: JSON.stringify({
+        status: 'awaiting_user_clarification',
+        blocking: true,
+        questions: [
+          {
+            question: 'Which cadence should this employee use?',
+            header: 'Cadence',
+            options: [{ label: 'Weekly', description: 'Run every week' }],
+          },
+        ],
+      }),
+      created_at: '2026-06-20T12:00:00Z',
+    });
+
+    expect(message).toMatchObject({
+      id: 'tool-1',
+      role: 'tool_call',
+      toolName: 'ask_user_question',
+      toolMeta: {
+        kind: 'user_clarification',
+        blocking: true,
+        questions: [
+          {
+            question: 'Which cadence should this employee use?',
+            header: 'Cadence',
+            options: [{ label: 'Weekly', description: 'Run every week' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('does not append an empty assistant bubble for terminal tool-card done events', () => {
+    const current = [
+      {
+        role: 'tool_call' as const,
+        content: '',
+        toolName: 'ask_user_question',
+        toolStatus: 'done' as const,
+        toolResult: '{"status":"awaiting_user_clarification","questions":[{"question":"Scope?","options":[{"label":"A"}]}]}',
+      },
+    ];
+
+    expect(applyRuntimeDoneEvent(current, { type: 'done', content: '' })).toBe(current);
+  });
+
+  it('removes dangling thinking placeholders when a terminal tool card arrives', () => {
+    const current = [
+      { role: 'assistant' as const, content: '', thinking: 'Need a cadence.', _streaming: true } as any,
+    ];
+    const toolMessage = normalizeStoredChatMessage({
+      role: 'tool_call',
+      toolName: 'ask_user_question',
+      toolStatus: 'done',
+      toolResult: JSON.stringify({
+        status: 'awaiting_user_clarification',
+        questions: [{ question: 'Cadence?', options: [{ label: 'Weekly' }] }],
+      }),
+    });
+
+    expect(appendToolCallMessage(current, toolMessage)).toEqual([toolMessage]);
   });
 
   it('normalizes persisted system compaction events from JSON content', () => {

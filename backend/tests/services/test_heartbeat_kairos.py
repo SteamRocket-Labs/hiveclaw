@@ -170,6 +170,39 @@ class TestReadT2Full:
         assert "sessions/s1/segments/seg-1" in result
         assert "source_refs" in result
 
+    def test_reads_episode_stitch_packages(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+        package_dir = tmp_agent_dir / str(agent_id) / "memory" / "sessions" / "s1" / "episodes" / "episode-1"
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "synthesis.md").write_text(
+            '<episode_synthesis status="closed"><episode_summary>stitched episode summary</episode_summary></episode_synthesis>',
+            encoding="utf-8",
+        )
+        (package_dir / "review.md").write_text(
+            "<episode_review><decision>approved</decision><allowed_next>t3_intake</allowed_next></episode_review>",
+            encoding="utf-8",
+        )
+        (package_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "t2.episode-stitch.manifest.v1",
+                    "package_status": "reviewed",
+                    "source_refs": ["t0://session/s1/segment/seg-1#seq=1..2"],
+                    "source_packages": ["t2pkg-1"],
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with patch("app.config.get_settings") as mock:
+            mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+            result = _read_t2_full(agent_id)
+
+        assert "sessions/s1/episodes/episode-1" in result
+        assert "package_kind: episode_stitch_package" in result
+        assert "stitched episode summary" in result
+
     def test_initializes_mtimes(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         _write_t2_package(tmp_agent_dir, agent_id, summary="<t2_summary>data</t2_summary>")
 
@@ -262,21 +295,62 @@ class TestReadIncrementalT2:
 
 
 class TestReadPendingT3Intake:
-    def test_reads_reviewed_segment_packages_not_legacy_learnings(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+    def test_reads_reviewed_segment_packages_not_legacy_learnings(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
         package_dir = tmp_agent_dir / str(agent_id) / "memory" / "sessions" / "session-1" / "segments" / "seg-1"
         package_dir.mkdir(parents=True)
-        (package_dir / "summary.md").write_text("# Summary\n\n<session_summary>important durable user preference</session_summary>\n", encoding="utf-8")
-        (package_dir / "labels.md").write_text("# Labels\n", encoding="utf-8")
+        source_ref = "t0://session/session-1/segment/seg-1#seq=1..2"
+        (package_dir / "summary.md").write_text(
+            f"""# Summary
+
+<t2_summary status="closed">
+  <segment_state value="complete">complete</segment_state>
+  <continuity><state>standalone</state><reason>完整片段。</reason></continuity>
+  <summary>important durable user preference</summary>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+</t2_summary>
+""",
+            encoding="utf-8",
+        )
+        (package_dir / "labels.md").write_text(
+            f"""# Labels
+
+<t2_labels>
+  <package_status>closed</package_status>
+  <continuity_state>standalone</continuity_state>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+</t2_labels>
+""",
+            encoding="utf-8",
+        )
         (package_dir / "review.md").write_text(
-            "# Review\n\n<allowed_next>t3_intake</allowed_next>\n",
+            f"""# Review
+
+<t2_review>
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <review_rubric schema_version="t2.review_rubric.v1">
+    <score name="summary_fidelity" value="0.95"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="label_alignment" value="0.90"/>
+    <score name="safety_scope" value="0.95"/>
+    <score name="package_closure" value="0.90"/>
+    <review_score>0.95</review_score>
+  </review_rubric>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+</t2_review>
+""",
             encoding="utf-8",
         )
         (package_dir / "manifest.json").write_text(
             json.dumps(
                 {
+                    "schema_version": "t2.segment-package.manifest.v1",
                     "package_status": "reviewed",
                     "session_id": "session-1",
                     "t0_segment_id": "seg-1",
+                    "source_refs": [source_ref],
                 }
             ),
             encoding="utf-8",
@@ -366,9 +440,9 @@ class TestHeartbeatTemplate:
         from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH
 
         main_template = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
-        hr_template = (Path(__file__).resolve().parents[3] / "backend" / "hr_agent_template" / "HEARTBEAT.md").read_text(
-            encoding="utf-8"
-        )
+        hr_template = (
+            Path(__file__).resolve().parents[3] / "backend" / "hr_agent_template" / "HEARTBEAT.md"
+        ).read_text(encoding="utf-8")
 
         for content in (main_template, hr_template):
             lowered = content.lower()

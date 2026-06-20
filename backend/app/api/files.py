@@ -80,7 +80,10 @@ def _managed_system_path_message(path: str) -> str | None:
     top_level = normalized.split("/", 1)[0]
     messages = {
         "logs": "logs/ is managed by platform services; raw file writes and deletes are not allowed.",
-        "evolution": "evolution/ is managed by platform services; raw file writes and deletes are not allowed.",
+        "evolution": (
+            "evolution/ is managed by platform services; use Skill Candidate Packages and governed APIs "
+            "instead of raw file writes."
+        ),
         "runtime_artifacts": (
             "runtime_artifacts/ is managed by platform services; raw file writes and deletes are not allowed."
         ),

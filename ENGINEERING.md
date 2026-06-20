@@ -326,9 +326,12 @@ The canonical T0->T2 path is package based:
 2. LLM summary and label agents create `summary.md` and `labels.md`.
 3. An independent review agent writes `review.md` with rubric-backed scoring.
 4. Platform Gate validates refs, schema, permissions, and atomicity, then commits the package manifest.
-5. T3 Consolidator reads reviewed packages and explicit overlay entries; legacy `load_t2_entries()` is not a T3 intake source.
+5. If review routes `allowed_next=episode_stitching`, the Continuity/Episode Agent writes
+   `memory/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` from adjacent reviewed Segment Packages.
+6. T3 Consolidator reads only reviewed standalone Segment Packages, reviewed Episode Stitch Packages, and explicit overlay entries; legacy `load_t2_entries()` is not a T3 intake source.
 
-T2 is one-to-one with a source session segment. It is not cross-session memory.
+T2 Segment Packages are one-to-one with source session segments. T2 Episode
+Stitch Packages are still session-local synthesis, not accepted T3 truth.
 T3 is where cross-session semantic convergence happens. Heartbeat is the
 orchestrator for T2->T3 intake and self-evolution tick; it reads canonical T2
 Package snapshots plus accepted T3, asks the LLM to produce a pitch/revised

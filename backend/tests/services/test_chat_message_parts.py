@@ -7,7 +7,11 @@ from types import SimpleNamespace
 def test_serialize_tool_call_message_includes_parts_and_legacy_fields():
     from app.services.chat_message_parts import serialize_chat_message
 
+    import uuid
+
+    message_id = uuid.uuid4()
     message = SimpleNamespace(
+        id=message_id,
         role="tool_call",
         content='{"name":"read_file","args":{"path":"skills/test/SKILL.md"},"status":"done","result":"loaded","reasoning_content":"reasoning"}',
         created_at=datetime.now(timezone.utc),
@@ -16,6 +20,7 @@ def test_serialize_tool_call_message_includes_parts_and_legacy_fields():
 
     entry = serialize_chat_message(message)
 
+    assert entry["id"] == str(message_id)
     assert entry["toolName"] == "read_file"
     assert entry["toolArgs"] == {"path": "skills/test/SKILL.md"}
     assert entry["toolStatus"] == "done"

@@ -239,7 +239,7 @@ def _render_agent_soul_from_blueprint(
         "<does_not_apply_when>Higher-priority owner/company charter gives a more specific rule.</does_not_apply_when>",
         "</soul_principle>",
         "",
-        "<!-- Operational details live outside soul.md: triggers are wake policy; work ledger tracks in-flight work; Dream updates enter through evolution/soul_candidates. -->",
+        "<!-- Operational details live outside soul.md: triggers are wake policy; work ledger tracks in-flight work; Dream updates enter through memory/.staging/soul_candidates. -->",
     ]
     return "\n".join(parts).rstrip() + "\n"
 

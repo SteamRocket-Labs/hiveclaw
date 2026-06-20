@@ -12,8 +12,8 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
         name="web_search",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
-            "Basic internet search for public information using the platform's built-in no-key providers "
-            "(SearXNG when configured, with DuckDuckGo fallback).\n\n"
+            "Basic internet search for public information using Hive's built-in provider chain "
+            "(AnySearch API first when configured, then SearXNG fallback).\n\n"
             "Usage:\n"
             "- Use specific, well-formed search queries — not full sentences. Good: 'Python pandas groupby multiple columns'. Bad: 'How do I group by multiple columns in pandas?'\n"
             "- Results include titles, URLs, and snippets. To read full page content, follow up with `web_fetch` after you pick the best URL.\n"
@@ -48,6 +48,9 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
             "search_engine": "auto",
             "max_results": 5,
             "language": "en",
+            "anysearch_api_keys": "",
+            "anysearch_zone": "intl",
+            "anysearch_content_types": "web",
         },
         config_schema={
             "fields": [
@@ -56,11 +59,39 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
                     "label": "Search Engine",
                     "type": "select",
                     "options": [
-                        {"value": "auto", "label": "Auto (prefer SearXNG when configured, then DuckDuckGo)"},
-                        {"value": "searxng", "label": "SearXNG (platform configured, no tenant API key)"},
-                        {"value": "duckduckgo", "label": "DuckDuckGo (free, no API key)"},
+                        {"value": "auto", "label": "Auto (AnySearch API first, then SearXNG fallback)"},
+                        {"value": "anysearch", "label": "AnySearch API (uses configured key pool)"},
+                        {"value": "searxng", "label": "SearXNG fallback (platform configured)"},
+                        {"value": "duckduckgo_legacy", "label": "Legacy HTML fallback (manual/debug only)"},
                     ],
                     "default": "auto",
+                },
+                {
+                    "key": "anysearch_api_keys",
+                    "label": "AnySearch API keys",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "one key per line",
+                    "multiline": True,
+                    "description": "Optional AnySearch API key pool. When set, auto mode uses AnySearch before SearXNG.",
+                },
+                {
+                    "key": "anysearch_zone",
+                    "label": "AnySearch zone",
+                    "type": "select",
+                    "options": [
+                        {"value": "intl", "label": "International"},
+                        {"value": "cn", "label": "China"},
+                    ],
+                    "default": "intl",
+                },
+                {
+                    "key": "anysearch_content_types",
+                    "label": "AnySearch content types",
+                    "type": "text",
+                    "default": "web",
+                    "placeholder": "web",
+                    "description": "Comma- or newline-separated AnySearch content types.",
                 },
                 {
                     "key": "max_results",
@@ -76,8 +107,8 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
                     "type": "select",
                     "options": [
                         {"value": "en", "label": "English"},
-                        {"value": "zh-CN", "label": "中文"},
-                        {"value": "ja", "label": "日本語"},
+                        {"value": "zh-CN", "label": "Chinese (zh-CN)"},
+                        {"value": "ja", "label": "Japanese"},
                     ],
                     "default": "en",
                 },
@@ -91,6 +122,229 @@ async def web_search(arguments: dict) -> str:
     return await _web_search(arguments)
 
 
+# ── AnySearch MCP vertical tools ─────────────────────────────────────
+
+_ANYSEARCH_DOMAINS = [
+    "general",
+    "resource",
+    "social_media",
+    "finance",
+    "academic",
+    "legal",
+    "health",
+    "business",
+    "security",
+    "ip",
+    "code",
+    "energy",
+    "environment",
+    "agriculture",
+    "travel",
+    "film",
+    "gaming",
+]
+
+
+@tool(
+    ToolMeta(
+        name="anysearch_get_sub_domains",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Discover AnySearch MCP vertical sub-domains and required parameters before vertical search. "
+            "This is part of the AnySearch search/discovery surface, not a page reader.\n\n"
+            "Usage:\n"
+            "- Call this before vertical search whenever the query is domain-specific, structured, real-time, or ambiguous.\n"
+            "- Use `domain` for one domain or `domains` for up to five domains. Cache the returned schema within the session.\n"
+            "- Then call `anysearch_search` with the selected `domain`, `sub_domain`, and required `sub_domain_params`."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "enum": _ANYSEARCH_DOMAINS,
+                    "description": "Single AnySearch vertical domain to inspect, e.g. finance or social_media.",
+                },
+                "domains": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": _ANYSEARCH_DOMAINS},
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "description": "Optional batch of up to five domains. Takes precedence over domain.",
+                },
+            },
+        },
+        category="search",
+        display_name="AnySearch Domains",
+        icon="\U0001f5c2\ufe0f",
+        is_default=False,
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+    )
+)
+async def anysearch_get_sub_domains(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _anysearch_get_sub_domains
+
+    return await _anysearch_get_sub_domains(arguments)
+
+
+@tool(
+    ToolMeta(
+        name="anysearch_search",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Search with the AnySearch MCP search/discovery surface, including vertical domains such as finance, "
+            "social_media, academic, legal, health, business, security, code, energy, and government-adjacent data.\n\n"
+            "Usage:\n"
+            "- For pure general knowledge, omit domain and sub_domain.\n"
+            "- For vertical or structured data, call `anysearch_get_sub_domains` first, then pass `domain`, "
+            "`sub_domain`, and all required `sub_domain_params`.\n"
+            "- Use this for precise data APIs and domain-specific public sources when basic `web_search` is too broad.\n"
+            "- To read the full page for a returned URL, use `web_fetch` or `anysearch_extract` after selecting the URL."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query."},
+                "domain": {
+                    "type": "string",
+                    "enum": _ANYSEARCH_DOMAINS,
+                    "description": "Optional AnySearch vertical domain.",
+                },
+                "sub_domain": {
+                    "type": "string",
+                    "description": "Sub-domain key discovered through anysearch_get_sub_domains, e.g. finance.quote.",
+                },
+                "sub_domain_params": {
+                    "type": "object",
+                    "description": "Parameters required by the selected sub_domain. Include required params even with empty values.",
+                    "additionalProperties": {"type": "string"},
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Number of results to return, 1-10.",
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+            },
+            "required": ["query"],
+        },
+        category="search",
+        display_name="AnySearch Search",
+        icon="\U0001f50d",
+        is_default=False,
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+    )
+)
+async def anysearch_search(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _anysearch_search
+
+    return await _anysearch_search(arguments)
+
+
+@tool(
+    ToolMeta(
+        name="anysearch_batch_search",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Run 2-5 AnySearch MCP searches in parallel through the AnySearch search/discovery surface, useful "
+            "for hybrid general + vertical coverage or multi-domain intersection research.\n\n"
+            "Usage:\n"
+            "- Provide 2-5 query objects. Each item supports query, domain, sub_domain, sub_domain_params, and max_results.\n"
+            "- Use one general query plus one or more vertical queries when you are unsure which domain route will be best."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "queries": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query."},
+                            "domain": {"type": "string", "enum": _ANYSEARCH_DOMAINS},
+                            "sub_domain": {"type": "string"},
+                            "sub_domain_params": {
+                                "type": "object",
+                                "additionalProperties": {"type": "string"},
+                                "description": "Parameters required by the selected sub_domain.",
+                            },
+                            "max_results": {"type": "integer", "minimum": 1, "maximum": 10},
+                        },
+                        "required": ["query"],
+                    },
+                    "description": "2-5 AnySearch query objects.",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Default max results to inject into items that omit max_results, 1-10.",
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+            },
+            "required": ["queries"],
+        },
+        category="search",
+        display_name="AnySearch Batch",
+        icon="\U0001f9f5",
+        is_default=False,
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+    )
+)
+async def anysearch_batch_search(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _anysearch_batch_search
+
+    return await _anysearch_batch_search(arguments)
+
+
+@tool(
+    ToolMeta(
+        name="anysearch_extract",
+        max_result_chars=RESULT_CHARS_UNLIMITED,
+        description=(
+            "Extract full page content as Markdown through the AnySearch read/extract surface for a known URL "
+            "returned by search. This is not a keyword-search tool.\n\n"
+            "Usage:\n"
+            "- Use this after AnySearch search results when you need full page content beyond snippets.\n"
+            "- Prefer `web_fetch` first for normal known URLs; use this when keeping the AnySearch vertical workflow together helps."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to extract as Markdown."},
+            },
+            "required": ["url"],
+        },
+        category="search",
+        display_name="AnySearch Extract",
+        icon="\U0001f4c4",
+        is_default=False,
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        pack="web_pack",
+        adapter="args_only",
+    )
+)
+async def anysearch_extract(arguments: dict) -> str:
+    from app.services.agent_tool_domains.web_mcp import _anysearch_extract
+
+    return await _anysearch_extract(arguments)
+
+
 # ── advanced search providers ────────────────────────────────────────
 
 
@@ -99,18 +353,54 @@ async def web_search(arguments: dict) -> str:
         name="exa_search",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
-            "Advanced Exa web search for semantic discovery, competitor/source finding, and higher-recall research.\n\n"
+            "Exa AI-native search for LLM agents: search the web and extract contents from results, with search "
+            "type controls and category verticals such as company, research paper, news, personal site, "
+            "financial report, and people.\n\n"
             "Usage:\n"
             "- This is a provider-backed escalation tool discovered through `tool_search`; start with `web_search` unless you already know Exa is needed.\n"
-            "- Use when basic `web_search` results are too shallow, keyword-mismatched, or need semantic/source discovery.\n"
-            "- Results include titles, URLs, and short extracted text. Follow up with `web_fetch`, `firecrawl_fetch`, or `xcrawl_scrape` for full page content.\n"
+            "- Use Exa when you need AI-native search, semantic/source discovery, dense extracted text, or a known retrieval category such as research papers, companies, people, news, or financial reports.\n"
+            "- `search_type` controls latency vs. reasoning depth: auto/instant/fast for quick retrieval; deep-lite/deep/deep-reasoning for harder synthesized research.\n"
+            "- Results include titles, URLs, and extracted text. Follow up with `web_fetch`, `firecrawl_fetch`, or `xcrawl_scrape` for full page content when needed.\n"
             "- Requires Exa API configuration."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Semantic search keywords or topic."},
-                "max_results": {"type": "integer", "description": "Number of results to return."},
+                "query": {"type": "string", "description": "Search query for Exa's AI-native web index."},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Number of results to return.",
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+                "search_type": {
+                    "type": "string",
+                    "enum": ["auto", "instant", "fast", "deep-lite", "deep", "deep-reasoning"],
+                    "description": "Exa search type: auto default; instant/fast for low latency; deep variants for harder research.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["company", "research paper", "news", "personal site", "financial report", "people"],
+                    "description": "Optional Exa category vertical when you know the retrieval surface.",
+                },
+                "include_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional domains to restrict results to, e.g. ['arxiv.org'].",
+                },
+                "exclude_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional domains to exclude from results.",
+                },
+                "start_published_date": {
+                    "type": "string",
+                    "description": "Optional ISO datetime; only return links published after this date.",
+                },
+                "end_published_date": {
+                    "type": "string",
+                    "description": "Optional ISO datetime; only return links published before this date.",
+                },
             },
             "required": ["query"],
         },
@@ -132,7 +422,7 @@ async def web_search(arguments: dict) -> str:
                     "type": "number",
                     "default": 5,
                     "min": 1,
-                    "max": 10,
+                    "max": 20,
                 },
             ]
         },
@@ -149,18 +439,66 @@ async def exa_search(arguments: dict) -> str:
         name="tavily_search",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
-            "Advanced Tavily web search for current research, news-like queries, and higher-quality web snippets.\n\n"
+            "Tavily real-time web access layer for AI agents and RAG workflows: retrieve live web data, relevant "
+            "content/chunks, optional generated answers, raw content, and topic-specific searches.\n\n"
             "Usage:\n"
             "- This is a provider-backed escalation tool discovered through `tool_search`; start with `web_search` unless Tavily is clearly needed.\n"
-            "- Use when basic `web_search` results are sparse, stale, or need a research-oriented provider.\n"
-            "- Results include titles, URLs, and snippets. Follow up with `web_fetch`, `firecrawl_fetch`, or `xcrawl_scrape` for full page content.\n"
+            "- Use Tavily when you need real-time web access, current factual retrieval, RAG-friendly content, or topic routing (`general`, `news`, `finance`).\n"
+            "- `search_depth` controls latency vs. relevance: ultra-fast/fast for speed, basic for balanced lookup, advanced for high-relevance chunks.\n"
+            "- Use `time_range`, `start_date`, or `end_date` for freshness; use `include_answer` for a sourced provider answer; use `include_raw_content` when the model needs cleaned page content.\n"
             "- Requires Tavily API configuration."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Search keywords or research question."},
-                "max_results": {"type": "integer", "description": "Number of results to return."},
+                "query": {"type": "string", "description": "Concise web search query for Tavily."},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Number of results to return.",
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+                "search_depth": {
+                    "type": "string",
+                    "enum": ["basic", "advanced", "fast", "ultra-fast"],
+                    "description": "Tavily search depth: basic balanced, advanced highest relevance, fast/ultra-fast lower latency.",
+                },
+                "topic": {
+                    "type": "string",
+                    "enum": ["general", "news", "finance"],
+                    "description": "Tavily topic category. Use news for real-time mainstream updates; finance for finance-oriented retrieval.",
+                },
+                "time_range": {
+                    "type": "string",
+                    "enum": ["day", "week", "month", "year", "d", "w", "m", "y"],
+                    "description": "Optional recency window based on publish/update date.",
+                },
+                "start_date": {"type": "string", "description": "Optional YYYY-MM-DD start date."},
+                "end_date": {"type": "string", "description": "Optional YYYY-MM-DD end date."},
+                "include_answer": {
+                    "description": "Optional provider-generated answer: true, false, 'basic', or 'advanced'.",
+                    "anyOf": [
+                        {"type": "boolean"},
+                        {"type": "string", "enum": ["basic", "advanced"]},
+                    ],
+                },
+                "include_raw_content": {
+                    "description": "Optional cleaned raw content: true, false, 'markdown', or 'text'.",
+                    "anyOf": [
+                        {"type": "boolean"},
+                        {"type": "string", "enum": ["markdown", "text"]},
+                    ],
+                },
+                "include_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional domains to restrict results to.",
+                },
+                "exclude_domains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional domains to exclude from results.",
+                },
             },
             "required": ["query"],
         },
@@ -188,7 +526,7 @@ async def exa_search(arguments: dict) -> str:
                     "type": "number",
                     "default": 5,
                     "min": 1,
-                    "max": 10,
+                    "max": 20,
                 },
             ]
         },
@@ -254,11 +592,13 @@ async def web_fetch(arguments: dict) -> str:
         name="firecrawl_fetch",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
-            "Fetch a known URL with Firecrawl for heavier page extraction, JS-heavy pages, or cleaner markdown than a raw fetch.\n\n"
+            "Fetch a known URL with Firecrawl `/scrape` for single-page extraction into LLM-ready markdown, "
+            "summary, HTML, links, screenshots, or structured JSON.\n\n"
             "Usage:\n"
             "- This is a provider-backed escalation tool discovered through `tool_search`; start with `web_fetch` for known URLs unless you already know the page needs rendering.\n"
-            "- Use this after `web_search` or when you already have a specific URL and `web_fetch` is not sufficient.\n"
-            "- Prefer this for complex pages, PDFs, or sites where a plain fetch misses the main content.\n"
+            "- Use this when you already have a URL and `web_fetch` is incomplete, too noisy, blocked, or missing rendered content.\n"
+            "- Prefer `formats=['markdown']` for normal reading; add `links`, `summary`, `html`, `screenshot`, or `json` only when the downstream task needs those formats.\n"
+            "- Use `only_main_content`, `only_clean_content`, `include_tags`, `exclude_tags`, or `wait_for_ms` to reduce page chrome or wait for JS-rendered content.\n"
             "- Do NOT use this for keyword search. If you do not have a URL yet, search first.\n"
             "- This tool is provider-backed and requires Firecrawl configuration."
         ),
@@ -267,9 +607,35 @@ async def web_fetch(arguments: dict) -> str:
             "properties": {
                 "url": {"type": "string", "description": "The URL to fetch and extract."},
                 "max_chars": {"type": "integer", "description": "Max characters to return (default 12000, max 30000)"},
+                "formats": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["markdown", "summary", "html", "rawHtml", "links", "screenshot", "json"],
+                    },
+                    "description": "Firecrawl output formats. Default ['markdown']; request richer formats only when needed.",
+                },
                 "only_main_content": {
                     "type": "boolean",
                     "description": "Prefer extracting just the main article/body content. Default true.",
+                },
+                "only_clean_content": {
+                    "type": "boolean",
+                    "description": "Run Firecrawl's additional clean-content pass to remove residual boilerplate. Default false.",
+                },
+                "wait_for_ms": {
+                    "type": "integer",
+                    "description": "Optional milliseconds to wait before extracting content when the page renders slowly.",
+                },
+                "include_tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional HTML tags/selectors Firecrawl should include.",
+                },
+                "exclude_tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional HTML tags/selectors Firecrawl should exclude.",
                 },
             },
             "required": ["url"],
@@ -310,11 +676,13 @@ async def firecrawl_fetch(arguments: dict) -> str:
         name="xcrawl_scrape",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
-            "Scrape a known URL with XCrawl for JS-rendered, anti-bot, or otherwise difficult pages.\n\n"
+            "Scrape a known URL with the XCrawl Scrape API for single-page extraction using official "
+            "`output.formats`, `request`, and `js_render` options.\n\n"
             "Usage:\n"
             "- This is a provider-backed escalation tool discovered through `tool_search`; use it only after lighter web readers are insufficient.\n"
-            "- Use this when `web_fetch` and `firecrawl_fetch` are insufficient, especially for highly dynamic or anti-bot-heavy pages.\n"
-            "- Prefer this only for hard pages because it is a heavier provider-backed path.\n"
+            "- Use this for difficult or JS-rendered pages where you need XCrawl's JS rendering, proxy controls, device/locale options, or structured extraction formats.\n"
+            "- Prefer `output_formats=['markdown']` for normal reading; add `links`, `summary`, `html`, `screenshot`, or `json` only when needed.\n"
+            "- This tool runs the sync single-page scrape path; do not treat it as site map, site crawl, or keyword search.\n"
             "- Do NOT use this for keyword search. If you do not have a URL yet, search first.\n"
             "- This tool is provider-backed and requires XCrawl configuration."
         ),
@@ -323,7 +691,41 @@ async def firecrawl_fetch(arguments: dict) -> str:
             "properties": {
                 "url": {"type": "string", "description": "The URL to scrape."},
                 "max_chars": {"type": "integer", "description": "Max characters to return (default 12000, max 30000)"},
+                "output_formats": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["markdown", "html", "raw_html", "links", "summary", "screenshot", "json"],
+                    },
+                    "description": "XCrawl output.formats for the sync scrape call. Default ['markdown'].",
+                },
+                "only_main_content": {
+                    "type": "boolean",
+                    "description": "XCrawl request.only_main_content. Default true.",
+                },
+                "block_ads": {
+                    "type": "boolean",
+                    "description": "XCrawl request.block_ads. Default true.",
+                },
                 "js_render": {"type": "boolean", "description": "Enable JS rendering. Default true."},
+                "wait_until": {
+                    "type": "string",
+                    "enum": ["load", "domcontentloaded", "networkidle"],
+                    "description": "XCrawl js_render.wait_until option.",
+                },
+                "device": {
+                    "type": "string",
+                    "enum": ["desktop", "mobile"],
+                    "description": "XCrawl request.device option.",
+                },
+                "locale": {
+                    "type": "string",
+                    "description": "XCrawl request.locale / Accept-Language value.",
+                },
+                "proxy_location": {
+                    "type": "string",
+                    "description": "XCrawl proxy.location ISO country code, e.g. US, JP, or SG.",
+                },
             },
             "required": ["url"],
         },

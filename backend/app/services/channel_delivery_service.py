@@ -439,7 +439,13 @@ class ChannelDeliveryService:
                 payload = json.dumps({"text": text})
                 service = FeishuService()
                 await service.send_message(
-                    config.app_id, config.app_secret, receive_id, "text", payload, receive_id_type=receive_id_type
+                    config.app_id,
+                    config.app_secret,
+                    receive_id,
+                    "text",
+                    payload,
+                    receive_id_type=receive_id_type,
+                    extra_config=config.extra_config,
                 )
                 result = ChannelDeliveryService._success(
                     channel, "Feishu message delivered.", receive_id=receive_id, receive_id_type=receive_id_type
@@ -480,7 +486,9 @@ class ChannelDeliveryService:
                 interaction_token = str(target.get("interaction_token") or "").strip()
                 if not interaction_token:
                     raise ValueError("missing interaction_token")
-                await _send_discord_followup(str(config.app_id or ""), str(config.app_secret or ""), interaction_token, text)
+                await _send_discord_followup(
+                    str(config.app_id or ""), str(config.app_secret or ""), interaction_token, text
+                )
                 result = ChannelDeliveryService._success(
                     channel, "Discord message delivered.", interaction_token=interaction_token
                 )
@@ -703,6 +711,7 @@ class ChannelDeliveryService:
                     path,
                     receive_id_type=receive_id_type,
                     accompany_msg=message,
+                    extra_config=config.extra_config,
                 )
                 result = ChannelDeliveryService._success(channel, "Feishu file delivered.", file_name=path.name)
             elif channel == "telegram":

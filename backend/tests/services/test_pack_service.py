@@ -110,8 +110,8 @@ def test_plaza_pack_only_contains_real_shared_feed_tools():
     assert "manage_tasks" not in plaza["tools"]
     assert "plaza_list_posts" not in plaza["tools"]
     assert "plaza_get_comments" not in plaza["tools"]
-    assert "共享广场" in plaza["summary"]
-    assert "协作" in plaza["activation_mode"]
+    assert "Shared plaza feed" in plaza["summary"]
+    assert "collaboration feed" in plaza["activation_mode"]
 
 
 def test_kernel_tools_are_strings():

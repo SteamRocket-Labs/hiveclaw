@@ -63,6 +63,14 @@ At a high level, the process of creating a skill goes like this:
 
 Your job when using this skill is to figure out where the user is in this process and then jump in and help them progress through these stages.
 
+## Hive authoring boundary
+
+Final `SKILL.md` content must be authored by the Agent. The platform may scaffold directories, collect source refs, run validation, enforce permissions, commit the exact reviewed file, and provide rollback metadata, but it must not decide or synthesize the semantic body of the skill.
+
+Do not ask the platform to template-generate the semantic body, mechanically rewrite instructions, or patch an active skill from counters alone. T3 capability evidence, runtime traces, and candidate_signal.md are evidence only until an Agent/Skill Writer turns them into a complete `SKILL.md.draft`.
+
+`save_skill` submits an inactive Skill Candidate Package. It does not directly activate or overwrite `skills/<name>/SKILL.md`; activation requires Skill Gate review and exact commit of the Agent-authored draft. `candidate_signal.md is evidence only` and cannot be promoted as the active skill body.
+
 ## Communicating with the user
 
 Pay attention to context cues to understand how to phrase your communication. Briefly explain terms if you're in doubt, and feel free to clarify terms with a short definition if you're unsure if the user will get it.

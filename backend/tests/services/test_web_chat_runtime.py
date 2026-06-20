@@ -114,6 +114,33 @@ def test_preserve_plan_mode_for_blocking_clarification_reply():
     assert context.metadata["plan_mode"]["active"] is True
 
 
+def test_interactive_pause_summary_accepts_structured_tool_payloads():
+    import app.services.web_chat_runtime as runtime
+
+    assert runtime._interactive_pause_summary_for_tool_call(
+        {
+            "name": "ask_user_question",
+            "status": "done",
+            "result": {
+                "status": "awaiting_user_clarification",
+                "blocking": True,
+                "questions": [{"question": "Scope?", "options": [{"label": "A"}]}],
+            },
+        }
+    ) == "awaiting_user_clarification"
+    assert runtime._interactive_pause_summary_for_tool_call(
+        {
+            "name": "create_digital_employee",
+            "status": "done",
+            "result": {
+                "status": "success",
+                "agent_id": "7a5b31cb-89b4-4053-a48e-6dfb42a8af20",
+                "message": "Successfully created digital employee.",
+            },
+        }
+    ) == "create_digital_employee_success"
+
+
 def test_explicit_plan_mode_request_does_not_clear_existing_plan_state_before_reactivation():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import PlanModeState, SessionContext
@@ -408,10 +435,13 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
     )
 
     assert finalized is True
-    assert len(added) == 1
-    assert added[0].decision_trace_id == f"web_chat_final:{run_id.hex}"
-    assert added[0].thinking == "private reasoning"
-    assert added[0].thinking_signature == "sig-final"
+    chat_messages = [item for item in added if getattr(item, "role", None) == "assistant"]
+    transcript_events = [item for item in added if getattr(item, "event_type", None) == "assistant_message"]
+    assert len(chat_messages) == 1
+    assert len(transcript_events) == 1
+    assert chat_messages[0].decision_trace_id == f"web_chat_final:{run_id.hex}"
+    assert chat_messages[0].thinking == "private reasoning"
+    assert chat_messages[0].thinking_signature == "sig-final"
     assert task.status == "completed"
     assert task.result_summary == "final answer"
     assert session.commits == 1
@@ -420,6 +450,103 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
         ("assistant_message", "assistant", "final answer")
     ]
     assert events[0].runtime_task_id == run_id.hex
+
+
+@pytest.mark.asyncio
+async def test_finalize_web_chat_run_binds_recent_workspace_artifacts(monkeypatch, tmp_path):
+    from app.memory.t0.ledger import replay_t0_session_events
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    run_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        metadata_json={},
+        result_summary=None,
+        completed_at=None,
+    )
+    added = []
+    artifact_calls = []
+
+    class _Session:
+        def __init__(self):
+            self.results = [task, None, None]
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.results.pop(0))
+
+        def add(self, value):
+            added.append(value)
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            self.commits += 1
+
+    session = _Session()
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    def fake_create_chat_artifacts_for_message(**kwargs):
+        artifact_calls.append(kwargs)
+        return [
+            {
+                "artifact_id": "artifact-1",
+                "path": "workspace/report.md",
+                "name": "report.md",
+                "preview_kind": "markdown",
+                "source": "workspace_write",
+            }
+        ]
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
+    monkeypatch.setattr(runtime, "create_chat_artifacts_for_message", fake_create_chat_artifacts_for_message)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    metadata_update = {"cancelled_by_user": False}
+    finalized = await runtime._finalize_web_chat_run_with_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        content="final answer",
+        thinking=None,
+        status="completed",
+        result_summary="final answer",
+        metadata_json=metadata_update,
+        artifact_paths=["workspace/report.md"],
+    )
+
+    assert finalized is True
+    chat_messages = [item for item in added if getattr(item, "role", None) == "assistant"]
+    transcript_events = [item for item in added if getattr(item, "event_type", None)]
+    assert len(chat_messages) == 1
+    assert [event.event_type for event in transcript_events] == ["assistant_message", "artifact_delivery"]
+    assert artifact_calls
+    assert artifact_calls[0]["message_id"] == chat_messages[0].id
+    assert artifact_calls[0]["runtime_task_id"] == run_id
+    assert artifact_calls[0]["paths"] == ["workspace/report.md"]
+    assert task.metadata_json["artifact_ids"] == ["artifact-1"]
+    assert metadata_update["artifact_ids"] == ["artifact-1"]
+    assert metadata_update["artifacts"][0]["path"] == "workspace/report.md"
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert any(event.event_type == "artifact_delivery" for event in events)
 
 
 @pytest.mark.asyncio
@@ -492,7 +619,8 @@ async def test_finalize_web_chat_run_reuses_kernel_persisted_terminal_message(mo
     )
 
     assert finalized is True
-    assert added == []
+    assert not [item for item in added if getattr(item, "role", None) == "assistant"]
+    assert [item.event_type for item in added if getattr(item, "event_type", None)] == ["assistant_message"]
     assert kernel_message.decision_trace_id == f"web_chat_final:{run_id.hex}"
     assert task.status == "completed"
     assert task.result_summary == "budget stopped"
@@ -628,6 +756,290 @@ async def test_execute_web_chat_run_does_not_broadcast_done_when_finalization_lo
 
 
 @pytest.mark.asyncio
+async def test_execute_web_chat_run_finalizes_blocking_clarification_without_empty_assistant(monkeypatch):
+    import json
+
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="Create an RWA monitoring agent",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+        trace_id=None,
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="RWA Researcher",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    broadcasts: list[dict] = []
+    persisted_tools: list[dict] = []
+    ordering: list[str] = []
+    finalized_without_assistant: list[dict] = []
+    delivered_channel_replies: list[str] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "name": "ask_user_question",
+                "args": {
+                    "questions": [
+                        {
+                            "question": "How often should the RWA report run?",
+                            "options": [{"label": "Weekly", "description": "Weekly report"}],
+                        }
+                    ]
+                },
+                "status": "done",
+                "result": json.dumps(
+                    {
+                        "status": "awaiting_user_clarification",
+                        "blocking": True,
+                        "questions": [
+                            {
+                                "question": "How often should the RWA report run?",
+                                "options": [{"label": "Weekly", "description": "Weekly report"}],
+                            }
+                        ],
+                    }
+                ),
+            }
+        )
+        return SimpleNamespace(content="", reasoning_signature=None)
+
+    async def fail_empty_assistant_finalize(**kwargs):
+        raise AssertionError(f"blocking clarification must not persist assistant content={kwargs.get('content')!r}")
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalized_without_assistant.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+        if event.get("type") == "tool_call":
+            ordering.append(f"broadcast:{event.get('name')}")
+
+    async def fake_persist_tool_call(**kwargs):
+        persisted_tools.append(kwargs["data"])
+        ordering.append(f"persist:{kwargs['data'].get('name')}")
+
+    async def fake_deliver(_agent_id, _session_id, content):
+        delivered_channel_replies.append(content)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_empty_assistant_finalize)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", fake_persist_tool_call)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", fake_deliver)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert [tool["name"] for tool in persisted_tools] == ["ask_user_question"]
+    assert ordering.index("persist:ask_user_question") < ordering.index("broadcast:ask_user_question")
+    assert len(finalized_without_assistant) == 1
+    assert finalized_without_assistant[0]["status"] == "completed"
+    assert finalized_without_assistant[0]["result_summary"] == "awaiting_user_clarification"
+    assert any(event.get("type") == "done" and event.get("content") == "" for event in broadcasts)
+    assert delivered_channel_replies == []
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(monkeypatch):
+    import json
+
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="Create an RWA employee",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+        trace_id=None,
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="HR",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    broadcasts: list[dict] = []
+    finalized_without_assistant: list[dict] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "name": "ask_user_question",
+                "args": {"questions": [{"question": "Cadence?", "options": [{"label": "Weekly"}]}]},
+                "status": "done",
+                "result": json.dumps(
+                    {
+                        "status": "awaiting_user_clarification",
+                        "blocking": True,
+                        "questions": [{"question": "Cadence?", "options": [{"label": "Weekly"}]}],
+                    }
+                ),
+            }
+        )
+        raise AssertionError("kernel must be interrupted after a terminal tool card")
+
+    async def fail_assistant_finalize(**kwargs):
+        raise AssertionError(f"terminal tool card must not persist assistant content={kwargs.get('content')!r}")
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalized_without_assistant.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_assistant_finalize)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert len(finalized_without_assistant) == 1
+    assert finalized_without_assistant[0]["status"] == "completed"
+    assert finalized_without_assistant[0]["result_summary"] == "awaiting_user_clarification"
+    assert any(event.get("type") == "done" and event.get("content") == "" for event in broadcasts)
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_stops_after_create_employee_success_card(monkeypatch):
+    import json
+
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    created_agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="Create the employee",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+        trace_id=None,
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="HR",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    broadcasts: list[dict] = []
+    finalized_without_assistant: list[dict] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "name": "create_digital_employee",
+                "args": {"name": "RWA项目与营销专员"},
+                "status": "done",
+                "result": json.dumps(
+                    {
+                        "status": "success",
+                        "agent_id": str(created_agent_id),
+                        "agent_name": "RWA项目与营销专员",
+                        "message": "Successfully created digital employee.",
+                    }
+                ),
+            }
+        )
+        raise AssertionError("kernel must stop after a successful create_digital_employee card")
+
+    async def fail_assistant_finalize(**kwargs):
+        raise AssertionError(f"create employee success must not wait for assistant content={kwargs.get('content')!r}")
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalized_without_assistant.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_assistant_finalize)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert len(finalized_without_assistant) == 1
+    assert finalized_without_assistant[0]["status"] == "completed"
+    assert finalized_without_assistant[0]["result_summary"] == "create_digital_employee_success"
+    assert any(event.get("type") == "done" and event.get("content") == "" for event in broadcasts)
+
+
+@pytest.mark.asyncio
 async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypatch, tmp_path):
     import app.services.web_chat_runtime as runtime
     from app.memory.t0.ledger import replay_t0_session_events
@@ -686,7 +1098,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert task.metadata_json["runtime_task_id"] == task.id.hex
     assert task.metadata_json["request_id"] == str(task.id)
     assert task.metadata_json["trace_id"] == task.trace_id
-    assert db.commits == 2
+    assert db.commits == 1
     assert scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert [(event.sequence, event.event_type, event.role, event.content) for event in events] == [
@@ -905,7 +1317,7 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
 
         async def commit(self):
             self.commits += 1
-            if self.commits == 2:
+            if self.commits == 1:
                 raise IntegrityError("insert runtime_tasks", {}, _Orig())
 
         async def rollback(self):
@@ -934,7 +1346,7 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
     assert exc_info.value.run["status"] == "running"
     assert exc_info.value.run["queued_user_message"]["content"] == "race message"
     assert db.rollbacks == 1
-    assert db.commits == 3
+    assert db.commits == 2
     assert not any(isinstance(item, ChatMessage) for item in db.added)
     assert not any(isinstance(item, RuntimeTask) for item in db.added)
     assert active_run.metadata_json["pending_user_messages"][0]["content"] == "race message"

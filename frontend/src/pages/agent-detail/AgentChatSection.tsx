@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { IconChecklist } from '@tabler/icons-react';
+import { IconChecklist, IconDownload, IconExternalLink, IconFileText } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
@@ -10,12 +10,14 @@ import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
+import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
   getCompactionDisplayContent,
   type AgentChatMessage,
+  type ChatArtifactPart,
   type ChatRuntimeSummary,
 } from './chatRuntime';
 
@@ -111,6 +113,14 @@ interface StructuredToolResultBodyProps {
   onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
 }
 
+type ArtifactPreviewState = {
+  artifact: ChatArtifactPart;
+  content?: string;
+  url?: string;
+  loading?: boolean;
+  error?: string;
+};
+
 const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
 const DEEP_RESEARCH_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const PLAN_ID_RE = /\bplan_id\s*[=:]\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
@@ -158,6 +168,135 @@ function InlinePlanCard({ agentId, planId }: { agentId: string; planId: string }
   }
 
   return <PlanCard agentId={agentId} plan={plan} onChanged={() => refetch()} dense />;
+}
+
+function formatArtifactSize(size: number | undefined): string | null {
+  if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) return null;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export type ArtifactOpenMode = 'inline_preview' | 'download';
+
+function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): string {
+  const explicit = artifact.previewKind?.toLowerCase();
+  if (explicit) return explicit;
+  const suffix = (artifact.name || artifact.path).split('.').pop()?.toLowerCase() || '';
+  if (['md', 'markdown'].includes(suffix)) return 'markdown';
+  if (['txt', 'csv', 'json', 'jsonl', 'log', 'xml', 'yaml', 'yml'].includes(suffix)) return 'text';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(suffix)) return 'image';
+  if (suffix === 'pdf') return 'pdf';
+  return 'download';
+}
+
+export function getArtifactOpenMode(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): ArtifactOpenMode {
+  const previewKind = getEffectiveArtifactPreviewKind(artifact);
+  if (previewKind && ['markdown', 'text', 'image', 'pdf'].includes(previewKind)) {
+    return 'inline_preview';
+  }
+  return 'download';
+}
+
+function ArtifactCards({
+  agentId,
+  artifacts,
+  onOpenArtifact,
+}: {
+  agentId?: string | null;
+  artifacts?: ChatArtifactPart[];
+  onOpenArtifact?: (artifact: ChatArtifactPart) => void;
+}) {
+  const { t } = useTranslation();
+  const visibleArtifacts = (artifacts || []).filter((artifact) => artifact.path);
+  if (!agentId || visibleArtifacts.length === 0) return null;
+
+  return (
+    <div style={{ display: 'grid', gap: '6px', marginTop: '8px' }}>
+      {visibleArtifacts.map((artifact) => {
+        const href = fileApi.downloadUrl(String(agentId), artifact.path);
+        const size = formatArtifactSize(artifact.size);
+        return (
+          <div
+            key={`${artifact.id || artifact.path}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-subtle)',
+              background: 'var(--bg-elevated)',
+              minWidth: 0,
+            }}
+          >
+            <IconFileText size={16} color="var(--text-tertiary)" style={{ flexShrink: 0 }} />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div
+                style={{
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: 'var(--text-primary)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {artifact.name}
+              </div>
+              <div
+                style={{
+                  fontSize: '10px',
+                  color: 'var(--text-tertiary)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {[artifact.previewKind, size].filter(Boolean).join(' · ') || artifact.path}
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="chat-artifact-open"
+              onClick={() => onOpenArtifact?.(artifact)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                fontSize: '11px',
+                color: 'var(--accent-primary)',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              <IconExternalLink size={13} />
+              {t('agent.chat.artifacts.open', 'Open')}
+            </button>
+            <a
+              href={href}
+              download={artifact.name}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
+                textDecoration: 'none',
+                flexShrink: 0,
+              }}
+            >
+              <IconDownload size={13} />
+              {t('agent.chat.artifacts.download', 'Download')}
+            </a>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function RawToolResultBlock({ text }: { text: string }) {
@@ -487,7 +626,35 @@ export default function AgentChatSection({
     email: t('common.channels.email'),
   };
 
-  const [showInternalTrace, setShowInternalTrace] = React.useState(false);
+  const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
+
+  const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
+    if (!agent?.id) return;
+    const agentId = String(agent.id);
+    const href = fileApi.downloadUrl(agentId, artifact.path);
+    if (getArtifactOpenMode(artifact) === 'download') {
+      window.open(href, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    const previewKind = getEffectiveArtifactPreviewKind(artifact);
+    if (previewKind === 'markdown' || previewKind === 'text' || !previewKind) {
+      setArtifactPreview({ artifact, loading: true });
+      try {
+        const response = await fileApi.read(agentId, artifact.path);
+        setArtifactPreview({ artifact, content: response.content || '', url: href });
+      } catch (error) {
+        setArtifactPreview({
+          artifact,
+          url: href,
+          error: error instanceof Error ? error.message : t('agent.chat.artifacts.previewFailed', 'Preview failed'),
+        });
+      }
+      return;
+    }
+
+    setArtifactPreview({ artifact, url: href });
+  }, [agent?.id, t]);
 
   React.useEffect(() => {
     const input = chatInputRef.current;
@@ -497,16 +664,6 @@ export default function AgentChatSection({
     input.style.height = `${nextHeight}px`;
     input.style.overflowY = nextHeight >= 160 ? 'auto' : 'hidden';
   }, [chatInput, chatInputRef]);
-
-  const formatCompactNumber = React.useCallback((value?: number | null) => {
-    if (typeof value !== 'number' || Number.isNaN(value)) return '—';
-    if (Math.abs(value) >= 1000) {
-      const compact = value / 1000;
-      const digits = Math.abs(compact) >= 100 ? 0 : 1;
-      return `${compact.toFixed(digits)}K`;
-    }
-    return `${value}`;
-  }, []);
 
   const renderEventMessage = React.useCallback(
     (msg: AgentChatMessage, index: number) => {
@@ -771,6 +928,7 @@ export default function AgentChatSection({
               ) : (
                 <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
               )}
+              <ArtifactCards agentId={agent?.id} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
               {inlinePlanId && agent?.id && (
                 <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
                   <InlinePlanCard agentId={String(agent.id)} planId={inlinePlanId} />
@@ -781,7 +939,7 @@ export default function AgentChatSection({
           </div>
         );
       }),
-    [agent?.id, t],
+    [agent?.id, openArtifact, t],
   );
 
   const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => (
@@ -910,17 +1068,16 @@ export default function AgentChatSection({
       return renderEventMessage(message, index);
     }
     if (message.role === 'tool_call') {
-      if (!showInternalTrace) {
-        if (
-          message.toolMeta?.kind === 'plan_needs_confirmation' ||
-          message.toolMeta?.kind === 'user_clarification' ||
-          message.toolMeta?.kind === 'plan_mode_request'
-        ) {
-          return renderInlinePlanToolCall(message, index);
-        }
-        return null;
+      if (
+        message.toolMeta?.kind === 'plan_needs_confirmation' ||
+        message.toolMeta?.kind === 'user_clarification' ||
+        message.toolMeta?.kind === 'plan_mode_request' ||
+        message.toolMeta?.kind === 'create_employee_success' ||
+        message.toolMeta?.kind === 'hr_preview'
+      ) {
+        return renderInlinePlanToolCall(message, index);
       }
-      return renderToolCall(message, index, message.toolStatus === 'running');
+      return null;
     }
     if (message.role === 'assistant' && !message.content?.trim()) {
       if (!message.thinking) return null;
@@ -929,38 +1086,10 @@ export default function AgentChatSection({
     return <ChatMessageItem key={index} msg={message} i={index} isLeft={isLeft} />;
   };
 
-  const runtimeInfoItems = [
-    {
-      label: t('agent.chat.runtime.model', 'Model'),
-      value: runtimeSummary?.model?.label || '—',
-    },
-    {
-      label: t('agent.chat.runtime.remaining', 'Remaining'),
-      value: formatCompactNumber(runtimeSummary?.runtime?.remaining_tokens_estimate),
-    },
-    {
-      label: t('agent.chat.runtime.compactions', 'Turn compressions'),
-      value: `${runtimeSummary?.compaction_count ?? 0}`,
-    },
-    {
-      label: t('agent.chat.runtime.permissions', 'Permissions'),
-      value: `${runtimeSummary?.permission_event_count ?? 0}`,
-    },
-    {
-      label: t('agent.chat.runtime.teamMemory', 'Team Memory'),
-      value: `${runtimeSummary?.team_memory_hit_count ?? 0}`,
-    },
-    {
-      label: t('agent.chat.runtime.retryReason', 'Retry'),
-      value: runtimeSummary?.last_retry_reason || '—',
-    },
-  ];
-
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
   const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : [];
   const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : [];
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
-  const hasInternalTrace = visibleTimeline.some((message) => message.role === 'tool_call');
   const hasActiveChatRun = Boolean(activeRunStatus || isWaiting || isStreaming);
   const fallbackWorkLedger = (() => {
     for (const message of [...visibleTimeline].reverse()) {
@@ -1284,64 +1413,6 @@ export default function AgentChatSection({
       </div>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
-        {activeSession && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '12px',
-              padding: '10px 16px',
-              borderBottom: '1px solid var(--border-subtle)',
-              background: 'var(--bg-elevated)',
-              flexWrap: 'wrap',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              {runtimeInfoItems.map((item) => (
-                <div
-                  key={item.label}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '5px 8px',
-                    borderRadius: '999px',
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-subtle)',
-                    fontSize: '11px',
-                  }}
-                >
-                  <span style={{ color: 'var(--text-tertiary)' }}>{item.label}</span>
-                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{item.value}</span>
-                </div>
-              ))}
-              {runtimeSummary?.last_tool_budget_event?.reason && (
-                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                  {`${runtimeSummary.last_tool_budget_event.reason}${runtimeSummary.last_tool_budget_event.tool_name ? ` · ${runtimeSummary.last_tool_budget_event.tool_name}` : ''}`}
-                </span>
-              )}
-            </div>
-            {hasInternalTrace && (
-              <button
-                onClick={() => setShowInternalTrace((value) => !value)}
-                style={{
-                  background: 'none',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: '999px',
-                  padding: '5px 10px',
-                  fontSize: '11px',
-                  color: 'var(--text-secondary)',
-                  cursor: 'pointer',
-                }}
-              >
-                {showInternalTrace
-                  ? t('agent.chat.runtime.hideTrace', 'Hide internal trace')
-                  : t('agent.chat.runtime.showTrace', 'Show internal trace')}
-              </button>
-            )}
-          </div>
-        )}
         {!activeSession ? (
           <div
             style={{
@@ -1540,6 +1611,93 @@ export default function AgentChatSection({
                 Connecting...
               </div>
             ) : null}
+            {artifactPreview && (
+              <div
+                data-testid="chat-artifact-preview"
+                style={{
+                  borderTop: '1px solid var(--border-subtle)',
+                  background: 'var(--bg-elevated)',
+                  padding: '10px 16px',
+                  maxHeight: '38vh',
+                  overflow: 'auto',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                  <IconFileText size={15} color="var(--text-tertiary)" />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {artifactPreview.artifact.name}
+                    </div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                      {t('agent.chat.artifacts.preview', 'Preview')}
+                    </div>
+                  </div>
+                  {artifactPreview.url && (
+                    <a
+                      href={artifactPreview.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none' }}
+                    >
+                      {t('agent.chat.artifacts.openInNewTab', 'Open in new tab')}
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setArtifactPreview(null)}
+                    style={{
+                      border: '1px solid var(--border-subtle)',
+                      background: 'transparent',
+                      borderRadius: '6px',
+                      padding: '3px 7px',
+                      fontSize: '11px',
+                      color: 'var(--text-secondary)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {t('common.close', 'Close')}
+                  </button>
+                </div>
+                {artifactPreview.loading ? (
+                  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                    {t('common.loading', 'Loading')}
+                  </div>
+                ) : artifactPreview.error ? (
+                  <div style={{ fontSize: '12px', color: 'var(--danger-text)' }}>
+                    {artifactPreview.error}
+                  </div>
+                ) : getEffectiveArtifactPreviewKind(artifactPreview.artifact) === 'image' && artifactPreview.url ? (
+                  <img
+                    src={artifactPreview.url}
+                    alt={artifactPreview.artifact.name}
+                    style={{ maxWidth: '100%', maxHeight: '32vh', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}
+                  />
+                ) : getEffectiveArtifactPreviewKind(artifactPreview.artifact) === 'pdf' && artifactPreview.url ? (
+                  <iframe
+                    title={artifactPreview.artifact.name}
+                    src={artifactPreview.url}
+                    style={{ width: '100%', height: '32vh', border: '1px solid var(--border-subtle)', borderRadius: '6px' }}
+                  />
+                ) : getEffectiveArtifactPreviewKind(artifactPreview.artifact) === 'markdown' ? (
+                  <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
+                    <MarkdownRenderer content={artifactPreview.content || ''} />
+                  </div>
+                ) : (
+                  <pre
+                    style={{
+                      margin: 0,
+                      fontSize: '11px',
+                      lineHeight: 1.55,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    {artifactPreview.content || ''}
+                  </pre>
+                )}
+              </div>
+            )}
             {agent?.id && activeSession?.id && (
               <ChatWorkLedgerDock
                 agentId={String(agent.id)}

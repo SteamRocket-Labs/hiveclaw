@@ -13,6 +13,7 @@ from loguru import logger
 from app.config import get_settings
 from app.runtime.context_budget import ContextBudget
 from app.services.agent_team_context import build_prompt_facing_team_context
+from app.services.skill_catalog_ranker import rank_skills_for_prompt
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 
 settings = get_settings()
@@ -122,9 +123,15 @@ def _load_skills_index(agent_id: uuid.UUID, *, budget_chars: int = 8000) -> str:
     """
     loader = WorkspaceSkillLoader()
     registry = SkillRegistry()
+    loaded_skills = []
 
     for ws_root in [TOOL_WORKSPACE / str(agent_id), PERSISTENT_DATA / str(agent_id)]:
-        registry.register_many(loader.load_from_workspace(ws_root))
+        loaded_skills.extend(loader.load_from_workspace(ws_root))
+
+    rank_workspace = PERSISTENT_DATA / str(agent_id)
+    if not rank_workspace.exists():
+        rank_workspace = TOOL_WORKSPACE / str(agent_id)
+    registry.register_many(rank_skills_for_prompt(rank_workspace, loaded_skills))
 
     return registry.render_catalog(budget_chars=budget_chars)
 

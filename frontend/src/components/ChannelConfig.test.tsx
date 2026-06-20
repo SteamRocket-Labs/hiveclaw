@@ -68,4 +68,14 @@ describe('ChannelConfig', () => {
     expect(markup).toContain('Basic Permissions');
     expect(markup).toContain('Full Permissions');
   });
+
+  it('shows an explicit Feishu or Lark platform selector for the IM channel', () => {
+    const markup = renderToStaticMarkup(
+      <ChannelConfig mode="create" values={{}} onChange={vi.fn()} />,
+    );
+
+    expect(markup).toContain('Platform');
+    expect(markup).toContain('Feishu (China)');
+    expect(markup).toContain('Lark (Global)');
+  });
 });

@@ -9,7 +9,11 @@ import AgentAwareSection, {
   buildWakePolicyPayload,
   workflowDefinitionOptionKey,
 } from './AgentAwareSection';
-import AgentChatSection, { StructuredToolResultBody, extractPlanIdFromPlanModeMessage } from './AgentChatSection';
+import AgentChatSection, {
+  StructuredToolResultBody,
+  extractPlanIdFromPlanModeMessage,
+  getArtifactOpenMode,
+} from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
 import AgentSkillsSection from './AgentSkillsSection';
@@ -1112,6 +1116,158 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Recovery Context');
   });
 
+  it('renders assistant artifacts directly inside the chat transcript', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Report delivery',
+          created_at: '2026-06-20T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'assistant',
+            content: '报告已经生成。',
+            artifacts: [
+              {
+                id: 'artifact-1',
+                name: 'market-report.md',
+                path: 'workspace/market-report.md',
+                previewKind: 'markdown',
+                source: 'workspace_write',
+              },
+            ],
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('报告已经生成。');
+    expect(markup).toContain('market-report.md');
+    expect(markup).toContain('Open');
+    expect(markup).toContain('Download');
+    expect(markup).toContain('/api/agents/agent-1/files/download?path=workspace%2Fmarket-report.md');
+  });
+
+  it('keeps internal tool-call trace out of the default chat header', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Tool trace',
+          created_at: '2026-06-20T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'read_file',
+            toolStatus: 'done',
+            toolResult: 'workspace/report.md',
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).not.toContain('Show technical details');
+    expect(markup).not.toContain('Hide technical details');
+    expect(markup).not.toContain('workspace/report.md');
+  });
+
   it('extracts Plan Mode plan ids from assistant replies', () => {
     expect(
       extractPlanIdFromPlanModeMessage(
@@ -1119,6 +1275,15 @@ describe('AgentDetail extracted sections', () => {
       ),
     ).toBe('a7cdfa75-cec5-4062-8bda-b18b2d2821a3');
     expect(extractPlanIdFromPlanModeMessage('普通回复，没有计划 ID')).toBeNull();
+  });
+
+  it('routes chat artifacts to inline preview only when the file type is previewable', () => {
+    expect(getArtifactOpenMode({ name: 'report.md', path: 'workspace/report.md', previewKind: 'markdown' })).toBe('inline_preview');
+    expect(getArtifactOpenMode({ name: 'notes.txt', path: 'workspace/notes.txt', previewKind: 'text' })).toBe('inline_preview');
+    expect(getArtifactOpenMode({ name: 'chart.png', path: 'workspace/chart.png', previewKind: 'image' })).toBe('inline_preview');
+    expect(getArtifactOpenMode({ name: 'slides.pdf', path: 'workspace/slides.pdf', previewKind: 'pdf' })).toBe('inline_preview');
+    expect(getArtifactOpenMode({ name: 'deck.pptx', path: 'workspace/deck.pptx', previewKind: 'office' })).toBe('download');
+    expect(getArtifactOpenMode({ name: 'archive.zip', path: 'workspace/archive.zip', previewKind: 'download' })).toBe('download');
   });
 
   it('renders PlanCard inline in the chatbox when an assistant reply contains a plan_id', () => {
@@ -1279,6 +1444,86 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Inline tool plan');
     expect(markup).toContain('Confirm and start');
     expect(markup).toContain('Confirm before creating the trigger.');
+  });
+
+  it('renders completed create-digital-employee tool cards in the chat transcript', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'HR Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Create employee',
+          created_at: '2026-06-20T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'create_digital_employee',
+            toolStatus: 'done',
+            toolResult: 'Created',
+            toolMeta: {
+              kind: 'create_employee_success',
+              agentId: 'bef8b286-b923-4e29-84c9-022f995ae6b3',
+              agentName: 'RWA项目与营销专员',
+              message: '数字员工已创建完成。',
+              warnings: [],
+              manualSteps: [],
+            },
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Digital Employee Created');
+    expect(markup).toContain('RWA项目与营销专员');
+    expect(markup).toContain('数字员工已创建完成。');
   });
 
   it('renders the running task todo dock above the chat composer', () => {

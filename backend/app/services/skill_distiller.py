@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
@@ -73,11 +74,25 @@ _PROMOTE_WINDOW_DAYS = 14
 _PROMOTE_THRESHOLD = 3
 _PATCH_THRESHOLD = 2
 _MIN_CONFIDENCE = 0.85
+_CANONICAL_SKILL_FRONTMATTER_KEYS = {"name", "description"}
 _TIME_SENSITIVE_PATTERNS = (
     re.compile(r"\b(?:today|tomorrow|yesterday|this session|current session)\b", re.IGNORECASE),
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
     re.compile(r"\b(?:user_id|session_id|private_token|access_token|api_key)\s*[:=]", re.IGNORECASE),
 )
+
+
+def _skill_frontmatter_for_exact_draft(rendered_markdown: str) -> tuple[dict[str, Any], list[str]]:
+    match = SkillParser.FRONTMATTER_PATTERN.match(rendered_markdown.strip())
+    if not match:
+        return {}, ["frontmatter is required"]
+    try:
+        loaded = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError:
+        return {}, ["frontmatter must be valid YAML"]
+    if not isinstance(loaded, dict):
+        return {}, ["frontmatter must be a mapping"]
+    return loaded, []
 
 
 @dataclass(slots=True)
@@ -391,6 +406,15 @@ def validate_distilled_skill(
         errors.append("instructions are required")
     if draft.decision in {"promote", "patch"} and not rendered_markdown.strip():
         errors.append("LLM-authored complete SKILL.md draft is required")
+    if draft.decision in {"promote", "patch"} and rendered_markdown.strip():
+        frontmatter, frontmatter_errors = _skill_frontmatter_for_exact_draft(rendered_markdown)
+        errors.extend(frontmatter_errors)
+        unexpected_keys = sorted(set(frontmatter) - _CANONICAL_SKILL_FRONTMATTER_KEYS)
+        if unexpected_keys:
+            errors.append(
+                "SKILL.md draft frontmatter may only contain name and description; "
+                f"unexpected key(s): {', '.join(unexpected_keys)}"
+            )
 
     available_tools = _available_tool_names()
     unknown_tools = sorted({tool for tool in draft.declared_tools if tool not in available_tools})
@@ -443,6 +467,8 @@ def _commit_skill_markdown_exact(
     skill_name: str,
     overwrite: bool,
     status: str,
+    candidate_id: str | None = None,
+    skill_origin: str | None = None,
 ) -> str:
     """Commit the LLM-authored SKILL.md draft exactly after all gates pass."""
 
@@ -487,6 +513,34 @@ def _commit_skill_markdown_exact(
             mark_skill_created(workspace, slug, created_by="skill_distiller")
     except Exception as exc:  # pragma: no cover - telemetry must not break commit
         logger.debug("[SkillDistiller] curator created mark failed for %s: %s", skill_name, exc)
+    try:
+        from app.services.skill_evolution_registry import (
+            ORIGIN_T3_AUTO_CREATED,
+            ORIGIN_USER_SKILL_CREATOR,
+            get_skill_evolution_entry,
+            upsert_skill_evolution_entry,
+        )
+
+        existing = get_skill_evolution_entry(workspace, skill_name) or get_skill_evolution_entry(
+            workspace, target_relative_path
+        )
+        resolved_origin = (
+            skill_origin
+            or (str(existing.get("skill_origin")) if isinstance(existing, dict) and existing.get("skill_origin") else "")
+            or (ORIGIN_USER_SKILL_CREATOR if overwrite else ORIGIN_T3_AUTO_CREATED)
+        )
+        upsert_skill_evolution_entry(
+            workspace,
+            skill_name=skill_name,
+            target_path=target_relative_path,
+            skill_origin=resolved_origin,
+            evolvable=True,
+            last_candidate_id=candidate_id,
+            state="active",
+            metadata={"committed_by": "skill_distiller", "commit_status": status},
+        )
+    except Exception as exc:  # pragma: no cover - registry telemetry must not break commit
+        logger.debug("[SkillDistiller] skill evolution registry update failed for %s: %s", skill_name, exc)
     return f"✅ committed exact skill draft at {target_relative_path}"
 
 
@@ -972,7 +1026,9 @@ async def _draft_skill_with_llm(
         "All keys must be present; use empty strings / empty arrays when a\n"
         "field does not apply (e.g., declared_tools=[] for a pure-reasoning skill).\n"
         "For promote or patch, skill_markdown must be a complete SKILL.md file:\n"
-        "YAML frontmatter plus body. Do not rely on the platform to assemble it.\n"
+        "YAML frontmatter plus body. The SKILL.md frontmatter must contain only `name` and `description`; "
+        "put tools/packs in the JSON sidecar fields, not inside skill_markdown. "
+        "Do not rely on the platform to assemble it.\n"
         "</output_contract>"
     )
     evidence_lines = []
@@ -1030,7 +1086,7 @@ async def _draft_skill_with_llm(
         '"declared_tools":["..."],'
         '"declared_packs":["..."],'
         '"consumed_memory_candidate_ids":["..."],'
-        '"skill_markdown":"---\\nname: ...\\ndescription: ...\\ntools: [...]\\npacks: [...]\\n---\\n# ...",'
+        '"skill_markdown":"---\\nname: ...\\ndescription: ...\\n---\\n# ...",'
         '"reason":"..."'
         "}"
     )
@@ -1360,6 +1416,37 @@ async def run_skill_distillation_cycle(
             )
             return {"status": "deferred", "processed_sessions": processed, "reason": note}
 
+        from app.services.skill_evolution_registry import (
+            ORIGIN_USER_SKILL_CREATOR,
+            can_self_evolve_skill,
+            get_skill_evolution_entry,
+        )
+
+        if not can_self_evolve_skill(workspace, patch_target.metadata.name):
+            note = "Patch target is not in the self-evolving skill chain."
+            update_skill_candidate_record(
+                workspace,
+                workflow_signature=record.workflow_signature,
+                skill_name=effective_draft.name or record.skill_name,
+                blocker="non_evolvable_skill",
+                last_status="defer",
+                last_note=note,
+                last_updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            record_skill_lifecycle_event(
+                workspace,
+                skill_name=patch_target.metadata.name,
+                status="defer",
+                note=note,
+            )
+            return {"status": "deferred", "processed_sessions": processed, "reason": note}
+        patch_registry_entry = get_skill_evolution_entry(workspace, patch_target.metadata.name)
+        patch_skill_origin = (
+            str(patch_registry_entry.get("skill_origin"))
+            if isinstance(patch_registry_entry, dict) and patch_registry_entry.get("skill_origin")
+            else ORIGIN_USER_SKILL_CREATOR
+        )
+
         from app.services.evolution_ledger import (
             record_evolution_candidate,
             record_promotion_decision,
@@ -1402,6 +1489,8 @@ async def run_skill_distillation_cycle(
             skill_name=effective_draft.name,
             package_type="patch",
             target_path=patch_relative_path,
+            skill_origin=patch_skill_origin,
+            evolvable=True,
             source_refs=[item.session_id for item in evidence_for_candidate],
             reason=effective_draft.reason or conflict.reason or "Patch existing skill after repeated evidence.",
             declared_tools=effective_draft.declared_tools,
@@ -1494,6 +1583,8 @@ async def run_skill_distillation_cycle(
             skill_name=effective_draft.name,
             overwrite=True,
             status="patched",
+            candidate_id=candidate["candidate_id"],
+            skill_origin=patch_skill_origin,
         )
         if "✅" not in save_result:
             record_promotion_decision(
@@ -1622,6 +1713,8 @@ async def run_skill_distillation_cycle(
         },
     )
     rollback_ref = f"skills/{_normalize_skill_folder_name(draft.name)}/SKILL.md"
+    from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED
+
     write_skill_candidate_package(
         workspace=workspace,
         candidate_id=candidate["candidate_id"],
@@ -1629,6 +1722,8 @@ async def run_skill_distillation_cycle(
         skill_name=draft.name,
         package_type="promote",
         target_path=rollback_ref,
+        skill_origin=ORIGIN_T3_AUTO_CREATED,
+        evolvable=True,
         source_refs=[item.session_id for item in evidence_for_candidate],
         reason=draft.reason or "Promote repeated workflow into a reusable skill.",
         declared_tools=draft.declared_tools,
@@ -1719,6 +1814,8 @@ async def run_skill_distillation_cycle(
         skill_name=draft.name,
         overwrite=False,
         status="promoted",
+        candidate_id=candidate["candidate_id"],
+        skill_origin=ORIGIN_T3_AUTO_CREATED,
     )
     if "✅" not in save_result:
         record_promotion_decision(

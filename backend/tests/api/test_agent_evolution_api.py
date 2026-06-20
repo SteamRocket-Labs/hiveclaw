@@ -40,6 +40,7 @@ def _build_client():
 def _seed_workspace(ws: Path) -> None:
     (ws / "skills").mkdir(parents=True, exist_ok=True)
     (ws / "evolution").mkdir(parents=True, exist_ok=True)
+    (ws / "memory" / "t3").mkdir(parents=True, exist_ok=True)
     usage = {
         "weekly-report": {
             "created_by": "agent",
@@ -61,6 +62,34 @@ def _seed_workspace(ws: Path) -> None:
         },
     }
     (ws / "evolution" / "skill_usage.json").write_text(json.dumps(usage), encoding="utf-8")
+    (ws / "evolution" / "skill_registry.json").write_text(
+        json.dumps(
+            {
+                "schema": "skill_registry.v1",
+                "skills": {
+                    "weekly-report": {
+                        "skill_name": "weekly-report",
+                        "skill_origin": "user_skill_creator",
+                        "evolvable": True,
+                        "state": "active",
+                        "target_path": "skills/weekly-report/SKILL.md",
+                    },
+                    "old-scraper": {
+                        "skill_name": "old-scraper",
+                        "skill_origin": "t3_auto_created",
+                        "evolvable": True,
+                        "state": "archived",
+                        "target_path": "skills/old-scraper/SKILL.md",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ws / "memory" / "t3" / "capabilities.md").write_text(
+        "- [2026-05-20] weekly report package pattern\n",
+        encoding="utf-8",
+    )
     (ws / "evolution" / "skill_review.md").write_text(
         "# Skill Review\n\n- 2026-05-20T09:05:00+00:00 [promote] weekly-report: 3 successes\n",
         encoding="utf-8",
@@ -104,13 +133,14 @@ async def test_get_agent_evolution_returns_structured_view(monkeypatch, tmp_path
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["skill_summary"] == {"active": 1, "stale": 0, "archived": 1, "total": 2}
-    assert payload["skills"][0]["slug"] == "weekly-report"
-    assert payload["skills"][0]["state"] == "active"
-    # timeline merged + reverse-chron: promotion (05-21) before promote review (05-20)
-    assert len(payload["timeline"]) == 2
-    assert payload["timeline"][0]["kind"] == "promotion"
-    assert payload["timeline"][0]["at"].startswith("2026-05-21")
+    assert payload["schema"] == "agent_evolution_view.v2"
+    assert payload["path_contract"]["t3_capabilities"] == "memory/t3/capabilities.md"
+    assert payload["skill_ecosystem"]["summary"]["active"] == 1
+    assert payload["skill_ecosystem"]["summary"]["archived"] == 1
+    assert payload["skill_ecosystem"]["summary"]["evolvable"] == 2
+    assert payload["skill_ecosystem"]["skills"][0]["skill_name"] == "weekly-report"
+    assert payload["skill_ecosystem"]["skills"][0]["skill_origin"] == "user_skill_creator"
+    assert payload["memory_learning"]["t3_targets"]["capabilities"]["line_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -130,11 +160,11 @@ async def test_get_agent_evolution_empty_when_no_workspace(monkeypatch, tmp_path
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload == {
-        "skill_summary": {"active": 0, "stale": 0, "archived": 0, "total": 0},
-        "skills": [],
-        "timeline": [],
-    }
+    assert payload["schema"] == "agent_evolution_view.v2"
+    assert payload["skill_ecosystem"]["summary"]["total"] == 0
+    assert payload["skill_ecosystem"]["skills"] == []
+    assert payload["skill_tuning"]["candidates"] == []
+    assert payload["legacy_audit"]["detected_legacy_files"] == []
 
 
 @pytest.mark.asyncio

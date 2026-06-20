@@ -1248,6 +1248,11 @@ async def _invoke_agent_for_triggers(
                 user_id=agent.creator_id,
                 participant_id=agent_participant.id if agent_participant else None,
                 source_channel="trigger",
+                session_kind="trigger_run",
+                actor_type="agent",
+                runtime_source="trigger",
+                visibility_scope="agent_owner",
+                listed_surface="task_updates",
                 title=title[:200],
             )
             db.add(session)
@@ -1430,37 +1435,23 @@ async def _invoke_agent_for_triggers(
         # Do NOT push to user's chat WebSocket — it pollutes the conversation.
         # Users can view trigger results in the self-awareness tab.
 
-        # Evolution feedback — close the learning loop for trigger executions (BP-1 fix)
+        # Outcome metadata only. Durable learning enters the canonical T0 -> T2
+        # path through the TRIGGER_END hook below.
         final_reply = reply or "".join(collected_content)
         trigger_outcome = "unknown"
         trigger_score = None
         try:
-            from app.services.heartbeat import (
-                _parse_heartbeat_outcome,
-                _update_evolution_files,
-            )
+            from app.services.heartbeat import _parse_heartbeat_outcome
 
             trigger_outcome, trigger_score = _parse_heartbeat_outcome(final_reply)
-            trigger_summary = final_reply[:80] if final_reply else "empty"
-
-            # Write to evolution files only — heartbeat/dream promote durable outcomes
-            # into canonical markdown memory during the md-first consolidation cycle.
-            await asyncio.to_thread(
-                _update_evolution_files,
-                agent_id,
-                trigger_outcome,
-                trigger_score,
-                f"[trigger] {trigger_summary}",
-                source="trigger",
-            )
             logger.debug(
-                "[TriggerDaemon] Evolution feedback for {}: {} score={}",
+                "[TriggerDaemon] Trigger outcome parsed for {}: {} score={}",
                 agent_id,
                 trigger_outcome,
                 trigger_score,
             )
-        except Exception as _evo_err:
-            logger.debug("[TriggerDaemon] Evolution feedback failed (non-fatal): {}", _evo_err)
+        except Exception as _outcome_err:
+            logger.debug("[TriggerDaemon] Trigger outcome parse failed (non-fatal): {}", _outcome_err)
 
         # Count trigger execution as a session for auto-dream gate
         try:

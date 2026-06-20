@@ -135,6 +135,8 @@ soul.md      ← Dream / Soul Writer     (reviewed soul.md.next, Platform Soul G
    ↑
 T3 memory    ← T3 Consolidator         (LLM pitch + Memory Gate review + Platform Gate exact XML blocks)
    ↑                                     memory/t3/{episodes,user,worker,capabilities}.md
+T2 episode   ← Continuity/Episode Agent (synthesis.md / review.md / manifest.json, only for broken/continuing segments)
+   ↑
 T2 package   ← T0 -> T2 distillers      (summary.md / labels.md / review.md / manifest.json)
    ↑
 T0 ledger    ← session ledger           (append-only MD/XML events, segment-sealed resume boundaries)
@@ -144,7 +146,8 @@ T0 ledger    ← session ledger           (append-only MD/XML events, segment-se
 | Layer | Where | Written by | What it holds |
 |-------|-------|-----------|---------------|
 | **T0** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | web chat, task executor, runtime hooks | Append-only raw MD/XML events — user, assistant, tool, task, trigger, delegation, heartbeat, dream, and segment boundaries |
-| **T2** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents plus independent Memory Gate review; Platform Gate commits package metadata | One reviewed Segment Package per source session segment, with `source_refs` back to T0 evidence |
+| **T2 Segment** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents plus independent Memory Gate review; Platform Gate commits package metadata | One reviewed Segment Package per source session segment, with `source_refs` back to T0 evidence |
+| **T2 Episode** | `memory/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` | Continuity/Episode Stitcher plus independent Memory Gate review; Platform Gate commits package metadata | Optional stitched episode for adjacent broken/continuing Segment Packages before T3 intake |
 | **Explicit overlay** | `memory/explicit/<scope>/...` | `save_memory` for explicit user-commanded memory only | Immediate, scoped memory overlay; later absorbed into T3 only through the same T3 consolidation lane |
 | **T3** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator + Memory Gate + Platform Gate exact commit | Curated semantic XML blocks: episodic anchors, user model, worker rules, and capability/SOP seeds |
 | **Skill candidates** | `evolution/skill_candidates/<candidate_id>/` | `save_skill`, fast reflection, Skill Distiller | Inactive `SKILL.md.draft` / `candidate_signal.md` packages; active skills require Skill Gate promotion |

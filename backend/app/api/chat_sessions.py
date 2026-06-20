@@ -14,9 +14,12 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.audit import ChatMessage
+from app.models.chat_artifact import ChatArtifact
+from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.chat_session import ChatSession
 from app.models.agent import Agent
 from app.models.user import User
+from app.services.chat_artifact_delivery import artifact_part_from_model
 from app.services.chat_message_parts import serialize_chat_message, split_inline_tools
 from app.services.web_chat_runtime import (
     ActiveWebChatRunExists,
@@ -27,6 +30,9 @@ from app.services.web_chat_runtime import (
 from app.services.session_feedback import record_session_feedback
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
+
+_LEGACY_HIDDEN_CHAT_SOURCES = ("trigger", "task", "heartbeat")
+_MINE_HIDDEN_CHAT_SOURCES = ("agent", *_LEGACY_HIDDEN_CHAT_SOURCES)
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
@@ -48,6 +54,14 @@ class SessionOut(BaseModel):
     user_id: str
     username: Optional[str] = None      # display_name ?? username
     source_channel: str = "web"         # web / feishu / discord / slack / agent
+    session_kind: str = "human_chat"
+    actor_type: str = "user"
+    runtime_source: str = "web_chat"
+    visibility_scope: str = "direct_user"
+    listed_surface: str = "chat"
+    parent_session_id: Optional[str] = None
+    root_session_id: Optional[str] = None
+    runtime_task_id: Optional[str] = None
     title: str
     created_at: str
     last_message_at: Optional[str] = None
@@ -56,6 +70,19 @@ class SessionOut(BaseModel):
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
     participant_type: str = "user"       # 'user' | 'agent'
+
+
+def _session_contract_fields(session: ChatSession) -> dict[str, Optional[str]]:
+    return {
+        "session_kind": getattr(session, "session_kind", None) or "human_chat",
+        "actor_type": getattr(session, "actor_type", None) or "user",
+        "runtime_source": getattr(session, "runtime_source", None) or "web_chat",
+        "visibility_scope": getattr(session, "visibility_scope", None) or "direct_user",
+        "listed_surface": getattr(session, "listed_surface", None) or "chat",
+        "parent_session_id": str(session.parent_session_id) if getattr(session, "parent_session_id", None) else None,
+        "root_session_id": str(session.root_session_id) if getattr(session, "root_session_id", None) else None,
+        "runtime_task_id": str(session.runtime_task_id) if getattr(session, "runtime_task_id", None) else None,
+    }
 
 
 class CreateSessionIn(BaseModel):
@@ -87,6 +114,40 @@ class RecordSessionFeedbackIn(BaseModel):
     reason: str = ""
     message_id: Optional[uuid.UUID] = None
     decision_id: Optional[str] = None
+
+
+def _transcript_role_for_event(event: ChatTranscriptEvent) -> str:
+    metadata = event.metadata_json or {}
+    role = metadata.get("role")
+    if isinstance(role, str) and role:
+        return role
+    if event.event_type == "user_message":
+        return "user"
+    if event.event_type == "assistant_message":
+        return "assistant"
+    if event.event_type in {"tool_result", "tool_call"}:
+        return "tool_call"
+    return "event"
+
+
+def _serialize_transcript_event(event: ChatTranscriptEvent) -> dict:
+    return {
+        "id": str(event.id),
+        "sequence": event.sequence,
+        "session_id": str(event.session_id),
+        "run_id": str(event.run_id) if event.run_id else None,
+        "message_id": str(event.message_id) if event.message_id else None,
+        "actor_type": event.actor_type,
+        "event_type": event.event_type,
+        "type": event.event_type,
+        "role": _transcript_role_for_event(event),
+        "visibility_scope": event.visibility_scope,
+        "listed_surface": event.listed_surface,
+        "content": event.content or "",
+        "parts": event.parts_json or [],
+        "metadata": event.metadata_json or {},
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+    }
 
 
 async def _get_run_session_and_agent(
@@ -126,7 +187,9 @@ async def list_sessions(
             select(ChatSession)
             .where(
                 (ChatSession.agent_id == agent_id)
-                | ((ChatSession.peer_agent_id == agent_id) & (ChatSession.source_channel == "agent"))
+                | ((ChatSession.peer_agent_id == agent_id) & (ChatSession.source_channel == "agent")),
+                ChatSession.listed_surface == "chat",
+                ChatSession.source_channel.notin_(_LEGACY_HIDDEN_CHAT_SOURCES),
             )
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )
@@ -180,6 +243,7 @@ async def list_sessions(
                 peer_agent_id=peer_agent_id,
                 peer_agent_name=peer_agent_name,
                 participant_type=participant_type,
+                **_session_contract_fields(session),
             ))
         return out
 
@@ -209,7 +273,8 @@ async def list_sessions(
             .where(
                 ChatSession.agent_id == agent_id,
                 ownership_filter,
-                ChatSession.source_channel.notin_(["agent", "trigger", "task", "heartbeat"]),
+                ChatSession.listed_surface == "chat",
+                ChatSession.source_channel.notin_(_MINE_HIDDEN_CHAT_SOURCES),
             )
             .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
         )
@@ -244,6 +309,7 @@ async def list_sessions(
                 created_at=session.created_at.isoformat(),
                 last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                 message_count=count,
+                **_session_contract_fields(session),
             ))
         return out
 
@@ -267,6 +333,12 @@ async def create_session(
         user_id=current_user.id,
         title=body.title or f"Session {now.strftime('%m-%d %H:%M')}",
         created_at=now,
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
     )
     db.add(session)
     await db.commit()
@@ -279,6 +351,7 @@ async def create_session(
         created_at=session.created_at.isoformat(),
         last_message_at=None,
         message_count=0,
+        **_session_contract_fields(session),
     )
 
 
@@ -383,6 +456,46 @@ async def get_active_session_run(
     return await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
 
 
+@router.get("/{agent_id}/sessions/{session_id}/transcript")
+async def get_session_transcript(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    after_sequence: int = 0,
+    limit: int = 500,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get replayable transcript events for a session.
+
+    This is the durable UI replay surface. `chat_messages` remains a read model
+    for compatibility, while transcript events are the ordered event stream.
+    """
+    result = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
+        raise HTTPException(status_code=403, detail="Not authorized to view this session")
+
+    events_result = await db.execute(
+        select(ChatTranscriptEvent)
+        .where(
+            ChatTranscriptEvent.session_id == session_id,
+            ChatTranscriptEvent.sequence > after_sequence,
+        )
+        .order_by(ChatTranscriptEvent.sequence.asc())
+        .limit(limit)
+    )
+    return [_serialize_transcript_event(event) for event in events_result.scalars().all()]
+
+
 @router.post("/{agent_id}/sessions/{session_id}/runs/{run_id}/cancel")
 async def cancel_session_run(
     agent_id: uuid.UUID,
@@ -428,6 +541,8 @@ async def delete_session(
 
     # Delete associated messages first
     from sqlalchemy import delete as sql_delete
+    await db.execute(sql_delete(ChatArtifact).where(ChatArtifact.session_id == session_id))
+    await db.execute(sql_delete(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session_id))
     await db.execute(sql_delete(ChatMessage).where(ChatMessage.conversation_id == str(session_id)))
     await db.delete(session)
     await db.commit()
@@ -465,6 +580,16 @@ async def get_session_messages(
         .limit(500)
     )
     messages = msgs_result.scalars().all()
+    message_ids = [m.id for m in messages]
+    artifacts_by_message: dict[uuid.UUID, list[dict]] = {}
+    if message_ids:
+        artifacts_result = await db.execute(
+            select(ChatArtifact)
+            .where(ChatArtifact.message_id.in_(message_ids))
+            .order_by(ChatArtifact.created_at.asc())
+        )
+        for artifact in artifacts_result.scalars().all():
+            artifacts_by_message.setdefault(artifact.message_id, []).append(artifact_part_from_model(artifact))
 
     # Resolve sender names for agent sessions
     sender_cache: dict = {}
@@ -478,9 +603,10 @@ async def get_session_messages(
     out = []
     for m in messages:
         sender_name = sender_cache.get(str(m.participant_id)) if m.participant_id else None
+        artifacts = artifacts_by_message.get(m.id, [])
 
         if m.role == "tool_call":
-            out.append(serialize_chat_message(m, sender_name=sender_name))
+            out.append(serialize_chat_message(m, sender_name=sender_name, artifacts=artifacts))
             continue
 
         # For agent sessions, parse inline tool_code blocks from assistant messages
@@ -489,6 +615,6 @@ async def get_session_messages(
             for part in parts:
                 out.append(part)
         else:
-            out.append(serialize_chat_message(m, sender_name=sender_name))
+            out.append(serialize_chat_message(m, sender_name=sender_name, artifacts=artifacts))
 
     return out

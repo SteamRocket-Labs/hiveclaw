@@ -37,6 +37,10 @@ def test_module_exports_heartbeat_loop() -> None:
     assert inspect.iscoroutinefunction(evolution_daemon._heartbeat_loop)
 
 
+def test_module_exports_post_heartbeat_maintenance() -> None:
+    assert inspect.iscoroutinefunction(evolution_daemon.run_heartbeat_evolution_maintenance)
+
+
 def test_default_interval_matches_legacy_value() -> None:
     """60s preserves the historical cadence so this refactor is observably
     behaviour-preserving for existing deployments."""
@@ -189,3 +193,32 @@ def test_trigger_daemon_no_longer_starts_heartbeat_or_workspace() -> None:
     assert "start_redis_listener" not in src
     assert "_heartbeat_tick" not in src
     assert "cleanup_expired_replies" not in src
+
+
+def test_heartbeat_source_no_longer_owns_peripheral_evolution_jobs() -> None:
+    src = Path(Path(__file__).parent.parent.parent / "app" / "services" / "heartbeat.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "run_skill_distillation_cycle" not in src
+    assert "run_skill_curator_pass" not in src
+    assert "run_scene_wiki_curation_tick" not in src
+    assert "record_dream_activity" not in src
+    assert "should_dream" not in src
+    assert "run_dream" not in src
+    assert "validate_and_normalize_t3" not in src
+    assert "sync_t3_to_memory_enhancement" not in src
+
+
+def test_hook_setup_schedules_evolution_maintenance_after_heartbeat() -> None:
+    from app.runtime import hooks_setup
+    from app.runtime.hooks import HookEvent
+
+    specs = [
+        spec
+        for spec in hooks_setup._MEMORY_HOOK_CONFIGURATION  # noqa: SLF001 - tests the registration contract.
+        if spec["event"] == HookEvent.HEARTBEAT_TICK_END.value
+    ]
+
+    assert any(spec["handler"] == "t0_heartbeat_tick_end" for spec in specs)
+    assert any(spec["handler"] == "evolution_maintenance_on_heartbeat" for spec in specs)

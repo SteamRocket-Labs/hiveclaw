@@ -18,11 +18,11 @@ def _assert_xml_block(path: Path, tag: str) -> ET.Element:
     return ET.fromstring(text[start:end])
 
 
-def _approved_review_xml(*, package_id: str | None, ref: str) -> str:
+def _approved_review_xml(*, package_id: str | None, ref: str, allowed_next: str = "t3_intake") -> str:
     package_attr = f' package_id="{package_id}"' if package_id else ""
     return f"""<t2_review schema_version="t2.review.v1"{package_attr} reviewer="memory_gate_agent">
   <decision>approved</decision>
-  <allowed_next>t3_intake</allowed_next>
+  <allowed_next>{allowed_next}</allowed_next>
   <review_rubric schema_version="t2.review_rubric.v1">
     <score name="summary_fidelity" value="0.95"/>
     <score name="source_ref_coverage" value="0.95"/>
@@ -34,11 +34,71 @@ def _approved_review_xml(*, package_id: str | None, ref: str) -> str:
   <evidence_coverage>complete</evidence_coverage>
   <hallucination_risk>low</hallucination_risk>
   <label_quality>pass</label_quality>
+  <continuity_result>{"requires_episode_stitching" if allowed_next == "episode_stitching" else "standalone"}</continuity_result>
   <sensitivity_result>pass</sensitivity_result>
   <issues/>
   <required_changes/>
   <source_refs_checked><source_ref uri="{ref}"/></source_refs_checked>
 </t2_review>"""
+
+
+def _summary_xml(source_bundle: dict, *, status: str = "closed", segment_state: str = "complete") -> str:
+    ref = source_bundle["source_refs"][0]
+    return f"""# T2 Segment Summary
+
+<t2_summary schema_version="t2.summary.v1" package_id="{source_bundle["package_id"]}" session_id="{source_bundle["session_id"]}" t0_segment_id="{source_bundle["t0_segment_id"]}" status="{status}">
+  <source_refs>
+    <source_ref uri="{ref["uri"]}" path="{ref["path"]}" sha256="{ref["sha256"]}"/>
+  </source_refs>
+  <segment_state value="{segment_state}">
+    <reason>测试片段状态。</reason>
+  </segment_state>
+  <scenario><title>测试场景</title><context>用于 T2 package builder 测试。</context></scenario>
+  <events><event id="evt-1" type="instruction" salience="high"><summary>测试事件。</summary><evidence_refs><source_ref uri="{ref["uri"]}"/></evidence_refs></event></events>
+  <facts><fact evidence_strength="source_backed">测试事实。</fact></facts>
+  <decisions/>
+  <corrections/>
+  <method_trace/>
+  <artifacts/>
+  <open_questions/>
+  <short_term_carryover/>
+  <continuity>
+    <open_threads/>
+  </continuity>
+  <promotion_hints><hint target="t3_candidate" reason="closed standalone package"/></promotion_hints>
+</t2_summary>
+"""
+
+
+def _labels_xml(source_bundle: dict, *, package_status: str = "closed", continuity_state: str = "standalone") -> str:
+    ref = source_bundle["source_refs"][0]["uri"]
+    return f"""# T2 Segment Labels
+
+<t2_labels schema_version="t2.labels.v1" package_id="{source_bundle["package_id"]}" session_id="{source_bundle["session_id"]}" t2_segment_id="{source_bundle["t0_segment_id"]}">
+  <control_metadata>
+    <source_integrity>complete</source_integrity>
+    <sensitivity>PL1</sensitivity>
+    <principal_scope>direct_owner</principal_scope>
+    <package_status>{package_status}</package_status>
+    <confidence>0.95</confidence>
+    <continuity_state>{continuity_state}</continuity_state>
+    <systems><system>memory</system></systems>
+    <risk_flags/>
+  </control_metadata>
+  <event_labels>
+    <event_label event_ref="evt-1">
+      <event_type>instruction</event_type>
+      <memory_domain>preference_memory</memory_domain>
+      <outcome>accepted</outcome>
+      <actionability>t3_candidate</actionability>
+      <stability>stable</stability>
+      <completeness>{package_status}</completeness>
+      <salience>high</salience>
+      <source_refs><source_ref uri="{ref}"/></source_refs>
+    </event_label>
+  </event_labels>
+</t2_labels>
+"""
 
 
 @pytest.mark.asyncio
@@ -70,75 +130,10 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     )
 
     async def summary_agent(source_bundle: dict) -> str:
-        ref = source_bundle["source_refs"][0]
-        return f"""# T2 Segment Summary
-
-<t2_summary schema_version="t2.summary.v1" package_id="{source_bundle["package_id"]}" session_id="{source_bundle["session_id"]}" t0_segment_id="{source_bundle["t0_segment_id"]}" status="closed">
-  <source_refs>
-    <source_ref uri="{ref["uri"]}" path="{ref["path"]}" sha256="{ref["sha256"]}"/>
-  </source_refs>
-  <scenario>
-    <title>架构改造前先讨论</title>
-    <user_cues>
-      <cue>先讨论，确认后再改</cue>
-    </user_cues>
-    <context>用户明确要求架构改造不要直接写。</context>
-  </scenario>
-  <events>
-    <event id="evt-1" type="instruction" salience="high">
-      <summary>用户要求架构改造先讨论，再落文档或代码。</summary>
-      <evidence_refs><source_ref uri="{ref["uri"]}"/></evidence_refs>
-    </event>
-  </events>
-  <facts>
-    <fact evidence_strength="source_backed">用户偏好讨论优先于直接修改。</fact>
-  </facts>
-  <decisions>
-    <decision status="accepted">架构改造默认先讨论边界。</decision>
-  </decisions>
-  <corrections/>
-  <method_trace>
-    <step>先确认边界，再写文档或代码。</step>
-  </method_trace>
-  <artifacts/>
-  <open_questions/>
-  <short_term_carryover/>
-  <promotion_hints>
-    <hint target="t3_candidate" reason="stable explicit user preference"/>
-  </promotion_hints>
-</t2_summary>
-"""
+        return _summary_xml(source_bundle)
 
     async def learning_brain(source_bundle: dict, summary_md: str) -> str:
-        ref = source_bundle["source_refs"][0]["uri"]
-        return f"""# T2 Segment Labels
-
-<t2_labels schema_version="t2.labels.v1" package_id="{source_bundle["package_id"]}" session_id="{source_bundle["session_id"]}" t2_segment_id="{source_bundle["t0_segment_id"]}">
-  <control_metadata>
-    <source_integrity>complete</source_integrity>
-    <sensitivity>PL1</sensitivity>
-    <principal_scope>direct_owner</principal_scope>
-    <package_status>closed</package_status>
-    <confidence>0.95</confidence>
-    <systems><system>memory</system></systems>
-    <risk_flags/>
-  </control_metadata>
-  <event_labels>
-    <event_label event_ref="evt-1">
-      <event_type>instruction</event_type>
-      <memory_domain>preference_memory</memory_domain>
-      <outcome>accepted</outcome>
-      <actionability>t3_candidate</actionability>
-      <stability>stable</stability>
-      <completeness>closed</completeness>
-      <salience>high</salience>
-      <cue_terms><cue>先讨论</cue></cue_terms>
-      <subjects><project>hive-memory</project></subjects>
-      <source_refs><source_ref uri="{ref}"/></source_refs>
-    </event_label>
-  </event_labels>
-</t2_labels>
-"""
+        return _labels_xml(source_bundle)
 
     async def memory_gate(source_bundle: dict, summary_md: str, labels_md: str) -> str:
         ref = source_bundle["source_refs"][0]["uri"]
@@ -186,8 +181,12 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     )
     assert source_bundle["t0_events"][0]["content"] == "以后架构改造先讨论，确认后再改文档。"
 
-    assert _assert_xml_block(package_dir / "summary.md", "t2_summary").attrib["status"] == "closed"
-    assert _assert_xml_block(package_dir / "labels.md", "t2_labels").findtext(".//confidence") == "0.95"
+    summary_node = _assert_xml_block(package_dir / "summary.md", "t2_summary")
+    labels_node = _assert_xml_block(package_dir / "labels.md", "t2_labels")
+    assert summary_node.attrib["status"] == "closed"
+    assert summary_node.find("segment_state").attrib["value"] == "complete"
+    assert labels_node.findtext(".//confidence") == "0.95"
+    assert labels_node.findtext(".//continuity_state") == "standalone"
     assert _assert_xml_block(package_dir / "review.md", "t2_review").findtext("decision") == "approved"
 
 
@@ -222,12 +221,10 @@ async def test_source_bundle_includes_verified_work_ledger_findings(tmp_path: Pa
     async def summary_agent(source_bundle: dict) -> str:
         nonlocal seen_source_bundle
         seen_source_bundle = source_bundle
-        ref = source_bundle["source_refs"][0]
-        return f"<t2_summary schema_version='t2.summary.v1'><source_refs><source_ref uri='{ref['uri']}'/></source_refs></t2_summary>"
+        return _summary_xml(source_bundle)
 
     async def labels(source_bundle: dict, _summary_md: str) -> str:
-        ref = source_bundle["source_refs"][0]["uri"]
-        return f"<t2_labels schema_version='t2.labels.v1'><source_refs><source_ref uri='{ref}'/></source_refs></t2_labels>"
+        return _labels_xml(source_bundle)
 
     async def review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
         ref = source_bundle["source_refs"][0]["uri"]
@@ -323,15 +320,10 @@ async def test_platform_gate_holds_approved_review_without_rubric(tmp_path: Path
     )
 
     async def summary_agent(source_bundle: dict) -> str:
-        ref = source_bundle["source_refs"][0]["uri"]
-        return f"<t2_summary schema_version='t2.summary.v1' status='closed'><source_refs><source_ref uri='{ref}'/></source_refs></t2_summary>"
+        return _summary_xml(source_bundle)
 
     async def labels(source_bundle: dict, _summary_md: str) -> str:
-        ref = source_bundle["source_refs"][0]["uri"]
-        return f"""<t2_labels schema_version='t2.labels.v1'>
-  <control_metadata><package_status>closed</package_status></control_metadata>
-  <source_refs><source_ref uri='{ref}'/></source_refs>
-</t2_labels>"""
+        return _labels_xml(source_bundle)
 
     async def review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
         ref = source_bundle["source_refs"][0]["uri"]
@@ -357,6 +349,358 @@ async def test_platform_gate_holds_approved_review_without_rubric(tmp_path: Path
     assert result.status == "held"
     assert not result.package_dir.exists()
     assert any("review_rubric" in issue for issue in report["issues"])
+
+
+@pytest.mark.asyncio
+async def test_platform_gate_blocks_t3_intake_for_non_standalone_continuity(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="我先去忙，回来继续。",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, status="rolling_checkpoint", segment_state="continuation")
+
+    async def labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(
+            source_bundle,
+            package_status="rolling_checkpoint",
+            continuity_state="same_episode_candidate",
+        )
+
+    async def review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        ref = source_bundle["source_refs"][0]["uri"]
+        return _approved_review_xml(package_id=source_bundle["package_id"], ref=ref, allowed_next="t3_intake")
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=labels,
+        memory_gate=review,
+    )
+
+    report = json.loads((result.staging_dir / "platform_gate_report.json").read_text(encoding="utf-8"))
+    assert result.status == "held"
+    assert any("continuity_state" in issue for issue in report["issues"])
+    assert not result.package_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_episode_stitch_package_commits_without_learning_brain(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_episode_stitch_package, build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="请创建 RWA 调研员。",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, status="rolling_checkpoint", segment_state="continuation")
+
+    async def labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(
+            source_bundle,
+            package_status="rolling_checkpoint",
+            continuity_state="same_episode_candidate",
+        )
+
+    async def review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        ref = source_bundle["source_refs"][0]["uri"]
+        return _approved_review_xml(package_id=source_bundle["package_id"], ref=ref, allowed_next="episode_stitching")
+
+    t2_result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=labels,
+        memory_gate=review,
+        package_id="t2pkg-rwa-1",
+    )
+    assert t2_result.status == "committed"
+
+    calls: list[str] = []
+
+    async def stitcher_agent(episode_bundle: dict) -> str:
+        calls.append("stitcher")
+        package_ref = episode_bundle["source_packages"][0]["package_id"]
+        source_ref = episode_bundle["t0_source_refs"][0]
+        return f"""# T2 Episode Synthesis
+
+<episode_synthesis schema_version="t2.episode_synthesis.v1" episode_id="{episode_bundle["episode_id"]}" session_id="{episode_bundle["session_id"]}" status="closed">
+  <source_packages><package_ref package_id="{package_ref}" t0_segment_id="{first.segment_id}" relationship="same_episode"/></source_packages>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+  <episode_summary><scenario>用户开始创建 RWA 调研员。</scenario></episode_summary>
+  <continuity_decision relationship="same_episode" confidence="0.90"><reason>同一创建任务。</reason></continuity_decision>
+  <promotion_hints><hint target="t3_intake" reason="closed episode"/></promotion_hints>
+</episode_synthesis>
+"""
+
+    async def episode_gate(episode_bundle: dict, synthesis_md: str) -> str:
+        calls.append("gate")
+        source_ref = episode_bundle["t0_source_refs"][0]
+        return f"""# T2 Episode Review
+
+<episode_review schema_version="t2.episode_review.v1" episode_id="{episode_bundle["episode_id"]}" reviewer="memory_gate_agent">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <episode_review_rubric schema_version="t2.episode_review_rubric.v1">
+    <score name="continuity_fidelity" value="0.90"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="correction_quality" value="0.90"/>
+    <score name="closure_quality" value="0.90"/>
+    <score name="safety_scope" value="1.00"/>
+    <review_score>0.90</review_score>
+  </episode_review_rubric>
+  <source_refs_checked><source_ref uri="{source_ref}"/></source_refs_checked>
+</episode_review>
+"""
+
+    episode_result = await build_t2_episode_stitch_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        trigger_package_id="t2pkg-rwa-1",
+        stitcher_agent=stitcher_agent,
+        memory_gate=episode_gate,
+        episode_id="episode-rwa",
+    )
+
+    assert calls == ["stitcher", "gate"]
+    assert episode_result.status == "committed"
+    assert (
+        episode_result.package_dir
+        == tmp_path / str(agent_id) / "memory" / "sessions" / str(session_id) / "episodes" / "episode-rwa"
+    )
+    assert sorted(path.name for path in episode_result.package_dir.iterdir()) == [
+        "manifest.json",
+        "review.md",
+        "synthesis.md",
+    ]
+    manifest = json.loads((episode_result.package_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "t2.episode-stitch.manifest.v1"
+    assert manifest["prompts"]["stitcher_prompt_version"] == "t2.episode_stitcher.v1"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.episode_gate_review.v1"
+    assert manifest["source_packages"] == ["t2pkg-rwa-1"]
+    assert (t2_result.package_dir / "summary.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_episode_bundle_includes_adjacent_t2_refs_by_default(tmp_path: Path) -> None:
+    from app.memory.t0.ledger import seal_t0_session_segment
+    from app.memory.t2.segment_package import build_t2_episode_stitch_package, build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="我想先设计一个 RWA 调研员。",
+        source="web",
+        data_root=tmp_path,
+    )
+    seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason="test_segment_boundary",
+        data_root=tmp_path,
+    )
+    second = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="继续刚才那个 RWA 调研员，把触发频率也定下来。",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def complete_summary(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle)
+
+    async def complete_labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle)
+
+    async def complete_review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        return _approved_review_xml(package_id=source_bundle["package_id"], ref=source_bundle["source_refs"][0]["uri"])
+
+    async def continuing_summary(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, status="rolling_checkpoint", segment_state="continuation")
+
+    async def continuing_labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(
+            source_bundle,
+            package_status="rolling_checkpoint",
+            continuity_state="needs_previous",
+        )
+
+    async def stitching_review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        return _approved_review_xml(
+            package_id=source_bundle["package_id"],
+            ref=source_bundle["source_refs"][0]["uri"],
+            allowed_next="episode_stitching",
+        )
+
+    await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=complete_summary,
+        learning_brain=complete_labels,
+        memory_gate=complete_review,
+        package_id="t2pkg-prev",
+    )
+    await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=second.segment_id,
+        summary_agent=continuing_summary,
+        learning_brain=continuing_labels,
+        memory_gate=stitching_review,
+        package_id="t2pkg-current",
+    )
+
+    async def stitcher_agent(episode_bundle: dict) -> str:
+        package_ids = [package["package_id"] for package in episode_bundle["source_packages"]]
+        assert package_ids == ["t2pkg-current", "t2pkg-prev"]
+        assert len(episode_bundle["t0_source_refs"]) == 2
+        package_refs = "\n".join(
+            f'<package_ref package_id="{package_id}" relationship="same_episode"/>' for package_id in package_ids
+        )
+        source_refs = "\n".join(f'<source_ref uri="{ref}"/>' for ref in episode_bundle["t0_source_refs"])
+        return f"""<episode_synthesis schema_version="t2.episode_synthesis.v1" episode_id="{episode_bundle["episode_id"]}" session_id="{episode_bundle["session_id"]}" status="closed">
+  <source_packages>{package_refs}</source_packages>
+  <source_refs>{source_refs}</source_refs>
+  <episode_summary><scenario>用户连续创建 RWA 调研员。</scenario></episode_summary>
+</episode_synthesis>"""
+
+    async def episode_gate(episode_bundle: dict, _synthesis_md: str) -> str:
+        return f"""<episode_review schema_version="t2.episode_review.v1" episode_id="{episode_bundle["episode_id"]}">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <episode_review_rubric schema_version="t2.episode_review_rubric.v1">
+    <score name="continuity_fidelity" value="0.90"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="correction_quality" value="0.90"/>
+    <score name="closure_quality" value="0.90"/>
+    <score name="safety_scope" value="1.00"/>
+    <review_score>0.90</review_score>
+  </episode_review_rubric>
+  <source_refs_checked><source_ref uri="{episode_bundle["t0_source_refs"][0]}"/></source_refs_checked>
+</episode_review>"""
+
+    result = await build_t2_episode_stitch_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        trigger_package_id="t2pkg-current",
+        stitcher_agent=stitcher_agent,
+        memory_gate=episode_gate,
+        episode_id="episode-rwa-adjacent",
+    )
+
+    assert result.status == "committed"
+
+
+@pytest.mark.asyncio
+async def test_episode_stitch_package_holds_without_episode_review_rubric(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_episode_stitch_package, build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="继续刚才的创建任务。",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, status="rolling_checkpoint", segment_state="continuation")
+
+    async def labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle, package_status="rolling_checkpoint", continuity_state="needs_previous")
+
+    async def review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        ref = source_bundle["source_refs"][0]["uri"]
+        return _approved_review_xml(package_id=source_bundle["package_id"], ref=ref, allowed_next="episode_stitching")
+
+    await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=labels,
+        memory_gate=review,
+        package_id="t2pkg-open-1",
+    )
+
+    async def stitcher_agent(episode_bundle: dict) -> str:
+        source_ref = episode_bundle["t0_source_refs"][0]
+        return f"<episode_synthesis schema_version='t2.episode_synthesis.v1' episode_id='{episode_bundle['episode_id']}' status='open'><source_packages><package_ref package_id='t2pkg-open-1'/></source_packages><source_refs><source_ref uri='{source_ref}'/></source_refs></episode_synthesis>"
+
+    async def bad_episode_gate(_episode_bundle: dict, _synthesis_md: str) -> str:
+        return "<episode_review schema_version='t2.episode_review.v1'><decision>approved</decision><allowed_next>t3_intake</allowed_next></episode_review>"
+
+    result = await build_t2_episode_stitch_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        trigger_package_id="t2pkg-open-1",
+        stitcher_agent=stitcher_agent,
+        memory_gate=bad_episode_gate,
+        episode_id="episode-held",
+    )
+
+    report = json.loads((result.staging_dir / "platform_gate_report.json").read_text(encoding="utf-8"))
+    assert result.status == "held"
+    assert not result.package_dir.exists()
+    assert any("episode_review_rubric" in issue for issue in report["issues"])
 
 
 @pytest.mark.asyncio
@@ -388,9 +732,9 @@ async def test_build_with_llm_runs_three_agent_roles(monkeypatch, tmp_path: Path
         ref = source_bundle["source_refs"][0]["uri"]
         package_id = source_bundle["package_id"]
         if kwargs["phase"] == "summary":
-            return f"<t2_summary schema_version='t2.summary.v1' package_id='{package_id}'><source_refs><source_ref uri='{ref}'/></source_refs></t2_summary>"
+            return _summary_xml(source_bundle)
         if kwargs["phase"] == "labels":
-            return f"<t2_labels schema_version='t2.labels.v1' package_id='{package_id}'><source_refs><source_ref uri='{ref}'/></source_refs></t2_labels>"
+            return _labels_xml(source_bundle)
         return _approved_review_xml(package_id=package_id, ref=ref)
 
     monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_model_config)

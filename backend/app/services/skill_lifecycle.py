@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.skill_candidate_package import write_skill_candidate_package
+from app.services.skill_evolution_registry import can_self_evolve_skill
 
 
 def record_skill_lifecycle_event(
@@ -512,6 +513,17 @@ def record_skill_runtime_usage(
             "promote_candidate_count": 0,
             "patch_candidate_count": 0,
             "last_status": normalized_status or "unknown",
+        }
+
+    if used_skill and normalized_status in {"failed", "workaround"} and not can_self_evolve_skill(
+        workspace, primary_skill
+    ):
+        return {
+            "decision": "ignored_non_evolvable",
+            "workflow_signature": workflow_signature,
+            "promote_candidate_count": 0,
+            "patch_candidate_count": 0,
+            "last_status": normalized_status,
         }
 
     result = record_skill_execution(

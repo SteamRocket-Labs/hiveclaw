@@ -11,11 +11,12 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import shutil
 import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,10 @@ from typing import Any
 from app.config import get_settings
 from app.memory.t0.ledger import replay_t0_session_events
 from app.memory.t2.prompts import (
+    EPISODE_GATE_REVIEW_PROMPT,
+    EPISODE_GATE_REVIEW_PROMPT_VERSION,
+    EPISODE_STITCHER_PROMPT,
+    EPISODE_STITCHER_PROMPT_VERSION,
     LABELS_PROMPT_VERSION,
     LEARNING_BRAIN_LABELS_PROMPT,
     MEMORY_GATE_REVIEW_PROMPT,
@@ -37,6 +42,8 @@ LABELS_FILENAME = "labels.md"
 REVIEW_FILENAME = "review.md"
 MANIFEST_FILENAME = "manifest.json"
 SOURCE_BUNDLE_FILENAME = "source_bundle.json"
+SYNTHESIS_FILENAME = "synthesis.md"
+EPISODE_BUNDLE_FILENAME = "episode_bundle.json"
 _REVIEW_RUBRIC_SCORE_WEIGHTS = {
     "summary_fidelity": 0.35,
     "source_ref_coverage": 0.25,
@@ -51,12 +58,37 @@ _T3_INTAKE_REVIEW_THRESHOLDS = {
     "safety_scope": 0.85,
     "package_closure": 0.75,
 }
+_EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS = {
+    "continuity_fidelity": 0.30,
+    "source_ref_coverage": 0.25,
+    "correction_quality": 0.15,
+    "closure_quality": 0.20,
+    "safety_scope": 0.10,
+}
+_EPISODE_T3_INTAKE_THRESHOLDS = {
+    "continuity_fidelity": 0.85,
+    "source_ref_coverage": 0.85,
+    "correction_quality": 0.75,
+    "closure_quality": 0.80,
+    "safety_scope": 0.85,
+}
+_ALLOWED_REVIEW_NEXT = {"t3_intake", "episode_stitching", "short_term_carryover", "archive_recall_only", "none"}
 
 SourceBundleAgent = Callable[..., str | Awaitable[str]]
 
 
 @dataclass(frozen=True, slots=True)
 class T2SegmentPackageResult:
+    status: str
+    job_id: str
+    package_dir: Path
+    staging_dir: Path
+    issues: tuple[str, ...] = ()
+    episode_result: T2EpisodeStitchPackageResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class T2EpisodeStitchPackageResult:
     status: str
     job_id: str
     package_dir: Path
@@ -100,7 +132,9 @@ async def build_t2_segment_package(
     review_md = await _call_agent(memory_gate, source_bundle, summary_md, labels_md)
     (staging_dir / "review.candidate.md").write_text(review_md, encoding="utf-8")
 
-    issues = _validate_candidate(source_bundle=source_bundle, summary_md=summary_md, labels_md=labels_md, review_md=review_md)
+    issues = _validate_candidate(
+        source_bundle=source_bundle, summary_md=summary_md, labels_md=labels_md, review_md=review_md
+    )
     if issues:
         _write_json(
             staging_dir / "platform_gate_report.json",
@@ -221,7 +255,7 @@ async def build_t2_segment_package_with_llm(
         )
 
     try:
-        return await build_t2_segment_package(
+        result = await build_t2_segment_package(
             agent_id=agent_id,
             tenant_id=tenant_id,
             session_id=session_id,
@@ -233,6 +267,16 @@ async def build_t2_segment_package_with_llm(
             package_id=resolved_package_id,
             job_id=resolved_job_id,
         )
+        if result.status == "committed" and _package_requests_episode_stitching(result.package_dir):
+            episode_result = await build_t2_episode_stitch_package_with_llm(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                trigger_package_id=resolved_package_id,
+                data_root=root,
+            )
+            return replace(result, episode_result=episode_result)
+        return result
     except Exception as exc:  # noqa: BLE001 - failed LLM/package jobs must hold, not corrupt memory
         return _hold_without_llm(
             root=root,
@@ -243,6 +287,172 @@ async def build_t2_segment_package_with_llm(
             package_id=resolved_package_id,
             job_id=resolved_job_id,
             reason=f"T0->T2 package build failed: {type(exc).__name__}: {exc}",
+        )
+
+
+async def build_t2_episode_stitch_package(
+    *,
+    agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str,
+    trigger_package_id: str,
+    stitcher_agent: SourceBundleAgent,
+    memory_gate: SourceBundleAgent,
+    data_root: Path | str | None = None,
+    episode_id: str | None = None,
+    job_id: str | None = None,
+    source_package_ids: list[str] | None = None,
+) -> T2EpisodeStitchPackageResult:
+    root = _data_root(data_root)
+    resolved_episode_id = episode_id or f"episode-{uuid.uuid4().hex}"
+    resolved_job_id = job_id or f"episode-job-{uuid.uuid4().hex}"
+    staging_dir = _episode_staging_dir(root, agent_id, resolved_job_id)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    episode_bundle = _build_episode_bundle(
+        root=root,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        trigger_package_id=trigger_package_id,
+        episode_id=resolved_episode_id,
+        source_package_ids=source_package_ids,
+    )
+    _write_json(staging_dir / EPISODE_BUNDLE_FILENAME, episode_bundle)
+
+    synthesis_md = await _call_agent(stitcher_agent, episode_bundle)
+    (staging_dir / "synthesis.candidate.md").write_text(synthesis_md, encoding="utf-8")
+    review_md = await _call_agent(memory_gate, episode_bundle, synthesis_md)
+    (staging_dir / "review.candidate.md").write_text(review_md, encoding="utf-8")
+
+    issues = _validate_episode_candidate(episode_bundle=episode_bundle, synthesis_md=synthesis_md, review_md=review_md)
+    if issues:
+        _write_json(
+            staging_dir / "platform_gate_report.json",
+            {
+                "schema_version": "t2.episode-platform-gate-report.v1",
+                "status": "held",
+                "issues": issues,
+                "created_at": _now(),
+            },
+        )
+        return T2EpisodeStitchPackageResult(
+            status="held",
+            job_id=resolved_job_id,
+            package_dir=_episode_dir(root, agent_id, session_id, resolved_episode_id),
+            staging_dir=staging_dir,
+            issues=tuple(issues),
+        )
+
+    package_dir = _episode_dir(root, agent_id, session_id, resolved_episode_id)
+    files = {
+        SYNTHESIS_FILENAME: synthesis_md,
+        REVIEW_FILENAME: review_md,
+    }
+    manifest = _build_episode_manifest(
+        episode_bundle=episode_bundle,
+        files=files,
+        job_id=resolved_job_id,
+    )
+    files[MANIFEST_FILENAME] = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    _commit_atomically(package_dir, files)
+    _write_json(
+        staging_dir / "platform_gate_report.json",
+        {
+            "schema_version": "t2.episode-platform-gate-report.v1",
+            "status": "committed",
+            "issues": [],
+            "package_dir": _relative_agent_path(root, agent_id, package_dir),
+            "created_at": _now(),
+        },
+    )
+    return T2EpisodeStitchPackageResult(
+        status="committed",
+        job_id=resolved_job_id,
+        package_dir=package_dir,
+        staging_dir=staging_dir,
+    )
+
+
+async def build_t2_episode_stitch_package_with_llm(
+    *,
+    agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str,
+    trigger_package_id: str,
+    data_root: Path | str | None = None,
+    episode_id: str | None = None,
+    job_id: str | None = None,
+    source_package_ids: list[str] | None = None,
+) -> T2EpisodeStitchPackageResult:
+    root = _data_root(data_root)
+    resolved_episode_id = episode_id or f"episode-{uuid.uuid4().hex}"
+    resolved_job_id = job_id or f"episode-job-{uuid.uuid4().hex}"
+
+    try:
+        from app.services.memory_service import _get_summary_model_config
+
+        model_config = await _get_summary_model_config(uuid.UUID(str(tenant_id))) if tenant_id else None
+    except Exception:
+        model_config = None
+
+    if not model_config:
+        return _hold_episode_without_llm(
+            root=root,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            trigger_package_id=trigger_package_id,
+            episode_id=resolved_episode_id,
+            job_id=resolved_job_id,
+            source_package_ids=source_package_ids,
+            reason="no summary model config for T2 episode stitching",
+        )
+
+    async def stitcher(episode_bundle: dict[str, Any]) -> str:
+        return await _run_t2_llm_agent(
+            model_config=model_config,
+            prompt=EPISODE_STITCHER_PROMPT,
+            payload=episode_bundle,
+            phase="episode_stitcher",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
+
+    async def gate(episode_bundle: dict[str, Any], synthesis_md: str) -> str:
+        return await _run_t2_llm_agent(
+            model_config=model_config,
+            prompt=EPISODE_GATE_REVIEW_PROMPT,
+            payload={"episode_bundle": episode_bundle, "synthesis_md": synthesis_md},
+            phase="episode_gate",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
+
+    try:
+        return await build_t2_episode_stitch_package(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            trigger_package_id=trigger_package_id,
+            stitcher_agent=stitcher,
+            memory_gate=gate,
+            data_root=root,
+            episode_id=resolved_episode_id,
+            job_id=resolved_job_id,
+            source_package_ids=source_package_ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _hold_episode_without_llm(
+            root=root,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            trigger_package_id=trigger_package_id,
+            episode_id=resolved_episode_id,
+            job_id=resolved_job_id,
+            source_package_ids=source_package_ids,
+            reason=f"T2 episode stitching failed: {type(exc).__name__}: {exc}",
         )
 
 
@@ -263,7 +473,9 @@ def _build_source_bundle(
     if not events:
         raise ValueError(f"no T0 events for session={session_id} segment={t0_segment_id}")
     source_path = events[0].path
-    source_ref = _source_ref(root=root, agent_id=agent_id, session_id=session_id, segment_id=t0_segment_id, path=source_path, events=events)
+    source_ref = _source_ref(
+        root=root, agent_id=agent_id, session_id=session_id, segment_id=t0_segment_id, path=source_path, events=events
+    )
     work_ledger = _work_ledger_payload(root=root, agent_id=agent_id, session_id=session_id)
     return {
         "schema_version": "t2.source_bundle.v1",
@@ -339,6 +551,139 @@ def _work_ledger_payload(*, root: Path, agent_id: uuid.UUID | str, session_id: u
     }
 
 
+def _build_episode_bundle(
+    *,
+    root: Path,
+    agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str,
+    trigger_package_id: str,
+    episode_id: str,
+    source_package_ids: list[str] | None,
+) -> dict[str, Any]:
+    packages_by_id = _load_t2_packages(root=root, agent_id=agent_id, session_id=session_id)
+    if trigger_package_id not in packages_by_id:
+        raise ValueError(f"trigger T2 package not found: {trigger_package_id}")
+    if _package_allowed_next(packages_by_id[trigger_package_id]["review_md"]) != "episode_stitching":
+        raise ValueError("episode stitching requires trigger review.allowed_next=episode_stitching")
+    selected_ids = _dedupe(
+        [
+            trigger_package_id,
+            *(
+                source_package_ids
+                if source_package_ids is not None
+                else _default_episode_source_package_ids(
+                    packages_by_id=packages_by_id, trigger_package_id=trigger_package_id
+                )
+            ),
+        ]
+    )
+    source_packages = []
+    for package_id in selected_ids:
+        package = packages_by_id.get(package_id)
+        if package is None:
+            raise ValueError(f"T2 source package not found: {package_id}")
+        source_packages.append(package)
+
+    t0_refs = _dedupe([ref for package in source_packages for ref in package["source_refs"]])
+    adjacent = [package for package_id, package in packages_by_id.items() if package_id not in set(selected_ids)][:4]
+    return {
+        "schema_version": "t2.episode_bundle.v1",
+        "episode_id": episode_id,
+        "episode_job_id": f"episode-job-{episode_id}",
+        "agent_id": str(agent_id),
+        "tenant_id": str(tenant_id) if tenant_id else None,
+        "session_id": str(session_id),
+        "trigger_package_id": trigger_package_id,
+        "trigger_reason": "review.allowed_next=episode_stitching",
+        "source_packages": source_packages,
+        "adjacent_packages": adjacent,
+        "open_carryover_packages": [
+            package
+            for package in packages_by_id.values()
+            if package["package_status"] in {"open", "rolling_checkpoint"} and package["package_id"] not in selected_ids
+        ][:4],
+        "t0_source_refs": t0_refs,
+        "t0_source_ranges": [package.get("source_range") for package in source_packages if package.get("source_range")],
+        "principal_context": {},
+        "created_at": _now(),
+    }
+
+
+def _load_t2_packages(
+    *, root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str
+) -> dict[str, dict[str, Any]]:
+    session_segments_dir = root / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments"
+    packages: dict[str, dict[str, Any]] = {}
+    if not session_segments_dir.exists():
+        return packages
+    for package_dir in sorted(path for path in session_segments_dir.iterdir() if path.is_dir()):
+        manifest_path = package_dir / MANIFEST_FILENAME
+        if not manifest_path.exists():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        package_id = str(manifest.get("package_id") or "").strip()
+        if not package_id:
+            continue
+        summary = (package_dir / SUMMARY_FILENAME).read_text(encoding="utf-8", errors="replace")
+        labels = (package_dir / LABELS_FILENAME).read_text(encoding="utf-8", errors="replace")
+        review = (package_dir / REVIEW_FILENAME).read_text(encoding="utf-8", errors="replace")
+        packages[package_id] = {
+            "package_id": package_id,
+            "path": _relative_agent_path(root, agent_id, package_dir),
+            "t0_segment_id": str(manifest.get("t0_segment_id") or package_dir.name),
+            "source_refs": [str(ref) for ref in manifest.get("source_refs") or [] if str(ref).strip()],
+            "source_range": manifest.get("source_range"),
+            "package_status": str(manifest.get("package_status") or ""),
+            "summary_md": summary,
+            "labels_md": labels,
+            "review_md": review,
+        }
+    return packages
+
+
+def _default_episode_source_package_ids(
+    *, packages_by_id: dict[str, dict[str, Any]], trigger_package_id: str
+) -> list[str]:
+    package_ids = sorted(packages_by_id, key=lambda package_id: _package_sort_key(packages_by_id[package_id]))
+    if trigger_package_id not in packages_by_id:
+        return []
+    trigger_index = package_ids.index(trigger_package_id)
+    continuity_state = _package_continuity_state(packages_by_id[trigger_package_id].get("labels_md") or "")
+    offsets = {
+        "needs_previous": (-1,),
+        "needs_next": (1,),
+        "same_episode_candidate": (-1, 1),
+    }.get(continuity_state, (-1, 1))
+    adjacent_ids: list[str] = []
+    for offset in offsets:
+        neighbor_index = trigger_index + offset
+        if neighbor_index < 0 or neighbor_index >= len(package_ids):
+            continue
+        adjacent_ids.append(package_ids[neighbor_index])
+    return adjacent_ids
+
+
+def _package_sort_key(package: dict[str, Any]) -> tuple[int, str]:
+    source_range = package.get("source_range") if isinstance(package.get("source_range"), dict) else {}
+    try:
+        start_sequence = int(source_range.get("start_sequence"))
+    except (TypeError, ValueError):
+        start_sequence = 1_000_000_000
+    return start_sequence, str(package.get("path") or package.get("package_id") or "")
+
+
+def _package_continuity_state(labels_md: str) -> str:
+    issues: list[str] = []
+    labels = _extract_single_xml(labels_md, "t2_labels", issues)
+    if labels is None:
+        return ""
+    return _continuity_state(labels)
+
+
 def _hold_without_llm(
     *,
     root: Path,
@@ -377,6 +722,51 @@ def _hold_without_llm(
         status="held",
         job_id=job_id,
         package_dir=_package_dir(root, agent_id, session_id, t0_segment_id),
+        staging_dir=staging_dir,
+        issues=(reason,),
+    )
+
+
+def _hold_episode_without_llm(
+    *,
+    root: Path,
+    agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str,
+    trigger_package_id: str,
+    episode_id: str,
+    job_id: str,
+    source_package_ids: list[str] | None,
+    reason: str,
+) -> T2EpisodeStitchPackageResult:
+    staging_dir = _episode_staging_dir(root, agent_id, job_id)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        episode_bundle = _build_episode_bundle(
+            root=root,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            trigger_package_id=trigger_package_id,
+            episode_id=episode_id,
+            source_package_ids=source_package_ids,
+        )
+        _write_json(staging_dir / EPISODE_BUNDLE_FILENAME, episode_bundle)
+    except Exception as exc:  # noqa: BLE001
+        reason = f"{reason}; episode bundle unavailable: {type(exc).__name__}: {exc}"
+    _write_json(
+        staging_dir / "platform_gate_report.json",
+        {
+            "schema_version": "t2.episode-platform-gate-report.v1",
+            "status": "held",
+            "issues": [reason],
+            "created_at": _now(),
+        },
+    )
+    return T2EpisodeStitchPackageResult(
+        status="held",
+        job_id=job_id,
+        package_dir=_episode_dir(root, agent_id, session_id, episode_id),
         staging_dir=staging_dir,
         issues=(reason,),
     )
@@ -460,21 +850,70 @@ def _validate_candidate(*, source_bundle: dict[str, Any], summary_md: str, label
     summary = _extract_single_xml(summary_md, "t2_summary", issues)
     labels = _extract_single_xml(labels_md, "t2_labels", issues)
     review = _extract_single_xml(review_md, "t2_review", issues)
-    expected_uris = {str(ref.get("uri")) for ref in source_bundle.get("source_refs") or [] if str(ref.get("uri") or "").strip()}
+    expected_uris = {
+        str(ref.get("uri")) for ref in source_bundle.get("source_refs") or [] if str(ref.get("uri") or "").strip()
+    }
     if not expected_uris:
         issues.append("source_refs missing from source_bundle")
     for name, node in ((SUMMARY_FILENAME, summary), (LABELS_FILENAME, labels), (REVIEW_FILENAME, review)):
         if node is None:
             continue
-        found = {str(item.attrib.get("uri")) for item in node.findall(".//source_ref") if str(item.attrib.get("uri") or "").strip()}
+        found = {
+            str(item.attrib.get("uri"))
+            for item in node.findall(".//source_ref")
+            if str(item.attrib.get("uri") or "").strip()
+        }
         if not found:
             issues.append(f"{name} source_refs missing")
         elif not found.intersection(expected_uris):
             issues.append(f"{name} source_refs do not match source_bundle")
+    _validate_continuity_fields(summary=summary, labels=labels, review=review, issues=issues)
     if review is not None and (review.findtext("decision") or "").strip() != "approved":
         issues.append("review decision is not approved")
     _validate_review_rubric(summary=summary, labels=labels, review=review, issues=issues)
     return issues
+
+
+def _validate_continuity_fields(
+    *,
+    summary: ET.Element | None,
+    labels: ET.Element | None,
+    review: ET.Element | None,
+    issues: list[str],
+) -> None:
+    if summary is not None:
+        segment_state = _segment_state(summary)
+        if segment_state not in {"complete", "continuation", "interrupted", "low_signal", "administrative"}:
+            issues.append(
+                "summary.md segment_state must be complete|continuation|interrupted|low_signal|administrative"
+            )
+        if summary.find("continuity") is None:
+            issues.append("summary.md continuity block missing")
+    if labels is not None:
+        continuity_state = _continuity_state(labels)
+        if continuity_state not in {
+            "standalone",
+            "same_episode_candidate",
+            "needs_previous",
+            "needs_next",
+            "low_signal",
+            "admin_only",
+        }:
+            issues.append("labels.md continuity_state must be controlled enum")
+    if review is not None:
+        allowed_next = (review.findtext("allowed_next") or "").strip()
+        if allowed_next not in _ALLOWED_REVIEW_NEXT:
+            issues.append("review.md allowed_next must be controlled enum")
+        if allowed_next == "t3_intake":
+            if summary is not None and _segment_state(summary) != "complete":
+                issues.append("segment_state must be complete for t3_intake")
+            if labels is not None and _continuity_state(labels) != "standalone":
+                issues.append("continuity_state must be standalone for t3_intake")
+        if allowed_next == "episode_stitching" and labels is not None:
+            if _continuity_state(labels) not in {"same_episode_candidate", "needs_previous", "needs_next"}:
+                issues.append(
+                    "episode_stitching requires continuity_state same_episode_candidate|needs_previous|needs_next"
+                )
 
 
 def _validate_review_rubric(
@@ -531,6 +970,107 @@ def _validate_review_rubric(
             issues.append("rolling_checkpoint package cannot be approved for t3_intake")
 
 
+def _validate_episode_candidate(*, episode_bundle: dict[str, Any], synthesis_md: str, review_md: str) -> list[str]:
+    issues: list[str] = []
+    synthesis = _extract_single_xml(synthesis_md, "episode_synthesis", issues)
+    review = _extract_single_xml(review_md, "episode_review", issues)
+    expected_refs = {str(ref) for ref in episode_bundle.get("t0_source_refs") or [] if str(ref).strip()}
+    expected_package_ids = {
+        str(package.get("package_id"))
+        for package in episode_bundle.get("source_packages") or []
+        if str(package.get("package_id") or "").strip()
+    }
+    if not expected_refs:
+        issues.append("episode_bundle t0_source_refs missing")
+    if not expected_package_ids:
+        issues.append("episode_bundle source_packages missing")
+
+    if synthesis is not None:
+        found_refs = {
+            str(item.attrib.get("uri"))
+            for item in synthesis.findall(".//source_ref")
+            if str(item.attrib.get("uri") or "").strip()
+        }
+        if not found_refs:
+            issues.append("synthesis.md source_refs missing")
+        elif expected_refs and not found_refs.intersection(expected_refs):
+            issues.append("synthesis.md source_refs do not match episode_bundle")
+        found_package_ids = {
+            str(item.attrib.get("package_id"))
+            for item in synthesis.findall(".//package_ref")
+            if str(item.attrib.get("package_id") or "").strip()
+        }
+        if not found_package_ids:
+            issues.append("synthesis.md source package refs missing")
+        elif expected_package_ids and not found_package_ids.intersection(expected_package_ids):
+            issues.append("synthesis.md source package refs do not match episode_bundle")
+
+    if review is not None and (review.findtext("decision") or "").strip() != "approved":
+        issues.append("episode review decision is not approved")
+    _validate_episode_review_rubric(synthesis=synthesis, review=review, issues=issues)
+    return issues
+
+
+def _validate_episode_review_rubric(
+    *,
+    synthesis: ET.Element | None,
+    review: ET.Element | None,
+    issues: list[str],
+) -> None:
+    if review is None:
+        return
+    rubric = review.find("episode_review_rubric")
+    if rubric is None:
+        issues.append("episode_review_rubric missing from review.md")
+        return
+    if (rubric.attrib.get("schema_version") or "").strip() != "t2.episode_review_rubric.v1":
+        issues.append("episode_review_rubric schema_version must be t2.episode_review_rubric.v1")
+
+    scores: dict[str, float] = {}
+    for score_node in rubric.findall("score"):
+        name = (score_node.attrib.get("name") or "").strip()
+        if name not in _EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS:
+            issues.append(f"episode_review_rubric has unknown score {name or '<missing>'}")
+            continue
+        value = _parse_unit_score(score_node.attrib.get("value"))
+        if value is None:
+            issues.append(f"episode_review_rubric score {name} must be between 0.00 and 1.00")
+            continue
+        scores[name] = value
+
+    missing = sorted(set(_EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS) - set(scores))
+    if missing:
+        issues.append(f"episode_review_rubric missing scores: {', '.join(missing)}")
+
+    review_score = _parse_unit_score(rubric.findtext("review_score"))
+    if review_score is None:
+        issues.append("episode_review_rubric review_score must be between 0.00 and 1.00")
+    elif not missing:
+        expected = _round_to_005(
+            sum(scores[name] * weight for name, weight in _EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS.items())
+        )
+        if abs(review_score - expected) > 0.001:
+            issues.append(
+                f"episode_review_rubric review_score {review_score:.2f} does not match formula result {expected:.2f}"
+            )
+
+    decision = (review.findtext("decision") or "").strip()
+    allowed_next = (review.findtext("allowed_next") or "").strip()
+    if allowed_next not in {"t3_intake", "short_term_carryover", "archive_recall_only", "none"}:
+        issues.append("episode review allowed_next must be controlled enum")
+    if decision == "approved" and allowed_next == "t3_intake":
+        for name, threshold in _EPISODE_T3_INTAKE_THRESHOLDS.items():
+            value = scores.get(name)
+            if value is not None and value < threshold:
+                issues.append(
+                    f"episode_review_rubric score {name}={value:.2f} below t3_intake threshold {threshold:.2f}"
+                )
+        if review_score is not None and review_score < 0.80:
+            issues.append(f"episode_review_rubric review_score {review_score:.2f} below t3_intake threshold 0.80")
+        if synthesis is not None and (synthesis.attrib.get("status") or "").strip() != "closed":
+            issues.append("episode_synthesis status must be closed for t3_intake")
+
+
 def _parse_unit_score(raw: str | None) -> float | None:
     try:
         value = float(str(raw or "").strip())
@@ -548,15 +1088,45 @@ def _package_status(*, summary: ET.Element | None, labels: ET.Element | None) ->
     return ((summary.attrib.get("status") if summary is not None else "") or "").strip()
 
 
+def _package_requests_episode_stitching(package_dir: Path) -> bool:
+    review_path = package_dir / REVIEW_FILENAME
+    if not review_path.exists():
+        return False
+    issues: list[str] = []
+    review = _extract_single_xml(review_path.read_text(encoding="utf-8", errors="replace"), "t2_review", issues)
+    return bool(review is not None and (review.findtext("allowed_next") or "").strip() == "episode_stitching")
+
+
+def _package_allowed_next(review_md: str) -> str:
+    issues: list[str] = []
+    review = _extract_single_xml(review_md, "t2_review", issues)
+    if review is None:
+        return ""
+    return (review.findtext("allowed_next") or "").strip()
+
+
+def _segment_state(summary: ET.Element) -> str:
+    node = summary.find("segment_state")
+    if node is None:
+        return ""
+    return (node.attrib.get("value") or node.text or "").strip()
+
+
+def _continuity_state(labels: ET.Element) -> str:
+    return (labels.findtext(".//continuity_state") or "").strip()
+
+
 def _extract_single_xml(markdown: str, tag: str, issues: list[str]) -> ET.Element | None:
     text = markdown or ""
-    start = text.find(f"<{tag}")
+    open_pattern = re.compile(rf"<{re.escape(tag)}(?=[\s>/])")
+    starts = list(open_pattern.finditer(text))
     end = text.rfind(f"</{tag}>")
-    if start < 0 or end < 0:
+    if not starts or end < 0:
         issues.append(f"{tag} block missing")
         return None
+    start = starts[0].start()
     end += len(f"</{tag}>")
-    if text.find(f"<{tag}", start + 1) >= 0:
+    if len(starts) > 1:
         issues.append(f"{tag} has multiple blocks")
         return None
     try:
@@ -589,14 +1159,46 @@ def _build_manifest(
             "labels_prompt_version": LABELS_PROMPT_VERSION,
             "review_prompt_version": REVIEW_PROMPT_VERSION,
         },
-        "files": {
-            filename: {"sha256": _sha256(content)}
-            for filename, content in files.items()
-        },
+        "files": {filename: {"sha256": _sha256(content)} for filename, content in files.items()},
         "created_at": _now(),
         "write_audit": {
             "writer": "Platform Gate",
             "commit_mode": "atomic_segment_package",
+        },
+        "rollback_refs": [],
+    }
+
+
+def _build_episode_manifest(
+    *,
+    episode_bundle: dict[str, Any],
+    files: dict[str, str],
+    job_id: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "t2.episode-stitch.manifest.v1",
+        "episode_id": episode_bundle["episode_id"],
+        "job_id": job_id,
+        "agent_id": episode_bundle["agent_id"],
+        "tenant_id": episode_bundle.get("tenant_id"),
+        "session_id": episode_bundle["session_id"],
+        "trigger_package_id": episode_bundle["trigger_package_id"],
+        "source_packages": [
+            str(package["package_id"])
+            for package in episode_bundle.get("source_packages") or []
+            if str(package.get("package_id") or "").strip()
+        ],
+        "source_refs": [str(ref) for ref in episode_bundle.get("t0_source_refs") or []],
+        "package_status": "reviewed",
+        "prompts": {
+            "stitcher_prompt_version": EPISODE_STITCHER_PROMPT_VERSION,
+            "review_prompt_version": EPISODE_GATE_REVIEW_PROMPT_VERSION,
+        },
+        "files": {filename: {"sha256": _sha256(content)} for filename, content in files.items()},
+        "created_at": _now(),
+        "write_audit": {
+            "writer": "Platform Gate",
+            "commit_mode": "atomic_episode_stitch_package",
         },
         "rollback_refs": [],
     }
@@ -638,8 +1240,16 @@ def _package_dir(root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | 
     return root / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments" / t0_segment_id
 
 
+def _episode_dir(root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str, episode_id: str) -> Path:
+    return root / str(agent_id) / "memory" / "sessions" / str(session_id) / "episodes" / episode_id
+
+
 def _staging_dir(root: Path, agent_id: uuid.UUID | str, job_id: str) -> Path:
     return root / str(agent_id) / "memory" / ".staging" / "t2_jobs" / job_id
+
+
+def _episode_staging_dir(root: Path, agent_id: uuid.UUID | str, job_id: str) -> Path:
+    return root / str(agent_id) / "memory" / ".staging" / "t2_episode_jobs" / job_id
 
 
 def _relative_agent_path(root: Path, agent_id: uuid.UUID | str, path: Path) -> str:

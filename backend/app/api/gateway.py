@@ -667,6 +667,7 @@ async def send_message(
                 msg_type="text",
                 content=_json.dumps({"text": content}, ensure_ascii=False),
                 receive_id_type="user_id",
+                extra_config=config.extra_config,
             )
         if (resp is None or resp.get("code") != 0) and stable_open_id:
             resp = await feishu_service.send_message(
@@ -676,6 +677,7 @@ async def send_message(
                 msg_type="text",
                 content=_json.dumps({"text": content}, ensure_ascii=False),
                 receive_id_type="open_id",
+                extra_config=config.extra_config,
             )
         await db.commit()
 

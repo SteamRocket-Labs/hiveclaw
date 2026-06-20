@@ -221,6 +221,11 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/
   labels.md       ← LLM-authored event labels + quantified engineering labels
   review.md       ← independent Memory Gate review/rubric output
   manifest.json   ← platform evidence refs, source bundle refs, revisions, audit metadata
+
+memory/sessions/<session_id>/episodes/<episode_id>/
+  synthesis.md    ← LLM-authored stitched episode for broken/continuing segments
+  review.md       ← independent Memory Gate review/rubric output
+  manifest.json   ← platform evidence refs, source package refs, revisions, audit metadata
 ```
 
 `memory/learnings/*.md` is a legacy migration/audit surface only and must not be
@@ -233,7 +238,8 @@ pointers live in `manifest.json` and in-file `source_refs`.
 |-------|----------|-----------|---------|
 | **T0 session ledger** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | `web_chat_runtime` append points; `task_executor` one-off task events; runtime hook events for trigger/delegation/heartbeat/dream; `SESSION_IDLE/CLOSE` seal chat segments | replay/import/backfill; higher layers as evidence |
 | **T0 legacy/import logs** | `logs/YYYY-MM-DD/{behavior,system}/` | Legacy import/manual compatibility only; not a runtime T0 writer | legacy import/operators |
-| **T2 Segment Package** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + independent review; Platform Gate commits package metadata | T3 Consolidator; residual T0 evidence lookup |
+| **T2 Segment Package** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + independent review; Platform Gate commits package metadata | T3 Consolidator only when complete/standalone; residual T0 evidence lookup |
+| **T2 Episode Stitch Package** | `memory/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` | Continuity/Episode Stitcher + independent review; Platform Gate commits package metadata | T3 Consolidator for broken/continuing segments after stitching |
 | **Explicit Memory Overlay** | `memory/explicit/<scope>/...` | `save_memory` only for explicit user-commanded memory; write gate enforces sensitivity/privacy | Prompt activation immediately; later T3 absorption candidate |
 | **T3 Accepted Memory** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator submits pitch/revised patch; Memory Gate reviews; Platform Gate commits exact accepted XML blocks | Dynamic memory activation and Dream soul evidence |
 | **soul.md** | Root workspace | Dream soul reconsolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |

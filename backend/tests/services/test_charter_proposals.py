@@ -301,11 +301,15 @@ class TestApplyApprovedProposal:
         soul = (agent_dir / "soul.md").read_text(encoding="utf-8")
         assert result["status"] == "candidate_staged"
         assert result["target_section"] == "Full Authority"
-        assert result["candidate_path"] == "evolution/soul_candidates/charter-proposal-proposal-1/charter_proposal_signal.md"
+        assert (
+            result["candidate_path"]
+            == "memory/.staging/soul_candidates/charter-proposal-proposal-1/charter_proposal_signal.md"
+        )
         assert soul == before
         signal = (
             agent_dir
-            / "evolution"
+            / "memory"
+            / ".staging"
             / "soul_candidates"
             / "charter-proposal-proposal-1"
             / "charter_proposal_signal.md"
@@ -314,7 +318,7 @@ class TestApplyApprovedProposal:
         assert "proposal_id: proposal-1" in signal
         assert "decision_id: decision/dec-1" in signal
         manifest = (
-            agent_dir / "evolution" / "soul_candidates" / "charter-proposal-proposal-1" / "manifest.json"
+            agent_dir / "memory" / ".staging" / "soul_candidates" / "charter-proposal-proposal-1" / "manifest.json"
         ).read_text(encoding="utf-8")
         assert '"status": "pending_soul_writer"' in manifest
         audit = (agent_dir / "memory" / "charter_calibration.md").read_text(encoding="utf-8")

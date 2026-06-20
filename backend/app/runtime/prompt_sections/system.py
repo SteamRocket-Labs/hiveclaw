@@ -53,7 +53,10 @@ runtime. Treat them as facts about your environment, not suggestions.
 - The memory pyramid runs in the background:
   - After a T0 session segment is sealed: the T0→T2 pipeline builds a reviewed
     T2 Segment Package from the append-only source range.
-  - Every ~2 h: heartbeat curates T2 into T3 semantic memory.
+  - If that package is a broken/continuing fragment: the Episode Stitcher builds
+    a reviewed T2 Episode before T3 intake.
+  - Every ~2 h: heartbeat curates standalone T2 Segment Packages, reviewed T2
+    Episodes, and explicit overlay entries into T3 semantic memory.
   - About once a day: dream consolidates T3 and may promote
     entries into `soul.md` (your permanent identity).
 - You do NOT need to manually curate — the pipeline handles it.

@@ -10,9 +10,8 @@ from sqlalchemy.orm import selectinload
 
 from app.kernel.contracts import ExecutionIdentityRef
 from app.database import tenant_scoped_session
-from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
+from app.memory.t0.ledger import seal_t0_session_segment
 from app.models.agent import Agent
-from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.participant import Participant
@@ -20,6 +19,7 @@ from app.models.task import Task, TaskLog
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
+from app.services.chat_transcript import AppendSessionEventResult, append_session_event
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
@@ -202,35 +202,42 @@ def _build_task_user_prompt(
     return user_prompt + "\n\n请认真完成此任务，给出详细的执行结果。"
 
 
-def _append_task_t0_event(
+async def _append_task_session_event(
     *,
+    db,
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     task_id: uuid.UUID,
     task_type: str,
     event_type: str,
     role: str,
+    actor_type: str,
     content: str,
     actor_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | None = None,
+    participant_id: uuid.UUID | None = None,
     message_id: uuid.UUID | None = None,
     metadata: dict | None = None,
-) -> None:
-    try:
-        append_t0_session_event(
-            agent_id=agent_id,
-            session_id=session_id,
-            event_type=event_type,
-            role=role,
-            content=content,
-            message_id=message_id,
-            actor_id=actor_id,
-            tenant_id=tenant_id,
-            source="task",
-            metadata={"task_id": str(task_id), "task_type": task_type, **(metadata or {})},
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[TaskExec] T0 append skipped for task {}: {}", task_id, exc)
+    t0_role: str | None = None,
+) -> AppendSessionEventResult:
+    return await append_session_event(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        actor_type=actor_type,
+        event_type=event_type,
+        role=role,
+        t0_role=t0_role,
+        user_id=actor_id,
+        participant_id=participant_id,
+        message_id=message_id,
+        content=content,
+        visibility_scope="agent_owner",
+        listed_surface="task_updates",
+        source="task",
+        metadata={"task_id": str(task_id), "task_type": task_type, **(metadata or {})},
+    )
 
 
 def _seal_task_t0_segment(
@@ -385,36 +392,33 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             user_id=creator_id,
             participant_id=agent_participant_id,
             source_channel="task",
+            session_kind="user_task",
+            actor_type="agent",
+            runtime_source="runtime_task",
+            visibility_scope="agent_owner",
+            listed_surface="task_updates",
             title=f"🧾 Task: {task_title}"[:200],
         )
         db.add(reflection_session)
         await db.flush()
         reflection_session_id = reflection_session.id
 
-        user_message = ChatMessage(
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            conversation_id=str(reflection_session_id),
-            role="user",
-            content=user_prompt,
-            user_id=creator_id,
-            participant_id=agent_participant_id,
-        )
-        db.add(user_message)
-        await db.commit()
-        _append_task_t0_event(
+        await _append_task_session_event(
+            db=db,
             agent_id=agent_id,
             session_id=reflection_session_id,
             task_id=task_id,
             task_type=task_type,
             event_type="user_message",
+            actor_type="user",
             role="user",
             content=user_prompt,
             actor_id=creator_id,
             tenant_id=tenant_id,
-            message_id=getattr(user_message, "id", None),
+            participant_id=agent_participant_id,
             metadata={"title": task_title},
         )
+        await db.commit()
 
     # Step 4: Call unified runtime
     try:
@@ -436,30 +440,23 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                 default=str,
             )
             async with tenant_scoped_session(tenant_id) as tc_db:
-                tool_message = ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=tenant_id,
-                    conversation_id=str(reflection_session_id),
-                    role="tool_call",
-                    content=tool_payload,
-                    user_id=creator_id,
-                    participant_id=agent_participant_id,
-                )
-                tc_db.add(tool_message)
-                await tc_db.commit()
-                _append_task_t0_event(
+                await _append_task_session_event(
+                    db=tc_db,
                     agent_id=agent_id,
                     session_id=reflection_session_id,
                     task_id=task_id,
                     task_type=task_type,
                     event_type="tool_result",
-                    role="tool",
+                    actor_type="agent",
+                    role="tool_call",
+                    t0_role="tool",
                     content=tool_payload,
                     actor_id=agent_id,
                     tenant_id=tenant_id,
-                    message_id=getattr(tool_message, "id", None),
+                    participant_id=agent_participant_id,
                     metadata={"tool_name": data.get("name"), "status": "done"},
                 )
+                await tc_db.commit()
 
         result = await invoke_agent(
             AgentInvocationRequest(
@@ -504,33 +501,25 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         result = await db.execute(select(Task).where(Task.id == task_id))
         task = result.scalar_one_or_none()
         if task:
-            assistant_message = ChatMessage(
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                conversation_id=str(reflection_session_id),
-                role="assistant",
-                content=reply,
-                user_id=creator_id,
-                participant_id=agent_participant_id,
-            )
-            db.add(assistant_message)
-            task.status = "done"
-            task.completed_at = datetime.now(timezone.utc)
-            db.add(TaskLog(tenant_id=tenant_id, task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
-            await db.commit()
-            _append_task_t0_event(
+            await _append_task_session_event(
+                db=db,
                 agent_id=agent_id,
                 session_id=reflection_session_id,
                 task_id=task_id,
                 task_type=task_type,
                 event_type="assistant_message",
+                actor_type="assistant",
                 role="assistant",
                 content=reply,
                 actor_id=agent_id,
                 tenant_id=tenant_id,
-                message_id=getattr(assistant_message, "id", None),
+                participant_id=agent_participant_id,
                 metadata={"title": task_title},
             )
+            task.status = "done"
+            task.completed_at = datetime.now(timezone.utc)
+            db.add(TaskLog(tenant_id=tenant_id, task_id=task_id, content=f"✅ 任务完成\n\n{reply}"))
+            await db.commit()
             _seal_task_t0_segment(
                 agent_id=agent_id,
                 session_id=reflection_session_id,

@@ -183,6 +183,24 @@ describe('request cleanup adapters', () => {
     expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/messages', { signal });
   });
 
+  it('routes replayable session transcript loading through chatApi', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+    const { chatApi } = await import('./domains/chat');
+    const { get } = await import('./core/request');
+    const signal = new AbortController().signal;
+    vi.mocked(get).mockResolvedValue([{ id: 'evt-1', sequence: 1, type: 'assistant_message', content: 'ok' }]);
+
+    await chatApi.getSessionTranscript('agent-1', 'session-1', { signal });
+
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/transcript', { signal });
+  });
+
   it('supports scoped session listing through chatApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

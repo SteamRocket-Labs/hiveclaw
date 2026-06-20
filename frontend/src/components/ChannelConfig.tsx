@@ -61,6 +61,22 @@ interface ChannelDef {
     qrScanMode?: boolean;
 }
 
+type FeishuPlatformRegion = 'feishu_cn' | 'lark_global';
+
+const DEFAULT_FEISHU_PLATFORM_REGION: FeishuPlatformRegion = 'feishu_cn';
+const FEISHU_PLATFORM_OPTIONS: Array<{ value: FeishuPlatformRegion; labelKey: string; fallback: string }> = [
+    { value: 'feishu_cn', labelKey: 'agent.settings.channel.platformFeishuCn', fallback: 'Feishu (China)' },
+    { value: 'lark_global', labelKey: 'agent.settings.channel.platformLarkGlobal', fallback: 'Lark (Global)' },
+];
+
+function normalizeFeishuPlatformRegion(value?: string): FeishuPlatformRegion {
+    return value === 'lark_global' ? 'lark_global' : DEFAULT_FEISHU_PLATFORM_REGION;
+}
+
+function getFeishuPlatformOption(region: FeishuPlatformRegion) {
+    return FEISHU_PLATFORM_OPTIONS.find(option => option.value === region) || FEISHU_PLATFORM_OPTIONS[0];
+}
+
 // ─── SVG Icons ──────────────────────────────────────────
 const SlackIcon = <img src="/slack.png" alt="Slack" width="20" height="20" style={{ borderRadius: '4px' }} />;
 
@@ -335,7 +351,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         if (mode === 'edit') {
             return { feishu: true };
         }
-        return {};
+        return { feishu: true };
     });
     const toggleChannel = (id: string) => setOpenChannels(prev => ({ ...prev, [id]: !prev[id] }));
 
@@ -354,6 +370,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         feishu: 'websocket',
         wecom: 'websocket',
         discord: 'gateway',
+    });
+    const [feishuPlatformRegions, setFeishuPlatformRegions] = useState<Record<string, FeishuPlatformRegion>>({
+        feishu: DEFAULT_FEISHU_PLATFORM_REGION,
     });
 
     // Password visibility
@@ -552,7 +571,10 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 app_id: form.app_id,
                 app_secret: form.app_secret,
                 encrypt_key: form.encrypt_key || undefined,
-                extra_config: { connection_mode: connectionModes.feishu || 'websocket' },
+                extra_config: {
+                    connection_mode: connectionModes.feishu || 'websocket',
+                    platform_region: normalizeFeishuPlatformRegion(feishuPlatformRegions.feishu),
+                },
             };
         }
         if (ch.id === 'wecom') {
@@ -685,6 +707,33 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         );
     };
 
+    const renderFeishuPlatformSelector = (
+        channelId: string,
+        selectedRegion: FeishuPlatformRegion,
+        onRegionChange: (region: FeishuPlatformRegion) => void,
+    ) => {
+        return (
+            <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <label style={{ fontSize: '12px', fontWeight: 500, width: '120px' }}>
+                    {t('agent.settings.channel.platform', 'Platform')}
+                </label>
+                <select
+                    className={mode === 'edit' ? 'input' : 'form-input'}
+                    value={selectedRegion}
+                    onChange={event => onRegionChange(normalizeFeishuPlatformRegion(event.target.value))}
+                    style={{ fontSize: '13px', maxWidth: '220px' }}
+                    aria-label={t('agent.settings.channel.platform', 'Platform')}
+                >
+                    {FEISHU_PLATFORM_OPTIONS.map(option => (
+                        <option key={`${channelId}-${option.value}`} value={option.value}>
+                            {t(option.labelKey, option.fallback)}
+                        </option>
+                    ))}
+                </select>
+            </div>
+        );
+    };
+
     // ─── Render create mode channel card ─────────────────
     const renderCreateChannel = (ch: ChannelDef) => {
         const isOpen = openChannels[ch.id] || false;
@@ -692,6 +741,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         // Ensure we default to 'websocket' for connectionMode in create view if enabled
         const connMode = ch.connectionMode ? (connectionModes[ch.id] || 'websocket') : null;
         const isWs = connMode === 'websocket';
+        const selectedFeishuPlatformRegion = normalizeFeishuPlatformRegion(
+            values?.[`${ch.id}_platform_region`] || feishuPlatformRegions[ch.id],
+        );
         
         // Active fields for current mode
         const activeFields = (ch.connectionMode && isWs && ch.wsFields) ? ch.wsFields : ch.fields;
@@ -729,6 +781,15 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 </div>
                 {isOpen && (
                     <div style={{ padding: '16px' }}>
+                        {ch.id === 'feishu' && renderFeishuPlatformSelector(ch.id, selectedFeishuPlatformRegion, region => {
+                            setFeishuPlatformRegions(prev => ({ ...prev, [ch.id]: region }));
+                            onChange?.({
+                                ...values,
+                                [`${ch.id}_platform_region`]: region,
+                                [`${ch.id}_connection_mode`]: connMode || 'websocket',
+                            });
+                        })}
+
                         {/* Connection Mode Toggle */}
                         {ch.connectionMode && (
                             <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -757,6 +818,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                         if (ch.connectionMode) {
                                             newValues[`${ch.id}_connection_mode`] = connMode || 'websocket';
                                         }
+                                        if (ch.id === 'feishu') {
+                                            newValues[`${ch.id}_platform_region`] = selectedFeishuPlatformRegion;
+                                        }
                                         onChange?.(newValues);
                                     },
                                 )}
@@ -779,6 +843,9 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         const connMode = connectionModes[ch.id] || 'websocket';
         const isWs = ch.connectionMode && connMode === 'websocket';
         const configConnMode = config?.extra_config?.connection_mode;
+        const selectedFeishuPlatformRegion = normalizeFeishuPlatformRegion(feishuPlatformRegions[ch.id]);
+        const currentConfigFeishuPlatformRegion = normalizeFeishuPlatformRegion(config?.extra_config?.platform_region);
+        const currentConfigFeishuPlatformOption = getFeishuPlatformOption(currentConfigFeishuPlatformRegion);
 
         // Determine desc subtitle based on current mode
         let subtitle = ch.desc;
@@ -846,11 +913,17 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00D6B9', display: 'inline-block' }}></span>
                                             <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket (No callback URL needed)</span>
                                         </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '4px' }}>
+                                            {t('agent.settings.channel.platform', 'Platform')}: <strong>{t(currentConfigFeishuPlatformOption.labelKey, currentConfigFeishuPlatformOption.fallback)}</strong>
+                                        </div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>App ID: <code>{config.app_id}</code></div>
                                     </div>
                                 )}
                                 {ch.id === 'feishu' && configConnMode !== 'websocket' && (
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
+                                        <div style={{ marginBottom: '4px' }}>
+                                            {t('agent.settings.channel.platform', 'Platform')}: <strong>{t(currentConfigFeishuPlatformOption.labelKey, currentConfigFeishuPlatformOption.fallback)}</strong>
+                                        </div>
                                         <div style={{ marginBottom: '4px' }}>Mode: <strong>Webhook</strong></div>
                                         <div>App ID: <code>{config.app_id}</code></div>
                                     </div>
@@ -954,6 +1027,10 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                                 prefill.app_secret = config.app_secret || '';
                                                 prefill.encrypt_key = config.encrypt_key || '';
                                                 setConnectionModes(prev => ({ ...prev, feishu: config.extra_config?.connection_mode || 'websocket' }));
+                                                setFeishuPlatformRegions(prev => ({
+                                                    ...prev,
+                                                    feishu: normalizeFeishuPlatformRegion(config.extra_config?.platform_region),
+                                                }));
                                             } else if (ch.id === 'wecom') {
                                                 const cm = config.extra_config?.connection_mode === 'websocket' ? 'websocket' : 'webhook';
                                                 setConnectionModes(prev => ({ ...prev, wecom: cm }));
@@ -1004,6 +1081,10 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                         ) : (
                             /* ── Form view (new or editing) ── */
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                {ch.id === 'feishu' && renderFeishuPlatformSelector(ch.id, selectedFeishuPlatformRegion, region => {
+                                    setFeishuPlatformRegions(prev => ({ ...prev, [ch.id]: region }));
+                                })}
+
                                 {/* Connection mode toggle (feishu, wecom) */}
                                 {ch.connectionMode && (
                                     <div style={{ marginBottom: '8px' }}>

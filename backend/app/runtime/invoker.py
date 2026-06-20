@@ -342,7 +342,10 @@ def _apply_vision_transform(api_messages: list[LLMMessage], supports_vision: boo
         image_count = len(re.findall(strip_pattern, msg.content))
         cleaned = re.sub(strip_pattern, "", msg.content).strip()
         if image_count > 0:
-            cleaned += f"\n[用户发送了 {image_count} 张图片，但当前模型不支持视觉，无法查看图片内容]"
+            cleaned += (
+                f"\n[The user sent {image_count} image(s), but the current model does not support vision, "
+                "so the image content is unavailable.]"
+            )
         api_messages[i] = LLMMessage(role=msg.role, content=cleaned)
     return api_messages
 
@@ -423,7 +426,7 @@ async def _resolve_memory_context(
     # so fresh memory can vary without invalidating the stable system prompt cache.
     # CC subagent semantics: a standalone-prompt invocation is a clean specialist —
     # the HOST agent's memory pyramid must not leak into its context. (Its own
-    # subagent 记忆.md is appended to the standalone prompt by the spawn layer.)
+    # the subagent memory.md is appended to the standalone prompt by the spawn layer.)
     if (request.standalone_system_prompt or "").strip():
         return ""
     parts: list[str] = []
@@ -685,7 +688,7 @@ def _infer_active_tool_groups(
             "name": synthetic_name,
             "summary": f"Tools discovered by {skill_name or 'tool_search'}",
             "source": "discovery",
-            "activation_mode": "通过 tool_search 发现",
+            "activation_mode": "Discovered through tool_search.",
             "tools": sorted(requested),
             "skill_name": skill_name,
         }
@@ -1042,7 +1045,7 @@ def _resolve_effective_turn_route(
     if request.session_context is not None:
         session_metadata = _session_metadata(request.session_context)
         session_metadata["turn_route"] = route_metadata
-        # Work Ledger 切口②/T-G1: decide on the general path whether the
+        # Work Ledger slice 2 / T-G1: decide on the general path whether the
         # cognitive scaffold may participate this turn (complex → scheduler
         # eligibility + compaction reboot; simple Q&A → zero overhead). The
         # kernel reads this flag; actual reminder frequency lives in the

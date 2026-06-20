@@ -38,38 +38,6 @@ _PLATFORM_ROOT_DIRS = {
 }
 _LEGACY_ROOT_WORK_FILES_DIR = Path("workspace") / "archived" / "legacy-root-files"
 
-_EVOLUTION_SCORECARD_SEED = """\
-# Evolution Scorecard
-
-## Metrics (updated each heartbeat)
-- total_heartbeats: 0
-- useful_heartbeats: 0
-- failed_attempts: 0
-- blocked_approaches: 0
-- skills_created: 0
-- strategies_evolved: 0
-
-## Recent Trend
-(updated automatically by heartbeat Phase 4)
-"""
-
-_EVOLUTION_BLOCKLIST_SEED = """\
-# Blocked Approaches
-
-Approaches proven impossible in this environment. Do NOT retry these.
-
-(none yet)
-"""
-
-_EVOLUTION_LINEAGE_SEED = """\
-# Evolution Lineage
-
-Each heartbeat records what was tried and the outcome.
-The next heartbeat reads this to avoid repeating failures and to build on successes.
-
-(no entries yet)
-"""
-
 _EVOLUTION_SKILL_REVIEW_SEED = """\
 # Skill Review
 
@@ -82,9 +50,6 @@ Lifecycle events for skills: candidate, promoted, patched, or superseded.
 def _bootstrap_evolution_files(ws: Path) -> None:
     """Create evolution seed files if they don't exist."""
     seeds = {
-        "evolution/scorecard.md": _EVOLUTION_SCORECARD_SEED,
-        "evolution/blocklist.md": _EVOLUTION_BLOCKLIST_SEED,
-        "evolution/lineage.md": _EVOLUTION_LINEAGE_SEED,
         "evolution/skill_review.md": _EVOLUTION_SKILL_REVIEW_SEED,
     }
     for rel_path, content in seeds.items():

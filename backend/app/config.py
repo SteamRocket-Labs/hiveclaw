@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     FEISHU_APP_ID: str = ""
     FEISHU_APP_SECRET: str = ""
     FEISHU_REDIRECT_URI: str = ""
+    FEISHU_PLATFORM_REGION: str = "feishu_cn"
+    FEISHU_OPEN_API_DOMAIN: str = ""
+    FEISHU_OAUTH_AUTHORIZE_URL: str = ""
     FEISHU_CLI_ENABLED: bool = False
     FEISHU_CLI_BIN: str = "lark-cli"
     FEISHU_CLI_TIMEOUT_SECONDS: int = 30
@@ -185,6 +188,12 @@ class Settings(BaseSettings):
 
     # Optional platform-hosted SearXNG instance for no-key basic web search.
     SEARXNG_URL: str = ""
+
+    # AnySearch Search API. Supports comma- or newline-separated API key pools.
+    ANYSEARCH_API_KEYS: str = ""
+    ANYSEARCH_DEFAULT_ZONE: str = "intl"
+    ANYSEARCH_DEFAULT_CONTENT_TYPES: str = "web"
+    ANYSEARCH_TIMEOUT_SECONDS: int = 12
 
     # Firecrawl / XCrawl scraping APIs
     FIRECRAWL_API_KEY: str = ""

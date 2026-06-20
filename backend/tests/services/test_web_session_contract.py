@@ -32,6 +32,11 @@ async def test_apply_web_session_contract_sets_delivery_target_and_external_conv
         source_channel=None,
         external_conv_id=None,
         delivery_target_json=None,
+        session_kind=None,
+        actor_type=None,
+        runtime_source=None,
+        visibility_scope=None,
+        listed_surface=None,
     )
 
     target = await apply_web_session_contract(_FakeDB(), session=session, agent_id=uuid4(), user=user)
@@ -45,6 +50,11 @@ async def test_apply_web_session_contract_sets_delivery_target_and_external_conv
     assert session.source_channel == "web"
     assert session.external_conv_id == "web_alice"
     assert session.delivery_target_json == target
+    assert session.session_kind == "human_chat"
+    assert session.actor_type == "user"
+    assert session.runtime_source == "web_chat"
+    assert session.visibility_scope == "direct_user"
+    assert session.listed_surface == "chat"
 
 
 @pytest.mark.asyncio

@@ -143,6 +143,36 @@ def test_feishu_sso_init_uses_current_oauth_authorize_contract(monkeypatch: pyte
     assert db.added, "Expected an SSO session row to be created"
 
 
+def test_feishu_sso_init_uses_lark_global_authorize_url_from_tenant_setting(monkeypatch: pytest.MonkeyPatch):
+    tenant_id = uuid4()
+    tenant_setting = SimpleNamespace(
+        value={
+            "app_id": "cli_lark_app_id",
+            "app_secret": "secret",
+            "platform_region": "lark_global",
+        }
+    )
+    db = _FakeDB(execute_results=[tenant_setting])
+    app = _build_app(db)
+
+    settings = SimpleNamespace(
+        FEISHU_APP_ID="",
+        FEISHU_APP_SECRET="",
+        FEISHU_REDIRECT_URI="https://example.com/api/auth/feishu/callback",
+        PUBLIC_BASE_URL="",
+        BASE_URL="",
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post(f"/auth/feishu/sso/init?tenant_id={tenant_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authorize_url"].startswith("https://accounts.larksuite.com/open-apis/authen/v1/authorize?")
+    assert "client_id=cli_lark_app_id" in payload["authorize_url"]
+
+
 def test_feishu_sso_init_pins_explicit_tenant(monkeypatch: pytest.MonkeyPatch):
     from app import database
 
@@ -352,22 +382,24 @@ def test_feishu_card_callback_resolves_user_via_channel_user_service():
     callback_body = {
         "open_id": "ou_callback_open",
         "operator": {"open_id": "ou_callback_open"},
-        "action": {
-            "value": '{"approval_id": "%s", "action": "approve"}' % approval_id
-        },
+        "action": {"value": '{"approval_id": "%s", "action": "approve"}' % approval_id},
     }
 
-    with patch(
-        "app.api.feishu.channel_user_service.resolve_feishu_user",
-        new_callable=AsyncMock,
-        return_value=current_user,
-    ) as resolve_user_mock, patch(
-        "app.services.approval_service.approval_service.resolve_approval",
-        new_callable=AsyncMock,
-        return_value=approval,
-    ) as resolve_approval_mock, patch(
-        "app.core.policy.write_audit_event",
-        new_callable=AsyncMock,
+    with (
+        patch(
+            "app.api.feishu.channel_user_service.resolve_feishu_user",
+            new_callable=AsyncMock,
+            return_value=current_user,
+        ) as resolve_user_mock,
+        patch(
+            "app.services.approval_service.approval_service.resolve_approval",
+            new_callable=AsyncMock,
+            return_value=approval,
+        ) as resolve_approval_mock,
+        patch(
+            "app.core.policy.write_audit_event",
+            new_callable=AsyncMock,
+        ),
     ):
         client = TestClient(app, raise_server_exceptions=False)
         response = client.post("/channel/feishu/card-callback", json=callback_body)
@@ -395,7 +427,7 @@ async def test_process_feishu_event_dispatches_card_action_trigger_to_callback(m
         "header": {"event_type": "card.action.trigger", "event_id": "evt_card_1"},
         "event": {
             "operator": {"open_id": "ou_card_1"},
-            "action": {"value": "{\"approval_id\": \"123\", \"action\": \"approve\"}"},
+            "action": {"value": '{"approval_id": "123", "action": "approve"}'},
         },
     }
 

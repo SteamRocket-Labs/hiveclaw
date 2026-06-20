@@ -22,17 +22,38 @@ WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 
 # Supported extensions and their text extraction method
 TEXT_EXTENSIONS = {
-    ".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml",
-    ".py", ".js", ".ts", ".html", ".css", ".sql", ".sh", ".log",
-    ".ini", ".cfg", ".conf", ".env", ".toml",
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".py",
+    ".js",
+    ".ts",
+    ".html",
+    ".css",
+    ".sql",
+    ".sh",
+    ".log",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".env",
+    ".toml",
 }
 OFFICE_EXTENSIONS = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 EXTRACTABLE = TEXT_EXTENSIONS | OFFICE_EXTENSIONS
 
 MIME_MAP = {
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
 }
 
 
@@ -147,9 +168,12 @@ async def upload_file(
         save_path = fallback_dir / f"{file_id}_{safe_filename}"
         save_path.write_bytes(content)
 
-    # Extract text (only for known formats)
+    # Convert text/documents to canonical Markdown artifacts. Keep image handling
+    # separate because vision-capable chat models still consume typed image parts.
     is_image = ext in IMAGE_EXTENSIONS
     image_data_url = ""
+    conversion = None
+    preview_text = ""
     if is_image:
         # For images: generate base64 data URL for vision models
         if len(content) > 10 * 1024 * 1024:  # 10MB limit
@@ -159,7 +183,46 @@ async def upload_file(
         image_data_url = f"data:{mime};base64,{b64}"
         extracted = f"[图片文件: {file.filename}，需要视觉模型分析]"
     elif ext in EXTRACTABLE:
-        extracted = extract_text(save_path, ext)
+        try:
+            from app.services.document_conversion import (
+                DocumentConversionRequest,
+                DocumentConversionService,
+                render_conversion_preview,
+            )
+
+            workspace_root = (WORKSPACE_ROOT / str(agent_id)).resolve() if agent_id else save_path.parent.resolve()
+            converted = DocumentConversionService().convert(
+                DocumentConversionRequest(
+                    source_path=save_path,
+                    workspace_root=workspace_root,
+                    source_uri=None,
+                    tenant_id=getattr(current_user, "tenant_id", None),
+                    agent_id=agent_id,
+                    user_id=getattr(current_user, "id", None),
+                    mode="auto",
+                    force_refresh=False,
+                )
+            )
+            extracted = render_conversion_preview(converted, max_chars=6000)
+            preview_text = extracted
+            conversion = {
+                "status": "converted",
+                "markdown_path": converted.artifact_markdown_path,
+                "metadata_path": converted.artifact_metadata_path,
+                "engine": converted.engine,
+                "used_ocr": converted.used_ocr,
+                "used_vision": converted.used_vision,
+                "warnings": list(converted.warnings),
+                "source_sha256": converted.source_sha256,
+            }
+        except Exception as e:
+            extracted = f"[文档转换失败: {str(e)[:200]}]"
+            preview_text = extracted
+            conversion = {
+                "status": "failed",
+                "error": str(e)[:300],
+                "warnings": ["document_conversion_failed"],
+            }
     else:
         extracted = f"[文件已保存，格式 {ext} 暂不支持文本提取，Agent 可通过 read_document 工具读取]"
 
@@ -172,6 +235,8 @@ async def upload_file(
         "saved_filename": save_path.name,
         "size": len(content),
         "extracted_text": extracted,
+        "preview_text": preview_text or extracted,
+        "conversion": conversion,
         "workspace_path": workspace_path,
         "is_image": is_image,
         "image_data_url": image_data_url,

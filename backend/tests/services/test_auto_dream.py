@@ -338,7 +338,7 @@ class TestApplyDreamDecisions:
         assert report["soul_candidate_committed"] == 1
         assert report["soul_added"] == 1
 
-        candidate_root = tmp_path / str(agent_id) / "evolution" / "soul_candidates"
+        candidate_root = tmp_path / str(agent_id) / "memory" / ".staging" / "soul_candidates"
         candidate_dirs = list(candidate_root.iterdir())
         assert len(candidate_dirs) == 1
         candidate_dir = candidate_dirs[0]
@@ -351,6 +351,20 @@ class TestApplyDreamDecisions:
         assert manifest["target_path"] == "soul.md"
         assert manifest["memory_gate_review"]["recommendation"] == "promote"
         assert manifest["memory_gate_review"]["reviewer"] == "soul_memory_gate_agent"
+        assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
+        audit_path = tmp_path / str(agent_id) / "memory" / "distillation_audit.jsonl"
+        audit_rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        audit = audit_rows[-1]
+        assert audit["stage"] == "soul_candidate"
+        assert audit["outcome"] == "committed"
+        assert audit["reason"] == "candidate passed Platform Soul Gate"
+        assert audit["detail"]["candidate_id"] == manifest["candidate_id"]
+        assert audit["detail"]["candidate_package_path"] == f"memory/.staging/soul_candidates/{manifest['candidate_id']}"
+        assert audit["detail"]["target_path"] == "soul.md"
+        assert audit["detail"]["rollback_ref"].startswith("memory/.rollback/soul/")
+        assert audit["detail"]["semantic_writer"] == "Dream / Soul Writer Agent"
+        assert audit["detail"]["reviewer"] == "Soul Memory Gate Agent"
+        assert audit["detail"]["physical_committer"] == "Platform Soul Gate"
 
     def test_self_reviewed_soul_candidate_is_held(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
@@ -369,6 +383,18 @@ class TestApplyDreamDecisions:
         assert soul == before
         assert report["soul_candidate_committed"] == 0
         assert report["soul_candidate_held"] == 1
+        assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
+        audit_path = tmp_path / str(agent_id) / "memory" / "distillation_audit.jsonl"
+        audit_rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        audit = audit_rows[-1]
+        assert audit["stage"] == "soul_candidate"
+        assert audit["outcome"] == "held"
+        assert audit["reason"] in {
+            "Soul Memory Gate review candidate_id mismatch",
+            "memory_gate_review must come from Soul Memory Gate, not Dream self-review",
+        }
+        assert audit["detail"]["target_path"] == "soul.md"
+        assert audit["detail"]["rollback_ref"] is None
 
     def test_legacy_soul_promotions_are_held_not_written(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)
@@ -1116,10 +1142,24 @@ def test_dream_consolidator_template_is_loaded_into_prompt() -> None:
         {"t3/user.md": "- [2026-05-02] User requires evidence-tagged memory"},
     )
 
-    assert "memory_promotion_candidate" in out
+    assert "memory_promotion_candidate" not in out
+    assert "evolution/evolution_ledger.jsonl" not in out
+    assert "soul_candidate" in out
+    assert "memory/distillation_audit.jsonl" in out
     assert "source_refs" in out
     assert "rollback_ref" in out
     assert "dream may propose candidates" in out.lower()
+
+
+def test_auto_dream_does_not_use_legacy_evolution_ledger_for_soul_writeback() -> None:
+    source = Path("app/services/auto_dream.py").read_text(encoding="utf-8")
+
+    assert "record_memory_promotion_candidate" not in source
+    assert "record_memory_promotion_decision" not in source
+    assert "load_evolution_ledger" not in source
+    assert "sync_t3_to_memory_enhancement" not in source
+    assert "_review_blocklist" not in source
+    assert "blocklist.md" not in source
 
 
 def test_feedback_decision_chains_propose_charter_calibration_without_mutation() -> None:

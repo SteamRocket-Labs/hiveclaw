@@ -256,7 +256,7 @@ def _stage_charter_proposal_soul_candidate(
     staged_at: datetime,
 ) -> str:
     candidate_id = f"charter-proposal-{_safe_candidate_id(proposal.id)}"
-    package_dir = agent_dir / "evolution" / "soul_candidates" / candidate_id
+    package_dir = agent_dir / "memory" / ".staging" / "soul_candidates" / candidate_id
     package_dir.mkdir(parents=True, exist_ok=True)
     signal_path = package_dir / "charter_proposal_signal.md"
     signal = (
@@ -288,7 +288,7 @@ def _stage_charter_proposal_soul_candidate(
         "target_path": "soul.md",
         "target_section": target_section,
         "status": "pending_soul_writer",
-        "signal_path": f"evolution/soul_candidates/{candidate_id}/charter_proposal_signal.md",
+        "signal_path": f"memory/.staging/soul_candidates/{candidate_id}/charter_proposal_signal.md",
         "source_refs": [proposal.decision_id, f"charter_proposal:{proposal.id}"],
         "staged_by": staged_by,
         "staged_at": staged_at.astimezone(timezone.utc).isoformat(),

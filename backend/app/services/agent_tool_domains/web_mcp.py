@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import html
 from html.parser import HTMLParser
+import itertools
+import json
 import logging
+from pathlib import Path
 import re
 import uuid
 from urllib.parse import urlparse
@@ -12,6 +15,11 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.database import async_session, tenant_scoped_session
+from app.services.document_conversion import (
+    DocumentConversionResult,
+    DocumentConversionService,
+    render_conversion_preview,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import classify_http_status, render_tool_error, render_tool_fallback
 
@@ -26,10 +34,77 @@ def _safe_int(value, default: int) -> int:
         return default
 
 
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, list | tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _split_config_list(value: object) -> list[str]:
+    if isinstance(value, list | tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r"[\n,;]+", value) if part.strip()]
+    return []
+
+
+def _optional_enum(value: object, allowed: set[str], default: str | None = None) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in allowed:
+        return text
+    return default
+
+
+def _enum_list(value: object, allowed: tuple[str, ...], default: list[str]) -> list[str]:
+    requested = _string_list(value)
+    if not requested:
+        return list(default)
+    canonical = {item.lower(): item for item in allowed}
+    selected: list[str] = []
+    for item in requested:
+        mapped = canonical.get(item.lower())
+        if mapped and mapped not in selected:
+            selected.append(mapped)
+    return selected or list(default)
+
+
+def _optional_string(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _optional_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
 _URL_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$")
 _SKIP_CRAWLER_FALLBACK = "_skip_crawler_fallback"
 _SKIP_WEB_FETCH_FALLBACK = "_skip_web_fetch_fallback"
 _SKIP_FIRECRAWL_FALLBACK = "_skip_firecrawl_fallback"
+_EXA_SEARCH_TYPES = {"auto", "instant", "fast", "deep-lite", "deep", "deep-reasoning"}
+_EXA_CATEGORIES = {"company", "research paper", "news", "personal site", "financial report", "people"}
+_TAVILY_SEARCH_DEPTHS = {"basic", "advanced", "fast", "ultra-fast"}
+_TAVILY_TOPICS = {"general", "news", "finance"}
+_TAVILY_TIME_RANGES = {"day", "week", "month", "year", "d", "w", "m", "y"}
+_ANYSEARCH_API_URL = "https://api.anysearch.com/v1/search"
+_ANYSEARCH_MCP_URL = "https://api.anysearch.com/mcp"
+_ANYSEARCH_ZONES = {"intl", "cn"}
+_ANYSEARCH_LOCAL_COUNTER = itertools.count()
+_FIRECRAWL_FORMATS = ("markdown", "summary", "html", "rawHtml", "links", "screenshot", "json")
+_XCRAWL_OUTPUT_FORMATS = ("markdown", "html", "raw_html", "links", "summary", "screenshot", "json")
+_XCRAWL_WAIT_UNTIL = {"load", "domcontentloaded", "networkidle"}
+_XCRAWL_DEVICES = {"desktop", "mobile"}
+_WEB_FETCH_CONVERSION_ROOT = Path(get_settings().AGENT_DATA_DIR) / ".hive" / "web_fetch"
 
 
 def _tool_visible_to_agent_tenant(tool, agent) -> bool:
@@ -129,7 +204,30 @@ def _http_error(tool_name: str, *, provider: str, status_code: int, detail: str,
     )
 
 
-def _extract_text_from_html(markup: str) -> str:
+def _extract_text_with_trafilatura(markup: str, *, url: str | None = None) -> str:
+    try:
+        import trafilatura
+    except Exception as e:
+        logger.debug("Trafilatura HTML extraction unavailable: %s", e)
+        return ""
+    try:
+        extracted = trafilatura.extract(
+            markup,
+            url=url,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+        )
+    except Exception as e:
+        logger.debug("Trafilatura HTML extraction failed: %s", e)
+        return ""
+    return (extracted or "").strip()
+
+
+def _extract_text_from_html(markup: str, *, url: str | None = None) -> str:
+    trafilatura_text = _extract_text_with_trafilatura(markup, url=url)
+    if trafilatura_text:
+        return trafilatura_text
     parser = _HTMLTextExtractor()
     parser.feed(markup)
     return parser.get_text()
@@ -165,6 +263,260 @@ def _provider_failure_message(result: str, engine: str) -> str:
     return first_line.removeprefix("❌").strip() or f"web_search provider '{engine}' failed"
 
 
+def _anysearch_api_keys(config: dict) -> list[str]:
+    keys = _split_config_list(config.get("anysearch_api_keys"))
+    if keys:
+        return keys
+    return _split_config_list(get_settings().ANYSEARCH_API_KEYS)
+
+
+def _anysearch_content_types(config: dict) -> list[str]:
+    configured = _split_config_list(config.get("anysearch_content_types"))
+    if configured:
+        return configured
+    settings_value = _split_config_list(get_settings().ANYSEARCH_DEFAULT_CONTENT_TYPES)
+    return settings_value or ["web"]
+
+
+def _anysearch_zone(config: dict) -> str:
+    zone = str(config.get("anysearch_zone") or get_settings().ANYSEARCH_DEFAULT_ZONE or "intl").strip().lower()
+    return zone if zone in _ANYSEARCH_ZONES else "intl"
+
+
+async def _next_anysearch_key_start_index(keys: list[str], scope: str) -> int:
+    if not keys:
+        return 0
+    try:
+        from app.core.events import get_redis
+
+        redis = await get_redis()
+        value = await redis.incr(f"web_search:anysearch:key_index:{scope}")
+        return (int(value) - 1) % len(keys)
+    except Exception as e:
+        logger.debug("AnySearch Redis key rotation unavailable: %s", e)
+        return next(_ANYSEARCH_LOCAL_COUNTER) % len(keys)
+
+
+def _ordered_anysearch_keys(keys: list[str], start_index: int) -> list[str]:
+    if not keys:
+        return []
+    start = start_index % len(keys)
+    return keys[start:] + keys[:start]
+
+
+def _anysearch_timeout(config: dict) -> int:
+    return max(3, min(_safe_int(config.get("anysearch_timeout_seconds"), get_settings().ANYSEARCH_TIMEOUT_SECONDS), 30))
+
+
+def _anysearch_mcp_text(data: object) -> str:
+    if not isinstance(data, dict):
+        return ""
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return ""
+    content = result.get("content")
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"].strip())
+        if parts:
+            return "\n\n".join(part for part in parts if part).strip()
+    if isinstance(result.get("text"), str):
+        return result["text"].strip()
+    if isinstance(result.get("structuredContent"), dict):
+        return json.dumps(result["structuredContent"], ensure_ascii=False, indent=2)
+    return ""
+
+
+def _anysearch_json_rpc_error_message(data: object) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    if not isinstance(error, dict):
+        return None
+    message = str(error.get("message") or error.get("code") or "AnySearch MCP JSON-RPC error").strip()
+    return message or "AnySearch MCP JSON-RPC error"
+
+
+def _anysearch_should_retry_json_rpc_error(message: str) -> bool:
+    normalized = message.lower()
+    return any(marker in normalized for marker in ("rate", "quota", "limit", "timeout", "temporar", "unavailable"))
+
+
+def _with_anysearch_max_results(arguments: dict, value: object) -> dict:
+    max_results = max(1, min(_safe_int(value, 10), 10))
+    result = dict(arguments)
+    result["max_results"] = max_results
+    return result
+
+
+async def _call_anysearch_mcp_tool(public_tool_name: str, mcp_tool_name: str, arguments: dict) -> str:
+    config = await _get_tool_config("web_search")
+    keys = _anysearch_api_keys(config)
+    allow_anonymous = _optional_bool(config.get("anysearch_allow_anonymous"), False)
+    if not keys and not allow_anonymous:
+        return render_tool_error(
+            tool_name=public_tool_name,
+            error_class="provider_not_configured",
+            message=f"{public_tool_name} requires configured AnySearch API keys.",
+            provider="anysearch_mcp",
+            retryable=False,
+            actionable_hint="Configure AnySearch API keys on web_search, or explicitly enable anonymous AnySearch for dev/eval only.",
+        )
+
+    key_scope = str(config.get("anysearch_key_scope") or "global").strip() or "global"
+    start_index = await _next_anysearch_key_start_index(keys, key_scope)
+    ordered_keys: list[str | None] = _ordered_anysearch_keys(keys, start_index) or [None]
+    timeout = _anysearch_timeout(config)
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": mcp_tool_name, "arguments": arguments},
+    }
+    retryable_statuses = {401, 402, 403, 408, 429, 500, 502, 503, 504}
+    last_status: int | None = None
+    last_error = "AnySearch MCP call failed: no request attempted"
+
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        for api_key in ordered_keys:
+            headers = {"User-Agent": "Hive WebSearch/1.0"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            resp = await client.post(_ANYSEARCH_MCP_URL, json=payload, headers=headers, timeout=timeout)
+            last_status = resp.status_code
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+
+            if resp.status_code != 200:
+                last_error = f"AnySearch MCP {mcp_tool_name} failed with HTTP {resp.status_code}: {resp.text[:200]}"
+                if api_key and resp.status_code in retryable_statuses:
+                    continue
+                return _http_error(
+                    public_tool_name,
+                    provider="anysearch_mcp",
+                    status_code=resp.status_code,
+                    detail=resp.text,
+                    hint="Retry later, add another AnySearch API key, or use basic web_search/SearXNG fallback.",
+                )
+
+            rpc_error = _anysearch_json_rpc_error_message(data)
+            if rpc_error:
+                last_error = f"AnySearch MCP {mcp_tool_name} failed: {rpc_error[:200]}"
+                if api_key and _anysearch_should_retry_json_rpc_error(rpc_error):
+                    continue
+                return render_tool_error(
+                    tool_name=public_tool_name,
+                    error_class="provider_error",
+                    message=last_error,
+                    provider="anysearch_mcp",
+                    retryable=_anysearch_should_retry_json_rpc_error(rpc_error),
+                    actionable_hint="Check the selected domain, sub_domain, and required sub_domain_params.",
+                )
+
+            text = _anysearch_mcp_text(data)
+            if text:
+                return text
+            last_error = f"AnySearch MCP {mcp_tool_name} returned no readable text content"
+
+    error_class = classify_http_status(last_status)[0] if last_status else "provider_error"
+    retryable = classify_http_status(last_status)[1] if last_status else True
+    return render_tool_error(
+        tool_name=public_tool_name,
+        error_class=error_class,
+        message=last_error,
+        provider="anysearch_mcp",
+        http_status=last_status,
+        retryable=retryable,
+        actionable_hint="Retry later, add another AnySearch API key, or use basic web_search/SearXNG fallback.",
+    )
+
+
+async def _anysearch_get_sub_domains(arguments: dict) -> str:
+    domain = _optional_string(arguments.get("domain"))
+    domains = _split_config_list(arguments.get("domains"))
+    if not domain and not domains:
+        return _invalid_argument_error(
+            "anysearch_get_sub_domains",
+            "anysearch_get_sub_domains requires domain or domains.",
+            provider="anysearch_mcp",
+            hint="Pass a single domain such as 'finance', or up to five domains such as ['finance', 'academic'].",
+        )
+    payload: dict[str, object] = {}
+    if domains:
+        payload["domains"] = ",".join(domains[:5])
+    elif domain:
+        payload["domain"] = domain
+    return await _call_anysearch_mcp_tool("anysearch_get_sub_domains", "get_sub_domains", payload)
+
+
+async def _anysearch_search(arguments: dict) -> str:
+    query = _optional_string(arguments.get("query"))
+    if not query:
+        return _invalid_argument_error(
+            "anysearch_search",
+            "anysearch_search requires a non-empty query.",
+            provider="anysearch_mcp",
+            hint="Pass concise search keywords. For vertical search, call anysearch_get_sub_domains first.",
+        )
+    payload: dict[str, object] = {"query": query}
+    for key in ("domain", "sub_domain"):
+        value = _optional_string(arguments.get(key))
+        if value:
+            payload[key] = value
+    sub_domain_params = arguments.get("sub_domain_params")
+    if isinstance(sub_domain_params, dict) and sub_domain_params:
+        payload["sub_domain_params"] = sub_domain_params
+    elif isinstance(sub_domain_params, str) and sub_domain_params.strip():
+        payload["sub_domain_params"] = sub_domain_params.strip()
+    if "max_results" in arguments:
+        payload = _with_anysearch_max_results(payload, arguments.get("max_results"))
+    return await _call_anysearch_mcp_tool("anysearch_search", "search", payload)
+
+
+async def _anysearch_batch_search(arguments: dict) -> str:
+    queries = arguments.get("queries")
+    if not isinstance(queries, list) or not (2 <= len(queries) <= 5):
+        return _invalid_argument_error(
+            "anysearch_batch_search",
+            "anysearch_batch_search requires 2-5 query objects.",
+            provider="anysearch_mcp",
+            hint="Pass queries=[{'query': '...'}, {'query': '...', 'domain': 'finance', 'sub_domain': '...'}].",
+        )
+    max_results = arguments.get("max_results")
+    payload_queries = []
+    for item in queries:
+        if not isinstance(item, dict) or not _optional_string(item.get("query")):
+            return _invalid_argument_error(
+                "anysearch_batch_search",
+                "Each AnySearch batch item requires a non-empty query.",
+                provider="anysearch_mcp",
+                hint="Use query objects with at least {'query': '...'}; add domain/sub_domain/sub_domain_params when needed.",
+            )
+        payload_item = dict(item)
+        if max_results is not None and "max_results" not in payload_item:
+            payload_item = _with_anysearch_max_results(payload_item, max_results)
+        payload_queries.append(payload_item)
+    return await _call_anysearch_mcp_tool("anysearch_batch_search", "batch_search", {"queries": payload_queries})
+
+
+async def _anysearch_extract(arguments: dict) -> str:
+    url = _optional_string(arguments.get("url"))
+    if not url:
+        return _invalid_argument_error(
+            "anysearch_extract",
+            "anysearch_extract requires a URL.",
+            provider="anysearch_mcp",
+            hint="Pass the URL returned by search when you need AnySearch's full-page Markdown extraction.",
+        )
+    if not _looks_like_url(url):
+        url = f"https://{url}"
+    return await _call_anysearch_mcp_tool("anysearch_extract", "extract", {"url": url})
+
+
 async def _get_tool_config(tool_name: str) -> dict:
     """Resolve tool config with tenant isolation via ContextVar.
 
@@ -198,16 +550,6 @@ async def _get_tool_config(tool_name: str) -> dict:
         return {}
 
 
-async def _fallback_search_result(query: str, max_results: int) -> tuple[str, str] | None:
-    try:
-        duckduckgo_result = await _search_duckduckgo(query, max_results)
-        if not _provider_result_failed(duckduckgo_result):
-            return ("web_search:duckduckgo", duckduckgo_result)
-    except Exception:
-        logger.debug("DuckDuckGo fallback failed", exc_info=True)
-    return None
-
-
 async def _web_search(arguments: dict) -> str:
     query = arguments.get("query", "")
     if not query:
@@ -228,37 +570,90 @@ async def _web_search(arguments: dict) -> str:
     config = await _get_tool_config("web_search")
 
     configured_engine = str(config.get("search_engine") or "auto").strip().lower()
-    engine = configured_engine if configured_engine in {"auto", "searxng", "duckduckgo"} else "auto"
+    if configured_engine == "duckduckgo":
+        configured_engine = "duckduckgo_legacy"
+    engine = configured_engine if configured_engine in {"auto", "anysearch", "searxng", "duckduckgo_legacy"} else "auto"
     max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 10)
-    language = config.get("language", "zh-CN")
-    fallback_note = None
+    language = config.get("language", "en")
     searxng_url = (config.get("searxng_url") or await _get_searxng_url()).strip().rstrip("/")
+    anysearch_keys = _anysearch_api_keys(config)
+    anysearch_allow_anonymous = _optional_bool(config.get("anysearch_allow_anonymous"), False)
 
     if engine == "auto":
-        engine = "searxng" if searxng_url else "duckduckgo"
+        if anysearch_keys:
+            engine = "anysearch"
+        elif searxng_url:
+            engine = "searxng"
+        else:
+            return render_tool_error(
+                tool_name="web_search",
+                error_class="provider_unavailable",
+                message="web_search has no configured provider: set AnySearch API keys or SEARXNG_URL.",
+                provider="web_search",
+                retryable=False,
+                actionable_hint="Configure AnySearch API keys for the primary provider, or configure SEARXNG_URL as the no-key fallback.",
+            )
+    if engine == "anysearch" and not anysearch_keys and not anysearch_allow_anonymous:
+        if searxng_url:
+            engine = "searxng"
+        else:
+            return render_tool_error(
+                tool_name="web_search",
+                error_class="provider_unavailable",
+                message="AnySearch is selected but no AnySearch API key is configured.",
+                provider="anysearch",
+                retryable=False,
+                actionable_hint="Add AnySearch API keys or configure SEARXNG_URL for fallback search.",
+            )
     if engine == "searxng" and not searxng_url:
-        fallback_note = "SearXNG is selected but SEARXNG_URL is not configured, so web_search fell back to DuckDuckGo."
-        engine = "duckduckgo"
+        return render_tool_error(
+            tool_name="web_search",
+            error_class="provider_unavailable",
+            message="SearXNG is selected but SEARXNG_URL is not configured.",
+            provider="searxng",
+            retryable=False,
+            actionable_hint="Configure SEARXNG_URL or switch web_search to auto with AnySearch API keys.",
+        )
 
     try:
-        if engine == "searxng":
-            result = await _search_searxng(query, searxng_url, max_results, language)
-        else:
-            result = await _search_duckduckgo(query, max_results)
-        if engine != "duckduckgo" and _provider_result_failed(result):
-            fallback = await _fallback_search_result(query, max_results)
-            if fallback:
-                fallback_tool, fallback_result = fallback
+        if engine == "anysearch":
+            result = await _search_anysearch(query, config, max_results, language)
+            if _provider_result_failed(result) and searxng_url:
+                fallback_result = await _search_searxng(query, searxng_url, max_results, language)
                 return render_tool_fallback(
                     tool_name="web_search",
                     error_class="provider_error",
-                    message=_provider_failure_message(result, engine),
-                    provider=engine,
+                    message=_provider_failure_message(result, "anysearch"),
+                    provider="anysearch",
                     retryable=True,
-                    actionable_hint="The configured provider returned an unusable response, so the tool fell back to DuckDuckGo.",
-                    fallback_tool=fallback_tool,
+                    actionable_hint="AnySearch was unavailable, so the tool fell back to SearXNG.",
+                    fallback_tool="web_search:searxng",
                     fallback_result=fallback_result,
                 )
+            if _provider_result_failed(result):
+                return render_tool_error(
+                    tool_name="web_search",
+                    error_class="provider_error",
+                    message=_provider_failure_message(result, "anysearch"),
+                    provider="anysearch",
+                    retryable=True,
+                    actionable_hint="Retry later, add another AnySearch API key, or configure SEARXNG_URL as fallback.",
+                )
+            return result
+        if engine == "searxng":
+            result = await _search_searxng(query, searxng_url, max_results, language)
+        elif engine == "duckduckgo_legacy":
+            result = await _search_duckduckgo(query, max_results)
+        else:
+            return render_tool_error(
+                tool_name="web_search",
+                error_class="provider_unavailable",
+                message=f"Unsupported web_search provider '{engine}'.",
+                provider="web_search",
+                retryable=False,
+                actionable_hint="Use auto, anysearch, searxng, or duckduckgo_legacy.",
+            )
+        if _provider_result_failed(result):
             return render_tool_fallback(
                 tool_name="web_search",
                 error_class="provider_error",
@@ -266,28 +661,24 @@ async def _web_search(arguments: dict) -> str:
                 provider=engine,
                 retryable=True,
                 actionable_hint="The configured provider returned an unusable response and no fallback provider was available.",
-                fallback_tool="web_search:duckduckgo",
+                fallback_tool="web_search:none",
                 fallback_result="❌ No fallback search provider was available.",
             )
-        if fallback_note:
-            return f"⚠️ {fallback_note}\n\n{result}"
         return result
     except Exception as e:
-        if engine != "duckduckgo":
-            fallback = await _fallback_search_result(query, max_results)
-            if fallback:
-                fallback_tool, fallback_result = fallback
-                return render_tool_fallback(
-                    tool_name="web_search",
-                    error_class="provider_error",
-                    message=f"web_search provider '{engine}' failed: {str(e)[:200]}",
-                    provider=engine,
-                    retryable=True,
-                    actionable_hint="The configured provider failed, so the tool fell back to DuckDuckGo.",
-                    fallback_tool=fallback_tool,
-                    fallback_result=fallback_result,
-                )
-        if engine == "duckduckgo":
+        if engine == "anysearch" and searxng_url:
+            fallback_result = await _search_searxng(query, searxng_url, max_results, language)
+            return render_tool_fallback(
+                tool_name="web_search",
+                error_class="provider_error",
+                message=f"web_search provider 'anysearch' failed: {str(e)[:200]}",
+                provider="anysearch",
+                retryable=True,
+                actionable_hint="AnySearch failed, so the tool fell back to SearXNG.",
+                fallback_tool="web_search:searxng",
+                fallback_result=fallback_result,
+            )
+        if engine == "duckduckgo_legacy":
             return render_tool_error(
                 tool_name="web_search",
                 error_class="provider_error",
@@ -350,6 +741,85 @@ async def _search_searxng(query: str, searxng_url: str, max_results: int, langua
     return f'🔍 SearXNG results for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
 
 
+async def _search_anysearch(query: str, config: dict, max_results: int, language: str) -> str:
+    keys = _anysearch_api_keys(config)
+    key_scope = str(config.get("anysearch_key_scope") or "global").strip() or "global"
+    start_index = await _next_anysearch_key_start_index(keys, key_scope)
+    ordered_keys: list[str | None] = _ordered_anysearch_keys(keys, start_index) or [None]
+    zone = _anysearch_zone(config)
+    content_types = _anysearch_content_types(config)
+    timeout = max(
+        3, min(_safe_int(config.get("anysearch_timeout_seconds"), get_settings().ANYSEARCH_TIMEOUT_SECONDS), 30)
+    )
+
+    payload: dict[str, object] = {
+        "query": query,
+        "max_results": max(1, min(max_results, 100)),
+        "zone": zone,
+        "language": language,
+    }
+    if content_types:
+        payload["content_types"] = content_types
+    domain = _optional_string(config.get("anysearch_domain"))
+    if domain:
+        payload["domain"] = domain
+    tag = _optional_string(config.get("anysearch_tag"))
+    if tag:
+        payload["tag"] = tag
+    params = config.get("anysearch_params")
+    if isinstance(params, dict) and params:
+        payload["params"] = params
+
+    last_error = "AnySearch search failed: no request attempted"
+    retryable_statuses = {401, 402, 403, 429, 500, 502, 503, 504}
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        for api_key in ordered_keys:
+            headers = {"User-Agent": "Hive WebSearch/1.0"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            resp = await client.post(
+                _ANYSEARCH_API_URL,
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+            )
+
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+
+            if resp.status_code != 200:
+                last_error = f"AnySearch search failed: HTTP {resp.status_code}: {resp.text[:200]}"
+                if api_key and resp.status_code in retryable_statuses:
+                    continue
+                return f"❌ {last_error}"
+
+            result_data = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+            if not isinstance(result_data, dict):
+                return f"❌ AnySearch search failed: unexpected response {str(data)[:200]}"
+            raw_results = result_data.get("results")
+            if not isinstance(raw_results, list):
+                return f"❌ AnySearch search failed: unexpected response {str(data)[:200]}"
+
+            results = []
+            for item in raw_results[:max_results]:
+                if not isinstance(item, dict):
+                    continue
+                title = item.get("title") or ""
+                url = item.get("url") or ""
+                snippet = item.get("snippet") or item.get("content") or ""
+                if not (title or url or snippet):
+                    continue
+                results.append(f"**{title}**\n{url}\n{str(snippet)[:300]}")
+
+            if not results:
+                return f'🔍 No results found for "{query}"'
+            return f'🔍 AnySearch results for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
+
+    return f"❌ {last_error}"
+
+
 async def _search_duckduckgo(query: str, max_results: int) -> str:
     import re
 
@@ -361,6 +831,9 @@ async def _search_duckduckgo(query: str, max_results: int) -> str:
             timeout=10,
         )
 
+    if resp.status_code >= 300:
+        return f"❌ DuckDuckGo search failed: HTTP {resp.status_code}: {resp.text[:200]}"
+
     results = []
     blocks = re.findall(
         r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?'
@@ -369,8 +842,8 @@ async def _search_duckduckgo(query: str, max_results: int) -> str:
         re.DOTALL,
     )
     for url, title, snippet in blocks[:max_results]:
-        title = re.sub(r"<[^>]+>", "", title).strip()
-        snippet = re.sub(r"<[^>]+>", "", snippet).strip()
+        title = html.unescape(re.sub(r"<[^>]+>", "", title)).strip()
+        snippet = html.unescape(re.sub(r"<[^>]+>", "", snippet)).strip()
         if "uddg=" in url:
             from urllib.parse import parse_qs, unquote, urlparse
 
@@ -429,8 +902,24 @@ async def _exa_search(arguments: dict) -> str:
             retryable=False,
             actionable_hint="Use web_search for basic no-key lookup, or configure Exa before using exa_search.",
         )
-    max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 10)
-    return await _search_exa(query, api_key, max_results)
+    max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 20)
+    search_type = _optional_enum(arguments.get("search_type"), _EXA_SEARCH_TYPES, default="auto")
+    category = _optional_enum(arguments.get("category"), _EXA_CATEGORIES)
+    include_domains = _string_list(arguments.get("include_domains"))
+    exclude_domains = _string_list(arguments.get("exclude_domains"))
+    start_published_date = _optional_string(arguments.get("start_published_date"))
+    end_published_date = _optional_string(arguments.get("end_published_date"))
+    return await _search_exa(
+        query,
+        api_key,
+        max_results,
+        search_type=search_type,
+        category=category,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
+        start_published_date=start_published_date,
+        end_published_date=end_published_date,
+    )
 
 
 async def _tavily_search(arguments: dict) -> str:
@@ -461,8 +950,30 @@ async def _tavily_search(arguments: dict) -> str:
             retryable=False,
             actionable_hint="Use web_search for basic no-key lookup, or configure Tavily before using tavily_search.",
         )
-    max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 10)
-    return await _search_tavily(query, api_key, max_results)
+    max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 20)
+    search_depth = _optional_enum(arguments.get("search_depth"), _TAVILY_SEARCH_DEPTHS, default="basic")
+    topic = _optional_enum(arguments.get("topic"), _TAVILY_TOPICS, default="general")
+    time_range = _optional_enum(arguments.get("time_range"), _TAVILY_TIME_RANGES)
+    start_date = _optional_string(arguments.get("start_date"))
+    end_date = _optional_string(arguments.get("end_date"))
+    include_answer = arguments.get("include_answer")
+    include_raw_content = arguments.get("include_raw_content")
+    include_domains = _string_list(arguments.get("include_domains"))
+    exclude_domains = _string_list(arguments.get("exclude_domains"))
+    return await _search_tavily(
+        query,
+        api_key,
+        max_results,
+        search_depth=search_depth,
+        topic=topic,
+        time_range=time_range,
+        start_date=start_date,
+        end_date=end_date,
+        include_answer=include_answer,
+        include_raw_content=include_raw_content,
+        include_domains=include_domains,
+        exclude_domains=exclude_domains,
+    )
 
 
 async def _try_crawler_fetch_fallback(normalized_url: str, max_chars: int) -> tuple[str, str] | None:
@@ -550,6 +1061,45 @@ def _extract_pdf_text(data: bytes) -> str:
         return ""
 
 
+def _filename_for_fetched_content(normalized_url: str, content_type: str) -> str:
+    parsed = urlparse(normalized_url)
+    name = Path(parsed.path).name or "index"
+    if not Path(name).suffix:
+        if "pdf" in content_type:
+            name = f"{name}.pdf"
+        elif "html" in content_type:
+            name = f"{name}.html"
+        elif "json" in content_type:
+            name = f"{name}.json"
+        elif "xml" in content_type:
+            name = f"{name}.xml"
+        else:
+            name = f"{name}.txt"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+
+
+def _convert_fetched_content(
+    *,
+    data: bytes,
+    filename: str,
+    normalized_url: str,
+    content_type: str,
+) -> DocumentConversionResult:
+    return DocumentConversionService().convert_bytes(
+        data=data,
+        filename=filename,
+        workspace_root=_WEB_FETCH_CONVERSION_ROOT,
+        source_uri=normalized_url,
+        source_mime_type=content_type or None,
+        mode="auto",
+        force_refresh=True,
+    )
+
+
+def _render_web_fetch_conversion(normalized_url: str, result: DocumentConversionResult, max_chars: int) -> str:
+    return f"📄 **Fetched content from: {normalized_url}**\n\n{render_conversion_preview(result, max_chars=max_chars)}"
+
+
 async def _web_fetch(arguments: dict) -> str:
     url = arguments.get("url", "").strip()
     if not url:
@@ -604,9 +1154,25 @@ async def _web_fetch(arguments: dict) -> str:
         content_type = (resp.headers.get("content-type", "") or "").lower()
         raw_bytes = resp.content or b""
         if "application/pdf" in content_type or raw_bytes[:5].startswith(b"%PDF"):
-            # RC2: PDFs arrive as binary; httpx resp.text would be mojibake. Extract real text
-            # from the bytes, or fail cleanly so a bad PDF never poisons a research ledger.
-            text = _extract_pdf_text(raw_bytes)
+            try:
+                converted = _convert_fetched_content(
+                    data=raw_bytes,
+                    filename=_filename_for_fetched_content(normalized_url, "application/pdf"),
+                    normalized_url=normalized_url,
+                    content_type=content_type or "application/pdf",
+                )
+            except Exception as e:
+                logger.debug("PDF conversion failed for %s: %s", normalized_url, e)
+                return await _web_fetch_failure_result(
+                    arguments,
+                    normalized_url=normalized_url,
+                    max_chars=max_chars,
+                    error_class="unreadable_pdf",
+                    message=f"web_fetch could not extract text from the PDF at {normalized_url}",
+                    retryable=True,
+                    actionable_hint="The PDF may be scanned, corrupt, or image-only; try a crawler-backed reader or another source.",
+                )
+            text = converted.markdown.strip()
             if not text:
                 return await _web_fetch_failure_result(
                     arguments,
@@ -617,6 +1183,23 @@ async def _web_fetch(arguments: dict) -> str:
                     retryable=True,
                     actionable_hint="The PDF may be scanned or image-only; try a crawler-backed reader or another source.",
                 )
+            if len(text) > max_chars:
+                converted = DocumentConversionResult(
+                    markdown=text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]",
+                    plain_text=converted.plain_text,
+                    source_path=converted.source_path,
+                    source_uri=converted.source_uri,
+                    source_sha256=converted.source_sha256,
+                    source_mime_type=converted.source_mime_type,
+                    engine=converted.engine,
+                    used_ocr=converted.used_ocr,
+                    used_vision=converted.used_vision,
+                    page_count=converted.page_count,
+                    artifact_markdown_path=converted.artifact_markdown_path,
+                    artifact_metadata_path=converted.artifact_metadata_path,
+                    warnings=converted.warnings,
+                )
+            return _render_web_fetch_conversion(normalized_url, converted, max_chars)
         else:
             text = resp.text.strip()
             if (
@@ -625,7 +1208,13 @@ async def _web_fetch(arguments: dict) -> str:
                 or text.lstrip().startswith("<html")
             ):
                 markup = text
-                text = _extract_text_from_html(markup)
+                converted = _convert_fetched_content(
+                    data=raw_bytes or markup.encode("utf-8"),
+                    filename=_filename_for_fetched_content(normalized_url, content_type or "text/html"),
+                    normalized_url=normalized_url,
+                    content_type=content_type or "text/html",
+                )
+                text = converted.markdown.strip()
                 if _looks_like_incomplete_rendered_page(markup, text):
                     return await _web_fetch_failure_result(
                         arguments,
@@ -636,6 +1225,18 @@ async def _web_fetch(arguments: dict) -> str:
                         retryable=True,
                         actionable_hint="Try a crawler-backed reader for JS-rendered pages.",
                     )
+                if not text:
+                    return await _web_fetch_failure_result(
+                        arguments,
+                        normalized_url=normalized_url,
+                        max_chars=max_chars,
+                        error_class="empty_content",
+                        message=f"web_fetch returned empty content for {normalized_url}",
+                        http_status=None,
+                        retryable=False,
+                        actionable_hint="Try another URL or use search to find a cleaner source page.",
+                    )
+                return _render_web_fetch_conversion(normalized_url, converted, max_chars)
         if not text:
             return await _web_fetch_failure_result(
                 arguments,
@@ -703,18 +1304,28 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             actionable_hint="Configure Firecrawl before using this tool, or fall back to web_fetch.",
         )
 
-    max_chars = min(int(arguments.get("max_chars", 12000)), 30000)
-    only_main_content = bool(arguments.get("only_main_content", True))
+    max_chars = min(_safe_int(arguments.get("max_chars", 12000), 12000), 30000)
+    request_payload: dict[str, object] = {
+        "url": normalized_url,
+        "formats": _enum_list(arguments.get("formats"), _FIRECRAWL_FORMATS, ["markdown"]),
+        "onlyMainContent": _optional_bool(arguments.get("only_main_content"), True),
+    }
+    if "only_clean_content" in arguments:
+        request_payload["onlyCleanContent"] = _optional_bool(arguments.get("only_clean_content"), False)
+    if arguments.get("wait_for_ms") is not None:
+        request_payload["waitFor"] = _safe_int(arguments.get("wait_for_ms"), 0)
+    include_tags = _string_list(arguments.get("include_tags"))
+    exclude_tags = _string_list(arguments.get("exclude_tags"))
+    if include_tags:
+        request_payload["includeTags"] = include_tags
+    if exclude_tags:
+        request_payload["excludeTags"] = exclude_tags
 
     try:
         async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
             resp = await client.post(
-                "https://api.firecrawl.dev/v1/scrape",
-                json={
-                    "url": normalized_url,
-                    "formats": ["markdown"],
-                    "onlyMainContent": only_main_content,
-                },
+                "https://api.firecrawl.dev/v2/scrape",
+                json=request_payload,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -751,7 +1362,15 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             )
 
         payload = data.get("data", data)
-        text = (payload.get("markdown") or payload.get("content") or payload.get("text") or "").strip()
+        text = (
+            payload.get("markdown")
+            or payload.get("summary")
+            or payload.get("content")
+            or payload.get("text")
+            or payload.get("html")
+            or payload.get("rawHtml")
+            or ""
+        ).strip()
         if not text:
             if arguments.get(_SKIP_WEB_FETCH_FALLBACK):
                 return render_tool_error(
@@ -833,18 +1452,45 @@ async def _xcrawl_scrape(arguments: dict) -> str:
             actionable_hint="Configure XCrawl before using this tool, or fall back to firecrawl_fetch/web_fetch.",
         )
 
-    max_chars = min(int(arguments.get("max_chars", 12000)), 30000)
-    js_render = bool(arguments.get("js_render", True))
+    max_chars = min(_safe_int(arguments.get("max_chars", 12000), 12000), 30000)
+    request_options: dict[str, object] = {
+        "only_main_content": _optional_bool(arguments.get("only_main_content"), True),
+        "block_ads": _optional_bool(arguments.get("block_ads"), True),
+    }
+    device = _optional_enum(arguments.get("device"), _XCRAWL_DEVICES)
+    locale = _optional_string(arguments.get("locale"))
+    if device:
+        request_options["device"] = device
+    if locale:
+        request_options["locale"] = locale
+
+    js_render_options: dict[str, object] = {
+        "enabled": _optional_bool(arguments.get("js_render"), True),
+    }
+    wait_until = _optional_enum(arguments.get("wait_until"), _XCRAWL_WAIT_UNTIL)
+    if wait_until:
+        js_render_options["wait_until"] = wait_until
+
+    request_payload: dict[str, object] = {
+        "url": normalized_url,
+        "mode": "sync",
+        "request": request_options,
+        "js_render": js_render_options,
+        "output": {
+            "formats": _enum_list(
+                arguments.get("output_formats", arguments.get("formats")), _XCRAWL_OUTPUT_FORMATS, ["markdown"]
+            )
+        },
+    }
+    proxy_location = _optional_string(arguments.get("proxy_location"))
+    if proxy_location:
+        request_payload["proxy"] = {"location": proxy_location.upper()}
 
     try:
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             resp = await client.post(
                 "https://run.xcrawl.com/v1/scrape",
-                json={
-                    "url": normalized_url,
-                    "markdown": True,
-                    "javascript": js_render,
-                },
+                json=request_payload,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -882,7 +1528,13 @@ async def _xcrawl_scrape(arguments: dict) -> str:
 
         payload = data.get("data", data)
         text = (
-            payload.get("markdown") or payload.get("content") or payload.get("text") or payload.get("html") or ""
+            payload.get("markdown")
+            or payload.get("summary")
+            or payload.get("content")
+            or payload.get("text")
+            or payload.get("html")
+            or payload.get("raw_html")
+            or ""
         ).strip()
         if not text:
             if arguments.get(_SKIP_FIRECRAWL_FALLBACK):
@@ -935,17 +1587,41 @@ async def _xcrawl_scrape(arguments: dict) -> str:
         )
 
 
-async def _search_exa(query: str, api_key: str, max_results: int) -> str:
+async def _search_exa(
+    query: str,
+    api_key: str,
+    max_results: int,
+    *,
+    search_type: str | None = "auto",
+    category: str | None = None,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    start_published_date: str | None = None,
+    end_published_date: str | None = None,
+) -> str:
+    payload: dict[str, object] = {
+        "query": query,
+        "numResults": max_results,
+        "type": search_type or "auto",
+        "contents": {
+            "text": {"maxCharacters": 800},
+        },
+    }
+    if category:
+        payload["category"] = category
+    if include_domains:
+        payload["includeDomains"] = include_domains
+    if exclude_domains:
+        payload["excludeDomains"] = exclude_domains
+    if start_published_date:
+        payload["startPublishedDate"] = start_published_date
+    if end_published_date:
+        payload["endPublishedDate"] = end_published_date
+
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
             "https://api.exa.ai/search",
-            json={
-                "query": query,
-                "numResults": max_results,
-                "contents": {
-                    "text": {"maxCharacters": 400},
-                },
-            },
+            json=payload,
             headers={
                 "x-api-key": api_key,
                 "Content-Type": "application/json",
@@ -968,13 +1644,48 @@ async def _search_exa(query: str, api_key: str, max_results: int) -> str:
     return f'🔍 Exa search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
 
 
-async def _search_tavily(query: str, api_key: str, max_results: int) -> str:
+async def _search_tavily(
+    query: str,
+    api_key: str,
+    max_results: int,
+    *,
+    search_depth: str | None = "basic",
+    topic: str | None = "general",
+    time_range: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    include_answer: object = None,
+    include_raw_content: object = None,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+) -> str:
     import httpx
+
+    payload: dict[str, object] = {
+        "query": query,
+        "max_results": max_results,
+        "search_depth": search_depth or "basic",
+        "topic": topic or "general",
+    }
+    if time_range:
+        payload["time_range"] = time_range
+    if start_date:
+        payload["start_date"] = start_date
+    if end_date:
+        payload["end_date"] = end_date
+    if include_answer is not None:
+        payload["include_answer"] = include_answer
+    if include_raw_content is not None:
+        payload["include_raw_content"] = include_raw_content
+    if include_domains:
+        payload["include_domains"] = include_domains
+    if exclude_domains:
+        payload["exclude_domains"] = exclude_domains
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://api.tavily.com/search",
-            json={"query": query, "max_results": max_results, "search_depth": "basic"},
+            json=payload,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             timeout=15,
         )
@@ -986,10 +1697,14 @@ async def _search_tavily(query: str, api_key: str, max_results: int) -> str:
     if "results" not in data:
         return f"❌ Tavily search failed: {data.get('error', str(data)[:200])}"
 
-    results = [
-        f"**{r.get('title', '')}**\n{r.get('url', '')}\n{r.get('content', '')[:200]}"
+    results = []
+    answer = str(data.get("answer") or "").strip()
+    if answer:
+        results.append(f"**Tavily answer:**\n{answer[:1000]}")
+    results.extend(
+        f"**{r.get('title', '')}**\n{r.get('url', '')}\n{r.get('content', '')[:400]}"
         for r in data["results"][:max_results]
-    ]
+    )
     if not results:
         return f'🔍 No results found for "{query}"'
     return f'🔍 Tavily search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)

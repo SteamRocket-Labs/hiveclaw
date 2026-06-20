@@ -1,11 +1,11 @@
 # Document Conversion and Multimodal Capability Design
 
-> Status: design draft, 2026-06-15.
+> Status: design draft, last updated 2026-06-20.
 > Scope: OCR, document transcription, native multimodal input, media generation, and speech model integration for Hive agents.
 
 ## Executive Summary
 
-Hive should use Markdown as the canonical document transcription format. The goal is not just "OCR support"; the platform needs one governed document conversion layer that can ingest PDFs, Office files, images, audio, and eventually video, then expose structured Markdown plus provenance to agents.
+Hive should use Markdown as the canonical document transcription format. The goal is not just "OCR support"; the platform needs one governed document conversion layer that can ingest PDFs, Office files, images, audio, HTML/web payloads, and eventually video, then expose structured Markdown plus provenance to agents.
 
 Current code already has partial capabilities:
 
@@ -19,10 +19,11 @@ But this is not a complete OCR or multimodal system. OCR for scanned PDFs/images
 The recommended direction is:
 
 1. Introduce a unified `DocumentConversionService` whose canonical output is Markdown.
-2. Add `markitdown` as the default local converter for supported files, with guarded local-only execution.
+2. Add `markitdown` as the default local file/stream-to-Markdown converter behind `DocumentConversionService`, with guarded local-only execution.
 3. Add provider-backed OCR/layout routes for higher-quality scanned documents, starting with Azure Document Intelligence or Azure Content Understanding where configured.
 4. Replace ad hoc base64 marker protocols with typed attachment blocks across upload, chat runtime, tools, and provider adapters.
-5. Introduce first-class model capabilities for image generation, video generation, speech-to-text, text-to-speech, and realtime voice instead of stretching `supports_vision`.
+5. Keep WebFetch, channel connectors, and upload APIs responsible for trusted source acquisition; they should hand vetted bytes/files to `DocumentConversionService` instead of owning conversion logic.
+6. Introduce first-class model capabilities for image generation, video generation, speech-to-text, text-to-speech, and realtime voice instead of stretching `supports_vision`.
 
 ## Current State
 
@@ -35,7 +36,8 @@ Current extraction is split across multiple paths:
 | Chat upload | `backend/app/api/upload.py` | Saves files, extracts text inline, returns up to a short text preview. | Duplicates extraction logic, no durable Markdown artifact, no real OCR route. |
 | Shared extractor | `backend/app/services/text_extractor.py` | Extracts PDF/DOCX/XLSX/PPTX text and writes companion `.txt`. | Separate implementation from `read_document`, limited layout fidelity. |
 | Agent tool | `backend/app/services/agent_tool_domains/workspace.py::_read_document` | Reads PDF/DOCX/XLSX/PPTX/TXT/MD/CSV with direct libraries. | Default cap is short, scanned PDFs return empty/failure, no cache/provenance. |
-| Feishu/Web fetch helpers | `backend/app/services/agent_tool_domains/feishu_drive.py`, `web_mcp.py` | Reuses the shared extractor in some paths. | Inherits weak OCR and extraction variance. |
+| Feishu/connector helpers | `backend/app/services/agent_tool_domains/feishu_drive.py` | Reuses the shared extractor in some paths. | Inherits weak OCR and extraction variance. |
+| WebFetch | `backend/app/services/agent_tool_domains/web_mcp.py` | Owns URL normalization, HTTP fetch, wrong-tool guards, HTML/PDF cleanup, and crawler-backed fallback. | It should not become the conversion truth surface; fetched HTML/PDF/Office bytes should be converted by `DocumentConversionService` into Markdown artifacts. |
 
 Dependencies already present in `backend/pyproject.toml` include `pdfplumber`, `python-docx`, `openpyxl`, `python-pptx`, `reportlab`, `pypdf`, and `XlsxWriter`. `markitdown` is referenced in `docs/SKILLS_AND_PACKS_V2.md`, but it is not currently a backend dependency or runtime service.
 
@@ -86,19 +88,22 @@ There is no central speech-to-text service, no text-to-speech service, no video 
 1. Markdown is the canonical transcription surface.
    Agents should see structured Markdown, not format-specific library dumps.
 
-2. Preserve source provenance.
+2. Source acquisition is separate from conversion.
+   Network, channel, connector, and permission layers obtain a trusted source; `DocumentConversionService` converts that source into a Markdown artifact; agents should consume the Markdown artifact first.
+
+3. Preserve source provenance.
    Every conversion result must know source path, content hash, engine, warnings, page count, output artifact paths, and whether OCR or visual fallback was used.
 
-3. Avoid prompt-only ingestion.
+4. Avoid prompt-only ingestion.
    Large conversions should be saved as workspace artifacts and read incrementally. Upload previews can be short, but the full Markdown must be addressable.
 
-4. Keep intelligence in the model where needed.
+5. Keep intelligence in the model where needed.
    Layout judgment, image OCR fallback, chart interpretation, and document understanding can use LLM vision when deterministic extraction fails or is insufficient.
 
-5. Keep governance above capability.
+6. Keep governance above capability.
    MarkItDown and cloud OCR must run under explicit file, path, URL, size, network, credential, cost, audit, and tenant boundaries.
 
-6. Model equality.
+7. Model equality.
    The canonical internal representation should be provider-neutral. Provider adapters should map to the best available native API and degrade observably when a provider lacks a modality.
 
 ## Proposed Architecture
@@ -112,6 +117,7 @@ Add a service responsible for all file-to-Markdown conversion:
 class DocumentConversionRequest:
     source_path: Path
     workspace_root: Path
+    source_uri: str | None
     tenant_id: uuid.UUID | None
     agent_id: uuid.UUID | None
     user_id: uuid.UUID | None
@@ -126,6 +132,7 @@ class DocumentConversionResult:
     markdown: str
     plain_text: str
     source_path: str
+    source_uri: str | None
     source_sha256: str
     source_mime_type: str
     engine: str
@@ -152,13 +159,15 @@ All existing document readers should route through this service:
 - `backend/app/services/agent_tool_domains/web_mcp.py`
 - Any future Gmail/Drive/Office pack readers.
 
+For `web_mcp.py`, this means WebFetch performs URL validation, network access, HTTP/crawler fallback, and source metadata capture first. `DocumentConversionService` must receive local bytes or a vetted local artifact plus `source_uri` provenance; it must not fetch user-supplied remote URLs itself.
+
 ### 2. Conversion Engine Routing
 
 The service should use ordered engines:
 
 | Engine | Use case | Notes |
 |---|---|---|
-| `local_markitdown` | Default local conversion for PDF, DOCX, PPTX, XLSX, HTML, images, audio where supported. | Use local file/stream APIs only. Do not allow arbitrary remote URLs. |
+| `local_markitdown` | Default local conversion for PDF, DOCX, PPTX, XLSX, HTML, images, audio where supported. | Use local file/stream APIs only. Do not pass user-supplied remote URLs; WebFetch-provided HTML/PDF must arrive as local bytes/artifacts with the original URL recorded as metadata only. |
 | `azure_document_intelligence` | Scanned PDFs, image-heavy PDFs, layout-heavy documents, tables, handwriting. | Tenant-configured, billable, audited. |
 | `azure_content_understanding` | Documents, images, audio, and video where one endpoint should route multiple modalities. | Best fit for multimodal extraction and structured field extraction. |
 | `vision_ocr` | Fallback for individual images/pages/charts when local extraction is empty or low confidence. | Uses a tenant-approved vision model. |
@@ -186,6 +195,19 @@ Escalation signals:
 - Tables are detected but flattened poorly.
 - User explicitly asks for OCR, screenshots, handwriting, forms, receipts, invoices, stamps, charts, or scans.
 - File type is image/audio/video.
+
+### 2.1 Source Acquisition Boundary
+
+`DocumentConversionService` is not a network reader. It converts sources that another governed layer has already obtained:
+
+| Acquisition layer | Owns | Hands to conversion |
+|---|---|---|
+| `/chat/upload` | Upload validation, workspace save path, filename/path guard, user/agent access. | Saved local file path plus upload metadata. |
+| `web_fetch` / crawler providers | URL normalization, HTTP request, wrong-tool guards, JS/crawler fallback, source URL metadata. | Fetched bytes, rendered HTML/PDF/Office artifact, or provider markdown wrapped as a local artifact. |
+| Feishu/Gmail/Drive/Office connectors | Managed auth, tenant/user permission, provider download/export, source token metadata. | Downloaded bytes or exported local artifact. |
+| Future API/data-source providers | API auth, rate limits, source ledger, schema validation. | Response body or generated source artifact for Markdown normalization when agent-readable prose is needed. |
+
+This keeps `markitdown` as the canonical converter without turning it into an unrestricted fetcher or credential-bearing connector.
 
 ### 3. Artifact Storage
 
@@ -389,6 +411,7 @@ MarkItDown must not run as an unrestricted fetcher in server paths. Required rul
 - Only convert files already saved inside the agent workspace or vetted upload temp directory.
 - Prefer local file or stream conversion APIs.
 - Do not pass user-supplied remote URLs to permissive conversion methods.
+- If WebFetch or a connector provides web content, pass only controlled bytes/local artifacts into MarkItDown and store the original URL/provider token as provenance metadata.
 - Reject path traversal and symlinks that escape workspace.
 - Enforce file size, page count, output size, and timeout limits.
 - Strip or quarantine active content where relevant.
@@ -427,8 +450,9 @@ Complete scope:
 - Add conversion artifact storage and metadata.
 - Route `read_document` through the service.
 - Route `/chat/upload` document extraction through the service.
+- Route WebFetch PDF/HTML/Office handoff through the service without allowing MarkItDown to fetch remote URLs.
 - Keep legacy extractors as observable fallback.
-- Add tests for PDF/DOCX/XLSX/PPTX/text/image routing, cache reuse, path escape rejection, missing dependency fallback, scanned/empty PDF escalation decision, and artifact output.
+- Add tests for PDF/DOCX/XLSX/PPTX/text/image/HTML routing, cache reuse, path escape rejection, missing dependency fallback, scanned/empty PDF escalation decision, WebFetch handoff, and artifact output.
 
 Verification command:
 
@@ -439,6 +463,7 @@ pytest \
   tests/services/test_document_conversion_service.py \
   tests/tools/test_read_document_conversion.py \
   tests/api/test_chat_upload_conversion.py \
+  tests/services/test_web_mcp_conversion.py \
   -q
 ```
 
@@ -548,4 +573,3 @@ The capability should be considered complete only when all of the following are 
 - Admin model configuration can represent at least chat, vision, OCR, image generation, video generation, speech-to-text, and text-to-speech capabilities.
 - Generated images/audio/video are saved as workspace artifacts with provenance.
 - All external OCR/generation calls are tenant-scoped, audited, and capability-gated.
-

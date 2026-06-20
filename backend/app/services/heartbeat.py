@@ -8,11 +8,8 @@ Runs as a background task inside the FastAPI process.
 """
 
 import asyncio
-import fcntl
 import json
-import os
 import re
-import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -48,12 +45,12 @@ When posting to the plaza during heartbeat, be selective:
 
 _HEARTBEAT_STRATEGY_SUFFIX = """
 
-## Strategy Logging Scope
-evolution/lineage.md is an audit and candidate ledger, not the semantic memory body.
-Keep entries focused on source, lane, outcome, score, and audit summary.
-Do NOT turn lineage into raw memory, raw task transcripts, or hand-written durable
-learning. Model reflection enters memory through Learning Brain / Extractor
-candidate lanes; the platform governs final writes.
+## Learning Write Scope
+Do not write durable semantic learning into legacy evolution scorecards or lineage files.
+The legacy evolution directory is not the semantic memory body.
+Reflect normally in your heartbeat response. Runtime evidence enters T0/T2/T3 memory
+through governed Memory Gate paths, and reusable capability evidence may become an
+inactive Skill Candidate Package for a later Skill Writer review.
 """
 
 _HEARTBEAT_SCORE_RUBRIC_SUFFIX = """
@@ -659,8 +656,8 @@ def _parse_heartbeat_outcome(reply: str | None) -> tuple[str, int | None]:
     if score_match:
         score = min(int(score_match.group(1)), 10)
     else:
-        # Fallback score based on outcome type — prevents silent None that
-        # breaks _write_evolution_to_memory and inflates scorecard counters.
+        # Fallback score based on outcome type — prevents silent None in
+        # telemetry while keeping semantic learning on governed memory paths.
         _OUTCOME_FALLBACK_SCORES = {"action_taken": 5, "failure": 2, "noop": 0}
         score = _OUTCOME_FALLBACK_SCORES.get(outcome, 0)
 
@@ -917,41 +914,19 @@ async def _build_evolution_context(
     company_id: uuid.UUID | str | None = None,
     company_name: str | None = None,
 ) -> str:
-    """Build structured evolution context from activity logs and workspace evolution files.
+    """Build structured learning context from activity logs and governed memory paths.
 
-    This is the server-side pattern analysis that feeds into the heartbeat prompt,
-    giving the agent pre-computed metrics instead of raw activity logs.
+    This feeds the heartbeat prompt with bounded runtime signals without reviving
+    the retired ``evolution/scorecard.md`` and ``evolution/lineage.md`` semantic
+    stores.
     """
     from collections import Counter
 
     parts: list[str] = []
 
-    # 1. Read evolution files from canonical workspace (H7: single source of truth)
+    # 1. Read non-semantic runtime context from canonical workspace.
     ws_root = _get_canonical_workspace(agent_id)
     if ws_root:
-        for filename in ["evolution/scorecard.md", "evolution/blocklist.md"]:
-            fpath = ws_root / filename
-            if fpath.exists():
-                try:
-                    content = fpath.read_text(encoding="utf-8", errors="replace").strip()
-                    if content:
-                        parts.append(content)
-                except Exception as e:
-                    logger.debug(f"Failed to read evolution file {fpath}: {e}")
-
-        # Read lineage tail — keep enough history for long-term pattern recognition
-        lineage_path = ws_root / "evolution" / "lineage.md"
-        if lineage_path.exists():
-            try:
-                full = lineage_path.read_text(encoding="utf-8", errors="replace").strip()
-                lines = full.split("\n")
-                if len(lines) > 80:
-                    parts.append("\n".join(lines[:5] + ["...(earlier entries omitted)..."] + lines[-70:]))
-                else:
-                    parts.append(full)
-            except Exception as e:
-                logger.debug(f"Failed to read evolution lineage: {e}")
-
         # Read compaction summary — context the agent lost during mid-loop compression
         compaction_path = ws_root / "runtime_artifacts" / "compaction_summary.md"
         if not compaction_path.exists():
@@ -1121,13 +1096,11 @@ async def _build_evolution_context(
                 "Output: [OUTCOME:noop] [SCORE:1]"
             )
         elif total_failures >= 3:
-            # Auto-seed evolution files server-side to break the cycle
-            _auto_seed_evolution(agent_id)
             parts.append(
                 "\n---\n## Bootstrap Recovery (auto-seeded)\n"
                 "Your previous bootstrap attempts failed. Evolution files have been\n"
-                "auto-seeded with initial values. Skip bootstrapping and proceed with\n"
-                "the normal 4-phase heartbeat protocol.\n"
+                "retired as a recovery surface. Skip bootstrapping and proceed with\n"
+                "the normal heartbeat protocol using governed memory/session evidence.\n"
                 "Focus on ONE simple action: review your recent work and memory, then do something small with evidence.\n"
                 "Output: [OUTCOME:action_taken] [SCORE:3]"
             )
@@ -1139,7 +1112,7 @@ async def _build_evolution_context(
                 "1. **Read soul.md** — understand your identity and role\n"
                 "2. **List and read your skills/** — understand your capabilities\n"
                 "3. Summarize your bootstrap observations in your final reply; "
-                "runtime records the heartbeat outcome into evolution/lineage.md after the tick\n"
+                "runtime records evidence into governed memory/session paths after the tick\n"
                 "6. Output: [OUTCOME:action_taken] [SCORE:3]\n\n"
                 "After bootstrapping, future heartbeats will follow the normal 4-phase protocol."
             )
@@ -1149,312 +1122,6 @@ async def _build_evolution_context(
         _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS,
         "heartbeat evolution context",
     )
-
-
-_LINEAGE_ARCHIVE_MAX = 500
-
-
-def _archive_lineage_entries(evo_dir: Path, discarded_segments: list[str], agent_id: uuid.UUID) -> None:
-    """Archive rotated lineage entries to lineage_archive.json before they are lost.
-
-    Extracts date/strategy/outcome/score from each entry as compact summaries.
-    Keeps last _LINEAGE_ARCHIVE_MAX entries in the archive file.
-    """
-    archive_path = evo_dir / "lineage_archive.json"
-    existing: list[dict] = []
-    if archive_path.exists():
-        try:
-            existing = json.loads(archive_path.read_text(encoding="utf-8"))
-            if not isinstance(existing, list):
-                existing = []
-        except (json.JSONDecodeError, OSError) as load_err:
-            logger.debug("[Heartbeat] Failed to load lineage archive: {}", load_err)
-
-    for segment in discarded_segments:
-        entry: dict[str, str | int | None] = {}
-        date_match = re.search(r"(\d{4}-\d{2}-\d{2}-\d{2}:\d{2})", segment)
-        if date_match:
-            entry["date"] = date_match.group(1)
-        for line in segment.splitlines():
-            line = line.strip()
-            if line.startswith("- Source:"):
-                entry["source"] = line[9:].strip()[:50]
-            if line.startswith("- Strategy:"):
-                entry["strategy"] = line[11:].strip()[:150]
-            elif line.startswith("- Outcome:"):
-                entry["outcome"] = line[10:].strip()[:50]
-            elif line.startswith("- Score:"):
-                try:
-                    entry["score"] = int(line[8:].strip().split()[0])
-                except (ValueError, IndexError) as parse_err:
-                    logger.debug("[Heartbeat] Failed to parse score: {}", parse_err)
-        if entry.get("date") or entry.get("strategy"):
-            existing.append(entry)
-
-    # Cap archive size
-    existing = existing[-_LINEAGE_ARCHIVE_MAX:]
-    try:
-        archive_path.write_text(json.dumps(existing, ensure_ascii=False, indent=1), encoding="utf-8")
-        logger.info("[Heartbeat] Archived {} rotated lineage entries for {}", len(discarded_segments), agent_id)
-    except Exception as write_err:
-        logger.debug("[Heartbeat] Failed to write lineage archive: {}", write_err)
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write file atomically via temp file + rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    fd_closed = False
-    try:
-        os.write(tmp_fd, content.encode("utf-8"))
-        os.close(tmp_fd)
-        fd_closed = True
-        os.replace(tmp_path, str(path))
-    except BaseException:
-        if not fd_closed:
-            os.close(tmp_fd)
-        try:
-            os.unlink(tmp_path)
-        except OSError as unlink_exc:
-            logger.debug("[Heartbeat] Failed to clean up temp file {}: {}", tmp_path, unlink_exc)
-        raise
-
-
-def _update_evolution_files(
-    agent_id: uuid.UUID,
-    outcome_type: str,
-    score: int | None,
-    summary: str,
-    *,
-    source: str = "heartbeat",
-) -> None:
-    """Server-side writeback: update scorecard counters and append lineage entry.
-
-    This closes the evolution feedback loop — the agent can see its real
-    performance history on subsequent heartbeats instead of frozen seed values.
-
-    Uses flock() to protect the read-modify-write cycle against concurrent
-    heartbeat processes writing the same files.
-    """
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H:%M")
-
-    # Use canonical workspace to avoid double-counting across paths
-    ws_root = _get_canonical_workspace(agent_id)
-    if not ws_root:
-        logger.debug("[Heartbeat] No workspace found for evolution writeback: {}", agent_id)
-        return
-
-    evo_dir = ws_root / "evolution"
-    evo_dir.mkdir(parents=True, exist_ok=True)
-
-    # Acquire exclusive lock for the entire read-modify-write cycle
-    lock_path = evo_dir / ".evolution.lock"
-    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-
-        # ── Update scorecard counters ──
-        scorecard_path = evo_dir / "scorecard.md"
-        try:
-            sc_text = scorecard_path.read_text(encoding="utf-8", errors="replace") if scorecard_path.exists() else ""
-            counters = {
-                "total_heartbeats": 0,
-                "useful_heartbeats": 0,
-                "total_trigger_runs": 0,
-                "useful_trigger_runs": 0,
-                "failed_runs": 0,
-                "blocked_approaches": 0,
-                "skills_created": 0,
-                "strategies_evolved": 0,
-            }
-            for key in counters:
-                match = re.search(rf"- {key}:\s*(\d+)", sc_text)
-                if match:
-                    counters[key] = int(match.group(1))
-            legacy_failed_attempts = re.search(r"- failed_attempts:\s*(\d+)", sc_text)
-            if legacy_failed_attempts:
-                counters["failed_runs"] = max(counters["failed_runs"], int(legacy_failed_attempts.group(1)))
-
-            if source == "heartbeat":
-                counters["total_heartbeats"] += 1
-                if _heartbeat_counts_as_useful(outcome_type, score):
-                    counters["useful_heartbeats"] += 1
-            elif source == "trigger":
-                counters["total_trigger_runs"] += 1
-                if _heartbeat_counts_as_useful(outcome_type, score):
-                    counters["useful_trigger_runs"] += 1
-
-            if outcome_type in ("failure", "crash"):
-                counters["failed_runs"] += 1
-
-            heartbeat_useful_rate = (
-                round(counters["useful_heartbeats"] / counters["total_heartbeats"] * 100)
-                if counters["total_heartbeats"] > 0
-                else 0
-            )
-            trigger_useful_rate = (
-                round(counters["useful_trigger_runs"] / counters["total_trigger_runs"] * 100)
-                if counters["total_trigger_runs"] > 0
-                else 0
-            )
-            trend = (
-                f"- Heartbeat useful rate: {heartbeat_useful_rate}% "
-                f"({counters['useful_heartbeats']}/{counters['total_heartbeats']})\n"
-                f"- Trigger useful rate: {trigger_useful_rate}% "
-                f"({counters['useful_trigger_runs']}/{counters['total_trigger_runs']})"
-            )
-
-            _atomic_write(
-                scorecard_path,
-                "# Evolution Scorecard\n\n## Metrics\n"
-                + "".join(f"- {k}: {v}\n" for k, v in counters.items())
-                + f"\n## Recent Trend\n{trend}\n"
-                + f"Last updated: {now}\n",
-            )
-        except Exception as exc:
-            logger.debug(f"[Heartbeat] Failed to update scorecard for {agent_id}: {exc}")
-
-        # ── Append lineage entry (skip if agent already wrote one for this timestamp) ──
-        lineage_path = evo_dir / "lineage.md"
-        try:
-            existing = lineage_path.read_text(encoding="utf-8", errors="replace") if lineage_path.exists() else ""
-            if "(no entries yet)" in existing:
-                existing = "# Evolution Lineage\n\n"
-
-            entry_marker = f"{source.upper()}-{now}"
-            if f"### {entry_marker}" in existing:
-                logger.debug(
-                    "[Heartbeat] Lineage entry {} already exists (agent-written), skipping server append", entry_marker
-                )
-            else:
-                score_str = f", score={score}" if score is not None else ""
-                entry = (
-                    f"### {entry_marker}\n"
-                    f"- Source: {source}\n"
-                    f"- Lane: {_heartbeat_outcome_lane(outcome_type)}\n"
-                    f"- Outcome: {outcome_type}{score_str}\n"
-                    f"- Summary: {summary}\n\n"
-                )
-                existing = existing.rstrip() + "\n\n" + entry
-
-            new_content = existing
-
-            # Rotate lineage: keep header + last 200 entries to prevent unbounded growth
-            _LINEAGE_MAX_ENTRIES = 200
-            segments = re.split(r"(?m)^### ", new_content)
-            if len(segments) > _LINEAGE_MAX_ENTRIES + 1:  # +1 for header segment
-                # B7 fix: archive rotated entries before discarding
-                discarded = segments[1:-_LINEAGE_MAX_ENTRIES]  # Skip header segment
-                if discarded:
-                    _archive_lineage_entries(evo_dir, discarded, agent_id)
-
-                header = "# Evolution Lineage\n\n"
-                trimmed = header + "### ".join(segments[-_LINEAGE_MAX_ENTRIES:])
-                _atomic_write(lineage_path, trimmed)
-            else:
-                _atomic_write(lineage_path, new_content)
-        except Exception as exc:
-            logger.debug(f"[Heartbeat] Failed to update lineage for {agent_id}: {exc}")
-
-        # ── Auto-append blocklist on consecutive failures (F2 fix) ──
-        # If last 3 lineage entries are all failures, add summary to blocklist.
-        if outcome_type in ("failure", "crash") and (score is not None and score <= 2):
-            try:
-                lineage_text = (
-                    lineage_path.read_text(encoding="utf-8", errors="replace") if lineage_path.exists() else ""
-                )
-                outcome_matches = re.findall(r"- Outcome:\s*(\w+)", lineage_text)
-                last_3 = outcome_matches[-3:] if len(outcome_matches) >= 3 else []
-                if len(last_3) == 3 and all(o in ("failure", "crash") for o in last_3):
-                    blocklist_path = evo_dir / "blocklist.md"
-                    bl_text = (
-                        blocklist_path.read_text(encoding="utf-8", errors="replace")
-                        if blocklist_path.exists()
-                        else "# Blocklist\n"
-                    )
-                    date_str = now[:10]
-                    entry = f"- [{date_str}] {summary[:150]} (3 consecutive failures)"
-                    if summary[:60].lower() not in bl_text.lower():
-                        _atomic_write(blocklist_path, bl_text.rstrip() + "\n" + entry + "\n")
-                        logger.info("[Heartbeat] Auto-blocked approach for agent {}: {}", agent_id, summary[:80])
-            except Exception as bl_err:
-                logger.debug("[Heartbeat] Blocklist auto-append failed: {}", bl_err)
-
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
-
-    logger.info(f"[Heartbeat] Evolution files updated for agent {agent_id}: {outcome_type}")
-
-
-def _auto_seed_evolution(agent_id: uuid.UUID) -> None:
-    """Server-side emergency seed: write minimal evolution files to break bootstrap loop."""
-    from pathlib import Path
-
-    from app.config import get_settings
-
-    settings = get_settings()
-    for ws_root in [
-        Path("/tmp/hive_workspaces") / str(agent_id),
-        Path(settings.AGENT_DATA_DIR) / str(agent_id),
-    ]:
-        evo_dir = ws_root / "evolution"
-        if ws_root.exists():
-            evo_dir.mkdir(parents=True, exist_ok=True)
-            now = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H:%M")
-            # Seed scorecard with initial counters
-            scorecard = evo_dir / "scorecard.md"
-            if not scorecard.exists() or "(updated each heartbeat)" in scorecard.read_text(
-                encoding="utf-8", errors="replace"
-            ):
-                scorecard.write_text(
-                    "# Evolution Scorecard\n\n## Metrics\n"
-                    "- total_heartbeats: 3\n- useful_heartbeats: 0\n"
-                    "- total_trigger_runs: 0\n- useful_trigger_runs: 0\n"
-                    "- failed_runs: 3\n- blocked_approaches: 0\n"
-                    "- skills_created: 0\n- strategies_evolved: 0\n\n"
-                    "## Recent Trend\nBootstrap failures detected — auto-seeded.\n",
-                    encoding="utf-8",
-                )
-            # Seed lineage with recovery record
-            lineage = evo_dir / "lineage.md"
-            lineage_content = lineage.read_text(encoding="utf-8", errors="replace") if lineage.exists() else ""
-            if "(no entries yet)" in lineage_content or not lineage_content.strip():
-                lineage.write_text(
-                    "# Evolution Lineage\n\n"
-                    f"### HEARTBEAT-{now} [auto-seed]\n"
-                    "- Source: heartbeat\n"
-                    "- Outcome: recovery\n"
-                    "- Summary: 3 bootstrap failures detected, evolution files auto-seeded by server\n",
-                    encoding="utf-8",
-                )
-            logger.info(f"[Heartbeat] Auto-seeded evolution files for agent {agent_id} after 3 bootstrap failures")
-            return
-    logger.warning(f"[Heartbeat] Cannot auto-seed evolution: no workspace found for agent {agent_id}")
-
-
-def _validate_bootstrap_completion(agent_id: uuid.UUID) -> None:
-    """Server-side validation that bootstrap produced expected files."""
-    from pathlib import Path
-
-    from app.config import get_settings
-
-    settings = get_settings()
-    for ws_root in [
-        Path("/tmp/hive_workspaces") / str(agent_id),
-        Path(settings.AGENT_DATA_DIR) / str(agent_id),
-    ]:
-        if not ws_root.exists():
-            continue
-        missing = []
-        for required in ["evolution/lineage.md", "evolution/scorecard.md"]:
-            fpath = ws_root / required
-            if not fpath.exists() or fpath.stat().st_size < 10:
-                missing.append(required)
-        if missing:
-            logger.info(f"[Heartbeat] Bootstrap incomplete for {agent_id}: missing {', '.join(missing)} — auto-seeding")
-            _auto_seed_evolution(agent_id)
-        return
 
 
 def _get_canonical_workspace(agent_id: uuid.UUID) -> "Path | None":
@@ -1473,15 +1140,6 @@ def _get_canonical_workspace(agent_id: uuid.UUID) -> "Path | None":
 
     # If persistent exists, it's canonical
     if persistent.exists():
-        # Sync evolution files from ephemeral if they're newer
-        if ephemeral.exists():
-            for rel in ["evolution/scorecard.md", "evolution/lineage.md", "evolution/blocklist.md"]:
-                eph_file = ephemeral / rel
-                per_file = persistent / rel
-                if eph_file.exists():
-                    if not per_file.exists() or eph_file.stat().st_mtime > per_file.stat().st_mtime:
-                        per_file.parent.mkdir(parents=True, exist_ok=True)
-                        per_file.write_text(eph_file.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
         return persistent
 
     if ephemeral.exists():
@@ -1534,51 +1192,6 @@ async def _touch_last_heartbeat(agent_id: uuid.UUID, tenant_id: uuid.UUID | None
                 await _db.commit()
     except Exception as _exc:
         logger.debug(f"[Heartbeat] Failed to touch last_heartbeat_at for {agent_id}: {_exc}")
-
-
-async def _maybe_run_skill_distillation(
-    *,
-    agent_id: uuid.UUID,
-    workspace: Path,
-    tenant_id: uuid.UUID | None,
-    runtime_config,
-    model,
-    current_session_id: str | None,
-) -> dict | None:
-    if not getattr(runtime_config, "skill_candidate_loop_enabled", False):
-        return None
-
-    from app.services.skill_distiller import run_skill_distillation_cycle
-
-    try:
-        return await run_skill_distillation_cycle(
-            agent_id=agent_id,
-            workspace=workspace,
-            tenant_id=tenant_id,
-            runtime_config=runtime_config,
-            model=model,
-            current_session_id=current_session_id,
-        )
-    except Exception as exc:
-        logger.warning("[Heartbeat] Skill distillation failed for {}: {}", agent_id, exc)
-        return None
-
-
-def _maybe_run_skill_curator(workspace: Path) -> dict | None:
-    """Run the skill curator decay pass for this agent's workspace.
-
-    Counterpart to skill distillation: distillation only adds skills, the
-    curator marks unused agent-authored skills stale and archives long-dormant
-    ones (never deletes). Synchronous file IO; failures are logged, never
-    propagated into the heartbeat tick.
-    """
-    try:
-        from app.services.skill_curator import run_skill_curator_pass
-
-        return run_skill_curator_pass(workspace)
-    except Exception as exc:
-        logger.warning("[Heartbeat] Skill curator pass failed for {}: {}", workspace, exc)
-        return None
 
 
 def _run_memory_lifecycle_maintenance(agent_id: uuid.UUID, *, now: datetime | None = None) -> dict:
@@ -1799,6 +1412,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     user_id=agent.creator_id,
                     participant_id=agent_participant_id,
                     source_channel="heartbeat",
+                    session_kind="agent_internal_maintenance",
+                    actor_type="agent",
+                    runtime_source="heartbeat",
+                    visibility_scope="agent_internal",
+                    listed_surface="hidden",
                     title=f"💓 Heartbeat: {agent.name}"[:200],
                 )
                 db.add(session)
@@ -2043,117 +1661,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     _reflection_err,
                 )
 
-            # Server-side evolution file writeback — closes the feedback loop
-            # Runs in thread pool to avoid blocking the event loop (flock is blocking I/O)
-            try:
-                await asyncio.to_thread(
-                    _update_evolution_files,
-                    agent_id,
-                    outcome_type,
-                    heartbeat_score,
-                    summary,
-                    source="heartbeat",
-                )
-            except Exception as _evo_err:
-                logger.warning(f"[Heartbeat] Evolution writeback failed for {agent_id}: {_evo_err}")
-
-            try:
-                from app.runtime.invoker import _resolve_runtime_config
-                from app.tools.workspace import ensure_workspace
-
-                runtime_config = await _resolve_runtime_config(agent_id)
-                # P0-1b: skip skill distillation when tenant cannot be resolved.
-                # Distiller writes persistent skill files; without tenant context
-                # we cannot enforce capability policy. Surface as observability
-                # signal rather than failing the heartbeat tick.
-                if runtime_config.tenant_resolution_error:
-                    logger.warning(
-                        "[Heartbeat] Skipping skill distillation for {} — tenant resolution failed: {}",
-                        agent_id,
-                        runtime_config.tenant_resolution_error,
-                    )
-                else:
-                    workspace = await ensure_workspace(
-                        agent_id, tenant_id=str(agent.tenant_id) if agent.tenant_id else None
-                    )
-                    await _maybe_run_skill_distillation(
-                        agent_id=agent_id,
-                        workspace=workspace,
-                        tenant_id=agent.tenant_id,
-                        runtime_config=runtime_config,
-                        model=model,
-                        current_session_id=str(session_id),
-                    )
-                    # Negative pressure: decay/archive unused agent-authored
-                    # skills so the catalog doesn't grow unbounded.
-                    _maybe_run_skill_curator(workspace)
-            except Exception as _distill_err:
-                logger.warning("[Heartbeat] Skill distillation setup failed for {}: {}", agent_id, _distill_err)
-
-            # Scene/wiki curation (spec §12 P5): consolidate new knowledge/
-            # strategy entries into scene narratives and wiki concept pages.
-            # Cursor-gated, candidate-first, never breaks the tick.
-            try:
-                from app.services.memory_curation import run_scene_wiki_curation_tick
-
-                curation_summary = await run_scene_wiki_curation_tick(agent_id, agent.tenant_id)
-                if curation_summary.get("status") == "ran":
-                    logger.info("[Heartbeat] Scene/wiki curation for {}: {}", agent_id, curation_summary)
-            except Exception as _curation_err:
-                logger.warning("[Heartbeat] Scene/wiki curation failed for {}: {}", agent_id, _curation_err)
-
-            # Count PRODUCTIVE heartbeats toward the auto-dream gate so agents
-            # with low user-chat but real autonomous output still distill —
-            # idle ticks (OUTCOME:noop) are not activity.
-            try:
-                from app.services.auto_dream import record_dream_activity, should_dream, run_dream
-
-                record_dream_activity(agent_id, outcome_type)
-                if should_dream(agent_id) and agent.tenant_id:
-                    asyncio.create_task(run_dream(agent_id, agent.tenant_id))
-                    logger.info("[Heartbeat] Auto-dream triggered for agent {}", agent_id)
-            except Exception as _dream_err:
-                logger.debug("[Heartbeat] Auto-dream check failed: {}", _dream_err)
-
-            # NOTE: Heartbeat outcomes are no longer written directly into long-term
-            # memory here. Evolution files are the intermediate source; dream curates
-            # durable entries into canonical markdown memory on the next cycle.
-
-            # PR-9: scrub any T3 rows the LLM may have written off-spec so
-            # dream's parser sees them. Must run BEFORE the T0 hook so the
-            # normalization report rides along in the heartbeat ledger event.
-            normalization_report: dict = {"fixed": 0, "warnings": [], "files_touched": []}
-            try:
-                from app.config import get_settings as _get_settings
-                from app.memory.md_store import validate_and_normalize_t3
-
-                normalization_report = validate_and_normalize_t3(Path(_get_settings().AGENT_DATA_DIR), agent_id)
-                if normalization_report["fixed"] or normalization_report["warnings"]:
-                    logger.info(
-                        "[Heartbeat] T3 normalization for {}: fixed={} warnings={} files={}",
-                        agent_id,
-                        normalization_report["fixed"],
-                        len(normalization_report["warnings"]),
-                        normalization_report["files_touched"],
-                    )
-            except Exception as _nrm_err:
-                logger.debug("[Heartbeat] T3 normalization failed (non-fatal): {}", _nrm_err)
-
-            # Optional enhancement adapter boundary. Runs after normalization
-            # and is currently a no-op; native T3 Markdown is the source.
-            try:
-                from app.memory.enhancement import sync_t3_to_memory_enhancement
-
-                sync_result = await sync_t3_to_memory_enhancement(agent_id, agent.tenant_id)
-                if sync_result.synced:
-                    logger.info(
-                        "[Heartbeat] Memory enhancement sync: {} T3 items (agent={})",
-                        sync_result.synced,
-                        agent_id,
-                    )
-            except Exception as _hs_err:
-                logger.warning("[Heartbeat] Memory enhancement sync outer guard tripped: {}", _hs_err)
-
             # Emit HEARTBEAT_TICK_END hook → T0 session ledger
             try:
                 from app.runtime.hooks import HookEvent, emit_hook
@@ -2191,15 +1698,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                         "summary": summary[:200] if summary else "",
                         "action": _heartbeat_action_label(outcome_type, summary),
                         "reasoning": reasoning_text,
-                        "t3_normalization": normalization_report,
+                        "tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
                     },
                 )
             except Exception as _hook_err:
                 logger.debug("[Heartbeat] HEARTBEAT_TICK_END hook failed (non-fatal): {}", _hook_err)
-
-            # Bootstrap validation: verify key files exist regardless of outcome
-            # (cold_start agents need validation even on failure/noop)
-            _validate_bootstrap_completion(agent_id)
 
             score_str = f" score={heartbeat_score}" if heartbeat_score is not None else ""
             logger.info(f"💓 Heartbeat for {agent.name}: {outcome_type}{score_str} — {summary}")
@@ -2239,18 +1742,6 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
             )
         except Exception as log_err:
             logger.debug(f"Failed to log heartbeat crash to activity: {log_err}")
-        # Update evolution files on crash too — closes the feedback loop
-        try:
-            await asyncio.to_thread(
-                _update_evolution_files,
-                agent_id,
-                "crash",
-                None,
-                f"crash: {error_text[:60]}",
-                source="heartbeat",
-            )
-        except Exception as _evo_crash_err:
-            logger.debug(f"[Heartbeat] Evolution writeback on crash failed: {_evo_crash_err}")
         await _update_heartbeat_runtime_task(
             runtime_task_id,
             status="failed",

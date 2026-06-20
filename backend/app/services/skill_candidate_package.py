@@ -8,6 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.skill_evolution_registry import (
+    AUTHORING_CONTRACT,
+    default_evolvable_for_origin,
+    default_origin_for_candidate,
+    normalize_skill_origin,
+)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -85,11 +92,18 @@ def write_skill_candidate_package(
     status: str = "candidate",
     extra_metadata: dict[str, Any] | None = None,
     draft_filename: str = "SKILL.md.draft",
+    skill_origin: str | None = None,
+    evolvable: bool | None = None,
 ) -> dict[str, Any]:
     """Stage an inactive candidate package. Active skills are never written here."""
 
     if draft_filename not in {"SKILL.md.draft", "candidate_signal.md"}:
         raise ValueError("draft_filename must be SKILL.md.draft or candidate_signal.md")
+    resolved_origin = normalize_skill_origin(
+        skill_origin or default_origin_for_candidate(package_type=package_type, draft_filename=draft_filename)
+    )
+    origin_evolvable = default_evolvable_for_origin(resolved_origin)
+    resolved_evolvable = origin_evolvable if evolvable is None else bool(evolvable) and origin_evolvable
     package_dir = workspace / "evolution" / "skill_candidates" / candidate_id
     package_dir.mkdir(parents=True, exist_ok=True)
     skill_pitch = render_skill_pitch(
@@ -119,6 +133,9 @@ def write_skill_candidate_package(
         "package_type": package_type,
         "status": status,
         "target_path": target_path,
+        "skill_origin": resolved_origin,
+        "evolvable": resolved_evolvable,
+        "authoring_contract": AUTHORING_CONTRACT,
         "draft_path": draft_path if draft_filename == "SKILL.md.draft" else None,
         "candidate_signal_path": draft_path if draft_filename == "candidate_signal.md" else None,
         "pitch_path": f"evolution/skill_candidates/{candidate_id}/skill_pitch.md",

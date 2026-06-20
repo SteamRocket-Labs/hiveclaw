@@ -331,9 +331,18 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
             assert source_bundle["work_ledger"]["findings"][0]["summary"] == (
                 "Webhook retries use exponential backoff capped at 5 minutes"
             )
-            return f"<t2_summary schema_version='t2.summary.v1' package_id='{package_id}'><source_refs><source_ref uri='{ref}'/></source_refs></t2_summary>"
+            return f"""<t2_summary schema_version="t2.summary.v1" package_id="{package_id}" status="closed">
+  <segment_state value="complete">complete</segment_state>
+  <continuity><state>standalone</state><reason>该 session close 片段自包含且可独立总结。</reason></continuity>
+  <summary>Webhook retries use exponential backoff capped at 5 minutes.</summary>
+  <source_refs><source_ref uri="{ref}"/></source_refs>
+</t2_summary>"""
         if kwargs["phase"] == "labels":
-            return f"<t2_labels schema_version='t2.labels.v1' package_id='{package_id}'><source_refs><source_ref uri='{ref}'/></source_refs></t2_labels>"
+            return f"""<t2_labels schema_version="t2.labels.v1" package_id="{package_id}">
+  <package_status>closed</package_status>
+  <continuity_state>standalone</continuity_state>
+  <source_refs><source_ref uri="{ref}"/></source_refs>
+</t2_labels>"""
         return _approved_review_xml(package_id=package_id, ref=ref)
 
     monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_model_config)

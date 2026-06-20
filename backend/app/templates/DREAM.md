@@ -71,7 +71,7 @@ The runtime wrapper requires raw JSON only. Do not output prose, Markdown, or to
 When a Soul change is warranted, emit one `soul_candidate` object that contains
 complete artifact content: `soul_pitch_md`, `soul_patch_md`, `soul_md_next`,
 `source_refs`, and the Soul Memory Gate `review` rubric. The platform may write
-those artifacts under `evolution/soul_candidates/<candidate_id>/` and commit
+those artifacts under `memory/.staging/soul_candidates/<candidate_id>/` and commit
 `soul.md.next` exactly after hard checks. Do not emit legacy per-section
 promotion rows.
 </required_output>

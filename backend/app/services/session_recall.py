@@ -653,6 +653,7 @@ async def _search_session_history_db(
             ChatSession.agent_id == agent_id,
             ChatMessage.agent_id == agent_id,
             ChatMessage.role.notin_(_EXCLUDED_ROLES),
+            ChatSession.listed_surface == "chat",
             ChatSession.source_channel.notin_(_EXCLUDED_CHANNELS),
             or_(
                 ChatMessage.content.ilike(pattern),

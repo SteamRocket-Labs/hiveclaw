@@ -25,6 +25,7 @@ from app.services.auth_provider import feishu_auth_provider
 from app.services.channel_user_service import channel_user_service
 from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
 from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
+from app.services.feishu_platform import resolve_feishu_platform
 from app.services.feishu_service import feishu_service
 from app.services.approval_service import approval_service
 from app.services.channel_agent_runtime import call_agent_llm
@@ -44,6 +45,10 @@ def _is_feishu_new_session_command(text: str) -> bool:
     import re
 
     return bool(re.search(_NEW_SESSION_TEXT_PATTERN, text or "", re.IGNORECASE))
+
+
+def _feishu_platform_extra(config) -> dict:
+    return dict(getattr(config, "extra_config", None) or {})
 
 
 def _parse_feishu_text_approval_action(text: str) -> str | None:
@@ -83,6 +88,7 @@ async def _try_resolve_feishu_text_approval(
             json.dumps({"text": text}, ensure_ascii=False),
             receive_id_type=receive_id_type,
             stage="approval_text_reply",
+            extra_config=_feishu_platform_extra(config),
         )
 
     if not agent:
@@ -280,6 +286,7 @@ async def _resolve_feishu_sender_profile(
             config.app_secret,
             sender_open_id,
             stage="resolve_sender_profile",
+            extra_config=_feishu_platform_extra(config),
         )
         if user_info:
             profile.update(
@@ -310,10 +317,10 @@ async def _resolve_feishu_sender_profile(
 
 # ─── OAuth ──────────────────────────────────────────────
 
-FEISHU_AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 
-
-async def _resolve_feishu_oauth_authorize_config(db: AsyncSession, tenant_id: uuid.UUID | None) -> tuple[str, str]:
+async def _resolve_feishu_oauth_authorize_config(
+    db: AsyncSession, tenant_id: uuid.UUID | None
+) -> tuple[str, str, dict]:
     """Resolve the OAuth app and callback URL for authorize-url generation."""
     try:
         config = await feishu_auth_provider.get_oauth_config(db, tenant_id)
@@ -330,7 +337,7 @@ async def _resolve_feishu_oauth_authorize_config(db: AsyncSession, tenant_id: uu
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Feishu SSO not configured on this deployment",
         )
-    return app_id, redirect_uri
+    return app_id, redirect_uri, config
 
 
 async def _load_public_sso_scan_session(db: AsyncSession, session_id: uuid.UUID) -> SSOScanSession | None:
@@ -366,7 +373,7 @@ async def feishu_sso_init(
 
     if tenant_id:
         await pin_rls_tenant_context(db, tenant_id)
-    app_id, redirect_uri = await _resolve_feishu_oauth_authorize_config(db, tenant_id)
+    app_id, redirect_uri, oauth_config = await _resolve_feishu_oauth_authorize_config(db, tenant_id)
 
     session = SSOScanSession(
         id=uuid.uuid4(),
@@ -383,7 +390,7 @@ async def feishu_sso_init(
         "response_type": "code",
         "state": str(session.id),
     }
-    authorize_url = f"{FEISHU_AUTHORIZE_URL}?{urlencode(params)}"
+    authorize_url = f"{resolve_feishu_platform(oauth_config).oauth_authorize_url}?{urlencode(params)}"
 
     return {"session_id": str(session.id), "authorize_url": authorize_url}
 
@@ -425,7 +432,7 @@ async def feishu_bind_init(
     from datetime import datetime, timedelta, timezone
     from urllib.parse import urlencode
 
-    app_id, redirect_uri = await _resolve_feishu_oauth_authorize_config(db, current_user.tenant_id)
+    app_id, redirect_uri, oauth_config = await _resolve_feishu_oauth_authorize_config(db, current_user.tenant_id)
 
     session = SSOScanSession(
         id=uuid.uuid4(),
@@ -443,7 +450,7 @@ async def feishu_bind_init(
         "response_type": "code",
         "state": str(session.id),
     }
-    authorize_url = f"{FEISHU_AUTHORIZE_URL}?{urlencode(params)}"
+    authorize_url = f"{resolve_feishu_platform(oauth_config).oauth_authorize_url}?{urlencode(params)}"
     return {"session_id": str(session.id), "authorize_url": authorize_url}
 
 
@@ -544,8 +551,9 @@ async def configure_channel(
         )
     )
     existing = result.scalar_one_or_none()
-    incoming_extra = data.extra_config or {}
     existing_extra = existing.extra_config if existing else {}
+    incoming_extra = {**(existing_extra or {}), **(data.extra_config or {})}
+    incoming_extra["platform_region"] = resolve_feishu_platform(incoming_extra).region
     connection_mode = incoming_extra.get("connection_mode", existing_extra.get("connection_mode", "webhook"))
     app_id = resolve_secret_value(data.app_id, existing.app_id if existing else None, preserve_missing=True)
     app_secret = resolve_secret_value(data.app_secret, existing.app_secret if existing else None, preserve_missing=True)
@@ -578,7 +586,14 @@ async def configure_channel(
 
         mode = existing.extra_config.get("connection_mode", "webhook")
         if mode == "websocket":
-            asyncio.create_task(feishu_ws_manager.start_client(agent_id, existing.app_id, existing.app_secret))
+            asyncio.create_task(
+                feishu_ws_manager.start_client(
+                    agent_id,
+                    existing.app_id,
+                    existing.app_secret,
+                    extra_config=existing.extra_config,
+                )
+            )
         else:
             asyncio.create_task(feishu_ws_manager.stop_client(agent_id))
 
@@ -604,7 +619,14 @@ async def configure_channel(
 
     mode = config.extra_config.get("connection_mode", "webhook")
     if mode == "websocket":
-        asyncio.create_task(feishu_ws_manager.start_client(agent_id, config.app_id, config.app_secret))
+        asyncio.create_task(
+            feishu_ws_manager.start_client(
+                agent_id,
+                config.app_id,
+                config.app_secret,
+                extra_config=config.extra_config,
+            )
+        )
 
     return ChannelConfigOut.model_validate(config)
 
@@ -789,7 +811,9 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
             db,
             reason=f"public feishu card approval lookup for {approval_uuid}",
         ) as bypass_db:
-            approval_result = await bypass_db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_uuid))
+            approval_result = await bypass_db.execute(
+                select(ApprovalRequest).where(ApprovalRequest.id == approval_uuid)
+            )
             approval_record = approval_result.scalar_one_or_none()
             if not approval_record:
                 return {"toast": {"type": "error", "content": "Approval not found"}}
@@ -984,7 +1008,12 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 for _ik in _post_image_keys:
                     try:
                         _img_bytes = await feishu_service.download_message_resource(
-                            config.app_id, config.app_secret, _msg_id, _ik, "image"
+                            config.app_id,
+                            config.app_secret,
+                            _msg_id,
+                            _ik,
+                            "image",
+                            extra_config=_feishu_platform_extra(config),
                         )
                         # Save to workspace
                         _save_path = _upload_dir / f"image_{_ik[-8:]}.jpg"
@@ -1108,6 +1137,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     json.dumps({"text": "已开启新会话。接下来的消息会从新的上下文开始。"}, ensure_ascii=False),
                     receive_id_type=delivery_target["receive_id_type"],
                     stage="new_session_ack",
+                    extra_config=_feishu_platform_extra(config),
                 )
                 return {"code": 0, "msg": "new session created"}
 
@@ -1263,6 +1293,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         file_path,
                         receive_id_type=_rid_type,
                         accompany_msg=msg,
+                        extra_config=_feishu_platform_extra(config),
                     )
                 except Exception as _upload_err:
                     # Fallback: send a download link when upload permission is not granted
@@ -1295,6 +1326,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         "text",
                         json.dumps({"text": "\n\n".join(_fallback_parts)}),
                         receive_id_type=_rid_type,
+                        extra_config=_feishu_platform_extra(config),
                     )
 
             _cfs_token = _cfs.set(_feishu_file_sender)
@@ -1346,6 +1378,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     config.app_id,
                     config.app_secret,
                     init_card,
+                    extra_config=_feishu_platform_extra(config),
                 )
                 cardkit_sequence = 1
                 await feishu_service.send_card_by_card_id(
@@ -1354,6 +1387,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     _reply_target,
                     cardkit_card_id,
                     receive_id_type=_rid_type,
+                    extra_config=_feishu_platform_extra(config),
                 )
                 logger.info(f"[Feishu] CardKit card created and sent: card_id={cardkit_card_id}")
             except Exception as exc:
@@ -1373,6 +1407,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         _json_card.dumps(init_card_fallback),
                         receive_id_type=_rid_type,
                         stage="stream_init_card",
+                        extra_config=_feishu_platform_extra(config),
                     )
                     msg_id_for_patch = init_resp.get("data", {}).get("message_id")
                 except Exception as fallback_exc:
@@ -1476,6 +1511,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             msg_id_for_patch,
                             payload,
                             stage=stage,
+                            extra_config=_feishu_platform_extra(config),
                         )
                     except Exception as exc:
                         logger.warning(f"[Feishu] Patch failed (stage={stage}, message_id={msg_id_for_patch}): {exc}")
@@ -1513,6 +1549,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                         "streaming_content",
                                         cardkit_text,
                                         cardkit_sequence,
+                                        extra_config=_feishu_platform_extra(config),
                                     ),
                                     timeout=5.0,
                                 )
@@ -1621,6 +1658,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             cardkit_card_id,
                             0,
                             cardkit_sequence,
+                            extra_config=_feishu_platform_extra(config),
                         ),
                         timeout=10.0,
                     )
@@ -1633,6 +1671,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             cardkit_card_id,
                             final_card,
                             cardkit_sequence,
+                            extra_config=_feishu_platform_extra(config),
                         ),
                         timeout=10.0,
                     )
@@ -1647,6 +1686,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             json.dumps({"text": reply_text}),
                             receive_id_type=_rid_type,
                             stage="stream_final_fallback_text",
+                            extra_config=_feishu_platform_extra(config),
                         )
                     except Exception as fallback_exc:
                         logger.error(f"[Feishu] CardKit fallback text also failed: {fallback_exc}")
@@ -1663,6 +1703,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         msg_id_for_patch,
                         _json_card.dumps(final_card),
                         stage="stream_final",
+                        extra_config=_feishu_platform_extra(config),
                     )
                 except Exception as exc:
                     logger.error(f"[Feishu] Final card patch failed: {exc}")
@@ -1675,6 +1716,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             json.dumps({"text": reply_text}),
                             receive_id_type=_rid_type,
                             stage="stream_final_fallback_text",
+                            extra_config=_feishu_platform_extra(config),
                         )
                     except Exception as fallback_exc:
                         logger.error(f"[Feishu] Fallback text also failed: {fallback_exc}")
@@ -1688,6 +1730,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         json.dumps({"text": reply_text}),
                         receive_id_type=_rid_type,
                         stage="stream_no_card_fallback_text",
+                        extra_config=_feishu_platform_extra(config),
                     )
                 except Exception as exc:
                     logger.error(f"[Feishu] Failed to send fallback message: {exc}")
@@ -1785,7 +1828,12 @@ async def _handle_feishu_file(
     # Download the file
     try:
         file_bytes = await feishu_service.download_message_resource(
-            config.app_id, config.app_secret, message_id, file_key, res_type
+            config.app_id,
+            config.app_secret,
+            message_id,
+            file_key,
+            res_type,
+            extra_config=_feishu_platform_extra(config),
         )
         save_path.write_bytes(file_bytes)
         logger.info(f"[Feishu] Saved {msg_type} to {save_path} ({len(file_bytes)} bytes)")
@@ -1803,10 +1851,16 @@ async def _handle_feishu_file(
                     "text",
                     _j.dumps({"text": err_tip}),
                     receive_id_type="chat_id",
+                    extra_config=_feishu_platform_extra(config),
                 )
             else:
                 await feishu_service.send_message(
-                    config.app_id, config.app_secret, sender_open_id, "text", _j.dumps({"text": err_tip})
+                    config.app_id,
+                    config.app_secret,
+                    sender_open_id,
+                    "text",
+                    _j.dumps({"text": err_tip}),
+                    extra_config=_feishu_platform_extra(config),
                 )
         except Exception as e2:
             logger.error(f"[Feishu] Also failed to send error tip: {e2}")
@@ -1936,6 +1990,7 @@ async def _handle_feishu_file(
                 "interactive",
                 _json_card_img.dumps(_init_card),
                 receive_id_type=_rid_type,
+                extra_config=_feishu_platform_extra(config),
             )
             _patch_msg_id = _init_resp.get("data", {}).get("message_id")
         except Exception as _e_init:
@@ -1958,7 +2013,11 @@ async def _handle_feishu_file(
 
                 _aio_img.create_task(
                     feishu_service.patch_message(
-                        config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_card)
+                        config.app_id,
+                        config.app_secret,
+                        _patch_msg_id,
+                        _json_card_img.dumps(_card),
+                        extra_config=_feishu_platform_extra(config),
                     )
                 )
                 _img_last_flush = now
@@ -1997,7 +2056,11 @@ async def _handle_feishu_file(
                 "elements": [{"tag": "markdown", "content": reply_text or "..."}],
             }
             await feishu_service.patch_message(
-                config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_final_card)
+                config.app_id,
+                config.app_secret,
+                _patch_msg_id,
+                _json_card_img.dumps(_final_card),
+                extra_config=_feishu_platform_extra(config),
             )
         else:
             try:
@@ -2008,6 +2071,7 @@ async def _handle_feishu_file(
                     "text",
                     json.dumps({"text": reply_text}),
                     receive_id_type=_rid_type,
+                    extra_config=_feishu_platform_extra(config),
                 )
             except Exception as _e_fb:
                 logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
@@ -2050,6 +2114,7 @@ async def _handle_feishu_file(
                 "text",
                 json.dumps({"text": ack}),
                 receive_id_type="chat_id",
+                extra_config=_feishu_platform_extra(config),
             )
         else:
             await feishu_service.send_message(
@@ -2058,6 +2123,7 @@ async def _handle_feishu_file(
                 sender_open_id,
                 "text",
                 json.dumps({"text": ack}),
+                extra_config=_feishu_platform_extra(config),
             )
     except Exception as e:
         logger.error(f"[Feishu] Failed to send ack: {e}")
@@ -2089,7 +2155,12 @@ async def _download_post_images(agent_id, config, message_id, image_keys):
     for ik in image_keys:
         try:
             file_bytes = await feishu_service.download_message_resource(
-                config.app_id, config.app_secret, message_id, ik, "image"
+                config.app_id,
+                config.app_secret,
+                message_id,
+                ik,
+                "image",
+                extra_config=_feishu_platform_extra(config),
             )
             save_path = upload_dir / f"image_{ik[-8:]}.jpg"
             save_path.write_bytes(file_bytes)

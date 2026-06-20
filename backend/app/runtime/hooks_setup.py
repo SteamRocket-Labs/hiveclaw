@@ -493,6 +493,35 @@ async def _t0_heartbeat_tick_end(ctx: HookContext) -> None:
     )
 
 
+async def _evolution_maintenance_on_heartbeat(ctx: HookContext) -> None:
+    """HEARTBEAT_TICK_END → schedule peripheral evolution maintenance."""
+    agent_id = _parse_agent_id(ctx)
+    if not agent_id:
+        return
+    tenant_raw = ctx.metadata.get("tenant_id")
+    tenant_id: uuid.UUID | None = None
+    if tenant_raw:
+        try:
+            tenant_id = uuid.UUID(str(tenant_raw))
+        except ValueError:
+            logger.debug("[Hooks] Invalid heartbeat tenant_id for evolution maintenance: %s", tenant_raw)
+
+    async def _run() -> None:
+        try:
+            from app.services.evolution_daemon import run_heartbeat_evolution_maintenance
+
+            await run_heartbeat_evolution_maintenance(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                outcome_type=str(ctx.metadata.get("outcome") or ""),
+                current_session_id=str(ctx.session_id or ctx.metadata.get("session_id") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Hooks] Evolution maintenance after heartbeat failed for %s: %s", agent_id, exc)
+
+    asyncio.create_task(_run(), name=f"heartbeat_evolution_maintenance:{agent_id}")
+
+
 async def _t0_dream_end(ctx: HookContext) -> None:
     """DREAM_END → append/seal a T0 runtime-session ledger + reset heartbeat session."""
     agent_id = _parse_agent_id(ctx)
@@ -609,7 +638,7 @@ def register_memory_hooks() -> None:
     registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
     logger.info(
-        "[Hooks] Memory hooks registered: %d handlers (3 log + 2 projection + 1 fast_reflection + 6 T0 + 1 pending_reply)",
+        "[Hooks] Memory hooks registered: %d handlers (3 log + 2 projection + 1 fast_reflection + 6 T0 + 1 evolution + 1 pending_reply)",
         len(_MEMORY_HOOK_REGISTRATIONS),
     )
 
@@ -635,6 +664,7 @@ _MEMORY_HOOK_HANDLERS = {
     "t0_trigger_end": _t0_trigger_end,
     "t0_delegation_end": _t0_delegation_end,
     "t0_heartbeat_tick_end": _t0_heartbeat_tick_end,
+    "evolution_maintenance_on_heartbeat": _evolution_maintenance_on_heartbeat,
     "t0_dream_end": _t0_dream_end,
     "capture_pending_reply": _capture_pending_reply,
 }
@@ -678,6 +708,11 @@ _MEMORY_HOOK_CONFIGURATION = [
         "event": HookEvent.HEARTBEAT_TICK_END.value,
         "handler": "t0_heartbeat_tick_end",
         "key": "memory.heartbeat_tick_end.t0",
+    },
+    {
+        "event": HookEvent.HEARTBEAT_TICK_END.value,
+        "handler": "evolution_maintenance_on_heartbeat",
+        "key": "evolution.heartbeat_tick_end.maintenance",
     },
     {"event": HookEvent.DREAM_END.value, "handler": "t0_dream_end", "key": "memory.dream_end.t0"},
     {

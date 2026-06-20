@@ -15,12 +15,9 @@ from app.models.identity import ExternalIdentity, IdentityProvider
 from app.models.participant import Participant
 from app.models.tenant_setting import TenantSetting
 from app.models.user import User
+from app.services.feishu_platform import resolve_feishu_platform
 
 settings = get_settings()
-
-FEISHU_TOKEN_URL_V2 = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
-FEISHU_USER_INFO_URL = "https://open.feishu.cn/open-apis/authen/v1/user_info"
-FEISHU_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
 
 
 def _get_runtime_settings():
@@ -37,13 +34,20 @@ def resolve_feishu_redirect_uri(settings_obj=None) -> str:
         return explicit
 
     public_base = (
-        (getattr(current_settings, "PUBLIC_BASE_URL", "") or "")
-        or (getattr(current_settings, "BASE_URL", "") or "")
+        (getattr(current_settings, "PUBLIC_BASE_URL", "") or "") or (getattr(current_settings, "BASE_URL", "") or "")
     ).strip()
     if not public_base:
         return ""
 
     return f"{public_base.rstrip('/')}/api/auth/feishu/callback"
+
+
+def _settings_platform_config(settings_obj) -> dict:
+    return {
+        "platform_region": getattr(settings_obj, "FEISHU_PLATFORM_REGION", "feishu_cn") or "feishu_cn",
+        "open_api_domain": getattr(settings_obj, "FEISHU_OPEN_API_DOMAIN", "") or "",
+        "oauth_authorize_url": getattr(settings_obj, "FEISHU_OAUTH_AUTHORIZE_URL", "") or "",
+    }
 
 
 class FeishuAuthProvider:
@@ -98,10 +102,12 @@ class FeishuAuthProvider:
     ) -> IdentityProvider:
         config = await self._load_provider_config(db, tenant_id)
         result = await db.execute(
-            select(IdentityProvider).where(
+            select(IdentityProvider)
+            .where(
                 IdentityProvider.provider_type == self.provider_type,
                 IdentityProvider.tenant_id == tenant_id,
-            ).limit(1)
+            )
+            .limit(1)
         )
         provider = result.scalar_one_or_none()
         if provider:
@@ -144,6 +150,9 @@ class FeishuAuthProvider:
                     "app_id": cfg["app_id"],
                     "app_secret": cfg["app_secret"],
                     "redirect_uri": redirect_uri,
+                    "platform_region": cfg.get("platform_region") or "feishu_cn",
+                    "open_api_domain": cfg.get("open_api_domain") or "",
+                    "oauth_authorize_url": cfg.get("oauth_authorize_url") or "",
                     "source": "tenant_setting",
                 }
 
@@ -156,15 +165,17 @@ class FeishuAuthProvider:
                 "app_id": app_id,
                 "app_secret": app_secret,
                 "redirect_uri": redirect_uri,
+                **_settings_platform_config(current_settings),
                 "source": "global_env",
             }
 
         raise RuntimeError("Feishu OAuth not configured")
 
     async def _get_app_access_token(self, config: dict) -> str:
+        platform = resolve_feishu_platform(config)
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                FEISHU_APP_TOKEN_URL,
+                platform.open_api_url("/auth/v3/app_access_token/internal"),
                 json={"app_id": config["app_id"], "app_secret": config["app_secret"]},
             )
             resp.raise_for_status()
@@ -177,9 +188,10 @@ class FeishuAuthProvider:
         if not redirect_uri:
             raise RuntimeError("Feishu redirect URI not configured")
 
+        platform = resolve_feishu_platform(config)
         async with httpx.AsyncClient(timeout=15) as client:
             token_resp = await client.post(
-                FEISHU_TOKEN_URL_V2,
+                platform.open_api_url("/authen/v2/oauth/token"),
                 json={
                     "grant_type": "authorization_code",
                     "client_id": config["app_id"],
@@ -193,10 +205,12 @@ class FeishuAuthProvider:
             # v2 returns access_token at top level (not nested under data)
             access_token = token_data.get("access_token") or token_data.get("data", {}).get("access_token", "")
             if not access_token:
-                raise RuntimeError(f"Feishu OAuth v2 code exchange failed: {token_data.get('error_description', token_data)}")
+                raise RuntimeError(
+                    f"Feishu OAuth v2 code exchange failed: {token_data.get('error_description', token_data)}"
+                )
 
             info_resp = await client.get(
-                FEISHU_USER_INFO_URL,
+                platform.open_api_url("/authen/v1/user_info"),
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             info_resp.raise_for_status()
@@ -238,8 +252,10 @@ class FeishuAuthProvider:
         provider: IdentityProvider,
         profile: dict,
     ) -> User | None:
-        query = select(User).join(ExternalIdentity, ExternalIdentity.user_id == User.id).where(
-            ExternalIdentity.provider_id == provider.id
+        query = (
+            select(User)
+            .join(ExternalIdentity, ExternalIdentity.user_id == User.id)
+            .where(ExternalIdentity.provider_id == provider.id)
         )
 
         provider_user_id = profile.get("user_id")

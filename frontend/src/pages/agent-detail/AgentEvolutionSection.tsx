@@ -1,16 +1,17 @@
-import React from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   IconActivityHeartbeat,
   IconArchive,
   IconBulb,
-  IconClock,
+  IconDatabase,
   IconHistory,
   IconSnowflake,
+  IconSparkles,
 } from '@tabler/icons-react';
 
-import { evolutionApi, type EvolutionTimelineItem } from '../../api/domains/evolution';
+import { evolutionApi, type EvolutionManifest } from '../../api/domains/evolution';
 
 type AgentEvolutionSectionProps = {
   agentId: string;
@@ -23,22 +24,12 @@ const STATE_COLORS: Record<string, { fg: string; bg: string }> = {
   archived: { fg: 'var(--text-tertiary)', bg: 'var(--bg-secondary)' },
 };
 
-const TIMELINE_KIND_COLORS: Record<string, string> = {
-  promote: 'var(--success, #16a34a)',
-  promotion: 'var(--success, #16a34a)',
-  created: 'var(--accent-primary)',
-  candidate: 'var(--accent-primary)',
-  eval: 'var(--text-secondary)',
-  patch: 'var(--accent-primary)',
-  stale: 'var(--warning, #d97706)',
-  archived: 'var(--text-tertiary)',
-  rollback: 'var(--danger, #dc2626)',
-};
+function manifestTitle(item: EvolutionManifest): string {
+  return String(item.skill_name || item.candidate_id || item.job_id || item.manifest_path || 'candidate');
+}
 
-function formatTimestamp(iso: string): string {
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  return parsed.toLocaleString();
+function manifestStatus(item: EvolutionManifest): string {
+  return String(item.status || item.reason || 'pending');
 }
 
 export default function AgentEvolutionSection({ agentId, active }: AgentEvolutionSectionProps) {
@@ -50,19 +41,38 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
     enabled: active && !!agentId,
   });
 
-  const summary = data?.skill_summary;
-  const skills = data?.skills ?? [];
-  const timeline = data?.timeline ?? [];
-  const hasAny = !!summary && summary.total > 0;
-  const hasTimeline = timeline.length > 0;
+  const summary = data?.skill_ecosystem.summary;
+  const skills = data?.skill_ecosystem.skills ?? [];
+  const pendingT3Jobs = data?.memory_learning.pending_t3_jobs ?? [];
+  const pendingSoulCandidates = data?.soul.pending_candidates ?? [];
+  const skillCandidates = data?.skill_tuning.candidates ?? [];
+  const legacyFiles = data?.legacy_audit.detected_legacy_files ?? [];
+  const hasAny =
+    !!summary &&
+    (summary.total > 0 ||
+      pendingT3Jobs.length > 0 ||
+      pendingSoulCandidates.length > 0 ||
+      skillCandidates.length > 0 ||
+      legacyFiles.length > 0);
 
   const stateLabel = (state: string) => t(`agent.evolution.state.${state}`, state);
-  const kindLabel = (kind: string) => t(`agent.evolution.kind.${kind}`, kind);
+  const originLabel = (origin: string) => t(`agent.evolution.origin.${origin}`, origin);
+  const pathRows: { key: string; path?: string }[] = [
+    { key: 'memory', path: data?.path_contract.t3_capabilities },
+    { key: 'soul', path: data?.path_contract.soul },
+    { key: 'skillRegistry', path: data?.path_contract.skill_registry },
+    { key: 'skillCandidates', path: data?.path_contract.skill_candidates },
+  ];
 
-  const summaryCards: { key: 'active' | 'stale' | 'archived'; icon: React.ReactNode }[] = [
-    { key: 'active', icon: <IconActivityHeartbeat size={16} /> },
-    { key: 'stale', icon: <IconSnowflake size={16} /> },
-    { key: 'archived', icon: <IconArchive size={16} /> },
+  const summaryCards: {
+    key: 'active' | 'stale' | 'archived' | 'evolvable';
+    icon: ReactNode;
+    colorKey: 'active' | 'stale' | 'archived';
+  }[] = [
+    { key: 'active', icon: <IconActivityHeartbeat size={16} />, colorKey: 'active' },
+    { key: 'stale', icon: <IconSnowflake size={16} />, colorKey: 'stale' },
+    { key: 'archived', icon: <IconArchive size={16} />, colorKey: 'archived' },
+    { key: 'evolvable', icon: <IconSparkles size={16} />, colorKey: 'active' },
   ];
 
   return (
@@ -77,14 +87,14 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
       </div>
 
       {isLoading && (
-        <div style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading…')}</div>
+        <div style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
       )}
 
       {isError && (
         <div style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.evolution.empty')}</div>
       )}
 
-      {!isLoading && !isError && !hasAny && !hasTimeline && (
+      {!isLoading && !isError && !hasAny && (
         <div
           style={{
             padding: '32px 16px',
@@ -101,10 +111,9 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
 
       {!isLoading && !isError && hasAny && (
         <>
-          {/* ── Skill state summary ── */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
-            {summaryCards.map(({ key, icon }) => {
-              const colors = STATE_COLORS[key];
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '12px' }}>
+            {summaryCards.map(({ key, icon, colorKey }) => {
+              const colors = STATE_COLORS[colorKey];
               return (
                 <div className="card" key={key} style={{ padding: '12px 14px' }}>
                   <div
@@ -118,7 +127,7 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
                     }}
                   >
                     <span style={{ color: colors.fg, display: 'inline-flex' }}>{icon}</span>
-                    {stateLabel(key)}
+                    {t(`agent.evolution.summary.${key}`)}
                   </div>
                   <div style={{ fontSize: '22px', fontWeight: 600 }}>{summary?.[key] ?? 0}</div>
                 </div>
@@ -126,7 +135,31 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
             })}
           </div>
 
-          {/* ── Skill list ── */}
+          <div>
+            <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+              {t('agent.evolution.pathsHeading')}
+            </h4>
+            <div style={{ display: 'grid', gap: '6px' }}>
+              {pathRows.map(({ key, path }) => (
+                <div
+                  key={key}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: '12px',
+                    padding: '9px 12px',
+                    borderRadius: '8px',
+                    background: 'var(--bg-secondary)',
+                    fontSize: '12px',
+                  }}
+                >
+                  <span style={{ color: 'var(--text-tertiary)' }}>{t(`agent.evolution.path.${key}`)}</span>
+                  <code style={{ color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>{path}</code>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {skills.length > 0 && (
             <div>
               <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
@@ -137,19 +170,18 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
                   const colors = STATE_COLORS[skill.state] ?? STATE_COLORS.archived;
                   return (
                     <div
-                      key={skill.slug}
+                      key={`${skill.skill_name}-${skill.target_path ?? ''}`}
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
+                        display: 'grid',
+                        gridTemplateColumns: 'minmax(0, 1fr) auto',
                         gap: '12px',
                         padding: '10px 12px',
                         borderRadius: '8px',
                         background: 'var(--bg-secondary)',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                        <span
+                      <div style={{ minWidth: 0 }}>
+                        <div
                           style={{
                             fontSize: '13px',
                             fontWeight: 500,
@@ -158,18 +190,22 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {skill.slug}
-                        </span>
-                        {skill.pinned && (
-                          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                            {t('agent.evolution.pinned')}
-                          </span>
-                        )}
+                          {skill.skill_name}
+                        </div>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                          {originLabel(skill.skill_origin)}
+                          {skill.target_path ? ` · ${skill.target_path}` : ''}
+                        </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                         <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
                           {t('agent.evolution.useCount', { count: skill.use_count })}
                         </span>
+                        {skill.evolvable && (
+                          <span style={{ fontSize: '11px', color: 'var(--success, #16a34a)' }}>
+                            {t('agent.evolution.evolvable')}
+                          </span>
+                        )}
                         <span
                           style={{
                             fontSize: '11px',
@@ -189,72 +225,103 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
               </div>
             </div>
           )}
+
+          <CandidateList
+            title={t('agent.evolution.memoryJobsHeading')}
+            icon={<IconDatabase size={16} />}
+            items={pendingT3Jobs}
+          />
+          <CandidateList
+            title={t('agent.evolution.soulCandidatesHeading')}
+            icon={<IconSparkles size={16} />}
+            items={pendingSoulCandidates}
+          />
+          <CandidateList
+            title={t('agent.evolution.skillCandidatesHeading')}
+            icon={<IconHistory size={16} />}
+            items={skillCandidates}
+          />
+
+          {legacyFiles.length > 0 && (
+            <div>
+              <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                {t('agent.evolution.legacyHeading')}
+              </h4>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {legacyFiles.map((file) => (
+                  <code
+                    key={file}
+                    style={{
+                      fontSize: '11px',
+                      padding: '4px 7px',
+                      borderRadius: '6px',
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-tertiary)',
+                    }}
+                  >
+                    {file}
+                  </code>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
+    </div>
+  );
+}
 
-      {/* ── Evolution timeline ── */}
-      {!isLoading && !isError && hasTimeline && (
-        <div>
-          <h4
+function CandidateList({ title, icon, items }: { title: string; icon: ReactNode; items: EvolutionManifest[] }) {
+  if (!items.length) return null;
+  return (
+    <div>
+      <h4
+        style={{
+          fontSize: '13px',
+          marginBottom: '8px',
+          color: 'var(--text-secondary)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+        }}
+      >
+        {icon} {title}
+      </h4>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {items.map((item, idx) => (
+          <div
+            key={`${manifestTitle(item)}-${idx}`}
             style={{
-              fontSize: '13px',
-              marginBottom: '8px',
-              color: 'var(--text-secondary)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0, 1fr) auto',
+              gap: '12px',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              background: 'var(--bg-secondary)',
             }}
           >
-            <IconHistory size={16} /> {t('agent.evolution.timelineHeading')}
-          </h4>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {timeline.map((item: EvolutionTimelineItem, idx: number) => (
+            <div style={{ minWidth: 0 }}>
               <div
-                key={`${item.at}-${idx}`}
                 style={{
-                  display: 'flex',
-                  gap: '10px',
-                  paddingLeft: '12px',
-                  borderLeft: `2px solid ${TIMELINE_KIND_COLORS[item.kind] ?? 'var(--border-subtle)'}`,
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                    <span
-                      style={{
-                        fontSize: '11px',
-                        fontWeight: 600,
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.03em',
-                        color: TIMELINE_KIND_COLORS[item.kind] ?? 'var(--text-secondary)',
-                      }}
-                    >
-                      {kindLabel(item.kind)}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: '11px',
-                        color: 'var(--text-tertiary)',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '3px',
-                      }}
-                    >
-                      <IconClock size={12} /> {formatTimestamp(item.at)}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '13px', marginTop: '2px' }}>{item.title}</div>
-                  {item.detail && (
-                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                      {item.detail}
-                    </div>
-                  )}
-                </div>
+                {manifestTitle(item)}
               </div>
-            ))}
+              {item.manifest_path && (
+                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                  {item.manifest_path}
+                </div>
+              )}
+            </div>
+            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{manifestStatus(item)}</span>
           </div>
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }

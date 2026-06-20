@@ -6,7 +6,9 @@ import uuid
 from pathlib import Path
 
 
-def _write_reviewed_t2_package(root: Path, agent_id: uuid.UUID, session_id: str = "s1", segment_id: str = "seg-1") -> Path:
+def _write_reviewed_t2_package(
+    root: Path, agent_id: uuid.UUID, session_id: str = "s1", segment_id: str = "seg-1"
+) -> Path:
     package_dir = root / str(agent_id) / "memory" / "sessions" / session_id / "segments" / segment_id
     package_dir.mkdir(parents=True)
     source_ref = f"t0://session/{session_id}/segment/{segment_id}#seq=1..3"
@@ -14,6 +16,11 @@ def _write_reviewed_t2_package(root: Path, agent_id: uuid.UUID, session_id: str 
         f"""# Summary
 
 <t2_summary id="sum-1" status="closed">
+  <segment_state value="complete">complete</segment_state>
+  <continuity>
+    <state>standalone</state>
+    <reason>完整会话片段，可以独立进入 T3 intake。</reason>
+  </continuity>
   <summary>用户要求 T3 通过 batch 收敛，并保留场景召回线索。</summary>
   <source_refs><source_ref uri="{source_ref}"/></source_refs>
 </t2_summary>
@@ -25,6 +32,7 @@ def _write_reviewed_t2_package(root: Path, agent_id: uuid.UUID, session_id: str 
 
 <t2_labels id="lbl-1">
   <package_status>closed</package_status>
+  <continuity_state>standalone</continuity_state>
   <event_labels><event_label>memory_architecture_decision</event_label></event_labels>
   <source_refs><source_ref uri="{source_ref}"/></source_refs>
 </t2_labels>
@@ -67,6 +75,62 @@ def _write_reviewed_t2_package(root: Path, agent_id: uuid.UUID, session_id: str 
             ensure_ascii=False,
             indent=2,
         ),
+        encoding="utf-8",
+    )
+    return package_dir
+
+
+def _write_episode_stitch_package(
+    root: Path, agent_id: uuid.UUID, session_id: str = "s1", episode_id: str = "episode-1"
+) -> Path:
+    package_dir = root / str(agent_id) / "memory" / "sessions" / session_id / "episodes" / episode_id
+    package_dir.mkdir(parents=True)
+    source_ref = f"t0://session/{session_id}/segment/seg-1#seq=1..3"
+    (package_dir / "synthesis.md").write_text(
+        f"""# Episode Synthesis
+
+<episode_synthesis schema_version="t2.episode_synthesis.v1" episode_id="{episode_id}" session_id="{session_id}" status="closed">
+  <source_packages><package_ref package_id="pkg-1" t0_segment_id="seg-1" relationship="same_episode"/></source_packages>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+  <episode_summary><scenario>用户跨片段讨论 T3 记忆收敛。</scenario></episode_summary>
+</episode_synthesis>
+""",
+        encoding="utf-8",
+    )
+    (package_dir / "review.md").write_text(
+        f"""# Episode Review
+
+<episode_review schema_version="t2.episode_review.v1" episode_id="{episode_id}" reviewer="memory_gate_agent">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <episode_review_rubric schema_version="t2.episode_review_rubric.v1">
+    <score name="continuity_fidelity" value="0.90"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="correction_quality" value="0.90"/>
+    <score name="closure_quality" value="0.90"/>
+    <score name="safety_scope" value="1.00"/>
+    <review_score>0.90</review_score>
+  </episode_review_rubric>
+  <source_refs_checked><source_ref uri="{source_ref}"/></source_refs_checked>
+</episode_review>
+""",
+        encoding="utf-8",
+    )
+    (package_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "t2.episode-stitch.manifest.v1",
+                "episode_id": episode_id,
+                "package_status": "reviewed",
+                "session_id": session_id,
+                "trigger_package_id": "pkg-1",
+                "source_packages": ["pkg-1"],
+                "source_refs": [source_ref],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return package_dir
@@ -167,7 +231,7 @@ def test_build_t3_consolidation_batch_stages_source_bundle_and_neighborhood(tmp_
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
     (mem_dir / "t3" / "capabilities.md").write_text(
         "# T3 Capabilities\n\n"
-        "<t3_capability id=\"cap_existing\" status=\"active\"><name>Memory batch flow</name></t3_capability>\n",
+        '<t3_capability id="cap_existing" status="active"><name>Memory batch flow</name></t3_capability>\n',
         encoding="utf-8",
     )
 
@@ -194,6 +258,56 @@ def test_build_t3_consolidation_batch_stages_source_bundle_and_neighborhood(tmp_
     neighborhood = (result.job_dir / "t3_neighborhood.md").read_text(encoding="utf-8")
     assert "cap_existing" in neighborhood
     assert "base_revision" in neighborhood
+
+
+def test_discover_pending_t3_sources_uses_episode_stitch_packages(tmp_path: Path) -> None:
+    from app.memory.t3_consolidation import discover_pending_t3_sources, stage_pending_t3_consolidation_job
+
+    agent_id = uuid.uuid4()
+    _write_episode_stitch_package(tmp_path, agent_id)
+
+    pending = discover_pending_t3_sources(agent_id=agent_id, data_root=tmp_path)
+
+    assert len(pending.package_dirs) == 1
+    assert pending.package_dirs[0].name == "episode-1"
+
+    result = stage_pending_t3_consolidation_job(agent_id=agent_id, data_root=tmp_path, job_id="job-episode-1")
+    assert result.status == "staged"
+    bundle = json.loads((result.job_dir / "source_bundle.json").read_text(encoding="utf-8"))
+    assert bundle["source_packages"][0]["ref"] == "t2://session/s1/episode/episode-1"
+    assert bundle["source_packages"][0]["source_kind"] == "episode_stitch_package"
+    assert bundle["source_packages"][0]["synthesis_sha256"]
+
+
+def test_discover_pending_t3_sources_rejects_non_standalone_segment(tmp_path: Path) -> None:
+    from app.memory.t3_consolidation import discover_pending_t3_sources
+
+    agent_id = uuid.uuid4()
+    package_dir = _write_reviewed_t2_package(tmp_path, agent_id)
+    (package_dir / "summary.md").write_text(
+        """# Summary
+
+<t2_summary id="sum-1" status="rolling_checkpoint">
+  <segment_state value="continuation">continuation</segment_state>
+  <continuity><state>needs_previous</state><reason>缺少上一段。</reason></continuity>
+</t2_summary>
+""",
+        encoding="utf-8",
+    )
+    (package_dir / "labels.md").write_text(
+        """# Labels
+
+<t2_labels id="lbl-1">
+  <package_status>rolling_checkpoint</package_status>
+  <continuity_state>needs_previous</continuity_state>
+</t2_labels>
+""",
+        encoding="utf-8",
+    )
+
+    pending = discover_pending_t3_sources(agent_id=agent_id, data_root=tmp_path)
+
+    assert pending.package_dirs == ()
 
 
 def test_build_t3_consolidation_batch_embeds_explicit_overlay_details(tmp_path: Path) -> None:
@@ -421,7 +535,7 @@ def test_platform_gate_accepts_reinforce_mode_and_marks_sources_reinforced(tmp_p
     target = mem_dir / "t3" / "user.md"
     target.write_text(
         "# T3 User\n\n"
-        "<t3_user_memory id=\"usr_existing_rule\" status=\"active\" confidence=\"0.90\" prompt_priority=\"p1_dynamic\">\n"
+        '<t3_user_memory id="usr_existing_rule" status="active" confidence="0.90" prompt_priority="p1_dynamic">\n'
         "  <claim>用户要求架构改造前必须先讨论。</claim>\n"
         "  <source_refs><source_ref>t2://session/s0/segment/seg-0</source_ref></source_refs>\n"
         "</t3_user_memory>\n",
@@ -641,7 +755,7 @@ def test_platform_gate_returns_rebase_required_when_base_revision_changed(tmp_pa
     mem_dir = ensure_t3_layout(tmp_path, agent_id)
     target = mem_dir / "t3" / "user.md"
     old_sha = file_sha256(target)
-    target.write_text(target.read_text(encoding="utf-8") + "\n<t3_user_memory id=\"usr_existing\"/>\n", encoding="utf-8")
+    target.write_text(target.read_text(encoding="utf-8") + '\n<t3_user_memory id="usr_existing"/>\n', encoding="utf-8")
     patch = f"""<t3_consolidation_patch id="t3p_rebase" schema_version="t3.consolidation_patch.v1">
   <base_revisions><base_revision path="memory/t3/user.md" sha256="{old_sha}"/></base_revisions>
   <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>

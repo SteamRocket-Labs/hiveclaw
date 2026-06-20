@@ -92,7 +92,8 @@ class TestDecisionMatrix:
         ]
         for phrase in forbidden_phrases:
             assert phrase not in template_text
-        assert "runtime records the heartbeat outcome into `evolution/`" in template_text
+        assert "runtime records heartbeat evidence into T0/session audit paths" in template_text
+        assert "do not write legacy `evolution/scorecard.md`" in template_text
 
 
 class TestCurationExamples:

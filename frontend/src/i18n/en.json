@@ -482,12 +482,38 @@
     },
     "evolution": {
       "title": "Evolution",
-      "description": "How this employee grows over time — which skills it has learned, kept sharp, or retired, and the milestones along the way.",
-      "empty": "No evolution activity yet. As this employee works, learns skills, and refines them, the history will appear here.",
+      "description": "Learning trajectory writes to Memory. Self-evolving Skills write to candidate packages and registry; system built-ins do not enter self-evolution patches.",
+      "empty": "No evolution activity yet. Memory, Soul, or self-evolving Skill candidates will appear here.",
       "skillsHeading": "Skills",
+      "pathsHeading": "Current write paths",
+      "memoryJobsHeading": "T3 memory candidates",
+      "soulCandidatesHeading": "Soul candidates",
+      "skillCandidatesHeading": "Skill tuning candidates",
+      "legacyHeading": "Detected legacy paths",
       "timelineHeading": "Evolution timeline",
       "pinned": "Pinned",
       "useCount": "{{count}} uses",
+      "evolvable": "Self-evolving",
+      "summary": {
+        "active": "Active",
+        "stale": "Cold",
+        "archived": "Archived",
+        "evolvable": "Self-evolving"
+      },
+      "path": {
+        "memory": "Capability evidence",
+        "soul": "Identity layer",
+        "skillRegistry": "Skill source",
+        "skillCandidates": "Skill candidates"
+      },
+      "origin": {
+        "system_builtin": "System built-in",
+        "user_skill_creator": "User-created",
+        "t3_auto_created": "T3 auto-created",
+        "runtime_evidence": "Runtime evidence",
+        "manual_import": "Manual import",
+        "unknown": "Unknown origin"
+      },
       "state": {
         "active": "Active",
         "stale": "Idle",
@@ -580,6 +606,13 @@
       "thinking": "Thinking...",
       "continuingRun": "Agent is continuing this run...",
       "runStartFailed": "Failed to start run",
+      "artifacts": {
+        "open": "Open",
+        "download": "Download",
+        "preview": "Preview",
+        "openInNewTab": "Open in new tab",
+        "previewFailed": "Preview failed"
+      },
       "toolResults": {
         "blueprintPreviewTitle": "Agent Blueprint Preview",
         "createdTitle": "Digital Employee Created",
@@ -648,8 +681,6 @@
         "permissions": "Permissions",
         "teamMemory": "Team Memory",
         "retryReason": "Retry",
-        "showTrace": "Show technical details",
-        "hideTrace": "Hide technical details",
         "eventTitle": "System Event",
         "compactingTitle": "Automatic compression in progress",
         "compactionCompleteTitle": "Automatic compression complete",
@@ -888,6 +919,9 @@
         "configured": "Connected",
         "notConfigured": "Not connected",
         "saveChannel": "Save Connection",
+        "platform": "Platform",
+        "platformFeishuCn": "Feishu (China)",
+        "platformLarkGlobal": "Lark (Global)",
         "syncHint": "Before connecting a Feishu bot, sync your organization in Company Settings → Org Structure first. This helps the bot identify who's messaging."
       },
       "danger": {

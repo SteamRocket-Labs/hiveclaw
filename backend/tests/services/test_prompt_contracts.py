@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -130,7 +131,9 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "Do NOT use this for long-running delegated work" in tools["send_message_to_agent"]
     assert "check back later with `check_async_task`" in tools["delegate_to_agent"]
     assert "follow up with `web_fetch`" in tools["web_search"]
-    assert "built-in no-key providers" in tools["web_search"]
+    assert "AnySearch API first when configured" in tools["web_search"]
+    assert "SearXNG fallback" in tools["web_search"]
+    assert "DuckDuckGo" not in tools["web_search"]
     assert "use `tool_search` to discover advanced search tools" in tools["web_search"]
     assert "provider-backed escalation tool discovered through `tool_search`" in tools["exa_search"]
     assert "provider-backed escalation tool discovered through `tool_search`" in tools["tavily_search"]
@@ -199,7 +202,7 @@ def test_web_search_config_schema_only_exposes_supported_search_providers() -> N
     option_values = {option["value"] for option in search_engine_field["options"]}
     field_keys = {field["key"] for field in fields}
 
-    assert option_values == {"auto", "searxng", "duckduckgo"}
+    assert option_values == {"auto", "anysearch", "searxng", "duckduckgo_legacy"}
     assert "google" not in option_values
     assert "bing" not in option_values
     assert "exa" not in option_values
@@ -208,6 +211,11 @@ def test_web_search_config_schema_only_exposes_supported_search_providers() -> N
     assert "bing_api_key" not in field_keys
     assert "exa_api_key" not in field_keys
     assert "tavily_api_key" not in field_keys
+    assert "anysearch_api_keys" in field_keys
+    anysearch_api_keys = next(field for field in fields if field["key"] == "anysearch_api_keys")
+    assert anysearch_api_keys["type"] == "password"
+    assert anysearch_api_keys["multiline"] is True
+    assert not re.search(r"[\u4e00-\u9fff]", str(web_search.meta.config_schema))
 
 
 def test_advanced_search_tools_are_deferred_provider_tools() -> None:
@@ -219,6 +227,12 @@ def test_advanced_search_tools_are_deferred_provider_tools() -> None:
     assert "tool_search" in tavily_search.meta.description
     assert exa_search.meta.config_schema["fields"][0]["key"] == "api_key"
     assert tavily_search.meta.config_schema["fields"][0]["key"] == "api_key"
+    exa_max_results = next(field for field in exa_search.meta.config_schema["fields"] if field["key"] == "max_results")
+    tavily_max_results = next(
+        field for field in tavily_search.meta.config_schema["fields"] if field["key"] == "max_results"
+    )
+    assert exa_max_results["max"] == 20
+    assert tavily_max_results["max"] == 20
 
 
 def test_skill_catalog_footer_discourages_speculative_loading() -> None:
@@ -249,7 +263,10 @@ def test_execution_playbook_keeps_skill_capsule_runtime_boundary() -> None:
 
     rendered = build_executing_actions_section()
 
-    assert "A skill can package context, references, templates, scripts, workflow definitions, and subagent definitions" in rendered
+    assert (
+        "A skill can package context, references, templates, scripts, workflow definitions, and subagent definitions"
+        in rendered
+    )
     assert "Packaging is not execution" in rendered
     assert "Workflow execution still goes through `preview_workflow` / `start_workflow`" in rendered
     assert "subagent execution still goes through `spawn_subagent` / `delegate_to_agent`" in rendered
@@ -324,6 +341,12 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     assert "firecrawl_fetch" in web_research_guide
     assert "xcrawl_scrape" in web_research_guide
     assert "web_fetch" in web_research_guide
+    assert "AnySearch API first when configured" in web_research_guide
+    assert "SearXNG fallback otherwise" in web_research_guide
+    assert "anysearch_get_sub_domains" in web_research_guide
+    assert "anysearch_search" in web_research_guide
+    assert "AnySearch MCP" in web_research_guide
+    assert "DuckDuckGo fallback" not in web_research_guide
     assert "jina_" not in find_skills.lower()
     assert "web_search" in find_skills
     assert "web_fetch" in find_skills
@@ -332,6 +355,42 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     assert "jina_" not in heartbeat.lower()
     # P4 candidate lane: heartbeat records skill_candidate signals, never save_skill.
     assert "skill_candidate" in heartbeat
+
+
+def test_web_research_skill_documents_crawler_provider_boundaries() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    skill_text = (
+        project_root / "backend" / "app" / "templates" / "system_skills" / "web-research" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Firecrawl `/scrape`" in skill_text
+    assert "known URL" in skill_text
+    assert "LLM-ready markdown" in skill_text
+    assert "onlyMainContent" in skill_text
+    assert "XCrawl Scrape API" in skill_text
+    assert "`output.formats`" in skill_text
+    assert "`js_render.enabled`" in skill_text
+    assert "single-page extraction" in skill_text
+    assert "Do not use crawler fetch tools for keyword search" in skill_text
+    assert not re.search(r"[\u4e00-\u9fff]", skill_text)
+
+
+def test_web_research_skill_documents_anysearch_vertical_workflow() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    skill_text = (
+        project_root / "backend" / "app" / "templates" / "system_skills" / "web-research" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "AnySearch MCP vertical tools" in skill_text
+    assert "Call `anysearch_get_sub_domains` before vertical `anysearch_search`" in skill_text
+    assert "AnySearch search/discovery surface" in skill_text
+    assert "AnySearch read/extract surface" in skill_text
+    assert "anysearch_extract is not a keyword-search tool" in skill_text
+    assert "finance" in skill_text
+    assert "social_media" in skill_text
+    assert "academic" in skill_text
+    assert "sub_domain_params" in skill_text
+    assert not re.search(r"[\u4e00-\u9fff]", skill_text)
 
 
 def test_settings_no_longer_define_jina_api_key() -> None:

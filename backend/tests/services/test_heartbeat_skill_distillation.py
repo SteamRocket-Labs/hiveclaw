@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_maybe_run_skill_distillation_respects_feature_flag(monkeypatch, tmp_path: Path) -> None:
-    from app.services.heartbeat import _maybe_run_skill_distillation
+    from app.services.evolution_daemon import _maybe_run_skill_distillation
 
     called: list[dict] = []
 

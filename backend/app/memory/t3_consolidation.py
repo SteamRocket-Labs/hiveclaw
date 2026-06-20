@@ -7,7 +7,9 @@ not decide memory semantics and does not write accepted T3 truth.
 from __future__ import annotations
 
 import json
+import re
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,9 +49,7 @@ def discover_pending_t3_sources(
     resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
     package_dirs = _discover_reviewed_t2_packages(root=root, agent_id=resolved_agent_id, limit=max_packages)
     explicit_ids = [
-        entry.entry_id
-        for entry in load_explicit_overlay_entries(root, resolved_agent_id)
-        if entry.status == "active"
+        entry.entry_id for entry in load_explicit_overlay_entries(root, resolved_agent_id) if entry.status == "active"
     ][:max_explicit_entries]
     return PendingT3Sources(package_dirs=tuple(package_dirs), explicit_entry_ids=tuple(explicit_ids))
 
@@ -70,7 +70,10 @@ def build_t3_consolidation_batch(
     job_dir.mkdir(parents=True, exist_ok=True)
 
     issues: list[str] = []
-    packages = [_load_package(root=root, agent_id=resolved_agent_id, package_dir=Path(path), issues=issues) for path in package_dirs]
+    packages = [
+        _load_package(root=root, agent_id=resolved_agent_id, package_dir=Path(path), issues=issues)
+        for path in package_dirs
+    ]
     packages = [package for package in packages if package]
     explicit_entries = _load_explicit_overlay_sources(
         root=root,
@@ -133,7 +136,9 @@ def build_t3_consolidation_batch(
         ],
         "created_at": _now(),
     }
-    (job_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (job_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return T3ConsolidationBatchResult(
         status="held" if issues else "staged",
         job_id=resolved_job_id,
@@ -239,29 +244,37 @@ def _load_package(*, root: Path, agent_id: uuid.UUID, package_dir: Path, issues:
     except (OSError, ValueError, TypeError) as exc:
         issues.append(f"package manifest unreadable: {package_dir}: {exc}")
         return None
+    package_kind = _t2_package_kind(package_dir=package_dir, manifest=manifest)
+    package_issues = _validate_t2_package_for_t3(package_dir=package_dir, manifest=manifest, package_kind=package_kind)
+    issues.extend(f"{issue}: {package_dir}" for issue in package_issues)
     status = str(manifest.get("package_status") or manifest.get("status") or "").strip().lower()
-    if status not in {"reviewed", "closed"}:
-        issues.append(f"package status must be reviewed/closed: {package_dir}")
-    review_text = _read_optional(package_dir / "review.md")
-    if "<allowed_next>t3_intake</allowed_next>" not in review_text:
-        issues.append(f"package is not approved for t3_intake: {package_dir}")
-    try:
-        rel = package_dir.relative_to(root / str(agent_id) / "memory" / "sessions")
-        parts = rel.parts
-        session_id = parts[0]
-        segment_id = parts[2] if len(parts) >= 3 and parts[1] == "segments" else package_dir.name
-    except ValueError:
-        session_id = str(manifest.get("session_id") or "unknown")
-        segment_id = str(manifest.get("t0_segment_id") or package_dir.name)
-    return {
-        "ref": f"t2://session/{session_id}/segment/{segment_id}",
+    session_id, source_id = _session_and_source_id(
+        root=root, agent_id=agent_id, package_dir=package_dir, manifest=manifest
+    )
+    ref_kind = "episode" if package_kind == "episode_stitch_package" else "segment"
+    ref = f"t2://session/{session_id}/{ref_kind}/{source_id}"
+    payload = {
+        "ref": ref,
+        "source_kind": package_kind,
         "path": _relative_agent_path(root, agent_id, package_dir),
         "status": status or "reviewed",
         "source_refs": [str(ref) for ref in manifest.get("source_refs") or []],
-        "summary_sha256": _sha256_file(package_dir / "summary.md"),
-        "labels_sha256": _sha256_file(package_dir / "labels.md"),
         "review_sha256": _sha256_file(package_dir / "review.md"),
         "manifest_sha256": _sha256_file(package_dir / "manifest.json"),
+    }
+    if package_kind == "episode_stitch_package":
+        payload.update(
+            {
+                "synthesis_sha256": _sha256_file(package_dir / "synthesis.md"),
+                "source_package_refs": [str(ref) for ref in manifest.get("source_packages") or []],
+                "trigger_package_id": str(manifest.get("trigger_package_id") or ""),
+            }
+        )
+        return payload
+    return {
+        **payload,
+        "summary_sha256": _sha256_file(package_dir / "summary.md"),
+        "labels_sha256": _sha256_file(package_dir / "labels.md"),
     }
 
 
@@ -312,7 +325,9 @@ def _source_signature(*, packages: list[dict[str, Any]], explicit_entries: list[
 
 
 def _pending_signature(root: Path, agent_id: uuid.UUID, pending: PendingT3Sources) -> str:
-    package_refs = sorted(_package_ref_from_dir(root=root, agent_id=agent_id, package_dir=path) for path in pending.package_dirs)
+    package_refs = sorted(
+        _package_ref_from_dir(root=root, agent_id=agent_id, package_dir=path) for path in pending.package_dirs
+    )
     explicit_refs = sorted(t3_explicit_ref(entry_id) for entry_id in pending.explicit_entry_ids)
     return json.dumps({"explicit": explicit_refs, "packages": package_refs}, ensure_ascii=False, sort_keys=True)
 
@@ -349,18 +364,15 @@ def _find_existing_staged_job(
 
 def _package_ref_from_dir(*, root: Path, agent_id: uuid.UUID, package_dir: Path) -> str:
     try:
-        rel = package_dir.relative_to(root / str(agent_id) / "memory" / "sessions")
-        parts = rel.parts
-        session_id = parts[0]
-        segment_id = parts[2] if len(parts) >= 3 and parts[1] == "segments" else package_dir.name
-    except ValueError:
-        try:
-            manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            manifest = {}
-        session_id = str(manifest.get("session_id") or "unknown")
-        segment_id = str(manifest.get("t0_segment_id") or package_dir.name)
-    return f"t2://session/{session_id}/segment/{segment_id}"
+        manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        manifest = {}
+    package_kind = _t2_package_kind(package_dir=package_dir, manifest=manifest)
+    session_id, source_id = _session_and_source_id(
+        root=root, agent_id=agent_id, package_dir=package_dir, manifest=manifest
+    )
+    ref_kind = "episode" if package_kind == "episode_stitch_package" else "segment"
+    return f"t2://session/{session_id}/{ref_kind}/{source_id}"
 
 
 def _discover_reviewed_t2_packages(*, root: Path, agent_id: uuid.UUID, limit: int) -> list[Path]:
@@ -368,22 +380,107 @@ def _discover_reviewed_t2_packages(*, root: Path, agent_id: uuid.UUID, limit: in
     if not sessions_dir.exists():
         return []
     package_dirs: list[Path] = []
-    for manifest_path in sorted(sessions_dir.glob("*/segments/*/manifest.json")):
+    manifest_paths = sorted(
+        [*sessions_dir.glob("*/segments/*/manifest.json"), *sessions_dir.glob("*/episodes/*/manifest.json")]
+    )
+    for manifest_path in manifest_paths:
         package_dir = manifest_path.parent
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError):
             continue
-        status = str(manifest.get("package_status") or manifest.get("status") or "").strip().lower()
-        if status not in {"reviewed", "closed"}:
-            continue
-        review_text = _read_optional(package_dir / "review.md")
-        if "<allowed_next>t3_intake</allowed_next>" not in review_text:
+        package_kind = _t2_package_kind(package_dir=package_dir, manifest=manifest)
+        if _validate_t2_package_for_t3(package_dir=package_dir, manifest=manifest, package_kind=package_kind):
             continue
         package_dirs.append(package_dir)
         if len(package_dirs) >= limit:
             break
     return package_dirs
+
+
+def _t2_package_kind(*, package_dir: Path, manifest: dict[str, Any]) -> str:
+    schema_version = str(manifest.get("schema_version") or "").strip()
+    if schema_version == "t2.episode-stitch.manifest.v1" or package_dir.parent.name == "episodes":
+        return "episode_stitch_package"
+    return "segment_package"
+
+
+def _validate_t2_package_for_t3(*, package_dir: Path, manifest: dict[str, Any], package_kind: str) -> list[str]:
+    issues: list[str] = []
+    status = str(manifest.get("package_status") or manifest.get("status") or "").strip().lower()
+    if status not in {"reviewed", "closed"}:
+        issues.append("package status must be reviewed/closed")
+    review = _extract_single_xml(
+        _read_optional(package_dir / "review.md"),
+        "episode_review" if package_kind == "episode_stitch_package" else "t2_review",
+    )
+    if review is None:
+        issues.append("review XML missing or invalid")
+    elif (review.findtext("allowed_next") or "").strip() != "t3_intake":
+        issues.append("package is not approved for t3_intake")
+    if package_kind == "episode_stitch_package":
+        synthesis = _extract_single_xml(_read_optional(package_dir / "synthesis.md"), "episode_synthesis")
+        if synthesis is None:
+            issues.append("episode synthesis XML missing or invalid")
+        elif (synthesis.attrib.get("status") or "").strip() != "closed":
+            issues.append("episode synthesis status must be closed")
+        if not manifest.get("source_packages"):
+            issues.append("episode source_packages missing")
+        return issues
+
+    summary = _extract_single_xml(_read_optional(package_dir / "summary.md"), "t2_summary")
+    labels = _extract_single_xml(_read_optional(package_dir / "labels.md"), "t2_labels")
+    if summary is None:
+        issues.append("summary XML missing or invalid")
+    elif _segment_state(summary) != "complete":
+        issues.append("segment_state must be complete for t3_intake")
+    if labels is None:
+        issues.append("labels XML missing or invalid")
+    elif (labels.findtext(".//continuity_state") or "").strip() != "standalone":
+        issues.append("continuity_state must be standalone for t3_intake")
+    return issues
+
+
+def _session_and_source_id(
+    *,
+    root: Path,
+    agent_id: uuid.UUID,
+    package_dir: Path,
+    manifest: dict[str, Any],
+) -> tuple[str, str]:
+    try:
+        rel = package_dir.relative_to(root / str(agent_id) / "memory" / "sessions")
+        parts = rel.parts
+        session_id = parts[0]
+        if len(parts) >= 3 and parts[1] == "episodes":
+            return session_id, parts[2]
+        if len(parts) >= 3 and parts[1] == "segments":
+            return session_id, parts[2]
+    except ValueError:
+        pass
+    session_id = str(manifest.get("session_id") or "unknown")
+    source_id = str(manifest.get("episode_id") or manifest.get("t0_segment_id") or package_dir.name)
+    return session_id, source_id
+
+
+def _segment_state(summary: ET.Element) -> str:
+    node = summary.find("segment_state")
+    if node is None:
+        return ""
+    return (node.attrib.get("value") or node.text or "").strip()
+
+
+def _extract_single_xml(markdown: str, tag: str) -> ET.Element | None:
+    text = markdown or ""
+    starts = list(re.finditer(rf"<{re.escape(tag)}(?=[\s>/])", text))
+    end = text.rfind(f"</{tag}>")
+    if not starts or end < 0 or len(starts) > 1:
+        return None
+    end += len(f"</{tag}>")
+    try:
+        return ET.fromstring(text[starts[0].start() : end])
+    except ET.ParseError:
+        return None
 
 
 def _write_if_missing(path: Path, content: str) -> None:

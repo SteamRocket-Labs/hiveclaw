@@ -123,7 +123,7 @@ def _manifest_pack_to_dict(manifest: PackManifest) -> dict:
         "name": manifest.name,
         "summary": manifest.description,
         "source": "manifest",
-        "activation_mode": "通过 pack.yaml catalog 展示；runtime 仍由 @tool(ToolMeta.pack) 决定",
+        "activation_mode": "Shown through the pack.yaml catalog; runtime membership is still determined by @tool(ToolMeta.pack).",
         "tools": list(manifest.tool_names),
         "capabilities": sorted(capabilities),
         "requires_channel": None,
@@ -451,7 +451,7 @@ async def get_agent_packs(db: AsyncSession, agent_id: uuid.UUID) -> dict:
                 **pack,
                 "summary": base.summary if base else "",
                 "source": base.source if base else "skill",
-                "activation_mode": base.activation_mode if base else "通过 tool_search 发现",
+                "activation_mode": base.activation_mode if base else "Discovered through tool_search.",
                 "enabled": True,
             }
         )

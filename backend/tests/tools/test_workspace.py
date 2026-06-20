@@ -70,6 +70,7 @@ def test_evolution_write_guard_points_to_platform_bookkeeping_not_missing_tool(t
     for result in (write_result, edit_result):
         assert "evolution/ is managed by platform services" in result
         assert "Return the outcome summary instead" in result
+        assert "Skill Candidate Packages plus Skill Gate" in result
         assert "skill/evolution" not in result
 
     assert not (tmp_path / "evolution" / "lineage.md").exists()
@@ -565,7 +566,9 @@ async def test_save_skill_handler_keeps_denied_pack_as_discovery_hint(monkeypatc
     manifest = (packages[0] / "manifest.json").read_text(encoding="utf-8")
     assert "skills/zombie-skill/SKILL.md" in manifest
     assert "pending_behavior_verification" in manifest
-    assert "web_pack" in candidate_text
+    assert "web_pack" in manifest
+    assert "packs:" not in candidate_text
+    assert "tools:" not in candidate_text
 
 
 @pytest.mark.asyncio

@@ -249,8 +249,8 @@ CORE_TOOL_NAMES = {
     "send_channel_file",
     "tool_search",
     "web_fetch",
-    # web_search is CORE because it is the no-key basic search path
-    # (SearXNG when configured, DuckDuckGo fallback). Provider-backed advanced
+    # web_search is CORE because it is the basic search path
+    # (AnySearch API when configured, SearXNG fallback otherwise). Provider-backed advanced
     # search/crawl tools stay deferred in web_pack and are loaded through tool_search.
     "web_search",
     # Source capabilities (T1.1, execution-mode-spectrum §4.6): subagent and

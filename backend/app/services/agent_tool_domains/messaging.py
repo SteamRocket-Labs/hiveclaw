@@ -110,6 +110,10 @@ def _normalize_messaging_result(tool_name: str, result: str) -> str:
     )
 
 
+def _channel_extra_config(config) -> dict | None:
+    return getattr(config, "extra_config", None)
+
+
 async def _resolve_target_agent_runtime(
     from_agent_id: uuid.UUID,
     agent_name: str,
@@ -233,6 +237,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 receive_id: str,
                 content: str,
                 receive_id_type: str = "open_id",
+                extra_config: dict | None = None,
             ) -> dict:
                 try:
                     return await feishu_service.send_message(
@@ -242,6 +247,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         msg_type="text",
                         content=content,
                         receive_id_type=receive_id_type,
+                        extra_config=extra_config,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -369,6 +375,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         receive_id=direct_user_id,
                         content=_j.dumps({"text": message_text}, ensure_ascii=False),
                         receive_id_type="user_id",
+                        extra_config=_channel_extra_config(config),
                     )
                     if resp.get("code") == 0:
                         args["user_id"] = direct_user_id
@@ -384,6 +391,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                             receive_id=direct_open_id,
                             content=_j.dumps({"text": message_text}, ensure_ascii=False),
                             receive_id_type="open_id",
+                            extra_config=_channel_extra_config(config),
                         )
                         if resp.get("code") == 0:
                             args["open_id"] = direct_open_id
@@ -399,6 +407,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         receive_id=direct_open_id,
                         content=_j.dumps({"text": message_text}, ensure_ascii=False),
                         receive_id_type="open_id",
+                        extra_config=_channel_extra_config(config),
                     )
                     if resp.get("code") == 0:
                         args["open_id"] = direct_open_id
@@ -486,6 +495,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         receive_id=resolved_id,
                         content=_j_prior.dumps({"text": message_text}, ensure_ascii=False),
                         receive_id_type=resolved_id_type,
+                        extra_config=_channel_extra_config(config),
                     )
                     if resp.get("code") == 0:
                         args[resolved_id_type] = resolved_id
@@ -527,6 +537,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         receive_id=_found_id,
                         content=_j2.dumps({"text": message_text}, ensure_ascii=False),
                         receive_id_type=_found_id_type,
+                        extra_config=_channel_extra_config(config),
                     )
                     if resp.get("code") == 0:
                         args[_found_id_type] = _found_id
@@ -564,13 +575,21 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
 
             content = _json.dumps({"text": message_text}, ensure_ascii=False)
 
-            async def _try_send(app_id: str, app_secret: str, receive_id: str, id_type: str = "open_id") -> dict:
+            async def _try_send(
+                app_id: str,
+                app_secret: str,
+                receive_id: str,
+                id_type: str = "open_id",
+                *,
+                extra_config: dict | None = None,
+            ) -> dict:
                 return await _safe_send_text_message(
                     app_id,
                     app_secret,
                     receive_id=receive_id,
                     content=content,
                     receive_id_type=id_type,
+                    extra_config=extra_config if extra_config is not None else _channel_extra_config(config),
                 )
 
             stable_user_id = target_member.external_id or target_member.feishu_user_id
@@ -593,6 +612,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                         config.app_secret,
                         email=target_member.email,
                         mobile=target_member.phone,
+                        extra_config=_channel_extra_config(config),
                     )
                     if resolved:
                         resp = await _try_send(config.app_id, config.app_secret, resolved)
@@ -635,6 +655,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                                 org_setting.value["app_secret"],
                                 stable_user_id,
                                 "user_id",
+                                extra_config=org_setting.value,
                             )
                             if resp2.get("code") == 0:
                                 args["user_id"] = stable_user_id
@@ -645,6 +666,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                             org_setting.value["app_id"],
                             org_setting.value["app_secret"],
                             stable_open_id,
+                            extra_config=org_setting.value,
                         )
                         if resp2.get("code") == 0:
                             args["open_id"] = stable_open_id

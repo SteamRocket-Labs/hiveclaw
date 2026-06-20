@@ -13,12 +13,18 @@ re-bloat the section.
 
 from __future__ import annotations
 
+import re
+
 from app.runtime.prompt_sections.active_tool_groups import (
     _DEFAULT_BUDGET_CHARS,
     _SUMMARY_MAX_CHARS,
     _TOOLS_PREVIEW_COUNT,
     build_active_tool_groups_section,
 )
+from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
+
+
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 # ── Constants pinned ──────────────────────────────────────────
@@ -45,10 +51,10 @@ def test_empty_packs_returns_empty_string() -> None:
 
 def test_short_pack_renders_inline_summary_and_tools() -> None:
     section = build_active_tool_groups_section(
-        [{"name": "web", "summary": "网页搜索", "tools": ["web_search", "firecrawl_fetch"]}]
+        [{"name": "web", "summary": "Web search", "tools": ["web_search", "firecrawl_fetch"]}]
     )
     assert "## Active Runtime Tool Groups" in section
-    assert "- web: 网页搜索" in section
+    assert "- web: Web search" in section
     assert "Tools: web_search, firecrawl_fetch" in section
     assert "+0 more" not in section  # no remainder marker when nothing trimmed
 
@@ -109,3 +115,21 @@ def test_total_size_for_typical_three_packs_stays_under_500_chars() -> None:
     ]
     section = build_active_tool_groups_section(packs)
     assert len(section) < 500
+
+
+def test_runtime_tool_group_prompt_metadata_is_english_only() -> None:
+    for group in RUNTIME_TOOL_GROUPS:
+        assert not _HAN_RE.search(group.summary), group.name
+        assert not _HAN_RE.search(group.activation_mode), group.name
+
+
+def test_real_runtime_tool_group_section_is_english_only() -> None:
+    section = build_active_tool_groups_section(
+        [
+            {"name": group.name, "summary": group.summary, "tools": list(group.tools)}
+            for group in RUNTIME_TOOL_GROUPS
+            if group.source != "mcp"
+        ]
+    )
+
+    assert not _HAN_RE.search(section)

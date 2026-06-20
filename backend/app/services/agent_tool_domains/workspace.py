@@ -332,12 +332,11 @@ def _render_skill_markdown(
         f'name: "{name}"',
         f'description: "{description}"',
     ]
-    if declared_tools:
-        lines.append("tools:")
-        lines.extend(f"  - {tool_name}" for tool_name in declared_tools)
-    if declared_packs:
-        lines.append("packs:")
-        lines.extend(f"  - {pack_name}" for pack_name in declared_packs)
+    # New agent-authored skills follow the Skill Creator contract: SKILL.md
+    # frontmatter contains only name/description. Tool and pack hints stay in
+    # the candidate manifest so legacy parser compatibility does not leak into
+    # newly generated skill bodies.
+    _ = declared_tools, declared_packs
     lines.append("---")
 
     body = instructions.strip()
@@ -576,6 +575,7 @@ def _submit_skill_activation_candidate(
 
     candidate_id = f"save-skill-{uuid.uuid4()}"
     from app.services.skill_candidate_package import write_skill_candidate_package
+    from app.services.skill_evolution_registry import ORIGIN_USER_SKILL_CREATOR, upsert_skill_evolution_entry
 
     manifest = write_skill_candidate_package(
         workspace=ws,
@@ -584,6 +584,8 @@ def _submit_skill_activation_candidate(
         skill_name=skill_name,
         package_type="save_skill",
         target_path=target_rel,
+        skill_origin=ORIGIN_USER_SKILL_CREATOR,
+        evolvable=True,
         source_refs=["tool:save_skill"],
         reason="Agent submitted a reusable capability capsule for external behavior verification.",
         declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
@@ -594,6 +596,17 @@ def _submit_skill_activation_candidate(
             "overwrite_requested": bool(overwrite),
             "source_tool": tool_name,
         },
+    )
+    upsert_skill_evolution_entry(
+        ws,
+        skill_name=skill_name,
+        target_path=target_rel,
+        skill_origin=ORIGIN_USER_SKILL_CREATOR,
+        evolvable=True,
+        last_candidate_id=candidate_id,
+        state="candidate",
+        source_refs=["tool:save_skill"],
+        metadata={"draft_path": manifest["draft_path"], "source_tool": tool_name},
     )
     from app.services.evolution_ledger import record_evolution_candidate
 
@@ -650,12 +663,18 @@ async def _read_document(
     max_chars: int = 8000,
     tenant_id: str | None = None,
     tool_name: str = "read_document",
+    mode: str = "auto",
+    max_pages: int | None = None,
+    force_refresh: bool = False,
+    return_format: str = "preview",
 ) -> str:
+    workspace_root = ws
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        workspace_root = enterprise_root
         sub = rel_path[len("enterprise_info") :].lstrip("/")
         file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not _is_within_path(file_path, enterprise_root):
@@ -668,103 +687,51 @@ async def _read_document(
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
 
-    ext = file_path.suffix.lower()
     try:
-        if ext == ".pdf":
-            import pdfplumber
+        from app.services.document_conversion import (
+            DocumentConversionRequest,
+            DocumentConversionService,
+            render_conversion_preview,
+        )
 
-            text_parts = []
-            with pdfplumber.open(str(file_path)) as pdf:
-                for i, page in enumerate(pdf.pages[:50]):
-                    page_text = page.extract_text() or ""
-                    if page_text:
-                        text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
-            content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
-        elif ext == ".docx":
-            from docx import Document
-            from docx.oxml.ns import qn
-
-            doc = Document(str(file_path))
-            lines: list[str] = []
-
-            def _extract_table(table) -> str:
-                rows = []
-                for row in table.rows:
-                    cells = [cell.text.strip() for cell in row.cells]
-                    deduped = [cells[0]] + [c for i, c in enumerate(cells[1:]) if c != cells[i]]
-                    row_str = " | ".join(c for c in deduped if c)
-                    if row_str:
-                        rows.append(row_str)
-                return "\n".join(rows)
-
-            for para in doc.paragraphs:
-                t = para.text.strip()
-                if t:
-                    lines.append(t)
-            for table in doc.tables:
-                t = _extract_table(table)
-                if t:
-                    lines.append(t)
-            for shape in doc.element.body.iter(qn("w:txbxContent")):
-                for child in shape.iter(qn("w:t")):
-                    if child.text and child.text.strip():
-                        lines.append(child.text.strip())
-            for section in doc.sections:
-                for hf in [section.header, section.footer]:
-                    if hf and hf.is_linked_to_previous is False:
-                        for para in hf.paragraphs:
-                            t = para.text.strip()
-                            if t:
-                                lines.append(t)
-            content = "\n".join(lines) if lines else "(Document is empty or uses unsupported formatting)"
-        elif ext == ".xlsx":
-            from openpyxl import load_workbook
-
-            wb = load_workbook(str(file_path), read_only=True, data_only=True)
-            sheets = []
-            for ws_name in wb.sheetnames[:10]:
-                sheet = wb[ws_name]
-                rows = []
-                for row in sheet.iter_rows(max_row=200, values_only=True):
-                    row_str = "\t".join(str(c) if c is not None else "" for c in row)
-                    if row_str.strip():
-                        rows.append(row_str)
-                if rows:
-                    sheets.append(f"=== Sheet: {ws_name} ===\n" + "\n".join(rows))
-            wb.close()
-            content = "\n\n".join(sheets) if sheets else "(Excel is empty)"
-        elif ext == ".pptx":
-            from pptx import Presentation
-
-            prs = Presentation(str(file_path))
-            slides = []
-            for i, slide in enumerate(prs.slides[:50]):
-                texts = []
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text.strip():
-                        texts.append(shape.text)
-                if texts:
-                    slides.append(f"--- Slide {i + 1} ---\n" + "\n".join(texts))
-            content = "\n\n".join(slides) if slides else "(PPT is empty)"
-        elif ext in (".txt", ".md", ".json", ".csv", ".log"):
-            content = file_path.read_text(encoding="utf-8", errors="replace")
-        else:
-            return _workspace_error(
-                tool_name,
-                "bad_arguments",
-                f"Unsupported file format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV",
+        result = DocumentConversionService().convert(
+            DocumentConversionRequest(
+                source_path=file_path,
+                workspace_root=workspace_root,
+                source_uri=None,
+                tenant_id=tenant_id,
+                agent_id=None,
+                user_id=None,
+                mode=mode if mode in {"auto", "fast", "ocr", "layout", "vision"} else "auto",
+                max_pages=max_pages,
+                max_output_chars=max_chars,
+                force_refresh=force_refresh,
             )
-
-        if len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
-        return content
+        )
+        if return_format == "markdown":
+            content = result.markdown
+            if len(content) > max_chars:
+                content = content[:max_chars] + f"\n\n...[truncated, {len(result.markdown)} chars total]"
+            return content
+        if return_format == "metadata":
+            metadata_path = workspace_root / result.artifact_metadata_path
+            return metadata_path.read_text(encoding="utf-8", errors="replace")
+        if return_format == "pages":
+            return (
+                "Page-level Markdown artifacts are not available yet.\n"
+                f"Full Markdown: {result.artifact_markdown_path}\n"
+                f"Metadata: {result.artifact_metadata_path}"
+            )
+        return render_conversion_preview(result, max_chars=max_chars)
     except ImportError as e:
         return _workspace_error(
             tool_name,
             "dependency_missing",
-            f"Missing dependency: {e}. Install: pip install pdfplumber python-docx openpyxl python-pptx",
+            f"Missing dependency: {e}. Install the document conversion backend dependencies.",
             actionable_hint="Install the required document parsing dependency in the backend environment.",
         )
+    except ValueError as e:
+        return _workspace_error(tool_name, "bad_arguments", str(e))
     except Exception as e:
         return _workspace_error(tool_name, "operation_failed", f"Document read failed: {str(e)[:200]}")
 
@@ -799,8 +766,8 @@ _PLATFORM_MANAGED_PREFIX_MESSAGES = {
     ),
     "evolution": (
         "evolution/ is managed by platform services — direct file writes, edits, and deletes are not allowed. "
-        "Return the outcome summary instead; heartbeat, trigger, dream, and promotion services record "
-        "scorecards, lineage, and candidate ledgers."
+        "Return the outcome summary instead; runtime evidence enters governed memory/session paths, "
+        "and Skill changes use inactive Skill Candidate Packages plus Skill Gate."
     ),
     "runtime_artifacts": (
         "runtime_artifacts/ is managed by platform services — direct file writes, edits, and deletes are not allowed. "

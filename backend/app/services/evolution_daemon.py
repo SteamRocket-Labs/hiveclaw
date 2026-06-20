@@ -14,8 +14,11 @@ Lifespan wiring lives in `app/main.py` — the daemon is spawned alongside
 from __future__ import annotations
 
 import asyncio
+import uuid
+from pathlib import Path
 
 from loguru import logger
+from sqlalchemy import select
 
 # Heartbeat tick cadence — read from typed settings so production (60s)
 # and dev (lower) configs are explicit. P1-W2-5: configurable via the
@@ -23,6 +26,212 @@ from loguru import logger
 from app.config import get_settings
 
 _HEARTBEAT_INTERVAL_SECONDS = get_settings().HEARTBEAT_TICK_SECONDS
+
+
+async def _maybe_run_skill_distillation(
+    *,
+    agent_id: uuid.UUID,
+    workspace: Path,
+    tenant_id: uuid.UUID | None,
+    runtime_config,
+    model,
+    current_session_id: str | None,
+) -> dict | None:
+    if not getattr(runtime_config, "skill_candidate_loop_enabled", False):
+        return None
+
+    from app.services.skill_distiller import run_skill_distillation_cycle
+
+    try:
+        return await run_skill_distillation_cycle(
+            agent_id=agent_id,
+            workspace=workspace,
+            tenant_id=tenant_id,
+            runtime_config=runtime_config,
+            model=model,
+            current_session_id=current_session_id,
+        )
+    except Exception as exc:
+        logger.warning("[EvolutionDaemon] Skill distillation failed for {}: {}", agent_id, exc)
+        return None
+
+
+def _maybe_run_skill_curator(workspace: Path) -> dict | None:
+    """Decay/archive unused agent-authored skills without deleting them."""
+    try:
+        from app.services.skill_curator import run_skill_curator_pass
+
+        return run_skill_curator_pass(workspace)
+    except Exception as exc:
+        logger.warning("[EvolutionDaemon] Skill curator pass failed for {}: {}", workspace, exc)
+        return None
+
+
+async def _resolve_agent_model(agent_id: uuid.UUID, tenant_id: uuid.UUID | None):
+    from app.database import tenant_scoped_session
+    from app.models.agent import Agent
+    from app.models.llm import LLMModel
+    from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
+
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        agent = result.scalar_one_or_none()
+        if not agent:
+            return None
+
+        model = None
+        if agent.primary_model_id:
+            model_result = await db.execute(
+                select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
+            )
+            model = model_result.scalar_one_or_none()
+
+        fallback_model = None
+        if agent.fallback_model_id:
+            fallback_result = await db.execute(
+                select(LLMModel).where(
+                    LLMModel.id == agent.fallback_model_id,
+                    LLMModel.tenant_id == agent.tenant_id,
+                )
+            )
+            fallback_model = fallback_result.scalar_one_or_none()
+
+        if not model and not fallback_model:
+            return None
+
+        if model and agent.tenant_id:
+            default_runtime_model = await resolve_default_model_for_tenant(
+                db,
+                agent.tenant_id,
+                exclude_model_id=model.id,
+            )
+            model, _fallback = choose_runtime_model_pair(model, fallback_model, default_runtime_model)
+            return model
+
+        if fallback_model:
+            default_runtime_model = None
+            if agent.tenant_id:
+                default_runtime_model = await resolve_default_model_for_tenant(
+                    db,
+                    agent.tenant_id,
+                    exclude_model_id=fallback_model.id,
+                )
+            model, _fallback = choose_runtime_model_pair(None, fallback_model, default_runtime_model)
+            return model
+
+        return model
+
+
+async def run_heartbeat_evolution_maintenance(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    outcome_type: str | None,
+    current_session_id: str | None,
+) -> dict:
+    """Run post-heartbeat evolution maintenance outside the heartbeat service.
+
+    Heartbeat owns autonomous reflection and T0 event emission. This helper owns
+    peripheral candidate/curation/repair lanes that can be scheduled after a
+    heartbeat boundary without becoming heartbeat logic.
+    """
+    report: dict[str, object] = {
+        "skill_distillation": None,
+        "skill_curator": None,
+        "scene_wiki_curation": None,
+        "dream_triggered": False,
+        "t3_normalization": None,
+        "enhancement_sync": None,
+    }
+
+    try:
+        from app.runtime.invoker import _resolve_runtime_config
+        from app.tools.workspace import ensure_workspace
+
+        runtime_config = await _resolve_runtime_config(agent_id)
+        if runtime_config.tenant_resolution_error:
+            logger.warning(
+                "[EvolutionDaemon] Skipping skill maintenance for {} — tenant resolution failed: {}",
+                agent_id,
+                runtime_config.tenant_resolution_error,
+            )
+        else:
+            workspace = await ensure_workspace(agent_id, tenant_id=str(tenant_id) if tenant_id else None)
+            model = await _resolve_agent_model(agent_id, tenant_id)
+            if model is not None:
+                report["skill_distillation"] = await _maybe_run_skill_distillation(
+                    agent_id=agent_id,
+                    workspace=workspace,
+                    tenant_id=tenant_id,
+                    runtime_config=runtime_config,
+                    model=model,
+                    current_session_id=current_session_id,
+                )
+            report["skill_curator"] = _maybe_run_skill_curator(workspace)
+    except Exception as exc:
+        logger.warning("[EvolutionDaemon] Skill maintenance setup failed for {}: {}", agent_id, exc)
+
+    try:
+        from app.services.memory_curation import run_scene_wiki_curation_tick
+
+        curation_summary = await run_scene_wiki_curation_tick(agent_id, tenant_id)
+        report["scene_wiki_curation"] = curation_summary
+        if curation_summary.get("status") == "ran":
+            logger.info("[EvolutionDaemon] Scene/wiki curation for {}: {}", agent_id, curation_summary)
+    except Exception as exc:
+        logger.warning("[EvolutionDaemon] Scene/wiki curation failed for {}: {}", agent_id, exc)
+
+    try:
+        from app.services.auto_dream import record_dream_activity, run_dream, should_dream
+
+        record_dream_activity(agent_id, outcome_type or "")
+        if should_dream(agent_id) and tenant_id:
+            asyncio.create_task(run_dream(agent_id, tenant_id), name=f"auto_dream:{agent_id}")
+            report["dream_triggered"] = True
+            logger.info("[EvolutionDaemon] Auto-dream triggered for agent {}", agent_id)
+    except Exception as exc:
+        logger.debug("[EvolutionDaemon] Auto-dream check failed for {}: {}", agent_id, exc)
+
+    try:
+        from app.memory.distillation_audit import write_distillation_audit
+        from app.memory.md_store import validate_and_normalize_t3
+
+        normalization_report = validate_and_normalize_t3(Path(get_settings().AGENT_DATA_DIR), agent_id)
+        report["t3_normalization"] = normalization_report
+        if normalization_report["fixed"] or normalization_report["warnings"]:
+            write_distillation_audit(
+                Path(get_settings().AGENT_DATA_DIR),
+                agent_id,
+                stage="t3_normalization_repair",
+                outcome="repaired" if normalization_report["fixed"] else "warning",
+                reason="platform hygiene normalized accepted T3 shape",
+                detail=normalization_report,
+            )
+            logger.info(
+                "[EvolutionDaemon] T3 normalization for {}: fixed={} warnings={} files={}",
+                agent_id,
+                normalization_report["fixed"],
+                len(normalization_report["warnings"]),
+                normalization_report["files_touched"],
+            )
+    except Exception as exc:
+        logger.debug("[EvolutionDaemon] T3 normalization failed for {}: {}", agent_id, exc)
+
+    try:
+        from app.memory.enhancement import sync_t3_to_memory_enhancement
+
+        sync_result = await sync_t3_to_memory_enhancement(agent_id, tenant_id)
+        report["enhancement_sync"] = {
+            "synced": sync_result.synced,
+            "skipped": sync_result.skipped,
+            "reason": sync_result.reason,
+        }
+        if sync_result.synced:
+            logger.info("[EvolutionDaemon] Memory enhancement sync: {} T3 items (agent={})", sync_result.synced, agent_id)
+    except Exception as exc:
+        logger.warning("[EvolutionDaemon] Memory enhancement sync outer guard tripped for {}: {}", agent_id, exc)
+
+    return report
 
 
 async def _heartbeat_loop() -> None:

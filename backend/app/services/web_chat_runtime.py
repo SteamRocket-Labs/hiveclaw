@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.core.permissions import is_agent_expired
 from app.kernel.contracts import ExecutionIdentityRef
-from app.memory.t0.ledger import append_t0_session_event
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -36,6 +35,8 @@ from app.services.chat_message_parts import (
     build_tool_call_event,
     build_tool_group_activation_event,
 )
+from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+from app.services.chat_transcript import append_session_event
 from app.services.llm_error_policy import is_llm_error_message
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
 from app.services import plan_mode_core
@@ -54,6 +55,14 @@ class ActiveWebChatRunExists(Exception):
     def __init__(self, run: dict[str, Any]) -> None:
         super().__init__("A web chat run is already active for this session")
         self.run = run
+
+
+class _TerminalToolCardSignal(Exception):
+    """Internal control signal: a user-visible tool card is the terminal output."""
+
+    def __init__(self, summary: str) -> None:
+        super().__init__(summary)
+        self.summary = summary
 
 
 def _run_id(value: str | uuid.UUID) -> uuid.UUID:
@@ -116,17 +125,6 @@ async def _queue_mid_run_user_message(
 ) -> dict[str, Any]:
     message_id = uuid.uuid4()
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
-    db.add(
-        ChatMessage(
-            id=message_id,
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            user_id=user.id,
-            role="user",
-            content=saved_content,
-            conversation_id=str(session.id),
-        )
-    )
     session.last_message_at = datetime.now(timezone.utc)
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
     pending = list(metadata.get("pending_user_messages") or [])
@@ -139,16 +137,18 @@ async def _queue_mid_run_user_message(
     metadata["pending_user_messages"] = pending
     metadata["pending_user_message_count"] = len(pending)
     active_run.metadata_json = metadata
-    append_t0_session_event(
+    await append_session_event(
+        db=db,
         agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
         session_id=session.id,
+        run_id=getattr(active_run, "id", None),
+        actor_type="user",
         event_type="user_message",
         role="user",
+        user_id=user.id,
         content=saved_content,
         message_id=message_id,
-        actor_id=user.id,
-        tenant_id=getattr(agent, "tenant_id", None),
-        runtime_task_id=getattr(active_run, "id", None),
         source="web",
         metadata={
             "source": "web",
@@ -326,17 +326,6 @@ async def start_web_chat_run(
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     message_id = uuid.uuid4()
 
-    db.add(
-        ChatMessage(
-            id=message_id,
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            user_id=user.id,
-            role="user",
-            content=saved_content,
-            conversation_id=str(session.id),
-        )
-    )
     session.last_message_at = now
     if not getattr(session, "title", "") or str(session.title).startswith("Session "):
         title_src = display_content if display_content else content
@@ -344,26 +333,6 @@ async def start_web_chat_run(
         if file_name and not clean_title:
             clean_title = f"📎 {file_name}"
         session.title = clean_title[:40] if clean_title else content[:40]
-    await db.commit()
-    append_t0_session_event(
-        agent_id=agent.id,
-        session_id=session.id,
-        event_type="user_message",
-        role="user",
-        content=saved_content,
-        message_id=message_id,
-        actor_id=user.id,
-        tenant_id=getattr(agent, "tenant_id", None),
-        runtime_task_id=run_uuid,
-        source="web",
-        metadata={
-            "source": "web",
-            "display_content": display_content,
-            "file_name": file_name,
-            "plan_mode_requested": bool(plan_mode_requested),
-            **(extra_metadata or {}),
-        },
-    )
 
     runtime_task = RuntimeTask(
         id=run_uuid,
@@ -396,6 +365,27 @@ async def start_web_chat_run(
         },
     )
     db.add(runtime_task)
+    await append_session_event(
+        db=db,
+        agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        session_id=session.id,
+        run_id=run_uuid,
+        actor_type="user",
+        event_type="user_message",
+        role="user",
+        user_id=user.id,
+        content=saved_content,
+        message_id=message_id,
+        source="web",
+        metadata={
+            "source": "web",
+            "display_content": display_content,
+            "file_name": file_name,
+            "plan_mode_requested": bool(plan_mode_requested),
+            **(extra_metadata or {}),
+        },
+    )
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -460,17 +450,20 @@ async def _queue_saved_mid_run_user_message(
     active_run.metadata_json = metadata
     session.last_message_at = datetime.now(timezone.utc)
     if not message_already_in_t0:
-        append_t0_session_event(
+        await append_session_event(
+            db=db,
             agent_id=agent.id,
+            tenant_id=getattr(agent, "tenant_id", None),
             session_id=session.id,
+            run_id=getattr(active_run, "id", None),
+            actor_type="user",
             event_type="user_message",
             role="user",
+            user_id=user.id,
             content=saved_content,
             message_id=queued["id"],
-            actor_id=user.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            runtime_task_id=getattr(active_run, "id", None),
             source=source_channel,
+            materialize_chat_message=False,
             metadata={
                 "source": source_channel,
                 "queued": True,
@@ -561,17 +554,20 @@ async def start_channel_chat_run_from_saved_turn(
         metadata_json=metadata,
     )
     db.add(runtime_task)
-    append_t0_session_event(
+    await append_session_event(
+        db=db,
         agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
         session_id=session.id,
+        run_id=run_uuid,
+        actor_type="user",
         event_type="user_message",
         role="user",
+        user_id=user.id,
         content=_saved_user_content(content=content, display_content=display_content, file_name=file_name),
         message_id=(extra_metadata or {}).get("message_id"),
-        actor_id=user.id,
-        tenant_id=getattr(agent, "tenant_id", None),
-        runtime_task_id=run_uuid,
         source=source_channel,
+        materialize_chat_message=False,
         metadata={
             "source": source_channel,
             "channel": source_channel,
@@ -744,19 +740,59 @@ async def _persist_assistant_message(
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
-        db.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                role="assistant",
-                content=content,
-                thinking=thinking,
-                thinking_signature=thinking_signature,
-                conversation_id=session_id,
-            )
+        await append_session_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            actor_type="assistant",
+            event_type="assistant_message",
+            role="assistant",
+            user_id=user_id,
+            content=content,
+            thinking=thinking,
+            thinking_signature=thinking_signature,
+            source="web_chat_runtime",
+            metadata={"source": "web_chat_runtime", "kernel_persisted": True},
         )
         await db.commit()
+
+
+async def _append_artifact_delivery_event(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    session_id: str,
+    run_uuid: uuid.UUID,
+    message_id: uuid.UUID | None,
+    artifact_parts: list[dict[str, Any]],
+    source: str = "web_chat_runtime",
+) -> None:
+    if not artifact_parts:
+        return
+    await append_session_event(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        run_id=run_uuid,
+        actor_type="system",
+        event_type="artifact_delivery",
+        role="system",
+        content="artifact_delivery",
+        message_id=message_id,
+        source=source,
+        parts=artifact_parts,
+        materialize_chat_message=False,
+        metadata={
+            "source": source,
+            "artifact_count": len(artifact_parts),
+            "artifact_ids": [part.get("artifact_id") for part in artifact_parts],
+            "artifact_paths": [part.get("path") for part in artifact_parts],
+            "artifacts": artifact_parts,
+        },
+    )
 
 
 async def _finalize_web_chat_run_with_assistant(
@@ -771,6 +807,7 @@ async def _finalize_web_chat_run_with_assistant(
     status: str,
     result_summary: str | None,
     metadata_json: dict[str, Any] | None = None,
+    artifact_paths: list[str] | None = None,
 ) -> bool:
     """Persist the terminal assistant response exactly once for a durable web-chat run."""
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -820,6 +857,8 @@ async def _finalize_web_chat_run_with_assistant(
             await db.commit()
             return False
 
+        workspace_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+
         terminal_since = getattr(task, "started_at", None) or getattr(task, "created_at", None)
         kernel_message_filters = [
             ChatMessage.agent_id == agent_id,
@@ -844,23 +883,43 @@ async def _finalize_web_chat_run_with_assistant(
                 kernel_persisted_message.thinking = thinking
             if thinking_signature and not kernel_persisted_message.thinking_signature:
                 kernel_persisted_message.thinking_signature = thinking_signature
+            artifact_parts = []
+            if artifact_paths and getattr(kernel_persisted_message, "id", None):
+                artifact_parts = create_chat_artifacts_for_message(
+                    db=db,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    message_id=kernel_persisted_message.id,
+                    runtime_task_id=run_uuid,
+                    paths=artifact_paths,
+                    workspace_root=workspace_root,
+                )
+            if artifact_parts:
+                if metadata_json is None:
+                    metadata_json = {}
+                metadata_json["artifact_ids"] = [part["artifact_id"] for part in artifact_parts]
+                metadata_json["artifact_paths"] = [part["path"] for part in artifact_parts]
+                metadata_json["artifacts"] = artifact_parts
             _apply_terminal_task_update(
                 task,
                 status=status,
                 result_summary=result_summary,
                 metadata_json=metadata_json,
             )
-            append_t0_session_event(
+            await append_session_event(
+                db=db,
                 agent_id=agent_id,
+                tenant_id=tenant_id,
                 session_id=session_id,
+                run_id=run_uuid,
+                actor_type="assistant",
                 event_type="assistant_message",
                 role="assistant",
                 content=content,
                 message_id=getattr(kernel_persisted_message, "id", None),
-                actor_id=agent_id,
-                tenant_id=tenant_id,
-                runtime_task_id=run_uuid,
                 source="web_chat_runtime",
+                materialize_chat_message=False,
                 metadata={
                     "source": "web_chat_runtime",
                     "final_decision_trace_id": final_decision_trace_id,
@@ -869,47 +928,115 @@ async def _finalize_web_chat_run_with_assistant(
                     **(metadata_json or {}),
                 },
             )
+            await _append_artifact_delivery_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                run_uuid=run_uuid,
+                message_id=getattr(kernel_persisted_message, "id", None),
+                artifact_parts=artifact_parts,
+            )
             await db.commit()
             return True
 
         assistant_message_id = uuid.uuid4()
-        db.add(
-            ChatMessage(
-                id=assistant_message_id,
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                role="assistant",
-                content=content,
-                thinking=thinking,
-                thinking_signature=thinking_signature,
-                decision_trace_id=final_decision_trace_id,
-                conversation_id=session_id,
-            )
+        artifact_parts = create_chat_artifacts_for_message(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            message_id=assistant_message_id,
+            runtime_task_id=run_uuid,
+            paths=artifact_paths or [],
+            workspace_root=workspace_root,
         )
+        if artifact_parts:
+            if metadata_json is None:
+                metadata_json = {}
+            metadata_json["artifact_ids"] = [part["artifact_id"] for part in artifact_parts]
+            metadata_json["artifact_paths"] = [part["path"] for part in artifact_parts]
+            metadata_json["artifacts"] = artifact_parts
         _apply_terminal_task_update(
             task,
             status=status,
             result_summary=result_summary,
             metadata_json=metadata_json,
         )
-        append_t0_session_event(
+        await append_session_event(
+            db=db,
             agent_id=agent_id,
+            tenant_id=tenant_id,
             session_id=session_id,
+            run_id=run_uuid,
+            actor_type="assistant",
             event_type="assistant_message",
             role="assistant",
+            user_id=user_id,
             content=content,
             message_id=assistant_message_id,
-            actor_id=agent_id,
-            tenant_id=tenant_id,
-            runtime_task_id=run_uuid,
             source="web_chat_runtime",
+            thinking=thinking,
+            thinking_signature=thinking_signature,
+            decision_trace_id=final_decision_trace_id,
+            parts=artifact_parts,
             metadata={
                 "source": "web_chat_runtime",
                 "final_decision_trace_id": final_decision_trace_id,
                 "status": status,
                 **(metadata_json or {}),
             },
+        )
+        await _append_artifact_delivery_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            run_uuid=run_uuid,
+            message_id=assistant_message_id,
+            artifact_parts=artifact_parts,
+        )
+        await db.commit()
+        return True
+
+
+async def _finalize_web_chat_run_without_assistant(
+    *,
+    run_uuid: uuid.UUID,
+    agent_id: uuid.UUID,
+    status: str,
+    result_summary: str | None,
+    metadata_json: dict[str, Any] | None = None,
+) -> bool:
+    """Mark a web-chat run terminal when the visible terminal output is a tool card."""
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == run_uuid,
+                RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+            )
+            .with_for_update()
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            logger.warning("[WebChatRun] Tool-card finalization skipped; runtime task {} not found", run_uuid.hex)
+            return False
+        if task.status not in _ACTIVE_STATUSES:
+            logger.info(
+                "[WebChatRun] Duplicate tool-card finalization skipped for run {} with status {}",
+                run_uuid.hex,
+                task.status,
+            )
+            return False
+        _apply_terminal_task_update(
+            task,
+            status=status,
+            result_summary=result_summary,
+            metadata_json=metadata_json,
         )
         await db.commit()
         return True
@@ -921,7 +1048,7 @@ async def _persist_tool_call(
     user_id: uuid.UUID,
     session_id: str,
     data: dict[str, Any],
-) -> None:
+) -> Any:
     raw_result = data.get("result") or ""
     raw_str = str(raw_result)
     if len(raw_str) > 50000:
@@ -941,29 +1068,21 @@ async def _persist_tool_call(
         "reasoning_signature": data.get("reasoning_signature"),
     }
     async with tenant_scoped_session(tenant_id) as db:
-        db.add(
-            ChatMessage(
-                id=message_id,
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                role="tool_call",
-                content=json.dumps(payload, ensure_ascii=False),
-                decision_trace_id=decision_trace_id,
-                conversation_id=session_id,
-            )
-        )
-        append_t0_session_event(
+        result = await append_session_event(
+            db=db,
             agent_id=agent_id,
+            tenant_id=tenant_id,
             session_id=session_id,
+            run_id=data.get("runtime_task_id") or data.get("run_id"),
+            actor_type="tool",
             event_type="tool_result",
-            role="tool",
+            role="tool_call",
+            t0_role="tool",
+            user_id=user_id,
             content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
             message_id=message_id,
-            actor_id=agent_id,
-            tenant_id=tenant_id,
-            runtime_task_id=data.get("runtime_task_id") or data.get("run_id"),
             source="web_chat_runtime",
+            decision_trace_id=decision_trace_id,
             metadata={
                 "source": "web_chat_runtime",
                 "tool_name": data.get("name", ""),
@@ -972,6 +1091,7 @@ async def _persist_tool_call(
             },
         )
         await db.commit()
+        return result
 
 
 async def _persist_runtime_event(
@@ -985,21 +1105,59 @@ async def _persist_runtime_event(
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
-        db.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                role="system",
-                content=json.dumps(data, ensure_ascii=False),
-                conversation_id=session_id,
-            )
+        event_type = str(data.get("event_type") or data.get("type") or "runtime_event")
+        await append_session_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            run_id=data.get("runtime_task_id") or data.get("run_id"),
+            actor_type="system",
+            event_type=event_type,
+            role="system",
+            user_id=user_id,
+            content=json.dumps(data, ensure_ascii=False),
+            source="web_chat_runtime",
+            metadata={"source": "web_chat_runtime", "runtime_event_type": event_type},
         )
         await db.commit()
 
 
 def _simulation_title(content: str) -> str:
     return content[:80] if content else ""
+
+
+def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None:
+    if data.get("status") != "done":
+        return None
+    tool_name = str(data.get("name") or "")
+    if tool_name not in {"ask_user_question", "request_plan_mode", "exit_plan_mode", "create_digital_employee"}:
+        return None
+    raw_result = data.get("result")
+    if isinstance(raw_result, dict):
+        payload = raw_result
+    else:
+        try:
+            payload = json.loads(str(raw_result or "{}"))
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if tool_name == "ask_user_question":
+        if payload.get("status") == "awaiting_user_clarification" and payload.get("blocking", True) is not False:
+            return "awaiting_user_clarification"
+        return None
+    if tool_name == "request_plan_mode" and payload.get("status") == "plan_mode_entry_requested":
+        return "plan_mode_entry_requested"
+    if tool_name == "exit_plan_mode" and payload.get("status") == "needs_plan":
+        return "plan_mode_needs_confirmation"
+    if (
+        tool_name == "create_digital_employee"
+        and payload.get("status") == "success"
+        and str(payload.get("agent_id") or "").strip()
+    ):
+        return "create_digital_employee_success"
+    return None
 
 
 def _provision_interactive_plan_file(agent_id: uuid.UUID, plan_file_path: str | None) -> None:
@@ -1643,23 +1801,52 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         active_plan_mode_metadata = runtime_session_context.metadata.get("plan_mode")
 
         plan_mode_submitted = False
+        interactive_pause_summary: str | None = None
+
+        def _tool_result_payload(data: dict[str, Any]) -> dict[str, Any]:
+            raw_result = data.get("result")
+            if isinstance(raw_result, dict):
+                return raw_result
+            try:
+                payload = json.loads(str(raw_result or "{}"))
+            except Exception:
+                return {}
+            return payload if isinstance(payload, dict) else {}
 
         def _tool_result_needs_plan(data: dict[str, Any]) -> bool:
             if data.get("name") != "exit_plan_mode" or data.get("status") != "done":
                 return False
-            try:
-                payload = json.loads(str(data.get("result") or "{}"))
-            except Exception:
-                return False
-            return payload.get("status") == "needs_plan"
+            return _tool_result_payload(data).get("status") == "needs_plan"
 
         async def tool_call_to_ws(data: dict[str, Any]) -> None:  # type: ignore[no-redef]
-            nonlocal plan_mode_submitted
-            await broadcast_web_chat_event(agent.id, session_id, build_tool_call_event(data))
+            nonlocal interactive_pause_summary, plan_mode_submitted
+            if data.get("status") != "done":
+                await broadcast_web_chat_event(agent.id, session_id, build_tool_call_event(data))
+                return
+
+            persisted_event = await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
+            ws_event = build_tool_call_event(data)
+            if persisted_event:
+                ws_event.update(
+                    {
+                        "transcript_event_id": str(persisted_event.event_id),
+                        "sequence": persisted_event.sequence,
+                        "event_type": "tool_result",
+                        "role": "tool_call",
+                        "content": persisted_event.transcript_event.content or "",
+                        "message_id": str(persisted_event.message_id) if persisted_event.message_id else None,
+                        "metadata": persisted_event.transcript_event.metadata_json or {},
+                    }
+                )
+            await broadcast_web_chat_event(agent.id, session_id, ws_event)
             if data.get("status") == "done":
                 if _tool_result_needs_plan(data):
                     plan_mode_submitted = True
-                await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
+                pause_summary = _interactive_pause_summary_for_tool_call(data)
+                if pause_summary:
+                    interactive_pause_summary = pause_summary
+                if pause_summary:
+                    raise _TerminalToolCardSignal(pause_summary)
 
         plan_mode_token = None
         try:
@@ -1667,33 +1854,37 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 from app.services.plan_mode_runtime_context import set_interactive_plan_mode
 
                 plan_mode_token = set_interactive_plan_mode(active_plan_mode_metadata)
-            result = await invoke_agent(
-                AgentInvocationRequest(
-                    model=llm_model,
-                    fallback_model=fallback_model,
-                    messages=conversation,
-                    agent_name=agent.name,
-                    role_description=agent.role_description or "",
-                    agent_id=agent.id,
-                    user_id=user.id,
-                    execution_identity=ExecutionIdentityRef(
-                        identity_type="delegated_user",
-                        identity_id=user.id,
-                        label=f"{user.display_name or user.username} via {runtime_session_context.channel or 'web'}",
-                    ),
-                    on_chunk=stream_to_ws,
-                    on_tool_call=tool_call_to_ws,
-                    on_thinking=thinking_to_ws,
-                    on_event=runtime_event_to_ws,
-                    supports_vision=getattr(llm_model, "supports_vision", False),
-                    memory_session_id=session_id,
-                    memory_messages=conversation,
-                    cancel_event=cancel_event,
-                    session_context=runtime_session_context,
-                    system_prompt_suffix=pending_reply_suffix,
-                    mid_run_message_drain=lambda: _claim_pending_mid_run_user_messages(run_uuid),
+            try:
+                result = await invoke_agent(
+                    AgentInvocationRequest(
+                        model=llm_model,
+                        fallback_model=fallback_model,
+                        messages=conversation,
+                        agent_name=agent.name,
+                        role_description=agent.role_description or "",
+                        agent_id=agent.id,
+                        user_id=user.id,
+                        execution_identity=ExecutionIdentityRef(
+                            identity_type="delegated_user",
+                            identity_id=user.id,
+                            label=f"{user.display_name or user.username} via {runtime_session_context.channel or 'web'}",
+                        ),
+                        on_chunk=stream_to_ws,
+                        on_tool_call=tool_call_to_ws,
+                        on_thinking=thinking_to_ws,
+                        on_event=runtime_event_to_ws,
+                        supports_vision=getattr(llm_model, "supports_vision", False),
+                        memory_session_id=session_id,
+                        memory_messages=conversation,
+                        cancel_event=cancel_event,
+                        session_context=runtime_session_context,
+                        system_prompt_suffix=pending_reply_suffix,
+                        mid_run_message_drain=lambda: _claim_pending_mid_run_user_messages(run_uuid),
+                    )
                 )
-            )
+            except _TerminalToolCardSignal as signal:
+                interactive_pause_summary = signal.summary
+                result = None
         finally:
             if plan_mode_token is not None:
                 from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
@@ -1702,6 +1893,22 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             if plan_mode_submitted:
                 _clear_interactive_plan_mode(runtime_session_context)
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
+        if result is None and interactive_pause_summary:
+            metadata_update = {
+                "cancelled_by_user": bool(cancel_event.is_set()),
+                "interactive_pause": interactive_pause_summary,
+            }
+            finalized = await _finalize_web_chat_run_without_assistant(
+                run_uuid=run_uuid,
+                agent_id=agent.id,
+                status="killed" if cancel_event.is_set() else "completed",
+                result_summary=interactive_pause_summary,
+                metadata_json=metadata_update,
+            )
+            if not finalized:
+                return
+            await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
+            return
         assistant_response = result.content
         thinking = "".join(thinking_content) if thinking_content else None
         status = (
@@ -1710,6 +1917,20 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             else ("failed" if is_llm_error_message(assistant_response) else "completed")
         )
         metadata_update = {"cancelled_by_user": bool(cancel_event.is_set())}
+        if interactive_pause_summary and not str(assistant_response or "").strip():
+            metadata_update["interactive_pause"] = interactive_pause_summary
+            finalized = await _finalize_web_chat_run_without_assistant(
+                run_uuid=run_uuid,
+                agent_id=agent.id,
+                status=status,
+                result_summary=interactive_pause_summary,
+                metadata_json=metadata_update,
+            )
+            if not finalized:
+                return
+            await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
+            return
+        artifact_paths = list(getattr(runtime_session_context, "recent_writes", []) or [])
         finalized = await _finalize_web_chat_run_with_assistant(
             run_uuid=run_uuid,
             agent_id=agent.id,
@@ -1721,10 +1942,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             status=status,
             result_summary=_simulation_title(assistant_response),
             metadata_json=metadata_update,
+            artifact_paths=artifact_paths,
         )
         if not finalized:
             return
-        await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response, thinking=thinking))
+        await broadcast_web_chat_event(
+            agent.id,
+            session_id,
+            build_done_event(assistant_response, thinking=thinking, artifacts=metadata_update.get("artifacts")),
+        )
         if status == "completed":
             # P1-2: deliver the result back to the origin IM channel (no-op for
             # web sessions). Without this, an IM plan confirmation that continues

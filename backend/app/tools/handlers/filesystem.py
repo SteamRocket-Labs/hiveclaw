@@ -322,7 +322,25 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None) 
                 "path": {
                     "type": "string",
                     "description": "Document file path, e.g.: workspace/knowledge_base/report.pdf, enterprise_info/knowledge_base/policy.docx",
-                }
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["auto", "fast", "ocr", "layout", "vision"],
+                    "description": "Conversion mode. Default auto.",
+                },
+                "max_pages": {
+                    "type": "integer",
+                    "description": "Optional page cap for conversion engines that support it.",
+                },
+                "force_refresh": {
+                    "type": "boolean",
+                    "description": "Rebuild the Markdown artifact instead of reusing the cached conversion.",
+                },
+                "return_format": {
+                    "type": "string",
+                    "enum": ["preview", "markdown", "metadata", "pages"],
+                    "description": "Return preview plus artifact paths, full markdown, metadata, or page artifact listing. Default preview.",
+                },
             },
             "required": ["path"],
         },
@@ -338,7 +356,21 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None) 
 async def read_document(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
     from app.services.agent_tool_domains.workspace import _read_document
 
-    return await _read_document(workspace, arguments.get("path", ""), tenant_id=tenant_id)
+    max_chars = arguments.get("max_chars", 8000)
+    try:
+        max_chars = int(max_chars)
+    except (TypeError, ValueError):
+        max_chars = 8000
+    return await _read_document(
+        workspace,
+        arguments.get("path", ""),
+        max_chars=max_chars,
+        tenant_id=tenant_id,
+        mode=str(arguments.get("mode") or "auto"),
+        max_pages=arguments.get("max_pages"),
+        force_refresh=bool(arguments.get("force_refresh", False)),
+        return_format=str(arguments.get("return_format") or "preview"),
+    )
 
 
 # -- execute_code -------------------------------------------------------------

@@ -54,22 +54,27 @@ tasks.json           — Read-only DB Task snapshot; use Work Ledger for cogniti
 
 memory/
   t0/sessions/       — Append-only raw session ledger (T0, auto-generated)
-  sessions/          — Reviewed T2 Segment Packages (auto-generated)
+  t2/                — Reviewed T2 Segment Packages with source_refs (auto-generated)
   explicit/          — Explicit user saves, active before accepted T3 absorption
   t3/
     episodes.md      — Scenario-first episodic anchors (accepted T3)
     user.md          — Stable user/principal model (accepted T3)
     worker.md        — Agent rules, redlines, failure modes (accepted T3)
     capabilities.md  — Reusable methods, SOPs, skill seeds (accepted T3)
+  .staging/t3_jobs/  — Pending Agent-authored T3 consolidation jobs
+  .staging/soul_candidates/
+                      — Pending Agent-authored soul patch candidates
+  sessions/          — Legacy/compatibility view; not the primary T2 truth
   learnings/         — Legacy/derived compatibility view for T2, auto-managed
 
 evolution/
-  scorecard.md       — Performance metrics
-  blocklist.md       — Approaches proven impossible
-  lineage.md         — Heartbeat/evolution history
+  skill_registry.json
+                      — Skill source/evolvable/version sidecar
+  skill_candidates/  — Inactive Skill Candidate Packages; candidate_signal is evidence only
+  skill_review.md    — Skill lifecycle audit events
 
 logs/                — Legacy/import compatibility logs; not runtime T0 truth
-skills/              — Active skill packages; read/load only from normal file tools, promotion writes go through Skill Gate
+skills/              — Active skill packages; final semantic writes go through Agent/Skill Writer + Skill Gate
 workspace/           — Your work files (reports, documents, artifacts)
   uploads/           — Files uploaded from chat or channels
   deep_research_reports/

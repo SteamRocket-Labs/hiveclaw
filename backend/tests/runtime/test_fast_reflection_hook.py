@@ -69,10 +69,11 @@ def test_memory_hook_plan_registers_fast_reflection_handler() -> None:
 
     plan = export_memory_hook_plan()
 
-    assert len(_MEMORY_HOOK_REGISTRATIONS) == 13
+    assert len(_MEMORY_HOOK_REGISTRATIONS) == 14
     assert any(
         item["event"] == HookEvent.RESPONSE_COMPLETE.value
         and item["key"] == "memory.response_complete.fast_reflection"
         and item["handler_name"] == "fast_reflection_on_response"
         for item in plan
     )
+    assert any(item["key"] == "evolution.heartbeat_tick_end.maintenance" for item in plan)

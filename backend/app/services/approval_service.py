@@ -96,6 +96,7 @@ class ApprovalService:
 
         # M-17: Auto-reject approvals older than 7 days (AFTER authorization check)
         from datetime import timedelta
+
         if approval.created_at and (datetime.now(timezone.utc) - approval.created_at) > timedelta(days=7):
             approval.status = "rejected"
             approval.resolved_at = datetime.now(timezone.utc)
@@ -151,10 +152,14 @@ class ApprovalService:
                 approved_by_user_id=user.id,
                 approval_id=approval.id,
             )
-            execution_status = "success" if execution_result and "failed" not in str(execution_result).lower() else "failed"
+            execution_status = (
+                "success" if execution_result and "failed" not in str(execution_result).lower() else "failed"
+            )
             logger.info(
                 "Post-approval execution for %s: status=%s result=%s",
-                approval.action_type, execution_status, str(execution_result)[:200],
+                approval.action_type,
+                execution_status,
+                str(execution_result)[:200],
             )
             await self._publish_approval_result_to_origin(
                 db,
@@ -340,9 +345,7 @@ class ApprovalService:
             creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
             creator = creator_result.scalar_one_or_none()
             delivery_target = (
-                await channel_user_service.get_feishu_delivery_target(db, user=creator)
-                if creator
-                else None
+                await channel_user_service.get_feishu_delivery_target(db, user=creator) if creator else None
             )
             if creator and delivery_target:
                 receive_id, id_type = delivery_target
@@ -355,6 +358,7 @@ class ApprovalService:
                     approval.action_type,
                     json.dumps(approval.details, ensure_ascii=False)[:500],
                     str(approval.id),
+                    extra_config=channel.extra_config,
                 )
 
 

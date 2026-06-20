@@ -4,6 +4,10 @@ description: "Use when you need current web research, source retrieval, citation
 tools:
   - web_search
   - web_fetch
+  - anysearch_get_sub_domains
+  - anysearch_search
+  - anysearch_batch_search
+  - anysearch_extract
   - exa_search
   - tavily_search
   - firecrawl_fetch
@@ -49,12 +53,16 @@ releases, prices, people, current stats, APIs that evolved).
 
 | Tool | Use Case | Escalation level |
 |------|----------|------------------|
-| `web_search` | Basic public web search using built-in no-key providers: SearXNG when configured, DuckDuckGo fallback. **Start here for normal lookup.** | Level 1 |
+| `web_search` | Basic public web search using Hive's built-in provider chain: AnySearch API first when configured, SearXNG fallback otherwise. **Start here for normal lookup.** | Level 1 |
 | `web_fetch` | Read full content from a specific URL. Use this first when you already have the link. | Level 1 |
-| `exa_search` | Advanced semantic/provider-backed search. Discover with `tool_search` when `web_search` is too shallow, sparse, or keyword-mismatched. | Level 2 |
-| `tavily_search` | Advanced research/news-oriented provider search. Discover with `tool_search` when current-event or research snippets need a stronger provider. | Level 2 |
-| `firecrawl_fetch` | Provider-backed fetch for heavier pages, PDFs, or pages where `web_fetch` misses the main content (JS-rendered). Discover with `tool_search` if not visible. | Level 2 |
-| `xcrawl_scrape` | Escalation path for JS-heavy or anti-bot pages when lighter fetch tools fail. Discover with `tool_search` if not visible. | Level 3 |
+| `anysearch_get_sub_domains` | AnySearch search/discovery surface schema directory. Call before vertical `anysearch_search` to discover valid sub-domain routes and required sub-domain parameters. | Level 2 |
+| `anysearch_search` | AnySearch search/discovery surface for vertical or general search. Use for precise finance, social media, academic, legal, health, business, security, code, energy, environment, agriculture, travel, film, and gaming sources when basic search is too broad. | Level 2 |
+| `anysearch_batch_search` | AnySearch search/discovery surface for parallel 2-5 query search. Use for hybrid general + vertical coverage or multi-domain intersections. | Level 2 |
+| `anysearch_extract` | AnySearch read/extract surface for known URLs. It extracts full page Markdown from a URL returned by search. Prefer `web_fetch` for ordinary known URLs. | Level 2 |
+| `exa_search` | Exa AI-native search for LLM agents. Use when you need search type control, category verticals (company, research paper, news, personal site, financial report, people), semantic/source discovery, or dense extracted result text. | Level 2 |
+| `tavily_search` | Tavily real-time web access layer for AI agents/RAG. Use when you need current factual retrieval, topic routing (`general`/`news`/`finance`), freshness filters, provider answers, or RAG-friendly content/chunks. | Level 2 |
+| `firecrawl_fetch` | Firecrawl `/scrape` for a known URL when you need single-page extraction into LLM-ready markdown or richer formats. Use `onlyMainContent`, clean-content, tags, and wait options to reduce page chrome or handle slow rendering. Discover with `tool_search` if not visible. Do not use crawler fetch tools for keyword search. | Level 2 |
+| `xcrawl_scrape` | XCrawl Scrape API for single-page extraction using official `output.formats`, `request`, and `js_render.enabled` options. Use for hard JS-rendered/proxy/device/locale cases after lighter readers fail. Discover with `tool_search` if not visible. Do not use crawler fetch tools for keyword search. | Level 3 |
 
 </tool_reference>
 
@@ -66,27 +74,46 @@ releases, prices, people, current stats, APIs that evolved).
 When the user asks for specific entities (people, companies, KOLs, prices, news), call `web_search` to get current data. Training data is stale for fast-moving domains.
 
 If `web_search` returns weak, sparse, contradictory, or obviously stale results, use:
-1. `tool_search(query="advanced web search")` to discover `exa_search` / `tavily_search`.
-2. `exa_search` for semantic/source discovery or competitor/research breadth.
-3. `tavily_search` for current-event or research-oriented snippets.
+1. `tool_search(query="advanced web search")` to discover AnySearch MCP vertical tools, `exa_search`, and `tavily_search`.
+2. `anysearch_get_sub_domains` before vertical `anysearch_search` when the question is finance, social media, academic, legal, health, business, security, code, or another domain-specific data request.
+3. `anysearch_batch_search` for hybrid general + vertical coverage when the best domain route is uncertain.
+4. `exa_search` for AI-native source discovery, category-specific retrieval, research papers, company/person pages, financial reports, or deep search types.
+5. `tavily_search` for real-time web retrieval, news/finance/current factual queries, freshness filters, provider answers, or RAG-friendly chunks.
 
-### 2. Fetch-first for known URLs
+### 2. AnySearch MCP vertical workflow
+Use AnySearch MCP vertical tools when the request benefits from domain-specific API-like retrieval rather than broad web ranking. Examples include finance quotes and fundamentals, company data, SEC-style public filings, social media discovery, academic papers, patents, legal/regulatory materials, health/biomedical public sources, security/IP intelligence, code documentation, energy/environment/agriculture/travel/film/gaming data.
+
+Treat AnySearch as two separate surfaces:
+- AnySearch search/discovery surface: `anysearch_get_sub_domains`, `anysearch_search`, and `anysearch_batch_search`. Use these to discover schemas, run keyword or vertical searches, and collect result URLs/snippets.
+- AnySearch read/extract surface: `anysearch_extract`. anysearch_extract is not a keyword-search tool; use it only after you already have a known URL and need full Markdown content.
+
+Flow:
+1. Identify the likely domain or domains, for example finance, social media, academic, legal, health, business, security, IP, or code.
+2. Call `anysearch_get_sub_domains` before vertical `anysearch_search`. Cache the returned domain schema within the session; do not call repeatedly for the same domain unless the previous result is missing.
+3. Choose the best sub-domain from the returned descriptions.
+4. Pass all required sub-domain parameters. If a required parameter has no meaningful value, pass an empty string for that key instead of omitting it.
+5. Use `anysearch_batch_search` when one topic crosses multiple domains or when you are unsure whether general search or vertical search will work better.
+6. Read the selected URL with `web_fetch` by default. Use `anysearch_extract` only when an AnySearch result URL needs full page Markdown and keeping the AnySearch extraction path is useful or `web_fetch` is not enough.
+
+### 3. Fetch-first for known URLs
 If the user already provides a URL:
 1. Try `web_fetch(url="...")` first (lightest).
-2. If returns empty/incomplete or looks JS-blocked → use `tool_search(query="web crawl")` if needed, then escalate to `firecrawl_fetch`.
-3. If still blocked → use `xcrawl_scrape`.
-4. If all three fail → report the specific failure mode (paywall, 403, JS-only SPA, etc.) to the user.
+2. If it returns empty/incomplete content or looks JS-blocked, use `tool_search(query="web crawl")` if needed, then escalate to `firecrawl_fetch`.
+3. Use `firecrawl_fetch` as the default provider-backed scrape path for a known URL: request markdown first, add links/summary/html/screenshot/json only when the task needs those fields.
+4. If Firecrawl is still blocked or misses content, use `xcrawl_scrape` for XCrawl's sync single-page scrape with `output.formats`, `request.only_main_content`, and `js_render.enabled`.
+5. Do not use crawler fetch tools for keyword search. Search first, then fetch or scrape the selected URLs.
+6. If all three fail, report the specific failure mode (paywall, 403, JS-only SPA, auth wall, provider quota, etc.) to the user.
 
-### 3. Cite every claim
+### 4. Cite every claim
 Include the source URL and fetch date when presenting results. Users need to verify.
 
-### 4. Match output size to the ask
+### 5. Match output size to the ask
 For simple "recent news", "related messages", or "what changed" requests, answer inline with concise bullets and source links. Do not create a report file, send an attachment, or call delivery tools unless the user explicitly asks for a report/file, the answer is too long for chat, or a durable artifact is clearly part of the task.
 
-### 5. Admit gaps
+### 6. Admit gaps
 If search returns insufficient data, say so explicitly. Do NOT fill gaps with training-data guesses — that's hallucination, and users will lose trust.
 
-### 6. Respect auth gates
+### 7. Respect auth gates
 If a page requires login/auth, search for public alternatives (press releases, GitHub README, product docs). Only report "requires authentication" as a final answer after trying public sources.
 
 </workflows>
@@ -97,7 +124,7 @@ If a page requires login/auth, search for public alternatives (press releases, G
 
 ### Example A — Current funding lookup
 
-Input: `帮我查一下某家 AI 公司最近一轮融资的规模和领投方`
+Input: `Find the latest funding round size and lead investor for a specific AI company.`
 
 Correct flow:
 ```
@@ -105,15 +132,16 @@ web_search(query="<company name> latest funding round 2026 amount lead investor"
   → returns top 3 results with dates and URLs
 if results are sparse or low quality:
 tool_search(query="advanced web search")
-exa_search(query="<company name> latest funding round 2026 amount lead investor")
+tavily_search(query="<company name> latest funding round 2026 amount lead investor", topic="news", time_range="year")
+exa_search(query="<company name> latest funding round 2026 amount lead investor", category="company")
 web_fetch(url="<most authoritative link, e.g. the company's own announcement>")
   → reads the actual funding announcement
 ```
-Output with citation: `根据该公司 2026-03 官方公告（<URL>），最近一轮融资 $3.5B，由 XXX 领投…`
+Output with citation: `According to the company's March 2026 announcement (<URL>), the latest round was $3.5B and was led by XXX...`
 
 ### Example B — JS-blocked page escalation
 
-Input: `读一下这个 SPA 应用的文档 https://example.com/docs`
+Input: `Read the documentation for this SPA app: https://example.com/docs`
 
 Correct flow:
 ```
@@ -124,15 +152,48 @@ firecrawl_fetch(url="https://example.com/docs")
 ```
 Output: summary based on `firecrawl_fetch` content, citing the URL.
 
-### Example C — Gap honesty
+### Example C — Vertical finance lookup
 
-Input: `查一下 XYZ 公司 2026 年 Q1 的营收`
+Input: `Find recent AAPL quote and fundamentals data.`
+
+Correct flow:
+```
+tool_search(query="AnySearch finance vertical search")
+anysearch_get_sub_domains(domain="finance")
+anysearch_search(
+  query="AAPL",
+  domain="finance",
+  sub_domain="<best finance sub-domain from the directory>",
+  sub_domain_params={"symbol": "AAPL", "cn_code": "", "type": "<required value>"},
+  max_results=5
+)
+```
+Output: concise finance summary with returned source links and retrieval date.
+
+### Example D — Hybrid social media discovery
+
+Input: `Find public reactions to a product launch on X, Reddit, and video platforms.`
+
+Correct flow:
+```
+tool_search(query="AnySearch social media vertical search")
+anysearch_get_sub_domains(domain="social_media")
+anysearch_batch_search(queries=[
+  {"query": "<product> launch public reactions"},
+  {"query": "<product> launch public reactions", "domain": "social_media", "sub_domain": "<selected social media sub-domain>", "sub_domain_params": {}}
+])
+```
+Use AnySearch for public discovery. For account-scoped actions, exact posts, or authenticated exports, use the dedicated authenticated tool after approval.
+
+### Example E — Gap honesty
+
+Input: `Find XYZ Company's Q1 2026 revenue.`
 
 If `web_search` + targeted `web_fetch` on their IR page returns no Q1 2026 figure:
 
-Correct response: `搜到 XYZ 公司官网 IR 页面（<URL>），但 2026 Q1 财报尚未公布（最新仍是 2025 年报）。可以等他们的 Q1 公告，或者看 SEC filings（如果是美股）。要不要我帮你设置个 poll trigger 等 Q1 财报发布？`
+Correct response: `I found XYZ Company's official IR page (<URL>), but Q1 2026 results have not been published yet; the latest available report is still the 2025 annual report. The next path is to monitor the IR page or check SEC filings if the company is US-listed.`
 
-Wrong response: 编一个数字。
+Wrong response: inventing a number.
 
 </examples>
 
@@ -143,9 +204,12 @@ Wrong response: 编一个数字。
 - ❌ **Answer time-sensitive questions from training memory without searching** → training data is stale for news, releases, prices, people. Always search first for anything dated.
 - ❌ **Return search results without citing source URL and date** → user can't verify. Every factual claim backed by search should include the link and retrieval date.
 - ❌ **Stop at `web_fetch` when it returns empty on a JS-heavy page** → escalate to `firecrawl_fetch`, then `xcrawl_scrape`. Don't conclude "page is broken" until all three fail.
-- ❌ **Fabricate data when search returns nothing** → hallucination. Say "搜不到" or "public sources don't cover this yet" and offer alternatives (wait, check SEC filings, ask user for access).
-- ❌ **Claim "cannot access the web"** → you have `web_search`, `web_fetch`, and deferred advanced tools (`exa_search`, `tavily_search`, `firecrawl_fetch`, `xcrawl_scrape`) discoverable through `tool_search`. Use them. There is no "no internet" excuse.
+- ❌ **Fabricate data when search returns nothing** → hallucination. Say "public sources do not cover this yet" and offer alternatives (wait, check SEC filings, ask user for access).
+- ❌ **Claim "cannot access the web"** → you have `web_search`, `web_fetch`, and deferred advanced tools (`anysearch_get_sub_domains`, `anysearch_search`, `anysearch_batch_search`, `anysearch_extract`, `exa_search`, `tavily_search`, `firecrawl_fetch`, `xcrawl_scrape`) discoverable through `tool_search`. Use them. There is no "no internet" excuse.
 - ❌ **Mix tools for the wrong job**: using `xcrawl_scrape` for a simple static page (overkill/slow), or `web_fetch` for a paywalled SPA (won't work). Match tool to page complexity.
+- ❌ **Skip `anysearch_get_sub_domains` before vertical `anysearch_search`** → AnySearch MCP vertical routes have required parameters. Discover the route first.
+- ❌ **Omit required sub-domain parameters** → include every required parameter returned by `anysearch_get_sub_domains`, using an empty string when necessary.
+- ❌ **Use `anysearch_extract` as a search tool** → it is a read/extract tool for known URLs. Search with `anysearch_search`, `anysearch_batch_search`, `exa_search`, `tavily_search`, or `web_search` first.
 
 </anti_patterns>
 
@@ -155,7 +219,9 @@ Wrong response: 编一个数字。
 - Every factual claim from the web is paired with a source URL and fetch date.
 - Simple lookup requests are answered inline; report/file artifacts are reserved for explicit report/file asks, long outputs, or durable deliverables.
 - Any empty/incomplete `web_fetch` result triggers escalation to `firecrawl_fetch` before the page is reported as inaccessible.
-- Weak basic search results trigger `tool_search` discovery of advanced search providers before you conclude no public information exists.
+- Weak basic search results trigger `tool_search` discovery of advanced search providers, including AnySearch MCP vertical tools, before you conclude no public information exists.
+- Vertical searches call `anysearch_get_sub_domains` before `anysearch_search` and pass required sub-domain parameters.
+- AnySearch extraction happens only after a known URL has been selected; `anysearch_extract` is never used for keyword search.
 - When search returns nothing, the response explicitly says so and offers a path forward (different search, waiting, alternative source).
 - No fabricated statistics, names, URLs, or dates.
 </success_criteria>

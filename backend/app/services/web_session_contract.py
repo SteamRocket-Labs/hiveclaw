@@ -45,6 +45,11 @@ async def apply_web_session_contract(
     target = build_web_delivery_target(user, session_id=session_id)
     session.source_channel = "web"
     session.delivery_target_json = target
+    session.session_kind = "human_chat"
+    session.actor_type = "user"
+    session.runtime_source = "web_chat"
+    session.visibility_scope = "direct_user"
+    session.listed_surface = "chat"
 
     desired_conv_id = canonical_web_external_conv_id(user)
     current_conv_id = str(getattr(session, "external_conv_id", "") or "").strip()

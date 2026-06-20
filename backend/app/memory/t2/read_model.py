@@ -14,17 +14,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-_PACKAGE_FILES = ("manifest.json", "summary.md", "labels.md", "review.md")
+_PACKAGE_FILES = ("manifest.json", "summary.md", "labels.md", "synthesis.md", "review.md")
 _ACTIVE_PACKAGE_STATUSES = {"reviewed", "closed", "absorbed", "t3_absorbed"}
 
 
 @dataclass(frozen=True, slots=True)
 class T2PackageSnapshot:
     rel_path: str
+    package_kind: str
     package_status: str
     source_refs: tuple[str, ...]
     summary_md: str
     labels_md: str
+    synthesis_md: str
     review_md: str
     updated_mtime: float
 
@@ -50,7 +52,10 @@ def load_t2_package_snapshots(
 
     snapshots: list[T2PackageSnapshot] = []
     current_mtimes: dict[str, float] = {}
-    for manifest_path in sorted(sessions_root.glob("*/segments/*/manifest.json")):
+    manifest_paths = sorted(
+        [*sessions_root.glob("*/segments/*/manifest.json"), *sessions_root.glob("*/episodes/*/manifest.json")]
+    )
+    for manifest_path in manifest_paths:
         package_dir = manifest_path.parent
         rel_path = _relative_package_path(agent_root, package_dir)
         updated_mtime = _package_mtime(package_dir)
@@ -73,16 +78,22 @@ def render_t2_package_snapshots(snapshots: list[T2PackageSnapshot] | tuple[T2Pac
     for snapshot in snapshots:
         lines = [
             f"### {snapshot.rel_path}",
+            f"- package_kind: {snapshot.package_kind}",
             f"- package_status: {snapshot.package_status or 'unknown'}",
         ]
         if snapshot.source_refs:
             lines.append("- source_refs:")
             lines.extend(f"  - {ref}" for ref in snapshot.source_refs[:8])
-        for label, text in (
-            ("summary.md", snapshot.summary_md),
-            ("labels.md", snapshot.labels_md),
-            ("review.md", snapshot.review_md),
-        ):
+        sections = (
+            (("synthesis.md", snapshot.synthesis_md), ("review.md", snapshot.review_md))
+            if snapshot.package_kind == "episode_stitch_package"
+            else (
+                ("summary.md", snapshot.summary_md),
+                ("labels.md", snapshot.labels_md),
+                ("review.md", snapshot.review_md),
+            )
+        )
+        for label, text in sections:
             if text.strip():
                 lines.append(f"#### {label}")
                 lines.append(text.strip()[:2000])
@@ -108,13 +119,21 @@ def _load_snapshot(*, package_dir: Path, agent_root: Path, updated_mtime: float)
     status = str(manifest.get("package_status") or manifest.get("status") or "").strip().lower()
     if status and status not in _ACTIVE_PACKAGE_STATUSES:
         return None
+    package_kind = (
+        "episode_stitch_package"
+        if str(manifest.get("schema_version") or "").strip() == "t2.episode-stitch.manifest.v1"
+        or package_dir.parent.name == "episodes"
+        else "segment_package"
+    )
     source_refs = tuple(str(ref).strip() for ref in (manifest.get("source_refs") or []) if str(ref).strip())
     return T2PackageSnapshot(
         rel_path=_relative_package_path(agent_root, package_dir),
+        package_kind=package_kind,
         package_status=status,
         source_refs=source_refs,
         summary_md=_read_optional(package_dir / "summary.md"),
         labels_md=_read_optional(package_dir / "labels.md"),
+        synthesis_md=_read_optional(package_dir / "synthesis.md"),
         review_md=_read_optional(package_dir / "review.md"),
         updated_mtime=updated_mtime,
     )

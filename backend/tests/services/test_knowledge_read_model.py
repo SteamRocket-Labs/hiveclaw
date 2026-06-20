@@ -82,9 +82,34 @@ def _seed_workspace(tmp_path: Path) -> Path:
     audit_rows = [
         {"at": "2026-06-04T10:00:00+00:00", "stage": "scene_curation", "outcome": "held", "reason": "no LLM"},
         {"at": "2026-06-04T11:00:00+00:00", "stage": "wiki_apply", "outcome": "applied", "reason": "ok"},
+        {
+            "at": "2026-06-04T12:00:00+00:00",
+            "stage": "soul_candidate",
+            "outcome": "held",
+            "reason": "thin evidence",
+            "detail": {
+                "candidate_id": "cand1",
+                "candidate_package_path": "memory/.staging/soul_candidates/cand1",
+                "target_path": "soul.md",
+            },
+        },
     ]
     (mem / "distillation_audit.jsonl").write_text(
         "\n".join(json.dumps(row) for row in audit_rows) + "\n", encoding="utf-8"
+    )
+    soul_candidate = mem / ".staging" / "soul_candidates" / "cand1" / "manifest.json"
+    soul_candidate.parent.mkdir(parents=True)
+    soul_candidate.write_text(
+        json.dumps(
+            {
+                "schema": "soul_candidate_package.v1",
+                "candidate_id": "cand1",
+                "status": "held",
+                "reason": "thin evidence",
+                "target_path": "soul.md",
+            }
+        ),
+        encoding="utf-8",
     )
 
     (mem / "auto_dream_state.json").write_text(
@@ -102,14 +127,6 @@ def _seed_workspace(tmp_path: Path) -> Path:
             }
         ),
         encoding="utf-8",
-    )
-
-    ledger_rows = [
-        {"event": "memory_promotion_candidate", "candidate_id": "cand1", "target_type": "memory:soul"},
-        {"event": "memory_promotion_decision", "candidate_id": "cand1", "decision": "hold", "reason": "thin evidence"},
-    ]
-    (root / "evolution" / "evolution_ledger.jsonl").write_text(
-        "\n".join(json.dumps(row) for row in ledger_rows) + "\n", encoding="utf-8"
     )
 
     (mem / "lifecycle.json").write_text(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from uuid import uuid4
 
 
@@ -131,12 +133,13 @@ def test_save_skill_submits_candidate_package_without_active_skill(tmp_path):
     assert manifest.exists()
 
     content = draft.read_text(encoding="utf-8")
+    manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
     assert 'name: "Deployment Review"' in content
     assert 'description: "Review deployment diffs and verify rollback paths."' in content
-    assert "tools:" in content
-    assert "  - web_search" in content
-    assert "packs:" in content
-    assert "  - web_pack" in content
+    assert "tools:" not in content
+    assert "packs:" not in content
+    assert manifest_data["declared_tools"] == ["web_search", "web_fetch"]
+    assert manifest_data["declared_packs"] == ["web_pack"]
     assert "not_found" in _load_skill(workspace, "deployment review")
     review_log = (workspace / "evolution" / "skill_review.md").read_text(encoding="utf-8")
     assert "Deployment Review" in review_log

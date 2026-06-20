@@ -144,28 +144,14 @@ def test_parse_heartbeat_outcome_accepts_curated_alias():
     assert score == 7
 
 
-def test_update_evolution_files_counts_curated_as_useful_lane(monkeypatch, tmp_path):
-    from app.services import heartbeat
+def test_heartbeat_service_does_not_expose_legacy_evolution_writeback() -> None:
+    from pathlib import Path
 
-    agent_id = uuid4()
-    workspace = tmp_path / str(agent_id)
-    (workspace / "evolution").mkdir(parents=True)
-    monkeypatch.setattr(heartbeat, "_get_canonical_workspace", lambda _agent_id: workspace)
+    source = Path("app/services/heartbeat.py").read_text(encoding="utf-8")
 
-    heartbeat._update_evolution_files(
-        agent_id,
-        "curated",
-        7,
-        "Curated three learnings into memory candidates.",
-        source="heartbeat",
-    )
-
-    scorecard = (workspace / "evolution" / "scorecard.md").read_text(encoding="utf-8")
-    lineage = (workspace / "evolution" / "lineage.md").read_text(encoding="utf-8")
-
-    assert "- total_heartbeats: 1" in scorecard
-    assert "- useful_heartbeats: 1" in scorecard
-    assert "- Outcome: curated, score=7" in lineage
+    assert "_update_evolution_files" not in source
+    assert "_auto_seed_evolution" not in source
+    assert "_validate_bootstrap_completion" not in source
 
 
 def test_heartbeat_memory_lifecycle_maintenance_uses_agent_data_dir(monkeypatch, tmp_path):
@@ -190,8 +176,8 @@ def test_compose_heartbeat_instruction_adds_strategy_boundary() -> None:
     text = _compose_heartbeat_instruction("Base heartbeat")
 
     assert "Base heartbeat" in text
-    assert "evolution/lineage.md is an audit and candidate ledger" in text
-    assert "not the semantic memory body" in text
+    assert "Do not write durable semantic learning into legacy evolution scorecards" in text
+    assert "inactive Skill Candidate Package" in text
 
 
 def test_compact_heartbeat_runtime_messages_full_fidelity_under_budget() -> None:
@@ -419,7 +405,7 @@ async def test_build_evolution_context_cold_start_bootstrap():
     assert "Bootstrap Mode" in result
     assert "Read soul.md" in result
     assert "Write to evolution/" not in result
-    assert "runtime records the heartbeat outcome into evolution/" in result
+    assert "runtime records evidence into governed memory/session paths" in result
 
 
 @pytest.mark.asyncio
@@ -493,12 +479,37 @@ async def test_build_evolution_context_stages_pending_t3_consolidation_job(tmp_p
     agent_id = uuid4()
     package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / "s1" / "segments" / "seg-1"
     package_dir.mkdir(parents=True)
-    (package_dir / "summary.md").write_text('<t2_summary id="sum-1" status="closed"/>', encoding="utf-8")
+    source_ref = "t0://session/s1/segment/seg-1#seq=1..2"
+    (package_dir / "summary.md").write_text(
+        f"""<t2_summary id="sum-1" status="closed">
+  <segment_state value="complete">complete</segment_state>
+  <continuity><state>standalone</state><reason>完整片段。</reason></continuity>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+</t2_summary>""",
+        encoding="utf-8",
+    )
     (package_dir / "labels.md").write_text(
-        '<t2_labels id="lbl-1"><package_status>closed</package_status></t2_labels>', encoding="utf-8"
+        f"""<t2_labels id="lbl-1">
+  <package_status>closed</package_status>
+  <continuity_state>standalone</continuity_state>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+</t2_labels>""",
+        encoding="utf-8",
     )
     (package_dir / "review.md").write_text(
-        '<t2_review id="rev-1"><decision>approved</decision><allowed_next>t3_intake</allowed_next></t2_review>',
+        f"""<t2_review id="rev-1">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <review_rubric schema_version="t2.review_rubric.v1">
+    <score name="summary_fidelity" value="0.95"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="label_alignment" value="0.90"/>
+    <score name="safety_scope" value="0.95"/>
+    <score name="package_closure" value="0.90"/>
+    <review_score>0.95</review_score>
+  </review_rubric>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+</t2_review>""",
         encoding="utf-8",
     )
     (package_dir / "manifest.json").write_text(
@@ -787,7 +798,6 @@ async def test_execute_heartbeat_does_not_resurrect_session_state_after_reset(mo
     monkeypatch.setattr("app.database.async_session", lambda: fake_session)
     monkeypatch.setattr(heartbeat, "invoke_agent", fake_invoke_agent)
     monkeypatch.setattr(heartbeat, "_load_heartbeat_instruction", lambda _id: "HB")
-    monkeypatch.setattr(heartbeat, "_update_evolution_files", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
     monkeypatch.setattr("app.services.activity_logger.log_activity", _noop)
 
@@ -843,7 +853,6 @@ async def test_execute_heartbeat_recovers_from_incomplete_persistent_session(mon
     monkeypatch.setattr("app.database.async_session", lambda: fake_session)
     monkeypatch.setattr(heartbeat, "invoke_agent", fake_invoke_agent)
     monkeypatch.setattr(heartbeat, "_load_heartbeat_instruction", lambda _id: "HB")
-    monkeypatch.setattr(heartbeat, "_update_evolution_files", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
     monkeypatch.setattr("app.services.activity_logger.log_activity", _noop)
 

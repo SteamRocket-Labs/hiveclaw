@@ -30,10 +30,22 @@ class _ListResult:
 
 
 class _QueryAwareDB:
-    def __init__(self, *, agent=None, sessions=None, messages=None, counts=None, users=None):
+    def __init__(
+        self,
+        *,
+        agent=None,
+        sessions=None,
+        messages=None,
+        artifacts=None,
+        transcript_events=None,
+        counts=None,
+        users=None,
+    ):
         self.agent = agent
         self.sessions = sessions or []
         self.messages = messages or []
+        self.artifacts = artifacts or []
+        self.transcript_events = transcript_events or []
         self.counts = list(counts or [])
         self.users = users or {}
         self.statements = []
@@ -48,12 +60,18 @@ class _QueryAwareDB:
             if not self.counts:
                 raise AssertionError("No count prepared")
             return _ScalarResult(self.counts.pop(0))
+        if sql.startswith("DELETE FROM "):
+            return _ScalarResult(None)
         if "FROM chat_sessions" in sql:
             if "WHERE chat_sessions.id =" in sql:
                 return _ScalarResult(self.sessions[0] if self.sessions else None)
             return _ListResult(self.sessions)
         if "FROM chat_messages" in sql:
             return _ListResult(self.messages)
+        if "FROM chat_artifacts" in sql:
+            return _ListResult(self.artifacts)
+        if "FROM chat_transcript_events" in sql:
+            return _ListResult(self.transcript_events)
         if "coalesce(users.display_name, users.username)" in sql:
             session = self.sessions[0]
             return _ScalarResult(self.users.get(session.user_id, "Unknown"))
@@ -203,6 +221,7 @@ async def test_list_sessions_mine_scope_uses_canonical_microsoft_teams_channel(m
     channel_values = tuple(session_query_params["source_channel_1"])
     assert "microsoft_teams" in channel_values
     assert "teams" not in channel_values
+    assert session_query_params["listed_surface_1"] == "chat"
     assert len(result) == 1
     assert result[0].source_channel == "microsoft_teams"
 
@@ -249,6 +268,107 @@ async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypat
     assert len(result) == 1
     assert result[0]["role"] == "assistant"
     assert result[0]["content"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_delete_session_removes_transcript_before_messages(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=owner_id)
+    current_user = SimpleNamespace(id=owner_id, role="member")
+    db = _QueryAwareDB(agent=agent, sessions=[session])
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.delete_session(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    delete_sql = [str(stmt) for stmt in db.statements if str(stmt).startswith("DELETE FROM ")]
+    assert "DELETE FROM chat_transcript_events" in delete_sql[1]
+    assert "DELETE FROM chat_messages" in delete_sql[2]
+    assert db.deleted == [session]
+    assert db.commits == 1
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_session_transcript_returns_replayable_events(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    message_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        peer_agent_id=None,
+        user_id=owner_id,
+        source_channel="web",
+    )
+    event = SimpleNamespace(
+        id=uuid4(),
+        sequence=42,
+        session_id=session_id,
+        run_id=run_id,
+        message_id=message_id,
+        actor_type="assistant",
+        event_type="assistant_message",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content="final answer",
+        parts_json=[{"type": "text", "text": "final answer"}],
+        metadata_json={"source": "web", "role": "assistant"},
+        created_at=SimpleNamespace(isoformat=lambda: "2026-06-20T12:00:00+00:00"),
+    )
+    current_user = SimpleNamespace(id=owner_id, role="member")
+    db = _QueryAwareDB(agent=agent, sessions=[session], transcript_events=[event])
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.get_session_transcript(
+        agent_id=agent_id,
+        session_id=session_id,
+        after_sequence=10,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result == [
+        {
+            "id": str(event.id),
+            "sequence": 42,
+            "session_id": str(session_id),
+            "run_id": str(run_id),
+            "message_id": str(message_id),
+            "actor_type": "assistant",
+            "event_type": "assistant_message",
+            "type": "assistant_message",
+            "role": "assistant",
+            "visibility_scope": "direct_user",
+            "listed_surface": "chat",
+            "content": "final answer",
+            "parts": [{"type": "text", "text": "final answer"}],
+            "metadata": {"source": "web", "role": "assistant"},
+            "created_at": "2026-06-20T12:00:00+00:00",
+        }
+    ]
 
 
 @pytest.mark.asyncio

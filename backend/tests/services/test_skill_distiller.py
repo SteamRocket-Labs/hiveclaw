@@ -153,6 +153,40 @@ def test_validate_skill_draft_rejects_unknown_tools_and_sensitive_content(tmp_pa
     assert any("sensitive" in error for error in errors)
 
 
+def test_validate_skill_draft_rejects_noncanonical_skill_frontmatter(tmp_path: Path) -> None:
+    from app.services.skill_distiller import DistilledSkillDraft, validate_distilled_skill
+
+    draft = DistilledSkillDraft(
+        decision="promote",
+        confidence=0.91,
+        name="Research Sprint",
+        description="Collect sources and synthesize findings.",
+        instructions_markdown="Search, fetch, and summarize.",
+        declared_tools=("web_search",),
+        declared_packs=("web_pack",),
+        reason="Repeated successful workflow.",
+    )
+
+    errors = validate_distilled_skill(
+        workspace=tmp_path,
+        draft=draft,
+        rendered_markdown=(
+            "---\n"
+            "name: Research Sprint\n"
+            "description: Collect sources and synthesize findings.\n"
+            "tools:\n"
+            "  - web_search\n"
+            "packs:\n"
+            "  - web_pack\n"
+            "---\n"
+            "# Research Sprint\n\n"
+            "Search, fetch, and summarize.\n"
+        ),
+    )
+
+    assert any("frontmatter may only contain name and description" in error for error in errors)
+
+
 def test_resolve_existing_skill_as_patch_recommendation(tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, resolve_existing_skill_conflict
 
@@ -1019,3 +1053,14 @@ class TestSkillDistillerOutputContract:
         prompt = _extract_system_prompt_literal()
         assert "All keys must be present" in prompt
         assert "empty strings" in prompt or "empty arrays" in prompt
+
+    def test_skill_markdown_uses_skill_creator_frontmatter_contract(self) -> None:
+        from app.services import skill_distiller
+
+        source = inspect.getsource(skill_distiller._draft_skill_with_llm)
+        assert "frontmatter must contain only `name` and `description`" in source
+        assert "skill_markdown" in source
+        assert "name: ..." in source
+        assert "description: ..." in source
+        assert "\\ntools: [...]" not in source
+        assert "\\npacks: [...]" not in source

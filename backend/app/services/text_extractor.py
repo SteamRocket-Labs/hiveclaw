@@ -68,7 +68,26 @@ def save_extracted_text(save_path: Path, file_bytes: bytes, filename: str) -> Pa
     For example: report.pdf → report.txt
     Returns the path to the text file, or None if extraction failed.
     """
-    text = extract_text(file_bytes, filename)
+    text = None
+    try:
+        from app.services.document_conversion import DocumentConversionRequest, DocumentConversionService
+
+        workspace_root = _infer_conversion_workspace_root(save_path)
+        result = DocumentConversionService().convert(
+            DocumentConversionRequest(
+                source_path=save_path,
+                workspace_root=workspace_root,
+                source_uri=None,
+                tenant_id=None,
+                agent_id=None,
+                user_id=None,
+                mode="auto",
+            )
+        )
+        text = result.plain_text or result.markdown
+    except Exception as e:
+        logger.warning(f"[TextExtractor] DocumentConversionService fallback for {filename}: {e}")
+        text = extract_text(file_bytes, filename)
     if not text or not text.strip():
         return None
 
@@ -76,6 +95,16 @@ def save_extracted_text(save_path: Path, file_bytes: bytes, filename: str) -> Pa
     txt_path.write_text(text, encoding="utf-8")
     logger.info(f"[TextExtractor] Extracted {len(text)} chars from {filename} → {txt_path.name}")
     return txt_path
+
+
+def _infer_conversion_workspace_root(save_path: Path) -> Path:
+    resolved = save_path.resolve()
+    for parent in resolved.parents:
+        if parent.name == "workspace":
+            return parent.parent
+        if parent.name == "enterprise_info" or parent.name.startswith("enterprise_info_"):
+            return parent
+    return save_path.parent.resolve()
 
 
 def _extract_pdf(data: bytes) -> str:

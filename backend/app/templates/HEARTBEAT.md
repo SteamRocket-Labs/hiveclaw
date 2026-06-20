@@ -30,9 +30,11 @@ Downstream:
 Core law:
 LLM负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。
 
-The runtime records the heartbeat outcome into `evolution/`; do not write
-`evolution/` yourself. `t0_backfill` is a human bucket provenance note: treat it
-as imported raw evidence that must be checked through T2 refs before promotion.
+The runtime records heartbeat evidence into T0/session audit paths and governed
+memory/staging lanes; do not write legacy `evolution/scorecard.md`,
+`evolution/blocklist.md`, or `evolution/lineage.md`. Treat `t0_backfill` as a
+human bucket provenance note: imported raw evidence that must be checked through
+T2 refs before promotion.
 After eligible T2 inputs are consumed, Platform Gate marks source packages or
 explicit overlay entries `absorbed` / `reinforced`; heartbeat itself must not
 edit T2 files directly.

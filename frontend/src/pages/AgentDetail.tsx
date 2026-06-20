@@ -21,18 +21,26 @@ import AgentStatusSection from './agent-detail/AgentStatusSection';
 import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
 import {
     CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
+    applySessionActiveRunObservedState,
     applySessionActiveRunState,
+    applyTranscriptEvent,
+    appendToolCallMessage,
+    applyRuntimeDoneEvent,
     applyStreamingChunkEvent,
     buildChatSocketKeepaliveMessage,
     buildRuntimeSummary,
+    createEmptyTranscriptReplayState,
     getRuntimeEventMessage,
     getTransportNotice,
     normalizeRuntimeEventMessage,
     normalizeStoredChatMessage,
+    replayTranscriptEvents,
     type AgentChatMessage,
+    type ChatTranscriptEventPayload,
     type ChatRuntimeSummary,
     type SessionRunState,
     type SessionUiState,
+    type TranscriptReplayState,
 } from './agent-detail/chatRuntime';
 import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-detail/planModeComposer';
 import RelationshipEditor from './agent-detail/RelationshipEditor';
@@ -178,11 +186,13 @@ function AgentDetailInner() {
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
     const reconnectAttemptsRef = useRef<Record<SessionRuntimeKey, number>>({});
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
+    const transcriptReplayStateRef = useRef<Record<SessionRuntimeKey, TranscriptReplayState>>({});
     const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
     const sessionLoadSeqRef = useRef(0);
+    const locallyTerminalRunIdsRef = useRef<Set<string>>(new Set());
     const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, SessionRunState>>({});
 
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
@@ -199,6 +209,20 @@ function AgentDetailInner() {
         activeRunStateRef.current = next.activeRuns;
         sessionUiStateRef.current = next.uiStates;
         setActiveRunStateBySession(next.activeRuns);
+    };
+
+    const observeActiveRunState = (key: SessionRuntimeKey, run: SessionRunState) => {
+        const next = applySessionActiveRunObservedState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
+        activeRunStateRef.current = next.activeRuns;
+        sessionUiStateRef.current = next.uiStates;
+        setActiveRunStateBySession(next.activeRuns);
+        return next.uiStates[key];
+    };
+
+    const markActiveRunTerminal = (key: SessionRuntimeKey) => {
+        const runId = activeRunStateRef.current[key]?.runId;
+        if (runId) locallyTerminalRunIdsRef.current.add(String(runId));
+        setActiveRunState(key, null);
     };
 
     const clearReconnectTimer = (key: SessionRuntimeKey) => {
@@ -245,6 +269,53 @@ function AgentDetailInner() {
     const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
         const prev = sessionUiStateRef.current[key] || { isWaiting: false, isStreaming: false };
         sessionUiStateRef.current[key] = { ...prev, ...next };
+    };
+
+    const isTerminalTranscriptToolMessage = (message: AgentChatMessage | undefined) => {
+        if (!message || message.role !== 'tool_call') return false;
+        const kind = message.toolMeta?.kind;
+        const toolMeta = message.toolMeta as (typeof message.toolMeta & { blocking?: boolean }) | null | undefined;
+        return Boolean(
+            toolMeta?.blocking
+            || kind === 'user_clarification'
+            || kind === 'plan_needs_confirmation'
+            || kind === 'plan_mode_request'
+            || kind === 'create_employee_success'
+            || kind === 'hr_preview',
+        );
+    };
+
+    const applyTranscriptToSession = (
+        agentId: string,
+        sessionId: string,
+        event: ChatTranscriptEventPayload,
+        isActiveRuntime: boolean,
+    ) => {
+        const key = buildSessionRuntimeKey(agentId, sessionId);
+        const previous = transcriptReplayStateRef.current[key] || createEmptyTranscriptReplayState();
+        const next = applyTranscriptEvent(previous, event);
+        transcriptReplayStateRef.current[key] = next;
+        sessionUiStateRef.current[key] = next.ui;
+
+        const eventType = event.event_type || event.type;
+        const lastMessage = next.messages[next.messages.length - 1];
+        const terminal =
+            eventType === 'assistant_message'
+            || eventType === 'run_completed'
+            || eventType === 'done'
+            || eventType === 'error'
+            || eventType === 'quota_exceeded'
+            || isTerminalTranscriptToolMessage(lastMessage);
+        if (terminal) {
+            markActiveRunTerminal(key);
+        }
+
+        if (isActiveRuntime) {
+            setChatMessagesSessionId(sessionId);
+            setChatMessages(next.messages.map(parseChatMsg));
+            setIsWaiting(next.ui.isWaiting);
+            setIsStreaming(next.ui.isStreaming);
+        }
     };
 
     const isWritableSession = (sess: any) => {
@@ -322,12 +393,26 @@ function AgentDetailInner() {
         sessionMsgAbortRef.current = controller;
         const loadSeq = ++sessionLoadSeqRef.current;
         try {
-            const msgs = await chatApi.getSessionMessages(targetAgentId, sessionId, { signal: controller.signal });
+            const transcriptEvents = await chatApi.getSessionTranscript(targetAgentId, sessionId, { signal: controller.signal });
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
             const isAgentSession = sess.source_channel === 'agent' || sess.participant_type === 'agent';
-            const preParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
+            let preParsed: AgentChatMessage[];
+            if (transcriptEvents.length > 0) {
+                const replay = replayTranscriptEvents(transcriptEvents as ChatTranscriptEventPayload[]);
+                transcriptReplayStateRef.current[runtimeKey] = replay;
+                sessionUiStateRef.current[runtimeKey] = replay.ui;
+                preParsed = replay.messages.map(parseChatMsg);
+            } else {
+                const msgs = await chatApi.getSessionMessages(targetAgentId, sessionId, { signal: controller.signal });
+                if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
+                preParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
+                transcriptReplayStateRef.current[runtimeKey] = {
+                    ...createEmptyTranscriptReplayState(),
+                    messages: preParsed,
+                };
+            }
             
             if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
                 setChatMessagesSessionId(sessionId);
@@ -434,7 +519,18 @@ function AgentDetailInner() {
 
     const [uploadProgress, setUploadProgress] = useState(-1);
     const uploadAbortRef = useRef<(() => void) | null>(null);
-    const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string }[]>([]);
+    const [attachedFiles, setAttachedFiles] = useState<{
+        name: string;
+        text: string;
+        path?: string;
+        imageUrl?: string;
+        conversion?: {
+            status?: string;
+            markdownPath?: string;
+            metadataPath?: string;
+            engine?: string;
+        };
+    }[]>([]);
     const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
@@ -652,6 +748,20 @@ function AgentDetailInner() {
         ws.onmessage = (e) => {
             const d = JSON.parse(e.data);
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+            if (
+                typeof d === 'object'
+                && d
+                && (typeof d.sequence === 'number' || d.transcript_event_id || d.metadata?.transcript_event_id)
+                && (d.event_type || d.type)
+            ) {
+                applyTranscriptToSession(agentId, sessionId, {
+                    ...d,
+                    id: d.id || d.transcript_event_id || d.metadata?.transcript_event_id,
+                    event_type: d.event_type || d.type,
+                    metadata: d.metadata || d.metadata_json || {},
+                }, isActiveRuntime);
+                return;
+            }
             if (d.type === 'run_started' && d.run_id) {
                 setActiveRunState(key, { runId: String(d.run_id), status: d.status || 'running' });
                 invalidateSessionRuntimeQueries(agentId, sessionId);
@@ -662,7 +772,7 @@ function AgentDetailInner() {
                 return;
             }
             if (d.type === 'run_cancelled') {
-                setActiveRunState(key, null);
+                markActiveRunTerminal(key);
                 invalidateSessionRuntimeQueries(agentId, sessionId);
                 if (isActiveRuntime) {
                     setIsWaiting(false);
@@ -680,7 +790,7 @@ function AgentDetailInner() {
                 });
                 if (d.type === 'tool_call') invalidateSessionRuntimeQueries(agentId, sessionId, false);
                 if (endStreaming) {
-                    setActiveRunState(key, null);
+                    markActiveRunTerminal(key);
                     invalidateSessionRuntimeQueries(agentId, sessionId);
                 }
             }
@@ -728,36 +838,30 @@ function AgentDetailInner() {
                 });
             } else if (d.type === 'tool_call') {
                 const normalizedResult = normalizeToolCallResult(d.name, d.result);
-                setChatMessages(prev => {
-                    const toolMsg: AgentChatMessage = normalizeToolCallMessage({
-                        role: 'tool_call',
-                        content: '',
-                        toolName: d.name,
-                        toolArgs: d.args,
-                        toolStatus: d.status,
-                        toolResult: normalizedResult.displayResult,
-                        toolRawResult: normalizedResult.raw,
-                        toolMeta: normalizedResult.toolMeta,
-                    });
-                    if (d.status === 'done') {
-                        const lastIdx = prev.length - 1;
-                        const last = prev[lastIdx];
-                        if (last && last.role === 'tool_call' && last.toolName === d.name && last.toolStatus === 'running') return [...prev.slice(0, lastIdx), toolMsg];
-                    }
-                    return [...prev, toolMsg];
+                const toolMsg: AgentChatMessage = normalizeToolCallMessage({
+                    role: 'tool_call',
+                    content: '',
+                    toolName: d.name,
+                    toolArgs: d.args,
+                    toolStatus: d.status,
+                    toolResult: normalizedResult.displayResult,
+                    toolRawResult: normalizedResult.raw,
+                    toolMeta: normalizedResult.toolMeta,
                 });
+                if (isTerminalTranscriptToolMessage(toolMsg)) {
+                    markActiveRunTerminal(key);
+                    setSessionUiState(key, { isWaiting: false, isStreaming: false });
+                    setIsWaiting(false);
+                    setIsStreaming(false);
+                }
+                setChatMessages(prev => appendToolCallMessage(prev, toolMsg));
                 if (normalizedResult.createdAgentId) {
                     setCreatedAgentId(normalizedResult.createdAgentId);
                 }
             } else if (d.type === 'chunk') {
                 setChatMessages(prev => applyStreamingChunkEvent(prev, d));
             } else if (d.type === 'done') {
-                setChatMessages(prev => {
-                    const last = prev[prev.length - 1];
-                    const thinking = (last && last.role === 'assistant' && (last as any)._streaming) ? last.thinking : undefined;
-                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), parseChatMsg({ role: 'assistant', content: d.content, thinking, timestamp: new Date().toISOString() })];
-                    return [...prev, parseChatMsg({ role: d.role, content: d.content, timestamp: new Date().toISOString() })];
-                });
+                setChatMessages(prev => applyRuntimeDoneEvent(prev, d).map(parseChatMsg));
                 fetchMySessions(true, agentId);
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
                 const msg = d.content || d.detail || d.message || 'Request denied';
@@ -898,7 +1002,10 @@ function AgentDetailInner() {
                     const wsPath = file.path || '';
                     const codePath = wsPath.replace(/^workspace\//, '');
                     const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
-                    filesPrompt += `[File: ${file.name}]${fileLoc}\n${file.text}\n\n`;
+                    const conversionLoc = file.conversion?.markdownPath
+                        ? `Markdown artifact (preferred): ${file.conversion.markdownPath}\nConversion metadata: ${file.conversion.metadataPath || ''}\n`
+                        : '';
+                    filesPrompt += `[File: ${file.name}]${fileLoc}${conversionLoc}\n${file.text}\n\n`;
                 }
             });
 
@@ -1008,7 +1115,16 @@ function AgentDetailInner() {
             });
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
-                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
+                name: data.filename,
+                text: data.preview_text || data.extracted_text,
+                path: data.workspace_path,
+                imageUrl: data.image_data_url || undefined,
+                conversion: data.conversion ? {
+                    status: data.conversion.status,
+                    markdownPath: data.conversion.markdown_path,
+                    metadataPath: data.conversion.metadata_path,
+                    engine: data.conversion.engine,
+                } : undefined,
             }));
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
@@ -1057,7 +1173,16 @@ function AgentDetailInner() {
             });
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
-                name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined
+                name: data.filename,
+                text: data.preview_text || data.extracted_text,
+                path: data.workspace_path,
+                imageUrl: data.image_data_url || undefined,
+                conversion: data.conversion ? {
+                    status: data.conversion.status,
+                    markdownPath: data.conversion.markdown_path,
+                    metadataPath: data.conversion.metadata_path,
+                    engine: data.conversion.engine,
+                } : undefined,
             }));
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
@@ -1100,9 +1225,16 @@ function AgentDetailInner() {
         if (!id || !activeSession?.id || !isWritableSession(activeSession)) return;
         const key = buildSessionRuntimeKey(id, String(activeSession.id));
         if (activeSessionRun && isLiveRun(activeSessionRun)) {
-            setActiveRunState(key, { runId: activeSessionRun.run_id, status: activeSessionRun.status });
-            setIsWaiting(true);
-            setIsStreaming(false);
+            if (locallyTerminalRunIdsRef.current.has(String(activeSessionRun.run_id))) {
+                invalidateSessionRuntimeQueries(id, String(activeSession.id), false);
+                return;
+            }
+            const observedUiState = observeActiveRunState(key, {
+                runId: activeSessionRun.run_id,
+                status: activeSessionRun.status,
+            });
+            setIsWaiting(observedUiState.isWaiting);
+            setIsStreaming(observedUiState.isStreaming);
             return;
         }
         const staleRuntimeState = Boolean(
@@ -1570,7 +1702,7 @@ function AgentDetailInner() {
                                     chatApi.cancelSessionRun(id, String(activeSession.id), activeRun.runId).catch((err) => {
                                         console.warn('Failed to cancel chat run:', err);
                                     });
-                                    setActiveRunState(activeRuntimeKey, null);
+                                    markActiveRunTerminal(activeRuntimeKey);
                                     setIsStreaming(false);
                                     setIsWaiting(false);
                                     setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });

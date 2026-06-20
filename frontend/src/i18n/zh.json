@@ -482,12 +482,38 @@
     },
     "evolution": {
       "title": "进化",
-      "description": "这位员工如何随时间成长 — 学会了哪些技能、保持活跃或归档了哪些，以及一路上的里程碑。",
-      "empty": "暂无进化记录。随着这位员工工作、学习技能并不断打磨，历史会显示在这里。",
+      "description": "学习轨迹写入 Memory，Skill 自进化写入候选包和 registry；系统内置 Skill 不参与自进化 patch。",
+      "empty": "暂无进化记录。Memory、Soul 或自进化 Skill 产生候选后会显示在这里。",
       "skillsHeading": "技能",
+      "pathsHeading": "当前写入路径",
+      "memoryJobsHeading": "T3 记忆候选",
+      "soulCandidatesHeading": "Soul 候选",
+      "skillCandidatesHeading": "Skill 微调候选",
+      "legacyHeading": "检测到的旧路径",
       "timelineHeading": "进化时间线",
       "pinned": "已置顶",
       "useCount": "使用 {{count}} 次",
+      "evolvable": "可自进化",
+      "summary": {
+        "active": "活跃",
+        "stale": "冷藏",
+        "archived": "归档",
+        "evolvable": "可自进化"
+      },
+      "path": {
+        "memory": "能力证据",
+        "soul": "身份层",
+        "skillRegistry": "Skill 来源",
+        "skillCandidates": "Skill 候选"
+      },
+      "origin": {
+        "system_builtin": "系统内置",
+        "user_skill_creator": "用户创建",
+        "t3_auto_created": "T3 自动创建",
+        "runtime_evidence": "运行证据",
+        "manual_import": "手动导入",
+        "unknown": "未知来源"
+      },
       "state": {
         "active": "活跃",
         "stale": "闲置",
@@ -580,6 +606,13 @@
       "thinking": "思考中...",
       "continuingRun": "Agent 正在继续执行...",
       "runStartFailed": "启动执行失败",
+      "artifacts": {
+        "open": "打开",
+        "download": "下载",
+        "preview": "预览",
+        "openInNewTab": "新窗口打开",
+        "previewFailed": "预览失败"
+      },
       "toolResults": {
         "blueprintPreviewTitle": "Agent 蓝图预览",
         "createdTitle": "数字员工已创建",
@@ -648,8 +681,6 @@
         "permissions": "权限事件",
         "teamMemory": "团队记忆",
         "retryReason": "重试原因",
-        "showTrace": "显示技术详情",
-        "hideTrace": "隐藏技术详情",
         "eventTitle": "系统事件",
         "compactingTitle": "自动压缩中",
         "compactionCompleteTitle": "自动压缩完成",
@@ -850,6 +881,9 @@
         "configured": "已连接",
         "notConfigured": "未连接",
         "saveChannel": "保存连接",
+        "platform": "平台",
+        "platformFeishuCn": "飞书（中国区）",
+        "platformLarkGlobal": "Lark（海外区）",
         "syncHint": "连接飞书机器人之前，请先在公司设置 → 组织架构中同步组织结构。这样机器人才能识别消息发送者。"
       },
       "danger": {

@@ -236,7 +236,7 @@ async def _get_feishu_probe_credentials(
     db: AsyncSession | None,
     agent_id: uuid.UUID | None,
     tenant_id: uuid.UUID | None,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, dict] | None:
     if db is None:
         return None
 
@@ -253,7 +253,7 @@ async def _get_feishu_probe_credentials(
             result = None
         config = result.scalar_one_or_none() if result else None
         if config and config.app_id and config.app_secret:
-            return config.app_id, config.app_secret
+            return config.app_id, config.app_secret, config.extra_config
 
     if tenant_id is not None:
         try:
@@ -268,7 +268,7 @@ async def _get_feishu_probe_credentials(
             result = None
         config = result.scalar_one_or_none() if result else None
         if config and config.app_id and config.app_secret:
-            return config.app_id, config.app_secret
+            return config.app_id, config.app_secret, config.extra_config
 
         try:
             result = await db.execute(
@@ -282,7 +282,7 @@ async def _get_feishu_probe_credentials(
         setting = result.scalar_one_or_none() if result else None
         value = getattr(setting, "value", {}) or {}
         if value.get("app_id") and value.get("app_secret"):
-            return value["app_id"], value["app_secret"]
+            return value["app_id"], value["app_secret"], value
 
     return None
 
@@ -310,7 +310,7 @@ async def _probe_feishu_cardkit_status(
             "cardkit_probe_supported": True,
         }
 
-    app_id, app_secret = creds
+    app_id, app_secret, extra_config = creds
     probe_card = {
         "config": {"update_multi": True},
         "header": {"title": {"tag": "plain_text", "content": "Hive CardKit Probe"}},
@@ -323,7 +323,7 @@ async def _probe_feishu_cardkit_status(
     }
 
     try:
-        await feishu_service.create_card_entity(app_id, app_secret, probe_card)
+        await feishu_service.create_card_entity(app_id, app_secret, probe_card, extra_config=extra_config)
     except Exception as exc:
         return {
             "cardkit_verified": False,

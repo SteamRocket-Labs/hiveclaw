@@ -19,16 +19,34 @@ class RuntimeToolGroupSpec:
 RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
     RuntimeToolGroupSpec(
         name="web_pack",
-        summary="高级网页搜索与抓取能力，用于在基础 web_search/web_fetch 不足时升级到 provider-backed 检索和页面提取。",
+        summary=(
+            "Advanced web search and read/extract tooling: AnySearch MCP provides vertical search/discovery "
+            "for finance, social media, academic, legal, health, business, security, code, and related data, "
+            "plus known-URL Markdown extraction as a read step; Exa provides AI-native search with search types "
+            "and category verticals; Tavily provides real-time agent/RAG search with topic, freshness, answer, "
+            "and raw-content options; Firecrawl/XCrawl handle page extraction when web_fetch is insufficient."
+        ),
         source="system",
-        activation_mode="通过 tool_search 发现 schema；先用 CORE 的 web_search/web_fetch，结果不足时再升级。",
-        tools=("exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"),
+        activation_mode=(
+            "Discover schemas through tool_search; start with CORE web_search/web_fetch, escalate to provider "
+            "search when results are insufficient, and use extract tools only after selecting a known URL."
+        ),
+        tools=(
+            "anysearch_get_sub_domains",
+            "anysearch_search",
+            "anysearch_batch_search",
+            "anysearch_extract",
+            "exa_search",
+            "tavily_search",
+            "firecrawl_fetch",
+            "xcrawl_scrape",
+        ),
     ),
     RuntimeToolGroupSpec(
         name="feishu_pack",
-        summary="飞书消息、文档、知识库、表格、Base、审批、任务与日历能力。",
+        summary="Feishu messaging, docs, wiki, sheets, Base, approvals, tasks, and calendar tools.",
         source="channel",
-        activation_mode="通过 tool_search 发现 schema；需要渠道方法时另读 feishu skill",
+        activation_mode="Discover schemas through tool_search; load the Feishu skill only when method guidance is needed.",
         tools=(
             "send_feishu_message",
             "feishu_user_search",
@@ -67,9 +85,9 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
     ),
     RuntimeToolGroupSpec(
         name="plaza_pack",
-        summary="共享广场动态浏览、发帖与评论能力，用于人和 agent 的公共协作 feed。",
+        summary="Shared plaza feed tools for reading posts, publishing posts, and comments in the public collaboration feed.",
         source="system",
-        activation_mode="作为共享协作广场能力按需激活",
+        activation_mode="Activate on demand for shared public collaboration feed workflows.",
         tools=(
             "plaza_get_new_posts",
             "plaza_create_post",
@@ -78,16 +96,16 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
     ),
     RuntimeToolGroupSpec(
         name="email_pack",
-        summary="邮件发送、阅读与回复能力，通过 SMTP/IMAP 连接。",
+        summary="Email sending, reading, and replying through SMTP/IMAP connections.",
         source="system",
-        activation_mode="通过 tool_search 发现 schema；需要方法时另读 email-guide skill",
+        activation_mode="Discover schemas through tool_search; load the email guide skill only when method guidance is needed.",
         tools=("send_email", "read_emails", "reply_email"),
     ),
     RuntimeToolGroupSpec(
         name="mcp_admin_pack",
-        summary="MCP 资源发现、导入与资源读取能力。",
+        summary="MCP resource discovery, server import, tool inspection, tool calls, and resource reading.",
         source="mcp",
-        activation_mode="仅在明确进行平台扩展或外部能力安装时显式启用",
+        activation_mode="Enable explicitly only for platform extension or external capability installation workflows.",
         tools=(
             "discover_resources",
             "import_mcp_server",
@@ -100,9 +118,11 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
     ),
     RuntimeToolGroupSpec(
         name="office_pack",
-        summary="办公生产力能力：通过 OfficeCLI 工具链路由 DOCX、XLSX、PPTX、PDF、会议纪要、周报和 Pitch Deck。",
+        summary="Office productivity tools for DOCX, XLSX, PPTX, PDF, meeting notes, weekly reports, and pitch decks.",
         source="system",
-        activation_mode="通过 tool_search 发现 schema；需要方法时另读 Office Productivity skill",
+        activation_mode=(
+            "Discover schemas through tool_search; load the Office Productivity skill only when method guidance is needed."
+        ),
         tools=(
             "read_document",
             "office_document_create",
@@ -116,9 +136,12 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
     ),
     RuntimeToolGroupSpec(
         name="deep_research_pack",
-        summary="专属深度研究能力：通过 Deep Research 工具链执行规划、检索、抓取、证据台账、评估和报告生成。",
+        summary="Dedicated Deep Research tools for planning, retrieval, extraction, evidence ledgers, evaluation, and report generation.",
         source="system",
-        activation_mode="通过 tool_search 发现专属 deep_research_* schema；需要方法时另读 Deep Research skill",
+        activation_mode=(
+            "Discover dedicated deep_research_* schemas through tool_search; load the Deep Research skill only when "
+            "method guidance is needed."
+        ),
         tools=(
             "deep_research_run",
             "deep_research_start",

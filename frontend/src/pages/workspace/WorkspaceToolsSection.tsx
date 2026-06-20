@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { useTranslation } from 'react-i18next';
 
+import { customApiConnectorsApi, type CustomApiConnector } from '../../api/domains/customApiConnectors';
 import { extensionsApi, type InstalledPlugin, type McpServerRecord } from '../../api/domains/extensions';
 import { toolsApi } from '../../api/domains/tools';
 import ToolIcon from '../../components/ToolIcon';
@@ -67,7 +68,7 @@ export default function WorkspaceToolsSection({
   const [editingToolId, setEditingToolId] = useState<string | null>(null);
   const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
   const [configCategory, setConfigCategory] = useState<string | null>(null);
-  const [toolsView, setToolsView] = useState<'global' | 'mcp-servers' | 'plugins' | 'agent-installed'>('global');
+  const [toolsView, setToolsView] = useState<'global' | 'mcp-servers' | 'custom-api' | 'plugins' | 'agent-installed'>('global');
   const [agentInstalledTools, setAgentInstalledTools] = useState<any[]>([]);
   const [collapsedServers, setCollapsedServers] = useState<Set<string>>(new Set());
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
@@ -76,6 +77,28 @@ export default function WorkspaceToolsSection({
   const [pluginsLoaded, setPluginsLoaded] = useState(false);
   const [pluginKeyInput, setPluginKeyInput] = useState('');
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
+  const [customApis, setCustomApis] = useState<CustomApiConnector[]>([]);
+  const [customApisLoaded, setCustomApisLoaded] = useState(false);
+  const [customApiBusy, setCustomApiBusy] = useState<string | null>(null);
+  const [customApiTestResult, setCustomApiTestResult] = useState<Record<string, string>>({});
+  const [customApiForm, setCustomApiForm] = useState({
+    connector_name: '',
+    action_name: '',
+    description: '',
+    base_url: '',
+    method: 'GET',
+    path: '/',
+    auth_scheme: 'api_key',
+    auth_location: 'header',
+    auth_name: 'X-API-Key',
+    secret_value: '',
+    parameters_schema: '{\n  "type": "object",\n  "properties": {}\n}',
+    headers: '{}',
+    query: '{}',
+    body_template: '',
+    test_arguments: '{}',
+    is_default: false,
+  });
 
   const loadMcpServers = async () => {
     try {
@@ -95,6 +118,22 @@ export default function WorkspaceToolsSection({
       setPlugins([]);
     }
     setPluginsLoaded(true);
+  };
+
+  const loadCustomApis = async () => {
+    try {
+      const data = await customApiConnectorsApi.list();
+      setCustomApis(data);
+    } catch {
+      setCustomApis([]);
+    }
+    setCustomApisLoaded(true);
+  };
+
+  const parseJsonField = (value: string, fallback: unknown) => {
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    return JSON.parse(trimmed);
   };
 
   const loadAllTools = async () => {
@@ -122,6 +161,7 @@ export default function WorkspaceToolsSection({
         {([
           ['global', t('enterprise.tools.globalTools', 'Global Tools')],
           ['mcp-servers', t('agent.extensions.mcpServers', 'MCP Servers')],
+          ['custom-api', t('enterprise.tools.customApis', 'Custom APIs')],
           ['plugins', t('agent.extensions.plugins', 'Plugins')],
           ['agent-installed', t('enterprise.tools.agentInstalled', 'Agent Installed')],
         ] as const).map(([key, label]) => (
@@ -135,6 +175,8 @@ export default function WorkspaceToolsSection({
                 loadMcpServers();
               } else if (key === 'plugins') {
                 loadPlugins();
+              } else if (key === 'custom-api') {
+                loadCustomApis();
               }
             }}
             style={{
@@ -352,6 +394,149 @@ export default function WorkspaceToolsSection({
                   >
                     {t('enterprise.tools.uninstallPlugin', 'Uninstall')}
                   </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {toolsView === 'custom-api' ? (
+        <div>
+          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+            {t('enterprise.tools.customApiHint', 'Tenant-governed HTTP API actions. Credentials are stored server-side and are never exposed to agents.')}
+          </p>
+          <div className="card" style={{ padding: '14px 16px', marginBottom: '12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' }}>
+              <input className="form-input" value={customApiForm.connector_name} onChange={(event) => setCustomApiForm({ ...customApiForm, connector_name: event.target.value })} placeholder={t('enterprise.tools.connectorName', 'Connector name')} />
+              <input className="form-input" value={customApiForm.action_name} onChange={(event) => setCustomApiForm({ ...customApiForm, action_name: event.target.value })} placeholder={t('enterprise.tools.actionName', 'Action name')} />
+              <input className="form-input" value={customApiForm.base_url} onChange={(event) => setCustomApiForm({ ...customApiForm, base_url: event.target.value })} placeholder="https://api.example.com" />
+              <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px' }}>
+                <select className="form-input" value={customApiForm.method} onChange={(event) => setCustomApiForm({ ...customApiForm, method: event.target.value })}>
+                  {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((method) => <option key={method} value={method}>{method}</option>)}
+                </select>
+                <input className="form-input" value={customApiForm.path} onChange={(event) => setCustomApiForm({ ...customApiForm, path: event.target.value })} placeholder="/v1/action/{id}" />
+              </div>
+              <select className="form-input" value={customApiForm.auth_scheme} onChange={(event) => setCustomApiForm({ ...customApiForm, auth_scheme: event.target.value })}>
+                <option value="none">{t('enterprise.tools.authNone', 'No auth')}</option>
+                <option value="api_key">{t('enterprise.tools.authApiKey', 'API key')}</option>
+                <option value="bearer">{t('enterprise.tools.authBearer', 'Bearer token')}</option>
+                <option value="basic">{t('enterprise.tools.authBasic', 'Basic auth')}</option>
+              </select>
+              <div style={{ display: 'grid', gridTemplateColumns: '100px 1fr', gap: '8px' }}>
+                <select className="form-input" value={customApiForm.auth_location} onChange={(event) => setCustomApiForm({ ...customApiForm, auth_location: event.target.value })}>
+                  <option value="header">{t('enterprise.tools.header', 'Header')}</option>
+                  <option value="query">{t('enterprise.tools.query', 'Query')}</option>
+                </select>
+                <input className="form-input" value={customApiForm.auth_name} onChange={(event) => setCustomApiForm({ ...customApiForm, auth_name: event.target.value })} placeholder="X-API-Key" />
+              </div>
+              <input className="form-input" type="password" value={customApiForm.secret_value} onChange={(event) => setCustomApiForm({ ...customApiForm, secret_value: event.target.value })} placeholder={t('enterprise.tools.secretValue', 'Credential value')} />
+              <input className="form-input" value={customApiForm.description} onChange={(event) => setCustomApiForm({ ...customApiForm, description: event.target.value })} placeholder={t('enterprise.tools.description', 'Description')} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px', marginTop: '10px' }}>
+              <textarea className="form-input" value={customApiForm.parameters_schema} onChange={(event) => setCustomApiForm({ ...customApiForm, parameters_schema: event.target.value })} rows={5} placeholder="parameters_schema JSON" />
+              <textarea className="form-input" value={customApiForm.body_template} onChange={(event) => setCustomApiForm({ ...customApiForm, body_template: event.target.value })} rows={5} placeholder={t('enterprise.tools.bodyTemplateJson', 'Body template JSON, optional')} />
+              <textarea className="form-input" value={customApiForm.headers} onChange={(event) => setCustomApiForm({ ...customApiForm, headers: event.target.value })} rows={3} placeholder={t('enterprise.tools.headersJson', 'Headers JSON')} />
+              <textarea className="form-input" value={customApiForm.query} onChange={(event) => setCustomApiForm({ ...customApiForm, query: event.target.value })} rows={3} placeholder={t('enterprise.tools.queryJson', 'Query JSON')} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px' }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                <input type="checkbox" checked={customApiForm.is_default} onChange={(event) => setCustomApiForm({ ...customApiForm, is_default: event.target.checked })} />
+                {t('enterprise.tools.enableForAllAgents', 'Enable for all agents')}
+              </label>
+              <button
+                className="btn btn-primary"
+                disabled={!customApiForm.connector_name.trim() || !customApiForm.action_name.trim() || !customApiForm.base_url.trim() || customApiBusy === 'create'}
+                onClick={async () => {
+                  setCustomApiBusy('create');
+                  try {
+                    await customApiConnectorsApi.create({
+                      connector_name: customApiForm.connector_name,
+                      action_name: customApiForm.action_name,
+                      description: customApiForm.description,
+                      base_url: customApiForm.base_url,
+                      method: customApiForm.method,
+                      path: customApiForm.path,
+                      auth_scheme: customApiForm.auth_scheme,
+                      auth_location: customApiForm.auth_location,
+                      auth_name: customApiForm.auth_name || null,
+                      secret_value: customApiForm.secret_value || null,
+                      parameters_schema: parseJsonField(customApiForm.parameters_schema, { type: 'object', properties: {} }) as Record<string, unknown>,
+                      headers: parseJsonField(customApiForm.headers, {}) as Record<string, unknown>,
+                      query: parseJsonField(customApiForm.query, {}) as Record<string, unknown>,
+                      body_template: parseJsonField(customApiForm.body_template, null),
+                      is_default: customApiForm.is_default,
+                      enabled: true,
+                    });
+                    setCustomApiForm({ ...customApiForm, action_name: '', description: '', path: '/', secret_value: '', body_template: '', test_arguments: '{}' });
+                    await loadCustomApis();
+                    await loadAllTools();
+                  } finally {
+                    setCustomApiBusy(null);
+                  }
+                }}
+              >
+                {t('enterprise.tools.createConnector', 'Create Connector')}
+              </button>
+            </div>
+          </div>
+          {!customApisLoaded ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
+          ) : customApis.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('enterprise.tools.noCustomApis', 'No custom API connectors')}</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {customApis.map((connector) => (
+                <div key={connector.id} className="card" style={{ padding: '12px 16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: '13px' }}>{connector.display_name}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{connector.name}</div>
+                      {connector.description ? <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '6px' }}>{connector.description}</div> : null}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                      <span style={{ fontSize: '11px', color: connector.enabled ? 'var(--success)' : 'var(--text-tertiary)' }}>{connector.enabled ? t('enterprise.tools.enabled', 'Enabled') : t('enterprise.tools.disabled', 'Disabled')}</span>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ color: 'var(--error)', fontSize: '12px' }}
+                        disabled={customApiBusy === connector.id}
+                        onClick={async () => {
+                          if (!confirm(t('enterprise.tools.deleteConnectorConfirm', { name: connector.display_name, defaultValue: `Delete ${connector.display_name}?` }))) return;
+                          setCustomApiBusy(connector.id);
+                          try {
+                            await customApiConnectorsApi.delete(connector.id);
+                            await loadCustomApis();
+                            await loadAllTools();
+                          } finally {
+                            setCustomApiBusy(null);
+                          }
+                        }}
+                      >
+                        {t('enterprise.tools.delete', 'Delete')}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <input className="form-input" value={customApiForm.test_arguments} onChange={(event) => setCustomApiForm({ ...customApiForm, test_arguments: event.target.value })} placeholder={t('enterprise.tools.testArgumentsJson', 'Test arguments JSON')} />
+                    <button
+                      className="btn btn-ghost"
+                      disabled={customApiBusy === `test:${connector.id}`}
+                      onClick={async () => {
+                        setCustomApiBusy(`test:${connector.id}`);
+                        try {
+                          const result = await customApiConnectorsApi.test(connector.id, parseJsonField(customApiForm.test_arguments, {}) as Record<string, unknown>);
+                          setCustomApiTestResult({ ...customApiTestResult, [connector.id]: result.result });
+                        } finally {
+                          setCustomApiBusy(null);
+                        }
+                      }}
+                    >
+                      {t('enterprise.tools.testConnector', 'Test')}
+                    </button>
+                  </div>
+                  {customApiTestResult[connector.id] ? (
+                    <pre style={{ marginTop: '8px', padding: '10px', maxHeight: '220px', overflow: 'auto', fontSize: '11px', background: 'var(--bg-tertiary)', borderRadius: '6px' }}>{customApiTestResult[connector.id]}</pre>
+                  ) : null}
                 </div>
               ))}
             </div>

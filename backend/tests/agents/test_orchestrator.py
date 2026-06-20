@@ -95,18 +95,18 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
         "cancel_trigger",
         "send_channel_file",
         "check_async_task",
-            "cancel_async_task",
-            "list_async_tasks",
-            "save_skill",
-            "search_memory",
-            "load_memory",
-            "save_memory",
-            "update_memory",
-            "retire_memory",
-            "submit_t3_consolidation_pitch",
-            "submit_t3_memory_gate_review",
-            "submit_t3_revised_patch",
-        )
+        "cancel_async_task",
+        "list_async_tasks",
+        "save_skill",
+        "search_memory",
+        "load_memory",
+        "save_memory",
+        "update_memory",
+        "retire_memory",
+        "submit_t3_consolidation_pitch",
+        "submit_t3_memory_gate_review",
+        "submit_t3_revised_patch",
+    )
     assert request.max_tool_rounds == 7
     assert "A2A_SUFFIX" in request.system_prompt_suffix
     # F-1: slim worker prompt — isolation_contract + tool_policy remain; forced
@@ -491,6 +491,48 @@ async def test_delegate_to_agent_supports_research_readonly_profile(monkeypatch)
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_research_readonly"
     assert request.session_context.metadata["delegation_memory_policy"] == "read_only_long_term_memory"
     assert "You MAY browse and retrieve external sources" in request.system_prompt_suffix
+
+
+@pytest.mark.asyncio
+async def test_agent_message_profile_uses_target_agent_tool_surface_without_recursion(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
+
+    target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge assistant")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="looked up")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+
+    result = await _delegate(
+        AgentDelegationRequest(
+            target=target,
+            target_model=target_model,
+            conversation_messages=[{"role": "user", "content": "请查飞书知识库里的灵巧手报告"}],
+            owner_id=uuid4(),
+            session_id="agent-message-child",
+            parent_agent_id=uuid4(),
+            parent_session_id="parent-session",
+            interaction_type="agent_message",
+            policy=OrchestrationPolicy(timeout_seconds=120, tool_profile="agent_message"),
+        )
+    )
+
+    request = captured["request"]
+    assert result.failed is False
+    assert request.core_tools_only is False
+    assert request.allowed_tool_names == ()
+    assert "send_message_to_agent" in request.excluded_tool_names
+    assert "delegate_to_agent" in request.excluded_tool_names
+    assert "save_memory" in request.excluded_tool_names
+    assert "save_skill" in request.excluded_tool_names
+    assert request.delegation_token is None
+    assert request.session_context.metadata["agent_message_tool_policy"] == "peer_agent_tool_surface"
+    assert request.session_context.metadata["agent_message_memory_policy"] == "peer_read_only_memory"
+    assert "peer agent request" in request.system_prompt_suffix
 
 
 @pytest.mark.asyncio

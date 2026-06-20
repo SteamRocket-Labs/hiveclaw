@@ -164,6 +164,22 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
             "You can read long-term memory to orient the research task. Writing memory and skill creation are disabled."
         ),
     ),
+    "agent_message": DelegationToolProfile(
+        name="agent_message",
+        core_tools_only=False,
+        allowed_tools=(),
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill",) + _DELEGATION_MEMORY_WRITE_TOOLS,
+        tool_policy="peer_agent_tool_surface",
+        tool_rule=(
+            "This is a peer agent request. Use your own assigned/read-authorized tools when needed, "
+            "but do not delegate recursively, manage triggers/workflows, or send deliverables directly to channels."
+        ),
+        memory_policy="peer_read_only_memory",
+        memory_rule=(
+            "You MAY read long-term memory when it materially helps answer the peer request. "
+            "Writing memory and creating/updating skills are disabled for this peer session."
+        ),
+    ),
 }
 
 _RESTART_REPLAY_SAFE_TOOL_PROFILES: frozenset[str] = frozenset(

@@ -22,6 +22,7 @@ def test_create_digital_employee_is_registered():
 def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
     """Creation is sensitive: it must be bound to a previewed and confirmed blueprint."""
     from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS
 
     all_tools = get_combined_openai_tools()
     hr_tool = next(t for t in all_tools if t["function"]["name"] == "create_digital_employee")
@@ -31,6 +32,7 @@ def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
     assert "name" in params["properties"]
     assert "confirmed_blueprint_hash" in params["properties"]
     assert "role_description" in params["properties"]
+    assert params["properties"]["role_description"]["maxLength"] == ROLE_DESCRIPTION_MAX_CHARS
     assert "personality" in params["properties"]
     assert "boundaries" in params["properties"]
     assert "primary_users" in params["properties"]
@@ -40,6 +42,41 @@ def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
     assert "permission_scope" in params["properties"]
     assert "company_charter" in params["properties"]
     assert "owner_agency_charter" in params["properties"]
+
+
+def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
+    from app.services.agent_tools import get_combined_openai_tools
+    from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS
+
+    all_tools = get_combined_openai_tools()
+    preview_tool = next(t for t in all_tools if t["function"]["name"] == "preview_agent_blueprint")
+    params = preview_tool["function"]["parameters"]
+
+    assert params["properties"]["role_description"]["maxLength"] == ROLE_DESCRIPTION_MAX_CHARS
+
+
+def test_hr_role_description_prompt_guard_trims_to_tool_limit():
+    from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS, _trim_role_description_for_prompt_guard
+
+    result = _trim_role_description_for_prompt_guard("x" * (ROLE_DESCRIPTION_MAX_CHARS + 50))
+
+    assert len(result) == ROLE_DESCRIPTION_MAX_CHARS
+
+
+def test_build_blueprint_preview_payload_trims_role_description_to_prompt_guard():
+    from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS, _build_blueprint_preview_payload
+
+    payload = _build_blueprint_preview_payload(
+        {
+            "name": "研究助理",
+            "role_description": "x" * (ROLE_DESCRIPTION_MAX_CHARS + 50),
+            "primary_users": ["投资团队"],
+            "core_outputs": ["日报"],
+            "focus_content": "先做日报",
+        }
+    )
+
+    assert len(payload["blueprint"]["role_description"]) == ROLE_DESCRIPTION_MAX_CHARS
 
 
 def test_hr_tool_included_in_hr_tools_set():

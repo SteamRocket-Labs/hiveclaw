@@ -26,6 +26,15 @@ from app.tools.runtime import ToolExecutionRequest
 
 logger = logging.getLogger(__name__)
 
+ROLE_DESCRIPTION_MAX_CHARS = 4000
+
+
+def _trim_role_description_for_prompt_guard(value: object) -> str:
+    role_description = str(value or "").strip()
+    if len(role_description) <= ROLE_DESCRIPTION_MAX_CHARS:
+        return role_description
+    return role_description[:ROLE_DESCRIPTION_MAX_CHARS].rstrip()
+
 
 def _stamp_hr_blueprint_trigger_exemption(config: dict | None) -> dict:
     cfg = dict(config or {})
@@ -752,7 +761,7 @@ async def _refine_soul_inputs(
         if isinstance(refined.get("role_description"), str) and len(refined["role_description"]) > max(
             len(role_description), 20
         ):
-            result["role_description"] = refined["role_description"]
+            result["role_description"] = _trim_role_description_for_prompt_guard(refined["role_description"])
         if isinstance(refined.get("personality"), str) and len(refined["personality"]) > max(len(personality), 20):
             result["personality"] = refined["personality"]
         if isinstance(refined.get("boundaries"), str) and len(refined["boundaries"]) > max(len(boundaries), 20):
@@ -1066,7 +1075,7 @@ async def _install_external_skill_ref(
 def _build_blueprint_preview_payload(arguments: dict) -> dict:
     """Build a structured HR blueprint preview from raw arguments."""
     name = str(arguments.get("name", "")).strip()
-    role_description = str(arguments.get("role_description", "")).strip()
+    role_description = _trim_role_description_for_prompt_guard(arguments.get("role_description", ""))
     primary_users = _dedupe_strings(
         [item for item in _parse_list(arguments.get("primary_users")) if isinstance(item, str)]
     )
@@ -1339,6 +1348,7 @@ def _build_create_employee_result(
                 },
                 "role_description": {
                     "type": "string",
+                    "maxLength": ROLE_DESCRIPTION_MAX_CHARS,
                     "description": "What this employee does — mission, core responsibilities, and domain expertise. Write 2-3 sentences minimum, be specific about the role.",
                 },
                 "personality": {
@@ -1461,7 +1471,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
     if len(name) > 100:
         return "Error: name must be 100 characters or less."
 
-    role_description = args.get("role_description", "")
+    role_description = _trim_role_description_for_prompt_guard(args.get("role_description", ""))
     personality = args.get("personality", "")
     boundaries = args.get("boundaries", "")
 
@@ -2185,7 +2195,11 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Proposed agent name."},
-                "role_description": {"type": "string", "description": "Core responsibilities and mission."},
+                "role_description": {
+                    "type": "string",
+                    "maxLength": ROLE_DESCRIPTION_MAX_CHARS,
+                    "description": "Core responsibilities and mission.",
+                },
                 "primary_users": {
                     "type": "array",
                     "items": {"type": "string"},

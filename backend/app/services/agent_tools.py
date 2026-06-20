@@ -169,12 +169,20 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
     from app.tools.resolver import ToolRuntimeResolver
 
     async def _fallback_execute(tool_name: str, arguments: dict, context) -> str:
+        if tool_name.startswith("custom_api__"):
+            from app.services.custom_api_connectors import execute_custom_api_tool
+
+            return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id)
         return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id)
 
     async def _direct_fallback_execute(tool_name: str, arguments: dict, context) -> str:
         # Approved/direct fallback is not a second implementation of first-class tools.
         # Known tools must be registered in ToolExecutionRegistry; only unknown tools
         # may fall through to MCP passthrough.
+        if tool_name.startswith("custom_api__"):
+            from app.services.custom_api_connectors import execute_custom_api_tool
+
+            return await execute_custom_api_tool(tool_name, arguments, agent_id=context.agent_id)
         return await _execute_mcp_tool(tool_name, arguments, agent_id=context.agent_id)
 
     async def _log_activity(*args, **kwargs) -> None:

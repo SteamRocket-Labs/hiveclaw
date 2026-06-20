@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine, cast
@@ -78,6 +79,49 @@ _PTL_ERROR_PATTERNS = (
 )
 
 _OUTPUT_CAP_FINISH_REASONS = {"length", "max_tokens"}
+
+_UNBACKED_TOOL_RESULT_MARKERS = (
+    "已验证",
+    "验证不可用",
+    "返回",
+    "超时",
+    "不响应",
+    "未配置",
+    "不可用",
+    "tool call",
+    "tool result",
+    "timed out",
+    "timeout",
+    "returned",
+    "not configured",
+    "failed with",
+)
+
+
+def _repair_unbacked_tool_result_claim(
+    content: str,
+    *,
+    tool_names: set[str],
+    has_tool_evidence: bool,
+) -> str:
+    """Replace tool-result claims when this invocation produced no tool evidence."""
+    if has_tool_evidence or not content or not tool_names:
+        return content
+    lowered = content.lower()
+    if not any(marker in lowered or marker in content for marker in _UNBACKED_TOOL_RESULT_MARKERS):
+        return content
+    mentioned = sorted(
+        name for name in tool_names if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", content)
+    )
+    if not mentioned:
+        return content
+    names = ", ".join(f"`{name}`" for name in mentioned[:8])
+    return (
+        "我不能确认刚才的工具状态：本轮没有实际工具调用记录，因此不能声称 "
+        f"{names} 已返回、失败或超时。请重试该操作，我会先调用对应工具并基于工具结果给出结论。"
+    )
+
+
 _STREAM_OUTPUT_CONTINUATION_MAX_ATTEMPTS = 3
 # Fallback continuation budget when the active model carries no resolvable
 # provider (e.g. test fakes). Real runs resolve the provider's own ceiling.
@@ -3177,6 +3221,16 @@ class AgentKernel:
 
                     if not response.tool_calls:
                         final_content = response.content or "[LLM returned empty content]"
+                        _available_tool_names = {
+                            str(tool.get("function", {}).get("name"))
+                            for tool in (tools_for_llm or [])
+                            if isinstance(tool, dict) and tool.get("function", {}).get("name")
+                        }
+                        final_content = _repair_unbacked_tool_result_claim(
+                            final_content,
+                            tool_names=_available_tool_names,
+                            has_tool_evidence=any(part.get("type") == "tool_call" for part in collected_parts),
+                        )
                         final_content, _source_permission_allowed = await _enforce_generated_source_permissions(
                             final_content
                         )

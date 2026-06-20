@@ -16,6 +16,7 @@ from app.api.autonomy import router as autonomy_router
 from app.api.capabilities import router as capabilities_router
 from app.api.chat_sessions import router as chat_sessions_router
 from app.api.config_history import router as config_history_router
+from app.api.custom_api_connectors import router as custom_api_connectors_router
 from app.api.desktop_agents import router as desktop_agents_router
 from app.api.desktop_audit import router as desktop_audit_router
 from app.api.desktop_auth import router as desktop_auth_router
@@ -575,6 +576,7 @@ _api_routers = [
     notification_router,
     gateway_router,
     config_history_router,
+    custom_api_connectors_router,
     feature_flags_router,
     admin_router,
     chat_sessions_router,

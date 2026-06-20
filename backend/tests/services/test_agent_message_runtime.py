@@ -80,6 +80,7 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
     assert captured["kwargs"]["tool_executor"] is orchestrator_executor
     assert captured["kwargs"]["max_tool_rounds"] == 9
     assert captured["kwargs"]["interaction_type"] == "agent_message"
+    assert captured["kwargs"]["policy"].tool_profile == "agent_message"
     # PR-19 rewrote A2A_SYSTEM_PROMPT_SUFFIX with XML structure; the A2A
     # identity signal is now carried by "agent-to-agent\ncommunication, 'A2A'"
     # and "peer agent" inside <role>.

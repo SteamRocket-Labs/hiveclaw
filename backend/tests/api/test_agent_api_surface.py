@@ -51,6 +51,24 @@ def test_agent_create_schema_rejects_legacy_agent_class_value():
     assert payload.agent_class == "internal_tenant"
 
 
+def test_agent_create_accepts_role_descriptions_up_to_prompt_guard_limit():
+    from app.schemas.schemas import AgentCreate
+
+    payload = AgentCreate(name="测试员工", role_description="x" * 4000)
+    assert len(payload.role_description) == 4000
+
+    with pytest.raises(ValidationError):
+        AgentCreate(name="测试员工", role_description="x" * 4001)
+
+
+def test_agent_role_description_is_text_at_persistence_layer():
+    from sqlalchemy import Text
+
+    from app.models.agent import Agent
+
+    assert isinstance(Agent.__table__.c.role_description.type, Text)
+
+
 def test_agent_schemas_expose_smart_model_routing_config():
     from app.schemas.schemas import AgentCreate, SmartModelRoutingConfig
 

@@ -8,6 +8,8 @@ from pydantic import BaseModel, EmailStr, Field, model_validator
 
 from app.services.llm_client import ABSOLUTE_MAX_OUTPUT_TOKENS
 
+AGENT_ROLE_DESCRIPTION_MAX_CHARS = 4000
+
 
 # ─── Auth ───────────────────────────────────────────────
 
@@ -80,7 +82,11 @@ class SmartModelRoutingConfig(BaseModel):
 
 class AgentCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100, description="Agent name, 2-100 characters")
-    role_description: str = Field(default="", max_length=500, description="Role description, max 500 characters")
+    role_description: str = Field(
+        default="",
+        max_length=AGENT_ROLE_DESCRIPTION_MAX_CHARS,
+        description="Role description, max 4000 characters",
+    )
     bio: str | None = None
     welcome_message: str | None = None
     avatar_url: str | None = None
@@ -150,7 +156,7 @@ class AgentOut(BaseModel):
 
 class AgentUpdate(BaseModel):
     name: str | None = None
-    role_description: str | None = None
+    role_description: str | None = Field(default=None, max_length=AGENT_ROLE_DESCRIPTION_MAX_CHARS)
     bio: str | None = None
     welcome_message: str | None = None
     avatar_url: str | None = None

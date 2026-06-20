@@ -879,7 +879,7 @@ async def _invoke_agent_message_runtime(
         # A2A is a real multi-tool turn (the target may call feishu_wiki_list etc.);
         # the default 30s OrchestrationPolicy cancels before the final reply is
         # synthesised + written back. Give it a turn budget under the 180s outer cap.
-        policy=OrchestrationPolicy(timeout_seconds=120.0),
+        policy=OrchestrationPolicy(timeout_seconds=120.0, tool_profile="agent_message"),
     )
 
 

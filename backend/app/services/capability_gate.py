@@ -156,6 +156,10 @@ SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
     "workspace.command.secret_exfiltration": ["run_command"],
 }
 
+DYNAMIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
+    "external.api.call": ["custom_api__*"],
+}
+
 
 # P1-W2-8: counter exposed via /api/admin/metrics for unmapped tool drift.
 # Per-tool because it lets operators see *which* tool is missing — a single
@@ -298,6 +302,28 @@ def _resolve_capability(tool_or_capability: str) -> str | None:
     return None
 
 
+async def _resolve_dynamic_capability(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    tool_name: str,
+) -> str | None:
+    if not tool_name.startswith("custom_api__"):
+        return None
+    from app.models.tool import Tool
+
+    result = await db.execute(
+        select(Tool.id).where(
+            Tool.tenant_id == tenant_id,
+            Tool.name == tool_name,
+            Tool.type == "custom_api",
+            Tool.enabled.is_(True),
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        return None
+    return "external.api.call"
+
+
 class CapabilityCheckResult:
     """Result of a capability gate check."""
 
@@ -339,6 +365,8 @@ async def check_capability(
     Returns CapabilityCheckResult with allowed/denied/escalate flags.
     """
     capability = _resolve_capability(tool_name)
+    if not capability:
+        capability = await _resolve_dynamic_capability(db, tenant_id, tool_name)
     if not capability:
         _record_unmapped_tool(tool_name)
         from app.config import get_settings
@@ -427,6 +455,8 @@ def get_all_capabilities() -> list[dict]:
     for tool, cap in CAPABILITY_MAP.items():
         cap_tools.setdefault(cap, []).append(tool)
     for cap, tools in SYNTHETIC_CAPABILITY_TOOLS.items():
+        cap_tools.setdefault(cap, []).extend(tools)
+    for cap, tools in DYNAMIC_CAPABILITY_TOOLS.items():
         cap_tools.setdefault(cap, []).extend(tools)
 
     return [{"capability": cap, "tools": tools} for cap, tools in sorted(cap_tools.items())]

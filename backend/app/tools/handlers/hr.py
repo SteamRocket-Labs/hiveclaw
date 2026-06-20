@@ -323,7 +323,10 @@ def _is_create_failure_result(result: object) -> bool:
     return (
         "failed to create the digital employee" in text
         or "create_digital_employee exceeded" in text
-        or (('"tool_name": "create_digital_employee"' in text or '"tool_name":"create_digital_employee"' in text) and "timeout" in text)
+        or (
+            ('"tool_name": "create_digital_employee"' in text or '"tool_name":"create_digital_employee"' in text)
+            and "timeout" in text
+        )
     )
 
 
@@ -943,34 +946,23 @@ async def _install_external_skill_from_url(
     files = await _fetch_github_directory(owner, repo, path, branch, token=token)
     if not files:
         raise ValueError("No files found at the provided GitHub URL")
-    from app.services.skill_guard import scan_skill_files
-
-    guard_report = scan_skill_files(files, source=url)
-    if not guard_report.allowed:
-        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
-        raise ValueError(f"SkillGuard blocked external skill before activation: {categories}")
-
     agent_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-    skill_dir = agent_dir / "skills" / folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    from app.services.skill_installation import install_active_skill_package
 
-    written = []
-    skill_dir_resolved = skill_dir.resolve()
-    for item in files:
-        file_path = (skill_dir / item["path"]).resolve()
-        try:
-            file_path.relative_to(skill_dir_resolved)
-        except ValueError:
-            continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(item["content"], encoding="utf-8")
-        written.append(item["path"])
+    install_result = install_active_skill_package(
+        workspace=agent_dir,
+        folder_name=folder_name,
+        files=files,
+        source=url,
+        overwrite=False,
+    )
 
     return {
         "status": "installed",
         "folder_name": folder_name,
-        "files_written": len(written),
-        "skill_guard": guard_report.to_dict(),
+        "files_written": install_result["files_written"],
+        "files": install_result["files"],
+        "skill_guard": install_result["skill_guard"],
         "source_url": url,
     }
 
@@ -1012,50 +1004,45 @@ async def _install_external_skill_from_skills_ref(
         if not sandbox_skills.exists():
             raise RuntimeError("skills.sh install completed but no skill files were produced")
 
-        from app.services.skill_guard import scan_skill_files
+        from app.services.skill_installation import collect_skill_package_files, install_active_skill_package
 
-        files_for_guard: list[dict] = []
-        for candidate in sandbox_skills.rglob("*"):
-            if not candidate.is_file():
-                continue
-            rel = candidate.relative_to(sandbox_skills).as_posix()
-            try:
-                content = candidate.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                content = ""
-            files_for_guard.append({"path": rel, "content": content})
-        guard_report = scan_skill_files(files_for_guard, source=f"skills_ref:{ref}")
-        if not guard_report.allowed:
-            categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
-            raise RuntimeError(f"SkillGuard blocked external skill before activation: {categories}")
-
-        copied: list[str] = []
-        agent_skills = agent_dir / "skills"
-        agent_skills.mkdir(parents=True, exist_ok=True)
+        installed: list[dict] = []
         for skill_path in sandbox_skills.iterdir():
-            dest = agent_skills / skill_path.name
             if skill_path.is_dir():
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(skill_path, dest)
-                copied.append(skill_path.name)
+                installed.append(
+                    install_active_skill_package(
+                        workspace=agent_dir,
+                        folder_name=skill_path.name,
+                        files=collect_skill_package_files(skill_path),
+                        source=f"skills_ref:{ref}",
+                        overwrite=True,
+                    )
+                )
             elif skill_path.is_file() and skill_path.suffix.lower() == ".md":
-                shutil.copy2(skill_path, dest)
-                copied.append(skill_path.name)
+                installed.append(
+                    install_active_skill_package(
+                        workspace=agent_dir,
+                        folder_name=skill_path.stem,
+                        files=[
+                            {"path": "SKILL.md", "content": skill_path.read_text(encoding="utf-8", errors="replace")}
+                        ],
+                        source=f"skills_ref:{ref}",
+                        overwrite=True,
+                    )
+                )
 
-        if not copied:
+        if not installed:
             raise RuntimeError("skills.sh install completed but copied 0 skill files")
 
         expected_folder = ref.split("@", 1)[1]
-        folder_name = (
-            expected_folder if expected_folder in copied or (agent_skills / expected_folder).exists() else copied[0]
-        )
+        installed_by_name = {item["folder_name"]: item for item in installed}
+        primary = installed_by_name.get(expected_folder) or installed[0]
 
         return {
             "status": "installed",
-            "folder_name": folder_name,
-            "files_written": len(copied),
-            "skill_guard": guard_report.to_dict(),
+            "folder_name": primary["folder_name"],
+            "files_written": sum(int(item.get("files_written") or 0) for item in installed),
+            "skill_guard": primary["skill_guard"],
             "source_ref": ref,
         }
     finally:
@@ -1838,21 +1825,16 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 if skill not in all_skills_to_copy:
                     all_skills_to_copy.append(skill)
 
-            skills_dir = agent_dir / "skills"
-            skills_dir.mkdir(parents=True, exist_ok=True)
+            from app.services.skill_installation import install_active_skill_package
 
             for skill in all_skills_to_copy:
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
-                skill_folder_resolved = skill_folder.resolve()
-                for sf in skill.files:
-                    file_path = (skill_folder / sf.path).resolve()
-                    try:
-                        file_path.relative_to(skill_folder_resolved)
-                    except ValueError:
-                        continue
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_path.write_text(sf.content)
+                install_active_skill_package(
+                    workspace=agent_dir,
+                    folder_name=skill.folder_name,
+                    files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
+                    source=f"hr_registry_skill:{skill.id}",
+                    overwrite=True,
+                )
 
             # Start container
             try:
@@ -2008,6 +1990,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 from pathlib import Path as _Path
                 from app.api.skills import CLAWHUB_BASE, _fetch_github_directory, _get_github_token
                 from app.config import get_settings as _get_settings
+                from app.services.skill_installation import install_active_skill_package
 
                 agent_dir = _Path(_get_settings().AGENT_DATA_DIR) / str(agent.id)
                 ch_tenant = str(effective_tenant_id) if effective_tenant_id else None
@@ -2084,17 +2067,13 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             continue
                         github_path = f"skills/{handle}/{slug}"
                         files = await _fetch_github_directory("openclaw", "skills", github_path, "main", ch_token)
-                        skill_dir = agent_dir / "skills" / slug
-                        skill_dir.mkdir(parents=True, exist_ok=True)
-                        skill_dir_resolved = skill_dir.resolve()
-                        for f in files:
-                            fp = (skill_dir / f["path"]).resolve()
-                            try:
-                                fp.relative_to(skill_dir_resolved)
-                            except ValueError:
-                                continue
-                            fp.parent.mkdir(parents=True, exist_ok=True)
-                            fp.write_text(f["content"], encoding="utf-8")
+                        install_result = install_active_skill_package(
+                            workspace=agent_dir,
+                            folder_name=slug,
+                            files=files,
+                            source=f"hr_clawhub:{slug}",
+                            overwrite=True,
+                        )
                         clawhub_results.append(f"✅ {slug}")
                         await record_capability_install(
                             agent_id=agent.id,
@@ -2102,7 +2081,11 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                             source_key=slug,
                             status="installed",
                             installed_via="hr_agent",
-                            metadata_json={"phase": "downloaded_to_agent"},
+                            metadata_json={
+                                "phase": "downloaded_to_agent",
+                                "skill_guard": install_result.get("skill_guard"),
+                                "files_written": install_result.get("files_written"),
+                            },
                         )
                         logger.info(f"[HR] Installed ClawHub skill {slug} for agent {agent.id}")
                     except Exception as ch_err:

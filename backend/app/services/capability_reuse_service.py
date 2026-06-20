@@ -14,6 +14,7 @@ from app.database import tenant_scoped_session
 from app.models.skill import Skill
 from app.models.tool import Tool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.skill_installation import install_active_skill_package
 
 
 def _agent_dir(agent_id: uuid.UUID) -> Path:
@@ -41,29 +42,22 @@ async def reuse_existing_skill_for_agent(
         if skill is None or not skill.files:
             return None
 
-    base = _agent_dir(agent_id)
-    skill_dir = base / "skills" / skill.folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    written = []
-    skill_dir_resolved = skill_dir.resolve()
-    for skill_file in skill.files:
-        target = (skill_dir / skill_file.path).resolve()
-        try:
-            target.relative_to(skill_dir_resolved)
-        except ValueError:
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(skill_file.content, encoding="utf-8")
-        written.append(skill_file.path)
+    install_result = install_active_skill_package(
+        workspace=_agent_dir(agent_id),
+        folder_name=skill.folder_name,
+        files=[{"path": skill_file.path, "content": skill_file.content} for skill_file in skill.files],
+        source=f"registry_skill:{skill.id}",
+        overwrite=True,
+    )
 
     return {
         "status": "already_installed",
         "skill_id": str(skill.id),
         "skill_name": skill.name,
         "folder_name": skill.folder_name,
-        "files_written": len(written),
-        "files": written,
+        "files_written": install_result["files_written"],
+        "files": install_result["files"],
+        "skill_guard": install_result["skill_guard"],
     }
 
 

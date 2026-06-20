@@ -3,6 +3,16 @@ from __future__ import annotations
 import pytest
 
 
+def test_threat_classifier_prompt_has_confidence_score_anchors() -> None:
+    from app.memory.write_gate import _THREAT_CLASSIFIER_SYSTEM_PROMPT
+
+    assert "<confidence_rubric>" in _THREAT_CLASSIFIER_SYSTEM_PROMPT
+    assert "0.00-0.39" in _THREAT_CLASSIFIER_SYSTEM_PROMPT
+    assert "0.40-0.69" in _THREAT_CLASSIFIER_SYSTEM_PROMPT
+    assert "0.70-0.84" in _THREAT_CLASSIFIER_SYSTEM_PROMPT
+    assert "0.85-1.00" in _THREAT_CLASSIFIER_SYSTEM_PROMPT
+
+
 def test_prepare_memory_write_rejects_pl4_credentials() -> None:
     from app.memory.write_gate import prepare_memory_write
 

@@ -82,6 +82,18 @@ the reason. Overwriting a claim on weak evidence corrupts semantic memory.
 Inline [[wikilinks]] to related concepts are allowed.
 </claim_safety>
 
+<confidence_rubric>
+Use confidence as a calibrated 0.00-1.00 score:
+- 0.00-0.39: hold. Evidence is absent, contradictory, unsafe, or not about the
+  requested concept.
+- 0.40-0.69: hold or add contradictions only. The claim is plausible but refs,
+  scope, or conflict handling are incomplete.
+- 0.70-0.84: proposed only when the page preserves all sections, cites concrete
+  source_refs, and does not overwrite a contested claim.
+- 0.85-1.00: strong proposal. Direct evidence, narrow scope, no unresolved
+  contradiction, and complete page contract.
+</confidence_rubric>
+
 <output_contract>
 Return EXACTLY ONE raw JSON object, no fences, no prose:
 {

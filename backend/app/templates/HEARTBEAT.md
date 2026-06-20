@@ -208,6 +208,19 @@ At the END of your reply, include these structured tags on one line:
 [OUTCOME:noop|action_taken|failure] [SCORE:0-10]
 ```
 
+<heartbeat_score_rubric>
+Use [SCORE:0-10] as a calibrated action-quality score, not a feeling:
+- 0-1: noop, no eligible input, or no material change.
+- 2-3: failure or bootstrap/recovery attempt; useful diagnostics may exist but
+  no durable progress was completed.
+- 4-6: useful small action with evidence, bounded scope, and no external side
+  effects requiring approval.
+- 7-8: high-value evidence-backed action, such as accepted curation pitch,
+  verified workspace artifact, or reusable candidate with source refs.
+- 9-10: exceptional, verified, reusable impact with clear source refs,
+  rollback/audit path, and no unresolved risk.
+</heartbeat_score_rubric>
+
 If no staged job or no eligible input exists, reply `HEARTBEAT_OK` and the
 outcome line.
 </required_output>

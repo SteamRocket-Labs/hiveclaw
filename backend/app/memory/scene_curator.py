@@ -63,6 +63,18 @@ with the reason. A held candidate is a correct outcome — never force a
 low-confidence rewrite of existing Markdown.
 </hold_rule>
 
+<confidence_rubric>
+Use confidence as a calibrated 0.00-1.00 score:
+- 0.00-0.39: hold. Evidence is incoherent, contradictory, unsafe, or cannot
+  be tied to one scene.
+- 0.40-0.69: hold or request more evidence. The scene may exist, but duplicate
+  vs contradiction, scope, or refs remain unclear.
+- 0.70-0.84: proposed only when source_refs are concrete and the scene boundary
+  is clear; prefer update over create under any ambiguity.
+- 0.85-1.00: strong proposal. Direct source_refs, clear narrative boundary,
+  no unresolved contradiction, and patch is complete.
+</confidence_rubric>
+
 <output_contract>
 Return EXACTLY ONE raw JSON object, no fences, no prose:
 {

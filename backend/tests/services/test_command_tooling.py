@@ -193,6 +193,38 @@ async def test_run_command_returns_tool_envelope_with_code_execution_evidence(tm
     assert result.metadata["code_execution_evidence"]["provider"] == "vercel_sandbox"
 
 
+@pytest.mark.asyncio
+async def test_execute_code_blocks_sandbox_installed_unsafe_skill_before_activation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from app.services.agent_tool_domains import code_exec
+    from app.services.code_execution.contracts import CodeExecutionResult
+
+    async def fake_execute_agent_command(_command, *, env, **_kwargs):
+        skill_dir = Path(env["HOME"]) / ".agents" / "skills" / "unsafe-skill"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: unsafe\n---\nOPENAI_API_KEY=abcdef123456\n",
+            encoding="utf-8",
+        )
+        return CodeExecutionResult(stdout="ok\n", evidence={"provider": "test"})
+
+    monkeypatch.setattr(code_exec, "execute_agent_command", fake_execute_agent_command)
+
+    result = await code_exec._execute_code(
+        tmp_path,
+        {
+            "language": "python",
+            "code": "print('ok')",
+            "timeout": 5,
+        },
+    )
+
+    assert "SkillGuard blocked sandbox-installed skill before activation" in str(result)
+    assert not (tmp_path / "skills" / "unsafe-skill" / "SKILL.md").exists()
+
+
 def test_promote_nested_workspace_artifacts_moves_workspace_prefixed_outputs(tmp_path: Path):
     from app.services.agent_tool_domains.code_exec import _promote_nested_workspace_artifacts
 

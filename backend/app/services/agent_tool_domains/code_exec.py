@@ -14,26 +14,55 @@ logger = logging.getLogger(__name__)
 
 # Dangerous patterns to block
 _DANGEROUS_BASH = [
-    "rm -rf /", "rm -rf ~", "sudo ", "mkfs", "dd if=",
-    ":(){ :", "chmod 777 /", "chown ", "shutdown", "reboot",
-    "curl ", "wget ", "nc ", "ncat ", "ssh ", "scp ",
-    "python3 -c", "python -c",
+    "rm -rf /",
+    "rm -rf ~",
+    "sudo ",
+    "mkfs",
+    "dd if=",
+    ":(){ :",
+    "chmod 777 /",
+    "chown ",
+    "shutdown",
+    "reboot",
+    "curl ",
+    "wget ",
+    "nc ",
+    "ncat ",
+    "ssh ",
+    "scp ",
+    "python3 -c",
+    "python -c",
 ]
 
 _DANGEROUS_PYTHON_IMPORTS = [
-    "subprocess", "shutil.rmtree", "os.system", "os.popen",
-    "os.exec", "os.spawn",
-    "socket", "http.client", "urllib.request", "requests",
-    "ftplib", "smtplib", "telnetlib", "ctypes",
-    "__import__", "importlib",
+    "subprocess",
+    "shutil.rmtree",
+    "os.system",
+    "os.popen",
+    "os.exec",
+    "os.spawn",
+    "socket",
+    "http.client",
+    "urllib.request",
+    "requests",
+    "ftplib",
+    "smtplib",
+    "telnetlib",
+    "ctypes",
+    "__import__",
+    "importlib",
 ]
 
 # Node.js dangerous patterns — kept as module-level constant
 # so _check_code_safety can reference it without redefinition.
 _DANGEROUS_NODE = [
     "child_" + "process",  # split to avoid hook false-positive
-    "fs.rmSync", "fs.rmdirSync", "process.exit",
-    "require('http')", "require('https')", "require('net')",
+    "fs.rmSync",
+    "fs.rmdirSync",
+    "process.exit",
+    "require('http')",
+    "require('https')",
+    "require('net')",
 ]
 
 _DANGEROUS_COMMAND_PATTERNS = [
@@ -210,26 +239,38 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
         stdout_str = result.stdout[:10000]
         stderr_str = result.stderr[:5000]
 
-        # Post-exec: copy skills installed by `npx skills add` from sandbox HOME to agent workspace
+        # Post-exec: install skills produced by `npx skills add` from sandbox HOME
+        # through the same guard/audit path as every other active Skill write.
         sandbox_skills = Path(safe_env["HOME"]) / ".agents" / "skills"
         if sandbox_skills.exists():
-            import shutil
+            from app.services.skill_installation import collect_skill_package_files, install_active_skill_package
 
-            agent_skills = ws / "skills"
-            agent_skills.mkdir(parents=True, exist_ok=True)
-            copied = []
+            installed = []
+            blocked = []
             for skill_dir in sandbox_skills.iterdir():
                 if skill_dir.is_dir():
                     if not (skill_dir / "SKILL.md").is_file():
                         continue
-                    dest = agent_skills / skill_dir.name
-                    if dest.exists():
-                        shutil.rmtree(dest)
-                    shutil.copytree(skill_dir, dest)
-                    copied.append(skill_dir.name)
-            if copied:
-                logger.info(f"[exec] Copied {len(copied)} skills from sandbox to workspace: {copied}")
+                    try:
+                        install_result = install_active_skill_package(
+                            workspace=ws,
+                            folder_name=skill_dir.name,
+                            files=collect_skill_package_files(skill_dir),
+                            source="execute_code:sandbox_home",
+                            overwrite=True,
+                        )
+                        installed.append(install_result["folder_name"])
+                    except ValueError as exc:
+                        blocked.append(f"{skill_dir.name}: {exc}")
             shutil.rmtree(sandbox_skills, ignore_errors=True)
+            if blocked:
+                return _with_code_execution_evidence(
+                    "❌ SkillGuard blocked sandbox-installed skill before activation:\n"
+                    + "\n".join(f"- {item}" for item in blocked),
+                    result,
+                )
+            if installed:
+                logger.info("[exec] Installed %d skills from sandbox into workspace: %s", len(installed), installed)
 
         result_parts = []
         if stdout_str.strip():

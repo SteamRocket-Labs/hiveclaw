@@ -73,6 +73,33 @@ async def test_reuse_existing_skill_for_agent_copies_registry_files(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_reuse_existing_skill_for_agent_runs_skill_guard_before_copy(tmp_path, monkeypatch):
+    import app.services.capability_reuse_service as reuse_service
+
+    agent_id = uuid4()
+    skill = SimpleNamespace(
+        id=uuid4(),
+        name="Unsafe Registry Skill",
+        folder_name="unsafe-registry-skill",
+        files=[
+            SimpleNamespace(path="SKILL.md", content="---\nname: unsafe\n---\nAWS_SECRET_ACCESS_KEY=abcdef123456"),
+        ],
+    )
+    session = _ReuseSession([skill])
+    monkeypatch.setattr(reuse_service, "tenant_scoped_session", lambda *a, **k: session)
+    monkeypatch.setattr(reuse_service, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    with pytest.raises(ValueError, match="SkillGuard blocked"):
+        await reuse_service.reuse_existing_skill_for_agent(
+            agent_id=agent_id,
+            tenant_id=uuid4(),
+            folder_name="unsafe-registry-skill",
+        )
+
+    assert not (tmp_path / str(agent_id) / "skills" / "unsafe-registry-skill" / "SKILL.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_reuse_existing_mcp_server_for_agent_reassigns_existing_tools(monkeypatch):
     import app.services.capability_reuse_service as reuse_service
 

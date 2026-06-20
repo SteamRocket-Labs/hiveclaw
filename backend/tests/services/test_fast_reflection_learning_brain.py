@@ -26,6 +26,11 @@ def test_learning_brain_prompt_preserves_complete_message_context() -> None:
     assert "signal_type" in system_text
     assert "container" in system_text
     assert "promotion_intent" in system_text
+    assert "<confidence_scoring_rubric>" in system_text
+    assert "0.00-0.39" in system_text
+    assert "0.40-0.69" in system_text
+    assert "0.70-0.84" in system_text
+    assert "0.85-1.00" in system_text
     assert "message-0" in user_text
     assert "message-11" in user_text
     assert user_text.count('"role": "user"') == 12

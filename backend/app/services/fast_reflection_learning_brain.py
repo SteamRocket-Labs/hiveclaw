@@ -24,7 +24,14 @@ _SIGNAL_TYPES = {
     "verification_failure",
     "repeated_task_pattern",
 }
-_CONTAINERS = {"none", "session_learning", "memory_candidate", "soul_candidate", "skill_candidate", "workflow_candidate"}
+_CONTAINERS = {
+    "none",
+    "session_learning",
+    "memory_candidate",
+    "soul_candidate",
+    "skill_candidate",
+    "workflow_candidate",
+}
 _PROMOTION_INTENTS = {"none", "project_only", "candidate", "defer", "reject"}
 _LEARNING_BRAIN_MAX_TOKENS = 8192
 
@@ -99,6 +106,13 @@ def build_learning_brain_messages(
         "- A skill_candidate requires a reusable procedure; a workflow_candidate requires deterministic repeated steps.\n"
         "- A soul_candidate requires repeated or explicit identity-level behavior evidence; it is never a direct write.\n"
         "- session_learning means next-turn projection only, not durable T2/T3 promotion.\n\n"
+        "<confidence_scoring_rubric>\n"
+        "Use confidence as a calibrated 0.00-1.00 score with explicit evidence anchors:\n"
+        "- 0.00-0.39: low_signal or reject. Evidence is absent, one-off, contradicted, or mostly politeness/current-task context.\n"
+        "- 0.40-0.69: session_learning only. Useful for next turn, but not stable enough for durable candidate promotion.\n"
+        "- 0.70-0.84: candidate/defer. There is a plausible durable pattern, but evidence refs, repeat count, or boundary checks are incomplete.\n"
+        "- 0.85-1.00: candidate. Use only when evidence refs are concrete, boundary_checks pass, and the lesson is reusable outside the current turn.\n"
+        "</confidence_scoring_rubric>\n\n"
         "Return raw JSON only with exactly these keys:\n"
         "{"
         '"signal_type":"low_signal|user_preference_correction|workflow_correction|verification_failure|repeated_task_pattern",'

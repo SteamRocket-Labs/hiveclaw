@@ -595,6 +595,27 @@ def _submit_skill_activation_candidate(
             "source_tool": tool_name,
         },
     )
+    from app.services.evolution_ledger import record_evolution_candidate
+
+    record_evolution_candidate(
+        ws,
+        target_type="skill",
+        target_id=target_rel,
+        diff=rendered,
+        source_attempt_ids=["tool:save_skill"],
+        baseline_version=target_rel if overwrite else "none",
+        candidate_id=candidate_id,
+        metadata={
+            "lane": "save_skill",
+            "package_type": "save_skill",
+            "package_manifest_path": manifest["manifest_path"],
+            "draft_path": manifest["draft_path"],
+            "target_path": target_rel,
+            "overwrite_requested": bool(overwrite),
+            "agent_id": str(agent_id) if agent_id else None,
+            "source_tool": tool_name,
+        },
+    )
 
     try:
         from app.services.skill_lifecycle import record_skill_lifecycle_event

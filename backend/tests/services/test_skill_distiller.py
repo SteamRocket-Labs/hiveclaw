@@ -935,6 +935,7 @@ class TestSkillDistillerPromptStructure:
             "<role>",
             "</role>",
             "<pipeline_context>",
+            "<confidence_scoring_rubric>",
             "<decision_matrix>",
             "<anti_patterns>",
             "<output_contract>",
@@ -964,7 +965,16 @@ class TestSkillDistillerPromptStructure:
 class TestSkillDistillerDecisionMatrix:
     def test_promote_requires_high_confidence(self) -> None:
         prompt = _extract_system_prompt_literal()
-        assert "Confidence ≥ 0.75" in prompt or "0.75" in prompt
+        assert "Confidence ≥ 0.85" in prompt
+        assert "3 successful" in prompt
+
+    def test_scoring_rubric_has_numeric_anchors(self) -> None:
+        prompt = _extract_system_prompt_literal()
+        assert "0.00-0.39" in prompt
+        assert "0.40-0.74" in prompt
+        assert "0.75-0.84" in prompt
+        assert "0.85-1.00" in prompt
+        assert "patch requires at least 2" in prompt
 
     def test_defer_is_default_when_uncertain(self) -> None:
         prompt = _extract_system_prompt_literal()

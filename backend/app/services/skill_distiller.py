@@ -453,15 +453,23 @@ def _commit_skill_markdown_exact(
     if target.exists() and not overwrite:
         return f"❌ skill commit failed: target already exists: {target_relative_path}"
 
-    from app.services.skill_guard import scan_skill_files
+    target_parts = Path(target_relative_path).parts
+    if len(target_parts) != 3 or target_parts[0] != "skills" or target_parts[2] != "SKILL.md":
+        return f"❌ skill commit failed: target must be skills/<folder>/SKILL.md: {target_relative_path}"
 
-    guard_report = scan_skill_files([{"path": target_relative_path, "content": rendered_markdown}], source="skill_distiller")
-    if not guard_report.allowed:
-        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
-        return f"❌ skill commit failed: SkillGuard blocked draft: {categories}"
+    from app.services.skill_installation import install_active_skill_package
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(rendered_markdown.rstrip() + "\n", encoding="utf-8")
+    try:
+        install_active_skill_package(
+            workspace=workspace,
+            folder_name=target_parts[1],
+            files=[{"path": "SKILL.md", "content": rendered_markdown.rstrip() + "\n"}],
+            source="skill_distiller",
+            overwrite=overwrite,
+        )
+    except ValueError as exc:
+        return f"❌ skill commit failed: {exc}"
+
     try:
         record_skill_lifecycle_event(
             workspace,
@@ -534,11 +542,15 @@ def _skill_behavior_regression_report(behavior_report: dict[str, Any] | None) ->
     from app.evals.baseline import BaselineModelMismatchError, BaselineUnavailableError, check_model_match
     from app.evals.baseline import compare_to_baseline, load_baseline
 
-    scenario_scores = {
-        str(name): float(entry.get("score") or 0.0)
-        for name, entry in (behavior_report.get("scenarios") or {}).items()
-        if isinstance(entry, dict)
-    } if isinstance(behavior_report, dict) else {}
+    scenario_scores = (
+        {
+            str(name): float(entry.get("score") or 0.0)
+            for name, entry in (behavior_report.get("scenarios") or {}).items()
+            if isinstance(entry, dict)
+        }
+        if isinstance(behavior_report, dict)
+        else {}
+    )
     base: dict[str, Any] = {
         "suite": _BEHAVIOR_BASELINE_SUITE,
         "passed": False,
@@ -909,6 +921,15 @@ async def _draft_skill_with_llm(
         "The caller parses your JSON directly. Any extra prose, markdown fences,\n"
         "or missing keys breaks the pipeline.\n"
         "</pipeline_context>\n\n"
+        "<confidence_scoring_rubric>\n"
+        "Use confidence as a calibrated 0.00-1.00 score, not a feeling:\n"
+        "- 0.00-0.39: reject. Evidence is one-off, unsafe, contradictory, or mostly session-specific.\n"
+        "- 0.40-0.74: defer. Some reusable shape exists, but evidence is too thin or boundaries are unclear.\n"
+        "- 0.75-0.84: candidate-quality but not promotable. Ask for more evidence or choose defer unless patch evidence is decisive.\n"
+        "- 0.85-1.00: promotable/patchable only when source refs are concrete, no anti-patterns appear, and the output is a complete reusable SKILL.md.\n"
+        "Promotion requires at least 3 successful evidence points inside the 14-day window; "
+        "patch requires at least 2 failure/workaround signals for an already used skill.\n"
+        "</confidence_scoring_rubric>\n\n"
         "<patch_first_policy>\n"
         "Hive is patch-first. If a workflow involved an already loaded skill\n"
         "and the attached success/failure contrast shows repeated failures,\n"
@@ -928,7 +949,7 @@ async def _draft_skill_with_llm(
         "</autonomy_boundary>\n\n"
         "<decision_matrix>\n"
         "- **promote** — workflow is stable, generic, safe, and NOT covered by\n"
-        "  an existing skill. Confidence ≥ 0.75 required.\n"
+        "  an existing skill. Confidence ≥ 0.85 and 3 successful evidence points required.\n"
         "- **patch**   — existing skill covers part of the workflow; your draft\n"
         "  refines its instructions or adds a missing tool hint.\n"
         "- **defer**   — evidence is too thin, too recent, or too specific to\n"

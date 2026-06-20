@@ -373,25 +373,21 @@ class AgentManager:
     async def _push_default_skills_to_agent(self, db: AsyncSession, agent_id: uuid.UUID, agent_dir: Path) -> None:
         """Write default skill files from DB into a single agent's workspace."""
         from app.models.skill import Skill
+        from app.services.skill_installation import install_active_skill_package
         from sqlalchemy.orm import selectinload
 
         result = await db.execute(select(Skill).where(Skill.is_default).options(selectinload(Skill.files)))
         default_skills = result.scalars().all()
-        skills_dir = agent_dir / "skills"
         for skill in default_skills:
             if not skill.files:
                 continue
-            skill_folder = skills_dir / skill.folder_name
-            skill_folder.mkdir(parents=True, exist_ok=True)
-            skill_folder_resolved = skill_folder.resolve()
-            for sf in skill.files:
-                fp = (skill_folder / sf.path).resolve()
-                try:
-                    fp.relative_to(skill_folder_resolved)
-                except ValueError:
-                    continue
-                fp.parent.mkdir(parents=True, exist_ok=True)
-                fp.write_text(sf.content, encoding="utf-8")
+            install_active_skill_package(
+                workspace=agent_dir,
+                folder_name=skill.folder_name,
+                files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
+                source=f"default_registry_skill:{skill.id}",
+                overwrite=True,
+            )
             logger.info(f"[AgentManager] Pushed skill '{skill.name}' to agent {agent_id}")
         try:
             from app.services.skill_seeder import remove_legacy_flat_skill_files

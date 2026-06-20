@@ -56,6 +56,22 @@ learning. Model reflection enters memory through Learning Brain / Extractor
 candidate lanes; the platform governs final writes.
 """
 
+_HEARTBEAT_SCORE_RUBRIC_SUFFIX = """
+
+<heartbeat_score_rubric>
+Use [SCORE:0-10] as a calibrated action-quality score, not a feeling:
+- 0-1: noop, no eligible input, or no material change.
+- 2-3: failure or bootstrap/recovery attempt; useful diagnostics may exist but
+  no durable progress was completed.
+- 4-6: useful small action with evidence, bounded scope, and no external side
+  effects requiring approval.
+- 7-8: high-value evidence-backed action, such as accepted curation pitch,
+  verified workspace artifact, or reusable candidate with source refs.
+- 9-10: exceptional, verified, reusable impact with clear source refs,
+  rollback/audit path, and no unresolved risk.
+</heartbeat_score_rubric>
+"""
+
 
 # ── KAIROS persistent session state ──
 # Instead of creating a fresh invocation each tick, maintain conversation
@@ -507,7 +523,7 @@ def _get_default_heartbeat_instruction() -> str:
 
 
 def _compose_heartbeat_instruction(base_instruction: str) -> str:
-    return base_instruction + _HEARTBEAT_STRATEGY_SUFFIX + _HEARTBEAT_PRIVACY_SUFFIX
+    return base_instruction + _HEARTBEAT_SCORE_RUBRIC_SUFFIX + _HEARTBEAT_STRATEGY_SUFFIX + _HEARTBEAT_PRIVACY_SUFFIX
 
 
 def _try_acquire_heartbeat_lease(
@@ -738,9 +754,7 @@ def _build_heartbeat_reflection_messages(
 
     final_reply = _truncate_heartbeat_reflection_text(reply or "")
     if final_reply and not (
-        messages
-        and messages[-1].get("role") == "assistant"
-        and str(messages[-1].get("content") or "") == final_reply
+        messages and messages[-1].get("role") == "assistant" and str(messages[-1].get("content") or "") == final_reply
     ):
         messages.append({"role": "assistant", "content": final_reply})
     return messages
@@ -1818,7 +1832,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                 # ═══ Subsequent tick: <tick> + canonical pending T3 intake ═══
                 pending_t3_intake = _read_pending_t3_intake(agent_id)
                 if not pending_t3_intake:
-                    logger.info("[Heartbeat] Skip tick #{} for {}: no pending canonical T3 intake", tick_count, agent.name)
+                    logger.info(
+                        "[Heartbeat] Skip tick #{} for {}: no pending canonical T3 intake", tick_count, agent.name
+                    )
                     await _release_heartbeat_lease_async(agent_id)
                     await _touch_last_heartbeat(agent_id, tenant_id)
                     return

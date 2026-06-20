@@ -36,6 +36,7 @@ async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
     Returns True if any counter was reset (caller should commit/flush).
     """
     from datetime import datetime, timezone as tz
+
     now = datetime.now(tz.utc)
     changed = False
 
@@ -104,16 +105,10 @@ async def list_agents(
     )
 
     # Get agents user has permission to (within their tenant)
-    permitted_ids = (
-        select(AgentPermission.agent_id)
-        .where(
-            (AgentPermission.scope_type == "company")
-            | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-            | (
-                (AgentPermission.scope_type == "department")
-                & (AgentPermission.scope_id == current_user.department_id)
-            )
-        )
+    permitted_ids = select(AgentPermission.agent_id).where(
+        (AgentPermission.scope_type == "company")
+        | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
+        | ((AgentPermission.scope_type == "department") & (AgentPermission.scope_id == current_user.department_id))
     )
     permitted = select(Agent).where(
         Agent.id.in_(permitted_ids),
@@ -210,12 +205,18 @@ def _sync_hr_agent_workspace(agent_dir: Path, *, force_identity_files: bool) -> 
 
     hr_skills = hr_template_dir / "skills"
     if hr_skills.exists():
-        for skill_file in hr_skills.rglob("*"):
-            if skill_file.is_file():
-                rel = skill_file.relative_to(hr_skills)
-                dest = agent_dir / "skills" / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(skill_file), str(dest))
+        from app.services.skill_installation import collect_skill_package_files, install_active_skill_package
+
+        for skill_dir in sorted(path for path in hr_skills.iterdir() if path.is_dir()):
+            if not (skill_dir / "SKILL.md").is_file():
+                continue
+            install_active_skill_package(
+                workspace=agent_dir,
+                folder_name=skill_dir.name,
+                files=collect_skill_package_files(skill_dir),
+                source="hr_template",
+                overwrite=True,
+            )
 
     (agent_dir / ".hr_template_version").write_text(HR_TEMPLATE_VERSION, encoding="utf-8")
 
@@ -258,6 +259,7 @@ async def get_or_create_hr_agent(
         # Keep existing HR agents on the current hiring-flow contract. Older
         # workspaces are refreshed once per template version with local backups.
         from app.services.agent_manager import agent_manager
+
         agent_dir = agent_manager._agent_dir(hr_agent.id)
         if not agent_dir.exists():
             await agent_manager.initialize_agent_files(db, hr_agent)
@@ -289,9 +291,14 @@ async def get_or_create_hr_agent(
     await ensure_agent_identity(db, hr_agent, display_name="HR Onboarding Agent", avatar_url=None)
 
     # No public permissions — HR agent is only accessible via this endpoint
-    db.add(AgentPermission(
-        agent_id=hr_agent.id, tenant_id=hr_agent.tenant_id, scope_type="company", access_level="use",
-    ))
+    db.add(
+        AgentPermission(
+            agent_id=hr_agent.id,
+            tenant_id=hr_agent.tenant_id,
+            scope_type="company",
+            access_level="use",
+        )
+    )
     await db.flush()
 
     # Initialize files using standard template (same as normal agents)
@@ -352,10 +359,7 @@ async def _validate_model_refs(
         if result.scalar_one_or_none() is None:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"{label} 指向的模型不存在、未启用或不属于本公司,"
-                    "请选择本公司已启用的模型"
-                ),
+                detail=(f"{label} 指向的模型不存在、未启用或不属于本公司,请选择本公司已启用的模型"),
             )
 
 
@@ -377,6 +381,7 @@ async def create_agent(
     default_webhook_rate = 5
     if target_tenant_id:
         from app.models.tenant import Tenant
+
         tenant_result = await db.execute(select(Tenant).where(Tenant.id == target_tenant_id))
         tenant = tenant_result.scalar_one_or_none()
         if tenant:
@@ -425,7 +430,11 @@ async def create_agent(
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
     if data.permission_scope_type == "company":
-        db.add(AgentPermission(agent_id=agent.id, tenant_id=agent.tenant_id, scope_type="company", access_level=access_level))
+        db.add(
+            AgentPermission(
+                agent_id=agent.id, tenant_id=agent.tenant_id, scope_type="company", access_level=access_level
+            )
+        )
     elif data.permission_scope_type == "user":
         if data.permission_scope_ids:
             for scope_id in data.permission_scope_ids:
@@ -454,14 +463,17 @@ async def create_agent(
 
     # Assign default platform tools
     from app.services.tool_seeder import assign_default_tools_to_agent
+
     await assign_default_tools_to_agent(db, agent.id)
     await db.flush()
 
     # Initialize agent — wrapped in try/except for rollback on failure (C-01)
     try:
         from app.services.agent_manager import agent_manager
+
         await agent_manager.initialize_agent_files(
-            db, agent,
+            db,
+            agent,
             personality=data.personality,
             boundaries=data.boundaries,
         )
@@ -471,30 +483,26 @@ async def create_agent(
         from app.api.skills import _skill_visible_to_user
         from sqlalchemy.orm import selectinload
 
-        default_result = await db.execute(
-            select(Skill).where(Skill.is_default, Skill.tenant_id.is_(None))
-        )
+        default_result = await db.execute(select(Skill).where(Skill.is_default, Skill.tenant_id.is_(None)))
         default_ids = {s.id for s in default_result.scalars().all()}
         all_skill_ids = set(data.skill_ids or []) | default_ids
 
         if all_skill_ids:
             agent_dir = agent_manager._agent_dir(agent.id)
-            skills_dir = agent_dir / "skills"
-            skills_dir.mkdir(parents=True, exist_ok=True)
+            from app.services.skill_installation import install_active_skill_package
 
             for sid in all_skill_ids:
-                result = await db.execute(
-                    select(Skill).where(Skill.id == sid).options(selectinload(Skill.files))
-                )
+                result = await db.execute(select(Skill).where(Skill.id == sid).options(selectinload(Skill.files)))
                 skill = result.scalar_one_or_none()
                 if not skill or not _skill_visible_to_user(skill, current_user):
                     continue
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
-                for sf in skill.files:
-                    file_path = skill_folder / sf.path
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_path.write_text(sf.content)
+                install_active_skill_package(
+                    workspace=agent_dir,
+                    folder_name=skill.folder_name,
+                    files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
+                    source=f"agent_create_registry_skill:{skill.id}",
+                    overwrite=True,
+                )
 
         # Start container
         try:
@@ -517,14 +525,24 @@ async def create_agent(
     # Audit: agent created
     try:
         from app.core.policy import write_audit_event
-        await write_audit_event(db, event_type="agent.created", severity="info",
-            actor_type="user", actor_id=current_user.id, tenant_id=current_user.tenant_id,
-            action="create_agent", resource_type="agent", resource_id=agent.id,
-            details={"name": agent.name, "agent_type": agent.agent_type})
+
+        await write_audit_event(
+            db,
+            event_type="agent.created",
+            severity="info",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=current_user.tenant_id,
+            action="create_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"name": agent.name, "agent_type": agent.agent_type},
+        )
     except Exception as _audit_err:
         logger.warning("Audit write failed for agent.created: %s", _audit_err)
 
     return _agent_out(agent)
+
 
 @router.get("/{agent_id}/channel-capabilities")
 async def get_agent_channel_capabilities(
@@ -581,6 +599,7 @@ async def get_agent(
     effective_tz = agent.timezone
     if not effective_tz and agent.tenant_id:
         from app.models.tenant import Tenant
+
         t_result = await db.execute(select(Tenant).where(Tenant.id == agent.tenant_id))
         tenant = t_result.scalar_one_or_none()
         if tenant:
@@ -637,7 +656,12 @@ async def get_agent_permissions(
     perms = result.scalars().all()
 
     if not perms:
-        return {"scope_type": "user", "scope_ids": [], "access_level": "manage" if is_agent_creator(current_user, agent) else "use", "is_owner": is_agent_creator(current_user, agent)}
+        return {
+            "scope_type": "user",
+            "scope_ids": [],
+            "access_level": "manage" if is_agent_creator(current_user, agent) else "use",
+            "is_owner": is_agent_creator(current_user, agent),
+        }
 
     scope_type = perms[0].scope_type
     scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
@@ -682,11 +706,16 @@ async def update_agent_permissions(
 
     # Delete existing permissions
     from sqlalchemy import delete as sql_delete
+
     await db.execute(sql_delete(AgentPermission).where(AgentPermission.agent_id == agent_id))
 
     # Insert new permissions
     if scope_type == "company":
-        db.add(AgentPermission(agent_id=agent_id, tenant_id=agent.tenant_id, scope_type="company", access_level=access_level))
+        db.add(
+            AgentPermission(
+                agent_id=agent_id, tenant_id=agent.tenant_id, scope_type="company", access_level=access_level
+            )
+        )
     elif scope_type == "user":
         if scope_ids:
             for sid in scope_ids:
@@ -728,7 +757,9 @@ async def update_agent(
     is_admin = current_user.role in ("platform_admin", "org_admin")
 
     if not is_agent_creator(current_user, agent) and not is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can update agent settings")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can update agent settings"
+        )
 
     update_data = data.model_dump(exclude_unset=True)
 
@@ -738,6 +769,7 @@ async def update_agent(
     trigger_fields = {"min_poll_interval_min", "webhook_rate_limit", "max_triggers"}
     if trigger_fields & set(update_data.keys()) and current_user.tenant_id:
         from app.models.tenant import Tenant
+
         t_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
         tenant = t_result.scalar_one_or_none()
         if tenant:
@@ -745,22 +777,26 @@ async def update_agent(
                 original = update_data["min_poll_interval_min"]
                 update_data["min_poll_interval_min"] = max(original, tenant.min_poll_interval_floor)
                 if update_data["min_poll_interval_min"] != original:
-                    clamped_fields.append({
-                        "field": "min_poll_interval_min",
-                        "requested": original,
-                        "applied": update_data["min_poll_interval_min"],
-                        "reason": "company_floor",
-                    })
+                    clamped_fields.append(
+                        {
+                            "field": "min_poll_interval_min",
+                            "requested": original,
+                            "applied": update_data["min_poll_interval_min"],
+                            "reason": "company_floor",
+                        }
+                    )
             if "webhook_rate_limit" in update_data:
                 original = update_data["webhook_rate_limit"]
                 update_data["webhook_rate_limit"] = min(original, tenant.max_webhook_rate_ceiling)
                 if update_data["webhook_rate_limit"] != original:
-                    clamped_fields.append({
-                        "field": "webhook_rate_limit",
-                        "requested": original,
-                        "applied": update_data["webhook_rate_limit"],
-                        "reason": "company_ceiling",
-                    })
+                    clamped_fields.append(
+                        {
+                            "field": "webhook_rate_limit",
+                            "requested": original,
+                            "applied": update_data["webhook_rate_limit"],
+                            "reason": "company_ceiling",
+                        }
+                    )
 
     if "primary_model_id" in update_data or "fallback_model_id" in update_data:
         await _validate_model_refs(
@@ -777,6 +813,7 @@ async def update_agent(
     # Sync Participant display_name / avatar if changed
     if "name" in update_data or "avatar_url" in update_data:
         from app.models.participant import Participant
+
         p_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id))
         p = p_r.scalar_one_or_none()
         if p:
@@ -789,10 +826,19 @@ async def update_agent(
     # Audit: agent updated
     try:
         from app.core.policy import write_audit_event
-        await write_audit_event(db, event_type="agent.updated", severity="info",
-            actor_type="user", actor_id=current_user.id, tenant_id=current_user.tenant_id,
-            action="update_agent", resource_type="agent", resource_id=agent.id,
-            details={"changed_fields": list(update_data.keys())})
+
+        await write_audit_event(
+            db,
+            event_type="agent.updated",
+            severity="info",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=current_user.tenant_id,
+            action="update_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"changed_fields": list(update_data.keys())},
+        )
     except Exception:
         logger.warning("Audit write failed for agent.updated", exc_info=True)
 
@@ -815,6 +861,7 @@ async def delete_agent(
 
     # Stop container and archive files (best effort)
     from app.services.agent_manager import agent_manager
+
     try:
         await agent_manager.remove_container(agent)
     except Exception as e:
@@ -829,10 +876,19 @@ async def delete_agent(
     # Audit: agent deleted (before commit so we still have agent data)
     try:
         from app.core.policy import write_audit_event
-        await write_audit_event(db, event_type="agent.deleted", severity="warn",
-            actor_type="user", actor_id=current_user.id, tenant_id=current_user.tenant_id,
-            action="delete_agent", resource_type="agent", resource_id=agent.id,
-            details={"name": agent.name})
+
+        await write_audit_event(
+            db,
+            event_type="agent.deleted",
+            severity="warn",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=current_user.tenant_id,
+            action="delete_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"name": agent.name},
+        )
     except Exception:
         logger.warning("Audit write failed for agent.deleted", exc_info=True)
 
@@ -851,15 +907,25 @@ async def start_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can start agent")
 
     from app.services.agent_manager import agent_manager
+
     await agent_manager.start_container(db, agent)
     await db.flush()
 
     try:
         from app.core.policy import write_audit_event
-        await write_audit_event(db, event_type="agent.started", severity="info",
-            actor_type="user", actor_id=current_user.id, tenant_id=current_user.tenant_id,
-            action="start_agent", resource_type="agent", resource_id=agent.id,
-            details={"name": agent.name})
+
+        await write_audit_event(
+            db,
+            event_type="agent.started",
+            severity="info",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=current_user.tenant_id,
+            action="start_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"name": agent.name},
+        )
     except Exception:
         logger.warning("Audit write failed for agent.started", exc_info=True)
 
@@ -878,15 +944,25 @@ async def stop_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can stop agent")
 
     from app.services.agent_manager import agent_manager
+
     await agent_manager.stop_container(agent)
     await db.flush()
 
     try:
         from app.core.policy import write_audit_event
-        await write_audit_event(db, event_type="agent.stopped", severity="info",
-            actor_type="user", actor_id=current_user.id, tenant_id=current_user.tenant_id,
-            action="stop_agent", resource_type="agent", resource_id=agent.id,
-            details={"name": agent.name})
+
+        await write_audit_event(
+            db,
+            event_type="agent.stopped",
+            severity="info",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=current_user.tenant_id,
+            action="stop_agent",
+            resource_type="agent",
+            resource_id=agent.id,
+            details={"name": agent.name},
+        )
     except Exception:
         logger.warning("Audit write failed for agent.stopped", exc_info=True)
 
@@ -906,9 +982,12 @@ async def list_agent_approvals(
     """List approval requests for a specific agent. Only creator or admin can view."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
     if not is_agent_creator(current_user, agent) and current_user.role not in ("platform_admin", "org_admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only agent creator or admin can view approvals")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only agent creator or admin can view approvals"
+        )
 
     from app.models.audit import ApprovalRequest
+
     query = select(ApprovalRequest).where(ApprovalRequest.agent_id == agent_id)
     if status_filter:
         query = query.where(ApprovalRequest.status == status_filter)
@@ -943,6 +1022,7 @@ async def resolve_agent_approval(
     agent, _access = await check_agent_access(db, current_user, agent_id)
 
     from app.services.approval_service import approval_service
+
     action = data.get("action", "reject")
     try:
         approval = await approval_service.resolve_approval(db, approval_id, current_user, action)
@@ -993,6 +1073,7 @@ async def list_gateway_messages(
     agent, _access = await check_agent_access(db, current_user, agent_id)
 
     from app.models.gateway_message import GatewayMessage
+
     result = await db.execute(
         select(GatewayMessage)
         .where(GatewayMessage.agent_id == agent_id)
@@ -1007,14 +1088,16 @@ async def list_gateway_messages(
         if m.sender_agent_id:
             r = await db.execute(select(Agent.name).where(Agent.id == m.sender_agent_id))
             sender_name = r.scalar_one_or_none()
-        out.append({
-            "id": str(m.id),
-            "sender_agent_name": sender_name,
-            "content": m.content,
-            "status": m.status,
-            "result": m.result,
-            "created_at": m.created_at.isoformat() if m.created_at else None,
-            "delivered_at": m.delivered_at.isoformat() if m.delivered_at else None,
-            "completed_at": m.completed_at.isoformat() if m.completed_at else None,
-        })
+        out.append(
+            {
+                "id": str(m.id),
+                "sender_agent_name": sender_name,
+                "content": m.content,
+                "status": m.status,
+                "result": m.result,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "delivered_at": m.delivered_at.isoformat() if m.delivered_at else None,
+                "completed_at": m.completed_at.isoformat() if m.completed_at else None,
+            }
+        )
     return out

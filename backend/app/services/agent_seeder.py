@@ -16,6 +16,7 @@ from app.models.user import User
 from app.config import get_settings
 from app.services.agent_identity_lifecycle import ensure_agent_identity
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.skill_installation import install_active_skill_package
 
 settings = get_settings()
 
@@ -220,7 +221,6 @@ async def seed_default_agents():
 
         for agent, skill_folders in [(morty, MORTY_SKILLS), (meeseeks, MEESEEKS_SKILLS)]:
             agent_dir = Path(settings.AGENT_DATA_DIR) / str(agent.id)
-            skills_dir = agent_dir / "skills"
 
             # Always include default skills
             folders_to_copy = set(skill_folders)
@@ -232,12 +232,13 @@ async def seed_default_agents():
                 skill = all_skills.get(fname)
                 if not skill:
                     continue
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
-                for sf in skill.files:
-                    file_path = skill_folder / sf.path
-                    file_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_path.write_text(sf.content, encoding="utf-8")
+                install_active_skill_package(
+                    workspace=agent_dir,
+                    folder_name=skill.folder_name,
+                    files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
+                    source=f"default_agent_seed_registry_skill:{skill.id}",
+                    overwrite=True,
+                )
 
         # ── Assign all default tools ──
         default_tools_result = await db.execute(select(Tool).where(Tool.is_default))

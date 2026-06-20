@@ -498,15 +498,17 @@ async def test_agent_import_skill_cannot_escape_skill_folder(monkeypatch, tmp_pa
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
     current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role="member")
 
-    result = await files_api.import_skill_to_agent(
-        agent_id=agent_id,
-        body=files_api.ImportSkillBody(skill_id=str(uuid.uuid4())),
-        current_user=current_user,
-        db=_FakeDB(),
-    )
+    with pytest.raises(HTTPException) as exc:
+        await files_api.import_skill_to_agent(
+            agent_id=agent_id,
+            body=files_api.ImportSkillBody(skill_id=str(uuid.uuid4())),
+            current_user=current_user,
+            db=_FakeDB(),
+        )
 
-    assert result["files"] == ["SKILL.md"]
-    assert (tmp_path / str(agent_id) / "skills" / "unsafe-skill" / "SKILL.md").exists()
+    assert exc.value.status_code == 400
+    assert "SkillGuard blocked" in str(exc.value.detail)
+    assert not (tmp_path / str(agent_id) / "skills" / "unsafe-skill" / "SKILL.md").exists()
     assert not (tmp_path / str(agent_id) / "skills" / "evil.md").exists()
     assert not (tmp_path / str(agent_id) / "evil.md").exists()
 

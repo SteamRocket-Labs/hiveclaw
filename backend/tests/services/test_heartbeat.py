@@ -111,6 +111,21 @@ def test_read_incremental_t2_ignores_legacy_learnings_when_no_canonical_package(
 # ─── _parse_heartbeat_outcome ───────────────────────────────────
 
 
+def test_heartbeat_instruction_contains_score_rubric() -> None:
+    from app.services.heartbeat import _HEARTBEAT_TEMPLATE_PATH, _compose_heartbeat_instruction
+
+    composed = _compose_heartbeat_instruction("base")
+    template = _HEARTBEAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    for text in (composed, template):
+        assert "<heartbeat_score_rubric>" in text
+        assert "0-1: noop" in text
+        assert "2-3: failure or bootstrap/recovery" in text
+        assert "4-6: useful small action" in text
+        assert "7-8: high-value evidence-backed action" in text
+        assert "9-10: exceptional, verified, reusable impact" in text
+
+
 def test_parse_heartbeat_outcome_structured_tags():
     from app.services.heartbeat import _parse_heartbeat_outcome
 
@@ -478,10 +493,12 @@ async def test_build_evolution_context_stages_pending_t3_consolidation_job(tmp_p
     agent_id = uuid4()
     package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / "s1" / "segments" / "seg-1"
     package_dir.mkdir(parents=True)
-    (package_dir / "summary.md").write_text("<t2_summary id=\"sum-1\" status=\"closed\"/>", encoding="utf-8")
-    (package_dir / "labels.md").write_text("<t2_labels id=\"lbl-1\"><package_status>closed</package_status></t2_labels>", encoding="utf-8")
+    (package_dir / "summary.md").write_text('<t2_summary id="sum-1" status="closed"/>', encoding="utf-8")
+    (package_dir / "labels.md").write_text(
+        '<t2_labels id="lbl-1"><package_status>closed</package_status></t2_labels>', encoding="utf-8"
+    )
     (package_dir / "review.md").write_text(
-        "<t2_review id=\"rev-1\"><decision>approved</decision><allowed_next>t3_intake</allowed_next></t2_review>",
+        '<t2_review id="rev-1"><decision>approved</decision><allowed_next>t3_intake</allowed_next></t2_review>',
         encoding="utf-8",
     )
     (package_dir / "manifest.json").write_text(

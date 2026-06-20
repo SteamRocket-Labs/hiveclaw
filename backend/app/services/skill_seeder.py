@@ -730,8 +730,9 @@ async def push_default_skills_to_existing_agents():
     """
     from app.models.agent import Agent
     from app.models.skill import Skill
-    from sqlalchemy.orm import selectinload
     from app.services.agent_manager import agent_manager
+    from app.services.skill_installation import install_active_skill_package
+    from sqlalchemy.orm import selectinload
 
     # Startup: pushes default skills into every agent across all tenants — the
     # unfiltered Agent scan needs cross-tenant visibility, so run under an
@@ -757,30 +758,32 @@ async def push_default_skills_to_existing_agents():
         updated = 0
         for agent in agents:
             agent_dir = agent_manager._agent_dir(agent.id)
-            skills_dir = agent_dir / "skills"
             for skill in default_skills:
                 if not skill.files:
                     continue
-                skill_folder = skills_dir / skill.folder_name
-                skill_folder.mkdir(parents=True, exist_ok=True)
-                skill_folder_resolved = skill_folder.resolve()
-                for sf in skill.files:
-                    fp = (skill_folder / sf.path).resolve()
-                    try:
-                        fp.relative_to(skill_folder_resolved)
-                    except ValueError:
-                        continue
-                    fp.parent.mkdir(parents=True, exist_ok=True)
-                    if fp.exists():
-                        existing_content = fp.read_text(encoding="utf-8")
-                        if existing_content == sf.content:
-                            continue  # already up-to-date
-                        fp.write_text(sf.content, encoding="utf-8")
-                        updated += 1
-                    else:
-                        fp.write_text(sf.content, encoding="utf-8")
-                        pushed += 1
-                        logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
+                before = {
+                    sf.path: (agent_dir / "skills" / skill.folder_name / sf.path).read_text(encoding="utf-8")
+                    for sf in skill.files
+                    if (agent_dir / "skills" / skill.folder_name / sf.path).is_file()
+                }
+                install_active_skill_package(
+                    workspace=agent_dir,
+                    folder_name=skill.folder_name,
+                    files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
+                    source=f"startup_default_registry_skill:{skill.id}",
+                    overwrite=True,
+                )
+                after_paths = [agent_dir / "skills" / skill.folder_name / sf.path for sf in skill.files]
+                if any(
+                    path.is_file() and sf.path not in before for path, sf in zip(after_paths, skill.files, strict=False)
+                ):
+                    pushed += 1
+                    logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
+                elif any(
+                    path.is_file() and path.read_text(encoding="utf-8") != before.get(sf.path, "")
+                    for path, sf in zip(after_paths, skill.files, strict=False)
+                ):
+                    updated += 1
             legacy_removed = remove_legacy_flat_skill_files(agent_dir)
             if legacy_removed:
                 updated += len(legacy_removed)

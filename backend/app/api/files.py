@@ -19,7 +19,6 @@ from app.services.file_download_tokens import (
     NotChannelFileDownloadToken,
     verify_channel_file_download_token,
 )
-from app.services.skill_guard import SkillGuardReport, scan_skill_files
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -169,20 +168,6 @@ def _raise_raw_memory_read_guard() -> None:
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Raw memory files require manage access; use the Knowledge read model for governed memory reads.",
     )
-
-
-def _skill_guard_detail(report: SkillGuardReport) -> dict:
-    return {
-        "message": f"SkillGuard blocked skill package: {len(report.blocking_findings)} blocking finding(s).",
-        "skill_guard": report.to_dict(),
-    }
-
-
-def _guard_skill_files_or_raise(files: list[dict], *, source: str) -> SkillGuardReport:
-    report = scan_skill_files(files, source=source)
-    if not report.allowed:
-        raise HTTPException(status_code=400, detail=_skill_guard_detail(report))
-    return report
 
 
 @router.get("/", response_model=list[FileInfo])
@@ -418,30 +403,27 @@ async def import_skill_to_agent(
     if not skill.files:
         raise HTTPException(status_code=400, detail="Skill has no files")
 
-    # Write each file into the agent's workspace
     base = _agent_base_dir(agent_id)
-    skill_dir = base / "skills" / skill.folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    from app.services.skill_installation import install_active_skill_package
 
-    written = []
-    skill_dir_resolved = skill_dir.resolve()
-    for f in skill.files:
-        file_path = (skill_dir / f.path).resolve()
-        # Safety check
-        try:
-            file_path.relative_to(skill_dir_resolved)
-        except ValueError:
-            continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(f.content, encoding="utf-8")
-        written.append(f.path)
+    try:
+        install_result = install_active_skill_package(
+            workspace=base,
+            folder_name=skill.folder_name,
+            files=[{"path": f.path, "content": f.content} for f in skill.files],
+            source=f"registry_skill:{skill.id}",
+            overwrite=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "status": "ok",
         "skill_name": skill.name,
         "folder_name": skill.folder_name,
-        "files_written": len(written),
-        "files": written,
+        "files_written": install_result["files_written"],
+        "files": install_result["files"],
+        "skill_guard": install_result["skill_guard"],
     }
 
 
@@ -628,7 +610,10 @@ async def upload_enterprise_kb_file(
                         tenant_id=str(current_user.tenant_id),
                         user_id=str(current_user.id),
                         acl={"tenant_ids": [str(current_user.tenant_id)], "scope": "tenant"},
-                        metadata={"source_type": "enterprise_knowledge_base", "path": f"{sub_path}/{filename}" if sub_path else filename},
+                        metadata={
+                            "source_type": "enterprise_knowledge_base",
+                            "path": f"{sub_path}/{filename}" if sub_path else filename,
+                        },
                         reason=f"Enterprise KB upload: {filename}",
                     )
                 )
@@ -783,31 +768,26 @@ async def agent_import_from_clawhub(
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     token = await _get_github_token(tenant_id)
     files = await _fetch_github_directory("openclaw", "skills", github_path, "main", token)
-    guard_report = _guard_skill_files_or_raise(files, source=f"agent_clawhub:{slug}")
+    from app.services.skill_installation import install_active_skill_package
 
-    # 3. Write to agent workspace: skills/<slug>/
-    skill_dir = base / "skills" / folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    written = []
-    skill_dir_resolved = skill_dir.resolve()
-    for f in files:
-        file_path = (skill_dir / f["path"]).resolve()
-        try:
-            file_path.relative_to(skill_dir_resolved)
-        except ValueError:
-            continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(f["content"], encoding="utf-8")
-        written.append(f["path"])
+    try:
+        install_result = install_active_skill_package(
+            workspace=base,
+            folder_name=folder_name,
+            files=files,
+            source=f"agent_clawhub:{slug}",
+            overwrite=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "status": "ok",
         "skill_name": skill_info.get("displayName", slug),
         "folder_name": folder_name,
-        "files_written": len(written),
-        "files": written,
-        "skill_guard": guard_report.to_dict(),
+        "files_written": install_result["files_written"],
+        "files": install_result["files"],
+        "skill_guard": install_result["skill_guard"],
     }
 
 
@@ -845,28 +825,23 @@ async def agent_import_from_url(
     files = await _fetch_github_directory(owner, repo, path, branch, token)
     if not files:
         raise HTTPException(404, "No files found")
-    guard_report = _guard_skill_files_or_raise(files, source=body.url)
+    from app.services.skill_installation import install_active_skill_package
 
-    # Write to agent workspace
-    skill_dir = base / "skills" / folder_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    written = []
-    skill_dir_resolved = skill_dir.resolve()
-    for f in files:
-        file_path = (skill_dir / f["path"]).resolve()
-        try:
-            file_path.relative_to(skill_dir_resolved)
-        except ValueError:
-            continue
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(f["content"], encoding="utf-8")
-        written.append(f["path"])
+    try:
+        install_result = install_active_skill_package(
+            workspace=base,
+            folder_name=folder_name,
+            files=files,
+            source=body.url,
+            overwrite=False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "status": "ok",
         "folder_name": folder_name,
-        "files_written": len(written),
-        "files": written,
-        "skill_guard": guard_report.to_dict(),
+        "files_written": install_result["files_written"],
+        "files": install_result["files"],
+        "skill_guard": install_result["skill_guard"],
     }

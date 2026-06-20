@@ -20,6 +20,7 @@ from app.services.auto_dream import (
     _build_dream_consolidation_user_prompt,
     _consolidate_t3_files,
     _last_dream_time,
+    _SOUL_MEMORY_GATE_SYSTEM_PROMPT,
     _heartbeat_ticks_since_dream,
     _parse_dream_decision,
     _read_preservation_flags,
@@ -35,6 +36,15 @@ def _reset_state():
     _last_dream_time.clear()
     _sessions_since_dream.clear()
     _heartbeat_ticks_since_dream.clear()
+
+
+def test_soul_memory_gate_prompt_has_metric_specific_score_standards() -> None:
+    assert "<metric_score_standards>" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
+    assert "evidence_strength: 0=no cited accepted T3/T2 source refs" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
+    assert "stability: 0=one-off/transient" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
+    assert "identity_fit: 0=ordinary task detail" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
+    assert "conflict_safety: 0=conflicts with frozen charter" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
+    assert "prompt_blast_radius: 0=broad always-on behavior change" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
 
 
 class TestDreamGates:
@@ -255,10 +265,10 @@ class TestSoulCandidatePackage:
             "soul_pitch_md": "# Soul Pitch\n\nPromote a stable verification principle from accepted T3 evidence.\n",
             "soul_patch_md": (
                 "# Soul Patch\n\n"
-                "<soul_principle id=\"verification-loop\" stability=\"stable\">\n"
+                '<soul_principle id="verification-loop" stability="stable">\n'
                 "Always verify after material changes.\n"
                 "<source_refs>\n"
-                f"<source_ref ref=\"{refs[0]}\" />\n"
+                f'<source_ref ref="{refs[0]}" />\n'
                 "</source_refs>\n"
                 "</soul_principle>\n"
             ),
@@ -290,13 +300,13 @@ class TestSoulCandidatePackage:
             "role: agent_identity\n"
             "---\n\n"
             f"# Soul — {name}\n\n"
-            "<soul_identity frozen=\"true\">\n"
+            '<soul_identity frozen="true">\n'
             f"<name>{name}</name>\n"
             "</soul_identity>\n\n"
-            "<soul_principle id=\"verification-loop\" stability=\"stable\">\n"
+            '<soul_principle id="verification-loop" stability="stable">\n'
             "Always verify after material changes.\n"
             "<source_refs>\n"
-            "<source_ref ref=\"t3:memory/t3/worker.md#block:soul-principle-1\" />\n"
+            '<source_ref ref="t3:memory/t3/worker.md#block:soul-principle-1" />\n'
             "</source_refs>\n"
             "<applies_when>Code, docs, prompt, or memory behavior changed.</applies_when>\n"
             "<does_not_apply_when>User explicitly asks for discussion only.</does_not_apply_when>\n"
@@ -462,9 +472,7 @@ class TestApplyDreamDecisions:
         feedback_path = tmp_path / str(agent_id) / "memory" / "t3" / "user.md"
         feedback_path.parent.mkdir(parents=True, exist_ok=True)
         feedback_path.write_text(
-            "# T3 User\n\n"
-            "- [2026-04-10] use Japanese for responses\n"
-            "- [2026-04-14] please respond in Chinese always\n",
+            "# T3 User\n\n- [2026-04-10] use Japanese for responses\n- [2026-04-14] please respond in Chinese always\n",
             encoding="utf-8",
         )
         original_content = feedback_path.read_text(encoding="utf-8")
@@ -566,15 +574,15 @@ class TestDreamFrozenMissionGate:
             "role: agent_identity\n"
             "---\n\n"
             "# Soul — Radar\n\n"
-            "<soul_identity frozen=\"true\">\n"
+            '<soul_identity frozen="true">\n'
             "<name>Radar</name>\n"
             "<mission>Scan the exhibition floor three times daily and proactively push fresh leads.</mission>\n"
             "</soul_identity>\n\n"
-            "<soul_principle id=\"lead-brief-rule\" stability=\"stable\">\n"
+            '<soul_principle id="lead-brief-rule" stability="stable">\n'
             f"{content}\n"
             "<source_refs>\n"
-            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:a\" />\n"
-            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:b\" />\n"
+            '<source_ref ref="t3:memory/t3/capabilities.md#entry:a" />\n'
+            '<source_ref ref="t3:memory/t3/capabilities.md#entry:b" />\n'
             "</source_refs>\n"
             "<applies_when>Preparing lead briefs.</applies_when>\n"
             "<does_not_apply_when>The owner explicitly changes the scan cadence.</does_not_apply_when>\n"
@@ -589,11 +597,11 @@ class TestDreamFrozenMissionGate:
         )
         candidate["soul_patch_md"] = (
             "# Soul Patch\n\n"
-            "<soul_principle id=\"lead-brief-rule\" stability=\"stable\">\n"
+            '<soul_principle id="lead-brief-rule" stability="stable">\n'
             f"{content}\n"
             "<source_refs>\n"
-            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:a\" />\n"
-            "<source_ref ref=\"t3:memory/t3/capabilities.md#entry:b\" />\n"
+            '<source_ref ref="t3:memory/t3/capabilities.md#entry:a" />\n'
+            '<source_ref ref="t3:memory/t3/capabilities.md#entry:b" />\n'
             "</source_refs>\n"
             "</soul_principle>\n"
         )
@@ -843,11 +851,11 @@ class TestRunDreamIntegration:
                     "role: agent_identity\n"
                     "---\n\n"
                     "# Soul — Test\n\n"
-                    "<soul_user_model id=\"concise-output\" stability=\"stable\">\n"
+                    '<soul_user_model id="concise-output" stability="stable">\n'
                     "Always prefer concise output.\n"
                     "<source_refs>\n"
-                    "<source_ref ref=\"t3:memory/t3/user.md#entry:a\" />\n"
-                    "<source_ref ref=\"t3:memory/t3/user.md#entry:b\" />\n"
+                    '<source_ref ref="t3:memory/t3/user.md#entry:a" />\n'
+                    '<source_ref ref="t3:memory/t3/user.md#entry:b" />\n'
                     "</source_refs>\n"
                     "<applies_when>User asks for status, implementation summaries, or next steps.</applies_when>\n"
                     "<does_not_apply_when>User explicitly asks for exhaustive detail.</does_not_apply_when>\n"

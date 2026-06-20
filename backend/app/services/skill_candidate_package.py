@@ -55,9 +55,7 @@ def render_eval_plan(
         f"- eval_tier: {tier}\n"
         f"- declared_tools: {', '.join(declared_tools) if declared_tools else 'none'}\n"
         f"- declared_packs: {', '.join(declared_packs) if declared_packs else 'none'}\n\n"
-        "## Required Checks\n"
-        + "\n".join(checks)
-        + "\n"
+        "## Required Checks\n" + "\n".join(checks) + "\n"
     )
 
 
@@ -126,6 +124,7 @@ def write_skill_candidate_package(
         "pitch_path": f"evolution/skill_candidates/{candidate_id}/skill_pitch.md",
         "eval_plan_path": f"evolution/skill_candidates/{candidate_id}/eval_plan.md",
         "failure_cases_path": f"evolution/skill_candidates/{candidate_id}/failure_cases.md",
+        "manifest_path": f"evolution/skill_candidates/{candidate_id}/manifest.json",
         "source_refs": source_refs,
         "declared_tools": list(declared_tools),
         "declared_packs": list(declared_packs),
@@ -161,5 +160,7 @@ def update_skill_candidate_package_status(
         manifest["status_reason"] = reason
     if extra_metadata:
         manifest.setdefault("metadata", {}).update(extra_metadata)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return manifest

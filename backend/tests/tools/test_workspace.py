@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -350,13 +351,12 @@ def test_migrate_all_workspaces_handles_legacy_memory_file(monkeypatch, tmp_path
 
     assert not (workspace / "memory" / "memory.md").exists()
     assert not (workspace / "memory" / "learnings" / "LEARNINGS.md").exists()
-    assert "Keep the architecture md-first" in (
-        workspace / "memory" / "t3" / "capabilities.md"
-    ).read_text(encoding="utf-8")
-    assert (
-        "Prefer weighted promotion over rigid layer upgrades."
-        in (workspace / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
+    assert "Keep the architecture md-first" in (workspace / "memory" / "t3" / "capabilities.md").read_text(
+        encoding="utf-8"
     )
+    assert "Prefer weighted promotion over rigid layer upgrades." in (
+        workspace / "memory" / "learnings" / "insights.md"
+    ).read_text(encoding="utf-8")
     assert (workspace / ".legacy_migrated").exists()
 
 
@@ -413,15 +413,13 @@ def test_migrate_all_workspaces_rehomes_legacy_runtime_and_root_files(monkeypatc
     assert not (workspace / "traces").exists()
     assert not (workspace / "state.json").exists()
     assert not (workspace / "focus.md").exists()
-    assert (workspace / "runtime_artifacts" / "traces" / "invocation_spans.jsonl").read_text(
-        encoding="utf-8"
-    ) == "{}\n"
+    assert (workspace / "runtime_artifacts" / "traces" / "invocation_spans.jsonl").read_text(encoding="utf-8") == "{}\n"
     assert (workspace / "runtime_artifacts" / "agent_state.json").read_text(encoding="utf-8") == '{"status": "idle"}'
     assert (workspace / "memory" / "retired_artifacts" / "focus.md").read_text(encoding="utf-8") == "# Legacy Focus\n"
     assert not (workspace / "legacy_report.md").exists()
-    assert (
-        workspace / "workspace" / "archived" / "legacy-root-files" / "legacy_report.md"
-    ).read_text(encoding="utf-8") == "# Legacy Report\n"
+    assert (workspace / "workspace" / "archived" / "legacy-root-files" / "legacy_report.md").read_text(
+        encoding="utf-8"
+    ) == "# Legacy Report\n"
 
 
 @pytest.mark.asyncio
@@ -500,9 +498,7 @@ async def test_check_declared_packs_authorized_denied_tool_still_allows_skill_sa
 
     checked_tools: list[str] = []
     monkeypatch.setattr("app.database.async_session", lambda: _NoopSession())
-    monkeypatch.setattr(
-        "app.services.capability_gate.check_capability", _fake_check_capability
-    )
+    monkeypatch.setattr("app.services.capability_gate.check_capability", _fake_check_capability)
 
     ok, reason = await workspace_mod.check_declared_packs_authorized(
         tenant_id=uuid4(),
@@ -537,9 +533,7 @@ async def test_save_skill_handler_keeps_denied_pack_as_discovery_hint(monkeypatc
         )
 
     monkeypatch.setattr("app.database.async_session", lambda: _NoopSession())
-    monkeypatch.setattr(
-        "app.services.capability_gate.check_capability", _fake_check_capability
-    )
+    monkeypatch.setattr("app.services.capability_gate.check_capability", _fake_check_capability)
 
     tenant_id = uuid4()
     agent_id = uuid4()
@@ -572,3 +566,46 @@ async def test_save_skill_handler_keeps_denied_pack_as_discovery_hint(monkeypatc
     assert "skills/zombie-skill/SKILL.md" in manifest
     assert "pending_behavior_verification" in manifest
     assert "web_pack" in candidate_text
+
+
+@pytest.mark.asyncio
+async def test_save_skill_candidate_is_recorded_in_evolution_ledger(monkeypatch, tmp_path):
+    import uuid
+
+    from app.core.execution_context import set_tool_tenant_id
+    from app.services.evolution_ledger import load_evolution_ledger
+    from app.tools.handlers.skills import save_skill
+
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    set_tool_tenant_id(tenant_id)
+    try:
+        result = await save_skill(
+            agent_id,
+            tmp_path,
+            {
+                "name": "Deploy Verification",
+                "description": "Verify a deployment using health checks and logs.",
+                "instructions": "Read current deploy output, inspect health endpoint, then summarize failures.",
+                "tools": ["read_file"],
+            },
+        )
+    finally:
+        set_tool_tenant_id(None)
+
+    assert "submitted for review" in result
+    packages = sorted((tmp_path / "evolution" / "skill_candidates").iterdir())
+    assert len(packages) == 1
+    manifest = json.loads((packages[0] / "manifest.json").read_text(encoding="utf-8"))
+    ledger_entries = load_evolution_ledger(tmp_path)
+    skill_candidates = [
+        entry
+        for entry in ledger_entries
+        if entry.get("schema") == "evolution_candidate.v1"
+        and entry.get("target_type") == "skill"
+        and entry.get("metadata", {}).get("lane") == "save_skill"
+    ]
+    assert len(skill_candidates) == 1
+    assert skill_candidates[0]["candidate_id"] == manifest["candidate_id"]
+    assert skill_candidates[0]["target_id"] == "skills/deploy-verification/SKILL.md"
+    assert skill_candidates[0]["metadata"]["package_manifest_path"] == manifest["manifest_path"]

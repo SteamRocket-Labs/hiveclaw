@@ -21,11 +21,13 @@ from pathlib import Path
 import pytest
 
 from app.memory.scene_curator import (
+    _SCENE_SYSTEM_PROMPT,
     ScenePatchCandidate,
     apply_scene_patch,
     curate_scene,
 )
 from app.memory.wiki_curator import (
+    _WIKI_SYSTEM_PROMPT,
     WikiPatchCandidate,
     apply_wiki_patch,
     curate_wiki_page,
@@ -39,6 +41,15 @@ def _llm_returning(payload: dict):
         return json.dumps(payload)
 
     return llm
+
+
+def test_derived_curator_prompts_define_confidence_score_anchors() -> None:
+    for prompt in (_SCENE_SYSTEM_PROMPT, _WIKI_SYSTEM_PROMPT):
+        assert "<confidence_rubric>" in prompt
+        assert "0.00-0.39" in prompt
+        assert "0.40-0.69" in prompt
+        assert "0.70-0.84" in prompt
+        assert "0.85-1.00" in prompt
 
 
 # ── Scene curator ──

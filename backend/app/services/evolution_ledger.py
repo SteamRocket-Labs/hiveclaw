@@ -57,10 +57,11 @@ def record_evolution_candidate(
     diff: str,
     source_attempt_ids: list[str],
     baseline_version: str | None = None,
+    candidate_id: str | None = None,
     manifest: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    candidate_id = _candidate_id(target_type, target_id, diff, source_attempt_ids)
+    candidate_id = candidate_id or _candidate_id(target_type, target_id, diff, source_attempt_ids)
     refs = [str(item).strip() for item in source_attempt_ids if str(item).strip()]
     candidate_manifest = manifest or build_evolution_manifest(
         change_type=target_type,

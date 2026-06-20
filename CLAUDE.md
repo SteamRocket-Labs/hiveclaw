@@ -284,10 +284,10 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | Notification | `MEMORY_EXTRACTED` |
 
 Memory pipeline hooks (registered in `hooks_setup.py`):
-- `RESPONSE_COMPLETE` → fire-and-forget LLM extraction to T2 (CC Stop hook equivalent)
-- `PRE_COMPACTION` → synchronous extraction before context is lost
-- `SESSION_IDLE` → incremental T0 write (cursor-based, no duplication on reconnect)
-- `SESSION_CLOSE` → drain extractor + incremental T0 write
+- `RESPONSE_COMPLETE` → append accepted runtime evidence into the T0 session ledger and route fast-reflection candidate signals; it must not reconnect the legacy `memory/learnings` hot path
+- `PRE_COMPACTION` → preserve evidence before context is summarized away; semantic writes still go through Segment Packages / T3 candidates
+- `SESSION_IDLE` → seal or advance T0 session ledger segments without duplicating already-flushed messages
+- `SESSION_CLOSE` → finalize the T0 segment and trigger canonical T0→T2 Segment Package construction for eligible user-facing segments
 
 ### Prompt Architecture (`app/runtime/prompt_sections/`)
 
@@ -296,7 +296,7 @@ Memory pipeline hooks (registered in `hooks_setup.py`):
 | Section | Source |
 |---------|--------|
 | `agent_context.py` | Soul identity + tone/style rules |
-| `memory_context.py` | T3 MD files (feedback, knowledge, strategies, blocked, user) |
+| `memory_context.py` | Accepted T3 files (`memory/t3/user.md`, `worker.md`, `episodes.md`, `capabilities.md`) plus explicit overlay when activation policy allows |
 | `tasks.py` | Active tasks + verification rules |
 | `executing_actions.py` | Tool usage + memory save rules |
 | `output_efficiency.py` | Response format and conciseness |

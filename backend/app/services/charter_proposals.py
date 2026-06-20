@@ -5,13 +5,14 @@ PostgreSQL-backed durable hand-off between dream's
 company admin who approves or rejects each proposal. Replaces the
 local-sqlite shim from the first Phase 15 implementation.
 
-Approved proposals can be explicitly applied to an agent's frozen
-owner charter with an audit line. The store still never applies
-pending/rejected proposals and never mutates company governance.
+Approved proposals are staged as Soul Candidate signals with an audit line.
+The store still never stages pending/rejected proposals and never mutates
+company governance or `soul.md` directly.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -205,26 +206,24 @@ def apply_approved_proposal_to_soul(
     applied_by: str,
     now: datetime | None = None,
 ) -> dict[str, str]:
-    """Apply an approved owner-charter calibration into `soul.md`.
+    """Stage an approved owner-charter calibration for Soul Writer review.
 
-    This is the explicit owner/admin-approved mutation path for Phase 15
-    proposals. It only appends to the frozen owner agency charter sections and
-    writes a local audit row under `memory/charter_calibration.md`.
+    Approved proposals are semantic identity changes. They must not be
+    mechanically appended into `soul.md`; this function writes a governed Soul
+    Candidate signal that Dream/Soul Writer can turn into `soul.md.next`, then
+    Soul Memory Gate and Platform Soul Gate perform the final exact commit.
     """
     if proposal.status != ProposalStatus.APPROVED.value:
         raise ValueError("Only approved charter proposals can be applied.")
 
     target_heading = _target_owner_charter_heading(proposal.proposal_kind)
-    soul_path = Path(agent_dir) / "soul.md"
-    text = soul_path.read_text(encoding="utf-8")
-    bullet = (
-        f"- {proposal.action} _(approved proposal={proposal.id}; decision={proposal.decision_id}; by={applied_by})_"
+    candidate_path = _stage_charter_proposal_soul_candidate(
+        Path(agent_dir),
+        proposal,
+        staged_by=applied_by,
+        target_section=target_heading.strip("*"),
+        staged_at=now or datetime.now(timezone.utc),
     )
-    updated, changed = _insert_bullet_once(
-        text, section_heading=target_heading, bullet=bullet, unique_text=proposal.action
-    )
-    if changed:
-        soul_path.write_text(updated, encoding="utf-8")
 
     applied_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     _append_charter_apply_audit(
@@ -233,13 +232,72 @@ def apply_approved_proposal_to_soul(
         applied_by=applied_by,
         applied_at=applied_at,
         target_section=target_heading.strip("*"),
-        changed=changed,
+        changed=True,
     )
     return {
-        "status": "applied" if changed else "already_present",
+        "status": "candidate_staged",
         "target_section": target_heading.strip("*"),
         "proposal_id": proposal.id,
+        "candidate_path": candidate_path,
     }
+
+
+def _safe_candidate_id(raw: str) -> str:
+    normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in raw.strip())
+    return "-".join(part for part in normalized.split("-") if part) or str(uuid.uuid4())
+
+
+def _stage_charter_proposal_soul_candidate(
+    agent_dir: Path,
+    proposal: CharterProposal,
+    *,
+    staged_by: str,
+    target_section: str,
+    staged_at: datetime,
+) -> str:
+    candidate_id = f"charter-proposal-{_safe_candidate_id(proposal.id)}"
+    package_dir = agent_dir / "evolution" / "soul_candidates" / candidate_id
+    package_dir.mkdir(parents=True, exist_ok=True)
+    signal_path = package_dir / "charter_proposal_signal.md"
+    signal = (
+        "# Charter Proposal Soul Candidate Signal\n\n"
+        f"- proposal_id: {proposal.id}\n"
+        f"- decision_id: {proposal.decision_id}\n"
+        f"- proposal_kind: {proposal.proposal_kind}\n"
+        f"- target_path: soul.md\n"
+        f"- target_section: {target_section}\n"
+        f"- status: pending_soul_writer\n"
+        f"- staged_by: {staged_by}\n"
+        f"- staged_at: {staged_at.astimezone(timezone.utc).isoformat()}\n\n"
+        "## Owner-Approved Action\n\n"
+        f"{proposal.action}\n\n"
+        "## Reason\n\n"
+        f"{proposal.reason}\n\n"
+        "## Writer Instruction\n\n"
+        "Dream / Soul Writer must inspect the current soul.md, preserve frozen identity/charter "
+        "sections, and produce a complete soul.md.next candidate. Platform code must not append "
+        "this action directly into soul.md.\n"
+    )
+    signal_path.write_text(signal, encoding="utf-8")
+    manifest = {
+        "schema": "soul_charter_candidate_signal.v1",
+        "candidate_id": candidate_id,
+        "proposal_id": proposal.id,
+        "decision_id": proposal.decision_id,
+        "proposal_kind": proposal.proposal_kind,
+        "target_path": "soul.md",
+        "target_section": target_section,
+        "status": "pending_soul_writer",
+        "signal_path": f"evolution/soul_candidates/{candidate_id}/charter_proposal_signal.md",
+        "source_refs": [proposal.decision_id, f"charter_proposal:{proposal.id}"],
+        "staged_by": staged_by,
+        "staged_at": staged_at.astimezone(timezone.utc).isoformat(),
+    }
+    (package_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest["signal_path"]
 
 
 def _row_to_dataclass(row: CharterProposalRow) -> CharterProposal:
@@ -312,8 +370,9 @@ def _append_charter_apply_audit(
     line = (
         f"- [{applied_at.date().isoformat()}][proposal_id={proposal.id}]"
         f"[decision_id={proposal.decision_id}][kind={proposal.proposal_kind}]"
-        f"[target={target_section}][applied_by={applied_by}]"
-        f"[status={'applied' if changed else 'already_present'}] {proposal.action}"
+        f"[target={target_section}][staged_by={applied_by}]"
+        "[status=candidate_staged] "
+        f"{proposal.action}"
     )
     if f"[proposal_id={proposal.id}]" in existing:
         return

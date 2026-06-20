@@ -131,26 +131,28 @@ Web chat is durable: the browser WebSocket subscribes to a background `RuntimeTa
 This is the part that makes Hive feel different from "a chatbot with a vector store."
 
 ```
-soul.md      ← Dream          (full gate: 24h + 3 sessions OR 2 productive heartbeats)
-   ↑                            soft dream: 6h relief valve when T3 approaches 100 entries
-T3 memory    ← governed writes (Heartbeat, save_memory, session feedback, dream/manual paths)
-   ↑                            feedback / knowledge / strategies / blocked / user
-T2 learnings ← extract_agent   (RESPONSE_COMPLETE hot path, PRE_COMPACTION drain, T0 replay)
-   ↑                            fast reflection writes ledger/session candidates, not direct T3
-T0 ledger    ← session ledger  (append-only MD/XML events, segment-sealed resume boundaries)
-               30-day raw evidence retention
+soul.md      ← Dream / Soul Writer     (reviewed soul.md.next, Platform Soul Gate exact commit)
+   ↑
+T3 memory    ← T3 Consolidator         (LLM pitch + Memory Gate review + Platform Gate exact XML blocks)
+   ↑                                     memory/t3/{episodes,user,worker,capabilities}.md
+T2 package   ← T0 -> T2 distillers      (summary.md / labels.md / review.md / manifest.json)
+   ↑
+T0 ledger    ← session ledger           (append-only MD/XML events, segment-sealed resume boundaries)
+               raw evidence for chat, tasks, triggers, delegation, heartbeat, and dream
 ```
 
 | Layer | Where | Written by | What it holds |
 |-------|-------|-----------|---------------|
 | **T0** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | web chat, task executor, runtime hooks | Append-only raw MD/XML events — user, assistant, tool, task, trigger, delegation, heartbeat, dream, and segment boundaries |
-| **T2** | `memory/learnings/*.md` | `extract_agent` hot path + backfill | Atomic learnings: facts, preferences, mistakes, patterns |
-| **T3** | `memory/{feedback,knowledge,strategies,blocked,user}.md` | governed T3 append path | Curated, deduplicated semantic memory with reinforcement counters in `lifecycle.json` |
-| **soul** | `soul.md` | Dream daemon, through promotion gates | Permanent identity — role, voice, boundaries |
+| **T2** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents plus independent Memory Gate review; Platform Gate commits package metadata | One reviewed Segment Package per source session segment, with `source_refs` back to T0 evidence |
+| **Explicit overlay** | `memory/explicit/<scope>/...` | `save_memory` for explicit user-commanded memory only | Immediate, scoped memory overlay; later absorbed into T3 only through the same T3 consolidation lane |
+| **T3** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator + Memory Gate + Platform Gate exact commit | Curated semantic XML blocks: episodic anchors, user model, worker rules, and capability/SOP seeds |
+| **Skill candidates** | `evolution/skill_candidates/<candidate_id>/` | `save_skill`, fast reflection, Skill Distiller | Inactive `SKILL.md.draft` / `candidate_signal.md` packages; active skills require Skill Gate promotion |
+| **soul** | `soul.md` | Dream/Soul Writer, through Soul Memory Gate + Platform Soul Gate | Permanent identity — mission, voice, boundaries, and high-stability behavior constitution |
 
 Heartbeat cadence is configuration-backed: `evolution_daemon` dispatches every `HEARTBEAT_TICK_SECONDS` (default 60s), and runnable agents are eligible on the managed `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` cadence (default 120 minutes). Subsequent heartbeat ticks skip when no new T2 entries exist. Full Dream is a slower identity operation: at least 24 hours plus either 3 sessions or 2 productive heartbeats. Soft Dream only does deterministic T3 maintenance and index refresh when T3 is under pressure.
 
-Files are the source of truth for human-readable memory. The active T3 prose is Markdown; `lifecycle.json` carries evidence, sensitivity, lifecycle state, access telemetry, and reinforcement counters; `memory/INDEX.md` is a lightweight navigation manifest, not a second memory store. No external T3 memory enhancement program is configured by default.
+Files are the source of truth for human-readable memory. The only accepted T3 semantic files are the four `memory/t3/*.md` files above; `memory/wiki_map.md` is the single generated navigation read model, not a second memory store and not always-on prompt memory. Legacy `memory/learnings/*.md`, `understandings.md`, root `memory/INDEX.md`, lower-case `memory/index.md`, and `.derived/t3_index.md` are compatibility or retired surfaces, not canonical runtime truth. The legacy learnings extractor is fail-closed by default and only runs with explicit migration env (`HIVE_ENABLE_LEGACY_T2_BACKFILL=1`). No external T3 memory enhancement program is configured by default.
 
 The pyramid is only the storage path. Runtime behavior is governed by the **Memory Control Plane**:
 

@@ -21,6 +21,7 @@ def queue_root(tmp_path, monkeypatch):
 
     monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("HIVE_ENABLE_LEGACY_EXTRACT_REPLAY", "1")
+    monkeypatch.setenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", "1")
     qroot = tmp_path / ".failed_extractions"
     qroot.mkdir(parents=True, exist_ok=True)
     yield qroot

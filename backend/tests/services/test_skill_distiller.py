@@ -13,6 +13,34 @@ def _jsonl_records(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _write_active_skill(
+    workspace: Path,
+    *,
+    slug: str = "web-research",
+    name: str = "Web Research",
+    description: str = "Run a basic web research workflow.",
+    instructions: str = "Search first, then fetch one page.",
+) -> Path:
+    skill_dir = workspace / "skills" / slug
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        "---\n"
+        f'name: "{name}"\n'
+        f'description: "{description}"\n'
+        "tools:\n"
+        "  - web_search\n"
+        "  - web_fetch\n"
+        "packs:\n"
+        "  - web_pack\n"
+        "---\n"
+        f"# {name}\n\n"
+        f"{instructions}\n",
+        encoding="utf-8",
+    )
+    return skill_path
+
+
 def _passing_behavior_report() -> dict:
     scenarios = {
         name: {"ready": True, "score": 100}
@@ -126,18 +154,14 @@ def test_validate_skill_draft_rejects_unknown_tools_and_sensitive_content(tmp_pa
 
 
 def test_resolve_existing_skill_as_patch_recommendation(tmp_path: Path) -> None:
-    from app.services.agent_tool_domains.workspace import _save_skill
     from app.services.skill_distiller import DistilledSkillDraft, resolve_existing_skill_conflict
 
     workspace = tmp_path / "agent"
     workspace.mkdir(parents=True)
-    _save_skill(
+    _write_active_skill(
         workspace,
-        name="Web Research",
         description="Run repeated web research workflows.",
         instructions="Search first, then fetch, then summarize.",
-        declared_tools=("web_search", "web_fetch"),
-        declared_packs=("web_pack",),
     )
 
     resolution = resolve_existing_skill_conflict(
@@ -673,20 +697,15 @@ async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatc
 
 @pytest.mark.asyncio
 async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, tmp_path: Path) -> None:
-    from app.services.agent_tool_domains.workspace import _save_skill
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 
     workspace = tmp_path / "agent"
     workspace.mkdir(parents=True)
-    save_result = _save_skill(
+    _write_active_skill(
         workspace,
-        name="Web Research",
         description="Run a basic web research workflow.",
         instructions="Search first, then fetch one page.",
-        declared_tools=("web_search", "web_fetch"),
-        declared_packs=("web_pack",),
     )
-    assert "✅" in save_result
 
     async def fake_load_internal_session_evidence(*, agent_id, since_days, state, current_session_id):
         del agent_id, since_days, state, current_session_id
@@ -782,18 +801,14 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
 
 @pytest.mark.asyncio
 async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeypatch, tmp_path: Path) -> None:
-    from app.services.agent_tool_domains.workspace import _save_skill
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 
     workspace = tmp_path / "agent"
     workspace.mkdir(parents=True)
-    _save_skill(
+    _write_active_skill(
         workspace,
-        name="Web Research",
         description="Run a basic web research workflow.",
         instructions="Search first, then fetch one page.",
-        declared_tools=("web_search", "web_fetch"),
-        declared_packs=("web_pack",),
     )
     captured_draft_kwargs: dict = {}
 

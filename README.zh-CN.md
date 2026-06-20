@@ -131,26 +131,28 @@ Web Chat 是可恢复执行：浏览器 WebSocket 只是订阅后台 `RuntimeTas
 这是让 Hive "不只是一个套了向量库的聊天机器人"的核心。
 
 ```
-soul.md      ← Dream          （完整门槛：24 小时 + 3 个会话，或 2 次有效 Heartbeat）
-   ↑                            soft dream：6 小时缓压，T3 接近 100 条时做轻量维护
-T3 语义记忆   ← 受治理写入       （Heartbeat、save_memory、session feedback、dream/manual 路径）
-   ↑                            feedback / knowledge / strategies / blocked / user
-T2 学习提取   ← extract_agent    （RESPONSE_COMPLETE 热路径、PRE_COMPACTION drain、T0 replay）
-   ↑                            fast reflection 写 ledger/session candidate，不直接写 T3
-T0 证据账本   ← session ledger   （append-only MD/XML events，segment-sealed resume boundaries）
-               原始证据保留 30 天
+soul.md      ← Dream / Soul Writer     （reviewed soul.md.next，Platform Soul Gate exact commit）
+   ↑
+T3 语义记忆   ← T3 Consolidator         （LLM pitch + Memory Gate review + Platform Gate exact XML blocks）
+   ↑                                     memory/t3/{episodes,user,worker,capabilities}.md
+T2 Package   ← T0 -> T2 distillers      （summary.md / labels.md / review.md / manifest.json）
+   ↑
+T0 证据账本   ← session ledger           （append-only MD/XML events，segment-sealed resume boundaries）
+               覆盖 chat、task、trigger、delegation、heartbeat、dream 的原始证据
 ```
 
 | 层级 | 存放位置 | 写入者 | 内容 |
 |-------|-------|-----------|---------------|
 | **T0** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | web chat、task executor、runtime hooks | append-only 原始 MD/XML events —— user、assistant、tool、task、trigger、delegation、heartbeat、dream 与 segment boundary |
-| **T2** | `memory/learnings/*.md` | `extract_agent` 热路径 + backfill | 原子化学习：事实、偏好、错误、模式 |
-| **T3** | `memory/{feedback,knowledge,strategies,blocked,user}.md` | 受治理的 T3 append 路径 | 带去重、reinforcement counter 与 `lifecycle.json` sidecar 的语义记忆 |
-| **soul** | `soul.md` | Dream 守护进程，经 promotion gate | 永久身份 —— 角色、语气、边界 |
+| **T2** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + 独立 Memory Gate review；Platform Gate 提交 package metadata | 每个 source session segment 对应一个 reviewed Segment Package，并用 `source_refs` 回指 T0 证据 |
+| **显性记忆 Overlay** | `memory/explicit/<scope>/...` | `save_memory`，只处理用户明确要求记住的内容 | 立即可激活的 scoped overlay；后续只能通过同一条 T3 consolidation lane 并入 accepted T3 |
+| **T3** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator + Memory Gate + Platform Gate exact commit | 已收敛的语义 XML blocks：情景锚点、用户模型、worker 规则、能力/SOP 种子 |
+| **Skill candidates** | `evolution/skill_candidates/<candidate_id>/` | `save_skill`、fast reflection、Skill Distiller | inactive `SKILL.md.draft` / `candidate_signal.md` packages；active skill 必须经过 Skill Gate promotion |
+| **soul** | `soul.md` | Dream/Soul Writer，经 Soul Memory Gate + Platform Soul Gate | 永久身份 —— mission、voice、boundaries 和高稳定行为宪法 |
 
 Heartbeat cadence 由配置驱动：`evolution_daemon` 每 `HEARTBEAT_TICK_SECONDS` 调度一次（默认 60 秒），可运行 Agent 按受平台托管的 `HEARTBEAT_DEFAULT_INTERVAL_MINUTES` cadence 进入资格判断（默认 120 分钟）。后续 Heartbeat tick 如果没有新的 T2 entries 会直接跳过。完整 Dream 是更慢的身份层操作：至少 24 小时，并满足 3 个会话或 2 次有效 Heartbeat。Soft Dream 只在 T3 压力上来时做确定性去重、容量缓压和 index refresh。
 
-**面向人的记忆真相仍是 MD 文件**。活跃 T3 正文是 Markdown；`lifecycle.json` 保存 evidence、sensitivity、lifecycle state、access telemetry 与 reinforcement counters；`memory/INDEX.md` 是轻量导航 manifest，不是第二套记忆库。默认不配置任何外部 T3 记忆增强程序。
+**面向人的记忆真相仍是 MD 文件**。Accepted T3 语义真相只包含上面四个 `memory/t3/*.md` 文件；`memory/wiki_map.md` 是唯一 generated navigation read model，不是第二套记忆库，也不是常驻 prompt 记忆。旧 `memory/learnings/*.md`、`understandings.md`、根目录 `memory/INDEX.md`、小写 `memory/index.md` 和 `.derived/t3_index.md` 都是兼容或已退役表面，不是 canonical runtime truth。legacy learnings extractor 默认 fail-closed，只允许在显式迁移环境变量 `HIVE_ENABLE_LEGACY_T2_BACKFILL=1` 下运行。默认不配置任何外部 T3 记忆增强程序。
 
 记忆金字塔只是沉淀路径。真正决定 Agent 如何判断和行动的是 **Memory Control Plane**：
 

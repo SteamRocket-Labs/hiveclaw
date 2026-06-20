@@ -120,8 +120,8 @@ API from booting.
 8. Run tool coverage and capability mapping audits.
 9. Apply workspace memory hygiene repair when an agent workspace is bootstrapped; the standalone `python -m app.scripts.repair_memory_hygiene --apply --confirm` path is available for fleet repair.
 10. Resume persisted async delegations and reconcile orphaned runtime tasks.
-11. Replay pending memory extraction queue entries from previous crashes or deploy restarts.
-12. Register runtime memory hooks.
+11. Register runtime memory hooks for the canonical T0 session ledger and T0->T2 Segment Package builder.
+12. Leave legacy learnings extraction and queue replay disabled unless `HIVE_ENABLE_LEGACY_T2_BACKFILL=1` and `HIVE_ENABLE_LEGACY_EXTRACT_REPLAY=1` are explicitly set for migration.
 13. Backfill legacy trigger reply contexts.
 14. Start background tasks:
     - `trigger_daemon`
@@ -131,7 +131,7 @@ API from booting.
     - `wecom_stream`
     - `wechat_personal_stream`
 15. Start optional `ss-local` SOCKS5 proxy for Discord.
-16. On shutdown, stop WeChat personal streams, close Redis, close OpenViking, close memory backends.
+16. On shutdown, stop WeChat personal streams, close Redis, and close optional connector clients.
 
 ## API Routing
 
@@ -226,9 +226,9 @@ Operational contracts:
 Hive's memory system is not a passive RAG folder. It is a closed control loop
 that turns runtime behavior into durable, permission-aware future behavior:
 
-1. Capture what happened.
-2. Extract durable learnings.
-3. Curate stable memory.
+1. Capture what happened in the append-only T0 session ledger.
+2. Distill each eligible session segment into a reviewed T2 Segment Package.
+3. Curate stable cross-session T3 memory through candidate packages and gates.
 4. Activate only the right memory for the current principal, goal, and company.
 5. Let the agent act with governed tools.
 6. Feed outcomes and owner feedback back into the next cycle.
@@ -239,23 +239,31 @@ the control loop around those files.
 
 ```mermaid
 flowchart LR
-    Run["Agent run\nweb chat / channel / trigger / delegation"]
-    Hooks["Runtime hooks\nRESPONSE_COMPLETE / PRE_COMPACTION / IDLE / CLOSE"]
-    T0["T0 raw behavior logs\nlogs/YYYY-MM-DD/behavior/*.md"]
-    Queue["durable extract queue\n.failed_extractions/*.json"]
-    T2["T2 learnings\nmemory/learnings/*.md"]
-    T3["T3 semantic memory\nmemory/*.md + understandings.md"]
+    Run["Agent run\nweb chat / channel / trigger / delegation / heartbeat / dream"]
+    Hooks["Runtime hooks\nT0 append / SESSION_IDLE / SESSION_CLOSE"]
+    T0["T0 session ledger\nmemory/t0/sessions/<session>/segments/<segment>/source.md"]
+    T2Job["T2 build job\nmemory/.staging/t2_jobs/<job>/source_bundle.json"]
+    T2["T2 Segment Package\nsummary.md / labels.md / review.md / manifest.json"]
+    T3Job["T3 Consolidation Batch\nLLM pitch + gate review + exact patch"]
+    T3["Accepted T3\nmemory/t3/{episodes,user,worker,capabilities}.md"]
+    WikiMap["Generated read model\nmemory/wiki_map.md"]
+    Explicit["Explicit Memory Overlay\nmemory/explicit/<scope>/..."]
     Activate["Activation gate\nPrincipalStack + goal/company/owner scoring"]
     Prompt["Prompt memory section\nbudgeted, sensitivity-stripped"]
     Tools["Governed tool execution\ncapability gate + action preflight"]
     Feedback["Outcome + owner feedback\ndecision trace / pending reply / T0"]
-    Evolve["Evolution ledger + replay guard\ncandidate -> eval -> promote/hold"]
-    Soul["soul.md / skills / policy\nstable behavior"]
+    SkillCandidate["Skill Candidate Package\nevolution/skill_candidates/<id>/"]
+    SoulCandidate["Soul Candidate Package\nevolution/soul_candidates/<id>/"]
+    Soul["soul.md\nreviewed soul.md.next exact commit"]
 
-    Run --> Hooks --> T0 --> Queue --> T2 --> T3 --> Activate --> Prompt --> Run
+    Run --> Hooks --> T0 --> T2Job --> T2 --> T3Job --> T3 --> WikiMap
+    T3 --> Activate --> Prompt --> Run
+    Explicit --> Activate
+    Explicit --> T3Job
     Prompt --> Tools --> Feedback --> Hooks
-    T3 --> Evolve --> Soul --> Run
-    Feedback --> Evolve
+    T3 --> SkillCandidate
+    T3 --> SoulCandidate --> Soul --> Run
+    SkillCandidate --> Prompt
 ```
 
 Current cadence is configuration-backed, not the old fixed-timer diagram:
@@ -270,18 +278,26 @@ threshold.
 
 | Layer | Storage | Writer | Purpose |
 |-------|---------|--------|---------|
-| Working | `focus.md`, objective ledger, runtime/session memory | objective services, runtime recovery | Current intent, open loops, and recovery state. This is not long-term memory. |
-| T0 raw | `logs/YYYY-MM-DD/behavior/*.md` | `runtime/hooks_setup.py`, `services/t0_logger.py` | Cursor-based record of agent/user/channel/trigger/delegation behavior. Eligible input for extraction and replay. |
-| T0 system audit | `logs/YYYY-MM-DD/system/*.md` | heartbeat and dream hooks | Distiller self-trace for operators. Not consumed as behavioral evidence for T2. |
-| T2 learnings | `memory/learnings/{insights,errors,requests}.md` | `services/extract_agent.py`, `memory/t2_store.py` | Weighted extracted facts, corrections, strategies, requests, and failure patterns. |
-| T3 semantic | `memory/{feedback,knowledge,strategies,blocked,user}.md` | heartbeat, dream, `save_memory`, governed write paths | Prompt-eligible durable memory. Markdown is the source of truth. |
-| Understanding graph | `memory/understandings.md` | `memory/understanding_store.py` | Relationship-shaped knowledge with evidence, confidence, contradictions, boundaries, and open questions. |
-| Identity | `soul.md` | dream / charter evolution path | Stable self-model, role, boundaries, and operating style. Promotion requires evidence and rollback metadata. |
-| Evolution evidence | `workspace/evolution/evolution_ledger.jsonl` | heartbeat, dream, evolution services | Candidate, eval, promotion/hold decisions for prompt, skill, memory, and policy changes. |
-| Session feedback | PostgreSQL `session_feedback_events` + governed T3 writeback | chat session feedback API | Useful/misleading labels and calibration notes tied to agent/session/decision context. |
+| Working | objective ledger, work ledger, runtime/session memory | objective services, runtime recovery, Work Ledger tools | Current intent, open loops, and recovery state. This is not long-term memory. |
+| T0 session ledger | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` + `index.json` | `memory/t0/ledger.py` via web chat, task executor, trigger/delegation, heartbeat, dream hooks | Append-only replayable raw evidence aligned with Claude Code transcript / Codex rollout semantics. |
+| T0 legacy/import logs | `logs/YYYY-MM-DD/{behavior,system}/` | `services/t0_logger.py` only for import/operator compatibility | Legacy evidence import and operator audit. Not the canonical runtime T0 truth. |
+| T2 Segment Package | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | `memory/t2/segment_package.py` | LLM-authored summary/labels plus independent review and manifest-backed `source_refs`. |
+| Explicit Memory Overlay | `memory/explicit/<scope>/...` | `save_memory` through `memory/explicit_overlay.py` and write gate | User-commanded explicit memory that activates immediately and may later be absorbed into accepted T3. |
+| Accepted T3 | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator + Memory Gate + Platform Gate exact commit | Cross-session semantic XML blocks. This is the only accepted T3 truth surface. |
+| Generated memory map | `memory/wiki_map.md` | `memory/md_store.py::rebuild_index()` / workspace bootstrap | Rebuildable navigation read model. It is not semantic truth and not always-on prompt memory. |
+| Skill candidates | `evolution/skill_candidates/<candidate_id>/` | `save_skill`, fast reflection, Skill Distiller | Inactive `SKILL.md.draft` / `candidate_signal.md` packages. Active skills require Skill Gate promotion and exact draft commit. |
+| Identity | `soul.md` | Dream/Soul Writer -> Soul Memory Gate -> Platform Soul Gate | Stable self-model, mission, role, boundaries, and operating constitution. Promotion requires evidence and rollback metadata. |
+| Evolution evidence | `workspace/evolution/evolution_ledger.jsonl` and candidate package manifests | heartbeat, dream, evolution services | Candidate, eval, promotion/hold decisions, source refs, and rollback strategy. |
+| Session feedback | PostgreSQL `session_feedback_events` + explicit overlay / T2/T3 governed absorption | chat session feedback API | Useful/misleading labels and calibration notes tied to agent/session/decision context. |
 
-Optional semantic backends such as Hindsight are read-side accelerators. They do
-not replace Markdown as the canonical memory source.
+Legacy `memory/learnings/*.md`, `memory/understandings.md`, root
+`memory/INDEX.md`, lower-case `memory/index.md`, and `.derived/t3_index.md` are
+retired or compatibility surfaces. They must not become prompt semantic memory or
+canonical write targets. Optional knowledge connectors such as OpenViking can
+serve file/knowledge retrieval, but cannot become the T3 source of truth.
+The legacy `extract_agent.extract()` / `schedule_extract()` learnings writer is
+fail-closed by default and only runs when `HIVE_ENABLE_LEGACY_T2_BACKFILL=1` is
+set for an operator-led migration or compatibility repair.
 
 ### Capture Loop
 
@@ -289,47 +305,49 @@ Runtime lifecycle events are the intake bus:
 
 | Hook | Memory role |
 |------|-------------|
-| `RESPONSE_COMPLETE` | Schedules non-blocking T0->T2 extraction and fast reflection. |
-| `PRE_COMPACTION` | Runs synchronous extraction before context is summarized away. |
-| `SESSION_IDLE` | Writes incremental T0 chat logs without duplicating already-flushed messages. |
-| `SESSION_CLOSE` | Drains pending extraction, writes final T0, and runs objective intake. |
-| `TRIGGER_END` / `DELEGATION_END` | Writes behavior T0 for autonomous work. |
-| `HEARTBEAT_TICK_END` / `DREAM_END` | Writes system audit T0 for curation/evolution decisions. |
+| `RESPONSE_COMPLETE` | Appends accepted runtime evidence into the T0 session ledger and can route fast-reflection candidate signals. It no longer schedules the legacy `memory/learnings` hot path. |
+| `PRE_COMPACTION` | Preserves evidence needed before context is summarized away; semantic writes still go through T2/T3 packages. |
+| `SESSION_IDLE` | Seals or advances T0 session ledger segments without duplicating already-flushed messages. |
+| `SESSION_CLOSE` | Finalizes the T0 segment and triggers canonical T0->T2 package construction for eligible user-facing segments. |
+| `TRIGGER_END` / `DELEGATION_END` | Writes autonomous work evidence into the same T0 ledger. |
+| `HEARTBEAT_TICK_END` / `DREAM_END` | Writes system/maintenance evidence into the same append-only T0 substrate; system-only logs do not bypass T2/T3 governance. |
 | `POST_TOOL_USE` | Captures outbound pending replies so later owner feedback can be tied to the action. |
 
-T0 has a privacy gate before disk persistence. `t0_logger.py` masks credentials,
-adds `t0_sensitivity`, records form warnings, spills large tool results to
-artifacts, and keeps behavior logs separate from system logs. T0 retention is
-short-lived by design; durable knowledge must be distilled upward.
+T0 has a privacy gate before disk persistence. Large tool results are spilled to
+artifacts and referenced from `source.md`; accepted raw events are append-only,
+per-session, replayable, and segment-sealed. `t0_logger.py` remains an import and
+operator compatibility surface, not the runtime truth writer.
 
 ### Extraction And Curation
 
-The hot extraction path is intentionally non-blocking, but it is not best-effort
-only:
+The canonical T0->T2 path is package based:
 
-1. `extract_agent.schedule_extract()` is called from `RESPONSE_COMPLETE`.
-2. `extract_queue.enqueue()` persists the batch before the async work starts.
-3. Successful extraction calls `mark_done()`.
-4. Startup replay scans `.failed_extractions/*.json` so process crashes do not
-   silently drop learnings.
-5. The extractor writes T2 through `memory/t2_store.py`.
+1. A sealed T0 segment is bundled into `memory/.staging/t2_jobs/<job_id>/source_bundle.json`.
+2. LLM summary and label agents create `summary.md` and `labels.md`.
+3. An independent review agent writes `review.md` with rubric-backed scoring.
+4. Platform Gate validates refs, schema, permissions, and atomicity, then commits the package manifest.
+5. T3 Consolidator reads reviewed packages and explicit overlay entries; legacy `load_t2_entries()` is not a T3 intake source.
 
-T2 is weighted by source and category. Human corrections and constraints rank
-highest; autonomous observations are useful but less authoritative. Heartbeat
-then reads T2 plus current T3 as deduplication context and curates stable facts
-through the governed T3 append path. Heartbeat does not directly turn its own
-outcome into permanent memory; it writes evolution files, normalizes T3,
-optionally syncs Hindsight, and lets dream decide what deserves promotion.
+T2 is one-to-one with a source session segment. It is not cross-session memory.
+T3 is where cross-session semantic convergence happens. Heartbeat is the
+orchestrator for T2->T3 intake and self-evolution tick; it reads canonical T2
+Package snapshots plus accepted T3, asks the LLM to produce a pitch/revised
+patch, then lets Memory Gate review and Platform Gate exact-commit accepted XML
+blocks. Heartbeat does not rewrite `soul.md` or active skills.
 
-Dream consolidates T3 and proposes memory/soul promotions through the Memory
-Control Plane. A promotion candidate must carry `source_refs`, evidence type,
-rollback strategy, and a promotion/hold decision. Inferred, ephemeral, or weakly
-evidenced identity changes are held instead of silently changing the agent.
+Dream reads accepted T3 and proposes soul-level reconsolidation through Soul
+Candidate Packages. It writes `soul_pitch.md`, `soul_patch.md`, and
+`soul.md.next`; an independent Soul Memory Gate must approve the candidate, then
+Platform Soul Gate validates frozen sections, base revision, rollback refs, and
+atomic commit. Inferred, ephemeral, or weakly evidenced identity changes are held
+instead of silently changing the agent.
 
 ### Write Safety
 
-Every durable memory write should pass through `prepare_memory_write()` or a
-wrapper that calls it.
+Every durable memory write must preserve the intelligence/governance split:
+LLM agents judge, summarize, tag, synthesize, and draft candidates; platform code
+validates evidence refs, permissions, schemas, dedupe/conflict state, rollback,
+audit, and exact commit. Platform code must not author semantic memory prose.
 
 | Gate | Effect |
 |------|--------|
@@ -337,10 +355,12 @@ wrapper that calls it.
 | PL4 zero retention | Credentials are rejected from durable memory. |
 | Form lint | Rejects entries that are too vague, relative, or malformed to be useful later. |
 | Metadata envelope | Adds `entry_id`, `sensitivity`, `status`, `version`, `evidence_refs`, supersession, expiry, access telemetry, and reinforcement counters in the lifecycle sidecar. |
-| Near-dedup | Paraphrases of an existing T3 fact reinforce the existing entry's helpful/harmful counters instead of appending duplicate prose. |
+| Near-dedup | Semantic duplicate handling belongs to Memory Gate/T3 Consolidator feedback; mechanical checks can detect exact path/base conflicts and require rebase. |
 
-This gate is what keeps memory from becoming a transcript dump. Durable entries
-must be concise, evidence-backed, scoped, and safe to activate later.
+This gate is what keeps memory from becoming a transcript dump while preserving
+LLM judgment. Durable entries must be concise, evidence-backed, scoped, and safe
+to activate later; if a semantic decision is needed, the candidate returns to an
+LLM writer/reviewer rather than being mechanically rewritten.
 
 Memory hygiene is part of the write-safety surface, not a one-off migration.
 `memory/hygiene.py` retires legacy `memory.sqlite3` / `memory.json` shadow stores,
@@ -356,11 +376,12 @@ dump every Markdown file into context.
 
 Current retrieval sources:
 
-1. Working projection from `focus.md`.
-2. T3 entries from `memory/*.md`.
-3. Relationship-shaped understandings from `memory/understandings.md`.
-4. Episodic context for the current/previous session.
-5. Optional semantic backend and external memory paths.
+1. Frozen identity from `soul.md`.
+2. Explicit memory overlay for user-commanded memories that are not yet absorbed into T3.
+3. Accepted T3 entries from `memory/t3/user.md` and `memory/t3/worker.md` when policy allows.
+4. Accepted T3 entries from `memory/t3/episodes.md` and `memory/t3/capabilities.md` by objective/query relevance.
+5. Rebuildable navigation from `memory/wiki_map.md` or live T3 entry manifest when needed.
+6. Episodic context for the current/previous session.
 
 `runtime/invoker.py` builds an `ActivationContext` around:
 
@@ -423,13 +444,17 @@ metadata.
 
 ### Memory Invariants
 
-- Markdown remains the canonical source of truth for T2/T3/soul memory.
+- Markdown remains the canonical source of truth for T0/T2/T3/soul memory:
+  T0 session ledger, T2 Segment Packages, accepted T3 files, and `soul.md`.
 - Runtime state, task progress, and temporary debugging evidence belong in the
   objective ledger or workspace artifacts, not durable memory.
 - PL4 credentials must never be retained in any durable memory layer.
-- Behavior T0 and system T0 are separate; only behavior T0 feeds extraction.
-- Every T2/T3 durable write must carry evidence, sensitivity, lifecycle, and
-  access metadata.
+- Legacy `logs/YYYY-MM-DD/**` can be imported or audited, but new runtime T0
+  truth is `memory/t0/sessions/**/source.md`.
+- Every T2/T3 durable write must carry source refs, sensitivity classification,
+  review status, and rollback/audit metadata.
+- `memory/learnings/*.md`, `understandings.md`, and old memory indexes are not
+  prompt semantic sources and are not canonical write targets.
 - Prompt memory must be selected by `ActivationContext`, not static inclusion.
 - Principal context must include owner/company/current-user/delegation posture
   when available.

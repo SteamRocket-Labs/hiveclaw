@@ -399,6 +399,45 @@ class TestExtractAgent:
     def extractor(self) -> ExtractAgent:
         return ExtractAgent()
 
+    @pytest.fixture(autouse=True)
+    def enable_legacy_backfill_for_compat_tests(self, monkeypatch) -> None:
+        monkeypatch.setenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", "1")
+
+    async def test_extract_write_path_is_disabled_by_default(
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.delenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", raising=False)
+        with patch("app.services.extract_agent._append_to_learnings_with_llm") as mock_append:
+            await extractor.extract(
+                agent_id,
+                [{"role": "user", "content": "Remember to always prefer concise answers"}],
+                source="web",
+            )
+
+        mock_append.assert_not_called()
+        assert str(agent_id) not in extractor._in_flight
+
+    async def test_schedule_extract_is_disabled_by_default(
+        self,
+        extractor: ExtractAgent,
+        agent_id: uuid.UUID,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.delenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", raising=False)
+        with patch("app.services.extract_agent._append_to_learnings_with_llm") as mock_append:
+            scheduled = extractor.schedule_extract(
+                agent_id,
+                [{"role": "user", "content": "Remember to always prefer concise answers"}],
+                source="web",
+            )
+
+        assert scheduled is False
+        assert str(agent_id) not in extractor._in_flight
+        mock_append.assert_not_called()
+
     async def test_skips_heartbeat(self, extractor: ExtractAgent, agent_id: uuid.UUID) -> None:
         """Heartbeat source should be skipped."""
         with patch("app.services.extract_agent._llm_extract") as mock_llm:
@@ -1203,6 +1242,7 @@ async def test_extract_agent_accepts_heartbeat_reflection_source_even_when_defau
     monkeypatch,
     agent_id: uuid.UUID,
 ):
+    monkeypatch.setenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", "1")
     extractor = ExtractAgent()
     extractor._cursors[str(agent_id)] = 99
     captured: list[dict] = []
@@ -1233,6 +1273,7 @@ async def test_extract_agent_accepts_heartbeat_reflection_source_even_when_defau
 
 @pytest.mark.asyncio
 async def test_extract_agent_still_skips_raw_heartbeat_audit_source(monkeypatch, agent_id: uuid.UUID):
+    monkeypatch.setenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", "1")
     extractor = ExtractAgent()
     called = False
 

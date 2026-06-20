@@ -97,7 +97,7 @@
 ## 7. 解锁"整体 SOTA"的步骤（按依赖序）
 
 1. **产出真实 live 行为基线**（前置一切）：对部署的 Railway/Vercel target 跑 `hive_live_runner`（带 `HIVE_EVAL_API_URL` + `HIVE_EVAL_CI_TOKEN`），采 6 场景 trusted-transport 分数，rebaseline `core_behavior_v1.json`（commit_sha、provisional=false）。按 §0/§6 这是任何"整体超越"声明的硬前置。
-2. **闭合普通租户的晋升臂**：(a) 接一个生产 daemon 跑 live 行为 eval 并按租户写 `BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY`（不止 `HIVE_EVAL_TENANT_ID`），让 `decide_behavior_gated_promotion` 能过、`_save_skill` 真 fire；或 (b) 加 Hermes 式 curator-judgment 低风险补丁晋升 lane（带可逆 archive）让"有东西真落地"，并给 `skill_activation_candidates.md` candidate 队列接消费者（当前死端）。
+2. **闭合普通租户的晋升臂**：(a) 接一个生产 daemon 跑 live 行为 eval 并按租户写 `BEHAVIOR_EVAL_LATEST_REPORT_SETTING_KEY`（不止 `HIVE_EVAL_TENANT_ID`），让 `decide_behavior_gated_promotion` 能过，并由 Skill Distiller / Skill Gate exact-commit reviewed `SKILL.md.draft`；或 (b) 加 Hermes 式 curator-judgment 低风险补丁晋升 lane（带可逆 archive）让"有东西真落地"。当前候选面已迁到 `evolution/skill_candidates/<candidate_id>/` package，旧 `skill_activation_candidates.md` 队列不再是 runtime path。
 3. ~~把 `record_skill_execution` 接进 live 主链~~ —— **§4 复核显示已完成**（invoker 终态 hook）；本步可移除。
 4. 采一次 live multi-agent/delegation 行为 eval（G13 首要下一层）+ 复杂多步任务的 Hive-vs-Hermes live delta，证明编排有可测收益。
 5. 修 Teammate Mailbox 默认暗：生产 deploy 配置默认 `COORDINATION_BACKEND=postgres`，或让 renderer 读 memory backend 真写的信号源。

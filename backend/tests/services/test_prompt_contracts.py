@@ -162,7 +162,7 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "workflow component" in tools["save_skill"]
     assert "governed runtime" in tools["save_skill"]
     assert "does not create an active skill directly" in tools["save_skill"]
-    assert "evolution/skill_activation_candidates.md" in tools["save_skill"]
+    assert "evolution/skill_candidates/<candidate_id>/" in tools["save_skill"]
     assert "Only use this after an approach has succeeded repeatedly" in tools["save_skill"]
     assert "never self-approved" in tools["save_skill"]
     assert "Do NOT save one-off notes, transient state, or raw transcripts as skills" in tools["save_skill"]

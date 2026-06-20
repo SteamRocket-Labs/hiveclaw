@@ -154,9 +154,10 @@ class TestExtractorIntegration:
         assert len(results) >= 1
         assert results[0]["category"] == "feedback"
 
-    def test_v10_coalescing_mutex(self) -> None:
+    def test_v10_coalescing_mutex(self, monkeypatch) -> None:
         from app.services.extract_agent import ExtractAgent
 
+        monkeypatch.setenv("HIVE_ENABLE_LEGACY_T2_BACKFILL", "1")
         ea = ExtractAgent()
         agent_id = uuid.uuid4()
         key = str(agent_id)

@@ -1276,7 +1276,7 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team
 
 **P0 已关闭**：
 
-1. **`save_skill` 自授权晋升旁路关闭**：LLM-facing `save_skill` 不再写 `skills/<slug>/SKILL.md` active skill，而是写 `evolution/skill_activation_candidates.md`，返回 `active_skill_created: false`。`_save_skill()` 保留给平台晋升/distiller 等外部门控路径。
+1. **`save_skill` 自授权晋升旁路关闭**：LLM-facing `save_skill` 不再写 `skills/<slug>/SKILL.md` active skill，而是写 inactive Skill Candidate Package：`evolution/skill_candidates/<candidate_id>/{SKILL.md.draft,skill_pitch.md,eval_plan.md,failure_cases.md,manifest.json}`，返回 `active_skill_created: false`。旧 `_save_skill()` direct activation path 已退役为显式错误；真正激活只能由 Skill Distiller / Skill Gate exact-commit reviewed `SKILL.md.draft`。
 2. **behavior eval report 接入 promotion gate**：`RuntimeConfig.skill_distiller_behavior_report` 从 tenant latest trusted behavior report 加载，distiller 把 report 交给 `decide_behavior_gated_promotion()`；无 trusted live report 时仍 hold。CI 缺 live eval secrets 时写 `behavior_eval_evidence.v1` 并 fail-closed，不再 green skip。
 3. **runtime DB RLS FORCE 兜底补齐**：`RLS_FORCED_TENANT_TABLES` 覆盖全部 `RLS_TENANT_TABLES`，migration `force_all_tenant_rls_0615` 对 tenant runtime tables ENABLE+FORCE，fresh bootstrap 与 alembic 路径一致。
 4. **subagent/delegation restart resume 改为 replay-safe governed lane**：仅 `review_readonly` / `research_readonly` delegation 与 `explorer` / `critic` subagent 写 `resume_after_restart`，orphan reconcile 保留这些 records；mutating/unsafe lane 标成 `needs_reconciliation` 并写 completion journal，不再假装安全 replay 或简单 failed。

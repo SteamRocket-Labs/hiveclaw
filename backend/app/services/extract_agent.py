@@ -5,9 +5,10 @@ sealed append-only T0 session segment -> source_bundle.json ->
 LLM-authored summary.md / labels.md / review.md -> Platform Gate atomic commit.
 
 This module remains only for legacy admin backfill, compatibility tests, and
-derived/read-model migration work. Default runtime hooks must not call
-``schedule_extract``; canonical T2 belongs only to reviewed Segment Packages,
-never to ``memory/learnings/*.md``.
+derived/read-model migration work. ``extract`` and ``schedule_extract`` are
+fail-closed unless ``HIVE_ENABLE_LEGACY_T2_BACKFILL=1`` is explicitly set;
+canonical T2 belongs only to reviewed Segment Packages, never to
+``memory/learnings/*.md``.
 
 Legacy role contract (docs/agent-memory-md-first-spec.md §5): this Extractor
 can perform fast ATOM EXTRACTION from messages / legacy T0 / Work Ledger into
@@ -944,6 +945,14 @@ class ExtractAgent:
         If another extraction is in progress for this agent, stashes
         the request and runs a trailing extraction after the current one.
         """
+        if not _legacy_t2_backfill_enabled():
+            logger.info(
+                "[Extractor] legacy learnings extraction disabled for %s (source=%s); canonical T2 uses Segment Packages",
+                agent_id,
+                source,
+            )
+            return
+
         key = _extract_cursor_key(agent_id, source)
         msgs = messages or []
 
@@ -1075,6 +1084,14 @@ class ExtractAgent:
 
         Use this instead of wrapping extract() in asyncio.create_task() externally.
         """
+        if not _legacy_t2_backfill_enabled():
+            logger.info(
+                "[Extractor] schedule_extract disabled for %s (source=%s); canonical T2 uses Segment Packages",
+                agent_id,
+                source,
+            )
+            return False
+
         from app.memory import metrics
         from app.services import extract_queue
 

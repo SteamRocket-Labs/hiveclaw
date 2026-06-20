@@ -173,15 +173,15 @@ These are current code facts verified against the repository when this document 
 
 ### 2.2 Memory and evolution substrate
 
-- `backend/app/runtime/hooks_setup.py:75-96` triggers `RESPONSE_COMPLETE` extraction.
-- `backend/app/services/extract_agent.py:688-776` writes extraction payloads to durable queue before scheduling.
-- `backend/app/services/extract_queue.py` and `backend/app/services/extract_queue_replay.py` implement failed/in-flight extraction replay.
-- `backend/app/main.py:319-340` replays pending extraction work on startup.
+- `backend/app/memory/t0/ledger.py` is the canonical append-only session ledger writer/sealer/replay surface.
+- `backend/app/runtime/hooks_setup.py:77-92` keeps `RESPONSE_COMPLETE` projection-only; durable T2 is built from sealed T0 segments.
+- `backend/app/memory/t2/segment_package.py` builds reviewed T2 Segment Packages from `source_bundle.json`, not legacy `memory/learnings/*.md`.
+- `backend/app/services/extract_agent.py`, `backend/app/services/extract_queue.py`, and `backend/app/services/extract_queue_replay.py` are explicit legacy migration/replay surfaces; legacy learnings writes are disabled unless `HIVE_ENABLE_LEGACY_T2_BACKFILL=1`, and runtime replay is disabled unless `HIVE_ENABLE_LEGACY_EXTRACT_REPLAY=1`.
 - `backend/app/services/evolution_ledger.py:49-235` records candidates, eval runs, promotion decisions, memory promotion decisions, and rollback refs.
-- `backend/app/services/reflection_service.py:23-61` writes reportable reflection artifacts and distilled T2 projections.
+- `backend/app/services/reflection_service.py:23-61` writes reportable reflection artifacts only; it no longer projects directly into T2 learnings.
 - `backend/app/memory/activation.py:43-74` scores memory with sensitivity, goal, owner, company, open-loop, retention, and confidence signals.
-- `backend/app/memory/retriever.py:191-241` combines working, T3, understandings, episodic, semantic backend, and external memory.
-- `backend/app/memory/retriever.py:359-477` keeps P0 memory direct and has an index-first shadow path for P1/P2.
+- `backend/app/memory/retriever.py` activates explicit overlay plus accepted T3 (`memory/t3/{user,worker,episodes,capabilities}.md`) under principal/sensitivity policy; `understandings.md` and legacy learnings are not prompt semantic sources.
+- `backend/app/memory/md_store.py` maintains the rebuildable `memory/wiki_map.md` navigation read model; it is not a second memory store.
 - `backend/app/services/memory_service.py:102-106,622-625` makes LLM rerank tenant-configured, not unconditional.
 
 ### 2.3 Heartbeat, dream, and skill loop

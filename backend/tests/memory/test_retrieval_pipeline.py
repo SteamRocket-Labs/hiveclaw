@@ -565,7 +565,7 @@ def _setup_wiki_page(data_root: Path, agent_id: uuid.UUID, slug: str, body: str)
 
 
 @pytest.mark.asyncio
-async def test_retrieve_includes_ppr_wiki_pages_in_prompt_memory(
+async def test_retrieve_excludes_ppr_wiki_pages_by_default_and_requires_derived_opt_in(
     data_root: Path,
     agent_id: uuid.UUID,
 ) -> None:

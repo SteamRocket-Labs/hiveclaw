@@ -60,7 +60,31 @@ def test_no_second_semantic_truth_sources_are_writable() -> None:
     assert "writes are disabled" in understanding_store
     assert "HIVE_ENABLE_LEGACY_EXTRACT_REPLAY" in extract_queue_replay
     assert "HIVE_ENABLE_LEGACY_T2_BACKFILL" in extract_agent
+    assert "schedule_extract disabled" in extract_agent
+    assert "canonical T2 uses Segment Packages" in extract_agent
     assert "load_t2_entries" not in heartbeat
     assert "load_t2_entries" not in self_evolution_audit
     assert "include_derived_sources" in retriever
     assert "source_type\": \"understanding_store\"" not in retriever
+
+
+def test_skill_creation_has_single_candidate_package_path() -> None:
+    workspace_domain = _read("app/services/agent_tool_domains/workspace.py")
+    skill_handler = _read("app/tools/handlers/skills.py")
+    skill_distiller = _read("app/services/skill_distiller.py")
+
+    assert "write_skill_candidate_package(" in workspace_domain
+    assert "skill_activation_candidates.md" not in workspace_domain
+    assert "retired_direct_activation_path" in workspace_domain
+    assert "_submit_skill_activation_candidate(" in skill_handler
+    assert "_save_skill(" not in skill_handler
+    assert "_commit_skill_markdown_exact(" in skill_distiller
+
+
+def test_charter_approval_stages_soul_candidate_instead_of_direct_soul_write() -> None:
+    charter_proposals = _read("app/services/charter_proposals.py")
+
+    assert "evolution\" / \"soul_candidates\"" in charter_proposals
+    assert "pending_soul_writer" in charter_proposals
+    assert "soul_path.write_text" not in charter_proposals
+    assert "soul.md` directly" in charter_proposals

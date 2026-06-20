@@ -113,19 +113,22 @@ async def test_save_memory_rejects_english_paraphrase(tmp_path: Path, monkeypatc
 
 def test_save_skill_rejects_near_duplicate_skill(tmp_path: Path):
     """Second save_skill call with paraphrased name+description must be blocked."""
-    from app.services.agent_tool_domains.workspace import _save_skill
+    from app.services.agent_tool_domains.workspace import _submit_skill_activation_candidate
 
     ws = tmp_path.resolve()
-    r1 = _save_skill(
+    r1 = _submit_skill_activation_candidate(
         ws,
+        agent_id=None,
         name="Research Brief",
         description="Do web research and write a brief summary",
         instructions="Search, fetch, then summarize into workspace/brief.md.",
     )
-    assert r1.startswith("✅")
+    assert "submitted for review" in r1
+    assert not (ws / "skills" / "research-brief" / "SKILL.md").exists()
 
-    r2 = _save_skill(
+    r2 = _submit_skill_activation_candidate(
         ws,
+        agent_id=None,
         name="Research Briefing",
         description="Do web research and write brief summaries",
         instructions="Do it.",
@@ -134,13 +137,14 @@ def test_save_skill_rejects_near_duplicate_skill(tmp_path: Path):
     assert "Research Brief" in r2
 
     # Clearly distinct skill is accepted
-    r3 = _save_skill(
+    r3 = _submit_skill_activation_candidate(
         ws,
+        agent_id=None,
         name="PDF Extractor",
         description="Extract tables from PDF invoices",
         instructions="Read pdf and emit csv.",
     )
-    assert r3.startswith("✅")
+    assert "submitted for review" in r3
 
 
 def test_skill_dedup_threshold_ordering():

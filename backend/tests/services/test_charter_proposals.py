@@ -249,7 +249,7 @@ class TestExpire:
 
 
 class TestApplyApprovedProposal:
-    def test_apply_approved_proposal_updates_frozen_owner_charter_and_audit(
+    def test_apply_approved_proposal_stages_soul_candidate_signal_and_audit(
         self, tmp_path: Path, now: datetime
     ) -> None:
         agent_dir = tmp_path / "agent-1"
@@ -295,18 +295,33 @@ class TestApplyApprovedProposal:
             decision_reason="safe recurring action",
         )
 
+        before = (agent_dir / "soul.md").read_text(encoding="utf-8")
         result = apply_approved_proposal_to_soul(agent_dir, proposal, applied_by="alice", now=now)
 
         soul = (agent_dir / "soul.md").read_text(encoding="utf-8")
-        assert result["status"] == "applied"
+        assert result["status"] == "candidate_staged"
         assert result["target_section"] == "Full Authority"
-        assert "- Send weekly investor summary after owner-approved template" in soul
-        assert "proposal=proposal-1" in soul
-        assert soul.count("Send weekly investor summary after owner-approved template") == 1
+        assert result["candidate_path"] == "evolution/soul_candidates/charter-proposal-proposal-1/charter_proposal_signal.md"
+        assert soul == before
+        signal = (
+            agent_dir
+            / "evolution"
+            / "soul_candidates"
+            / "charter-proposal-proposal-1"
+            / "charter_proposal_signal.md"
+        ).read_text(encoding="utf-8")
+        assert "Send weekly investor summary after owner-approved template" in signal
+        assert "proposal_id: proposal-1" in signal
+        assert "decision_id: decision/dec-1" in signal
+        manifest = (
+            agent_dir / "evolution" / "soul_candidates" / "charter-proposal-proposal-1" / "manifest.json"
+        ).read_text(encoding="utf-8")
+        assert '"status": "pending_soul_writer"' in manifest
         audit = (agent_dir / "memory" / "charter_calibration.md").read_text(encoding="utf-8")
         assert "[proposal_id=proposal-1]" in audit
         assert "[decision_id=decision/dec-1]" in audit
-        assert "[applied_by=alice]" in audit
+        assert "[staged_by=alice]" in audit
+        assert "[status=candidate_staged]" in audit
 
     def test_apply_rejects_non_approved_proposal(self, tmp_path: Path, now: datetime) -> None:
         agent_dir = tmp_path / "agent-1"

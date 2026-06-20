@@ -23,12 +23,12 @@ class HookEvent(StrEnum):
 
     Session lifecycle (4, replaces old SESSION_END):
         SESSION_START      — invoke begins, frozen prompt assembled
-        RESPONSE_COMPLETE  — each agent response, main extraction trigger
-        SESSION_IDLE       — idle timeout, incremental T0 write (cursor-based)
-        SESSION_CLOSE      — WebSocket disconnect / new session / invoke return, drain
+        RESPONSE_COMPLETE  — each agent response, volatile projection + candidate signals
+        SESSION_IDLE       — idle timeout, T0 segment seal/advance
+        SESSION_CLOSE      — WebSocket disconnect / new session / invoke return, T0 finalization
 
     Context compression (2):
-        PRE_COMPACTION     — before LLM summarize, extract to preserve context
+        PRE_COMPACTION     — before LLM summarize, preserve evidence for package builders
         POST_COMPACTION    — after summarize, compact_summary available
 
     Delegation (2):

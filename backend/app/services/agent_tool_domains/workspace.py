@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import uuid
-from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from app.config import get_settings
@@ -384,6 +384,49 @@ def _find_similar_existing_skill(
     return best
 
 
+def _find_similar_pending_skill_candidate(
+    ws: Path,
+    *,
+    name: str,
+    description: str,
+) -> tuple[dict, float] | None:
+    """Return the most similar inactive skill candidate package if present."""
+
+    from app.memory.md_store import SKILL_DEDUP_THRESHOLD, jaccard_similarity
+
+    if not name or not description:
+        return None
+    root = ws / "evolution" / "skill_candidates"
+    if not root.exists():
+        return None
+    candidate_text = f"{name} {description}".strip()
+    best: tuple[dict, float] | None = None
+    for manifest_path in root.glob("*/manifest.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        draft_path_raw = manifest.get("draft_path") or manifest.get("candidate_signal_path")
+        draft_text = ""
+        if draft_path_raw:
+            draft_path = (ws / str(draft_path_raw)).resolve()
+            if _is_within_path(draft_path, ws) and draft_path.exists():
+                draft_text = draft_path.read_text(encoding="utf-8", errors="replace")
+        candidate_name = str(manifest.get("skill_name") or "")
+        candidate_description = ""
+        for line in draft_text.splitlines():
+            if line.strip().startswith("description:"):
+                candidate_description = line.split(":", 1)[1].strip().strip('"')
+                break
+        existing_text = f"{candidate_name} {candidate_description}".strip()
+        if not existing_text:
+            continue
+        score = jaccard_similarity(candidate_text, existing_text)
+        if score >= SKILL_DEDUP_THRESHOLD and (best is None or score > best[1]):
+            best = (manifest, score)
+    return best
+
+
 async def check_declared_packs_authorized(
     *,
     tenant_id: uuid.UUID | None,
@@ -412,127 +455,16 @@ def _save_skill(
     overwrite: bool = False,
     tool_name: str = "save_skill",
 ) -> str:
-    skill_name = (name or "").strip()
-    skill_description = (description or "").strip()
-    skill_instructions = (instructions or "").strip()
-    if not skill_name:
-        return _workspace_error(tool_name, "bad_arguments", "Skill name cannot be empty.")
-    if not skill_description:
-        return _workspace_error(tool_name, "bad_arguments", "Skill description cannot be empty.")
-    if not skill_instructions:
-        return _workspace_error(tool_name, "bad_arguments", "Skill instructions cannot be empty.")
-
-    skills_dir = (ws / "skills").resolve()
-    skills_dir.mkdir(parents=True, exist_ok=True)
-
-    requested_folder = (folder_name or "").strip()
-    if requested_folder:
-        slug = _normalize_skill_folder_name(requested_folder)
-        if not slug:
-            return _workspace_error(
-                tool_name, "bad_arguments", "folder_name must contain at least one valid character."
-            )
-        target = (skills_dir / slug / "SKILL.md").resolve()
-    else:
-        try:
-            existing = _build_skill_registry(ws).resolve(skill_name)
-        except KeyError:
-            existing = None
-
-        if existing is not None:
-            target = (ws / existing.relative_path).resolve()
-        else:
-            slug = _normalize_skill_folder_name(skill_name)
-            if not slug:
-                return _workspace_error(
-                    tool_name, "bad_arguments", "Skill name must contain at least one valid character."
-                )
-            target = (skills_dir / slug / "SKILL.md").resolve()
-
-    if not _is_within_path(target, skills_dir):
-        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
-    if target.exists() and not overwrite:
-        rel_path = target.relative_to(ws).as_posix()
-        return _workspace_error(
-            tool_name,
-            "already_exists",
-            f"Skill already exists at {rel_path}.",
-            actionable_hint="Pass overwrite=true to replace the existing skill, or choose a different skill name/folder_name.",
-        )
-
-    if not overwrite:
-        similar = _find_similar_existing_skill(
-            ws,
-            name=skill_name,
-            description=skill_description,
-        )
-        if similar is not None:
-            sim_skill, sim_score = similar
-            return _workspace_error(
-                tool_name,
-                "similar_skill_exists",
-                (
-                    f"A semantically similar skill already exists "
-                    f"(similarity={sim_score:.2f}): {sim_skill.metadata.name} at "
-                    f"{sim_skill.relative_path}. Description: {sim_skill.metadata.description}"
-                ),
-                actionable_hint=(
-                    "Patch the existing skill (pass overwrite=true and the same name/folder), "
-                    "or pick a clearly distinct name and description that captures the difference."
-                ),
-            )
-
-    content = _render_skill_markdown(
-        name=skill_name,
-        description=skill_description,
-        instructions=skill_instructions,
-        declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
-        declared_packs=tuple(dict.fromkeys(pack.strip() for pack in declared_packs if pack.strip())),
+    del name, description, instructions, declared_tools, declared_packs, folder_name, overwrite
+    return _workspace_error(
+        tool_name,
+        "retired_direct_activation_path",
+        "Direct active skill writes are retired. save_skill can only submit inactive Skill Candidate Packages.",
+        actionable_hint=(
+            "Call save_skill through the tool handler, or use _submit_skill_activation_candidate; "
+            "Skill Distiller must promote a reviewed SKILL.md.draft through Platform Skill Gate."
+        ),
     )
-    from app.services.skill_guard import scan_skill_files
-
-    guard_report = scan_skill_files([{"path": "SKILL.md", "content": content}], source="workspace_save_skill")
-    if not guard_report.allowed:
-        categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
-        return _workspace_error(
-            tool_name,
-            "skill_guard_blocked",
-            f"SkillGuard blocked this skill before activation: {categories}",
-            actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
-        )
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        rel_path = target.relative_to(ws).as_posix()
-        action = "Updated" if overwrite and target.exists() else "Saved"
-        try:
-            from app.services.skill_lifecycle import record_skill_lifecycle_event
-
-            record_skill_lifecycle_event(
-                ws,
-                skill_name=skill_name,
-                status="promoted" if not overwrite else "patched",
-                note=f"{action} via save_skill at {rel_path}",
-            )
-        except Exception as exc:
-            logger.warning("[workspace] Failed to record skill lifecycle for %s: %s", skill_name, exc)
-        try:
-            from app.services.skill_curator import mark_skill_created
-
-            slug = _skill_slug_from_relative_path(rel_path)
-            if slug:
-                mark_skill_created(ws, slug, created_by="agent")
-        except Exception as exc:  # pragma: no cover - telemetry must never break save
-            logger.debug("[workspace] curator created mark failed for %s: %s", skill_name, exc)
-        return (
-            f"✅ {action} skill at {rel_path}\n"
-            f"- name: {skill_name}\n"
-            f"- declared_tools: {', '.join(declared_tools) or '(none)'}\n"
-            f"- declared_packs: {', '.join(declared_packs) or '(none)'}\n"
-            "- next step: call `load_skill` for the method when needed; use `tool_search` to discover any missing tool schemas."
-        )
-    except Exception as exc:
-        return _workspace_error(tool_name, "operation_failed", f"Skill save failed: {exc}")
 
 
 def _submit_skill_activation_candidate(
@@ -571,6 +503,57 @@ def _submit_skill_activation_candidate(
         return _workspace_error(
             tool_name, "bad_arguments", "Skill name/folder_name must contain at least one valid character."
         )
+    skills_dir = (ws / "skills").resolve()
+    target = (skills_dir / slug / "SKILL.md").resolve()
+    if not _is_within_path(target, skills_dir):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
+    target_rel = f"skills/{slug}/SKILL.md"
+    if target.exists() and not overwrite:
+        return _workspace_error(
+            tool_name,
+            "already_exists",
+            f"Skill already exists at {target_rel}.",
+            actionable_hint=(
+                "Pass overwrite=true to request a patch candidate, or choose a different skill name/folder_name."
+            ),
+        )
+    if not overwrite:
+        similar = _find_similar_existing_skill(ws, name=skill_name, description=skill_description)
+        if similar is not None:
+            sim_skill, sim_score = similar
+            return _workspace_error(
+                tool_name,
+                "similar_skill_exists",
+                (
+                    f"A semantically similar skill already exists "
+                    f"(similarity={sim_score:.2f}): {sim_skill.metadata.name} at "
+                    f"{sim_skill.relative_path}. Description: {sim_skill.metadata.description}"
+                ),
+                actionable_hint=(
+                    "Patch the existing skill (pass overwrite=true and the same name/folder), "
+                    "or pick a clearly distinct name and description that captures the difference."
+                ),
+            )
+        similar_candidate = _find_similar_pending_skill_candidate(
+            ws,
+            name=skill_name,
+            description=skill_description,
+        )
+        if similar_candidate is not None:
+            manifest, sim_score = similar_candidate
+            return _workspace_error(
+                tool_name,
+                "similar_skill_exists",
+                (
+                    f"A semantically similar skill candidate already exists "
+                    f"(similarity={sim_score:.2f}): {manifest.get('skill_name')} at "
+                    f"{manifest.get('draft_path') or manifest.get('candidate_signal_path')}"
+                ),
+                actionable_hint=(
+                    "Wait for the existing candidate to pass Skill Gate, or submit a patch candidate with "
+                    "overwrite=true if this adds distinct value."
+                ),
+            )
 
     rendered = _render_skill_markdown(
         name=skill_name,
@@ -591,35 +574,27 @@ def _submit_skill_activation_candidate(
             actionable_hint="Remove embedded secrets, remote shell installers, path escapes, or destructive commands.",
         )
 
-    evolution_dir = ws / "evolution"
-    evolution_dir.mkdir(parents=True, exist_ok=True)
-    candidate_path = evolution_dir / "skill_activation_candidates.md"
-    if not candidate_path.exists():
-        candidate_path.write_text("# Skill Activation Candidates\n\n", encoding="utf-8")
+    candidate_id = f"save-skill-{uuid.uuid4()}"
+    from app.services.skill_candidate_package import write_skill_candidate_package
 
-    stamp = datetime.now(timezone.utc).isoformat()
-    candidate_id = f"skill_activation_candidate:{uuid.uuid4()}"
-    target_rel = f"skills/{slug}/SKILL.md"
-    with candidate_path.open("a", encoding="utf-8") as handle:
-        handle.write(
-            "\n".join(
-                [
-                    f"## {stamp} {skill_name}",
-                    f"- candidate_id: {candidate_id}",
-                    "- status: pending_behavior_verification",
-                    f"- agent_id: {agent_id or ''}",
-                    f"- target: {target_rel}",
-                    f"- overwrite: {str(bool(overwrite)).lower()}",
-                    f"- declared_tools: {', '.join(declared_tools) or '(none)'}",
-                    f"- declared_packs: {', '.join(declared_packs) or '(none)'}",
-                    "",
-                    "```markdown",
-                    rendered.rstrip(),
-                    "```",
-                    "",
-                ]
-            )
-        )
+    manifest = write_skill_candidate_package(
+        workspace=ws,
+        candidate_id=candidate_id,
+        rendered_markdown=rendered,
+        skill_name=skill_name,
+        package_type="save_skill",
+        target_path=target_rel,
+        source_refs=["tool:save_skill"],
+        reason="Agent submitted a reusable capability capsule for external behavior verification.",
+        declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
+        declared_packs=tuple(dict.fromkeys(pack.strip() for pack in declared_packs if pack.strip())),
+        status="pending_behavior_verification",
+        extra_metadata={
+            "agent_id": str(agent_id) if agent_id else None,
+            "overwrite_requested": bool(overwrite),
+            "source_tool": tool_name,
+        },
+    )
 
     try:
         from app.services.skill_lifecycle import record_skill_lifecycle_event
@@ -629,17 +604,18 @@ def _submit_skill_activation_candidate(
             skill_name=skill_name,
             status="candidate",
             note=(
-                f"Submitted via save_skill for external behavior verification at "
-                f"{candidate_path.relative_to(ws).as_posix()}; target={target_rel}"
+                f"Submitted via save_skill for external behavior verification at {manifest['draft_path']}; "
+                f"target={target_rel}"
             ),
         )
     except Exception as exc:
         logger.warning("[workspace] Failed to record skill activation candidate for %s: %s", skill_name, exc)
 
     return (
-        f"🟡 save_skill submitted for review at {candidate_path.relative_to(ws).as_posix()}\n"
+        f"🟡 save_skill submitted for review at evolution/skill_candidates/{candidate_id}/\n"
         f"- candidate_id: {candidate_id}\n"
         f"- target: {target_rel}\n"
+        f"- draft: {manifest['draft_path']}\n"
         f"- declared_tools: {', '.join(declared_tools) or '(none)'}\n"
         f"- declared_packs: {', '.join(declared_packs) or '(none)'}\n"
         "- active_skill_created: false\n"

@@ -100,14 +100,15 @@ def test_load_skills_index_instructs_load_skill(monkeypatch, tmp_path):
     assert "call `read_file`" not in skills_index
 
 
-def test_save_skill_creates_folder_layout_and_loadable_body(tmp_path):
-    from app.services.agent_tool_domains.workspace import _load_skill, _save_skill
+def test_save_skill_submits_candidate_package_without_active_skill(tmp_path):
+    from app.services.agent_tool_domains.workspace import _load_skill, _submit_skill_activation_candidate
 
     workspace = tmp_path / "agent"
     workspace.mkdir(parents=True)
 
-    result = _save_skill(
+    result = _submit_skill_activation_candidate(
         workspace,
+        agent_id=None,
         name="Deployment Review",
         description="Review deployment diffs and verify rollback paths.",
         instructions="Check rollout status, verify logs, and confirm rollback steps.",
@@ -116,23 +117,33 @@ def test_save_skill_creates_folder_layout_and_loadable_body(tmp_path):
     )
 
     skill_path = workspace / "skills" / "deployment-review" / "SKILL.md"
+    assert "submitted for review" in result
     assert "skills/deployment-review/SKILL.md" in result
-    assert skill_path.exists()
+    assert not skill_path.exists()
+    assert not (workspace / "evolution" / "skill_activation_candidates.md").exists()
 
-    content = skill_path.read_text(encoding="utf-8")
+    packages = sorted((workspace / "evolution" / "skill_candidates").iterdir())
+    assert len(packages) == 1
+    package = packages[0]
+    draft = package / "SKILL.md.draft"
+    manifest = package / "manifest.json"
+    assert draft.exists()
+    assert manifest.exists()
+
+    content = draft.read_text(encoding="utf-8")
     assert 'name: "Deployment Review"' in content
     assert 'description: "Review deployment diffs and verify rollback paths."' in content
     assert "tools:" in content
     assert "  - web_search" in content
     assert "packs:" in content
     assert "  - web_pack" in content
-    assert _load_skill(workspace, "deployment review").startswith("# Deployment Review")
+    assert "not_found" in _load_skill(workspace, "deployment review")
     review_log = (workspace / "evolution" / "skill_review.md").read_text(encoding="utf-8")
     assert "Deployment Review" in review_log
 
 
-def test_save_skill_updates_existing_skill_when_overwrite_enabled(tmp_path):
-    from app.services.agent_tool_domains.workspace import _save_skill
+def test_save_skill_requests_patch_package_without_overwriting_active_skill(tmp_path):
+    from app.services.agent_tool_domains.workspace import _submit_skill_activation_candidate
 
     workspace = tmp_path / "agent"
     skill_dir = workspace / "skills" / "research"
@@ -143,63 +154,70 @@ def test_save_skill_updates_existing_skill_when_overwrite_enabled(tmp_path):
         encoding="utf-8",
     )
 
-    rejected = _save_skill(
+    rejected = _submit_skill_activation_candidate(
         workspace,
+        agent_id=None,
         name="Research",
         description="Updated workflow.",
         instructions="Use primary sources first.",
     )
     assert "already exists" in rejected
 
-    updated = _save_skill(
+    updated = _submit_skill_activation_candidate(
         workspace,
+        agent_id=None,
         name="Research",
         description="Updated workflow.",
         instructions="Use primary sources first.",
         overwrite=True,
     )
-    assert "Updated skill" in updated
+    assert "submitted for review" in updated
     content = skill_path.read_text(encoding="utf-8")
-    assert 'description: "Updated workflow."' in content
-    assert "Use primary sources first." in content
+    assert 'description: "Old"' in content
+    assert "Old steps." in content
+    packages = sorted((workspace / "evolution" / "skill_candidates").iterdir())
+    assert len(packages) == 1
+    draft = (packages[0] / "SKILL.md.draft").read_text(encoding="utf-8")
+    assert 'description: "Updated workflow."' in draft
+    assert "Use primary sources first." in draft
 
 
-def test_save_skill_marks_curator_usage_record(tmp_path):
-    """Saving a skill seeds the curator usage store with agent provenance."""
-    from app.services.agent_tool_domains.workspace import _save_skill
-    from app.services.skill_curator import load_skill_usage
+def test_save_skill_marks_candidate_review_record(tmp_path):
+    """Saving a skill records an inactive candidate, not an active curator entry."""
+    from app.services.agent_tool_domains.workspace import _submit_skill_activation_candidate
 
     workspace = tmp_path / "agent"
     workspace.mkdir(parents=True)
 
-    _save_skill(
+    _submit_skill_activation_candidate(
         workspace,
+        agent_id=None,
         name="Deployment Review",
         description="Review deployment diffs and verify rollback paths.",
         instructions="Check rollout status, verify logs, and confirm rollback steps.",
     )
 
-    usage = load_skill_usage(workspace)
-    assert "deployment-review" in usage
-    rec = usage["deployment-review"]
-    assert rec["created_by"] == "agent"
-    assert rec["state"] == "active"
-    assert rec["use_count"] == 0
+    review_log = (workspace / "evolution" / "skill_review.md").read_text(encoding="utf-8")
+    assert "[candidate] Deployment Review:" in review_log
+    assert not (workspace / "skills" / "deployment-review" / "SKILL.md").exists()
 
 
 def test_load_skill_bumps_curator_use_count(tmp_path):
     """Loading a skill increments its curator use_count and refreshes last_used_at."""
-    from app.services.agent_tool_domains.workspace import _load_skill, _save_skill
+    from app.services.agent_tool_domains.workspace import _load_skill
     from app.services.skill_curator import load_skill_usage
 
     workspace = tmp_path / "agent"
-    workspace.mkdir(parents=True)
-
-    _save_skill(
-        workspace,
-        name="Deployment Review",
-        description="Review deployment diffs and verify rollback paths.",
-        instructions="Check rollout status, verify logs, and confirm rollback steps.",
+    skill_dir = workspace / "skills" / "deployment-review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        'name: "Deployment Review"\n'
+        'description: "Review deployment diffs and verify rollback paths."\n'
+        "---\n"
+        "# Deployment Review\n\n"
+        "Check rollout status, verify logs, and confirm rollback steps.\n",
+        encoding="utf-8",
     )
 
     _load_skill(workspace, "deployment review")

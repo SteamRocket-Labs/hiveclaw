@@ -564,9 +564,11 @@ async def test_save_skill_handler_keeps_denied_pack_as_discovery_hint(monkeypatc
     assert "web_pack" in result
     saved = tmp_path / "skills" / "zombie-skill" / "SKILL.md"
     assert not saved.exists()
-    candidate = tmp_path / "evolution" / "skill_activation_candidates.md"
-    assert candidate.exists()
-    candidate_text = candidate.read_text(encoding="utf-8")
-    assert "target: skills/zombie-skill/SKILL.md" in candidate_text
-    assert "status: pending_behavior_verification" in candidate_text
+    assert not (tmp_path / "evolution" / "skill_activation_candidates.md").exists()
+    packages = sorted((tmp_path / "evolution" / "skill_candidates").iterdir())
+    assert len(packages) == 1
+    candidate_text = (packages[0] / "SKILL.md.draft").read_text(encoding="utf-8")
+    manifest = (packages[0] / "manifest.json").read_text(encoding="utf-8")
+    assert "skills/zombie-skill/SKILL.md" in manifest
+    assert "pending_behavior_verification" in manifest
     assert "web_pack" in candidate_text

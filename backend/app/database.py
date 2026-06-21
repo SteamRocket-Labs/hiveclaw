@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -97,9 +97,14 @@ class Base(DeclarativeBase):
     pass
 
 
-def set_current_tenant(tenant_id: str | None) -> None:
+def set_current_tenant(tenant_id: str | None) -> Token[str | None]:
     """Set tenant context (called by TenantMiddleware)."""
-    _current_tenant_id.set(tenant_id)
+    return _current_tenant_id.set(tenant_id)
+
+
+def reset_current_tenant(token: Token[str | None]) -> None:
+    """Restore tenant context after a request or scoped background session."""
+    _current_tenant_id.reset(token)
 
 
 async def pin_rls_tenant_context(session: AsyncSession, tenant_id: str | uuid.UUID | None) -> uuid.UUID | None:
@@ -162,6 +167,7 @@ async def tenant_scoped_session(
     """
     factory = session_factory or async_session
     effective = tenant_id if tenant_id is not None else _current_tenant_id.get()
+    previous_tenant = _current_tenant_id.get()
 
     async with factory() as session:
         try:
@@ -172,6 +178,8 @@ async def tenant_scoped_session(
         except Exception:
             await session.rollback()
             raise
+        finally:
+            _current_tenant_id.set(previous_tenant)
 
 
 # ── P1-W3-7 — RLS BYPASS auditing ─────────────────────────────

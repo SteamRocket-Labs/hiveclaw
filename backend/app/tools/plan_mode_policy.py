@@ -41,6 +41,10 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
         "list_triggers",
         "tool_search",
         "load_skill",
+        # CC parity: Plan Mode can inspect deterministic workflow shape and
+        # read background subagent status, but may not start execution.
+        "preview_workflow",
+        "check_subagent",
         # CC parity: TodoWrite is allowed in plan mode — the work ledger is the
         # agent's private working memory (internal scratchpad), not an external or
         # workspace mutation. Hive's track_todo/record_finding/read_ledger are the
@@ -57,6 +61,15 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
 _PLAN_FILE_WRITE_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "fs_write"})
 # Argument names different write tools use for their target path.
 _PATH_ARG_NAMES = ("path", "file_path", "filename")
+_PLAN_MODE_READONLY_SUBAGENT_TYPES: frozenset[str] = frozenset({"explorer", "critic"})
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _extract_target_path(arguments: dict) -> str | None:
@@ -85,6 +98,29 @@ def _is_exact_plan_file_write(tool_name: str, arguments: dict, plan_file_path: s
     return os.path.normpath(target) == os.path.normpath(plan_file_path)
 
 
+def _is_plan_mode_readonly_subagent_spawn(arguments: dict | None) -> bool:
+    """Allow only the CC-style read-only exploration lane in Plan Mode.
+
+    ``spawn_subagent`` is normally sensitive because it can start workers,
+    background runs, ledger ownership, persistent definitions, and subagent
+    memory writeback. Inside Plan Mode the only permitted shape is an inline,
+    synchronous explorer/critic used to gather evidence for the plan.
+    """
+    args = arguments or {}
+    if not isinstance(args, dict):
+        return False
+    subagent_type = str(args.get("type") or "explorer").strip() or "explorer"
+    if subagent_type not in _PLAN_MODE_READONLY_SUBAGENT_TYPES:
+        return False
+    if str(args.get("definition_name") or "").strip():
+        return False
+    if str(args.get("ledger_todo_id") or "").strip():
+        return False
+    if _truthy(args.get("run_in_background")):
+        return False
+    return True
+
+
 def is_plan_mode_tool_allowed(
     tool_name: str,
     arguments: dict | None = None,
@@ -97,6 +133,8 @@ def is_plan_mode_tool_allowed(
     call targets that exact normalised path — and never for ``fs_write`` delete.
     Phase 3 callers pass no ``plan_file_path``, so every write stays blocked.
     """
+    if tool_name == "spawn_subagent":
+        return _is_plan_mode_readonly_subagent_spawn(arguments)
     if tool_name in PLAN_MODE_READONLY_TOOLS:
         return True
     if tool_name in _PLAN_FILE_WRITE_TOOLS:

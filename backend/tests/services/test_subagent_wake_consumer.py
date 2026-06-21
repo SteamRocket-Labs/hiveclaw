@@ -115,6 +115,35 @@ async def test_subagent_completion_wakes_idle_parent_once(owner_sessionmaker, te
     assert await _signal_count(owner_sessionmaker, tenant_id) == 0
 
 
+async def test_subagent_completion_wake_enumerates_signals_under_nonowner_rls(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    tenant_id,
+):
+    """Production uses the non-owner app role: the cross-tenant daemon scan must
+    use an audited discovery path, then return to tenant-scoped per-signal work.
+    """
+    from app.services.subagent_wake_consumer import SubagentWakeRequest, drain_subagent_completion_wakes
+
+    parent_agent_id = uuid.uuid4()
+    signal_id = await _send_completion_signal(owner_sessionmaker, tenant_id, parent_agent_id)
+    invoked: list[SubagentWakeRequest] = []
+
+    async def invoke_parent(request: SubagentWakeRequest) -> str:
+        invoked.append(request)
+        return "parent resumed"
+
+    result = await drain_subagent_completion_wakes(
+        session_factory=app_user_sessionmaker,
+        invoke_parent=invoke_parent,
+    )
+
+    assert [item.signal_id for item in result] == [signal_id]
+    assert len(invoked) == 1
+    assert invoked[0].tenant_id == tenant_id
+    assert await _signal_count(owner_sessionmaker, tenant_id) == 0
+
+
 async def test_subagent_completion_does_not_wake_parent_with_active_run(owner_sessionmaker, tenant_id):
     from app.services.subagent_wake_consumer import SubagentWakeRequest, drain_subagent_completion_wakes
 

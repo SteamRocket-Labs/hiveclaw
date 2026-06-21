@@ -1109,6 +1109,64 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_start_web_chat_run_flushes_runtime_task_before_transcript_event(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.runtime_task import RuntimeTask
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Session 05-21",
+        last_message_at=None,
+    )
+
+    class _FlushTrackingDB(_FakeDB):
+        def __init__(self):
+            super().__init__(active_run=None)
+            self.runtime_task_flushed = False
+
+        async def flush(self):
+            self.runtime_task_flushed = any(isinstance(item, RuntimeTask) for item in self.added)
+
+    db = _FlushTrackingDB()
+    append_calls = []
+    scheduled = []
+
+    async def fake_append_session_event(**kwargs):
+        assert db.runtime_task_flushed is True
+        append_calls.append(kwargs)
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return SimpleNamespace(done=lambda: False, add_done_callback=lambda _cb: None)
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+
+    await runtime.start_web_chat_run(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content="hello",
+    )
+
+    assert append_calls
+    assert scheduled
+
+
+@pytest.mark.asyncio
 async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_without_duplicate_user_message(
     monkeypatch, tmp_path
 ):
@@ -1175,6 +1233,66 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
         ("user_message", "user", "处理这条飞书消息")
     ]
     assert events[0].metadata["existing_user_message_saved"] is True
+
+
+@pytest.mark.asyncio
+async def test_start_channel_chat_run_from_saved_turn_flushes_runtime_task_before_transcript_event(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.models.runtime_task import RuntimeTask
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="feishu_u", display_name="Feishu User")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Feishu Session",
+        last_message_at=None,
+        delivery_target_json={"channel": "feishu", "receive_id": "ou_1"},
+    )
+
+    class _FlushTrackingDB(_FakeDB):
+        def __init__(self):
+            super().__init__(active_run=None)
+            self.runtime_task_flushed = False
+
+        async def flush(self):
+            self.runtime_task_flushed = any(isinstance(item, RuntimeTask) for item in self.added)
+
+    db = _FlushTrackingDB()
+    append_calls = []
+    scheduled = []
+
+    async def fake_append_session_event(**kwargs):
+        assert db.runtime_task_flushed is True
+        append_calls.append(kwargs)
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return SimpleNamespace(done=lambda: False, add_done_callback=lambda _cb: None)
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+
+    await runtime.start_channel_chat_run_from_saved_turn(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content="处理这条飞书消息",
+        source_channel="feishu",
+    )
+
+    assert append_calls
+    assert scheduled
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@
 
 Hive 应该自己建设公司级 `Knowledge / Ontology Plane`，并把它作为公司知识、权限、审计和 Agent 写入治理的权威层。外部活跃项目可以接在下面，作为索引、图谱、检索、GraphRAG 或向量搜索 provider，但不能成为公司知识的最终真相源。
 
-当前选型决定：第一版 provider 先采用 `getzep/graphiti`。Graphiti 负责 temporal context graph、episode provenance、facts/relationships 增量更新和 graph/hybrid retrieval；Hive 仍然负责公司知识权威层、ACL、proposal/review、Platform Gate、source refs、审计和 prompt 注入。
+当前选型决定：第一版 graph provider 先采用 `getzep/graphiti`，并允许 `Zleap-AI/SAG` 作为平行 retrieval provider 同步接入。Graphiti 负责 temporal context graph、episode provenance、facts/relationships 增量更新和 graph/hybrid retrieval；SAG 负责 Markdown 文档语料上的 chunk / vector / event / entity / 多跳检索。Hive 仍然负责公司知识权威层、ACL、proposal/review、Platform Gate、source refs、审计、结果融合和 prompt 注入。
 
 不要让 SAG、GraphRAG、Graphiti、Cognee、Neo4j、Weaviate、Qdrant 或任何单一外部项目承担以下权威职责：
 
@@ -104,7 +104,7 @@ Memory 仍然是 Agent 私有或 Agent 作用域内的学习资产。公司知�
 - `knowledge_acl_bindings`
   - tenant、department、project、role、user、agent、sensitivity、field/object/edge-level access。
 - `knowledge_index_jobs`
-  - 同步到 Graphiti/SAG/Weaviate/Qdrant/Vespa 等 provider 的派生索引任务。
+  - 同步到 Graphiti/SAG/Weaviate/Qdrant/Vespa 等 provider 的派生索引任务；同一个 document/segment 可以被多个 provider 平行索引。
 - `knowledge_audit_events`
   - append-only 证据：proposal、review、publish、retire、merge、export、prompt injection。
 
@@ -167,7 +167,7 @@ Graphiti 和 SAG 的第一版接入都应该消费 Hive 已经生成的 Markdown
 
 ### 5.3 Provider 层：可插拔引擎
 
-第一版默认 provider：`Graphiti`。
+第一版 graph 主线 provider：`Graphiti`。第一版可平行接入的 retrieval provider：`SAG`。
 
 Graphiti 在本架构里的定位：
 
@@ -176,6 +176,25 @@ Graphiti 在本架构里的定位：
 - 输出候选 entities、relationships、facts、search results、trace。
 - 不负责最终权限判断，不负责公司事实提交，不负责直接改 prompt。
 - 不直接暴露给用户或 Agent；所有调用经由 Hive `KnowledgeProvider` adapter。
+
+SAG 在本架构里的定位：
+
+- 承载 Markdown 文档语料的 chunk、embedding、event/entity extraction 和多跳检索。
+- 接收 Hive canonical Markdown artifact / segments，不直接解析原始 PDF、DOCX、HTML。
+- 输出 source-bound chunks、events、entities、multi-hop trace，作为回答证据或 Graphiti 事实候选的旁证。
+- 不负责 ontology authority，不负责审批，不负责 ACL，不负责 prompt 注入。
+
+Graphiti 和 SAG 可以平行，不是二选一：
+
+```text
+Canonical Markdown Artifact / Knowledge Segments
+  -> Graphiti index: temporal facts / entities / relationships
+  -> SAG index: chunks / vectors / events / entities / multi-hop evidence
+  -> KnowledgeSearchService fusion
+  -> Hive ACL / citation validation / prompt injection
+```
+
+二者的输出都必须回到 Hive 做融合、去重、权限过滤和 citation validation。Graphiti 更像事实图和时间关系层，SAG 更像文档证据和多跳检索层；它们可以互相补充，也可以互相验证，但都不能成为公司知识 source of truth。
 
 Graphiti 的第一版工程前提：
 
@@ -203,7 +222,7 @@ health()
 推荐 provider 候选：
 
 1. `Graphiti`：第一版默认 provider，用于 temporal context graph 和 Agent 维护的变化事实。
-2. `SAG`：后续对照 provider，用于文档语料上的轻量 event/entity retrieval。
+2. `SAG`：第一版可平行接入的 retrieval provider，用于文档语料上的轻量 event/entity retrieval 和多跳证据召回。
 3. `Weaviate` 或 `Qdrant`：后续生产 vector/hybrid indexing baseline。
 4. `Vespa`：如果后续需要严肃的低延迟 search/ranking。
 5. `Microsoft GraphRAG` / `LightRAG`：作为 benchmark pipeline，不作为 online authority。
@@ -215,7 +234,8 @@ health()
 ```text
 user query
   -> Hive principal context
-  -> Knowledge search providers
+  -> parallel Knowledge search providers (Graphiti + SAG + optional vector/full-text)
+  -> result fusion / dedupe / ranking
   -> Hive ACL/sensitivity filter
   -> citation/source validation
   -> Knowledge prompt section
@@ -275,7 +295,7 @@ T0/T2/T3 memory or runtime artifact
 
 ### 6.3 候选矩阵
 
-第一版先跑 Graphiti 主线，同时保留两个对照 spike：
+第一版先跑 Graphiti 主线，并允许 SAG 作为平行 retrieval provider 同步接入；Weaviate/Qdrant 作为后续对照 spike：
 
 1. Hive Knowledge Core + Graphiti
    - 目标：作为第一版默认路线，验证动态 temporal graph 是否适合 Agent 维护公司事实。
@@ -283,9 +303,9 @@ T0/T2/T3 memory or runtime artifact
    - 风险：依赖 graph backend、Neo4j/Neptune 选型、LLM structured output 质量。
 
 2. Hive Knowledge Core + SAG
-   - 目标：验证轻量 document event/entity retrieval。
-   - 预期强项：部署简单、Postgres-like operational fit、多跳检索有潜力。
-   - 风险：项目年轻、无稳定 release、enterprise surface 不完整。
+   - 目标：作为 Graphiti 的平行文档检索 provider，验证 lightweight document chunk/event/entity retrieval 和多跳证据召回。
+   - 预期强项：部署简单、Postgres-like operational fit、适合从 canonical Markdown 快速建立文档证据索引。
+   - 风险：项目年轻、无稳定 release、enterprise surface 不完整；不能承担公司事实权威。
 
 3. Hive Knowledge Core + Weaviate 或 Qdrant
    - 目标：建立可靠生产 vector/hybrid retrieval baseline。
@@ -327,18 +347,21 @@ Microsoft GraphRAG 和 LightRAG 用同一 corpus 做 offline baseline。
 - `KnowledgeProvider` interface。
 - Graphiti adapter，作为 v1 默认 provider，输入为 Hive Markdown artifact / segment / source refs。
 - Graphiti graph backend bootstrap，至少支持本地 / eval 环境。
-- SAG adapter，对照验证，不阻塞 v1；SAG 不需要处理原始 PDF / DOCX，只消费 Markdown content。
+- SAG adapter，作为可平行运行的 v1 retrieval provider；SAG 不需要处理原始 PDF / DOCX，只消费 Markdown content。
+- `knowledge_index_jobs.provider` 支持同一 source/document/segment fanout 到 `graphiti` 和 `sag`，并分别记录索引状态、失败原因、last_indexed_artifact_hash。
 - Weaviate 或 Qdrant adapter，对照验证，不阻塞 v1，输入同样来自 canonical Markdown segments。
 - 基于共享 corpus 的 evaluation runner。
-- latency、citation accuracy、ACL leakage、update behavior、operational cost scorecard。
+- latency、citation accuracy、ACL leakage、update behavior、operational cost、Graphiti-only / SAG-only / fused-result scorecard。
 
 ### Phase 3：Runtime Integration
 
 交付物：
 
 - 用 `KnowledgeSearchService` 替换当前 ad hoc company knowledge injection。
+- `KnowledgeSearchService` 支持 provider fanout：Graphiti 返回 temporal fact/entity/relationship 线索，SAG 返回 chunk/event/entity 证据，Hive 负责融合、去重、排序和冲突暴露。
 - 把 source collection 写进 runtime trace。
 - 确保 prompt `## Knowledge` 只接收 ACL-filtered、source-bound snippets。
+- 增加 fused retrieval trace：记录每条注入知识来自哪个 provider、对应 source refs、segment hash 和 ACL decision。
 - 增加 restricted knowledge never enters prompt 的测试。
 
 ### Phase 4：Agent Maintenance Workflow
@@ -371,7 +394,7 @@ Microsoft GraphRAG 和 LightRAG 用同一 corpus 做 offline baseline。
 2. 把现有 `DocumentConversionService + MarkItDown` 正式纳入 Knowledge Core ingestion：所有文档先形成 canonical Markdown artifact，再进入分段、ACL、source refs 和 provider indexing。
 3. 第一版默认接入 Graphiti，用于 temporal agent-maintained knowledge。
 4. 同时记录 Graphiti 的 graph backend 风险：Neo4j/Neptune 生产路线必须单独确认。
-5. 第二优先 spike SAG，用于轻量 document/event/entity retrieval，对照 Graphiti；SAG 只消费 Hive Markdown content，不负责原始文件解析。
+5. 平行接入 SAG，用于轻量 document/event/entity retrieval，补足 Graphiti 之外的文档证据和多跳召回；SAG 只消费 Hive Markdown content，不负责原始文件解析。
 6. 第三优先 spike Weaviate 或 Qdrant，建立生产 vector baseline。
 7. Microsoft GraphRAG 和 LightRAG 保留为 offline benchmark / reference。
 8. R2R 因开发节奏陈旧，排除出 foundation 候选。
@@ -391,8 +414,11 @@ Hive PostgreSQL/RLS
 Graphiti
   = temporal graph provider for changing agent/company facts
 
-SAG or Weaviate/Qdrant/Vespa
-  = retrieval/index provider for document corpora
+SAG
+  = parallel retrieval provider for Markdown document evidence and multi-hop recall
+
+Weaviate/Qdrant/Vespa
+  = optional retrieval/index provider for production vector/hybrid search
 
 Microsoft GraphRAG / LightRAG
   = offline eval baselines

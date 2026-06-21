@@ -365,28 +365,29 @@ async def start_web_chat_run(
         },
     )
     db.add(runtime_task)
-    await append_session_event(
-        db=db,
-        agent_id=agent.id,
-        tenant_id=getattr(agent, "tenant_id", None),
-        session_id=session.id,
-        run_id=run_uuid,
-        actor_type="user",
-        event_type="user_message",
-        role="user",
-        user_id=user.id,
-        content=saved_content,
-        message_id=message_id,
-        source="web",
-        metadata={
-            "source": "web",
-            "display_content": display_content,
-            "file_name": file_name,
-            "plan_mode_requested": bool(plan_mode_requested),
-            **(extra_metadata or {}),
-        },
-    )
     try:
+        await db.flush()
+        await append_session_event(
+            db=db,
+            agent_id=agent.id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session.id,
+            run_id=run_uuid,
+            actor_type="user",
+            event_type="user_message",
+            role="user",
+            user_id=user.id,
+            content=saved_content,
+            message_id=message_id,
+            source="web",
+            metadata={
+                "source": "web",
+                "display_content": display_content,
+                "file_name": file_name,
+                "plan_mode_requested": bool(plan_mode_requested),
+                **(extra_metadata or {}),
+            },
+        )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -554,31 +555,32 @@ async def start_channel_chat_run_from_saved_turn(
         metadata_json=metadata,
     )
     db.add(runtime_task)
-    await append_session_event(
-        db=db,
-        agent_id=agent.id,
-        tenant_id=getattr(agent, "tenant_id", None),
-        session_id=session.id,
-        run_id=run_uuid,
-        actor_type="user",
-        event_type="user_message",
-        role="user",
-        user_id=user.id,
-        content=_saved_user_content(content=content, display_content=display_content, file_name=file_name),
-        message_id=(extra_metadata or {}).get("message_id"),
-        source=source_channel,
-        materialize_chat_message=False,
-        metadata={
-            "source": source_channel,
-            "channel": source_channel,
-            "existing_user_message_saved": True,
-            "display_content": display_content,
-            "file_name": file_name,
-            "plan_mode_requested": bool(plan_mode_requested),
-            **(extra_metadata or {}),
-        },
-    )
     try:
+        await db.flush()
+        await append_session_event(
+            db=db,
+            agent_id=agent.id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session.id,
+            run_id=run_uuid,
+            actor_type="user",
+            event_type="user_message",
+            role="user",
+            user_id=user.id,
+            content=_saved_user_content(content=content, display_content=display_content, file_name=file_name),
+            message_id=(extra_metadata or {}).get("message_id"),
+            source=source_channel,
+            materialize_chat_message=False,
+            metadata={
+                "source": source_channel,
+                "channel": source_channel,
+                "existing_user_message_saved": True,
+                "display_content": display_content,
+                "file_name": file_name,
+                "plan_mode_requested": bool(plan_mode_requested),
+                **(extra_metadata or {}),
+            },
+        )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()

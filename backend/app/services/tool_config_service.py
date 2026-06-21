@@ -11,6 +11,7 @@ across tenants.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from sqlalchemy import select
@@ -29,18 +30,30 @@ logger = logging.getLogger(__name__)
 MASKED_SECRET_SENTINEL = "__HIVE_SECRET_SET__"
 
 
-def _secret_field_keys(config_schema: dict | None) -> set[str]:
-    """Return config keys whose schema field type is ``password`` (i.e. secrets)."""
+def _schema_fields_by_key(config_schema: dict | None) -> dict[str, dict]:
     if not isinstance(config_schema, dict):
-        return set()
+        return {}
     fields = config_schema.get("fields")
     if not isinstance(fields, list):
-        return set()
-    return {
-        str(field["key"])
-        for field in fields
-        if isinstance(field, dict) and field.get("type") == "password" and field.get("key")
-    }
+        return {}
+    return {str(field["key"]): field for field in fields if isinstance(field, dict) and field.get("key")}
+
+
+def _secret_field_keys(config_schema: dict | None) -> set[str]:
+    """Return config keys whose schema field type is ``password`` (i.e. secrets)."""
+    return {key for key, field in _schema_fields_by_key(config_schema).items() if field.get("type") == "password"}
+
+
+def _split_multiline_secret_rows(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r"[\n,]+", value) if part.strip()]
+    return []
+
+
+def _join_multiline_secret_rows(rows: list[str]) -> str:
+    return "\n".join(row for row in rows if row)
 
 
 def mask_tool_config_secrets(config: dict | None, config_schema: dict | None) -> dict:
@@ -52,9 +65,16 @@ def mask_tool_config_secrets(config: dict | None, config_schema: dict | None) ->
     if not isinstance(config, dict):
         return {}
     masked = dict(config)
+    fields_by_key = _schema_fields_by_key(config_schema)
     for key in _secret_field_keys(config_schema):
         value = masked.get(key)
-        if isinstance(value, str) and value:
+        if not value:
+            continue
+        if fields_by_key.get(key, {}).get("multiline") is True:
+            rows = _split_multiline_secret_rows(_decrypt_secret(value))
+            if rows:
+                masked[key] = _join_multiline_secret_rows([MASKED_SECRET_SENTINEL] * len(rows))
+        elif isinstance(value, str) and value:
             masked[key] = MASKED_SECRET_SENTINEL
     return masked
 
@@ -73,10 +93,28 @@ def merge_tool_config_secrets(
     """
     incoming = dict(incoming) if isinstance(incoming, dict) else {}
     stored = stored if isinstance(stored, dict) else {}
+    fields_by_key = _schema_fields_by_key(config_schema)
     for key in _secret_field_keys(config_schema):
         if key not in incoming or incoming.get(key) == MASKED_SECRET_SENTINEL:
             if key in stored:
                 incoming[key] = stored[key]
+            else:
+                incoming.pop(key, None)
+            continue
+        if fields_by_key.get(key, {}).get("multiline") is True:
+            value = incoming.get(key)
+            if value == "":
+                continue
+            stored_rows = _split_multiline_secret_rows(_decrypt_secret(stored.get(key)))
+            merged_rows: list[str] = []
+            for index, row in enumerate(_split_multiline_secret_rows(value)):
+                if row == MASKED_SECRET_SENTINEL:
+                    if index < len(stored_rows):
+                        merged_rows.append(stored_rows[index])
+                else:
+                    merged_rows.append(row)
+            if merged_rows:
+                incoming[key] = _join_multiline_secret_rows(merged_rows)
             else:
                 incoming.pop(key, None)
     return incoming

@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select, text
 
 from app.agents.subagent import SUBAGENT_COMPLETION_SIGNAL
-from app.database import tenant_scoped_session
+from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.coordination import CoordinationSignal
 from app.models.runtime_task import RuntimeTask
 
@@ -73,18 +73,19 @@ async def drain_subagent_completion_wakes(
         return []
 
     async with tenant_scoped_session(None, session_factory=session_factory) as session:
-        rows = (
-            (
-                await session.execute(
-                    select(CoordinationSignal)
-                    .where(CoordinationSignal.signal_type == SUBAGENT_COMPLETION_SIGNAL)
-                    .order_by(CoordinationSignal.created_at)
-                    .limit(max(limit, 1))
+        async with enter_rls_bypass(session, reason="subagent wake daemon — enumerate completion signals"):
+            rows = (
+                (
+                    await session.execute(
+                        select(CoordinationSignal)
+                        .where(CoordinationSignal.signal_type == SUBAGENT_COMPLETION_SIGNAL)
+                        .order_by(CoordinationSignal.created_at)
+                        .limit(max(limit, 1))
+                    )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
         candidates = [
             (
                 row.id,

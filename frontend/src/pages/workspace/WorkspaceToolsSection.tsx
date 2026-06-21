@@ -29,6 +29,109 @@ const GLOBAL_CATEGORY_CONFIG_SCHEMAS: Record<string, { title: string; fields: an
   },
 };
 
+type ToolConfigField = {
+  key: string;
+  label?: string;
+  placeholder?: string;
+  description?: string;
+  [key: string]: unknown;
+};
+
+export function normalizeToolConfigListValue(value: unknown, options: { preserveEmpty?: boolean } = {}): string[] {
+  let parts: string[];
+  if (Array.isArray(value)) {
+    parts = value.map((item) => String(item).trim());
+  } else if (typeof value === 'string') {
+    parts = value.split(/[\n,]+/).map((item) => item.trim());
+  } else {
+    parts = [];
+  }
+  return options.preserveEmpty ? parts : parts.filter(Boolean);
+}
+
+export function countToolConfigListValues(value: unknown): number {
+  return normalizeToolConfigListValue(value).length;
+}
+
+function joinToolConfigListRows(rows: string[]): string {
+  return rows.join('\n');
+}
+
+export function ToolConfigSecretListField({
+  field,
+  value,
+  onChange,
+}: {
+  field: ToolConfigField;
+  value: unknown;
+  onChange: (nextValue: string) => void;
+}) {
+  const rows = normalizeToolConfigListValue(value, { preserveEmpty: true });
+  const visibleRows = rows.length > 0 ? rows : [''];
+  const count = countToolConfigListValues(visibleRows);
+  const label = field.label || field.key;
+  const placeholder = field.placeholder || 'Enter one key per row';
+
+  const updateRows = (nextRows: string[]) => {
+    onChange(joinToolConfigListRows(nextRows));
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '6px' }}>
+        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500 }}>{label}</label>
+        <span style={{ fontSize: '11px', color: 'var(--text-secondary)', background: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: '999px', padding: '2px 8px', whiteSpace: 'nowrap' }}>
+          {count} {count === 1 ? 'key' : 'keys'} configured
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {visibleRows.map((row, index) => (
+          <div key={`${field.key}-${index}`} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className="form-input"
+              value={row}
+              placeholder={index === 0 ? placeholder : `API key #${index + 1}`}
+              aria-label={`${label} #${index + 1}`}
+              onChange={(event) => {
+                const nextRows = [...visibleRows];
+                nextRows[index] = event.target.value;
+                updateRows(nextRows);
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}
+              onClick={() => {
+                const nextRows = visibleRows.filter((_, rowIndex) => rowIndex !== index);
+                updateRows(nextRows.length > 0 ? nextRows : ['']);
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginTop: '8px' }}>
+        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+          Enter one API key per row. Calls rotate across saved keys in order.
+          {field.description ? ` ${field.description}` : ''}
+        </div>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}
+          onClick={() => updateRows([...visibleRows, ''])}
+        >
+          Add key
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function WorkspaceToolsSection({
   selectedTenantId,
 }: WorkspaceToolsSectionProps) {
@@ -876,6 +979,16 @@ export default function WorkspaceToolsSection({
                                             return null;
                                           }
                                         }
+                                        if (field.type === 'password' && field.multiline) {
+                                          return (
+                                            <ToolConfigSecretListField
+                                              key={field.key}
+                                              field={field}
+                                              value={editingConfig[field.key] ?? ''}
+                                              onChange={(value) => setEditingConfig((current) => ({ ...current, [field.key]: value }))}
+                                            />
+                                          );
+                                        }
                                         return (
                                           <div key={field.key}>
                                             <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
@@ -1004,14 +1117,23 @@ export default function WorkspaceToolsSection({
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {GLOBAL_CATEGORY_CONFIG_SCHEMAS[configCategory].fields.map((field: any) => (
-                    <div key={field.key}>
-                      <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
-                      {field.type === 'password' ? (
-                        <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''} onChange={(event) => setEditingConfig((current) => ({ ...current, [field.key]: event.target.value }))} />
-                      ) : (
-                        <input type="text" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''} onChange={(event) => setEditingConfig((current) => ({ ...current, [field.key]: event.target.value }))} />
-                      )}
-                    </div>
+                    field.type === 'password' && field.multiline ? (
+                      <ToolConfigSecretListField
+                        key={field.key}
+                        field={field}
+                        value={editingConfig[field.key] ?? ''}
+                        onChange={(value) => setEditingConfig((current) => ({ ...current, [field.key]: value }))}
+                      />
+                    ) : (
+                      <div key={field.key}>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: 500, marginBottom: '4px' }}>{field.label}</label>
+                        {field.type === 'password' ? (
+                          <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''} onChange={(event) => setEditingConfig((current) => ({ ...current, [field.key]: event.target.value }))} />
+                        ) : (
+                          <input type="text" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''} onChange={(event) => setEditingConfig((current) => ({ ...current, [field.key]: event.target.value }))} />
+                        )}
+                      </div>
+                    )
                   ))}
                   <div style={{ display: 'flex', gap: '8px', marginTop: '8px', justifyContent: 'flex-end' }}>
                     <button className="btn btn-secondary" onClick={() => setConfigCategory(null)}>

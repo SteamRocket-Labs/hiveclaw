@@ -174,6 +174,60 @@ async def test_startup_resume_picks_up_running_run(service, tenant_id, owner_ses
     assert "completed" in statuses.values()
 
 
+async def test_startup_resume_picks_up_running_run_under_nonowner_rls(tenant_id, owner_sessionmaker, app_user_sessionmaker):
+    """The production app role is non-owner. Startup resume must use an audited
+    discovery scan, then resume each run inside its tenant scope.
+    """
+    owner_service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    app_role_service = WorkflowRuntimeService(session_factory=app_user_sessionmaker)
+    crash = {"armed": True}
+
+    class _SimulatedCrash(RuntimeError):
+        pass
+
+    async def crashing_leaf(request: LeafRequest) -> LeafOutcome:
+        if crash["armed"] and request.step_id == "report":
+            crash["armed"] = False
+            raise _SimulatedCrash("process died mid-run")
+        return LeafOutcome(ok=True, output={"echo": request.task})
+
+    with pytest.raises(_SimulatedCrash):
+        await owner_service.start_run(
+            tenant_id=tenant_id,
+            definition_data=_definition(),
+            args={"target": "x"},
+            leaf_executor=crashing_leaf,
+        )
+
+    resumed = await app_role_service.resume_pending_runs(leaf_executor=_ok_leaf())
+
+    assert [item.outcome.status for item in resumed] == ["completed"]
+
+
+async def test_checkpoint_gate_decider_resolves_run_tenant_under_nonowner_rls(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    tenant_id,
+):
+    from app.services.workflow_runtime_service import CheckpointGateDecider
+
+    run_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            RuntimeTask(
+                id=run_id,
+                task_type="workflow",
+                tenant_id=tenant_id,
+                status="suspended",
+                metadata_json={"tenant_id": str(tenant_id)},
+            )
+        )
+
+    decider = CheckpointGateDecider(session_factory=app_user_sessionmaker)
+
+    assert await decider._tenant_for_run(str(run_id)) == str(tenant_id)
+
+
 async def test_resume_does_not_reuse_steps_from_other_definition_hash(service, tenant_id, owner_sessionmaker):
     """Journal rows stamped with a DIFFERENT definition_hash are never
     reused — simulates a stale journal from an older definition version."""

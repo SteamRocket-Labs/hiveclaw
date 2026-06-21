@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 _DECISION_REF_RE = re.compile(r"\bdecision/(?P<id>[A-Za-z0-9_.:-]+)\b")
 logger = logging.getLogger(__name__)
@@ -571,17 +571,35 @@ class SqlDecisionTraceStore:
 class TenantScopedSqlDecisionTraceStore:
     """Production store that opens a tenant-scoped session per append."""
 
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession] | None = None) -> None:
+        self._session_factory = session_factory
+
+    async def _tenant_for_decision(self, decision_id: str) -> uuid.UUID | None:
+        from app.database import async_session, enter_rls_bypass
+        from app.models.decision_trace import DecisionTraceRecord
+
+        factory = self._session_factory or async_session
+        normalized_id = decision_id_from_ref(decision_id)
+        async with factory() as session:
+            async with enter_rls_bypass(session, reason=f"decision feedback tenant resolution for {normalized_id}"):
+                return (
+                    await session.execute(
+                        select(DecisionTraceRecord.tenant_id).where(DecisionTraceRecord.decision_id == normalized_id)
+                    )
+                ).scalar_one_or_none()
+
     async def record_decision(self, **kwargs: Any) -> DecisionTrace:
         from app.database import tenant_scoped_session
 
         tenant_id = kwargs.get("tenant_id")
-        async with tenant_scoped_session(tenant_id) as session:
+        async with tenant_scoped_session(tenant_id, session_factory=self._session_factory) as session:
             return await SqlDecisionTraceStore(session).record_decision(**kwargs)
 
     async def record_feedback(self, **kwargs: Any) -> FeedbackSignal:
         from app.database import tenant_scoped_session
 
-        async with tenant_scoped_session(None) as session:
+        tenant_id = await self._tenant_for_decision(str(kwargs.get("decision_id") or ""))
+        async with tenant_scoped_session(tenant_id, session_factory=self._session_factory) as session:
             return await SqlDecisionTraceStore(session).record_feedback(**kwargs)
 
 

@@ -201,6 +201,21 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     if not task:
         return _json({"ok": False, "error": "task is required"})
 
+    from app.services.plan_mode_runtime_context import interactive_plan_mode_active
+    from app.tools.plan_mode_policy import is_plan_mode_tool_allowed
+
+    plan_mode_active = interactive_plan_mode_active()
+    if plan_mode_active and not is_plan_mode_tool_allowed("spawn_subagent", request.arguments):
+        return _json(
+            {
+                "ok": False,
+                "error": (
+                    "Interactive Plan Mode only allows synchronous inline explorer/critic subagents. "
+                    "Workers, background runs, persistent definitions, and ledger ownership require plan approval first."
+                ),
+            }
+        )
+
     agent_id = request.context.agent_id
     model, fallback_model, agent = await _resolve_parent_runtime(agent_id)
     if model is None or agent is None:
@@ -261,12 +276,19 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             name = validate_subagent_name(name)
         except ValueError as exc:
             return _json({"ok": False, "error": str(exc)})
-        spec = SubagentSpec(name=name, type=subagent_type, max_tool_rounds=max_tool_rounds)
+        spec = SubagentSpec(
+            name=name,
+            type=subagent_type,
+            max_tool_rounds=max_tool_rounds,
+            has_own_memory=not plan_mode_active,
+        )
 
     # §12.5: memory follows the definition's scope — agent-private definitions
     # accumulate craft in the agent workspace; tenant definitions (and inline
     # specs, unchanged) share the tenant store.
-    if definition_scope == SCOPE_AGENT:
+    if plan_mode_active:
+        memory_store = None
+    elif definition_scope == SCOPE_AGENT:
         memory_store = memory_store_for_agent(agent_id)
     else:
         memory_store = memory_store_for_tenant(tenant_id) if tenant_id is not None else None

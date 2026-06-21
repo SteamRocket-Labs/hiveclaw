@@ -87,16 +87,57 @@ class TestMaskToolConfigSecrets:
             {"key": "tavily_api_key", "type": "password"},
         ]
     }
+    _MULTILINE_SCHEMA = {
+        "fields": [
+            {"key": "search_engine", "type": "select"},
+            {"key": "anysearch_api_keys", "type": "password", "multiline": True},
+        ]
+    }
 
     def test_mask_replaces_nonempty_secret_with_sentinel(self) -> None:
         from app.services.tool_config_service import MASKED_SECRET_SENTINEL, mask_tool_config_secrets
 
-        masked = mask_tool_config_secrets(
-            {"search_engine": "auto", "exa_api_key": "exa-REAL-KEY"}, self._SCHEMA
-        )
+        masked = mask_tool_config_secrets({"search_engine": "auto", "exa_api_key": "exa-REAL-KEY"}, self._SCHEMA)
         assert masked["exa_api_key"] == MASKED_SECRET_SENTINEL
         assert "exa-REAL-KEY" not in masked.values()  # plaintext never echoed
         assert masked["search_engine"] == "auto"  # non-secret untouched
+
+    def test_mask_multiline_secret_preserves_key_count_with_sentinel_lines(self) -> None:
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL, mask_tool_config_secrets
+
+        masked = mask_tool_config_secrets(
+            {"anysearch_api_keys": "key-a\nkey-b,key-c\n\nkey-d"},
+            self._MULTILINE_SCHEMA,
+        )
+
+        assert masked["anysearch_api_keys"] == "\n".join([MASKED_SECRET_SENTINEL] * 4)
+        assert "key-a" not in masked["anysearch_api_keys"]
+        assert masked["anysearch_api_keys"].count(MASKED_SECRET_SENTINEL) == 4
+
+    def test_mask_multiline_encrypted_secret_preserves_key_count(self, monkeypatch) -> None:
+        import base64
+
+        class _Base64Provider:
+            def encrypt(self, value: str) -> str:
+                return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")
+
+            def decrypt(self, value: str) -> str:
+                return base64.urlsafe_b64decode(value.encode("ascii")).decode("utf-8")
+
+        monkeypatch.setattr("app.services.secrets_provider.get_secrets_provider", lambda: _Base64Provider())
+        from app.services.tool_config_service import (
+            MASKED_SECRET_SENTINEL,
+            encrypt_tool_config_secrets,
+            mask_tool_config_secrets,
+        )
+
+        encrypted = encrypt_tool_config_secrets(
+            {"anysearch_api_keys": "key-a\nkey-b\nkey-c"},
+            self._MULTILINE_SCHEMA,
+        )
+
+        masked = mask_tool_config_secrets(encrypted, self._MULTILINE_SCHEMA)
+        assert masked["anysearch_api_keys"] == "\n".join([MASKED_SECRET_SENTINEL] * 3)
 
     def test_mask_leaves_empty_secret_empty(self) -> None:
         from app.services.tool_config_service import mask_tool_config_secrets
@@ -121,28 +162,44 @@ class TestMaskToolConfigSecrets:
         assert merged["exa_api_key"] == "exa-REAL-KEY"  # not overwritten by the mask
         assert merged["search_engine"] == "tavily"  # non-secret edit still applied
 
+    def test_merge_multiline_sentinel_rows_preserve_existing_pool_and_new_rows(self) -> None:
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL, merge_tool_config_secrets
+
+        merged = merge_tool_config_secrets(
+            {"anysearch_api_keys": f"{MASKED_SECRET_SENTINEL}\n{MASKED_SECRET_SENTINEL}\nkey-c"},
+            {"anysearch_api_keys": "key-a\nkey-b"},
+            self._MULTILINE_SCHEMA,
+        )
+
+        assert merged["anysearch_api_keys"] == "key-a\nkey-b\nkey-c"
+
+    def test_merge_multiline_sentinel_rows_can_reduce_pool_count(self) -> None:
+        from app.services.tool_config_service import MASKED_SECRET_SENTINEL, merge_tool_config_secrets
+
+        merged = merge_tool_config_secrets(
+            {"anysearch_api_keys": f"{MASKED_SECRET_SENTINEL}\n{MASKED_SECRET_SENTINEL}"},
+            {"anysearch_api_keys": "key-a\nkey-b\nkey-c"},
+            self._MULTILINE_SCHEMA,
+        )
+
+        assert merged["anysearch_api_keys"] == "key-a\nkey-b"
+
     def test_merge_new_value_updates_secret(self) -> None:
         from app.services.tool_config_service import merge_tool_config_secrets
 
-        merged = merge_tool_config_secrets(
-            {"exa_api_key": "exa-NEW"}, {"exa_api_key": "exa-OLD"}, self._SCHEMA
-        )
+        merged = merge_tool_config_secrets({"exa_api_key": "exa-NEW"}, {"exa_api_key": "exa-OLD"}, self._SCHEMA)
         assert merged["exa_api_key"] == "exa-NEW"
 
     def test_merge_empty_string_clears_secret(self) -> None:
         from app.services.tool_config_service import merge_tool_config_secrets
 
-        merged = merge_tool_config_secrets(
-            {"exa_api_key": ""}, {"exa_api_key": "exa-OLD"}, self._SCHEMA
-        )
+        merged = merge_tool_config_secrets({"exa_api_key": ""}, {"exa_api_key": "exa-OLD"}, self._SCHEMA)
         assert merged["exa_api_key"] == ""  # explicit clear is honored
 
     def test_merge_absent_key_keeps_stored(self) -> None:
         from app.services.tool_config_service import merge_tool_config_secrets
 
-        merged = merge_tool_config_secrets(
-            {"search_engine": "auto"}, {"exa_api_key": "exa-OLD"}, self._SCHEMA
-        )
+        merged = merge_tool_config_secrets({"search_engine": "auto"}, {"exa_api_key": "exa-OLD"}, self._SCHEMA)
         assert merged["exa_api_key"] == "exa-OLD"  # partial payload must not wipe a key
 
     def test_merge_sentinel_with_no_stored_drops_key(self) -> None:
@@ -197,9 +254,7 @@ class TestToolConfigSecretEncryption:
             return value[::-1]
 
     def test_encrypt_tags_and_decrypt_restores(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "app.services.secrets_provider.get_secrets_provider", lambda: self._ReversingProvider()
-        )
+        monkeypatch.setattr("app.services.secrets_provider.get_secrets_provider", lambda: self._ReversingProvider())
         from app.services.tool_config_service import (
             _ENCRYPTED_SECRET_PREFIX,
             decrypt_tool_config_secrets,
@@ -263,3 +318,60 @@ class TestClearSecretFields:
 
         out = clear_secret_fields({"search_engine": "auto"}, self._SCHEMA)
         assert out == {"search_engine": "auto"}
+
+
+class TestLegacyToolDomainConfigReaders:
+    async def test_email_config_uses_central_resolver(self, monkeypatch) -> None:
+        agent_id = uuid.uuid4()
+        calls: list[tuple[str, uuid.UUID | None]] = []
+
+        async def fake_resolve_tool_config(tool_name, tenant_id=None, *, agent_id=None, db=None):
+            calls.append((tool_name, agent_id))
+            return {"email_provider": "smtp", "smtp_host": "smtp.example.test"}
+
+        monkeypatch.setattr("app.services.tool_config_service.resolve_tool_config", fake_resolve_tool_config)
+
+        from app.services.agent_tool_domains.email import _get_email_config
+
+        assert await _get_email_config(agent_id) == {"email_provider": "smtp", "smtp_host": "smtp.example.test"}
+        assert calls == [("send_email", agent_id)]
+
+    async def test_image_upload_uses_central_resolver_before_upload(self, monkeypatch, tmp_path) -> None:
+        agent_id = uuid.uuid4()
+        image_path = tmp_path / "image.png"
+        image_path.write_bytes(b"png")
+        calls: list[tuple[str, uuid.UUID | None]] = []
+
+        async def fake_resolve_tool_config(tool_name, tenant_id=None, *, agent_id=None, db=None):
+            calls.append((tool_name, agent_id))
+            return {"private_key": "private", "url_endpoint": "https://img.example.test"}
+
+        class _FakeResponse:
+            def __init__(self):
+                self.status_code = 200
+
+            def json(self):
+                return {"url": "https://img.example.test/image.png"}
+
+            def raise_for_status(self):
+                return None
+
+        class _FakeAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return _FakeResponse()
+
+        monkeypatch.setattr("app.services.tool_config_service.resolve_tool_config", fake_resolve_tool_config)
+        monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: _FakeAsyncClient())
+
+        from app.services.agent_tool_domains.image_upload import _upload_image
+
+        result = await _upload_image(agent_id, tmp_path, {"file_path": "image.png"})
+
+        assert "https://img.example.test/image.png" in result
+        assert calls == [("upload_image", agent_id)]

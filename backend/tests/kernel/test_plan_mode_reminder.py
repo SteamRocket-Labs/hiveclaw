@@ -63,6 +63,15 @@ def test_full_reminder_scopes_workspace_reads_to_relevant_context():
     assert "reference" in full
 
 
+def test_full_reminder_teaches_narrow_readonly_helper_lane():
+    full = _PLAN_MODE_REMINDER_FULL
+    assert "preview_workflow" in full
+    assert "spawn_subagent" in full
+    assert "explorer/critic" in full
+    assert "run_in_background" in full
+    assert "worker" in full
+
+
 def test_sparse_reminder_routes_clarification_and_plan_body():
     sparse = _PLAN_MODE_REMINDER_SPARSE
     assert "ask_user_question" in sparse

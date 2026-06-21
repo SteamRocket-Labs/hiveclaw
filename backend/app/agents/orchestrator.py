@@ -1035,10 +1035,11 @@ def _spawn_async_delegation_task(
         # The spawn-time ContextVar snapshot covers request-spawned tasks, but
         # daemon resume paths have no request context — the request carries
         # the tenant explicitly so every session below scopes correctly.
+        tenant_token = None
         if request.tenant_id:
-            from app.database import set_current_tenant
+            from app.database import reset_current_tenant, set_current_tenant
 
-            set_current_tenant(str(request.tenant_id))
+            tenant_token = set_current_tenant(str(request.tenant_id))
         try:
             plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
             if not plan_allowed:
@@ -1113,6 +1114,9 @@ def _spawn_async_delegation_task(
                 depth=request.depth,
                 failed=True,
             )
+        finally:
+            if tenant_token is not None:
+                reset_current_tenant(tenant_token)
 
     task = asyncio.create_task(_run(), name="async-delegation-" + task_id)
     _async_tasks[task_id] = AsyncDelegationState(

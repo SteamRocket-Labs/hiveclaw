@@ -274,6 +274,62 @@ async def test_sql_decision_trace_store_records_decision_and_feedback() -> None:
     assert feedback.refs == f"decision/{decision.id}"
 
 
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_tenant_scoped_decision_feedback_resolves_tenant_under_nonowner_rls(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+) -> None:
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.decision_trace import DecisionTraceFeedbackRecord, DecisionTraceRecord
+    from app.models.tenant import Tenant
+    from app.services.decision_trace import TenantScopedSqlDecisionTraceStore
+
+    tenant_id = uuid4()
+    decision_id = f"decision-{uuid4().hex}"
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=tenant_id, name="decision-trace", slug=f"dt-{tenant_id.hex[:10]}"))
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            DecisionTraceRecord(
+                id=uuid4(),
+                decision_id=decision_id,
+                tenant_id=tenant_id,
+                action="send_feishu_message",
+                chosen="ask",
+                reasoning="External-visible action.",
+                alternatives_json=[],
+                situational_factors_json=[],
+                charter_zone="confirm_first",
+                preflight_json={},
+                sensitivity="PL1_public",
+                payload_json={},
+                created_at=datetime.now(UTC),
+            )
+        )
+
+    store = TenantScopedSqlDecisionTraceStore(session_factory=app_user_sessionmaker)
+    feedback = await store.record_feedback(
+        decision_id=decision_id,
+        reaction="approved",
+        polarity="positive",
+        source="direct_owner",
+    )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        rows = (
+            await session.execute(
+                select(DecisionTraceFeedbackRecord).where(DecisionTraceFeedbackRecord.decision_id == decision_id)
+            )
+        ).scalars().all()
+
+    assert feedback.refs == f"decision/{decision_id}"
+    assert len(rows) == 1
+    assert rows[0].tenant_id == tenant_id
+
+
 def test_decision_trace_sql_models_are_append_only_tenant_scoped() -> None:
     from app.models.decision_trace import DecisionTraceFeedbackRecord, DecisionTraceRecord
 

@@ -146,17 +146,11 @@ async def fire_workflow_for_trigger(
         logger.warning("[WorkflowTrigger] %s: invalid workflow_ref: %s", trigger_name, shape_error)
         return WorkflowTriggerFireResult(status="invalid_ref", reason=shape_error)
 
-    # Resolve the firing agent's tenant.
-    from sqlalchemy import select
+    from app.services.tenant_resolver import resolve_tenant_for_agent
 
-    from app.database import tenant_scoped_session
-    from app.models.agent import Agent
-
-    async with tenant_scoped_session(session_factory=session_factory) as session:
-        agent = (await session.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
-    if agent is None or agent.tenant_id is None:
+    tenant_id = await resolve_tenant_for_agent(agent_id, session_factory=session_factory)
+    if tenant_id is None:
         return WorkflowTriggerFireResult(status="invalid_ref", reason=f"agent {agent_id} not found or tenant-less")
-    tenant_id = agent.tenant_id
 
     service = definition_service or WorkflowDefinitionService(session_factory=session_factory)
     try:

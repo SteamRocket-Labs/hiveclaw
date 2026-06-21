@@ -390,8 +390,10 @@ def _append_event_block(
     metadata: dict[str, Any],
 ) -> None:
     segment_id = path.parent.name
-    session_id = path.parents[2].name
-    agent_id = path.parents[5].name
+    session_dir = path.parents[2]
+    session_id = session_dir.name
+    agent_dir = session_dir.parent.parent.parent.parent
+    agent_id = agent_dir.name
     _ensure_segment_file(path, agent_id=agent_id, session_id=session_id, segment_id=segment_id, now=created_at)
     block = _render_event_block(
         event_id=event_id,

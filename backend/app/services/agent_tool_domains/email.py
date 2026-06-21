@@ -4,39 +4,16 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select
-
-from app.database import async_session
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
 
 
 async def _get_email_config(agent_id: uuid.UUID) -> dict:
-    """Retrieve per-agent email config from the send_email tool's AgentTool config."""
-    from app.models.tool import Tool, AgentTool
+    """Retrieve effective email config through the governed resolver."""
+    from app.services.tool_config_service import resolve_tool_config
 
-    async with async_session() as db:
-        # Find the global send_email tool. RLS 阶段1 / Finding #1: pin
-        # `tenant_id IS NULL` so a same-named tenant-owned `send_email` tool
-        # can't leak its credentials here. The per-agent override below is
-        # scoped by agent_id and remains the tenant-specific path.
-        r = await db.execute(select(Tool).where(Tool.name == "send_email", Tool.tenant_id.is_(None)))
-        tool = r.scalar_one_or_none()
-        if not tool:
-            return {}
-
-        # Get per-agent config
-        at_r = await db.execute(
-            select(AgentTool).where(
-                AgentTool.agent_id == agent_id,
-                AgentTool.tool_id == tool.id,
-            )
-        )
-        at = at_r.scalar_one_or_none()
-        agent_config = (at.config or {}) if at else {}
-        # Merge global + agent override
-        return {**(tool.config or {}), **agent_config}
+    return await resolve_tool_config("send_email", agent_id=agent_id)
 
 
 async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:

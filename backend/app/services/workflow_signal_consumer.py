@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select, text
 
-from app.database import tenant_scoped_session
+from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.runtime.workflow_engine import LeafExecutor, WorkflowRunOutcome
 from app.services.workflow_runtime_service import WorkflowRuntimeService
@@ -50,15 +50,16 @@ async def drain_signal_resumes(
     runtime = service or WorkflowRuntimeService(session_factory=session_factory)
 
     async with tenant_scoped_session(session_factory=session_factory) as session:
-        rows = (
-            (
-                await session.execute(
-                    select(RuntimeTask).where(RuntimeTask.task_type == "workflow", RuntimeTask.status == "suspended")
+        async with enter_rls_bypass(session, reason="workflow signal daemon — enumerate suspended workflow waits"):
+            rows = (
+                (
+                    await session.execute(
+                        select(RuntimeTask).where(RuntimeTask.task_type == "workflow", RuntimeTask.status == "suspended")
+                    )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
         waiting = [
             (
                 row.id,

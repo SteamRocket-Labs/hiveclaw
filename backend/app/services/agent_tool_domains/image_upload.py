@@ -4,10 +4,6 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select
-
-from app.database import async_session
-
 logger = logging.getLogger(__name__)
 
 
@@ -39,33 +35,11 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
 
     # ── Load ImageKit credentials (global → per-agent fallback) ──
     private_key = ""
-    url_endpoint = ""
     try:
-        from app.models.tool import Tool, AgentTool
+        from app.services.tool_config_service import resolve_tool_config
 
-        async with async_session() as db:
-            # Global config. RLS 阶段1 / Finding #1: pin `tenant_id IS NULL` so a
-            # same-named tenant-owned `upload_image` tool can never leak its
-            # private_key here. The per-agent override below is scoped by
-            # agent_id and stays the tenant-specific path.
-            r = await db.execute(select(Tool).where(Tool.name == "upload_image", Tool.tenant_id.is_(None)))
-            tool = r.scalar_one_or_none()
-            if tool and tool.config:
-                private_key = tool.config.get("private_key", "")
-                url_endpoint = tool.config.get("url_endpoint", "")
-
-            # Per-agent override (if global key is empty)
-            if not private_key and tool:
-                r2 = await db.execute(
-                    select(AgentTool).where(
-                        AgentTool.agent_id == agent_id,
-                        AgentTool.tool_id == tool.id,
-                    )
-                )
-                agent_tool = r2.scalar_one_or_none()
-                if agent_tool and agent_tool.config:
-                    private_key = agent_tool.config.get("private_key", "") or private_key
-                    url_endpoint = agent_tool.config.get("url_endpoint", "") or url_endpoint
+        config = await resolve_tool_config("upload_image", agent_id=agent_id)
+        private_key = config.get("private_key", "")
     except Exception as e:
         logger.error(f"[UploadImage] Config load error: {e}")
 

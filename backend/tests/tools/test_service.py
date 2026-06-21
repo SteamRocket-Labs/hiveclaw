@@ -756,6 +756,37 @@ async def test_interactive_plan_mode_allows_write_only_to_exact_plan_file():
         reset_interactive_plan_mode(token)
 
 
+def test_interactive_plan_mode_allows_only_narrow_readonly_subagent_lane():
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.service import ToolRuntimeService
+
+    token = set_interactive_plan_mode({"original_request": "plan"})
+    try:
+        assert (
+            ToolRuntimeService._interactive_plan_mode_readonly_block(
+                "spawn_subagent",
+                {"task": "inspect relevant files", "type": "explorer"},
+            )
+            is None
+        )
+        assert ToolRuntimeService._interactive_plan_mode_readonly_block("preview_workflow", {"definition": {}}) is None
+        assert ToolRuntimeService._interactive_plan_mode_readonly_block("check_subagent", {}) is None
+
+        worker = ToolRuntimeService._interactive_plan_mode_readonly_block(
+            "spawn_subagent",
+            {"task": "make the change", "type": "worker"},
+        )
+        assert worker is not None and "plan_mode_readonly_violation" in worker
+
+        background = ToolRuntimeService._interactive_plan_mode_readonly_block(
+            "spawn_subagent",
+            {"task": "inspect later", "run_in_background": True},
+        )
+        assert background is not None and "plan_mode_readonly_violation" in background
+    finally:
+        reset_interactive_plan_mode(token)
+
+
 # ── Confirmation gate: tool intercept never auto-enters Plan Mode ──
 
 

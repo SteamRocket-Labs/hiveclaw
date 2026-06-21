@@ -878,21 +878,26 @@ async def spawn_subagent(
         # §9 P0: pin the initiating tenant inside THIS task's context copy.
         # Request-spawned tasks inherit it via the ContextVar snapshot, but
         # daemon-spawned ones have no request context — ctx carries it.
+        tenant_token = None
         if ctx.tenant_id:
-            from app.database import set_current_tenant
+            from app.database import reset_current_tenant, set_current_tenant
 
-            set_current_tenant(str(ctx.tenant_id))
-        result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
-        _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
-        # Update the durable run record (if any) BEFORE the wake signal, so a parent
-        # woken by the signal already sees the terminal status via check_subagent.
-        if on_complete is not None:
-            try:
-                await on_complete(result)
-            except Exception as exc:  # durable bookkeeping is best-effort, never blocks the signal
-                logger.warning("[Subagent] on_complete callback failed (non-fatal): %s", exc)
-        await _emit_completion_signal(ctx, result)
-        return result
+            tenant_token = set_current_tenant(str(ctx.tenant_id))
+        try:
+            result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+            _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
+            # Update the durable run record (if any) BEFORE the wake signal, so a parent
+            # woken by the signal already sees the terminal status via check_subagent.
+            if on_complete is not None:
+                try:
+                    await on_complete(result)
+                except Exception as exc:  # durable bookkeeping is best-effort, never blocks the signal
+                    logger.warning("[Subagent] on_complete callback failed (non-fatal): %s", exc)
+            await _emit_completion_signal(ctx, result)
+            return result
+        finally:
+            if tenant_token is not None:
+                reset_current_tenant(tenant_token)
 
     task_obj = asyncio.create_task(_run_and_signal(), name=f"subagent-{spec.name}")
     _BACKGROUND_TASKS.add(task_obj)

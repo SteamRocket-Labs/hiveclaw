@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.coordination_wiring import gateway_scope
 from app.config import get_settings
-from app.database import tenant_scoped_session
+from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
 from app.services.channel_delivery_service import ChannelDeliveryService
@@ -464,9 +464,12 @@ class CheckpointGateDecider:
 
     async def _tenant_for_run(self, run_id: str) -> str | None:
         async with tenant_scoped_session(session_factory=self._session_factory) as session:
-            row = (
-                await session.execute(select(RuntimeTask.metadata_json).where(RuntimeTask.id == uuid.UUID(str(run_id))))
-            ).scalar_one_or_none()
+            async with enter_rls_bypass(session, reason=f"workflow gate tenant resolution for run {run_id}"):
+                row = (
+                    await session.execute(
+                        select(RuntimeTask.metadata_json).where(RuntimeTask.id == uuid.UUID(str(run_id)))
+                    )
+                ).scalar_one_or_none()
         if not isinstance(row, dict):
             return None
         tenant_value = row.get("tenant_id")
@@ -874,18 +877,19 @@ class WorkflowRuntimeService:
             # runtime_tasks.tenant_id is nullable/backfilled; tenant comes from
             # each run's metadata mirror (authoritative) and scopes the per-run
             # journal sessions.
-            rows = (
-                (
-                    await session.execute(
-                        select(RuntimeTask).where(
-                            RuntimeTask.task_type == "workflow",
-                            RuntimeTask.status.in_(_RESUMABLE_STATUSES),
+            async with enter_rls_bypass(session, reason="workflow startup resume — enumerate resumable workflow runs"):
+                rows = (
+                    (
+                        await session.execute(
+                            select(RuntimeTask).where(
+                                RuntimeTask.task_type == "workflow",
+                                RuntimeTask.status.in_(_RESUMABLE_STATUSES),
+                            )
                         )
                     )
+                    .scalars()
+                    .all()
                 )
-                .scalars()
-                .all()
-            )
             pending = [
                 (row.id, (row.metadata_json or {}).get("tenant_id"), row.status, row.metadata_json or {})
                 for row in rows

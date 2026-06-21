@@ -183,6 +183,47 @@ async def test_spawn_tool_wires_llm_memory_distiller(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spawn_tool_disables_memory_writeback_inside_interactive_plan_mode(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        model = SimpleNamespace(provider="openai", api_key="k", model="m", base_url=None)
+        return model, None, SimpleNamespace(name="Planner")
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ctx"] = ctx
+        captured["spec"] = spec
+        captured["kwargs"] = kwargs
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ok"),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    token = set_interactive_plan_mode({"original_request": "plan", "plan_file_path": "workspace/plans/p.md"})
+    try:
+        out = await handler_mod.spawn_subagent_tool(
+            _tool_request({"task": "inspect current implementation", "type": "explorer"}, tenant_id=str(uuid.uuid4()))
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert json.loads(out)["ok"] is True
+    assert captured["spec"].type == "explorer"
+    assert captured["spec"].has_own_memory is False
+    assert captured["ctx"].memory_store is None
+    assert captured["ctx"].memory_distiller is None
+    assert captured["kwargs"].get("run_in_background", False) is False
+
+
+@pytest.mark.asyncio
 async def test_spawn_tool_inline_type_selects_builtin(monkeypatch):
     """CC parity: all three builtin types are reachable from the spawn surface."""
 

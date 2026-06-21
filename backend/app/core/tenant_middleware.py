@@ -64,41 +64,34 @@ class TenantMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
 
-        from app.database import set_current_tenant
+        from app.database import reset_current_tenant, set_current_tenant
 
-        # Skip public paths
-        if _is_public_path(path):
-            set_current_tenant(None)
-            request.state.tenant_id = None
-            return await call_next(request)
-
-        # Try to extract tenant_id from JWT
-        auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            set_current_tenant(None)
-            request.state.tenant_id = None
-            return await call_next(request)
-
-        token = auth_header[7:]
         tenant_id = None
-        try:
-            from jose import jwt as jose_jwt
-            payload = jose_jwt.decode(
-                token, settings.JWT_SECRET_KEY,
-                algorithms=[settings.JWT_ALGORITHM],
-                options={"verify_exp": False},  # Expiry checked by route dependency
-            )
-            tenant_id = payload.get("tid")
-            user_role = payload.get("role", "")
+        if not _is_public_path(path):
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:]
+                try:
+                    from jose import jwt as jose_jwt
+                    payload = jose_jwt.decode(
+                        token, settings.JWT_SECRET_KEY,
+                        algorithms=[settings.JWT_ALGORITHM],
+                        options={"verify_exp": False},  # Expiry checked by route dependency
+                    )
+                    tenant_id = payload.get("tid")
+                    user_role = payload.get("role", "")
 
-            if user_role == "platform_admin":
-                override = request.headers.get("x-tenant-id")
-                if override:
-                    tenant_id = override
+                    if user_role == "platform_admin":
+                        override = request.headers.get("x-tenant-id")
+                        if override:
+                            tenant_id = override
 
-        except Exception as e:
-            logger.debug("JWT decode skipped in TenantMiddleware: %s", e)
+                except Exception as e:
+                    logger.debug("JWT decode skipped in TenantMiddleware: %s", e)
 
-        set_current_tenant(tenant_id)
+        token = set_current_tenant(tenant_id)
         request.state.tenant_id = tenant_id
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        finally:
+            reset_current_tenant(token)

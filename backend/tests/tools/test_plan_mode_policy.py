@@ -70,6 +70,30 @@ def test_planning_ledger_tools_allowed_in_plan_mode():
         assert name in PLAN_MODE_READONLY_TOOLS
 
 
+def test_plan_mode_allows_readonly_subagent_and_workflow_inspection_tools():
+    # CC parity: Plan Mode can use read-only specialist exploration/planning
+    # helpers, but not execution or mutation.
+    assert is_plan_mode_tool_allowed("preview_workflow") is True
+    assert is_plan_mode_tool_allowed("check_subagent") is True
+    assert is_plan_mode_tool_allowed("spawn_subagent", {"task": "inspect current state"}) is True
+    assert is_plan_mode_tool_allowed("spawn_subagent", {"task": "verify claim", "type": "critic"}) is True
+
+
+def test_plan_mode_blocks_mutating_or_durable_subagent_spawns():
+    # The allowed Plan Mode subagent lane is narrow: synchronous inline
+    # explorer/critic only. Workers, background runs, persistent definitions, and
+    # ledger ownership all create execution/durable side effects and must stay
+    # blocked until the plan is approved.
+    blocked_payloads = (
+        {"task": "edit this", "type": "worker"},
+        {"task": "inspect later", "run_in_background": True},
+        {"task": "use custom helper", "definition_name": "team-scout"},
+        {"task": "take todo", "ledger_todo_id": "todo-1"},
+    )
+    for payload in blocked_payloads:
+        assert is_plan_mode_tool_allowed("spawn_subagent", payload) is False, payload
+
+
 def test_exit_plan_mode_is_always_in_the_readonly_allowlist():
     # Iron law ①: exit_plan_mode (the approval exit) MUST stay in the read-only
     # allowlist, otherwise the agent could never submit a plan from Plan Mode.

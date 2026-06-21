@@ -49,6 +49,9 @@ def test_append_user_and_assistant_messages_to_unified_session_ledger(tmp_path: 
     assert second.sequence == 2
 
     content = first.path.read_text(encoding="utf-8")
+    assert f"agent_id: {agent_id}" in content
+    assert f"session_id: {session_id}" in content
+    assert "agent_id: memory" not in content
     assert '<t0_event id="' in content
     assert 'seq="1"' in content
     assert 'event_type="user_message"' in content

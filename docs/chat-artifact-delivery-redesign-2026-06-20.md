@@ -215,7 +215,7 @@ append_session_event(
 保持不变：
 
 1. T0 仍然是原始、append-only、可回放的证据层。
-2. T0 canonical path 仍然是 `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md`，并保持 MD/XML event block 形态。
+2. T0 canonical mechanical path 是 `memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl`；同段 `source.md` 保持 MD/XML event block 形态，作为确定性 readable projection。
 3. T2 仍然只从合格的 T0 session segment 生成一对一 Segment Package。
 4. T3 仍然只从通过复查和治理的 T2 package 做跨 session 收敛。
 5. `summary.md` / `labels.md` / `review.md` / `manifest.json` 的 T2 package contract 不因为 chat UI 改造而改变。
@@ -231,7 +231,7 @@ append_session_event(
 
 1. 不需要重新设计 T0 的四层记忆位置。
 2. 不需要改变 T2/T3 的晋升逻辑。
-3. 不需要把 T0 从 Markdown/XML 改成 JSONL。
+3. 不需要放弃 Markdown/XML readable projection；T0 机械真相已经是 JSONL-first，`source.md` 继续作为 projection。
 4. 不需要把已有 T2/T3 文档推倒重写。
 
 结论：T0 地基不变，但 T0 的上游接入点要统一。正确形态是：
@@ -239,7 +239,8 @@ append_session_event(
 ```text
 agent runtime
   -> append_session_event(event_id, sequence, payload)
-      -> T0 source.md event block
+      -> T0 events.jsonl event record
+      -> T0 source.md event block projection
       -> DB transcript/read model
       -> WebSocket projection
       -> notification pointer
@@ -262,13 +263,13 @@ agent runtime
 禁止改：
 
 1. 禁止改变 T0 作为 raw evidence layer 的定位；T0 不能开始做总结、评分、标签、晋升判断。
-2. 禁止改变 canonical path：`memory/t0/sessions/<session_id>/segments/<segment_id>/source.md`。
-3. 禁止把 T0 从 MD/XML event block 改成 JSONL、SQL-only 或纯 DB truth。
+2. 禁止绕过 canonical mechanical path：`memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl`；`source.md` 必须保持同事件的 deterministic projection。
+3. 禁止把 T0 退化成 SQL-only、纯 DB truth，或让 Markdown projection 替代 JSONL mechanical truth。
 4. 禁止让 `ChatMessage`、runtime summary、notification、Activity Log 成为 T0 的替代 truth。
 5. 禁止改变 T0 -> T2 一对一 Segment Package 关系，或让 T2/T3 直接读 transcript read model 绕过 T0。
 6. 禁止因为 UI transcript 改造而重写 T2/T3 的文件结构、标签体系、review/gate 顺序。
 
-验收标准：实现后应能证明同一条 runtime event 同时可从 chat transcript 回放和 T0 `source.md` source refs 追溯；但 T2/T3 的输入仍然只认 T0 segment，不认前端 timeline 或 DB read model。
+验收标准：实现后应能证明同一条 runtime event 同时可从 chat transcript 回放、T0 `events.jsonl` 机械记录恢复，并从 `source.md` projection source refs 追溯；但 T2/T3 的输入仍然只认 T0 segment，不认前端 timeline 或 DB read model。
 
 ## 5. 运行链路
 
@@ -554,7 +555,7 @@ Activity Log 展示诊断和审计内容：tool call JSON、raw trace、压缩�
 7. 任何 trigger / schedule / workflow / heartbeat agent 后台 run 都必须能定位到一个可回放 `ChatSession`；不得只写 `RuntimeTask.result_summary`、workspace 文件或 notification。
 8. 普通聊天列表必须只显示 `listed_surface=chat` 或明确可见的用户任务 session；内部 session 只能通过 Activity Log / Audit / Evolution 等入口查看。
 9. 终端工具卡出现后，聊天输入区不得继续显示“Agent 正在继续执行”；刷新后该工具卡仍必须存在，不得变成空消息、消失或被隐藏成技术细节。
-10. T0 的入口必须接到 `append_session_event`，但 T0 canonical path、MD/XML block 形态、raw evidence 定位、T0 -> T2 -> T3 晋升契约不得变化。
+10. T0 的入口必须接到 `append_session_event`；`events.jsonl` mechanical path、`source.md` MD/XML projection、raw evidence 定位、T0 -> T2 -> T3 晋升契约不得变化。
 
 ### 9.1 测试矩阵
 

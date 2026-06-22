@@ -172,6 +172,7 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
             "goal_start",
             "team_create",
             "advanced_plan",
+            "verify_plan",
         ),
         infer_from_tools=False,
     ),

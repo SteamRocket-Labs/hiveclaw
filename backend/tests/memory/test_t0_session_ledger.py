@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from app.memory.t0.ledger import (
+    EVENT_RECORD_SCHEMA_VERSION,
+    EVENTS_FILENAME,
     append_t0_session_event,
     import_legacy_t0_file,
     replay_t0_session_events,
@@ -44,9 +48,23 @@ def test_append_user_and_assistant_messages_to_unified_session_ledger(tmp_path: 
     expected_root = tmp_path / str(agent_id) / "memory" / "t0" / "sessions" / str(session_id)
     assert first.path == second.path
     assert first.path == expected_root / "segments" / first.segment_id / "source.md"
+    assert first.jsonl_path == expected_root / "segments" / first.segment_id / EVENTS_FILENAME
+    assert second.jsonl_path == first.jsonl_path
     assert "logs" not in first.path.parts
     assert first.sequence == 1
     assert second.sequence == 2
+
+    records = [json.loads(line) for line in first.jsonl_path.read_text(encoding="utf-8").splitlines()]
+    assert [record["schema_version"] for record in records] == [
+        EVENT_RECORD_SCHEMA_VERSION,
+        EVENT_RECORD_SCHEMA_VERSION,
+    ]
+    assert [record["sequence"] for record in records] == [1, 2]
+    assert records[0]["content"] == "请按 Claude Code 的 transcript 方式保存这一轮"
+    assert records[0]["projection"]["path"] == f"segments/{first.segment_id}/source.md"
+    assert records[0]["mechanical_truth"]["format"] == "jsonl"
+    assert records[0]["event_hash"]
+    assert records[1]["prev_event_hash"] == records[0]["event_hash"]
 
     content = first.path.read_text(encoding="utf-8")
     assert f"agent_id: {agent_id}" in content
@@ -63,6 +81,68 @@ def test_append_user_and_assistant_messages_to_unified_session_ledger(tmp_path: 
         (1, "user_message", "user", "请按 Claude Code 的 transcript 方式保存这一轮"),
         (2, "assistant_message", "assistant", "已写入 append-only session ledger。"),
     ]
+    assert [event.record_schema_version for event in events] == [
+        EVENT_RECORD_SCHEMA_VERSION,
+        EVENT_RECORD_SCHEMA_VERSION,
+    ]
+    assert [event.truth_path for event in events] == [first.jsonl_path, first.jsonl_path]
+    assert [event.path for event in events] == [first.path, first.path]
+    assert events[0].event_hash == records[0]["event_hash"]
+    assert events[1].prev_event_hash == records[0]["event_hash"]
+
+
+def test_jsonl_append_uses_o_append_and_single_write(monkeypatch, tmp_path: Path) -> None:
+    import app.memory.t0.ledger as ledger
+
+    opened: list[tuple[str, int, int]] = []
+    writes: list[bytes] = []
+    real_open = os.open
+
+    def fake_open(path, flags, mode=0o777):
+        opened.append((str(path), flags, mode))
+        return real_open(tmp_path / "actual.jsonl", flags, mode)
+
+    real_write = os.write
+
+    def fake_write(fd, data):
+        writes.append(data)
+        return real_write(fd, data)
+
+    monkeypatch.setattr(ledger.os, "open", fake_open)
+    monkeypatch.setattr(ledger.os, "write", fake_write)
+
+    offset, length = ledger._append_event_record(tmp_path / "events.jsonl", {"sequence": 1, "content": "hello"})
+
+    assert opened
+    assert opened[0][1] & os.O_APPEND
+    assert opened[0][1] & os.O_CREAT
+    assert len(writes) == 1
+    assert writes[0].endswith(b"\n")
+    assert length == len(writes[0])
+    assert offset == 0
+
+
+def test_replay_falls_back_to_markdown_projection_for_legacy_segments(tmp_path: Path) -> None:
+    agent_id = uuid4()
+    session_id = uuid4()
+
+    result = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        event_type="user_message",
+        role="user",
+        content="legacy projection still replays",
+        data_root=tmp_path,
+    )
+    result.jsonl_path.unlink()
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+
+    assert [(event.sequence, event.event_type, event.content) for event in events] == [
+        (1, "user_message", "legacy projection still replays")
+    ]
+    assert events[0].record_schema_version == "t0.markdown-projection.v1"
+    assert events[0].truth_path == result.path
 
 
 def test_seal_segment_preserves_append_only_history_and_next_turn_gets_new_segment(tmp_path: Path) -> None:

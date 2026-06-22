@@ -102,7 +102,8 @@ memory/
         index.json                  # sequence/segment sidecar, not semantic truth
         segments/
           <segment_id>/
-            source.md               # current T0 append-only MD/XML session ledger
+            events.jsonl            # T0 mechanical truth: append-only event records
+            source.md               # deterministic Markdown/XML readable projection
 logs/
   YYYY-MM-DD/                       # legacy/import compatibility only
     behavior/
@@ -203,14 +204,14 @@ soul.md = 纲领 / 宪法 / 世界观 / 长期人格原则
 
 | 层级 | 作用 | 文件/存储 | 关键边界 |
 |---|---|---|---|
-| T0 | 原始行为证据、系统审计、可回放上下文 | `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md`、DB `ChatMessage`、`invocation_spans`、runtime artifacts | 不做语义结论；当前实现是 append-only session ledger，chat/one-off task/trigger/delegation/heartbeat/dream 都写 ledger；idle/close 只 seal segment；`logs/...` 是 legacy/import compatibility，不是 runtime session truth；不能直接写 T3 |
+| T0 | 原始行为证据、系统审计、可回放上下文 | `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl`、同段 `source.md` 投影、DB `ChatMessage`、`invocation_spans`、runtime artifacts | 不做语义结论；当前实现是 append-only session ledger，JSONL 是 resume/replay/fork/rollback 的机械真相，`source.md` 是 LLM/human-readable 投影；chat/one-off task/trigger/delegation/heartbeat/dream 都写 ledger；idle/close 只 seal segment；`logs/...` 是 legacy/import compatibility，不是 runtime session truth；不能直接写 T3 |
 | T2 | 一个 ChatSession 内 segment 对应一个 Segment Package | `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md` | `summary.md` 只放 XML-style structured summary；`labels.md` 单独放轻量标签；`review.md` 放裁判结论；Platform Gate 只负责格式、权限、证据、去重和原子提交 |
 | T3 | 稳定长期语义记忆 / converged semantic layer | `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md` | `memory/t3/` 只保存这四个最终 accepted memory files；不保存 index、chapter、关系索引、冲突索引、curation package；T3 patch 只能由 T2 Segment Packages 推导，并用 `source_refs` 回溯 T0 验证；必须经 Memory Gate Agent 复查，再由 Platform Gate 原子提交 |
 | Soul | 身份、使命、长期人格与不可轻易变更的行为原则 | `soul.md` | 必须由 Dream / Soul Writer Agent 产出语义 patch，经 Memory Gate Agent 复查，再由 Platform Gate 原子提交；平台不能机械生成或改写内容 |
 
 ### 2.1 ChatSession、T0 Raw Stream 与 T2 Segment Package
 
-当前代码里的 `ChatSession.id` 是稳定会话锚点，不等同于 T2 切分单位。T0 原始证据目前来自 append-only session ledger：`memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md`，同时 DB `ChatMessage` / `invocation_spans` 作为可交叉校验的运行时读模型。`SESSION_IDLE`、`SESSION_CLOSE` 不再写旧 chat logs，而是 seal 当前 segment。one-off task、trigger、delegation、heartbeat、dream 这类非聊天运行事件也必须写入同一套 session ledger。旧 `logs/YYYY-MM-DD/**` 只作为 legacy/import compatibility，不应该被当成当前 session truth。
+当前代码里的 `ChatSession.id` 是稳定会话锚点，不等同于 T2 切分单位。T0 原始证据目前来自 append-only session ledger：`memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl` 是机械真相，旁路 `source.md` 是确定性 Markdown/XML 投影，同时 DB `ChatMessage` / `invocation_spans` 作为可交叉校验的运行时读模型。`SESSION_IDLE`、`SESSION_CLOSE` 不再写旧 chat logs，而是 seal 当前 segment。one-off task、trigger、delegation、heartbeat、dream 这类非聊天运行事件也必须写入同一套 session ledger。旧 `logs/YYYY-MM-DD/**` 只作为 legacy/import compatibility，不应该被当成当前 session truth。
 
 因此文档里的 `segment` 应统一改名为 **segment**：
 
@@ -296,7 +297,8 @@ memory/sessions/<chat_session_id>/
   "segment_id": "seg-0001",
   "source_refs": ["t0://session/session-xxx/segment/seg-0001#seq=12..18"],
   "source_hashes": {
-    "memory/t0/sessions/session-xxx/segments/seg-0001/source.md": "<sha256>"
+    "memory/t0/sessions/session-xxx/segments/seg-0001/events.jsonl": "<sha256>",
+    "memory/t0/sessions/session-xxx/segments/seg-0001/source.md": "<projection_sha256>"
   },
   "content_hashes": {
     "summary.md": "<sha256>",
@@ -308,7 +310,7 @@ memory/sessions/<chat_session_id>/
 }
 ````
 
-T0 真相源仍是 `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md`；DB `ChatMessage`、`invocation_spans` 只用于交叉校验和运行时读模型。
+T0 机械真相源是 `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl`；同段 `source.md` 是确定性 Markdown/XML readable projection。DB `ChatMessage`、`ChatTranscriptEvent`、`invocation_spans` 只用于交叉校验和运行时读模型。
 
 `summary.md`：
 
@@ -1391,14 +1393,14 @@ class MemoryCandidateEnvelope(TypedDict):
 
 这里必须区分两个概念，避免把 T0 的“唯一原始真相源”和各层的 canonical accepted files 混在一起：
 
-1. **唯一 T0 原始 / 回放真相源**：只指 `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md`。这是可 replay、可残差回看的原始事件账本。
+1. **唯一 T0 机械回放真相源**：只指 `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl`。同段 `source.md` 是由 JSONL event 确定性生成的 readable projection，可作为 T2 snippet/evidence view，但不再承担 resume/replay/fork/rollback 的唯一机械真相。
 2. **各层 canonical accepted files**：T2 的 Segment Package、T3 的 accepted memory files、`soul.md` 都是各自层级的 accepted source，但不是 T0 原始证据的替代物。
 
 因此，T3 Curator 的入口不是把 T3 真相源替换成 `summary.md` / `labels.md` / `review.md`。正确关系是：T3 Curator 读取成熟 T2 Segment Packages 作为主入口，并沿其中的 `source_refs` 回看 T0 原始证据，同时读取当前四个 T3 accepted memory files 作为目标层上下文；最终只生成 T3 Patch Envelope，不能直接覆盖 T3 accepted files。
 
 | 关注点 | Canonical Source | Derived / Audit Only |
 |---|---|---|
-| 原始可回放证据 | `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md` | DB `ChatMessage`、`invocation_spans` 是交叉校验/运行时读模型；`source_bundle.json` 是 staging 输入包；`logs/...` 是 legacy/import compatibility |
+| 原始可回放证据 | `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl`，同段 `source.md` 为 deterministic readable projection | DB `ChatMessage` / `ChatTranscriptEvent`、`invocation_spans` 是交叉校验/运行时读模型；`source_bundle.json` 是 staging 输入包；`logs/...` 是 legacy/import compatibility |
 | 短期 session projection | runtime session memory、`runtime_artifacts/session_learning_projection.jsonl` | 只允许 TTL / session scoped；不是 durable semantic truth |
 | T2 Segment Package | `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md`、`manifest.json` | `memory/t2/**`、`memory/learnings/*.md` compatibility views |
 | T3 accepted memory files | `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md` | Compatibility `memory/wiki/**/*.md`、`memory/*.md` T3 files；旧 `canon.md`、`relations.md`、`contradictions.md` 只作为迁移输入或 read-only compatibility view |
@@ -1413,7 +1415,7 @@ class MemoryCandidateEnvelope(TypedDict):
 
 | 目标 | 唯一允许写入者 |
 |---|---|
-| `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md` | T0 session ledger writer (`web_chat_runtime` append points; `task_executor` one-off task events; runtime hooks for trigger/delegation/heartbeat/dream; idle/close seal chat segments) |
+| `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl` + `source.md` | T0 session ledger writer (`web_chat_runtime` append points; `task_executor` one-off task events; runtime hooks for trigger/delegation/heartbeat/dream; idle/close seal chat segments). Writer must append JSONL mechanical truth first, then deterministic Markdown/XML projection. |
 | `logs/.../{behavior,system}/*.md` | Legacy T0 import/manual compatibility only；runtime hooks must not write here |
 | `memory/.staging/t2_jobs/<job_id>/source_bundle.json` | T0ToT2PackageBuilder staging writer；构建期输入包，不是 canonical memory |
 | `runtime_artifacts/session_learning_projection.jsonl` | runtime continuity / session projection writer；TTL/session scoped |

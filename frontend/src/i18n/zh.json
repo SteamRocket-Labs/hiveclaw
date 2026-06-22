@@ -695,6 +695,16 @@
         "statusBlocked": "阻塞",
         "statusPending": "待处理"
       },
+      "commands": {
+        "title": "命令",
+        "open": "命令",
+        "empty": "暂无可用命令",
+        "search": "搜索命令",
+        "arguments": "命令参数",
+        "execute": "执行",
+        "running": "执行中",
+        "loading": "正在加载命令..."
+      },
       "runtime": {
         "model": "模型",
         "remaining": "剩余上下文",

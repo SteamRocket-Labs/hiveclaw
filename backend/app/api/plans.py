@@ -42,6 +42,7 @@ from app.models.user import User
 from app.services.plan_mode_recommendation_service import create_plan_recommendation, decline_recommendation
 from app.services.plan_mode_service import PlanConflictError, PlanModeService
 from app.services.plan_mode_service import get_plan_mode_service as _get_shared_plan_mode_service
+from app.services.plan_verification_service import verify_plan_artifact
 
 router = APIRouter(prefix="/agents", tags=["plans"])
 
@@ -113,6 +114,13 @@ class PlanDecisionIn(BaseModel):
     reason: str | None = None
 
 
+class PlanVerifyIn(BaseModel):
+    evidence_refs: list[str] = Field(default_factory=list)
+    completed_criteria: list[str] = Field(default_factory=list)
+    failed_criteria: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
 class PlanRecommendationCreateIn(BaseModel):
     original_request: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
@@ -165,6 +173,12 @@ class PlanHandoffOut(BaseModel):
     plan_id: str
     handoff_status: str | None = None
     handoff_payload: dict[str, Any] | None = None
+
+
+class PlanVerificationOut(BaseModel):
+    ok: bool
+    plan_id: str
+    verification: dict[str, Any]
 
 
 class PlanRecommendationOut(BaseModel):
@@ -405,6 +419,33 @@ async def get_plan(
     service = get_plan_mode_service()
     plan = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
     return _plan_out(plan)
+
+
+@router.post("/{agent_id}/plans/{plan_id}/verify", response_model=PlanVerificationOut)
+async def verify_plan(
+    agent_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    payload: PlanVerifyIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify claimed execution against the plan's own success criteria."""
+    await check_agent_access(db, current_user, agent_id)
+    service = get_plan_mode_service()
+    plan = await _load_plan_for_agent(service, agent_id=agent_id, plan_id=plan_id)
+    verification = verify_plan_artifact(
+        plan_json=plan.plan_json or {},
+        evidence_refs=payload.evidence_refs,
+        completed_criteria=payload.completed_criteria,
+        failed_criteria=payload.failed_criteria,
+        notes=payload.notes,
+    )
+    metadata = dict(plan.metadata_json or {})
+    metadata["last_verification"] = verification
+    plan.metadata_json = metadata
+    if hasattr(db, "commit"):
+        await db.commit()
+    return PlanVerificationOut(ok=True, plan_id=str(plan.id), verification=verification)
 
 
 # ---------------------------------------------------------------------------

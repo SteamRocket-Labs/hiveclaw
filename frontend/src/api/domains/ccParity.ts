@@ -24,6 +24,11 @@ export interface ExecuteCommandInput {
   session_id?: string | null;
 }
 
+export interface ListCommandsOptions {
+  surface?: 'agent_prompt' | 'user';
+  includeOptionalPacks?: boolean;
+}
+
 export interface ExecuteCommandResult {
   ok: boolean;
   command: string;
@@ -115,12 +120,17 @@ export interface AgentTeamCloseResult extends AgentTeam {
 }
 
 export const ccParityApi = {
-  listCommands(agentId: string): Promise<CommandIndexEntry[]> {
-    return get<CommandIndexEntry[]>(`/agents/${agentId}/commands`);
+  listCommands(agentId: string, options: ListCommandsOptions = {}): Promise<CommandIndexEntry[]> {
+    const params = new URLSearchParams();
+    if (options.surface) params.set('surface', options.surface);
+    if (options.includeOptionalPacks) params.set('include_optional_packs', 'true');
+    const query = params.toString();
+    return get<CommandIndexEntry[]>(`/agents/${agentId}/commands${query ? `?${query}` : ''}`);
   },
 
-  getCommand(agentId: string, commandName: string): Promise<CommandDefinition> {
-    return get<CommandDefinition>(`/agents/${agentId}/commands/${commandName}`);
+  getCommand(agentId: string, commandName: string, options: { includeOptionalPacks?: boolean } = {}): Promise<CommandDefinition> {
+    const query = options.includeOptionalPacks ? '?include_optional_packs=true' : '';
+    return get<CommandDefinition>(`/agents/${agentId}/commands/${commandName}${query}`);
   },
 
   executeCommand(agentId: string, commandName: string, input: ExecuteCommandInput = {}): Promise<ExecuteCommandResult> {

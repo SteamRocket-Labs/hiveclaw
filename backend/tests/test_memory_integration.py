@@ -25,7 +25,17 @@ class TestHooksIntegration:
     def test_v1_all_events(self) -> None:
         from app.runtime.hooks import HookEvent
 
-        assert len(HookEvent) == 32
+        assert len(HookEvent) == 33
+        assert {event.value for event in HookEvent}.issuperset(
+            {
+                "stop",
+                "notification",
+                "task_created",
+                "task_completed",
+                "team_created",
+                "teammate_idle",
+            }
+        )
 
     def test_v2_response_complete_event(self) -> None:
         from app.runtime.hooks import HookEvent

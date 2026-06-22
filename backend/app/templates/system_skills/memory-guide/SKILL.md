@@ -47,8 +47,9 @@ LLM 负责判断、提炼、反思、归纳、候选生成。
 <pyramid>
 ```
 T0
+  memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl
   memory/t0/sessions/<session_id>/segments/<segment_id>/source.md
-  append-only raw session ledger; no LLM prompt, no summary, no manual edits
+  append-only raw session ledger; events.jsonl is mechanical truth, source.md is deterministic projection; no LLM prompt, no summary, no manual edits
 
 T2
   memory/sessions/<session_id>/segments/<segment_id>/

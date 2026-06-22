@@ -2,7 +2,9 @@
 
 Session T0 truth now lives in the append-only ledger under:
 
-    memory/t0/sessions/{chat_session_id}/segments/{segment_id}/source.md
+    memory/t0/sessions/{chat_session_id}/segments/{segment_id}/events.jsonl
+
+with ``source.md`` as the deterministic Markdown/XML readable projection.
 
 Runtime chat, trigger, delegation, heartbeat, and dream events must write that
 ledger. This module remains only for legacy file imports, explicit manual
@@ -96,8 +98,8 @@ def _apply_t0_privacy_gate(content: str) -> str:
 def _category_of(behavior_type: str) -> str:
     """Map a behavior_type to its storage subdirectory.
 
-    This is the legacy logs layout. Runtime T0 truth lives in
-    memory/t0/sessions/**/source.md. behavior/ holds legacy importable behavior
+    This is the legacy logs layout. Runtime T0 mechanical truth lives in
+    memory/t0/sessions/**/events.jsonl. behavior/ holds legacy importable behavior
     snapshots; system/ holds legacy distiller traces. Unknown types fall back
     to system/ so they do not look like runtime session evidence.
     """
@@ -842,7 +844,9 @@ async def backfill_recent_chat_logs(
 
     This function intentionally no longer writes ``logs/YYYY-MM-DD/**/chat-*.md``.
     The legacy per-file logger remains available for import/compatibility, but
-    session T0 truth is ``memory/t0/sessions/<session>/segments/*/source.md``.
+    session T0 mechanical truth is
+    ``memory/t0/sessions/<session>/segments/*/events.jsonl``; ``source.md`` is
+    the deterministic readable projection.
     """
     data_root = Path(get_settings().AGENT_DATA_DIR)
 
@@ -879,7 +883,9 @@ async def backfill_recent_chat_logs(
 
             for session in sessions:
                 session_key = str(session.id)
-                existing_t0 = bool(replay_t0_session_events(agent_id=agent_id, session_id=session_key, data_root=data_root))
+                existing_t0 = bool(
+                    replay_t0_session_events(agent_id=agent_id, session_id=session_key, data_root=data_root)
+                )
                 transcript_stmt = (
                     select(ChatTranscriptEvent.id)
                     .where(

@@ -251,7 +251,15 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert source_bundle["source_refs"][0]["path"].endswith(
         f"memory/t0/sessions/{session_id}/segments/{first.segment_id}/source.md"
     )
+    assert source_bundle["source_refs"][0]["truth_path"].endswith(
+        f"memory/t0/sessions/{session_id}/segments/{first.segment_id}/events.jsonl"
+    )
+    assert source_bundle["source_refs"][0]["truth_sha256"]
     assert source_bundle["t0_events"][0]["content"] == "以后架构改造先讨论，确认后再改文档。"
+    assert source_bundle["t0_events"][0]["truth_path"].endswith(
+        f"memory/t0/sessions/{session_id}/segments/{first.segment_id}/events.jsonl"
+    )
+    assert source_bundle["t0_events"][0]["event_hash"]
 
     summary_node = _assert_xml_block(package_dir / "summary.md", "t2_summary")
     labels_node = _assert_xml_block(package_dir / "labels.md", "t2_labels")

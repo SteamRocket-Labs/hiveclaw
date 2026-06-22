@@ -14,6 +14,27 @@ class _FakeDB:
         self.flushes += 1
 
 
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _ExecuteDB(_FakeDB):
+    def __init__(self, values) -> None:
+        super().__init__()
+        self.values = list(values)
+        self.execute_count = 0
+
+    async def execute(self, _stmt):
+        self.execute_count += 1
+        if not self.values:
+            raise AssertionError("unexpected execute() call")
+        return _ScalarResult(self.values.pop(0))
+
+
 @pytest.mark.asyncio
 async def test_continue_session_goal_starts_goal_continuation_run(monkeypatch):
     import app.services.goal_continuation_service as service
@@ -92,3 +113,80 @@ async def test_continue_session_goal_marks_budget_limited_without_starting_run(m
     assert result["decision"]["next_status"] == "budget_limited"
     assert goal.status == "budget_limited"
     assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_maybe_continue_session_goal_after_turn_dispatches_active_goal(monkeypatch):
+    import app.services.goal_continuation_service as service
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    user_id = uuid4()
+    goal = AgentSessionGoal(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        chat_session_id=session_id,
+        created_by_user_id=user_id,
+        objective="Finish active goal.",
+        status="active",
+    )
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id)
+    user = SimpleNamespace(id=user_id)
+    db = _ExecuteDB([goal, agent, session, user])
+    calls: list[dict] = []
+
+    async def fake_continue_session_goal(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "goal_id": str(goal.id), "run": {"run_id": "run-2"}}
+
+    monkeypatch.setattr(service, "continue_session_goal", fake_continue_session_goal)
+
+    result = await service.maybe_continue_session_goal_after_turn(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        completed_task_type="web_chat_turn",
+        completed_status="completed",
+        metadata_json={"ephemeral": False},
+    )
+
+    assert result["ok"] is True
+    assert result["goal_id"] == str(goal.id)
+    assert db.execute_count == 4
+    assert calls[0]["agent"] is agent
+    assert calls[0]["session"] is session
+    assert calls[0]["user"] is user
+    assert calls[0]["goal"] is goal
+    assert calls[0]["active_run_exists"] is False
+    assert calls[0]["pending_user_input"] is False
+    assert calls[0]["plan_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_maybe_continue_session_goal_after_turn_skips_non_user_turns(monkeypatch):
+    import app.services.goal_continuation_service as service
+
+    async def fail_continue_session_goal(**_kwargs):
+        raise AssertionError("goal continuation turns must not recursively continue themselves")
+
+    monkeypatch.setattr(service, "continue_session_goal", fail_continue_session_goal)
+
+    db = _ExecuteDB([])
+    result = await service.maybe_continue_session_goal_after_turn(
+        db=db,
+        agent_id=uuid4(),
+        session_id=uuid4(),
+        user_id=uuid4(),
+        completed_task_type="goal_continuation",
+        completed_status="completed",
+        metadata_json={"source": "goal_continuation"},
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "unsupported_task_type"
+    assert db.execute_count == 0

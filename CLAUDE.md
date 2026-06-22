@@ -53,6 +53,8 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/wiki_map.md` is the single generated navigation map, not always-on prompt memory.
 
+**T0 session truth:** JSONL is the mechanical truth and Markdown is the deterministic projection. Per-segment `memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl` is the resume/replay/fork/checkpoint/rollback source of truth; same-segment `source.md` is the human/LLM-readable Markdown/XML projection and legacy fallback, not the mechanical truth.
+
 **Review lens — apply to every subsystem:** ① Is the LLM's input visibility complete? ② Is its output budget sufficient? ③ Is the prompt engineered to benchmark quality? ④ Does mechanical processing appear only as an observable fallback?
 
 ## Delivery Discipline — One Complete Pass, No MVP (交付纪律 — 一次改完，零技术债)
@@ -236,7 +238,8 @@ memory/t0/sessions/<chat_session_id>/
   index.json
   segments/
     <segment_id>/
-      source.md    ← append-only XML event blocks: user_message, assistant_message, tool_result, segment_boundary
+      events.jsonl ← append-only mechanical truth records with hash chain
+      source.md    ← deterministic Markdown/XML projection: user_message, assistant_message, tool_result, segment_boundary
 ```
 
 `logs/YYYY-MM-DD/**` is now legacy/import compatibility only. Old chat logs can be imported, but runtime chat, one-off task, trigger, delegation, heartbeat, and dream T0 truth is the append-only session ledger.
@@ -264,7 +267,7 @@ pointers live in `manifest.json` and in-file `source_refs`.
 
 | Layer | Location | Written By | Read By |
 |-------|----------|-----------|---------|
-| **T0 session ledger** | `memory/t0/sessions/<session_id>/segments/<segment_id>/source.md` | `web_chat_runtime` append points; `task_executor` one-off task events; runtime hook events for trigger/delegation/heartbeat/dream; `SESSION_IDLE/CLOSE` seal chat segments | replay/import/backfill; higher layers as evidence |
+| **T0 session ledger** | `memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl` + deterministic `source.md` projection | `web_chat_runtime` append points; `task_executor` one-off task events; runtime hook events for trigger/delegation/heartbeat/dream; `SESSION_IDLE/CLOSE` seal chat segments | resume/replay/fork/checkpoint/rollback/export read JSONL first; T2/human review may use projection and source refs |
 | **T0 legacy/import logs** | `logs/YYYY-MM-DD/{behavior,system}/` | Legacy import/manual compatibility only; not a runtime T0 writer | legacy import/operators |
 | **T2 Segment Package** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + independent review; Platform Gate commits package metadata | T3 Consolidator only when complete/standalone; residual T0 evidence lookup |
 | **T2 Episode Stitch Package** | `memory/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` | Continuity/Episode Stitcher + independent review; Platform Gate commits package metadata | T3 Consolidator for broken/continuing segments after stitching |

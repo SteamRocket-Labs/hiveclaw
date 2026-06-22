@@ -51,14 +51,15 @@ LLM 负责判断、提炼、反思、归纳、候选生成；
 
 ### 2.1 当前 T0 已完成的事实
 
-当前 T0 canonical path：
+当前 T0 canonical mechanical path 与 readable projection：
 
 ```text
+<AGENT_DATA_DIR>/<agent_id>/memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl
 <AGENT_DATA_DIR>/<agent_id>/memory/t0/sessions/<session_id>/segments/<segment_id>/source.md
 <AGENT_DATA_DIR>/<agent_id>/memory/t0/sessions/<session_id>/index.json
 ```
 
-`source.md` 是 Markdown 容器，内部是 XML event blocks：
+`events.jsonl` 是 `t0.event-record.v2` 机械真相；`source.md` 是从同一事件确定性生成的 Markdown/XML readable projection，内部是 XML event blocks：
 
 ```xml
 <t0_event id="..." seq="..." event_type="user_message" role="user" created_at="..." source="web" sensitivity="PL1_public">
@@ -562,7 +563,7 @@ Episode Stitch Package 的文件职责：
 
 术语边界：
 
-- `memory/t0/sessions/<session_id>/segments/<t0_segment_id>/source.md` 才是唯一 T0 原始 / 回放真相源。
+- `memory/t0/sessions/<session_id>/segments/<t0_segment_id>/events.jsonl` 才是唯一 T0 机械回放真相源；同段 `source.md` 是 deterministic Markdown/XML projection，供 T2 source snippets、human review 和 LLM evidence review 使用。
 - T2 的 `summary.md` / `labels.md` / `review.md` / `manifest.json` 是 canonical Segment Package，不是 T0 原始证据的替代物。
 - T3 Curator 读取 mature Segment Packages，是把它们作为 T3 curation 的主入口；T3 accepted memory truth 仍然只落在 `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md`。
 

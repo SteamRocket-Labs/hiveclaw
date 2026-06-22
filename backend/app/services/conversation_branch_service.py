@@ -15,10 +15,10 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.user import User
 from app.services.chat_transcript import append_session_event
 
-ConversationBranchMode = Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate"]
+ConversationBranchMode = Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate", "rewind"]
 
 _CONTENT_REQUIRED_MODES = {"edit", "insert_before", "insert_after", "reply"}
-_VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "regenerate"}
+_VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "regenerate", "rewind"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +79,7 @@ def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> 
         "insert_after": "insert",
         "reply": "reply",
         "regenerate": "regenerate",
+        "rewind": "rewind",
     }.get(mode, "branch")
     return f"{source_title} ({suffix})"[:200]
 
@@ -195,6 +196,8 @@ def _validate_branch_request(*, mode: str, anchor: ChatTranscriptEvent, content:
         raise HTTPException(status_code=400, detail="edit requires a user message anchor")
     if mode == "regenerate" and role != "assistant":
         raise HTTPException(status_code=400, detail="regenerate requires an assistant message anchor")
+    if mode == "rewind" and role != "user":
+        raise HTTPException(status_code=400, detail="rewind requires a user message checkpoint")
 
 
 async def create_conversation_branch(

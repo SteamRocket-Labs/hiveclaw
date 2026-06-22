@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.runtime.hooks import HookContext, HookEvent, HookRegistry, HookResult
@@ -569,7 +571,7 @@ class TestHookEvents:
 
     def test_all_events_defined(self) -> None:
         events = list(HookEvent)
-        assert len(events) == 32
+        assert len(events) == 33
 
     def test_new_events_exist(self) -> None:
         assert HookEvent.USER_PROMPT_SUBMIT == "user_prompt_submit"
@@ -584,6 +586,7 @@ class TestHookEvents:
         assert HookEvent.TRIGGER_END == "trigger_end"
         assert HookEvent.HEARTBEAT_TICK_END == "heartbeat_tick_end"
         assert HookEvent.DREAM_END == "dream_end"
+        assert HookEvent.NOTIFICATION == "notification"
         assert HookEvent.PERMISSION_REQUEST == "permission_request"
         assert HookEvent.TASK_CREATED == "task_created"
         assert HookEvent.TASK_COMPLETED == "task_completed"
@@ -599,6 +602,45 @@ class TestHookEvents:
     def test_session_end_restored_for_cc_parity(self) -> None:
         event_values = [e.value for e in HookEvent]
         assert "session_end" in event_values
+
+    @pytest.mark.asyncio
+    async def test_runtime_config_can_disable_registration_key(self) -> None:
+        from app.runtime.hooks import configure_hook_runtime, reset_hook_runtime_config
+
+        reset_hook_runtime_config()
+        reg = HookRegistry()
+        calls: list[str] = []
+
+        async def handler(_ctx):
+            calls.append("called")
+
+        reg.register(HookEvent.SESSION_END, handler, key="test.disable")
+        configure_hook_runtime(key="test.disable", enabled=False)
+
+        await reg.emit(HookContext(event=HookEvent.SESSION_END))
+
+        assert calls == []
+        reset_hook_runtime_config()
+
+    @pytest.mark.asyncio
+    async def test_runtime_config_timeout_can_block_blocking_hook(self) -> None:
+        from app.runtime.hooks import configure_hook_runtime, reset_hook_runtime_config
+
+        reset_hook_runtime_config()
+        reg = HookRegistry()
+
+        async def slow_handler(_ctx):
+            await asyncio.sleep(0.05)
+
+        reg.register(HookEvent.USER_PROMPT_SUBMIT, slow_handler, key="test.timeout")
+        configure_hook_runtime(key="test.timeout", timeout_seconds=0.001, failure_policy="block")
+
+        result = await reg.emit(HookContext(event=HookEvent.USER_PROMPT_SUBMIT, prompt="hello"))
+
+        assert result is not None
+        assert result.block is True
+        assert "test.timeout" in result.reason
+        reset_hook_runtime_config()
 
     def test_registry_initializes_all_events(self) -> None:
         reg = HookRegistry()

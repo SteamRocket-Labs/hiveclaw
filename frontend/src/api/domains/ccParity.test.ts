@@ -53,6 +53,14 @@ describe('ccParityApi', () => {
     expect(commands[0]).not.toHaveProperty('input_schema');
   });
 
+  it('lists user commands with optional packs when requested', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ name: 'diff', aliases: [], category: 'coding_pack' }]));
+
+    await ccParityApi.listCommands('agent-1', { surface: 'user', includeOptionalPacks: true });
+
+    expect(requestOf().url).toBe('/api/agents/agent-1/commands?surface=user&include_optional_packs=true');
+  });
+
   it('loads a selected command schema on demand', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -71,9 +79,9 @@ describe('ccParityApi', () => {
       }),
     );
 
-    const command = await ccParityApi.getCommand('agent-1', 'goal_start');
+    const command = await ccParityApi.getCommand('agent-1', 'goal_start', { includeOptionalPacks: true });
 
-    expect(requestOf().url).toBe('/api/agents/agent-1/commands/goal_start');
+    expect(requestOf().url).toBe('/api/agents/agent-1/commands/goal_start?include_optional_packs=true');
     expect(command.input_schema.properties).toBeTruthy();
   });
 

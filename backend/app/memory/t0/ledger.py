@@ -2,8 +2,9 @@
 
 This is Hive's raw conversation substrate. It follows the same ground rule as
 Claude Code transcripts and Codex rollouts: accepted session events are appended
-to a per-session ledger first, then higher layers may build summaries or indexes
-from it. T0 is not a summary store and does not rewrite historical events.
+to JSONL mechanical truth first, then a deterministic Markdown/XML projection
+and higher-layer indexes may be built from it. T0 is not a summary store and
+does not rewrite historical events.
 """
 
 from __future__ import annotations
@@ -25,9 +26,17 @@ from app.config import get_settings
 from app.memory.form_lint import lint_memory_form
 from app.services.privacy_layer import PrivacyLayer, PrivacyStore
 
+try:  # pragma: no cover - Windows fallback; production/dev targets are Unix.
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
 
 SCHEMA_VERSION = "t0.session-ledger.v1"
+EVENT_RECORD_SCHEMA_VERSION = "t0.event-record.v2"
+MARKDOWN_PROJECTION_SCHEMA_VERSION = "t0.markdown-projection.v1"
 SOURCE_FILENAME = "source.md"
+EVENTS_FILENAME = "events.jsonl"
 INDEX_FILENAME = "index.json"
 _EVENT_BLOCK_RE = re.compile(r"<t0_event\b.*?</t0_event>", re.DOTALL)
 
@@ -35,6 +44,7 @@ _EVENT_BLOCK_RE = re.compile(r"<t0_event\b.*?</t0_event>", re.DOTALL)
 @dataclass(frozen=True, slots=True)
 class T0AppendResult:
     path: Path
+    jsonl_path: Path
     segment_id: str
     event_id: str
     sequence: int
@@ -45,6 +55,7 @@ class T0SealResult:
     path: Path
     segment_id: str
     sequence: int
+    jsonl_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +64,7 @@ class LegacyImportResult:
     segment_id: str
     sequence: int
     imported: bool
+    jsonl_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +83,12 @@ class T0SessionEvent:
     metadata: dict[str, Any]
     path: Path
     segment_id: str
+    truth_path: Path | None = None
+    byte_offset: int | None = None
+    byte_length: int | None = None
+    event_hash: str | None = None
+    prev_event_hash: str | None = None
+    record_schema_version: str = MARKDOWN_PROJECTION_SCHEMA_VERSION
 
 
 def append_t0_session_event(
@@ -97,11 +115,34 @@ def append_t0_session_event(
     segment = _ensure_open_segment(index, now=now)
     sequence = int(index.get("next_sequence") or 1)
     path = session_dir / segment["path"]
+    jsonl_path = session_dir / _segment_events_path(segment)
     sanitized_content, sensitivity, form_warnings = _sanitize_t0_content(content)
     event_id = _new_event_id()
     event_metadata = _clean_metadata(metadata)
     if form_warnings:
         event_metadata["form_warnings"] = form_warnings
+    event_record = _build_event_record(
+        agent_id=agent_id,
+        session_id=session_id,
+        segment_id=str(segment["segment_id"]),
+        source_path=Path(str(segment["path"])),
+        jsonl_path=_segment_events_path(segment),
+        event_id=event_id,
+        sequence=sequence,
+        event_type=event_type,
+        role=role,
+        content=sanitized_content,
+        created_at=now,
+        message_id=message_id,
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        runtime_task_id=runtime_task_id,
+        source=source,
+        sensitivity=sensitivity,
+        metadata=event_metadata,
+        prev_event_hash=str(index.get("last_event_hash") or ""),
+    )
+    _append_event_record(jsonl_path, event_record)
     _append_event_block(
         path,
         event_id=event_id,
@@ -118,10 +159,21 @@ def append_t0_session_event(
         sensitivity=sensitivity,
         metadata=event_metadata,
     )
+    segment["events_path"] = _segment_events_path(segment).as_posix()
+    segment["last_event_hash"] = event_record["event_hash"]
     index["next_sequence"] = sequence + 1
     index["updated_at"] = _iso(now)
+    index["truth_surface"] = "events.jsonl"
+    index["projection_surface"] = "source.md"
+    index["last_event_hash"] = event_record["event_hash"]
     _write_index(session_dir, index)
-    return T0AppendResult(path=path, segment_id=str(segment["segment_id"]), event_id=event_id, sequence=sequence)
+    return T0AppendResult(
+        path=path,
+        jsonl_path=jsonl_path,
+        segment_id=str(segment["segment_id"]),
+        event_id=event_id,
+        sequence=sequence,
+    )
 
 
 def seal_t0_session_segment(
@@ -154,8 +206,31 @@ def seal_t0_session_segment(
 
     sequence = int(index.get("next_sequence") or 1)
     path = session_dir / segment["path"]
+    jsonl_path = session_dir / _segment_events_path(segment)
     event_id = _new_event_id()
     event_metadata = {"reason": reason, **_clean_metadata(metadata)}
+    event_record = _build_event_record(
+        agent_id=agent_id,
+        session_id=session_id,
+        segment_id=str(segment["segment_id"]),
+        source_path=Path(str(segment["path"])),
+        jsonl_path=_segment_events_path(segment),
+        event_id=event_id,
+        sequence=sequence,
+        event_type="segment_boundary",
+        role="system",
+        content=reason,
+        created_at=now,
+        message_id=None,
+        actor_id=None,
+        tenant_id=None,
+        runtime_task_id=None,
+        source="t0_ledger",
+        sensitivity="PL1_public",
+        metadata=event_metadata,
+        prev_event_hash=str(index.get("last_event_hash") or ""),
+    )
+    _append_event_record(jsonl_path, event_record)
     _append_event_block(
         path,
         event_id=event_id,
@@ -172,14 +247,19 @@ def seal_t0_session_segment(
         sensitivity="PL1_public",
         metadata=event_metadata,
     )
+    segment["events_path"] = _segment_events_path(segment).as_posix()
+    segment["last_event_hash"] = event_record["event_hash"]
     segment["state"] = "sealed"
     segment["sealed_at"] = _iso(now)
     segment["seal_reason"] = reason
     index["active_segment_id"] = None
     index["next_sequence"] = sequence + 1
     index["updated_at"] = _iso(now)
+    index["truth_surface"] = "events.jsonl"
+    index["projection_surface"] = "source.md"
+    index["last_event_hash"] = event_record["event_hash"]
     _write_index(session_dir, index)
-    return T0SealResult(path=path, segment_id=str(segment["segment_id"]), sequence=sequence)
+    return T0SealResult(path=path, segment_id=str(segment["segment_id"]), sequence=sequence, jsonl_path=jsonl_path)
 
 
 def import_legacy_t0_file(
@@ -212,6 +292,7 @@ def import_legacy_t0_file(
             segment_id=str(record["segment_id"]),
             sequence=int(record["sequence"]),
             imported=False,
+            jsonl_path=session_dir / str(record.get("events_path") or _segment_events_path(record)),
         )
 
     segment_id = f"legacy-{digest[:12]}"
@@ -221,6 +302,7 @@ def import_legacy_t0_file(
         segment = {
             "segment_id": segment_id,
             "path": segment_path.as_posix(),
+            "events_path": (Path("segments") / segment_id / EVENTS_FILENAME).as_posix(),
             "state": "sealed",
             "created_at": _iso(now),
             "sealed_at": _iso(now),
@@ -234,7 +316,34 @@ def import_legacy_t0_file(
 
     sequence = int(index.get("next_sequence") or 1)
     path = session_dir / segment_path
+    jsonl_path = session_dir / _segment_events_path(segment)
     event_id = _new_event_id()
+    metadata = {
+        "legacy_path": source_path.as_posix(),
+        "legacy_sha256": digest,
+    }
+    event_record = _build_event_record(
+        agent_id=agent_id,
+        session_id=session_id,
+        segment_id=segment_id,
+        source_path=segment_path,
+        jsonl_path=_segment_events_path(segment),
+        event_id=event_id,
+        sequence=sequence,
+        event_type="legacy_import",
+        role="system",
+        content=raw,
+        created_at=now,
+        message_id=None,
+        actor_id=None,
+        tenant_id=None,
+        runtime_task_id=None,
+        source="legacy_t0_logger",
+        sensitivity="PL1_public",
+        metadata=metadata,
+        prev_event_hash=str(index.get("last_event_hash") or ""),
+    )
+    _append_event_record(jsonl_path, event_record)
     _append_event_block(
         path,
         event_id=event_id,
@@ -249,14 +358,14 @@ def import_legacy_t0_file(
         runtime_task_id=None,
         source="legacy_t0_logger",
         sensitivity="PL1_public",
-        metadata={
-            "legacy_path": source_path.as_posix(),
-            "legacy_sha256": digest,
-        },
+        metadata=metadata,
     )
+    segment["events_path"] = _segment_events_path(segment).as_posix()
+    segment["last_event_hash"] = event_record["event_hash"]
     legacy_imports[legacy_key] = {
         "segment_id": segment_id,
         "path": segment_path.as_posix(),
+        "events_path": _segment_events_path(segment).as_posix(),
         "sequence": sequence,
         "legacy_path": source_path.as_posix(),
         "sha256": digest,
@@ -265,8 +374,11 @@ def import_legacy_t0_file(
     index["legacy_imports"] = legacy_imports
     index["next_sequence"] = sequence + 1
     index["updated_at"] = _iso(now)
+    index["truth_surface"] = "events.jsonl"
+    index["projection_surface"] = "source.md"
+    index["last_event_hash"] = event_record["event_hash"]
     _write_index(session_dir, index)
-    return LegacyImportResult(path=path, segment_id=segment_id, sequence=sequence, imported=True)
+    return LegacyImportResult(path=path, segment_id=segment_id, sequence=sequence, imported=True, jsonl_path=jsonl_path)
 
 
 def replay_t0_session_events(
@@ -284,10 +396,13 @@ def replay_t0_session_events(
     for segment in segment_records:
         segment_id = str(segment.get("segment_id") or "")
         rel_path = segment.get("path") or (Path("segments") / segment_id / SOURCE_FILENAME).as_posix()
-        path = session_dir / str(rel_path)
-        if not path.exists():
+        source_path = session_dir / str(rel_path)
+        jsonl_path = session_dir / _segment_events_path(segment)
+        if jsonl_path.exists():
+            events.extend(_parse_events_from_jsonl(path=jsonl_path, segment_id=segment_id, source_path=source_path))
             continue
-        events.extend(_parse_events_from_source(path=path, segment_id=segment_id))
+        if source_path.exists():
+            events.extend(_parse_events_from_source(path=source_path, segment_id=segment_id))
     return sorted(events, key=lambda event: event.sequence)
 
 
@@ -312,12 +427,16 @@ def _load_or_create_index(
     session_dir.mkdir(parents=True, exist_ok=True)
     index = {
         "schema_version": SCHEMA_VERSION,
+        "event_record_schema_version": EVENT_RECORD_SCHEMA_VERSION,
         "agent_id": str(agent_id),
         "session_id": str(session_id),
         "created_at": _iso(now),
         "updated_at": _iso(now),
+        "truth_surface": "events.jsonl",
+        "projection_surface": "source.md",
         "active_segment_id": None,
         "next_sequence": 1,
+        "last_event_hash": None,
         "segments": [],
         "legacy_imports": {},
     }
@@ -355,6 +474,7 @@ def _ensure_open_segment(index: dict[str, Any], *, now: datetime) -> dict[str, A
     segment = {
         "segment_id": segment_id,
         "path": (Path("segments") / segment_id / SOURCE_FILENAME).as_posix(),
+        "events_path": (Path("segments") / segment_id / EVENTS_FILENAME).as_posix(),
         "state": "open",
         "created_at": _iso(now),
         "sealed_at": None,
@@ -370,6 +490,91 @@ def _segment_by_id(index: dict[str, Any], segment_id: str) -> dict[str, Any] | N
         if str(segment.get("segment_id")) == segment_id:
             return segment
     return None
+
+
+def _segment_events_path(segment: dict[str, Any]) -> Path:
+    raw = segment.get("events_path")
+    if raw:
+        return Path(str(raw))
+    segment_id = str(segment.get("segment_id") or "")
+    return Path("segments") / segment_id / EVENTS_FILENAME
+
+
+def _build_event_record(
+    *,
+    agent_id: uuid.UUID | str,
+    session_id: uuid.UUID | str,
+    segment_id: str,
+    source_path: Path,
+    jsonl_path: Path,
+    event_id: str,
+    sequence: int,
+    event_type: str,
+    role: str | None,
+    content: str,
+    created_at: datetime,
+    message_id: uuid.UUID | str | None,
+    actor_id: uuid.UUID | str | None,
+    tenant_id: uuid.UUID | str | None,
+    runtime_task_id: uuid.UUID | str | None,
+    source: str,
+    sensitivity: str,
+    metadata: dict[str, Any],
+    prev_event_hash: str,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "schema_version": EVENT_RECORD_SCHEMA_VERSION,
+        "agent_id": str(agent_id),
+        "session_id": str(session_id),
+        "segment_id": segment_id,
+        "event_id": event_id,
+        "sequence": sequence,
+        "event_type": event_type,
+        "role": role,
+        "content": content,
+        "created_at": _iso(created_at),
+        "message_id": _id_value(message_id) or None,
+        "actor_id": _id_value(actor_id) or None,
+        "tenant_id": _id_value(tenant_id) or None,
+        "runtime_task_id": _id_value(runtime_task_id) or None,
+        "source": source,
+        "sensitivity": sensitivity,
+        "metadata": metadata,
+        "prev_event_hash": prev_event_hash or None,
+        "mechanical_truth": {"format": "jsonl", "path": jsonl_path.as_posix()},
+        "projection": {"format": "markdown+xml", "path": source_path.as_posix()},
+    }
+    record["event_hash"] = _record_hash(record)
+    return record
+
+
+def _record_hash(record: dict[str, Any]) -> str:
+    payload = {key: value for key, value in record.items() if key != "event_hash"}
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _append_event_record(path: Path, record: dict[str, Any]) -> tuple[int, int]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    encoded = line.encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    fd = os.open(path, flags, 0o600)
+    locked = False
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+        offset = os.lseek(fd, 0, os.SEEK_END)
+        written = os.write(fd, encoded)
+        if written != len(encoded):
+            raise OSError(f"partial T0 JSONL append: wrote {written} of {len(encoded)} bytes")
+        os.fsync(fd)
+    finally:
+        if locked and fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    return offset, len(encoded)
 
 
 def _append_event_block(
@@ -509,9 +714,85 @@ def _parse_events_from_source(*, path: Path, segment_id: str) -> list[T0SessionE
                 metadata=metadata,
                 path=path,
                 segment_id=segment_id,
+                truth_path=path,
+                record_schema_version=MARKDOWN_PROJECTION_SCHEMA_VERSION,
             )
         )
     return parsed
+
+
+def _parse_events_from_jsonl(*, path: Path, segment_id: str, source_path: Path) -> list[T0SessionEvent]:
+    parsed: list[T0SessionEvent] = []
+    offset = 0
+    try:
+        with path.open("rb") as fh:
+            for raw_line in fh:
+                byte_length = len(raw_line)
+                try:
+                    record = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    offset += byte_length
+                    continue
+                if not isinstance(record, dict):
+                    offset += byte_length
+                    continue
+                event = _event_from_record(
+                    record=record,
+                    jsonl_path=path,
+                    source_path=source_path,
+                    segment_id=segment_id,
+                    byte_offset=offset,
+                    byte_length=byte_length,
+                )
+                if event is not None:
+                    parsed.append(event)
+                offset += byte_length
+    except OSError:
+        return []
+    return parsed
+
+
+def _event_from_record(
+    *,
+    record: dict[str, Any],
+    jsonl_path: Path,
+    source_path: Path,
+    segment_id: str,
+    byte_offset: int,
+    byte_length: int,
+) -> T0SessionEvent | None:
+    schema = str(record.get("schema_version") or "")
+    if schema != EVENT_RECORD_SCHEMA_VERSION:
+        return None
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    projection = record.get("projection") if isinstance(record.get("projection"), dict) else {}
+    projected_path = source_path
+    projection_path = str(projection.get("path") or "").strip()
+    if projection_path:
+        session_dir = jsonl_path.parents[2]
+        projected_path = session_dir / projection_path
+    return T0SessionEvent(
+        event_id=str(record.get("event_id") or ""),
+        sequence=_safe_int(record.get("sequence")),
+        event_type=str(record.get("event_type") or ""),
+        role=str(record.get("role")) if record.get("role") else None,
+        content=str(record.get("content") or ""),
+        created_at=str(record.get("created_at") or ""),
+        message_id=str(record.get("message_id")) if record.get("message_id") else None,
+        actor_id=str(record.get("actor_id")) if record.get("actor_id") else None,
+        runtime_task_id=str(record.get("runtime_task_id")) if record.get("runtime_task_id") else None,
+        source=str(record.get("source") or ""),
+        sensitivity=str(record.get("sensitivity") or ""),
+        metadata=metadata,
+        path=projected_path,
+        segment_id=str(record.get("segment_id") or segment_id),
+        truth_path=jsonl_path,
+        byte_offset=byte_offset,
+        byte_length=byte_length,
+        event_hash=str(record.get("event_hash")) if record.get("event_hash") else None,
+        prev_event_hash=str(record.get("prev_event_hash")) if record.get("prev_event_hash") else None,
+        record_schema_version=schema,
+    )
 
 
 def _discover_segments(session_dir: Path) -> list[dict[str, Any]]:
@@ -522,9 +803,10 @@ def _discover_segments(session_dir: Path) -> list[dict[str, Any]]:
         {
             "segment_id": segment_dir.name,
             "path": (Path("segments") / segment_dir.name / SOURCE_FILENAME).as_posix(),
+            "events_path": (Path("segments") / segment_dir.name / EVENTS_FILENAME).as_posix(),
         }
         for segment_dir in sorted(segments_dir.iterdir())
-        if (segment_dir / SOURCE_FILENAME).exists()
+        if (segment_dir / SOURCE_FILENAME).exists() or (segment_dir / EVENTS_FILENAME).exists()
     ]
 
 

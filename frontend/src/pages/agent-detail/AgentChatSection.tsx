@@ -7,6 +7,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
+import CommandPalette from './CommandPalette';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
@@ -30,7 +31,7 @@ type AttachedFile = {
   imageUrl?: string;
 };
 
-type ConversationBranchMode = 'fork' | 'edit' | 'insert_before' | 'insert_after' | 'reply' | 'regenerate';
+type ConversationBranchMode = 'fork' | 'edit' | 'insert_before' | 'insert_after' | 'reply' | 'regenerate' | 'rewind';
 
 export interface BranchLineageItem {
   id: string;
@@ -2062,6 +2063,13 @@ export default function AgentChatSection({
                 sessionId={String(activeSession.id)}
                 runtimeTaskId={fallbackWorkLedger?.runtimeTaskId}
                 live={workLedgerLive}
+              />
+            )}
+            {effectiveAgentId && activeSession?.id && (
+              <CommandPalette
+                agentId={effectiveAgentId}
+                sessionId={String(activeSession.id)}
+                disabled={!wsConnected || isWaiting || isStreaming}
               />
             )}
             {attachedFiles.length > 0 && (

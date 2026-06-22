@@ -139,6 +139,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "update_memory",
         "update_trigger",
         "upload_image",
+        "verify_plan",
         "web_fetch",
         "web_search",
         "write_file",

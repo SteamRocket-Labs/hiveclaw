@@ -93,6 +93,8 @@ def _command(
     permission_mode: str = "default",
     bridge_safe: bool = True,
     remote_safe: bool = True,
+    visible_to_model: bool = True,
+    visible_to_user: bool = True,
 ) -> CommandDefinition:
     return CommandDefinition(
         name=name,
@@ -106,18 +108,223 @@ def _command(
         permission_mode=permission_mode,
         bridge_safe=bridge_safe,
         remote_safe=remote_safe,
+        visible_to_model=visible_to_model,
+        visible_to_user=visible_to_user,
     )
 
 
-def build_default_command_registry() -> CommandRegistry:
+def _coerce_command_definition(value: CommandDefinition | dict[str, Any]) -> CommandDefinition:
+    if isinstance(value, CommandDefinition):
+        return value
+    return CommandDefinition(**value)
+
+
+def register_dynamic_commands(
+    registry: CommandRegistry,
+    dynamic_commands: list[CommandDefinition | dict[str, Any]] | None,
+) -> None:
+    """Register Skill/Workflow/MCP/plugin commands discovered at runtime."""
+    for raw in dynamic_commands or []:
+        registry.register(_coerce_command_definition(raw))
+
+
+def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[CommandDefinition]:
+    return [
+        _command(
+            "worktree_enter",
+            "Enter a governed coding worktree context.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:worktree_enter",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "worktree_exit",
+            "Leave the current governed coding worktree context.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:worktree_exit",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "diff",
+            "Inspect workspace changes through the governed coding pack.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:diff",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "commit",
+            "Create a governed source-control commit.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:commit",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "commit_push_pr",
+            "Create a governed commit, push, and pull request.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:commit_push_pr",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "pr_comments",
+            "Read or address governed pull request comments.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:pr_comments",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "github_review",
+            "Run governed GitHub review workflows.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:github_review",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "review",
+            "Run a governed code review command.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:review",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "security_review",
+            "Run a governed security review command.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:security_review",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "lsp",
+            "Query governed language-server diagnostics.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:lsp",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "notebook",
+            "Open a governed notebook-style coding workspace.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:notebook",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+        _command(
+            "shell_pack",
+            "Use governed shell-pack tasks through the code execution provider.",
+            category="coding_pack",
+            source="plugin",
+            execution_mode="external",
+            handler_ref="coding_pack:shell_pack",
+            permission_mode="coding_pack",
+            bridge_safe=False,
+            remote_safe=False,
+            visible_to_model=visible_to_model,
+        ),
+    ]
+
+
+def build_default_command_registry(
+    *,
+    dynamic_commands: list[CommandDefinition | dict[str, Any]] | None = None,
+    include_optional_coding_pack: bool = False,
+    optional_coding_pack_model_visible: bool = False,
+) -> CommandRegistry:
     registry = CommandRegistry()
     commands = [
         _command("resume", "Resume a previous session from durable transcript evidence.", category="session"),
-        _command("rewind", "Create a session rollback point without deleting transcript evidence.", category="session"),
+        _command(
+            "checkpoints",
+            "List user-turn session checkpoints available for rewind or rollback.",
+            category="session",
+        ),
+        _command(
+            "rewind",
+            "Create a non-destructive branch before a selected user-turn checkpoint.",
+            category="session",
+        ),
+        _command(
+            "rollback",
+            "Roll back N user turns by creating a non-destructive checkpoint branch.",
+            category="session",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "num_turns": {"type": "integer", "minimum": 1, "default": 1},
+                    "checkpoint_event_id": {"type": "string"},
+                    "title": {"type": "string"},
+                },
+            },
+        ),
         _command("branch", "Fork a conversation from a transcript event.", category="session"),
         _command("rename", "Rename the current session.", category="session"),
         _command("tag", "Tag the current session for later lookup.", category="session"),
         _command("export", "Export session transcript, artifacts, plan, and ledger evidence.", category="session"),
+        _command(
+            "copy",
+            "Return assistant response content for client clipboard or file copy.",
+            category="session",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer", "minimum": 1, "default": 1},
+                    "index": {"type": "integer", "minimum": 1},
+                },
+            },
+        ),
         _command("clear", "Start a clean context boundary while retaining durable evidence.", category="session"),
         _command("compact", "Run manual compaction with pre/post compaction hooks.", category="session"),
         _command(
@@ -184,11 +391,27 @@ def build_default_command_registry() -> CommandRegistry:
             permission_mode="plan",
             input_schema={
                 "type": "object",
-                "properties": {"prompt": {"type": "string"}},
-                "required": ["prompt"],
+                "properties": {"objective": {"type": "string"}, "context": {"type": "object"}},
+                "required": ["objective"],
             },
         ),
-        _command("verify_plan", "Verify plan execution against success criteria and evidence refs.", category="plan"),
+        _command(
+            "verify_plan",
+            "Verify plan execution against success criteria and evidence refs.",
+            category="plan",
+            execution_mode="runtime",
+            permission_mode="read",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "plan_json": {"type": "object"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "completed_criteria": {"type": "array", "items": {"type": "string"}},
+                    "failed_criteria": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["plan_json"],
+            },
+        ),
         _command(
             "load_skill",
             "Load a progressive disclosure skill capsule.",
@@ -237,4 +460,8 @@ def build_default_command_registry() -> CommandRegistry:
                 handler_ref=f"diagnostic:{name}",
             )
         )
+    if include_optional_coding_pack:
+        for command in _optional_coding_pack_commands(visible_to_model=optional_coding_pack_model_visible):
+            registry.register(command)
+    register_dynamic_commands(registry, dynamic_commands)
     return registry

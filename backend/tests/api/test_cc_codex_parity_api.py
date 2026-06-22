@@ -11,6 +11,7 @@ class _FakeDB:
         self.added = []
         self.flushes = 0
         self.refreshes = []
+        self.commits = 0
 
     def add(self, value):
         self.added.append(value)
@@ -20,6 +21,9 @@ class _FakeDB:
 
     async def refresh(self, value):
         self.refreshes.append(value)
+
+    async def commit(self):
+        self.commits += 1
 
 
 class _ScalarResult:
@@ -53,11 +57,34 @@ class _ExecuteDB(_FakeDB):
         return _ScalarResult(self._values.pop(0))
 
 
+class _FilteringExecuteDB(_FakeDB):
+    def __init__(self, values_by_model: dict[str, object]) -> None:
+        super().__init__()
+        self.values_by_model = values_by_model
+        self.executes = 0
+
+    async def execute(self, stmt):
+        self.executes += 1
+        text = str(stmt)
+        aliases = {
+            "ChatSession": ("ChatSession", "chat_sessions"),
+            "AgentSessionGoal": ("AgentSessionGoal", "agent_session_goals"),
+            "AgentTeam": ("AgentTeam", "agent_teams"),
+            "AgentTeamMember": ("AgentTeamMember", "agent_team_members"),
+        }
+        for model_name, value in self.values_by_model.items():
+            candidates = aliases.get(model_name, (model_name,))
+            if any(candidate in text for candidate in candidates):
+                return _ScalarResult(value)
+        return _ScalarResult(None)
+
+
 @pytest.mark.asyncio
 async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
     import app.api.commands as commands_api
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
     db = _FakeDB()
 
@@ -65,19 +92,64 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
         assert db_arg is db
         assert user_arg is current_user
         assert requested_agent_id == agent_id
-        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
+
+    async def fake_pack_policies(_db, requested_tenant_id, requested_agent_id):
+        assert requested_tenant_id == tenant_id
+        assert requested_agent_id == agent_id
+        return {"coding_pack": True}
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
 
     index = await commands_api.list_agent_commands(agent_id=agent_id, current_user=current_user, db=db)
     assert any(item["name"] == "goal_start" for item in index)
     assert all("input_schema" not in item for item in index)
+    assert any(item["name"] == "diff" and item["category"] == "coding_pack" for item in index)
+
+    user_index = await commands_api.list_agent_commands(
+        agent_id=agent_id,
+        surface="user",
+        include_optional_packs=True,
+        current_user=current_user,
+        db=db,
+    )
+    assert any(item["name"] == "diff" and item["category"] == "coding_pack" for item in user_index)
 
     schema = await commands_api.get_agent_command(
         agent_id=agent_id, command_name="goal_start", current_user=current_user, db=db
     )
     assert schema["name"] == "goal_start"
     assert schema["input_schema"]["properties"]["objective"]["type"] == "string"
+
+
+@pytest.mark.asyncio
+async def test_commands_api_hides_optional_coding_pack_without_policy(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
+
+    async def fake_pack_policies(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
+
+    index = await commands_api.list_agent_commands(
+        agent_id=agent_id,
+        surface="user",
+        include_optional_packs=True,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert all(item["name"] != "diff" for item in index)
 
 
 @pytest.mark.asyncio
@@ -128,6 +200,356 @@ async def test_commands_api_executes_builtin_command_tool(monkeypatch, tmp_path)
         "user_id": current_user.id,
         "session_id": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_commands_api_executes_session_command_without_tool_runtime(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    db = _FakeDB()
+    captured = {}
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "manage"
+
+    async def fake_execute_session_command(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "title": "Renamed"}
+
+    async def fail_execute_tool(*_args, **_kwargs):
+        raise AssertionError("session metadata commands must not execute as LLM tools")
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_session_command", fake_execute_session_command)
+    monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
+
+    result = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="rename",
+        body=commands_api.ExecuteCommandIn(arguments={"title": "Renamed"}, session_id=str(session_id)),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result == {"ok": True, "command": "rename", "result": {"ok": True, "title": "Renamed"}}
+    assert db.commits == 1
+    assert captured["agent"] is agent
+    assert captured["user"] is current_user
+    assert captured["access_level"] == "manage"
+    assert captured["command_name"] == "rename"
+    assert captured["session_id"] == str(session_id)
+    assert captured["arguments"] == {"title": "Renamed"}
+
+
+@pytest.mark.asyncio
+async def test_commands_api_executes_diagnostic_command_without_tool_runtime(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    db = _FakeDB()
+    captured = {}
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "use"
+
+    async def fake_execute_diagnostic_command(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "command": "version", "version": "1.7.0"}
+
+    async def fail_execute_tool(*_args, **_kwargs):
+        raise AssertionError("diagnostic commands must not execute as LLM tools")
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_diagnostic_command", fake_execute_diagnostic_command)
+    monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
+
+    result = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="version",
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1"),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result == {
+        "ok": True,
+        "command": "version",
+        "result": {"ok": True, "command": "version", "version": "1.7.0"},
+    }
+    assert captured["db"] is db
+    assert captured["agent"] is agent
+    assert captured["user"] is current_user
+    assert captured["command_name"] == "version"
+    assert captured["session_id"] == "session-1"
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(monkeypatch):
+    import app.api.commands as commands_api
+    from app.models.agent_session_goal import AgentSessionGoal
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    goal_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "manage"
+
+    async def fail_execute_tool(*_args, **_kwargs):
+        raise AssertionError("goal lifecycle commands must persist directly through the command runtime")
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
+
+    start_db = _FilteringExecuteDB({"ChatSession": SimpleNamespace(id=session_id, agent_id=agent_id)})
+    started = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="goal_start",
+        body=commands_api.ExecuteCommandIn(
+            arguments={"objective": "Finish parity", "token_budget": 1000},
+            session_id=str(session_id),
+        ),
+        current_user=current_user,
+        db=start_db,
+    )
+    assert started["ok"] is True
+    assert started["result"]["requires_api_persist"] is False
+    stored_goal = next(item for item in start_db.added if isinstance(item, AgentSessionGoal))
+    assert stored_goal.objective == "Finish parity"
+    assert stored_goal.chat_session_id == session_id
+    assert stored_goal.created_by_user_id == current_user.id
+    assert start_db.commits == 1
+
+    goal = AgentSessionGoal(
+        id=goal_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        chat_session_id=session_id,
+        objective="Finish parity",
+        token_budget=1000,
+    )
+    update_db = _FilteringExecuteDB({"AgentSessionGoal": goal})
+    updated = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="goal_update",
+        body=commands_api.ExecuteCommandIn(
+            arguments={"objective": "Finish all parity", "token_budget": 1500, "max_continuation_turns": 3},
+            session_id=str(session_id),
+        ),
+        current_user=current_user,
+        db=update_db,
+    )
+    assert updated["result"]["objective"] == "Finish all parity"
+    assert goal.objective == "Finish all parity"
+    assert goal.token_budget == 1500
+    assert goal.max_continuation_turns == 3
+
+    stop_db = _FilteringExecuteDB({"AgentSessionGoal": goal})
+    stopped = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="goal_stop",
+        body=commands_api.ExecuteCommandIn(
+            arguments={"status": "complete", "completion_summary": "Done"},
+            session_id=str(session_id),
+        ),
+        current_user=current_user,
+        db=stop_db,
+    )
+    assert stopped["result"]["status"] == "complete"
+    assert goal.status == "complete"
+    assert goal.completion_summary == "Done"
+
+
+@pytest.mark.asyncio
+async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
+    import app.api.commands as commands_api
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+    from app.models.chat_session import ChatSession
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    team_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "manage"
+
+    async def fail_execute_tool(*_args, **_kwargs):
+        raise AssertionError("team lifecycle commands must persist directly through the command runtime")
+
+    emitted = []
+
+    async def fake_emit_hook(event, **kwargs):
+        emitted.append((event.value, kwargs))
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
+    monkeypatch.setattr(commands_api, "emit_hook", fake_emit_hook)
+
+    create_db = _FilteringExecuteDB({"ChatSession": SimpleNamespace(id=session_id, agent_id=agent_id)})
+    created = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="team_create",
+        body=commands_api.ExecuteCommandIn(
+            arguments={"name": "research", "members": [{"name": "critic", "role": "Review"}]},
+            session_id=str(session_id),
+        ),
+        current_user=current_user,
+        db=create_db,
+    )
+
+    assert created["result"]["requires_api_persist"] is False
+    assert created["result"]["status"] == "active"
+    assert {type(item).__name__ for item in create_db.added} >= {
+        "AgentTeam",
+        "AgentTeamMember",
+        "AgentTeamEvent",
+        "ChatSession",
+    }
+    team = next(item for item in create_db.added if isinstance(item, AgentTeam))
+    member = next(item for item in create_db.added if isinstance(item, AgentTeamMember))
+    member_session = next(item for item in create_db.added if isinstance(item, ChatSession))
+    assert team.parent_session_id == session_id
+    assert member.team_id == team.id
+    assert member.chat_session_id == member_session.id
+    assert emitted[0][0] == "team_created"
+
+    existing_team = AgentTeam(
+        id=team_id,
+        tenant_id=tenant_id,
+        lead_agent_id=agent_id,
+        parent_session_id=session_id,
+        name="research",
+    )
+    existing_member = AgentTeamMember(id=uuid4(), team_id=team_id, member_name="critic", chat_session_id=uuid4())
+    delete_db = _FilteringExecuteDB({"AgentTeam": existing_team, "AgentTeamMember": [existing_member]})
+    deleted = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="team_delete",
+        body=commands_api.ExecuteCommandIn(arguments={"team_id": str(team_id)}, session_id=str(session_id)),
+        current_user=current_user,
+        db=delete_db,
+    )
+    assert deleted["result"]["status"] == "closed"
+    assert existing_team.status == "closed"
+    assert existing_member.status == "closed"
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_closed" for item in delete_db.added)
+
+
+@pytest.mark.asyncio
+async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    db = _FakeDB()
+    captured_tools = []
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "use"
+
+    async def fake_execute_tool(tool_name, arguments, *, agent_id, user_id, session_id=None, **_kwargs):
+        captured_tools.append((tool_name, arguments, session_id))
+        return '{"ok": true, "tool_name": "%s"}' % tool_name
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_tool", fake_execute_tool)
+
+    for command_name, arguments in [
+        ("load_skill", {"skill_name": "research"}),
+        ("preview_workflow", {"workflow_ref": "wf"}),
+        ("start_workflow", {"workflow_ref": "wf"}),
+        ("mcp", {"action": "list_tools"}),
+    ]:
+        result = await commands_api.execute_agent_command(
+            agent_id=agent_id,
+            command_name=command_name,
+            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1"),
+            current_user=current_user,
+            db=db,
+        )
+        assert result["ok"] is True
+        assert result["result"]["ok"] is True
+
+    config = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="config",
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1"),
+        current_user=current_user,
+        db=db,
+    )
+    assert config["result"]["command"] == "config"
+    assert config["result"]["mode"] == "read_only_runtime_view"
+
+    permissions = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="permissions",
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1"),
+        current_user=current_user,
+        db=db,
+    )
+    assert permissions["result"]["command"] == "permissions"
+    assert permissions["result"]["access_level"] == "use"
+    assert ("load_skill", {"name": "research"}, "session-1") in captured_tools
+    assert ("list_mcp_tools", {}, "session-1") in captured_tools
+
+
+@pytest.mark.asyncio
+async def test_commands_api_enforces_bridge_and_remote_safety(monkeypatch):
+    import app.api.commands as commands_api
+    from fastapi import HTTPException
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "manage"
+
+    async def fake_pack_policies(*_args, **_kwargs):
+        return {"coding_pack": True}
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
+
+    with pytest.raises(HTTPException) as bridge_exc:
+        await commands_api.execute_agent_command(
+            agent_id=agent_id,
+            command_name="diff",
+            body=commands_api.ExecuteCommandIn(arguments={}, origin="bridge"),
+            current_user=current_user,
+            db=db,
+        )
+    assert bridge_exc.value.status_code == 403
+
+    with pytest.raises(HTTPException) as remote_exc:
+        await commands_api.execute_agent_command(
+            agent_id=agent_id,
+            command_name="diff",
+            body=commands_api.ExecuteCommandIn(arguments={}, origin="remote"),
+            current_user=current_user,
+            db=db,
+        )
+    assert remote_exc.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -247,7 +669,12 @@ async def test_agent_teams_api_creates_control_index_and_member_sessions(monkeyp
     assert result["members"][0]["member_name"] == "critic"
     assert result["members"][0]["runtime_task_type"] == "team_member"
     assert db.flushes == 1
-    assert {type(item).__name__ for item in db.added} == {"AgentTeam", "AgentTeamMember", "ChatSession"}
+    assert {type(item).__name__ for item in db.added} == {
+        "AgentTeam",
+        "AgentTeamMember",
+        "AgentTeamEvent",
+        "ChatSession",
+    }
 
 
 @pytest.mark.asyncio

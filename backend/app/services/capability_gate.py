@@ -62,6 +62,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "goal_start": "agent.goal.modify",
     "team_create": "agent.team.modify",
     "advanced_plan": "agent.plan.modify",
+    "verify_plan": "agent.plan.read",
     "exit_plan_mode": "agent.plan.modify",
     "ask_user_question": "agent.plan.clarify",
     "request_plan_mode": "agent.plan.request",

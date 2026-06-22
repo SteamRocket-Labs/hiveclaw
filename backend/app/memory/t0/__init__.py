@@ -1,6 +1,8 @@
 """Append-only T0 session ledger primitives."""
 
 from app.memory.t0.ledger import (
+    EVENT_RECORD_SCHEMA_VERSION,
+    EVENTS_FILENAME,
     LegacyImportResult,
     T0AppendResult,
     T0SealResult,
@@ -13,6 +15,8 @@ from app.memory.t0.ledger import (
 
 __all__ = [
     "LegacyImportResult",
+    "EVENT_RECORD_SCHEMA_VERSION",
+    "EVENTS_FILENAME",
     "T0AppendResult",
     "T0SealResult",
     "T0SessionEvent",

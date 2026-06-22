@@ -1,0 +1,623 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+from app.models.chat_session import ChatSession
+from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.memory.t0.ledger import T0SessionEvent
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        if isinstance(self._value, list):
+            return self._value[0] if self._value else None
+        return self._value
+
+    def scalars(self):
+        value = self._value if isinstance(self._value, list) else ([] if self._value is None else [self._value])
+        return SimpleNamespace(all=lambda: value)
+
+
+class _DB:
+    def __init__(self, *values):
+        self.values = list(values)
+        self.added = []
+        self.flushes = 0
+
+    async def execute(self, _stmt):
+        if not self.values:
+            return _ScalarResult(None)
+        return _ScalarResult(self.values.pop(0))
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        self.flushes += 1
+
+
+def _session(agent_id, user_id, *, title="Session") -> ChatSession:
+    return ChatSession(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=uuid4(),
+        user_id=user_id,
+        title=title,
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+    )
+
+
+def _event(
+    session: ChatSession,
+    event_type: str = "user_message",
+    *,
+    sequence: int = 1,
+    content: str = "hello",
+    role: str | None = None,
+) -> ChatTranscriptEvent:
+    resolved_role = role or (
+        "assistant"
+        if event_type == "assistant_message"
+        else "tool"
+        if event_type in {"tool_call", "tool_result"}
+        else "user"
+    )
+    return ChatTranscriptEvent(
+        id=uuid4(),
+        sequence=sequence,
+        tenant_id=session.tenant_id,
+        agent_id=session.agent_id,
+        session_id=session.id,
+        actor_type="assistant" if resolved_role == "assistant" else "tool" if resolved_role == "tool" else "user",
+        event_type=event_type,
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content=content,
+        metadata_json={"role": resolved_role},
+    )
+
+
+def _t0_event(
+    session: ChatSession,
+    event_type: str = "user_message",
+    *,
+    sequence: int = 1,
+    content: str = "hello",
+    role: str | None = None,
+    transcript_event_id: str | None = None,
+) -> T0SessionEvent:
+    resolved_role = role or (
+        "assistant"
+        if event_type == "assistant_message"
+        else "tool"
+        if event_type in {"tool_call", "tool_result"}
+        else "user"
+    )
+    ledger_event_id = f"evt_{sequence}"
+    return T0SessionEvent(
+        event_id=ledger_event_id,
+        sequence=sequence,
+        event_type=event_type,
+        role=resolved_role,
+        content=content,
+        created_at="2026-06-22T00:00:00+00:00",
+        message_id=f"msg-{sequence}",
+        actor_id=str(session.agent_id),
+        runtime_task_id=None,
+        source="web",
+        sensitivity="PL1_public",
+        metadata={"role": resolved_role, "transcript_event_id": transcript_event_id or str(uuid4())},
+        path=SimpleNamespace(as_posix=lambda: "memory/t0/sessions/source.md"),
+        segment_id="seg-jsonl",
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_commands_resume_detects_interrupted_transcript():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    db = _DB(session, [_event(session, "tool_call")])
+
+    result = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["interrupted"] is True
+    assert result["next_query"] == "Continue from where you left off."
+    assert result["repair_strategy"] == "transcript_replay_chain_repair"
+
+
+@pytest.mark.asyncio
+async def test_session_commands_resume_prefers_t0_jsonl_truth_over_db_projection(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    t0_events = [_t0_event(session, "user_message", sequence=1, content="persisted before model loop", role="user")]
+    db = _DB(session, [])
+
+    monkeypatch.setattr(runtime, "replay_t0_session_events", lambda **_kwargs: t0_events, raising=False)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["truth_source"] == "t0_events_jsonl"
+    assert result["event_count"] == 1
+    assert result["interrupted"] is True
+    assert result["last_replayable_event"]["ledger_event_id"] == "evt_1"
+    assert result["next_query"] == "Continue from where you left off."
+
+
+@pytest.mark.asyncio
+async def test_session_commands_resume_ignores_non_turn_tail_and_detects_user_prewrite_interrupt():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    events = [
+        _event(session, "assistant_message", sequence=1, content="done", role="assistant"),
+        _event(session, "session_compact_command", sequence=2, content="pressure", role="system"),
+    ]
+    interrupted_events = [
+        _event(session, "user_message", sequence=1, content="continue the audit", role="user"),
+        _event(session, "session_compact_command", sequence=2, content="pressure", role="system"),
+    ]
+    db = _DB(session, events, session, interrupted_events)
+
+    complete = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+    interrupted = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="resume",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert complete["interrupted"] is False
+    assert complete["last_replayable_event"]["event_type"] == "assistant_message"
+    assert interrupted["interrupted"] is True
+    assert interrupted["last_replayable_event"]["event_type"] == "user_message"
+    assert interrupted["resume_from_checkpoint_event_id"] == str(interrupted_events[0].id)
+
+
+@pytest.mark.asyncio
+async def test_session_commands_rename_and_tag_update_control_index_only():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    db = _DB(session, session)
+
+    renamed = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rename",
+        session_id=session.id,
+        arguments={"title": "New title"},
+    )
+    tagged = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="tag",
+        session_id=session.id,
+        arguments={"tags": ["parity", "cc", "parity"]},
+    )
+
+    assert renamed["title"] == "New title"
+    assert tagged["tags"] == ["cc", "parity"]
+    assert db.flushes == 2
+
+
+@pytest.mark.asyncio
+async def test_session_export_returns_transcript_messages_and_artifact_refs():
+    from app.models.audit import ChatMessage
+    from app.models.chat_artifact import ChatArtifact
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    message = ChatMessage(id=uuid4(), agent_id=agent.id, user_id=user.id, role="user", content="hello")
+    artifact = ChatArtifact(
+        id=uuid4(),
+        agent_id=agent.id,
+        tenant_id=agent.tenant_id,
+        session_id=session.id,
+        message_id=message.id,
+        path="workspace/report.md",
+        name="report.md",
+        snapshot_hash="hash",
+    )
+    db = _DB(session, [_event(session)], [message], [artifact])
+
+    result = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="export",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["truth_surface"] == "chat_transcript_events_read_model_with_t0_fallback"
+    assert result["truth_source"] == "chat_transcript_events_read_model"
+    assert result["transcript_events"][0]["content"] == "hello"
+    assert result["messages"][0]["role"] == "user"
+    assert result["artifacts"][0]["path"] == "workspace/report.md"
+
+
+@pytest.mark.asyncio
+async def test_session_export_uses_t0_jsonl_truth_and_db_as_read_model(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    t0_events = [
+        _t0_event(session, "user_message", sequence=1, content="jsonl first", role="user"),
+        _t0_event(session, "assistant_message", sequence=2, content="projection second", role="assistant"),
+    ]
+    db = _DB(session, [], [], [])
+
+    monkeypatch.setattr(runtime, "replay_t0_session_events", lambda **_kwargs: t0_events, raising=False)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="export",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["truth_surface"] == "t0_events_jsonl_plus_markdown_projection"
+    assert result["truth_source"] == "t0_events_jsonl"
+    assert [event["content"] for event in result["t0_events"]] == ["jsonl first", "projection second"]
+    assert result["transcript_events"] == []
+
+
+@pytest.mark.asyncio
+async def test_branch_command_is_non_destructive_session_fork(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    source = _session(agent.id, user.id)
+    branch = _session(agent.id, user.id, title="Branch")
+    branch.parent_session_id = source.id
+    branch.root_session_id = source.id
+    db = _DB(source)
+    captured = []
+
+    async def fake_create_conversation_branch(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(
+            session=branch,
+            branch={"anchor_event_id": str(kwargs["anchor_event_id"]), "branch_mode": kwargs["mode"]},
+        )
+
+    monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="branch",
+        session_id=source.id,
+        arguments={"anchor_event_id": str(uuid4())},
+    )
+
+    assert result["session"]["parent_session_id"] == str(source.id)
+    assert result["branch"]["command"] == "branch"
+    assert [item["mode"] for item in captured] == ["fork"]
+
+
+@pytest.mark.asyncio
+async def test_checkpoints_lists_user_turn_boundaries():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first_user = _event(session, "user_message", sequence=1, content="first", role="user")
+    assistant = _event(session, "assistant_message", sequence=2, content="answer", role="assistant")
+    second_user = _event(session, "user_message", sequence=3, content="second", role="user")
+    db = _DB(session, [first_user, assistant, second_user])
+
+    result = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="checkpoints",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["checkpoint_count"] == 2
+    assert [item["turn_index"] for item in result["checkpoints"]] == [1, 2]
+    assert [item["content"] for item in result["checkpoints"]] == ["first", "second"]
+    assert [item["checkpoint_event_id"] for item in result["checkpoints"]] == [str(first_user.id), str(second_user.id)]
+
+
+@pytest.mark.asyncio
+async def test_copy_returns_nth_latest_assistant_response_and_code_blocks():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(
+        session,
+        "assistant_message",
+        sequence=1,
+        content="First response\n\n```python\nprint('first')\n```",
+        role="assistant",
+    )
+    second = _event(
+        session,
+        "assistant_message",
+        sequence=2,
+        content="Second response\n\n```ts\nconsole.log('second')\n```",
+        role="assistant",
+    )
+    db = _DB(session, [first, second])
+
+    result = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="copy",
+        session_id=session.id,
+        arguments={"n": 2},
+    )
+
+    assert result["content"].startswith("First response")
+    assert result["message_age"] == 1
+    assert result["source_event_id"] == str(first.id)
+    assert result["available_assistant_messages"] == 2
+    assert result["code_blocks"] == [{"index": 0, "lang": "python", "code": "print('first')\n"}]
+    assert result["copy_strategy"] == "client_clipboard_or_file"
+
+
+@pytest.mark.asyncio
+async def test_copy_rejects_out_of_range_assistant_index():
+    from fastapi import HTTPException
+
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    only = _event(session, "assistant_message", sequence=1, content="Only response", role="assistant")
+    db = _DB(session, [only])
+
+    with pytest.raises(HTTPException) as exc:
+        await execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="copy",
+            session_id=session.id,
+            arguments={"n": 2},
+        )
+
+    assert exc.value.status_code == 400
+    assert "Only 1 assistant message" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_copy_rejects_zero_index():
+    from fastapi import HTTPException
+
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    only = _event(session, "assistant_message", sequence=1, content="Only response", role="assistant")
+    db = _DB(session, [only])
+
+    with pytest.raises(HTTPException) as exc:
+        await execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="copy",
+            session_id=session.id,
+            arguments={"n": 0},
+        )
+
+    assert exc.value.status_code == 400
+    assert "n must be a positive integer" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_rewind_defaults_to_last_user_checkpoint_and_drops_that_turn(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    source = _session(agent.id, user.id)
+    branch = _session(agent.id, user.id, title="Rewind")
+    branch.parent_session_id = source.id
+    branch.root_session_id = source.id
+    first_user = _event(source, "user_message", sequence=1, content="first", role="user")
+    assistant = _event(source, "assistant_message", sequence=2, content="answer", role="assistant")
+    second_user = _event(source, "user_message", sequence=3, content="second", role="user")
+    db = _DB(source, [first_user, assistant, second_user])
+    captured = {}
+
+    async def fake_create_conversation_branch(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            session=branch,
+            branch={"anchor_event_id": str(kwargs["anchor_event_id"]), "branch_mode": kwargs["mode"]},
+        )
+
+    monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=source.id,
+        arguments={},
+    )
+
+    assert captured["mode"] == "rewind"
+    assert captured["anchor_event_id"] == second_user.id
+    assert result["checkpoint"]["checkpoint_event_id"] == str(second_user.id)
+    assert result["branch"]["command"] == "rewind"
+
+
+@pytest.mark.asyncio
+async def test_rollback_num_turns_selects_nth_latest_user_checkpoint(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    source = _session(agent.id, user.id)
+    branch = _session(agent.id, user.id, title="Rollback")
+    branch.parent_session_id = source.id
+    branch.root_session_id = source.id
+    first_user = _event(source, "user_message", sequence=1, content="first", role="user")
+    assistant = _event(source, "assistant_message", sequence=2, content="answer", role="assistant")
+    second_user = _event(source, "user_message", sequence=3, content="second", role="user")
+    db = _DB(source, [first_user, assistant, second_user])
+    captured = {}
+
+    async def fake_create_conversation_branch(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            session=branch,
+            branch={"anchor_event_id": str(kwargs["anchor_event_id"]), "branch_mode": kwargs["mode"]},
+        )
+
+    monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rollback",
+        session_id=source.id,
+        arguments={"num_turns": 2},
+    )
+
+    assert captured["mode"] == "rewind"
+    assert captured["anchor_event_id"] == first_user.id
+    assert result["checkpoint"]["checkpoint_event_id"] == str(first_user.id)
+    assert result["branch"]["command"] == "rollback"
+    assert result["rollback"]["num_turns"] == 2
+
+
+@pytest.mark.asyncio
+async def test_clear_creates_new_context_boundary_without_deleting_source():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    source = _session(agent.id, user.id)
+    db = _DB(source)
+
+    result = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="clear",
+        session_id=source.id,
+        arguments={"title": "Clean"},
+    )
+
+    new_session = db.added[0]
+    assert result["source_session_id"] == str(source.id)
+    assert new_session.parent_session_id == source.id
+    assert new_session.transcript_metadata_json["keeps_evidence"] is True
+
+
+@pytest.mark.asyncio
+async def test_compact_command_emits_compaction_hooks_and_appends_transcript_event(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    db = _DB(session)
+    emitted = []
+
+    async def fake_emit_hook(event, **kwargs):
+        emitted.append((event.value, kwargs))
+
+    async def fake_append_session_event(**kwargs):
+        return SimpleNamespace(event_id=uuid4(), kwargs=kwargs)
+
+    monkeypatch.setattr(runtime, "emit_hook", fake_emit_hook)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="compact",
+        session_id=session.id,
+        arguments={"reason": "pressure"},
+    )
+
+    assert result["hook_events"] == ["pre_compaction", "post_compaction"]
+    assert [item[0] for item in emitted] == ["pre_compaction", "post_compaction"]

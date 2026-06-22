@@ -954,10 +954,17 @@ def _source_ref(
 ) -> dict[str, str]:
     start_seq = events[0].sequence
     end_seq = events[-1].sequence
+    truth_path = getattr(events[0], "truth_path", None) or path
+    truth_path = Path(truth_path)
     return {
         "uri": f"t0://session/{session_id}/segment/{segment_id}#seq={start_seq}..{end_seq}",
         "path": _relative_agent_path(root, agent_id, path),
         "sha256": _sha256(path.read_text(encoding="utf-8", errors="replace")),
+        "truth_path": _relative_agent_path(root, agent_id, truth_path),
+        "truth_sha256": _sha256(truth_path.read_text(encoding="utf-8", errors="replace"))
+        if truth_path.exists()
+        else "",
+        "projection_path": _relative_agent_path(root, agent_id, path),
     }
 
 
@@ -976,6 +983,12 @@ def _event_payload(event: Any) -> dict[str, Any]:
         "sensitivity": event.sensitivity,
         "metadata": event.metadata,
         "segment_id": event.segment_id,
+        "truth_path": str(getattr(event, "truth_path", "") or ""),
+        "byte_offset": getattr(event, "byte_offset", None),
+        "byte_length": getattr(event, "byte_length", None),
+        "event_hash": getattr(event, "event_hash", None),
+        "prev_event_hash": getattr(event, "prev_event_hash", None),
+        "record_schema_version": getattr(event, "record_schema_version", None),
     }
 
 

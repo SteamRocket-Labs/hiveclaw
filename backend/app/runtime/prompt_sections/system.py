@@ -76,7 +76,7 @@ runtime. Treat them as facts about your environment, not suggestions.
   space — their key information is retained via extraction. When the
   context is already past ~60% of the model window, the cleanup gap
   drops to 10 minutes so we shed bloat before heavy compaction kicks in.
-- Full raw session evidence is available in `memory/t0/sessions/.../source.md` for recovery if needed; legacy/import compatibility pointers may still appear under `logs/`.
+- Full raw session evidence is available in `memory/t0/sessions/.../events.jsonl` for mechanical recovery, with `source.md` as the readable Markdown/XML projection; legacy/import compatibility pointers may still appear under `logs/`.
 </context_compression>
 
 ### Trust Boundaries

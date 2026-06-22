@@ -231,21 +231,24 @@ T0 可以因为 idle、token pressure、最大事件数、runtime 完成、取�
   index.json
   segments/
     <segment_id>/
+      events.jsonl
       source.md
 ```
 
 决策：
 
 - 实现采用 segmented layout。
-- 每个 `source.md` 在 sealed 前只允许 append。
+- 每个 `events.jsonl` 是机械真相：resume / replay / fork / checkpoint / rollback / export 优先读取它。
+- 每个 `source.md` 是从同一条 JSONL event 确定性追加出的 Markdown/XML 投影，服务于人类阅读、LLM evidence review、T0->T2 snippets。
+- 每个 `source.md` 在 sealed 前只允许 append；它不能覆盖或替代 `events.jsonl`。
 - seal 之后，除非有显式审计过的 repair record，否则不可变。
-- `index.json` 记录 active segment、next sequence、sealed segments 和 legacy import idempotency。
+- `index.json` 记录 active segment、next sequence、sealed segments、hash chain tail、truth/projection surface 和 legacy import idempotency。
 
 `index.json` 是机械 sidecar，不是语义记忆真相。超大的 runtime artifacts 仍然由 runtime / workspace artifact 机制单独治理，除非未来增加 T0 artifact adapter。
 
-## 8. 源 Markdown 格式
+## 8. 机械 JSONL 与 Markdown 投影
 
-T0 保持 MD-first，但 source 文件内部所有语义 block 都使用 XML。
+T0 现在是 JSONL-first：`events.jsonl` 保存 `t0.event-record.v2`，每行携带 event id、sequence、content、metadata、projection path、prev hash 和 event hash。`source.md` 保持 Markdown/XML 格式，但它只是确定性投影，不是 resume 的唯一机械来源。
 
 示例：
 

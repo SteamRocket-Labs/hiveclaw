@@ -104,7 +104,7 @@ class StartSessionRunIn(BaseModel):
 
 
 class BranchSessionIn(BaseModel):
-    mode: Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate"]
+    mode: Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate", "rewind"]
     anchor_event_id: uuid.UUID
     content: str = ""
     display_content: str = ""

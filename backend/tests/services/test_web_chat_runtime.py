@@ -70,6 +70,44 @@ def test_cc_session_task_types_are_executable_chat_runs():
     assert not runtime.is_executable_chat_task_type("delegation")
 
 
+@pytest.mark.asyncio
+async def test_completed_user_turn_bridges_to_goal_continuation(monkeypatch):
+    import app.services.goal_continuation_service as goal_service
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    user_id = uuid4()
+    calls: list[dict] = []
+
+    async def fake_maybe_continue_session_goal_after_turn(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "goal_id": "goal-1"}
+
+    monkeypatch.setattr(
+        goal_service,
+        "maybe_continue_session_goal_after_turn",
+        fake_maybe_continue_session_goal_after_turn,
+    )
+
+    result = await runtime._maybe_continue_goal_after_terminal_turn(
+        db=object(),
+        task=SimpleNamespace(task_type="web_chat_turn", metadata_json={"ephemeral": False}),
+        agent_id=agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        status="completed",
+    )
+
+    assert result == {"ok": True, "goal_id": "goal-1"}
+    assert calls[0]["agent_id"] == agent_id
+    assert calls[0]["session_id"] == session_id
+    assert calls[0]["user_id"] == user_id
+    assert calls[0]["completed_task_type"] == "web_chat_turn"
+    assert calls[0]["completed_status"] == "completed"
+    assert calls[0]["metadata_json"] == {"ephemeral": False}
+
+
 def test_clear_stale_plan_mode_for_plain_new_turn():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import PlanModeState, SessionContext

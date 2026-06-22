@@ -34,6 +34,7 @@ from app.api.files import router as files_router
 from app.api.files import upload_router as files_upload_router
 from app.api.gateway import router as gateway_router
 from app.api.guard_policies import router as guard_policies_router
+from app.api.hooks import router as hooks_router
 from app.api.deep_research import router as deep_research_router
 from app.api.interoperability import router as interoperability_router
 from app.api.local_bridge import router as local_bridge_router
@@ -605,6 +606,7 @@ _api_routers = [
     session_goals_router,
     agent_teams_router,
     advanced_plan_router,
+    hooks_router,
     plaza_router,
     triggers_router,
     memory_router,

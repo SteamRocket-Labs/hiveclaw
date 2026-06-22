@@ -38,7 +38,8 @@ def _empty_view() -> dict[str, Any]:
     return {
         "schema": "agent_evolution_view.v2",
         "path_contract": {
-            "t0_raw_evidence": "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md",
+            "t0_raw_evidence": "memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl",
+            "t0_readable_projection": "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md",
             "t2_segment_packages": "memory/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}",
             "t3_episodes": "memory/t3/episodes.md",
             "t3_user": "memory/t3/user.md",
@@ -233,7 +234,11 @@ def _load_t0_segment_index_events(workspace: Path) -> list[dict[str, Any]]:
                     path=source_path,
                     source_refs=[f"t0://session/{session_id}/segment/{segment_id}"],
                     created_at=str(segment.get("created_at") or segment.get("sealed_at") or "") or None,
-                    details={"session_id": session_id, "segment_id": segment_id, "seal_reason": segment.get("seal_reason")},
+                    details={
+                        "session_id": session_id,
+                        "segment_id": segment_id,
+                        "seal_reason": segment.get("seal_reason"),
+                    },
                 )
             )
     return events

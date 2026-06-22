@@ -49,6 +49,7 @@ class HookEvent(StrEnum):
 
     Notification (1):
         MEMORY_EXTRACTED   — extraction finished (debug/monitoring)
+        NOTIFICATION       — CC-compatible notification hook surface
     """
 
     # ── Tool lifecycle (wired in engine.py) ──
@@ -83,6 +84,7 @@ class HookEvent(StrEnum):
 
     # ── Notification ──
     MEMORY_EXTRACTED = "memory_extracted"
+    NOTIFICATION = "notification"
 
     # ── FreeCode command/team/task parity events ──
     PERMISSION_REQUEST = "permission_request"
@@ -127,6 +129,7 @@ class HookResult:
     block: bool = False  # If True, block the operation when the event supports blocking.
     reason: str = ""  # Reason for blocking
     modified_args: dict[str, Any] | None = None  # Modified tool args (PreToolUse only)
+    additional_contexts: list[str] = field(default_factory=list)  # Extra model context from hook output.
     prevent_continuation: bool = False  # Stop/SubagentStop: return final state without another loop.
     stop_reason: str = ""  # Human-readable stop/prevent-continuation reason.
 
@@ -376,6 +379,69 @@ class _HookBinding:
     handler_name: str | None = None
 
 
+_disabled_hook_keys: set[str] = set()
+_hook_runtime_policies: dict[str, dict[str, Any]] = {}
+
+
+def configure_hook_runtime(
+    *,
+    key: str,
+    enabled: bool | None = None,
+    timeout_seconds: float | None = None,
+    failure_policy: str | None = None,
+) -> dict[str, Any]:
+    """Configure one hook registration key at runtime.
+
+    This is intentionally a runtime control surface, not durable product
+    configuration. Durable hook config can build on the same primitives later.
+    """
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("hook key is required")
+    if enabled is not None:
+        if enabled:
+            _disabled_hook_keys.discard(clean_key)
+        else:
+            _disabled_hook_keys.add(clean_key)
+    policy = dict(_hook_runtime_policies.get(clean_key) or {})
+    if timeout_seconds is not None:
+        if timeout_seconds <= 0:
+            policy.pop("timeout_seconds", None)
+        else:
+            policy["timeout_seconds"] = float(timeout_seconds)
+    if failure_policy is not None:
+        clean_policy = str(failure_policy).strip() or "continue"
+        if clean_policy not in {"continue", "block"}:
+            raise ValueError("failure_policy must be 'continue' or 'block'")
+        policy["failure_policy"] = clean_policy
+    if policy:
+        _hook_runtime_policies[clean_key] = policy
+    else:
+        _hook_runtime_policies.pop(clean_key, None)
+    return describe_hook_runtime_config(clean_key)
+
+
+def describe_hook_runtime_config(key: str | None = None) -> dict[str, Any]:
+    def _one(item_key: str) -> dict[str, Any]:
+        policy = dict(_hook_runtime_policies.get(item_key) or {})
+        return {
+            "key": item_key,
+            "enabled": item_key not in _disabled_hook_keys,
+            "timeout_seconds": policy.get("timeout_seconds"),
+            "failure_policy": policy.get("failure_policy", "continue"),
+        }
+
+    if key is not None:
+        return _one(str(key))
+    keys = sorted({*_disabled_hook_keys, *_hook_runtime_policies.keys()})
+    return {"items": [_one(item_key) for item_key in keys]}
+
+
+def reset_hook_runtime_config() -> None:
+    _disabled_hook_keys.clear()
+    _hook_runtime_policies.clear()
+
+
 class HookRegistry:
     """Central registry for runtime event hooks.
 
@@ -546,12 +612,20 @@ class HookRegistry:
         final_result: HookResult | None = None
         for binding in handlers:
             try:
+                if binding.key and binding.key in _disabled_hook_keys:
+                    continue
                 if binding.matcher and not binding.matcher(ctx):
                     continue
 
                 result = binding.handler(ctx)
                 if asyncio.iscoroutine(result):
-                    result = await result
+                    timeout_seconds = None
+                    if binding.key:
+                        timeout_seconds = (_hook_runtime_policies.get(binding.key) or {}).get("timeout_seconds")
+                    if timeout_seconds:
+                        result = await asyncio.wait_for(result, timeout=float(timeout_seconds))
+                    else:
+                        result = await result
 
                 if isinstance(result, HookResult):
                     if ctx.event == HookEvent.PRE_TOOL_USE and result.modified_args is not None:
@@ -560,12 +634,21 @@ class HookRegistry:
                             block=False,
                             reason=result.reason,
                             modified_args=result.modified_args,
+                            additional_contexts=list(result.additional_contexts or []),
+                        )
+                    elif result.additional_contexts:
+                        final_result = HookResult(
+                            block=False,
+                            reason=result.reason,
+                            modified_args=ctx.tool_args if ctx.event == HookEvent.PRE_TOOL_USE else None,
+                            additional_contexts=list(result.additional_contexts),
                         )
                     if result.block and self._blocking_supported(ctx.event):
                         blocked = HookResult(
                             block=True,
                             reason=result.reason,
                             modified_args=ctx.tool_args,
+                            additional_contexts=list(result.additional_contexts or []),
                             prevent_continuation=result.prevent_continuation,
                             stop_reason=result.stop_reason,
                         )
@@ -580,6 +663,7 @@ class HookRegistry:
                             block=False,
                             reason=result.reason,
                             modified_args=ctx.tool_args,
+                            additional_contexts=list(result.additional_contexts or []),
                             prevent_continuation=True,
                             stop_reason=result.stop_reason,
                         )
@@ -594,6 +678,12 @@ class HookRegistry:
                 )
                 if ctx.event == HookEvent.STOP:
                     await self._emit_stop_failure(ctx, exc)
+                if (
+                    binding.key
+                    and (_hook_runtime_policies.get(binding.key) or {}).get("failure_policy") == "block"
+                    and self._blocking_supported(ctx.event)
+                ):
+                    return HookResult(block=True, reason=f"Hook {binding.key} failed: {type(exc).__name__}")
         return final_result
 
     def handler_count(self, event: HookEvent) -> int:

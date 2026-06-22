@@ -18,18 +18,27 @@ def _collect():
     return collect_tools()
 
 
-def _request(tool_name: str, arguments: dict, tmp_path: Path):
+def _request(
+    tool_name: str,
+    arguments: dict,
+    tmp_path: Path,
+    *,
+    agent_id=None,
+    user_id=None,
+    tenant_id=None,
+    session_id=None,
+):
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
     return ToolExecutionRequest(
         tool_name=tool_name,
         arguments=arguments,
         context=ToolExecutionContext(
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            tenant_id=str(uuid4()),
+            agent_id=agent_id or uuid4(),
+            user_id=user_id or uuid4(),
+            tenant_id=str(tenant_id or uuid4()),
             workspace=tmp_path,
-            session_id=str(uuid4()),
+            session_id=str(session_id or uuid4()),
         ),
     )
 
@@ -48,25 +57,72 @@ def test_cc_codex_parity_tools_are_registered():
         "goal_start",
         "team_create",
         "advanced_plan",
+        "verify_plan",
     } <= names
 
     assert "task_create" not in collected.sensitive_tools
     assert "task_create" not in collected.read_only_names
     assert "task_list" in collected.read_only_names
+    assert "verify_plan" in collected.read_only_names
 
 
 @pytest.mark.asyncio
 async def test_task_create_tool_writes_work_ledger_without_execution(tmp_path, monkeypatch):
-    from app.tools.handlers.command_parity import task_create
+    from app.runtime.hooks import HookEvent
+    from app.tools.handlers import command_parity
 
     monkeypatch.setenv("AGENT_DATA_DIR", str(tmp_path))
-    result = await task_create(_request("task_create", {"subject": "Inspect hooks", "owner": "critic"}, tmp_path))
+    emitted = []
+
+    async def fake_emit_hook(event, **kwargs):
+        emitted.append((event, kwargs))
+
+    monkeypatch.setattr(command_parity, "emit_hook", fake_emit_hook, raising=False)
+    request = _request("task_create", {"subject": "Inspect hooks", "owner": "critic"}, tmp_path)
+    result = await command_parity.task_create(request)
 
     payload = json.loads(result)
     assert payload["ok"] is True
     assert payload["starts_execution"] is False
     assert payload["task"]["title"] == "Inspect hooks"
     assert payload["task"]["owner"] == "critic"
+    assert emitted[0][0] == HookEvent.TASK_CREATED
+    assert emitted[0][1]["session_id"] == request.context.session_id
+    assert emitted[0][1]["metadata"]["task_id"] == payload["task"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_task_update_completed_emits_task_completed_hook(tmp_path, monkeypatch):
+    from app.runtime.hooks import HookEvent
+    from app.tools.handlers import command_parity
+
+    monkeypatch.setenv("AGENT_DATA_DIR", str(tmp_path))
+    emitted = []
+
+    async def fake_emit_hook(event, **kwargs):
+        emitted.append((event, kwargs))
+
+    monkeypatch.setattr(command_parity, "emit_hook", fake_emit_hook, raising=False)
+    agent_id = uuid4()
+    session_id = uuid4()
+    create_request = _request("task_create", {"subject": "Inspect hooks"}, tmp_path, agent_id=agent_id, session_id=session_id)
+    created = json.loads(await command_parity.task_create(create_request))
+    emitted.clear()
+    request = _request(
+        "task_update",
+        {"task_id": created["task"]["id"], "subject": "Inspect hooks", "status": "completed"},
+        tmp_path,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
+    result = await command_parity.task_update(request)
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert emitted[0][0] == HookEvent.TASK_COMPLETED
+    assert emitted[0][1]["session_id"] == request.context.session_id
+    assert emitted[0][1]["metadata"]["task_id"] == created["task"]["id"]
 
 
 @pytest.mark.asyncio
@@ -164,3 +220,24 @@ async def test_advanced_plan_tool_returns_runtime_handoff_payload(tmp_path):
     assert payload["runtime_task_type"] == "advanced_plan"
     assert payload["objective"] == "Design parity rollout"
     assert payload["context"] == {"source": "freecode"}
+
+
+@pytest.mark.asyncio
+async def test_verify_plan_tool_checks_criteria_and_evidence(tmp_path):
+    from app.tools.handlers.command_parity import verify_plan
+
+    result = await verify_plan(
+        _request(
+            "verify_plan",
+            {
+                "plan_json": {"success_criteria": ["tests pass"]},
+                "evidence_refs": ["pytest://backend/tests/tools/test_cc_codex_parity_tools.py"],
+                "completed_criteria": ["tests pass"],
+            },
+            tmp_path,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["verification"]["status"] == "passed"

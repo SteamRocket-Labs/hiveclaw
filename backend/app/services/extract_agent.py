@@ -23,8 +23,10 @@ Legacy fallback: messages → regex patterns → append to learnings/{category}.
 
 Legacy T0 backfill (PR-4): when in-memory message extraction was skipped before
 the append-only session ledger existed, legacy behavior T0 MD files can be
-replayed back into messages and re-extracted into T2. Current runtime T0 truth
-lives under memory/t0/sessions/<session_id>/segments/<segment_id>/source.md.
+replayed back into messages and re-extracted into T2. Current runtime T0
+mechanical truth lives under
+memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl, with
+source.md as the deterministic Markdown/XML readable projection.
 The backfill cursor (learnings/.backfill_cursor.json) records which legacy
 session_ids have already been processed so re-runs are idempotent.
 """

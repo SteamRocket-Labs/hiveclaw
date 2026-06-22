@@ -695,6 +695,16 @@
         "statusBlocked": "Blocked",
         "statusPending": "Pending"
       },
+      "commands": {
+        "title": "Commands",
+        "open": "Commands",
+        "empty": "No commands available",
+        "search": "Search commands",
+        "arguments": "Command arguments",
+        "execute": "Execute",
+        "running": "Running",
+        "loading": "Loading commands..."
+      },
       "runtime": {
         "model": "Model",
         "remaining": "Context remaining",

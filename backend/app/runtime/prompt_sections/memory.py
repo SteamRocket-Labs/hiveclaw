@@ -6,7 +6,7 @@ _MEMORY_SECTION_TEMPLATE = """\
 You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 
 ### Layers
-- **T0** (`memory/t0/sessions/<session_id>/segments/<segment_id>/source.md`): append-only raw session ledger, 30-day retention
+- **T0** (`memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl` + `source.md`): append-only raw session ledger, 30-day retention. JSONL is the mechanical truth; Markdown/XML is the readable projection.
 - **T2** (`memory/sessions/<session_id>/segments/<segment_id>/`): reviewed Segment Packages
   (`summary.md`, `labels.md`, `review.md`, `manifest.json`) built from sealed T0 session segments
 - **T2 Episodes** (`memory/sessions/<session_id>/episodes/<episode_id>/`): reviewed Episode Stitch Packages

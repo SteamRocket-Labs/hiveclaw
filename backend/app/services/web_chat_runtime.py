@@ -127,6 +127,38 @@ def _apply_terminal_task_update(
         task.completed_at = datetime.now(timezone.utc)
 
 
+async def _maybe_continue_goal_after_terminal_turn(
+    *,
+    db: AsyncSession,
+    task: RuntimeTask,
+    agent_id: uuid.UUID,
+    session_id: str | uuid.UUID,
+    user_id: str | uuid.UUID | None,
+    status: str,
+) -> dict[str, Any]:
+    if not user_id or not session_id:
+        return {"ok": False, "reason": "missing_runtime_context"}
+    try:
+        from app.services.goal_continuation_service import maybe_continue_session_goal_after_turn
+
+        return await maybe_continue_session_goal_after_turn(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            completed_task_type=str(getattr(task, "task_type", "") or ""),
+            completed_status=status,
+            metadata_json=dict(getattr(task, "metadata_json", None) or {}),
+        )
+    except Exception as exc:  # pragma: no cover - defensive runtime isolation
+        logger.warning(
+            "[WebChatRun] Goal continuation bridge failed for run {}: {}",
+            getattr(task, "id", None),
+            exc,
+        )
+        return {"ok": False, "reason": "goal_continuation_bridge_failed", "error": str(exc)}
+
+
 def _assistant_transcript_parts(
     content: str,
     *,
@@ -1187,6 +1219,14 @@ async def _finalize_web_chat_run_with_assistant(
                 message_id=getattr(kernel_persisted_message, "id", None),
                 artifact_parts=artifact_parts,
             )
+            await _maybe_continue_goal_after_terminal_turn(
+                db=db,
+                task=task,
+                agent_id=agent_id,
+                session_id=session_id,
+                user_id=user_id,
+                status=status,
+            )
             await db.commit()
             return True
 
@@ -1246,6 +1286,14 @@ async def _finalize_web_chat_run_with_assistant(
             message_id=assistant_message_id,
             artifact_parts=artifact_parts,
         )
+        await _maybe_continue_goal_after_terminal_turn(
+            db=db,
+            task=task,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=user_id,
+            status=status,
+        )
         await db.commit()
         return True
 
@@ -1287,6 +1335,15 @@ async def _finalize_web_chat_run_without_assistant(
             status=status,
             result_summary=result_summary,
             metadata_json=metadata_json,
+        )
+        merged_metadata = dict(getattr(task, "metadata_json", None) or {})
+        await _maybe_continue_goal_after_terminal_turn(
+            db=db,
+            task=task,
+            agent_id=agent_id,
+            session_id=str(getattr(task, "parent_session_id", "") or merged_metadata.get("session_id") or ""),
+            user_id=merged_metadata.get("user_id"),
+            status=status,
         )
         await db.commit()
         return True

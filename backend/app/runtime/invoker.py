@@ -226,6 +226,14 @@ def _latest_user_prompt(messages: list[dict] | tuple[dict, ...] | None) -> str:
     return ""
 
 
+def _format_hook_additional_contexts(contexts: list[str]) -> str:
+    cleaned = [str(item).strip() for item in contexts if str(item).strip()]
+    if not cleaned:
+        return ""
+    body = "\n\n".join(cleaned)
+    return f"## Hook Additional Context\n{body}"
+
+
 def _plan_mode_interactive_available(session_context: SessionContext | None) -> bool:
     # Compatibility-only: ToolRuntimeService ignores this for Plan Mode entry.
     from app.runtime.session import is_interactive_plan_eligible
@@ -1217,6 +1225,12 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
                 final_tools=[],
                 parts=[],
             )
+        if prompt_result and prompt_result.additional_contexts:
+            hook_context = _format_hook_additional_contexts(prompt_result.additional_contexts)
+            if hook_context:
+                kernel_request.system_prompt_suffix = "\n\n".join(
+                    part for part in (kernel_request.system_prompt_suffix, hook_context) if part
+                )
     except Exception as _prompt_err:
         logging.getLogger(__name__).debug("[Invoker] USER_PROMPT_SUBMIT hook failed (non-fatal): %s", _prompt_err)
 

@@ -1,8 +1,10 @@
 """Single-path chat transcript event writer.
 
-The service creates the durable event first-class surface for UI replay while
-bridging runtime-authored events into the canonical T0 Markdown/XML ledger.
-ChatMessage and artifact rows are read models, not a second truth source.
+The service creates the durable DB read model for UI replay while bridging
+runtime-authored events into canonical T0. T0 writes ``events.jsonl`` first as
+mechanical truth and ``source.md`` second as a deterministic Markdown/XML
+projection. ChatMessage, ChatTranscriptEvent, and artifact rows are read models,
+not a second truth source.
 """
 
 from __future__ import annotations
@@ -68,7 +70,9 @@ def _metadata_with_transcript_refs(
     clean["listed_surface"] = listed_surface
     if parts:
         clean["parts"] = parts
-        artifact_ids = [part.get("artifact_id") for part in parts if part.get("type") == "artifact" and part.get("artifact_id")]
+        artifact_ids = [
+            part.get("artifact_id") for part in parts if part.get("type") == "artifact" and part.get("artifact_id")
+        ]
         if artifact_ids:
             clean["artifact_ids"] = artifact_ids
     return clean

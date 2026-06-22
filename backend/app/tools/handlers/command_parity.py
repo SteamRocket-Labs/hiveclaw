@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_work_ledger import read_agent_work_ledger_view, upsert_agent_work_ledger_todo
+from app.services.plan_verification_service import verify_plan_artifact
 from app.services.runtime_task_service import get_runtime_task_record, update_runtime_task_record
 from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
 from app.tools.decorator import ToolMeta, tool
@@ -69,6 +71,20 @@ async def task_create(request: ToolExecutionRequest) -> str:
         blocked_by=payload.get("blockedBy"),
         session_id=_session_id(request),
     )
+    task = result["item"]
+    await emit_hook(
+        HookEvent.TASK_CREATED,
+        agent_id=request.context.agent_id,
+        session_id=_session_id(request),
+        source="command_task",
+        metadata={
+            "tenant_id": request.context.tenant_id,
+            "task_id": task.get("id"),
+            "subject": task.get("title"),
+            "owner": task.get("owner"),
+            "starts_execution": False,
+        },
+    )
     return _json({"ok": True, "starts_execution": False, "task": result["item"]})
 
 
@@ -100,6 +116,21 @@ async def task_update(request: ToolExecutionRequest) -> str:
         owner=request.arguments.get("owner"),
         session_id=_session_id(request),
     )
+    task = result["item"]
+    if str(task.get("status") or "").strip() == "completed":
+        await emit_hook(
+            HookEvent.TASK_COMPLETED,
+            agent_id=request.context.agent_id,
+            session_id=_session_id(request),
+            source="command_task",
+            metadata={
+                "tenant_id": request.context.tenant_id,
+                "task_id": task.get("id"),
+                "subject": task.get("title"),
+                "owner": task.get("owner"),
+                "starts_execution": False,
+            },
+        )
     return _json({"ok": True, "starts_execution": False, "task": result["item"]})
 
 
@@ -320,3 +351,53 @@ async def advanced_plan(request: ToolExecutionRequest) -> str:
             "context": context if isinstance(context, dict) else {},
         }
     )
+
+
+@tool(
+    ToolMeta(
+        name="verify_plan",
+        description=(
+            "Verify a plan artifact against its success criteria and explicit evidence references. "
+            "This is an evidence check; it does not execute the plan."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "plan_json": {"type": "object"},
+                "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                "completed_criteria": {"type": "array", "items": {"type": "string"}},
+                "failed_criteria": {"type": "array", "items": {"type": "string"}},
+                "notes": {"type": "string"},
+            },
+            "required": ["plan_json"],
+        },
+        category="command_plan",
+        display_name="Verify Plan",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="request",
+    )
+)
+async def verify_plan(request: ToolExecutionRequest) -> str:
+    plan_json = request.arguments.get("plan_json")
+    if not isinstance(plan_json, dict):
+        return _json({"ok": False, "error": "plan_json is required."})
+    verification = verify_plan_artifact(
+        plan_json=plan_json,
+        evidence_refs=request.arguments.get("evidence_refs")
+        if isinstance(request.arguments.get("evidence_refs"), list)
+        else [],
+        completed_criteria=(
+            request.arguments.get("completed_criteria")
+            if isinstance(request.arguments.get("completed_criteria"), list)
+            else []
+        ),
+        failed_criteria=(
+            request.arguments.get("failed_criteria")
+            if isinstance(request.arguments.get("failed_criteria"), list)
+            else []
+        ),
+        notes=str(request.arguments.get("notes") or ""),
+    )
+    return _json({"ok": True, "verification": verification})

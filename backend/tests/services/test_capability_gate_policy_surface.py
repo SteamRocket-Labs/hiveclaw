@@ -103,6 +103,7 @@ def test_capability_map_covers_cc_codex_command_tools():
         "goal_start": "agent.goal.modify",
         "team_create": "agent.team.modify",
         "advanced_plan": "agent.plan.modify",
+        "verify_plan": "agent.plan.read",
     }
 
     for tool_name, capability in expected.items():

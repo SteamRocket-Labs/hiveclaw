@@ -17,7 +17,7 @@
 3. 放到 optional coding pack：worktree、diff、commit、PR、review/security-review、LSP、Notebook、Bash/PowerShell local shell 等 coding-first 能力。
 4. 排除 FreeCode/CC 产品私有功能：login/logout/upgrade/rate-limit/release-notes/stickers/Claude Web teleport 的产品绑定本身。可吸收其机制，不继承其供应商特权。
 
-关于“Glow”：本轮在 FreeCode 源码中没有找到稳定的 `Glow` command/tool 符号；结合 Codex delta，我把它归一为 **Goal / thread goal continuation**。如果后续确认 Glow 是另一个产品名或 UI 名，需要重新映射。
+关于“Glow”：本轮在 FreeCode 源码中没有找到稳定的 `Glow` command/tool 符号；它不作为独立命令保留。当前 canonical 名称是 **Session Goal / goal continuation**；如果后续确认 Glow 是另一个产品名或 UI 名，只能作为 UI alias 映射到 Goal，不能新增一套平行机制。
 
 ## 0.1 Evidence Inputs
 
@@ -310,7 +310,7 @@ Hive core 是 organization-facing general agent framework，不应让 coding-fir
 建议顺序：
 
 1. **Command Registry substrate**：先建统一入口，否则后续 Team/Task/Goal 都会继续散落在 API/tool/frontend。
-2. **Session Goal runtime**：补 Codex-style continuation，让“目标/Glow”成为 session lifecycle 的一等能力。
+2. **Session Goal runtime**：补 Codex-style continuation，让“目标”成为 session lifecycle 的一等能力；“Glow”不作为独立 runtime 名称。
 3. **Team runtime**：DB-backed Team + member ChatSession + RuntimeTask + UI switcher。
 4. **Task adapters**：把 TaskCreate/Get/List/Output/Stop/Update 映射到 Work Ledger / Team / RuntimeTask。
 5. **Hook completion**：把 Task/Team/Permission/Elicitation/Config/Instruction events 补齐。

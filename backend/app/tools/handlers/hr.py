@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Any
 
 from app.services.archetype import apply_archetype_defaults
 
@@ -27,6 +28,46 @@ from app.tools.runtime import ToolExecutionRequest
 logger = logging.getLogger(__name__)
 
 ROLE_DESCRIPTION_MAX_CHARS = 4000
+
+SOURCE_ATTRIBUTION_TYPES = [
+    "confirmed_by_user",
+    "supported_by_company_kb",
+    "suggested_by_history",
+    "suggested_by_general_knowledge",
+    "unknown_or_needs_company_source",
+]
+
+SOURCE_ATTRIBUTIONS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "field": {
+                "type": "string",
+                "description": "Blueprint field this source supports, e.g. boundaries, focus_content, core_outputs.",
+            },
+            "value_summary": {
+                "type": "string",
+                "description": "Short summary of the proposed value that this source supports.",
+            },
+            "source_type": {
+                "type": "string",
+                "enum": SOURCE_ATTRIBUTION_TYPES,
+                "description": "Whether the value is user-confirmed, company-knowledge-backed, historical, general, or unresolved.",
+            },
+            "source_refs": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Evidence refs such as kb://..., t3:memory/..., explicit:..., or external source refs.",
+            },
+        },
+        "required": ["field", "source_type"],
+    },
+    "description": (
+        "Source attribution for substantive blueprint content. Company knowledge is authoritative, "
+        "history is advisory, and all non-current-session suggestions must be shown to the user for confirmation."
+    ),
+}
 
 
 def _trim_role_description_for_prompt_guard(value: object) -> str:
@@ -192,6 +233,83 @@ def _dedupe_strings(values: list[str]) -> list[str]:
         seen.add(item)
         deduped.append(item)
     return deduped
+
+
+def _parse_source_attributions(value: object) -> tuple[list[dict[str, Any]], list[str]]:
+    """Normalize source attributions and reject invalid source types.
+
+    These annotations are advisory/provenance metadata for the blueprint. They
+    let the HR flow distinguish company knowledge, historical suggestions, and
+    unresolved knowledge debt without letting any non-current-session source
+    silently become a confirmed decision.
+    """
+    raw_items = _parse_list(value)
+    normalized: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    invalid_count = 0
+    for item in raw_items:
+        if not isinstance(item, dict):
+            invalid_count += 1
+            continue
+        source_type = str(item.get("source_type") or "").strip()
+        field = str(item.get("field") or "").strip()
+        if source_type not in SOURCE_ATTRIBUTION_TYPES or not field:
+            invalid_count += 1
+            continue
+        entry: dict[str, Any] = {
+            "field": field,
+            "source_type": source_type,
+            "value_summary": str(item.get("value_summary") or "").strip(),
+            "source_refs": _dedupe_strings(
+                [ref for ref in _parse_list(item.get("source_refs")) if isinstance(ref, str)]
+            ),
+        }
+        normalized.append(entry)
+    if invalid_count:
+        warnings.append(f"invalid source_attributions ignored: {invalid_count}")
+    return normalized, warnings
+
+
+def _knowledge_debt_from_source_attributions(source_attributions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "field": item["field"],
+            "value_summary": item.get("value_summary", ""),
+            "source_type": "unknown_or_needs_company_source",
+            "reason": "unknown_or_needs_company_source",
+        }
+        for item in source_attributions
+        if item.get("source_type") == "unknown_or_needs_company_source"
+    ]
+
+
+def _source_attribution_policy() -> dict[str, Any]:
+    return {
+        "company_knowledge_lane": "authoritative",
+        "history_suggestion_lane": "advisory",
+        "general_knowledge_lane": "fallback",
+        "confirmation_rule": (
+            "All substantive blueprint content from company knowledge, history, or general knowledge "
+            "must be presented to the user and explicitly confirmed before create_digital_employee."
+        ),
+        "source_type_precedence": [
+            "confirmed_by_user",
+            "supported_by_company_kb",
+            "suggested_by_history",
+            "suggested_by_general_knowledge",
+            "unknown_or_needs_company_source",
+        ],
+    }
+
+
+def _confirmation_requirements(source_attributions: list[dict[str, Any]]) -> dict[str, Any]:
+    source_types = _dedupe_strings([str(item.get("source_type")) for item in source_attributions])
+    return {
+        "must_present_all_substantive_blueprint_content": True,
+        "source_types_to_present": source_types,
+        "must_distinguish_supported_by_company_kb_from_suggested_by_history": True,
+        "must_confirm_before_create": True,
+    }
 
 
 def _canonical_json(value: object) -> str:
@@ -1131,6 +1249,7 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
         except (ValueError, TypeError):
             raw_triggers = []
     triggers = [item for item in raw_triggers if isinstance(item, dict)]
+    source_attributions, source_attribution_warnings = _parse_source_attributions(arguments.get("source_attributions"))
 
     capability_routing = _derive_capability_routing(
         role_description=role_description,
@@ -1164,6 +1283,7 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
     if not focus_content:
         warnings.append("focus_content is empty — the new agent will need an initial mission seed after creation.")
     warnings.extend(capability_routing["warnings"])
+    warnings.extend(source_attribution_warnings)
 
     manual_steps = _derive_manual_steps(
         skill_names=install_now_skill_names,
@@ -1234,6 +1354,7 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
         "welcome_message": welcome_message,
         "focus_content": focus_content,
         "heartbeat_topics": heartbeat_topics,
+        "source_attributions": source_attributions,
         "ready_now": _default_ready_now(),
         "deferred_capabilities": [
             f"{skill_name} (defer until a first real task proves builtin/default coverage is insufficient)"
@@ -1274,6 +1395,9 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
             "external_skill_refs": external_skill_refs,
         },
         "manual_steps": manual_steps,
+        "source_attribution_policy": _source_attribution_policy(),
+        "knowledge_debt": _knowledge_debt_from_source_attributions(source_attributions),
+        "confirmation_requirements": _confirmation_requirements(source_attributions),
         "warnings": _dedupe_strings(warnings),
     }
 
@@ -1321,6 +1445,59 @@ def _build_create_employee_result(
             "message": message,
         },
         ensure_ascii=False,
+    )
+
+
+def _append_hr_creation_t0_event(
+    *,
+    hr_agent_id: uuid.UUID | str,
+    created_agent_id: uuid.UUID | str,
+    created_agent_name: str,
+    session_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    user_id: uuid.UUID | str | None,
+    blueprint_hash: str,
+    preview_payload: dict[str, Any],
+    installed_skill_names: list[str],
+    trigger_count: int,
+    data_root: Path | str | None = None,
+):
+    """Append raw HR creation evidence to the HR agent's T0 session ledger."""
+    from app.memory.t0.ledger import append_t0_session_event
+
+    blueprint = preview_payload.get("blueprint") if isinstance(preview_payload, dict) else {}
+    blueprint = blueprint if isinstance(blueprint, dict) else {}
+    manual_steps = preview_payload.get("manual_steps") if isinstance(preview_payload, dict) else []
+    source_attributions = blueprint.get("source_attributions") or []
+    metadata = {
+        "created_agent_id": str(created_agent_id),
+        "created_agent_name": str(created_agent_name),
+        "blueprint_hash": str(blueprint_hash),
+        "preview_session_id": str(session_id),
+        "requesting_user_id": str(user_id) if user_id else None,
+        "tenant_id": str(tenant_id) if tenant_id else None,
+        "permission_scope": str(blueprint.get("permission_scope") or "company"),
+        "risk_class": str(preview_payload.get("risk_class") or "standard"),
+        "archetype": str(blueprint.get("archetype") or ""),
+        "primary_users": [str(item) for item in (blueprint.get("primary_users") or [])],
+        "core_outputs": [str(item) for item in (blueprint.get("core_outputs") or [])],
+        "first_task_count": len([item for item in (blueprint.get("first_tasks") or []) if str(item).strip()]),
+        "trigger_count": int(trigger_count),
+        "installed_skill_names": _dedupe_strings(installed_skill_names),
+        "manual_setup_debt": [str(item) for item in (manual_steps or [])],
+        "source_attributions": source_attributions if isinstance(source_attributions, list) else [],
+    }
+    return append_t0_session_event(
+        agent_id=hr_agent_id,
+        session_id=session_id,
+        event_type="hr_agent_created",
+        role="tool",
+        content="Created digital employee from confirmed HR blueprint.",
+        actor_id=user_id,
+        tenant_id=tenant_id,
+        source="web",
+        metadata=metadata,
+        data_root=data_root,
     )
 
 
@@ -1387,6 +1564,7 @@ def _build_create_employee_result(
                         "never_do": {"type": "array", "items": {"type": "string"}},
                     },
                 },
+                "source_attributions": SOURCE_ATTRIBUTIONS_SCHEMA,
                 "skill_names": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1879,6 +2057,28 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
             await db.commit()
 
+            session_id = getattr(request.context, "session_id", None)
+            if session_id:
+                try:
+                    _append_hr_creation_t0_event(
+                        hr_agent_id=request.context.agent_id,
+                        created_agent_id=agent.id,
+                        created_agent_name=agent.name,
+                        session_id=session_id,
+                        tenant_id=effective_tenant_id or user.tenant_id,
+                        user_id=user.id,
+                        blueprint_hash=preview_payload["blueprint_hash"],
+                        preview_payload=preview_payload,
+                        installed_skill_names=skill_names,
+                        trigger_count=len(triggers),
+                    )
+                except Exception as t0_exc:
+                    logger.warning(
+                        "[HR] Failed to append hr_agent_created T0 event for agent %s: %s",
+                        agent.id,
+                        t0_exc,
+                    )
+
             if install_plan:
                 try:
                     await record_capability_install_plan(
@@ -2218,6 +2418,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     "type": "string",
                     "description": "Risk boundaries or red lines, one per line if helpful.",
                 },
+                "source_attributions": SOURCE_ATTRIBUTIONS_SCHEMA,
                 "skill_names": {
                     "type": "array",
                     "items": {"type": "string"},

@@ -431,21 +431,38 @@ def test_hr_templates_prefer_identity_first_and_install_later() -> None:
     assert not hr_focus_path.exists()
 
 
+def test_hr_templates_retire_hr_guide_and_use_company_knowledge_lanes() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    hr_create_employee = (
+        project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
+    hr_guide_path = project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide"
+    combined = "\n".join([hr_create_employee, hr_soul])
+
+    assert not hr_guide_path.exists()
+    assert "Company Knowledge Lane" in combined
+    assert "History Suggestion Lane" in combined
+    assert "supported_by_company_kb" in combined
+    assert "suggested_by_history" in combined
+    assert "unknown_or_needs_company_source" in combined
+    assert "confirmed_by_user" in combined
+    assert "company knowledge" in combined.lower()
+    assert "history" in combined.lower()
+
+
 def test_hr_templates_use_dynamic_rounds_with_mandatory_creation_gates() -> None:
     project_root = Path(__file__).resolve().parents[3]
     hr_create_employee = (
         project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
     ).read_text(encoding="utf-8")
-    hr_guide = (project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
-    combined = "\n".join([hr_create_employee, hr_guide, hr_soul])
+    combined = "\n".join([hr_create_employee, hr_soul])
 
     assert "dynamic rounds, mandatory gates" in combined
     assert "Identity gate" in combined
+    assert "Work Contract gate" in combined
     assert "Governance gate" in combined
-    assert "Activation gate" in combined
     assert "Capability / Setup Debt gate" in combined
     assert "Preview + Confirmation gate" in combined
     assert "5-round" not in combined.lower()
@@ -458,12 +475,9 @@ def test_hr_templates_do_not_reference_retired_objective_ledger() -> None:
     hr_create_employee = (
         project_root / "backend" / "hr_agent_template" / "skills" / "create-employee" / "SKILL.md"
     ).read_text(encoding="utf-8")
-    hr_guide = (project_root / "backend" / "hr_agent_template" / "skills" / "hr-guide" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
     hr_soul = (project_root / "backend" / "hr_agent_template" / "soul.md").read_text(encoding="utf-8")
 
-    combined = "\n".join([hr_create_employee, hr_guide, hr_soul])
+    combined = "\n".join([hr_create_employee, hr_soul])
 
     assert "Trigger is wake policy" in combined
     assert "scheduled_job" in combined

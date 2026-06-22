@@ -14,6 +14,7 @@
  */
 
 import React from 'react';
+import { IconChevronLeft, IconChevronRight } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 
 import type { ClarificationQuestion } from './toolResultEnvelope';
@@ -138,9 +139,28 @@ export default function AskUserQuestionCard({
   submitted = false,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
+  const questionsFingerprint = React.useMemo(
+    () =>
+      JSON.stringify(
+        questions.map((question) => ({
+          question: question.question,
+          header: question.header,
+          multiSelect: question.multiSelect,
+          options: question.options.map((option) => [option.label, option.description ?? '']),
+        })),
+      ),
+    [questions],
+  );
   const [answers, setAnswers] = React.useState<QuestionAnswerState[]>(() => makeInitialState(questions));
+  const [activeQuestionIndex, setActiveQuestionIndex] = React.useState(0);
   const [busy, setBusy] = React.useState(false);
   const [done, setDone] = React.useState(submitted);
+
+  React.useEffect(() => {
+    setAnswers(makeInitialState(questions));
+    setActiveQuestionIndex(0);
+    setDone(submitted);
+  }, [questionsFingerprint, submitted]);
 
   const toggleOption = (questionIndex: number, optionIndex: number, multiSelect: boolean) => {
     setAnswers((prev) =>
@@ -157,6 +177,15 @@ export default function AskUserQuestionCard({
   // Blocking cards require every question answered; the helper is pure so the
   // gating logic is unit-tested directly.
   const canSubmit = !done && !busy && canSubmitClarification(questions, answers, blocking);
+  const questionCount = questions.length;
+  const safeActiveQuestionIndex = Math.min(activeQuestionIndex, Math.max(questionCount - 1, 0));
+  const activeQuestion = questions[safeActiveQuestionIndex];
+  const activeState = answers[safeActiveQuestionIndex] ?? { selected: [], other: '' };
+  const isFirstQuestion = safeActiveQuestionIndex === 0;
+  const isLastQuestion = safeActiveQuestionIndex >= questionCount - 1;
+  const answeredCount = questions.filter((question, index) =>
+    isQuestionAnswered(question, answers[index] ?? { selected: [], other: '' }),
+  ).length;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -179,6 +208,16 @@ export default function AskUserQuestionCard({
     letterSpacing: '0.4px',
   };
 
+  if (questionCount === 0 || !activeQuestion) {
+    return null;
+  }
+
+  const otherFieldId = `clarify-${safeActiveQuestionIndex}-other`;
+  const progressText = t('agent.clarification.progress', 'Question {{current}} of {{total}}', {
+    current: safeActiveQuestionIndex + 1,
+    total: questionCount,
+  });
+
   return (
     <div
       data-testid="ask-user-question-card"
@@ -191,7 +230,7 @@ export default function AskUserQuestionCard({
         gap: dense ? '12px' : '14px',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'space-between' }}>
         <span
           style={{
             fontSize: '10px',
@@ -207,108 +246,126 @@ export default function AskUserQuestionCard({
         >
           {t('agent.clarification.badge', 'Needs your input')}
         </span>
+        <span style={{ ...labelStyle, textTransform: 'none', letterSpacing: 0 }}>{progressText}</span>
       </div>
 
-      {questions.map((question, questionIndex) => {
-        const state = answers[questionIndex];
-        const otherFieldId = `clarify-${questionIndex}-other`;
-        return (
-          <div key={questionIndex} style={{ display: 'grid', gap: '8px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              {question.header && (
-                <span
-                  style={{
-                    fontSize: '10px',
-                    fontWeight: 700,
-                    padding: '2px 8px',
-                    borderRadius: '6px',
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--text-secondary)',
-                  }}
-                >
-                  {question.header}
-                </span>
-              )}
-              {question.multiSelect && (
-                <span style={{ ...labelStyle }}>{t('agent.clarification.multiSelect', 'Select all that apply')}</span>
-              )}
-            </div>
-            <div style={{ fontSize: dense ? '13px' : '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.5 }}>
-              {question.question}
-            </div>
+      <div style={{ display: 'grid', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          {activeQuestion.header && (
+            <span
+              style={{
+                fontSize: '10px',
+                fontWeight: 700,
+                padding: '2px 8px',
+                borderRadius: '6px',
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-subtle)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              {activeQuestion.header}
+            </span>
+          )}
+          {activeQuestion.multiSelect && (
+            <span style={{ ...labelStyle }}>{t('agent.clarification.multiSelect', 'Select all that apply')}</span>
+          )}
+        </div>
+        <div style={{ fontSize: dense ? '13px' : '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+          {activeQuestion.question}
+        </div>
 
-            <div style={{ display: 'grid', gap: '6px' }}>
-              {question.options.map((option, optionIndex) => {
-                const checked = state.selected.includes(optionIndex);
-                const inputName = question.multiSelect
-                  ? `clarify-${questionIndex}-${optionIndex}`
-                  : `clarify-${questionIndex}`;
-                return (
-                  <label
-                    key={optionIndex}
-                    style={{
-                      display: 'flex',
-                      gap: '8px',
-                      alignItems: 'flex-start',
-                      padding: '8px 10px',
-                      borderRadius: '8px',
-                      border: `1px solid ${checked ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
-                      background: checked ? 'rgba(16,185,129,0.08)' : 'var(--bg-secondary)',
-                      cursor: done ? 'default' : 'pointer',
-                    }}
-                  >
-                    <input
-                      type={question.multiSelect ? 'checkbox' : 'radio'}
-                      name={inputName}
-                      checked={checked}
-                      disabled={done || busy}
-                      onChange={() => toggleOption(questionIndex, optionIndex, question.multiSelect)}
-                      style={{ marginTop: '2px', flexShrink: 0 }}
-                    />
-                    <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
-                      <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{option.label}</span>
-                      {option.description && (
-                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                          {option.description}
-                        </span>
-                      )}
-                    </span>
-                  </label>
-                );
-              })}
-
-              {/* "Other" free-text is ALWAYS offered (CC behaviour). */}
-              <div style={{ display: 'grid', gap: '4px' }}>
-                <label htmlFor={otherFieldId} style={{ ...labelStyle }}>
-                  {t('agent.clarification.other', 'Other')}
-                </label>
+        <div style={{ display: 'grid', gap: '6px' }}>
+          {activeQuestion.options.map((option, optionIndex) => {
+            const checked = activeState.selected.includes(optionIndex);
+            const inputName = activeQuestion.multiSelect
+              ? `clarify-${safeActiveQuestionIndex}-${optionIndex}`
+              : `clarify-${safeActiveQuestionIndex}`;
+            return (
+              <label
+                key={optionIndex}
+                style={{
+                  display: 'flex',
+                  gap: '8px',
+                  alignItems: 'flex-start',
+                  padding: '8px 10px',
+                  borderRadius: '8px',
+                  border: `1px solid ${checked ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+                  background: checked ? 'rgba(16,185,129,0.08)' : 'var(--bg-secondary)',
+                  cursor: done ? 'default' : 'pointer',
+                }}
+              >
                 <input
-                  id={otherFieldId}
-                  type="text"
-                  value={state.other}
+                  type={activeQuestion.multiSelect ? 'checkbox' : 'radio'}
+                  name={inputName}
+                  checked={checked}
                   disabled={done || busy}
-                  placeholder={t('agent.clarification.otherPlaceholder', 'Type your own answer…')}
-                  onChange={(event) => setOther(questionIndex, event.target.value, question.multiSelect)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 10px',
-                    fontSize: '13px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-subtle)',
-                    background: 'var(--bg-secondary)',
-                    color: 'var(--text-primary)',
-                  }}
+                  onChange={() => toggleOption(safeActiveQuestionIndex, optionIndex, activeQuestion.multiSelect)}
+                  style={{ marginTop: '2px', flexShrink: 0 }}
                 />
-              </div>
-            </div>
+                <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{option.label}</span>
+                  {option.description && (
+                    <span style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                      {option.description}
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
+
+          {/* "Other" free-text is ALWAYS offered (CC behaviour). */}
+          <div style={{ display: 'grid', gap: '4px' }}>
+            <label htmlFor={otherFieldId} style={{ ...labelStyle }}>
+              {t('agent.clarification.other', 'Other')}
+            </label>
+            <input
+              id={otherFieldId}
+              type="text"
+              value={activeState.other}
+              disabled={done || busy}
+              placeholder={t('agent.clarification.otherPlaceholder', 'Type your own answer…')}
+              onChange={(event) => setOther(safeActiveQuestionIndex, event.target.value, activeQuestion.multiSelect)}
+              style={{
+                width: '100%',
+                padding: '8px 10px',
+                fontSize: '13px',
+                borderRadius: '8px',
+                border: '1px solid var(--border-subtle)',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+              }}
+            />
           </div>
-        );
-      })}
+        </div>
+      </div>
 
       {nextAction && !done && (
         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{nextAction}</div>
       )}
+
+      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', justifyContent: 'center' }} aria-hidden="true">
+        {questions.map((question, index) => {
+          const isActive = index === safeActiveQuestionIndex;
+          const isAnswered = isQuestionAnswered(question, answers[index] ?? { selected: [], other: '' });
+          return (
+            <span
+              key={index}
+              style={{
+                width: isActive ? '18px' : '7px',
+                height: '7px',
+                borderRadius: '999px',
+                background: isActive
+                  ? 'var(--accent-primary)'
+                  : isAnswered
+                    ? 'var(--success-primary, #10b981)'
+                    : 'var(--border-subtle)',
+                transition: 'width 120ms ease, background 120ms ease',
+              }}
+            />
+          );
+        })}
+      </div>
 
       {done ? (
         <div
@@ -325,7 +382,59 @@ export default function AskUserQuestionCard({
           {t('agent.clarification.sent', 'Your answer was sent.')}
         </div>
       ) : (
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <button
+              type="button"
+              aria-label={t('agent.clarification.previousQuestion', 'Previous question')}
+              title={t('agent.clarification.previousQuestion', 'Previous question')}
+              disabled={busy || isFirstQuestion}
+              onClick={() => setActiveQuestionIndex((index) => Math.max(0, index - 1))}
+              style={{
+                width: '30px',
+                height: '30px',
+                borderRadius: '8px',
+                border: '1px solid var(--border-subtle)',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: busy || isFirstQuestion ? 'not-allowed' : 'pointer',
+                opacity: busy || isFirstQuestion ? 0.5 : 1,
+              }}
+            >
+              <IconChevronLeft size={16} stroke={2.3} />
+            </button>
+            <button
+              type="button"
+              aria-label={t('agent.clarification.nextQuestion', 'Next question')}
+              title={t('agent.clarification.nextQuestion', 'Next question')}
+              disabled={busy || isLastQuestion}
+              onClick={() => setActiveQuestionIndex((index) => Math.min(questionCount - 1, index + 1))}
+              style={{
+                width: '30px',
+                height: '30px',
+                borderRadius: '8px',
+                border: '1px solid var(--border-subtle)',
+                background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: busy || isLastQuestion ? 'not-allowed' : 'pointer',
+                opacity: busy || isLastQuestion ? 0.5 : 1,
+              }}
+            >
+              <IconChevronRight size={16} stroke={2.3} />
+            </button>
+          </div>
+          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            {t('agent.clarification.answeredProgress', '{{answered}}/{{total}} answered', {
+              answered: answeredCount,
+              total: questionCount,
+            })}
+          </span>
           <button
             type="button"
             className="btn btn-primary"

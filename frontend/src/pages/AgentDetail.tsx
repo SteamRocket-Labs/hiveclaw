@@ -31,10 +31,13 @@ import {
     buildRuntimeSummary,
     createEmptyTranscriptReplayState,
     getRuntimeEventMessage,
+    getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
+    filterSessionsForAgent,
     normalizeRuntimeEventMessage,
     normalizeStoredChatMessage,
     replayTranscriptEvents,
+    sessionBelongsToAgent,
     type AgentChatMessage,
     type ChatTranscriptEventPayload,
     type ChatRuntimeSummary,
@@ -219,8 +222,8 @@ function AgentDetailInner() {
         return next.uiStates[key];
     };
 
-    const markActiveRunTerminal = (key: SessionRuntimeKey) => {
-        const runId = activeRunStateRef.current[key]?.runId;
+    const markActiveRunTerminal = (key: SessionRuntimeKey, terminalRunId?: string | null) => {
+        const runId = terminalRunId || activeRunStateRef.current[key]?.runId;
         if (runId) locallyTerminalRunIdsRef.current.add(String(runId));
         setActiveRunState(key, null);
     };
@@ -307,7 +310,7 @@ function AgentDetailInner() {
             || eventType === 'quota_exceeded'
             || isTerminalTranscriptToolMessage(lastMessage);
         if (terminal) {
-            markActiveRunTerminal(key);
+            markActiveRunTerminal(key, getTerminalRunIdFromTranscriptEvent(event));
         }
 
         if (isActiveRuntime) {
@@ -342,7 +345,7 @@ function AgentDetailInner() {
         if (!agentId) return [];
         if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(true);
         try {
-            const data = await chatApi.listSessions(agentId, 'mine');
+            const data = filterSessionsForAgent(await chatApi.listSessions(agentId, 'mine'), agentId);
             if (currentAgentIdRef.current === agentId) setSessions(data);
             if (!silent && currentAgentIdRef.current === agentId) setSessionsLoading(false);
             return data;
@@ -358,7 +361,7 @@ function AgentDetailInner() {
         }
         setAllSessionsLoading(true);
         try {
-            const all = await chatApi.listSessions(id, 'all');
+            const all = filterSessionsForAgent(await chatApi.listSessions(id, 'all'), id);
             if (currentAgentIdRef.current === id) {
                 setAllSessions(all.filter((s: any) => s.source_channel !== 'trigger'));
             }
@@ -369,6 +372,7 @@ function AgentDetailInner() {
     const selectSession = async (sess: any) => {
         const targetAgentId = id;
         if (!targetAgentId) return;
+        if (!sessionBelongsToAgent(sess, targetAgentId)) return;
         const sessionId = String(sess.id);
         const runtimeKey = buildSessionRuntimeKey(targetAgentId, sessionId);
         const runtimeState = sessionUiStateRef.current[runtimeKey] || { isWaiting: false, isStreaming: false };
@@ -772,7 +776,7 @@ function AgentDetailInner() {
                 return;
             }
             if (d.type === 'run_cancelled') {
-                markActiveRunTerminal(key);
+                markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
                 invalidateSessionRuntimeQueries(agentId, sessionId);
                 if (isActiveRuntime) {
                     setIsWaiting(false);
@@ -790,7 +794,7 @@ function AgentDetailInner() {
                 });
                 if (d.type === 'tool_call') invalidateSessionRuntimeQueries(agentId, sessionId, false);
                 if (endStreaming) {
-                    markActiveRunTerminal(key);
+                    markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
                     invalidateSessionRuntimeQueries(agentId, sessionId);
                 }
             }
@@ -849,7 +853,7 @@ function AgentDetailInner() {
                     toolMeta: normalizedResult.toolMeta,
                 });
                 if (isTerminalTranscriptToolMessage(toolMsg)) {
-                    markActiveRunTerminal(key);
+                    markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
                     setSessionUiState(key, { isWaiting: false, isStreaming: false });
                     setIsWaiting(false);
                     setIsStreaming(false);
@@ -1641,6 +1645,7 @@ function AgentDetailInner() {
                 {
                     activeTab === 'chat' && (
                         <AgentChatSection
+                            agentId={id}
                             agent={agent}
                             currentUser={currentUser}
                             isAdmin={isSystemHr ? false : isAdmin}

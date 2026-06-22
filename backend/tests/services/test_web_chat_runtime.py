@@ -442,6 +442,10 @@ async def test_finalize_web_chat_run_sets_run_scoped_assistant_marker(monkeypatc
     assert chat_messages[0].decision_trace_id == f"web_chat_final:{run_id.hex}"
     assert chat_messages[0].thinking == "private reasoning"
     assert chat_messages[0].thinking_signature == "sig-final"
+    assert transcript_events[0].parts_json[:2] == [
+        {"type": "reasoning", "text": "private reasoning"},
+        {"type": "text", "text": "final answer"},
+    ]
     assert task.status == "completed"
     assert task.result_summary == "final answer"
     assert session.commits == 1
@@ -846,6 +850,7 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
 
     monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
     monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "_claim_pending_reply_suffix_for_session", noop_async)
     monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_empty_assistant_finalize)
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
@@ -1390,6 +1395,127 @@ async def test_persist_tool_call_appends_t0_tool_result(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_persist_tool_call_appends_running_step_contract(monkeypatch, tmp_path):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    run_id = uuid4()
+    added = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def add(self, value):
+            added.append(value)
+
+        async def commit(self):
+            return None
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    persisted = await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        data={
+            "id": "toolu_123",
+            "name": "read_file",
+            "args": {"path": "workspace/a.md"},
+            "status": "running",
+            "runtime_task_id": str(run_id),
+            "started_at": "2026-06-22T10:00:00Z",
+        },
+    )
+
+    assert persisted is not None
+    assert added[0].role == "tool_call"
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role) for event in events] == [("tool_call", "tool")]
+    assert events[0].runtime_task_id == run_id.hex
+    assert events[0].metadata["tool_name"] == "read_file"
+    assert events[0].metadata["status"] == "running"
+    assert events[0].metadata["tool_call_id"] == "toolu_123"
+    assert events[0].metadata["step_id"] == "tool:toolu_123"
+    assert events[0].metadata["visibility"] == "collapsed"
+    assert '"status": "running"' in events[0].content
+    assert '"tool_call_id": "toolu_123"' in events[0].content
+    assert '"step_id": "tool:toolu_123"' in events[0].content
+    assert '"duration_ms"' not in events[0].content
+
+
+@pytest.mark.asyncio
+async def test_persist_tool_call_done_contract_includes_stable_ids_and_duration(monkeypatch, tmp_path):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+    from app.memory.t0.ledger import replay_t0_session_events
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    run_id = uuid4()
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def add(self, _value):
+            return None
+
+        async def commit(self):
+            return None
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        data={
+            "id": "toolu_123",
+            "name": "read_file",
+            "args": {"path": "workspace/a.md"},
+            "status": "done",
+            "result": "file content",
+            "runtime_task_id": str(run_id),
+            "started_at": "2026-06-22T10:00:00Z",
+            "completed_at": "2026-06-22T10:00:02.500Z",
+        },
+    )
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role) for event in events] == [("tool_result", "tool")]
+    assert events[0].metadata["tool_call_id"] == "toolu_123"
+    assert events[0].metadata["step_id"] == "tool:toolu_123"
+    assert events[0].metadata["duration_ms"] == 2500
+    assert events[0].metadata["visibility"] == "collapsed"
+    assert '"duration_ms": 2500' in events[0].content
+    assert '"result": "file content"' in events[0].content
+
+
+@pytest.mark.asyncio
 async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(monkeypatch, tmp_path):
     import app.services.web_chat_runtime as runtime
     from app.memory.t0.ledger import replay_t0_session_events
@@ -1605,7 +1731,9 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
             return SimpleNamespace(all=lambda: [task])
 
     class _DB:
-        commits = 0
+        def __init__(self):
+            self.calls = 0
+            self.commits = 0
 
         async def __aenter__(self):
             return self
@@ -1614,7 +1742,8 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
             return False
 
         async def execute(self, _stmt):
-            return _Rows()
+            self.calls += 1
+            return _Rows() if self.calls <= 2 else _ScalarResult(None)
 
         async def commit(self):
             self.commits += 1
@@ -1636,6 +1765,120 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
     assert scheduled == [run_id.hex]
     assert task.metadata_json["resumed_after_restart"] is True
     assert task.metadata_json["restart_resume_context"]["resume_prompt"] == "resume now"
+
+
+@pytest.mark.asyncio
+async def test_get_active_web_chat_run_reconciles_terminal_transcript_ghost():
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        metadata_json={},
+    )
+    terminal_event = SimpleNamespace(
+        event_type="assistant_message",
+        content="final answer",
+        metadata_json={"status": "completed"},
+    )
+
+    class _DB:
+        def __init__(self):
+            self.calls = 0
+            self.commits = 0
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            return _ScalarResult(task if self.calls == 1 else terminal_event)
+
+        async def commit(self):
+            self.commits += 1
+
+    db = _DB()
+
+    active = await runtime.get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+
+    assert active is None
+    assert task.status == "completed"
+    assert task.result_summary == "final answer"
+    assert task.completed_at is not None
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_web_chat_runs_skips_terminal_transcript_ghost(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        status="running",
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        metadata_json={},
+    )
+    terminal_event = SimpleNamespace(
+        event_type="assistant_message",
+        content="final answer",
+        metadata_json={"status": "completed"},
+    )
+
+    class _Rows:
+        def scalars(self):
+            return SimpleNamespace(all=lambda: [task])
+
+    class _DB:
+        def __init__(self):
+            self.calls = 0
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            return _Rows() if self.calls <= 2 else _ScalarResult(terminal_event)
+
+        async def commit(self):
+            self.commits += 1
+
+    scheduled: list[str] = []
+
+    def fake_create_task(coro, *args, **kwargs):
+        scheduled.append(coro.cr_frame.f_locals["run_id"].hex)
+        coro.close()
+        return SimpleNamespace(add_done_callback=lambda _cb: None)
+
+    monkeypatch.setattr(runtime, "_async_session", lambda: _DB())
+    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
+
+    resumed = await runtime.resume_persisted_web_chat_runs(limit=10)
+
+    assert resumed == []
+    assert scheduled == []
+    assert task.status == "completed"
+    assert task.result_summary == "final answer"
+    assert task.completed_at is not None
 
 
 @pytest.mark.asyncio
@@ -1952,6 +2195,84 @@ async def test_maybe_handle_plan_mode_entry_does_not_auto_enter_for_deep_researc
 
     assert result is None
     assert "plan_mode" not in session_context.metadata
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_exception(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="latest question",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+        trace_id=None,
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Web3研究员",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    finalized: list[dict] = []
+    updates: list[tuple] = []
+    broadcasts: list[dict] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(_request):
+        raise RuntimeError("provider stream closed")
+
+    async def fake_finalize(**kwargs):
+        finalized.append(kwargs)
+        return True
+
+    async def fake_update(run_uuid, **kwargs):
+        updates.append((run_uuid, kwargs))
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_update_runtime_task", fake_update)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert finalized == [
+        {
+            "run_uuid": run_id,
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "content": "[LLM Error] AI 模型调用异常，请稍后重试。",
+            "thinking": None,
+            "thinking_signature": None,
+            "status": "failed",
+            "result_summary": "Web chat run failed: RuntimeError",
+            "metadata_json": {"error": "provider stream closed"},
+        }
+    ]
+    assert updates == []
+    assert broadcasts[-1] == {"type": "error", "content": "[LLM Error] AI 模型调用异常，请稍后重试。"}
 
 
 @pytest.mark.asyncio

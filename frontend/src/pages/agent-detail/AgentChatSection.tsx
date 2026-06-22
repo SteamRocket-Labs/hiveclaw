@@ -10,8 +10,10 @@ import ChatWorkLedgerDock from './ChatWorkLedgerDock';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
+import RunDisclosureBlock from './RunDisclosureBlock';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
+import { buildRunTimelineFromMessages, isDisclosureStepMessage } from './chatDisclosureReducer';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
@@ -29,6 +31,7 @@ type AttachedFile = {
 };
 
 interface AgentChatSectionProps {
+  agentId?: string | null;
   agent: any;
   currentUser: any;
   isAdmin: boolean;
@@ -513,6 +516,10 @@ export function StructuredToolResultBody({
     );
   }
 
+  if (toolMeta.kind === 'runtime_step') {
+    return toolResult ? <RawToolResultBlock text={toolResult} /> : null;
+  }
+
   const showRawOutput = rawText.length > 0 && rawText !== toolMeta.message;
   return (
     <div style={{ display: 'grid', gap: '8px' }}>
@@ -547,6 +554,7 @@ export function StructuredToolResultBody({
 }
 
 export default function AgentChatSection({
+  agentId,
   agent,
   currentUser,
   isAdmin,
@@ -603,6 +611,7 @@ export default function AgentChatSection({
   onAbortGeneration,
 }: AgentChatSectionProps) {
   const { t, i18n } = useTranslation();
+  const effectiveAgentId = agentId ? String(agentId) : (agent?.id ? String(agent.id) : null);
   const planModeToggleLabel = planModeRequested
     ? t('agent.plan.composerToggleOn', 'Plan Mode enabled')
     : t('agent.plan.composerToggleOff', 'Start next message in Plan Mode');
@@ -629,9 +638,8 @@ export default function AgentChatSection({
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
 
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
-    if (!agent?.id) return;
-    const agentId = String(agent.id);
-    const href = fileApi.downloadUrl(agentId, artifact.path);
+    if (!effectiveAgentId) return;
+    const href = fileApi.downloadUrl(effectiveAgentId, artifact.path);
     if (getArtifactOpenMode(artifact) === 'download') {
       window.open(href, '_blank', 'noopener,noreferrer');
       return;
@@ -641,7 +649,7 @@ export default function AgentChatSection({
     if (previewKind === 'markdown' || previewKind === 'text' || !previewKind) {
       setArtifactPreview({ artifact, loading: true });
       try {
-        const response = await fileApi.read(agentId, artifact.path);
+        const response = await fileApi.read(effectiveAgentId, artifact.path);
         setArtifactPreview({ artifact, content: response.content || '', url: href });
       } catch (error) {
         setArtifactPreview({
@@ -654,7 +662,7 @@ export default function AgentChatSection({
     }
 
     setArtifactPreview({ artifact, url: href });
-  }, [agent?.id, t]);
+  }, [effectiveAgentId, t]);
 
   React.useEffect(() => {
     const input = chatInputRef.current;
@@ -928,10 +936,10 @@ export default function AgentChatSection({
               ) : (
                 <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
               )}
-              <ArtifactCards agentId={agent?.id} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
-              {inlinePlanId && agent?.id && (
+              <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
+              {inlinePlanId && effectiveAgentId && (
                 <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
-                  <InlinePlanCard agentId={String(agent.id)} planId={inlinePlanId} />
+                  <InlinePlanCard agentId={effectiveAgentId} planId={inlinePlanId} />
                 </div>
               )}
               {timestampHtml}
@@ -939,7 +947,7 @@ export default function AgentChatSection({
           </div>
         );
       }),
-    [agent?.id, openArtifact, t],
+    [effectiveAgentId, openArtifact, t],
   );
 
   const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => (
@@ -995,7 +1003,7 @@ export default function AgentChatSection({
               toolMeta={msg.toolMeta}
               toolResult={msg.toolResult}
               toolRawResult={msg.toolRawResult}
-              agentId={agent?.id}
+              agentId={effectiveAgentId ?? undefined}
               agentName={agent?.name}
               onSendMessage={onSendMessage}
               onEnterPlanMode={onEnterPlanMode}
@@ -1013,7 +1021,7 @@ export default function AgentChatSection({
         toolMeta={msg.toolMeta}
         toolResult={msg.toolResult}
         toolRawResult={msg.toolRawResult}
-        agentId={agent?.id}
+        agentId={effectiveAgentId ?? undefined}
         agentName={agent?.name}
         onSendMessage={onSendMessage}
         onEnterPlanMode={onEnterPlanMode}
@@ -1063,27 +1071,66 @@ export default function AgentChatSection({
     </div>
   );
 
+  const isInlineToolCardMessage = (message: AgentChatMessage) => (
+    message.role === 'tool_call' && (
+      message.toolMeta?.kind === 'plan_needs_confirmation' ||
+      message.toolMeta?.kind === 'user_clarification' ||
+      message.toolMeta?.kind === 'plan_mode_request' ||
+      message.toolMeta?.kind === 'create_employee_success' ||
+      message.toolMeta?.kind === 'hr_preview'
+    )
+  );
+
   const renderConversationMessage = (message: AgentChatMessage, index: number, isLeft: boolean) => {
     if (message.role === 'event') {
       return renderEventMessage(message, index);
     }
     if (message.role === 'tool_call') {
-      if (
-        message.toolMeta?.kind === 'plan_needs_confirmation' ||
-        message.toolMeta?.kind === 'user_clarification' ||
-        message.toolMeta?.kind === 'plan_mode_request' ||
-        message.toolMeta?.kind === 'create_employee_success' ||
-        message.toolMeta?.kind === 'hr_preview'
-      ) {
-        return renderInlinePlanToolCall(message, index);
-      }
+      if (isInlineToolCardMessage(message)) return renderInlinePlanToolCall(message, index);
       return null;
     }
     if (message.role === 'assistant' && !message.content?.trim()) {
-      if (!message.thinking) return null;
-      return renderThinkingCard(message.thinking, index);
+      return null;
     }
     return <ChatMessageItem key={index} msg={message} i={index} isLeft={isLeft} />;
+  };
+
+  const renderConversationMessages = (
+    messages: AgentChatMessage[],
+    resolveIsLeft: (message: AgentChatMessage, index: number) => boolean,
+  ) => {
+    const nodes: React.ReactNode[] = [];
+    const pending: Array<{ message: AgentChatMessage; index: number }> = [];
+
+    const flushPending = () => {
+      if (pending.length === 0) return;
+      const first = pending[0];
+      const last = pending[pending.length - 1];
+      nodes.push(
+        <RunDisclosureBlock
+          key={`run-disclosure-${first.index}-${last.index}`}
+          timeline={buildRunTimelineFromMessages(pending.map((entry) => entry.message))}
+        />,
+      );
+      for (const entry of pending) {
+        if (isInlineToolCardMessage(entry.message)) {
+          nodes.push(renderInlinePlanToolCall(entry.message, entry.index));
+        }
+      }
+      pending.length = 0;
+    };
+
+    messages.forEach((message, index) => {
+      if (isDisclosureStepMessage(message)) {
+        pending.push({ message, index });
+        return;
+      }
+      flushPending();
+      nodes.push(renderConversationMessage(message, index, resolveIsLeft(message, index)));
+    });
+    flushPending();
+
+    return nodes;
   };
 
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
@@ -1456,10 +1503,10 @@ export default function AgentChatSection({
                 const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
                 const thisAgentName = agent?.name;
                 const thisAgentPid = isA2A && thisAgentName ? visibleHistoryMsgs.find((message) => message.sender_name === thisAgentName)?.participant_id : null;
-                return visibleHistoryMsgs.map((message, index) => {
-                  const isLeft = isA2A && thisAgentPid ? message.participant_id !== thisAgentPid : message.role === 'assistant';
-                  return renderConversationMessage(message, index, isLeft);
-                });
+                return renderConversationMessages(
+                  visibleHistoryMsgs,
+                  (message) => (isA2A && thisAgentPid ? message.participant_id !== thisAgentPid : message.role === 'assistant'),
+                );
               })()}
             </div>
             {showHistoryScrollBtn && (
@@ -1499,9 +1546,7 @@ export default function AgentChatSection({
                   <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                 </div>
               )}
-              {visibleChatMessages.map((message, index) => {
-                return renderConversationMessage(message, index, message.role === 'assistant');
-              })}
+              {renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant')}
               {isWaiting && (
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
                   <div
@@ -1698,9 +1743,9 @@ export default function AgentChatSection({
                 )}
               </div>
             )}
-            {agent?.id && activeSession?.id && (
+            {effectiveAgentId && activeSession?.id && (
               <ChatWorkLedgerDock
-                agentId={String(agent.id)}
+                agentId={effectiveAgentId}
                 sessionId={String(activeSession.id)}
                 runtimeTaskId={fallbackWorkLedger?.runtimeTaskId}
                 live={workLedgerLive}

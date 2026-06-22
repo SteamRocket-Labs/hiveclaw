@@ -8,6 +8,7 @@ import {
   computeComposerHeight,
   getCompactionDisplayContent,
   getRuntimeEventMessage,
+  getTerminalRunIdFromTranscriptEvent,
   getTransportNotice,
   applySessionActiveRunState,
   applySessionActiveRunObservedState,
@@ -17,6 +18,8 @@ import {
   normalizeStoredChatMessage,
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
+  filterSessionsForAgent,
+  sessionBelongsToAgent,
 } from './chatRuntime';
 
 describe('chatRuntime helpers', () => {
@@ -74,6 +77,89 @@ describe('chatRuntime helpers', () => {
     expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
   });
 
+  it('unwraps persisted tool-result envelopes before rendering clarification cards', () => {
+    const state = {
+      ...createEmptyTranscriptReplayState(),
+      messages: [{ role: 'assistant' as const, content: '', thinking: 'Need more input', _streaming: true } as any],
+      ui: { isWaiting: true, isStreaming: true },
+    };
+
+    const next = applyTranscriptEvent(state, {
+      id: 'evt-tool-envelope',
+      sequence: 12,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'tool',
+      content: JSON.stringify({
+        name: 'ask_user_question',
+        args: { questions: [] },
+        status: 'done',
+        result: JSON.stringify({
+          status: 'awaiting_user_clarification',
+          blocking: true,
+          questions: [{
+            header: '核心职责',
+            question: '这个 AI 产品经理的核心职责是什么？',
+            options: [{ label: '全都要', description: '覆盖全栈产品经理职责' }],
+          }],
+        }),
+      }),
+      metadata: { tool_name: 'ask_user_question' },
+      created_at: '2026-06-21T09:09:09Z',
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      role: 'tool_call',
+      toolName: 'ask_user_question',
+      toolMeta: { kind: 'user_clarification', blocking: true },
+    });
+    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
+  it('preserves runtime step metadata from persisted tool transcript events', () => {
+    const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-tool-step',
+      sequence: 42,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'tool',
+      content: JSON.stringify({
+        name: 'read_file',
+        args: { path: 'workspace/a.md' },
+        status: 'done',
+        result: 'file content',
+        tool_call_id: 'toolu_123',
+        step_id: 'tool:toolu_123',
+        duration_ms: 2500,
+        visibility: 'collapsed',
+      }),
+      metadata: {
+        tool_name: 'read_file',
+        status: 'done',
+        tool_call_id: 'toolu_123',
+        step_id: 'tool:toolu_123',
+        duration_ms: 2500,
+        visibility: 'collapsed',
+      },
+      created_at: '2026-06-22T10:00:02.500Z',
+    });
+
+    expect(next.messages[0]).toMatchObject({
+      role: 'tool_call',
+      toolName: 'read_file',
+      toolStatus: 'done',
+      toolArgs: { path: 'workspace/a.md' },
+      toolMeta: {
+        kind: 'runtime_step',
+        toolCallId: 'toolu_123',
+        stepId: 'tool:toolu_123',
+        durationMs: 2500,
+        visibility: 'collapsed',
+      },
+    });
+  });
+
   it('keeps websocket sessions alive while a user is waiting for output', () => {
     expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeGreaterThan(0);
     expect(CHAT_SOCKET_KEEPALIVE_INTERVAL_MS).toBeLessThanOrEqual(30_000);
@@ -114,6 +200,33 @@ describe('chatRuntime helpers', () => {
 
     expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
     expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: false, isStreaming: true } });
+  });
+
+  it('extracts terminal run ids from replayed assistant transcript events', () => {
+    expect(getTerminalRunIdFromTranscriptEvent({
+      event_type: 'assistant_message',
+      run_id: 'run-1',
+      content: 'final answer',
+    })).toBe('run-1');
+    expect(getTerminalRunIdFromTranscriptEvent({
+      event_type: 'thinking',
+      run_id: 'run-1',
+      content: 'partial reasoning',
+    })).toBeNull();
+  });
+
+  it('filters sessions that belong to a different route agent', () => {
+    expect(sessionBelongsToAgent({ id: 'session-1', agent_id: 'agent-1' }, 'agent-1')).toBe(true);
+    expect(sessionBelongsToAgent({ id: 'session-1', agent_id: 'agent-2' }, 'agent-1')).toBe(false);
+    expect(sessionBelongsToAgent({ id: 'legacy-session-without-agent-id' }, 'agent-1')).toBe(true);
+    expect(filterSessionsForAgent([
+      { id: 'session-1', agent_id: 'agent-1' },
+      { id: 'session-2', agent_id: 'agent-2' },
+      { id: 'session-3' },
+    ], 'agent-1')).toEqual([
+      { id: 'session-1', agent_id: 'agent-1' },
+      { id: 'session-3' },
+    ]);
   });
 
   it('resets the streaming assistant when a chunk tombstone arrives', () => {

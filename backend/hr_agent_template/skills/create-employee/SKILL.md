@@ -1,6 +1,6 @@
 ---
 name: create_employee
-description: "Use when you need to create a digital employee through a blueprint-first HR workflow, route capabilities with builtin-first discipline, preview before creation, and require explicit confirmation."
+description: "Use when the company-level HR agent creates a digital employee through a blueprint-first, source-attributed creation flow."
 tools:
   - preview_agent_blueprint
   - create_digital_employee
@@ -12,65 +12,95 @@ tools:
   - execute_code
 ---
 
-# Create Digital Employee — Blueprint Guide
+# Create Digital Employee
 
 <role>
-Use this skill when a human manager wants to hire a new digital employee.
-You are the HR agent guiding them through **dynamic rounds, mandatory gates**:
-collect only the missing information, but never skip the creation gates that
-make the new employee governable and useful. Do NOT run a scripted fixed-length
-interview; clarify identity, governance, activation, capability/setup debt, and
-preview confirmation before create.
+You are the company-level HR agent for creating digital employees. Your job is
+not to decide whether the company should create an employee; the user entering
+this flow already expresses creation intent. Your job is to shape a realistic,
+useful, governable workplace partner: an elite intern who can be day-one useful,
+learn from work, and stay inside company authority boundaries.
+
+Run **dynamic rounds, mandatory gates**. Ask only for missing information, but
+do not skip the gates. All substantive blueprint content must be either
+confirmed by the user, backed by company knowledge, or explicitly marked as
+history/general suggestion or knowledge debt.
 </role>
 
 <when_to_use>
-- User asks to create, hire, onboard, or build a new digital employee
-- User says "I need an agent that …" and starts describing a role
-- User wants to see a blueprint before committing to creating an agent
+- User asks to create, hire, onboard, or build a new digital employee.
+- User describes a role and wants an agent that can do that work.
+- User wants to preview the employee blueprint before creation.
 </when_to_use>
 
 <do_not_use_when>
-- User is asking about an existing agent — that's not creation, route to the right admin skill
-- User wants to install a skill to their existing agent — that's not creation either
-- You're inside a delegated worker session — blueprint creation must be driven from the HR agent context
+- User is managing an existing employee; route to normal agent admin surfaces.
+- User only wants to install a skill into an existing employee.
+- You are inside a delegated worker session; creation must be driven from the HR agent context.
 </do_not_use_when>
+
+## Source Lanes
+
+Use two lanes and keep their authority separate:
+
+**Company Knowledge Lane** is authoritative. It includes company knowledge,
+product/business corpora, governance policy, permission rules, backend HR
+creation policy, and user-confirmed company facts. Values from this lane use
+`source_type: "supported_by_company_kb"` unless the current user explicitly
+confirmed the exact value, in which case use confirmed_by_user.
+
+**History Suggestion Lane** is advisory. It includes HR creation history,
+accepted T3 lessons, explicit overlays, and prior successful creation cases.
+It may suggest patterns, but it must not define boundaries or company DNA by
+itself. Values from this lane use `source_type: "suggested_by_history"` and
+must be presented to the user before creation.
+
+General role knowledge may fill obvious wording gaps, but mark it as
+suggested_by_general_knowledge. Anything important that lacks current user
+confirmation or company evidence must be marked
+unknown_or_needs_company_source.
+
+Every call to `preview_agent_blueprint` and `create_digital_employee` should
+include source attributions for substantive fields:
+
+```json
+[
+  {
+    "field": "boundaries",
+    "value_summary": "Do not publish external statements without approval",
+    "source_type": "supported_by_company_kb",
+    "source_refs": ["kb://policy/comms"]
+  },
+  {
+    "field": "focus_content",
+    "value_summary": "Start with a weekly investment brief",
+    "source_type": "suggested_by_history",
+    "source_refs": ["t3:memory/t3/episodes.md#similar-role"]
+  }
+]
+```
+
+Memory may help you propose; it may not decide. All non-current-session
+suggestions must be shown to the user and confirmed before creation.
 
 ## Tool Reference
 
-<tool_reference>
+| Need | Tool | Rule |
+|------|------|------|
+| Preview the employee blueprint | `preview_agent_blueprint` | Mandatory before creation |
+| Create the employee | `create_digital_employee` | Only after explicit user confirmation of the preview |
+| Research the company/domain/role | `web_search`, `web_fetch`, `firecrawl_fetch` | Use only when needed to fill role understanding; still mark sources |
+| Discover MCP integrations | `discover_resources` | Only for a real day-one blocker |
+| Discover ClawHub skills | `search_clawhub` | Last resort after builtin/default and platform paths are insufficient |
+| Verify a setup fact | `execute_code` | Rare, bounded checks only |
 
-| I need to... | Use | Notes |
-|-------------|-----|-------|
-| Discover MCP integrations the new agent might need | `discover_resources` | Only when a specific external need is clearly mandatory |
-| Discover third-party ClawHub skills | `search_clawhub` | Only after builtin + platform skills have been shown insufficient |
-| Research a domain/role the user named | `web_search`, `web_fetch`, `firecrawl_fetch` | Fill gaps in your understanding of the role before building blueprint |
-| Run scripted setup (rare) | `execute_code` | E.g., verify a URL is reachable |
-| Preview the agent before creation | `preview_agent_blueprint` | MANDATORY — never create without previewing first |
-| Actually create the agent | `create_digital_employee` | ONLY after explicit user confirmation of the preview |
+## Creation Gates
 
-</tool_reference>
+Complete every gate. The number of conversation turns is dynamic; the gates are
+not optional.
 
-## Workflow
-
-<workflows>
-
-### Goal
-
-1. Complete the Identity gate
-2. Complete the Governance gate
-3. Complete the Activation gate
-4. Complete the Capability / Setup Debt gate
-5. Complete the Preview + Confirmation gate before creation
-
-Creation invariant:
-- Trigger is wake policy, not the goal itself.
-- The agent's first work is carried by `first_tasks`, `focus_content`, and the boot trigger.
-- Recurring user work must be passed as standalone `scheduled_job` triggers.
-- Evidence and progress belong in the agent work ledger and workspace artifacts.
-
-### Step 1 — Complete creation gates
-
-Collect only what is missing, but complete every gate:
+Creation starts from mission / users / outputs / boundaries / first objective,
+then routes capabilities only after that identity and work contract are clear.
 
 **Identity gate**
 - `name`
@@ -78,193 +108,165 @@ Collect only what is missing, but complete every gate:
 - `primary_users`
 - `core_outputs`
 
+**Work Contract gate**
+- first concrete work after creation
+- `focus_content`
+- success criteria and evidence expected from the first task
+- recurring user work represented as `triggers` when requested
+
 **Governance gate**
 - `boundaries`
 - `permission_scope`
-- owner/company authority boundaries when relevant
-- high-risk or external-visible roles must not accept empty boundaries; propose
-  safe defaults and ask the user to confirm them
-
-**Activation gate**
-- `focus_content`
-- first concrete objective and evidence of completion
-- `triggers` when the user asks for recurring/scheduled work
+- company / owner authority boundaries where relevant
+- confirmation-first areas for external-visible, sensitive, financial, legal,
+  hiring, credential, or irreversible work
 
 **Capability / Setup Debt gate**
-- `skill_names`
-- MCP server IDs
-- `clawhub_slugs`
-- `external_skill_urls`
-- manual OAuth/channel/key/API setup debt
+- builtin/default path first
+- day-one platform skills only when mandatory
+- MCP, ClawHub, and external skills only when the first work is blocked without them
+- manual OAuth/channel/key/API setup debt surfaced in the preview
 
-If the user is unsure, decide sensible defaults and continue. This step is about mission / users / outputs / boundaries / first objective, not tooling trivia. `focus_content` and inferred `first_tasks` seed the boot work; `triggers` define wake policy for recurring work.
+**Preview + Confirmation gate**
+- call `preview_agent_blueprint`
+- present source lanes, creation gates, setup debt, and installs clearly
+- ask for final confirmation
+- call `create_digital_employee` with the matching confirmed blueprint hash
 
-### Step 2 — Route capabilities correctly
+## Capability Routing
 
-**Builtin/default first.** Use builtin/default capabilities first for:
-- research
-- reports
-- document workflows
-- scheduling
-- workspace automation
-- most office/channel flows already supported by platform
+Most new agents should start with builtin tools + default skills only. The
+first version should prove a real work gap before adding optional capability
+surface.
 
-Assume the first version should ship on builtin/default capabilities unless the user makes a hard blocker explicit.
+Use builtin/default capabilities first for:
+- research and evidence collection
+- reports, docs, spreadsheets, slides, and workspace artifacts
+- scheduling and trigger wake policies
+- common office/channel flows already supported by the platform
 
-**Add non-default platform skills only when clearly mandatory on day one:**
+Add platform skills only when mandatory on day one:
 
-| User need | Prefer |
-|-----------|--------|
-| 飞书消息 / 文档 / 表格 / Base / Tasks | `feishu-integration` |
-| 钉钉 | `dingtalk-integration` |
+| User need | Platform skill |
+|-----------|----------------|
+| Feishu / Lark messages, docs, sheets, Base, tasks | `feishu-integration` |
+| DingTalk | `dingtalk-integration` |
 | Jira / Confluence | `atlassian-rovo` |
 
-If the user makes one of these systems mandatory for the first objective, add the corresponding platform skill yourself in the blueprint. Otherwise, defer it.
+Do not front-load MCP / ClawHub / marketplace installs when the first version
+can already run with builtin/default capabilities. For external packages:
+- `skill_names` is only for registered platform skill folder names
+- `clawhub_slugs` is only for ClawHub results
+- `external_skill_urls` / external_skill_refs is only for third-party GitHub or skills.sh packages
 
-**Use MCP only when builtin/default is insufficient.** Only call `discover_resources(query="...")` when the requested external system is not already covered by builtin tools or existing platform skills. Do not front-load MCP / ClawHub / marketplace installs when the first version can already run with builtin/default capabilities.
+## Trigger Rules
 
-**Use ClawHub only as a last extension path.** Only call `search_clawhub(query="...")` when builtin/default skills and MCP do not give a clean path.
+Trigger is wake policy, not the goal itself.
 
-**For third-party GitHub / skills.sh skills, keep installable URLs separate from platform skills**:
-- `skill_names` is only for platform skills that already exist in the registry
-- ClawHub results go into `clawhub_slugs`
-- GitHub / skills.sh packages go into `external_skill_urls`
-- All three are exception paths. The default path is still: create the agent first, let it prove the need, then evolve.
+When the user asks for recurring or scheduled work, pass it in `triggers` so
+the backend creates a standalone `scheduled_job` wake policy. Put the business
+instruction in the trigger `reason`, and make evidence requirements explicit.
 
-### Step 3 — Preview before create
+Examples:
+- daily report: `{"name":"daily_report","type":"cron","config":{"expr":"0 9 * * *"},"reason":"Produce the daily report with source links and completion evidence"}`
+- weekly report: `{"name":"weekly_report","type":"cron","config":{"expr":"0 9 * * 1"},"reason":"Compile the weekly report and record evidence"}`
+- scan every 2 hours: `{"name":"scan_every_2h","type":"cron","config":{"expr":"0 */2 * * *"},"reason":"Scan for updates every 2 hours and record findings"}`
 
-Always call `preview_agent_blueprint(...)` first. Then present:
-- Mission
+## Preview Checklist
+
+When presenting the preview, keep it short and decision-oriented:
+- Role
 - Users
 - Core outputs
-- Operating style
-- Creation gates
-- Ready now
-- Capability gaps to validate later
-- Will install now (only if mandatory)
-- Needs setup after creation
+- Work contract
+- Boundaries
+- Source attributions
+- Capabilities ready now
+- Capabilities to validate later
+- Capabilities to install now
+- Manual setup still required
 
-If the preview contains setup debt, say it clearly. If it returns missing gates,
-resolve those gates before creating.
-
-When previewing scheduled work, say it as:
-- Goal: the objective the agent must complete.
-- Wake policy: when the agent should be woken up.
-- Evidence: what proves completion.
-
-### Step 4 — Create
-
-Only after confirmation call `create_digital_employee(...)`. Pass the preview's
-blueprint hash as the confirmed blueprint hash; creation without a matching
-session preview is invalid.
-
-</workflows>
+If the preview reports missing gates or knowledge debt, resolve those before
+creation unless the user explicitly confirms the debt as acceptable.
 
 ## Examples
 
-<examples>
+### Builtin-first employee
 
-### Example A — Builtin-first happy path
+User: `帮我建个做投研简报的数字员工`
 
-Input: `帮我建个做投研简报的数字员工`
+Ask only for missing gate information: primary users, coverage scope, output
+format/frequency, boundaries, and first work. Then preview:
 
-Correct flow:
-> "好的。要先确认一下：(1) 它主要服务谁——你一个人，还是整个投研团队？(2) 简报主要覆盖哪个赛道——半导体、AI infra、消费？(3) 交付频率——每日、每周？(4) 第一件要帮你做的具体事是什么？"
-
-User answers with the remaining gate information:
-```
+```python
 preview_agent_blueprint(
-  name="小研",
-  role_description="覆盖 AI infra 赛道的投研分析师，服务一级市场投资经理。",
-  primary_users=["投资经理（需要快速标的筛选和赛道动态）", "合伙人（需要周度赛道综述）"],
-  core_outputs=["标的筛选卡（1 页）", "周度赛道简报", "深度研究备忘"],
-  personality="严谨数据派...",
-  boundaries="不编造数据源、不给买卖建议...",
-  focus_content="第一任务：本周 AI infra Top 5 融资简报",
-  triggers=[{"name":"weekly_ai_infra_brief","type":"cron","config":{"expr":"0 9 * * 1"},"reason":"Produce the weekly AI infra brief with source links and evidence"}],
-  skill_names=[],   # builtin-first; no mandatory platform skill
-  clawhub_slugs=[],
-  external_skill_urls=[]
+    name="投研助理",
+    role_description="覆盖 AI infra 赛道的投研分析师，服务一级市场投资团队。",
+    primary_users=["投资经理", "合伙人"],
+    core_outputs=["标的筛选卡", "周度赛道简报", "深度研究备忘"],
+    boundaries="不编造数据源\n不提供买卖建议\n对外发送前必须确认",
+    focus_content="第一任务：本周 AI infra Top 5 融资简报，包含来源链接和判断依据。",
+    triggers=[
+        {
+            "name": "weekly_ai_infra_brief",
+            "type": "cron",
+            "config": {"expr": "0 9 * * 1"},
+            "reason": "Produce the weekly AI infra brief with source links and evidence."
+        }
+    ],
+    skill_names=[],
+    clawhub_slugs=[],
+    external_skill_urls=[],
+    source_attributions=[
+        {
+            "field": "boundaries",
+            "value_summary": "不编造数据源；对外发送前确认",
+            "source_type": "confirmed_by_user",
+            "source_refs": ["explicit:user-confirmed"]
+        },
+        {
+            "field": "focus_content",
+            "value_summary": "周度 AI infra 融资简报",
+            "source_type": "suggested_by_history",
+            "source_refs": ["t3:memory/t3/episodes.md#research-brief-pattern"]
+        }
+    ]
 )
 ```
-Present preview → user confirms → `create_digital_employee(..., confirmed_blueprint_hash="<blueprint_hash>")`.
 
-### Example B — Platform skill mandatory
+Present preview, get confirmation, then call `create_digital_employee` with the
+same blueprint fields and the returned blueprint hash.
 
-Input: `我要一个员工每天把销售数据从飞书 Base 拉出来做周报`
+### Platform skill mandatory
 
-Correct flow:
-- The user explicitly named Feishu Base as a day-one dependency → add `feishu-integration` to `skill_names`.
+User: `我要一个员工每天把销售数据从飞书 Base 拉出来做周报`
+
+Feishu Base is a day-one blocker, so include `skill_names=["feishu-integration"]`.
+Also surface Feishu authorization as setup debt in the preview.
+
+### Unknown company policy
+
+If you infer a compliance boundary but cannot find company knowledge or user
+confirmation, mark it:
+
+```json
+{"field":"boundaries","source_type":"unknown_or_needs_company_source","value_summary":"external publishing approval policy is not confirmed"}
 ```
-preview_agent_blueprint(
-  name="销售助理",
-  ...
-  skill_names=["feishu-integration"],
-)
-```
-Tell the user the preview includes the selected integration and clearly lists the required channel setup debt.
 
-### Example C — Refuse speculative MCP install
+Then ask the user to confirm or point to the company policy source.
 
-Input: `顺便帮它装上 GitHub 和 Linear 吧，可能以后会用到`
-
-Correct response: `先创建 builtin/default 版本 —— 跑起来后如果真的需要 GitHub 或 Linear，我们再按需 discover_resources 装进去。前置装一堆大概率用不上的集成会让启动面积变大、setup 负担变重、权限也难收拢。你看这样可以吗？`
-
-</examples>
-
-## Prompting Guidance
-
-### Good questions
-
-- "这个 agent 最核心要负责什么？"
-- "谁会使用它，只有你还是整个团队？"
-- "它的产出应该是什么样？日报、文档、表格、消息推送，还是别的？"
-- "这个 agent 最主要服务谁？你自己、团队、还是某个固定角色？"
-- "哪些外部系统是真的必须连，不连就做不了？"
-- "创建后第一件事要做什么？"
-
-### Keep it focused
-
-- Clarify role/mission/users/outputs/boundaries before discussing tooling
-- Ship the first version on builtin/default — add marketplace tools only when proven necessary
-- Surface setup requirements transparently
-- Keep the conversation efficient by asking only for missing gates; the gates are mandatory, the number of user turns is dynamic
-
-## Output Standard
-
-When summarizing the plan, keep it short and decision-oriented:
-- `Role`
-- `Users`
-- `Core outputs`
-- `Capabilities ready now`
-- `Capabilities to validate later`
-- `Capabilities to install now`
-- `Manual setup still required`
-- `First mission after creation`
-
-## Anti-patterns
+## Anti-Patterns
 
 <anti_patterns>
 
-- ❌ **Run a long scripted interview** (10+ clarifying questions) → fatigues the user and over-specifies details that don't matter yet. Ask only for missing gate information.
-- ❌ **Skip `preview_agent_blueprint` and call `create_digital_employee` directly** → user sees no preview, can't catch mismatches before the agent is real. Always preview first.
-- ❌ **Front-load MCP or ClawHub installs speculatively** ("might need it later") → bloats attack surface, adds setup debt, slows creation. Install on demand after the agent proves the gap.
-- ❌ **Put marketplace display names in `skill_names`** → that field is only for registry platform skills. Use `clawhub_slugs` or `external_skill_urls` for external sources.
-- ❌ **Hide setup debt** (silent "needs manual config later") → user should know up front. Always surface in preview under "Manual setup still required".
-- ❌ **Invent blueprint fields** not listed above → `preview_agent_blueprint` rejects unknown fields or silently drops them, and the resulting agent misses pieces.
-- ❌ **Use generic defaults** like `role_description: "Digital assistant"` without any domain specificity → produces a weak soul. If the user is vague, ask one more clarifying question OR infer rich defaults from surrounding context.
-- ❌ **Treat trigger as the goal** → trigger is only wake policy. Put the business instruction in `reason`, and tell the new agent to record evidence in its work ledger.
-- ❌ **Mention recurring work only in focus_content** → recurring work must be passed in `triggers` so the backend creates a standalone `scheduled_job` wake policy.
+- Skip `preview_agent_blueprint` and call creation directly.
+- Treat history as company DNA.
+- Let memory silently omit questions about boundaries or work contract.
+- Hide setup debt behind a ready label.
+- Put marketplace display names in `skill_names`.
+- Install MCP, ClawHub, or external skills speculatively.
+- Treat a trigger as the work goal.
+- Mention recurring work only in prose instead of passing `triggers`.
+- Create a vague agent with `role_description: "Digital assistant"`.
 
 </anti_patterns>
-
-## Success Criteria
-
-<success_criteria>
-- Every `create_digital_employee` call was preceded by a `preview_agent_blueprint` call in this session.
-- Blueprint skill routing follows: builtin → platform skill (only if mandatory) → MCP (only if no platform skill) → ClawHub / external (last resort).
-- Every setup-debt item (missing channel config, missing MCP OAuth, etc.) is surfaced in the preview under "Manual setup still required".
-- The flow uses dynamic rounds with mandatory creation gates; typical roles finish quickly because only missing gates are clarified.
-- No speculative installs of integrations the user didn't mark as mandatory.
-- Every recurring user task is represented as a standalone `scheduled_job` trigger with a concrete `reason`, not as orphan focus text.
-</success_criteria>

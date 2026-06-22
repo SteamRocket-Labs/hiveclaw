@@ -77,13 +77,23 @@ export interface PlanModeRequestToolMeta {
   nextAction: string | null;
 }
 
+export interface RuntimeStepToolMeta {
+  kind: 'runtime_step';
+  toolCallId: string | null;
+  stepId: string | null;
+  durationMs: number | null;
+  visibility: 'visible' | 'collapsed' | 'debug' | 'redacted';
+  status: string | null;
+}
+
 export type ToolCallMeta =
   | HrPreviewToolResult
   | CreateEmployeeSuccessToolMeta
   | DeepResearchToolMeta
   | PlanNeedsConfirmationToolMeta
   | UserClarificationToolMeta
-  | PlanModeRequestToolMeta;
+  | PlanModeRequestToolMeta
+  | RuntimeStepToolMeta;
 
 export interface NormalizedToolCallResult {
   displayResult: string;

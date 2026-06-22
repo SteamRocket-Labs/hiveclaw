@@ -450,6 +450,10 @@
     "clarification": {
       "badge": "Needs your input",
       "multiSelect": "Select all that apply",
+      "progress": "Question {{current}} of {{total}}",
+      "answeredProgress": "{{answered}}/{{total}} answered",
+      "previousQuestion": "Previous question",
+      "nextQuestion": "Next question",
       "other": "Other",
       "otherPlaceholder": "Type your own answer…",
       "submit": "Submit answer",
@@ -606,6 +610,12 @@
       "thinking": "Thinking...",
       "continuingRun": "Agent is continuing this run...",
       "runStartFailed": "Failed to start run",
+      "disclosure": {
+        "processing": "Processing",
+        "processed": "Processed",
+        "waiting": "Waiting for input",
+        "stepCount": "{{count}} steps"
+      },
       "artifacts": {
         "open": "Open",
         "download": "Download",

@@ -73,6 +73,7 @@ export type StreamingChunkEvent = {
 export type ChatTranscriptEventPayload = {
   id?: string;
   sequence?: number;
+  run_id?: string | null;
   type?: string;
   event_type?: string;
   actor_type?: string;
@@ -95,10 +96,27 @@ export interface SessionUiState {
   isStreaming: boolean;
 }
 
+export type AgentOwnedSession = {
+  id?: unknown;
+  agent_id?: unknown;
+  agentId?: unknown;
+};
+
 export interface TranscriptReplayState {
   messages: AgentChatMessage[];
   ui: SessionUiState;
   seenEventIds: Set<string>;
+}
+
+export function sessionBelongsToAgent(session: AgentOwnedSession | null | undefined, agentId: string | null | undefined): boolean {
+  if (!session || !agentId) return false;
+  const sessionAgentId = session.agent_id ?? session.agentId;
+  return sessionAgentId == null || String(sessionAgentId) === String(agentId);
+}
+
+export function filterSessionsForAgent<T extends AgentOwnedSession>(sessions: T[], agentId: string | null | undefined): T[] {
+  if (!agentId) return [];
+  return sessions.filter((session) => sessionBelongsToAgent(session, agentId));
 }
 
 export function applySessionActiveRunState(
@@ -199,11 +217,15 @@ export function appendToolCallMessage(
 
   const lastIdx = base.length - 1;
   const currentLast = base[lastIdx];
+  const currentToolCallId = currentLast?.role === 'tool_call' && currentLast.toolMeta?.kind === 'runtime_step'
+    ? currentLast.toolMeta.toolCallId
+    : null;
+  const nextToolCallId = toolMessage.toolMeta?.kind === 'runtime_step' ? toolMessage.toolMeta.toolCallId : null;
   if (
     toolMessage.toolStatus === 'done'
     && currentLast
     && currentLast.role === 'tool_call'
-    && currentLast.toolName === toolMessage.toolName
+    && (currentLast.toolName === toolMessage.toolName || (currentToolCallId && currentToolCallId === nextToolCallId))
     && currentLast.toolStatus === 'running'
   ) {
     return [...base.slice(0, lastIdx), toolMessage];
@@ -267,6 +289,26 @@ function transcriptEventType(event: ChatTranscriptEventPayload): string {
   return String(event.event_type || event.type || '');
 }
 
+function parseTranscriptObject(content: string): Record<string, unknown> | null {
+  if (!content.trim()) return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const TERMINAL_TRANSCRIPT_EVENT_TYPES = new Set(['assistant_message', 'run_completed', 'done', 'error', 'quota_exceeded']);
+
+export function getTerminalRunIdFromTranscriptEvent(event: ChatTranscriptEventPayload): string | null {
+  const runId = typeof event.run_id === 'string' && event.run_id.trim() ? event.run_id.trim() : null;
+  if (!runId) return null;
+  return TERMINAL_TRANSCRIPT_EVENT_TYPES.has(transcriptEventType(event)) ? runId : null;
+}
+
 function isBlockingToolMessage(message: AgentChatMessage): boolean {
   const toolMeta = message.toolMeta as (ToolCallMeta & { blocking?: boolean }) | null | undefined;
   return message.role === 'tool_call'
@@ -278,6 +320,79 @@ function toolNameFromTranscriptEvent(event: ChatTranscriptEventPayload): string 
   return typeof metadataName === 'string' && metadataName.trim()
     ? metadataName.trim()
     : undefined;
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function visibilityFromValue(value: unknown): 'visible' | 'collapsed' | 'debug' | 'redacted' {
+  return value === 'visible' || value === 'debug' || value === 'redacted' ? value : 'collapsed';
+}
+
+function toolResultFromTranscriptEvent(event: ChatTranscriptEventPayload): {
+  toolName?: string;
+  result: unknown;
+  args?: Record<string, unknown>;
+  status?: string;
+  runtimeStepMeta?: ToolCallMeta | null;
+} {
+  const content = event.content || '';
+  const metadataToolName = toolNameFromTranscriptEvent(event);
+  const envelope = parseTranscriptObject(content);
+  const envelopeToolName = typeof envelope?.name === 'string' && envelope.name.trim()
+    ? envelope.name.trim()
+    : undefined;
+  const envelopeStatus = typeof envelope?.status === 'string' ? envelope.status : undefined;
+  const looksLikePersistedToolEnvelope = Boolean(
+    envelope
+      && (
+        Object.prototype.hasOwnProperty.call(envelope, 'result')
+        || Object.prototype.hasOwnProperty.call(envelope, 'args')
+        || Object.prototype.hasOwnProperty.call(envelope, 'tool_call_id')
+        || Object.prototype.hasOwnProperty.call(envelope, 'step_id')
+        || envelopeStatus === 'running'
+        || envelopeStatus === 'done'
+        || envelopeStatus === 'completed'
+        || envelopeStatus === 'failed'
+      )
+      && (envelopeToolName || envelopeStatus || Object.prototype.hasOwnProperty.call(envelope, 'args')),
+  );
+  if (looksLikePersistedToolEnvelope) {
+    const meta = event.metadata || {};
+    const toolCallId = stringOrNull(envelope?.tool_call_id ?? meta.tool_call_id ?? meta.toolCallId);
+    const stepId = stringOrNull(envelope?.step_id ?? meta.step_id ?? meta.stepId);
+    const durationMs = numberOrNull(envelope?.duration_ms ?? meta.duration_ms ?? meta.durationMs);
+    const status = typeof envelope?.status === 'string' ? envelope.status : (typeof meta.status === 'string' ? meta.status : undefined);
+    return {
+      toolName: metadataToolName || envelopeToolName,
+      result: envelope?.result ?? '',
+      args: envelope?.args && typeof envelope.args === 'object' && !Array.isArray(envelope.args)
+        ? envelope.args as Record<string, unknown>
+        : undefined,
+      status,
+      runtimeStepMeta: (toolCallId || stepId || durationMs != null || meta.visibility || envelope?.visibility)
+        ? {
+            kind: 'runtime_step',
+            toolCallId,
+            stepId,
+            durationMs,
+            visibility: visibilityFromValue(envelope?.visibility ?? meta.visibility),
+            status: status || null,
+          }
+        : null,
+    };
+  }
+  return { toolName: metadataToolName, result: content };
 }
 
 export function applyTranscriptEvent(
@@ -345,16 +460,18 @@ export function applyTranscriptEvent(
   }
 
   if (eventType === 'tool_result' || eventType === 'tool_call' || event.role === 'tool_call') {
-    const toolName = toolNameFromTranscriptEvent(event);
-    const normalized = normalizeToolCallResult(toolName, content);
+    const toolPayload = toolResultFromTranscriptEvent(event);
+    const normalized = normalizeToolCallResult(toolPayload.toolName, toolPayload.result);
+    const toolStatus = toolPayload.status === 'running' ? 'running' : 'done';
     const toolMessage: AgentChatMessage = {
       role: 'tool_call',
       content: '',
-      toolName,
-      toolStatus: 'done',
+      toolName: toolPayload.toolName,
+      toolArgs: toolPayload.args,
+      toolStatus,
       toolResult: normalized.displayResult,
       toolRawResult: normalized.raw,
-      toolMeta: normalized.toolMeta,
+      toolMeta: normalized.toolMeta || toolPayload.runtimeStepMeta || null,
       timestamp,
       id: event.message_id || event.id,
     };

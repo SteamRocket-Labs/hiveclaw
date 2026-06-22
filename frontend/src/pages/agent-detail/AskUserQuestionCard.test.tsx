@@ -154,24 +154,26 @@ describe('formatClarificationAnswer', () => {
 });
 
 describe('AskUserQuestionCard rendering', () => {
-  it('renders each question, header chip, options with descriptions, and an Other input per question', () => {
+  it('renders a single-question carousel panel instead of expanding every question at once', () => {
     const markup = renderToStaticMarkup(
       <AskUserQuestionCard questions={TWO_QUESTIONS} blocking onSubmit={() => undefined} />,
     );
 
     expect(markup).toContain('Which asset tracks should the RWA report focus on?');
-    expect(markup).toContain('How often should it run?');
+    expect(markup).not.toContain('How often should it run?');
     expect(markup).toContain('Tracks');
-    expect(markup).toContain('Cadence');
+    expect(markup).not.toContain('Cadence');
     expect(markup).toContain('US Treasuries');
     expect(markup).toContain('Ondo/Backed/Mountain');
     expect(markup).toContain('Pre-IPO equity');
-    // "Other" free-text input present for each question (two questions → two
-    // text inputs, identified by their id attribute).
-    expect(markup.match(/id="clarify-\d+-other"/g)?.length).toBe(2);
+    expect(markup).toContain('Question 1 of 2');
+    expect(markup).toContain('aria-label="Previous question"');
+    expect(markup).toContain('aria-label="Next question"');
+    // Only the active question owns an "Other" input.
+    expect(markup.match(/id="clarify-\d+-other"/g)?.length).toBe(1);
     // Multi-select question renders checkboxes; single-select renders radios.
     expect(markup).toContain('type="checkbox"');
-    expect(markup).toContain('type="radio"');
+    expect(markup).not.toContain('type="radio"');
   });
 
   it('disables Submit while the blocking card is unanswered', () => {

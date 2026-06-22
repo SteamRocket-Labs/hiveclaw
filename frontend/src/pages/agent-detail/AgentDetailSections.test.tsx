@@ -26,6 +26,8 @@ import RelationshipEditor from './RelationshipEditor';
 import ToolsManager from './ToolsManager';
 import type { PlanRequest } from '../../api/domains/plans';
 
+const queryKeyCalls = vi.hoisted(() => [] as unknown[][]);
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>, options?: Record<string, unknown>) => {
@@ -58,6 +60,7 @@ vi.stubGlobal('localStorage', {
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey, enabled }: { queryKey: unknown[]; enabled?: boolean }) => {
+    queryKeyCalls.push(queryKey);
     if (enabled === false) {
       return { data: undefined, isLoading: false, isError: false, error: null };
     }
@@ -1116,6 +1119,73 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Recovery Context');
   });
 
+  it('uses the route agent id for chat runtime queries when cached agent data is stale', () => {
+    queryKeyCalls.length = 0;
+
+    renderToStaticMarkup(
+      <AgentChatSection
+        agentId="route-agent"
+        agent={{ id: 'stale-agent', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          agent_id: 'route-agent',
+          user_id: 'user-1',
+          title: 'Launch sync',
+          created_at: '2026-03-27T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(queryKeyCalls).toContainEqual(['chat-session-work-ledger', 'route-agent', 'session-1']);
+    expect(queryKeyCalls).not.toContainEqual(['chat-session-work-ledger', 'stale-agent', 'session-1']);
+  });
+
   it('renders assistant artifacts directly inside the chat transcript', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
@@ -1196,7 +1266,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('/api/agents/agent-1/files/download?path=workspace%2Fmarket-report.md');
   });
 
-  it('keeps internal tool-call trace out of the default chat header', () => {
+  it('shows ordinary tool-call steps while keeping raw results collapsed by default', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
@@ -1234,8 +1304,9 @@ describe('AgentDetail extracted sections', () => {
             role: 'tool_call',
             content: '',
             toolName: 'read_file',
+            toolArgs: { path: 'workspace/report.md' },
             toolStatus: 'done',
-            toolResult: 'workspace/report.md',
+            toolResult: 'RAW FILE CONTENT SHOULD NOT BE INLINE',
           },
         ]}
         chatMessagesSessionId="session-1"
@@ -1263,9 +1334,116 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).not.toContain('Show technical details');
-    expect(markup).not.toContain('Hide technical details');
-    expect(markup).not.toContain('workspace/report.md');
+    expect(markup).toContain('Processed');
+    expect(markup).toContain('read_file');
+    expect(markup).toContain('workspace/report.md');
+    expect(markup).not.toContain('RAW FILE CONTENT SHOULD NOT BE INLINE');
+  });
+
+  it('groups consecutive runtime steps into one turn-level disclosure block before the final answer', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Grouped turn',
+          created_at: '2026-06-22T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'assistant',
+            content: '',
+            thinking: 'Inspect code before answering.',
+            timestamp: '2026-06-22T10:00:00Z',
+          },
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'read_file',
+            toolArgs: { path: 'frontend/src/pages/agent-detail/AgentChatSection.tsx' },
+            toolStatus: 'done',
+            toolResult: 'RAW READ FILE CONTENT',
+            timestamp: '2026-06-22T10:00:01Z',
+          },
+          {
+            role: 'event',
+            content: 'Compacted prior context.',
+            eventType: 'session_compact',
+            eventTitle: 'Context Compacted',
+            timestamp: '2026-06-22T10:00:02Z',
+          },
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'execute_code',
+            toolArgs: { cmd: 'npm test -- --run chatDisclosureReducer.test.ts' },
+            toolStatus: 'done',
+            toolResult: 'RAW COMMAND OUTPUT',
+            timestamp: '2026-06-22T10:00:03Z',
+          },
+          {
+            role: 'assistant',
+            content: '最终答案已经完成。',
+            timestamp: '2026-06-22T10:00:04Z',
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup.match(/data-testid="run-disclosure-block"/g)?.length).toBe(1);
+    expect(markup).toContain('Thinking');
+    expect(markup).toContain('read_file');
+    expect(markup).toContain('Context Compacted');
+    expect(markup).toContain('execute_code');
+    expect(markup).toContain('最终答案已经完成。');
+    expect(markup).not.toContain('RAW READ FILE CONTENT');
+    expect(markup).not.toContain('RAW COMMAND OUTPUT');
   });
 
   it('extracts Plan Mode plan ids from assistant replies', () => {

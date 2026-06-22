@@ -450,6 +450,10 @@
     "clarification": {
       "badge": "需要你的确认",
       "multiSelect": "可多选",
+      "progress": "问题 {{current}} / {{total}}",
+      "answeredProgress": "已答 {{answered}}/{{total}}",
+      "previousQuestion": "上一题",
+      "nextQuestion": "下一题",
       "other": "其他",
       "otherPlaceholder": "输入你自己的答案…",
       "submit": "提交答复",
@@ -606,6 +610,12 @@
       "thinking": "思考中...",
       "continuingRun": "Agent 正在继续执行...",
       "runStartFailed": "启动执行失败",
+      "disclosure": {
+        "processing": "处理中",
+        "processed": "已处理",
+        "waiting": "等待输入",
+        "stepCount": "{{count}} 个步骤"
+      },
       "artifacts": {
         "open": "打开",
         "download": "下载",

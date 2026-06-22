@@ -21,6 +21,7 @@ from app.kernel.contracts import ExecutionIdentityRef
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.gateway_message import GatewayMessage
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
@@ -47,6 +48,9 @@ from app.services.web_chat_broker import web_chat_broker
 WEB_CHAT_TURN_TASK_TYPE = "web_chat_turn"
 _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME = "uq_runtime_tasks_active_web_chat_session"
 _ACTIVE_STATUSES = ("pending", "running")
+_TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
+_TERMINAL_TRANSCRIPT_EVENT_TYPES = ("assistant_message", "run_completed", "done", "error", "quota_exceeded")
+_USER_VISIBLE_WEB_CHAT_ERROR = "[LLM Error] AI 模型调用异常，请稍后重试。"
 _CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _TASKS: dict[str, asyncio.Task] = {}
 
@@ -110,6 +114,143 @@ def _apply_terminal_task_update(
         task.metadata_json = metadata
     if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
         task.completed_at = datetime.now(timezone.utc)
+
+
+def _assistant_transcript_parts(
+    content: str,
+    *,
+    thinking: str | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    return list(build_done_event(content, thinking=thinking, artifacts=artifacts or []).get("parts") or [])
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _duration_ms_from_tool_step(data: dict[str, Any]) -> int | None:
+    explicit = data.get("duration_ms") or data.get("durationMs")
+    if explicit is not None:
+        try:
+            return max(0, int(float(explicit)))
+        except (TypeError, ValueError):
+            return None
+    started = _parse_iso_datetime(data.get("started_at") or data.get("startedAt"))
+    completed = _parse_iso_datetime(data.get("completed_at") or data.get("completedAt"))
+    if started is None or completed is None:
+        return None
+    return max(0, int((completed - started).total_seconds() * 1000))
+
+
+def _tool_step_contract(data: dict[str, Any], *, fallback_run_id: uuid.UUID | str | None = None) -> dict[str, Any]:
+    payload = dict(data)
+    status = str(payload.get("status") or "done")
+    tool_call_id = (
+        payload.get("tool_call_id")
+        or payload.get("toolCallId")
+        or payload.get("id")
+        or payload.get("call_id")
+        or payload.get("callId")
+    )
+    if tool_call_id is not None:
+        tool_call_id = str(tool_call_id)
+    step_id = payload.get("step_id") or payload.get("stepId")
+    if not step_id:
+        step_id = f"tool:{tool_call_id}" if tool_call_id else f"tool:{payload.get('name') or 'unknown'}:{uuid.uuid4().hex}"
+    duration_ms = _duration_ms_from_tool_step(payload)
+    payload["status"] = status
+    payload["tool_call_id"] = tool_call_id
+    payload["step_id"] = str(step_id)
+    payload["visibility"] = str(payload.get("visibility") or "collapsed")
+    if fallback_run_id is not None and not (payload.get("runtime_task_id") or payload.get("run_id")):
+        payload["runtime_task_id"] = str(fallback_run_id)
+    if duration_ms is not None:
+        payload["duration_ms"] = duration_ms
+    return payload
+
+
+def _terminal_status_from_transcript_event(event: ChatTranscriptEvent) -> str | None:
+    event_type = getattr(event, "event_type", None)
+    if event_type not in _TERMINAL_TRANSCRIPT_EVENT_TYPES:
+        return None
+    metadata = getattr(event, "metadata_json", None) or {}
+    status = str(metadata.get("status") or "").lower()
+    if status in _TERMINAL_STATUSES:
+        return status
+    content = str(getattr(event, "content", None) or "")
+    if event_type in {"error", "quota_exceeded"} or is_llm_error_message(content):
+        return "failed"
+    return "completed"
+
+
+async def _terminal_transcript_event_for_run(
+    db: AsyncSession,
+    task: RuntimeTask,
+) -> ChatTranscriptEvent | None:
+    run_id = getattr(task, "id", None)
+    if run_id is None:
+        return None
+    filters = [
+        ChatTranscriptEvent.run_id == run_id,
+        ChatTranscriptEvent.event_type.in_(_TERMINAL_TRANSCRIPT_EVENT_TYPES),
+    ]
+    parent_session_id = getattr(task, "parent_session_id", None)
+    if parent_session_id:
+        try:
+            filters.append(ChatTranscriptEvent.session_id == uuid.UUID(str(parent_session_id)))
+        except (TypeError, ValueError):
+            pass
+    result = await db.execute(
+        select(ChatTranscriptEvent)
+        .where(*filters)
+        .order_by(ChatTranscriptEvent.sequence.desc())
+        .limit(1)
+    )
+    event = result.scalar_one_or_none()
+    return event if _terminal_status_from_transcript_event(event) else None
+
+
+async def _reconcile_terminal_transcript_ghost(db: AsyncSession, task: RuntimeTask) -> bool:
+    if getattr(task, "status", None) not in _ACTIVE_STATUSES:
+        return False
+    terminal_event = await _terminal_transcript_event_for_run(db, task)
+    if terminal_event is None:
+        return False
+    status = _terminal_status_from_transcript_event(terminal_event)
+    if status is None:
+        return False
+    metadata = {
+        "terminal_reconciled_from_transcript": True,
+        "terminal_transcript_event_type": getattr(terminal_event, "event_type", None),
+    }
+    terminal_event_id = getattr(terminal_event, "id", None)
+    if terminal_event_id:
+        metadata["terminal_transcript_event_id"] = str(terminal_event_id)
+    _apply_terminal_task_update(
+        task,
+        status=status,
+        result_summary=str(getattr(terminal_event, "content", None) or "")[:500],
+        metadata_json=metadata,
+    )
+    await db.commit()
+    logger.warning(
+        "[WebChatRun] Reconciled ghost active run {} from terminal transcript event {}",
+        getattr(task, "id", None),
+        terminal_event_id or getattr(terminal_event, "event_type", None),
+    )
+    return True
 
 
 async def _queue_mid_run_user_message(
@@ -265,7 +406,10 @@ async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id:
         .order_by(RuntimeTask.created_at.desc())
         .limit(1)
     )
-    return result.scalars().first()
+    task = result.scalars().first()
+    if task is not None and await _reconcile_terminal_transcript_ghost(db, task):
+        return None
+    return task
 
 
 def _is_active_web_chat_unique_violation(exc: IntegrityError) -> bool:
@@ -670,6 +814,8 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
         tasks = result.scalars().all()
         resumed: list[RuntimeTask] = []
         for task in tasks:
+            if await _reconcile_terminal_transcript_ghost(db, task):
+                continue
             run_key = task.id.hex
             if run_key in _TASKS:
                 continue
@@ -754,6 +900,7 @@ async def _persist_assistant_message(
             content=content,
             thinking=thinking,
             thinking_signature=thinking_signature,
+            parts=_assistant_transcript_parts(content, thinking=thinking),
             source="web_chat_runtime",
             metadata={"source": "web_chat_runtime", "kernel_persisted": True},
         )
@@ -903,6 +1050,7 @@ async def _finalize_web_chat_run_with_assistant(
                 metadata_json["artifact_ids"] = [part["artifact_id"] for part in artifact_parts]
                 metadata_json["artifact_paths"] = [part["path"] for part in artifact_parts]
                 metadata_json["artifacts"] = artifact_parts
+            persisted_thinking = thinking or getattr(kernel_persisted_message, "thinking", None)
             _apply_terminal_task_update(
                 task,
                 status=status,
@@ -922,6 +1070,7 @@ async def _finalize_web_chat_run_with_assistant(
                 message_id=getattr(kernel_persisted_message, "id", None),
                 source="web_chat_runtime",
                 materialize_chat_message=False,
+                parts=_assistant_transcript_parts(content, thinking=persisted_thinking, artifacts=artifact_parts),
                 metadata={
                     "source": "web_chat_runtime",
                     "final_decision_trace_id": final_decision_trace_id,
@@ -981,7 +1130,7 @@ async def _finalize_web_chat_run_with_assistant(
             thinking=thinking,
             thinking_signature=thinking_signature,
             decision_trace_id=final_decision_trace_id,
-            parts=artifact_parts,
+            parts=_assistant_transcript_parts(content, thinking=thinking, artifacts=artifact_parts),
             metadata={
                 "source": "web_chat_runtime",
                 "final_decision_trace_id": final_decision_trace_id,
@@ -1051,6 +1200,8 @@ async def _persist_tool_call(
     session_id: str,
     data: dict[str, Any],
 ) -> Any:
+    data = _tool_step_contract(data)
+    status = str(data.get("status") or "done")
     raw_result = data.get("result") or ""
     raw_str = str(raw_result)
     if len(raw_str) > 50000:
@@ -1064,11 +1215,20 @@ async def _persist_tool_call(
     payload = {
         "name": data.get("name", ""),
         "args": data.get("args"),
-        "status": "done",
-        "result": raw_str,
+        "status": status,
+        "tool_call_id": data.get("tool_call_id"),
+        "step_id": data.get("step_id"),
+        "visibility": data.get("visibility") or "collapsed",
+        "started_at": data.get("started_at") or data.get("startedAt"),
+        "completed_at": data.get("completed_at") or data.get("completedAt"),
+        "duration_ms": data.get("duration_ms"),
         "reasoning_content": data.get("reasoning_content"),
         "reasoning_signature": data.get("reasoning_signature"),
     }
+    if status in {"done", "completed", "failed"} or "result" in data:
+        payload["result"] = raw_str
+    payload = {key: value for key, value in payload.items() if value is not None}
+    event_type = "tool_result" if status in {"done", "completed", "failed"} else "tool_call"
     async with tenant_scoped_session(tenant_id) as db:
         result = await append_session_event(
             db=db,
@@ -1077,7 +1237,7 @@ async def _persist_tool_call(
             session_id=session_id,
             run_id=data.get("runtime_task_id") or data.get("run_id"),
             actor_type="tool",
-            event_type="tool_result",
+            event_type=event_type,
             role="tool_call",
             t0_role="tool",
             user_id=user_id,
@@ -1088,7 +1248,11 @@ async def _persist_tool_call(
             metadata={
                 "source": "web_chat_runtime",
                 "tool_name": data.get("name", ""),
-                "status": "done",
+                "status": status,
+                "tool_call_id": data.get("tool_call_id"),
+                "step_id": data.get("step_id"),
+                "duration_ms": data.get("duration_ms"),
+                "visibility": data.get("visibility") or "collapsed",
                 "decision_trace_id": decision_trace_id,
             },
         )
@@ -1822,8 +1986,23 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
         async def tool_call_to_ws(data: dict[str, Any]) -> None:  # type: ignore[no-redef]
             nonlocal interactive_pause_summary, plan_mode_submitted
+            data = _tool_step_contract(data, fallback_run_id=run_uuid)
             if data.get("status") != "done":
-                await broadcast_web_chat_event(agent.id, session_id, build_tool_call_event(data))
+                persisted_event = await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
+                ws_event = build_tool_call_event(data)
+                if persisted_event:
+                    ws_event.update(
+                        {
+                            "transcript_event_id": str(persisted_event.event_id),
+                            "sequence": persisted_event.sequence,
+                            "event_type": "tool_call",
+                            "role": "tool_call",
+                            "content": persisted_event.transcript_event.content or "",
+                            "message_id": str(persisted_event.message_id) if persisted_event.message_id else None,
+                            "metadata": persisted_event.transcript_event.metadata_json or {},
+                        }
+                    )
+                await broadcast_web_chat_event(agent.id, session_id, ws_event)
                 return
 
             persisted_event = await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
@@ -1961,26 +2140,51 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     except Exception as exc:
         logger.exception("[WebChatRun] Run {} failed", run_uuid.hex)
         was_cancelled = cancel_event.is_set()
-        await _update_runtime_task(
-            run_uuid,
-            status="killed" if was_cancelled else "failed",
-            result_summary="Generation stopped by user."
-            if was_cancelled
-            else f"Web chat run failed: {type(exc).__name__}",
-            metadata_json={"cancelled_by_user": True} if was_cancelled else {"error": str(exc)[:500]},
-        )
         if was_cancelled:
+            await _update_runtime_task(
+                run_uuid,
+                status="killed",
+                result_summary="Generation stopped by user.",
+                metadata_json={"cancelled_by_user": True},
+            )
             return
+        result_summary = f"Web chat run failed: {type(exc).__name__}"
+        metadata_update = {"error": str(exc)[:500]}
         try:
             runtime_task, agent, user, *_rest = await _load_runtime_context(run_uuid)
             session_id = str(runtime_task.parent_session_id)
+            finalized = await _finalize_web_chat_run_with_assistant(
+                run_uuid=run_uuid,
+                agent_id=agent.id,
+                user_id=user.id,
+                session_id=session_id,
+                content=_USER_VISIBLE_WEB_CHAT_ERROR,
+                thinking=None,
+                thinking_signature=None,
+                status="failed",
+                result_summary=result_summary,
+                metadata_json=metadata_update,
+            )
+            if not finalized:
+                await _update_runtime_task(
+                    run_uuid,
+                    status="failed",
+                    result_summary=result_summary,
+                    metadata_json=metadata_update,
+                )
             await broadcast_web_chat_event(
                 agent.id,
                 session_id,
-                {"type": "error", "content": "[LLM Error] AI 模型调用异常，请稍后重试。"},
+                {"type": "error", "content": _USER_VISIBLE_WEB_CHAT_ERROR},
             )
-        except Exception:
-            pass
+        except Exception as terminal_exc:
+            logger.warning("[WebChatRun] Failed to persist visible terminal error for {}: {}", run_uuid.hex, terminal_exc)
+            await _update_runtime_task(
+                run_uuid,
+                status="failed",
+                result_summary=result_summary,
+                metadata_json=metadata_update,
+            )
     finally:
         _CANCEL_EVENTS.pop(run_key, None)
         if terminal_agent_id is not None and terminal_session_id:

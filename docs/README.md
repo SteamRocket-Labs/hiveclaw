@@ -23,7 +23,7 @@
 - Memory / self-evolution: `agent-evolution-memory-redesign-2026-06-20.md`、`self-evolution-sota-plan.md`、`agent-memory-md-first-spec.md`、`agent-memory-purity-spec.md`、`agent-memory-research.md`、`owner-steward-agent-memory-design.md`。
 - Skills / MCP / extension surface: `agent-extension-surface-skill-mcp.md`、`SKILLS_AND_PACKS_V2.md`、`capability-pack-consolidation.md`、`cc-tooling-alignment-and-plugin-system.md`。
 - Trigger / automation: `trigger-cc-alignment.md`、`execution-mode-spectrum.md`。
-- Frontend / agent workbench: `frontend-agent-workbench-redesign-2026-06-20.md`；`frontend-claude-design-migration-plan.md` remains the broader prototype-to-frontend migration baseline.
+- Frontend / agent workbench: `frontend-agent-workbench-redesign-2026-06-20.md`；`frontend-claude-design-migration-plan.md` remains the broader prototype-to-frontend migration baseline；`chat-runtime-disclosure-cc-codex-alignment-2026-06-22.md` is the CC/Codex-aligned runtime disclosure and transcript replay design.
 - Office / document / multimodal: `document-conversion-multimodal-design.md`。
 - Web / data source ingestion: `web-data-source-layer-plan-2026-06-20.md`；known URL / OCR / document conversion boundary resolves through `document-conversion-multimodal-design.md`。
 - Remote workstation / code execution: `remote-workstation-runtime.md`。

@@ -42,6 +42,15 @@ def test_create_digital_employee_schema_requires_session_confirmed_blueprint():
     assert "permission_scope" in params["properties"]
     assert "company_charter" in params["properties"]
     assert "owner_agency_charter" in params["properties"]
+    assert "source_attributions" in params["properties"]
+    source_schema = params["properties"]["source_attributions"]["items"]["properties"]
+    assert source_schema["source_type"]["enum"] == [
+        "confirmed_by_user",
+        "supported_by_company_kb",
+        "suggested_by_history",
+        "suggested_by_general_knowledge",
+        "unknown_or_needs_company_source",
+    ]
 
 
 def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
@@ -53,6 +62,7 @@ def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
     params = preview_tool["function"]["parameters"]
 
     assert params["properties"]["role_description"]["maxLength"] == ROLE_DESCRIPTION_MAX_CHARS
+    assert "source_attributions" in params["properties"]
 
 
 def test_hr_role_description_prompt_guard_trims_to_tool_limit():
@@ -179,6 +189,25 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
             "clawhub_slugs": ["market-research-agent", "market-research-agent"],
             "focus_content": "先完成行业扫描",
             "heartbeat_topics": "AI\n半导体",
+            "source_attributions": [
+                {
+                    "field": "boundaries",
+                    "value_summary": "不绕过合规审批",
+                    "source_type": "supported_by_company_kb",
+                    "source_refs": ["kb://policy/compliance"],
+                },
+                {
+                    "field": "focus_content",
+                    "value_summary": "先完成行业扫描",
+                    "source_type": "suggested_by_history",
+                    "source_refs": ["t3:memory/t3/episodes.md#case-1"],
+                },
+                {
+                    "field": "core_outputs",
+                    "value_summary": "日报/周报缺少公司知识库依据",
+                    "source_type": "unknown_or_needs_company_source",
+                },
+            ],
             "triggers": [{"name": "daily_report", "type": "cron", "config": {"expr": "0 9 * * *"}, "reason": "日报"}],
         }
     )
@@ -202,12 +231,40 @@ def test_build_blueprint_preview_payload_summarizes_ready_install_and_manual_ste
     assert payload["summary"]["core_outputs"] == ["日报", "周报"]
     assert payload["summary"]["first_mission"] == "先完成行业扫描"
     assert payload["blueprint_hash"]
+    assert payload["blueprint"]["source_attributions"][0]["source_type"] == "supported_by_company_kb"
+    assert payload["source_attribution_policy"]["company_knowledge_lane"] == "authoritative"
+    assert payload["source_attribution_policy"]["history_suggestion_lane"] == "advisory"
+    assert any(
+        item["source_type"] == "unknown_or_needs_company_source" for item in payload["knowledge_debt"]
+    )
+    assert "supported_by_company_kb" in payload["confirmation_requirements"]["source_types_to_present"]
+    assert "suggested_by_history" in payload["confirmation_requirements"]["source_types_to_present"]
     assert payload["creation_flow"]["mode"] == "dynamic_rounds_mandatory_gates"
     assert payload["creation_flow"]["gates"]["identity"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["governance"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["activation"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["capabilities"]["status"] == "complete"
     assert payload["creation_flow"]["gates"]["confirmation"]["status"] == "pending"
+
+
+def test_build_blueprint_preview_payload_rejects_invalid_source_attribution_types() -> None:
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    payload = _build_blueprint_preview_payload(
+        {
+            "name": "研究助理",
+            "role_description": "服务投研团队的市场研究员。",
+            "primary_users": ["投研团队"],
+            "core_outputs": ["日报"],
+            "focus_content": "先完成日报",
+            "source_attributions": [
+                {"field": "boundaries", "source_type": "memory_says_so", "value_summary": "不外发"}
+            ],
+        }
+    )
+
+    assert payload["blueprint"]["source_attributions"] == []
+    assert any("invalid source_attributions ignored" in warning for warning in payload["warnings"])
 
 
 def test_build_blueprint_preview_payload_auto_recommends_platform_skills() -> None:
@@ -344,6 +401,66 @@ def test_build_blueprint_preview_payload_reclassifies_skills_ref_out_of_platform
         "external skill ref: patricio0312rev/skills@design-to-component-translator" in item
         for item in payload["will_install"]
     )
+
+
+def test_append_hr_creation_t0_event_records_source_attributed_creation_case(tmp_path) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.tools.handlers.hr import _append_hr_creation_t0_event
+
+    hr_agent_id = uuid4()
+    created_agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+
+    result = _append_hr_creation_t0_event(
+        hr_agent_id=hr_agent_id,
+        created_agent_id=created_agent_id,
+        created_agent_name="投研助理",
+        session_id=session_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        blueprint_hash="bp_123",
+        preview_payload={
+            "risk_class": "standard",
+            "blueprint": {
+                "archetype": "research",
+                "primary_users": ["投研团队"],
+                "core_outputs": ["日报"],
+                "skill_names": ["feishu-integration"],
+                "source_attributions": [
+                    {
+                        "field": "boundaries",
+                        "source_type": "supported_by_company_kb",
+                        "source_refs": ["kb://policy/compliance"],
+                        "value_summary": "不绕过合规审批",
+                    },
+                    {
+                        "field": "focus_content",
+                        "source_type": "suggested_by_history",
+                        "source_refs": ["t3:memory/t3/episodes.md#case-1"],
+                        "value_summary": "先做日报",
+                    },
+                ],
+            },
+            "manual_steps": ["配置飞书授权"],
+        },
+        installed_skill_names=["feishu-integration"],
+        trigger_count=1,
+        data_root=tmp_path,
+    )
+
+    events = replay_t0_session_events(agent_id=hr_agent_id, session_id=session_id, data_root=tmp_path)
+
+    assert result.event_id
+    assert len(events) == 1
+    assert events[0].event_type == "hr_agent_created"
+    assert events[0].role == "tool"
+    assert events[0].metadata["created_agent_id"] == str(created_agent_id)
+    assert events[0].metadata["blueprint_hash"] == "bp_123"
+    assert events[0].metadata["source_attributions"][0]["source_type"] == "supported_by_company_kb"
+    assert events[0].metadata["source_attributions"][1]["source_type"] == "suggested_by_history"
+    assert events[0].metadata["manual_setup_debt"] == ["配置飞书授权"]
 
 
 @pytest.mark.asyncio

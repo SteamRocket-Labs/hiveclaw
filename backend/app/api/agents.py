@@ -3,6 +3,7 @@
 import logging
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -136,7 +137,7 @@ async def list_agents(
 
 
 HR_AGENT_NAME = "__system_hr__"
-HR_TEMPLATE_VERSION = "hr-flow-v2-dynamic-gates-2026-06-18"
+HR_TEMPLATE_VERSION = "hr-flow-v3-company-knowledge-history-2026-06-21"
 
 
 async def _get_existing_hr_agent(db: AsyncSession, tenant_id: uuid.UUID, *, lock_rows: bool) -> Agent | None:
@@ -188,6 +189,24 @@ def _copy_hr_identity_template(src: Path, dest: Path, *, force: bool) -> None:
     dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def _retire_hr_template_skill(agent_dir: Path, folder_name: str) -> None:
+    """Move retired bundled HR skills out of the active skill path."""
+    skill_dir = agent_dir / "skills" / folder_name
+    if not skill_dir.exists():
+        return
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    retired_root = agent_dir / "skills" / ".retired" / folder_name
+    retired_dir = retired_root / stamp
+    counter = 1
+    while retired_dir.exists():
+        counter += 1
+        retired_dir = retired_root / f"{stamp}-{counter}"
+
+    retired_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(skill_dir), str(retired_dir))
+
+
 def _sync_hr_agent_workspace(agent_dir: Path, *, force_identity_files: bool) -> None:
     """Sync the system HR workspace with the bundled template contract."""
     hr_template_dir = _hr_template_dir()
@@ -218,6 +237,7 @@ def _sync_hr_agent_workspace(agent_dir: Path, *, force_identity_files: bool) -> 
                 overwrite=True,
             )
 
+    _retire_hr_template_skill(agent_dir, "hr-guide")
     (agent_dir / ".hr_template_version").write_text(HR_TEMPLATE_VERSION, encoding="utf-8")
 
 

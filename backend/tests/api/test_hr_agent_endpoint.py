@@ -135,6 +135,9 @@ async def test_get_hr_agent_refreshes_existing_workspace_template(
         encoding="utf-8",
     )
     (agent_dir / "HEARTBEAT.md").write_text("OLD HEARTBEAT\n", encoding="utf-8")
+    legacy_hr_guide = agent_dir / "skills" / "hr-guide" / "SKILL.md"
+    legacy_hr_guide.parent.mkdir(parents=True)
+    legacy_hr_guide.write_text("# Legacy HR Guide\n", encoding="utf-8")
 
     fake_db = _FakeDb([hr_agent])
     monkeypatch.setattr(agent_manager_module, "agent_manager", _FakeAgentManager(tmp_path))
@@ -150,3 +153,7 @@ async def test_get_hr_agent_refreshes_existing_workspace_template(
     assert "fixed five-round interview" not in soul
     assert (agent_dir / ".hr_template_version").read_text(encoding="utf-8") == agents_api.HR_TEMPLATE_VERSION
     assert (agent_dir / ".soul.md.pre-hr-template.bak").read_text(encoding="utf-8").startswith("OLD HR FLOW")
+    assert not legacy_hr_guide.exists()
+    retired = list((agent_dir / "skills" / ".retired" / "hr-guide").glob("*/SKILL.md"))
+    assert len(retired) == 1
+    assert retired[0].read_text(encoding="utf-8") == "# Legacy HR Guide\n"

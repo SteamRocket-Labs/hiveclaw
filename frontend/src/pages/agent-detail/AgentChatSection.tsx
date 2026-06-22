@@ -30,6 +30,27 @@ type AttachedFile = {
   imageUrl?: string;
 };
 
+type ConversationBranchMode = 'fork' | 'edit' | 'insert_before' | 'insert_after' | 'reply' | 'regenerate';
+
+export interface BranchLineageItem {
+  id: string;
+  parent_session_id?: string | null;
+  root_session_id?: string | null;
+  title?: string | null;
+  branch?: Record<string, unknown> | null;
+  created_at?: string | null;
+}
+
+export interface BranchLineageRow extends BranchLineageItem {
+  depth: number;
+}
+
+export interface BranchComposeDraft {
+  mode: ConversationBranchMode;
+  message: AgentChatMessage;
+  content: string;
+}
+
 interface AgentChatSectionProps {
   agentId?: string | null;
   agent: any;
@@ -42,6 +63,9 @@ interface AgentChatSectionProps {
   sessionsLoading: boolean;
   sessions: any[];
   activeSession: any | null;
+  branchLineage?: BranchLineageItem[];
+  branchLineageLoading?: boolean;
+  onSelectBranchSession?: (sessionId: string) => void | Promise<unknown>;
   wsConnected: boolean;
   allSessions: any[];
   allSessionsLoading: boolean;
@@ -80,6 +104,7 @@ interface AgentChatSectionProps {
   onSetChatInput: (value: string) => void;
   onHandlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onSendChatMsg: () => void;
+  onBranchMessage?: (message: AgentChatMessage, mode: ConversationBranchMode, content?: string) => void | Promise<unknown>;
   /** Sends an explicit message (not from the composer) — used by inline cards. */
   onSendMessage?: (text: string) => void | Promise<unknown>;
   /**
@@ -102,6 +127,8 @@ interface StructuredToolResultBodyProps {
   agentId?: string;
   /** The agent's display name — shown on the plan-mode-request approval card. */
   agentName?: string | null;
+  /** True when a persisted clarification card already has a later user answer. */
+  submitted?: boolean;
   /**
    * Sends a new user chat message. Threaded from the component that owns the
    * send handler (AgentDetail → AgentChatSection). Used by the clarification
@@ -143,6 +170,179 @@ function _isRecentDeepResearchFallbackMessage(message: AgentChatMessage): boolea
 export function extractPlanIdFromPlanModeMessage(content: string | null | undefined): string | null {
   if (!content) return null;
   return content.match(PLAN_ID_RE)?.[1] ?? null;
+}
+
+export function isClarificationCardAnsweredByLaterUserMessage(messages: AgentChatMessage[], index: number): boolean {
+  const message = messages[index];
+  if (message?.role !== 'tool_call' || message.toolMeta?.kind !== 'user_clarification') return false;
+  if (message.toolMeta.answered) return true;
+  return messages
+    .slice(index + 1)
+    .some((candidate) => candidate.role === 'user' && String(candidate.content || '').trim().length > 0);
+}
+
+function branchModeLabel(item: BranchLineageItem): string {
+  const branch = item.branch || {};
+  const mode = String(branch.branch_mode || branch.mode || '').trim();
+  if (!mode) return 'root';
+  return mode.replace(/_/g, ' ');
+}
+
+export function buildBranchLineageRows(lineage: BranchLineageItem[]): BranchLineageRow[] {
+  const byId = new Map(lineage.map((item) => [String(item.id), item]));
+  const children = new Map<string, BranchLineageItem[]>();
+  const roots: BranchLineageItem[] = [];
+  lineage.forEach((item) => {
+    const parentId = item.parent_session_id ? String(item.parent_session_id) : null;
+    if (!parentId || !byId.has(parentId)) {
+      roots.push(item);
+      return;
+    }
+    const list = children.get(parentId) || [];
+    list.push(item);
+    children.set(parentId, list);
+  });
+
+  const rows: BranchLineageRow[] = [];
+  const seen = new Set<string>();
+  const visit = (item: BranchLineageItem, depth: number) => {
+    const id = String(item.id);
+    if (seen.has(id)) return;
+    seen.add(id);
+    rows.push({ ...item, depth });
+    (children.get(id) || []).forEach((child) => visit(child, depth + 1));
+  };
+  roots.forEach((root) => visit(root, 0));
+  lineage.forEach((item) => {
+    if (!seen.has(String(item.id))) visit(item, 0);
+  });
+  return rows;
+}
+
+export function BranchLineagePanel({
+  activeSessionId,
+  lineage,
+  loading = false,
+  onSelectSession,
+}: {
+  activeSessionId?: string | null;
+  lineage: BranchLineageItem[];
+  loading?: boolean;
+  onSelectSession: (sessionId: string) => void | Promise<unknown>;
+}) {
+  const { t } = useTranslation();
+  if (loading) {
+    return (
+      <div data-testid="branch-lineage-panel" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+        {t('common.loading', 'Loading')}
+      </div>
+    );
+  }
+  if (lineage.length <= 1) return null;
+  const rows = buildBranchLineageRows(lineage);
+  return (
+    <div data-testid="branch-lineage-panel" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
+      <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0, marginBottom: '6px' }}>
+        {t('agent.chat.branch.branches', 'Branches')}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        {rows.map((row) => {
+          const isActive = String(row.id) === String(activeSessionId || '');
+          return (
+            <button
+              key={row.id}
+              type="button"
+              data-testid="branch-lineage-row"
+              onClick={() => onSelectSession(String(row.id))}
+              style={{
+                border: 'none',
+                background: isActive ? 'var(--bg-secondary)' : 'transparent',
+                color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                padding: '4px 6px',
+                paddingLeft: `${6 + row.depth * 12}px`,
+                textAlign: 'left',
+                fontSize: '11px',
+                lineHeight: 1.3,
+              }}
+            >
+              <span style={{ color: 'var(--text-tertiary)', marginRight: '5px' }}>{branchModeLabel(row)}</span>
+              <span>{row.title || row.id}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function BranchComposePanel({
+  draft,
+  busy,
+  onChange,
+  onCancel,
+  onSubmit,
+}: {
+  draft: BranchComposeDraft | null;
+  busy: boolean;
+  onChange: (content: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void | Promise<unknown>;
+}) {
+  const { t } = useTranslation();
+  if (!draft) return null;
+  const modeLabel = draft.mode.replace(/_/g, ' ');
+  const canSubmit = draft.content.trim().length > 0 && !busy;
+  return (
+    <div
+      data-testid="branch-compose-panel"
+      style={{
+        borderTop: '1px solid var(--border-subtle)',
+        background: 'var(--bg-secondary)',
+        padding: '10px 12px',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', marginBottom: '8px' }}>
+        <div>
+          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+            {t('agent.chat.branch.composeTitle', 'Create branch')}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            {modeLabel}
+          </div>
+        </div>
+        <button type="button" onClick={onCancel} disabled={busy} style={{ border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: busy ? 'not-allowed' : 'pointer' }}>
+          {t('common.cancel', 'Cancel')}
+        </button>
+      </div>
+      <textarea
+        data-testid="branch-compose-input"
+        value={draft.content}
+        onChange={(event) => onChange(event.target.value)}
+        rows={4}
+        style={{
+          width: '100%',
+          boxSizing: 'border-box',
+          resize: 'vertical',
+          minHeight: '84px',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '6px',
+          padding: '8px 10px',
+          background: 'var(--bg-primary)',
+          color: 'var(--text-primary)',
+          font: 'inherit',
+          fontSize: '12px',
+          lineHeight: 1.5,
+        }}
+      />
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
+        <button type="button" className="btn btn-primary" disabled={!canSubmit} onClick={onSubmit} style={{ fontSize: '12px', padding: '5px 10px' }}>
+          {busy ? t('common.saving', 'Saving...') : t('agent.chat.branch.createBranch', 'Create branch')}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function InlinePlanCard({ agentId, planId }: { agentId: string; planId: string }) {
@@ -302,6 +502,65 @@ function ArtifactCards({
   );
 }
 
+function MessageBranchActions({
+  message,
+  isLeft,
+  onBranchMessage,
+}: {
+  message: AgentChatMessage;
+  isLeft: boolean;
+  onBranchMessage?: (message: AgentChatMessage, mode: ConversationBranchMode) => void | Promise<unknown>;
+}) {
+  if (!message.id || !onBranchMessage) return null;
+  const isUser = message.role === 'user';
+  const isAssistant = message.role === 'assistant';
+  if (!isUser && !isAssistant) return null;
+
+  const actions: Array<{ mode: ConversationBranchMode; label: string; testId: string }> = [
+    { mode: 'fork', label: 'Fork', testId: 'message-action-fork' },
+    ...(isUser ? [{ mode: 'edit' as ConversationBranchMode, label: 'Edit', testId: 'message-action-edit' }] : []),
+    { mode: 'insert_before', label: 'Insert before', testId: 'message-action-insert-before' },
+    { mode: 'insert_after', label: 'Insert after', testId: 'message-action-insert-after' },
+    { mode: 'reply', label: 'Reply', testId: 'message-action-reply' },
+    ...(isAssistant ? [{ mode: 'regenerate' as ConversationBranchMode, label: 'Regenerate', testId: 'message-action-regenerate' }] : []),
+  ];
+
+  return (
+    <div
+      style={{
+        display: 'inline-flex',
+        gap: '4px',
+        marginLeft: isLeft ? '6px' : 0,
+        marginRight: isLeft ? 0 : '6px',
+        flexWrap: 'wrap',
+        justifyContent: isLeft ? 'flex-start' : 'flex-end',
+      }}
+    >
+      {actions.map((action) => (
+        <button
+          key={action.mode}
+          type="button"
+          data-testid={action.testId}
+          title={action.label}
+          onClick={() => onBranchMessage(message, action.mode)}
+          style={{
+            border: '1px solid var(--border-subtle)',
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-tertiary)',
+            borderRadius: '4px',
+            fontSize: '10px',
+            lineHeight: 1,
+            padding: '3px 5px',
+            cursor: 'pointer',
+          }}
+        >
+          {action.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function RawToolResultBlock({ text }: { text: string }) {
   return (
     <div
@@ -346,6 +605,7 @@ export function StructuredToolResultBody({
   toolRawResult,
   agentId,
   agentName,
+  submitted = false,
   onSendMessage,
   onEnterPlanMode,
 }: StructuredToolResultBodyProps) {
@@ -377,6 +637,7 @@ export function StructuredToolResultBody({
         blocking={toolMeta.blocking}
         nextAction={toolMeta.nextAction}
         onSubmit={(answerText) => onSendMessage(answerText)}
+        submitted={submitted}
         dense
       />
     );
@@ -565,6 +826,9 @@ export default function AgentChatSection({
   sessionsLoading,
   sessions,
   activeSession,
+  branchLineage = [],
+  branchLineageLoading = false,
+  onSelectBranchSession,
   wsConnected,
   allSessions,
   allSessionsLoading,
@@ -603,6 +867,7 @@ export default function AgentChatSection({
   onSetChatInput,
   onHandlePaste,
   onSendChatMsg,
+  onBranchMessage,
   onSendMessage,
   onEnterPlanMode,
   planModeRequested = false,
@@ -633,9 +898,39 @@ export default function AgentChatSection({
     wechat_personal: t('common.channels.wechatPersonal'),
     telegram: t('common.channels.telegram'),
     email: t('common.channels.email'),
+    local_bridge: t('common.channels.localBridge', 'Local Bridge'),
   };
 
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
+  const [branchDraft, setBranchDraft] = React.useState<BranchComposeDraft | null>(null);
+  const [branchBusy, setBranchBusy] = React.useState(false);
+
+  const startBranchAction = React.useCallback(
+    async (message: AgentChatMessage, mode: ConversationBranchMode) => {
+      if (!onBranchMessage) return;
+      if (mode === 'fork' || mode === 'regenerate') {
+        await onBranchMessage(message, mode);
+        return;
+      }
+      setBranchDraft({
+        mode,
+        message,
+        content: mode === 'edit' ? message.content || '' : '',
+      });
+    },
+    [onBranchMessage],
+  );
+
+  const submitBranchDraft = React.useCallback(async () => {
+    if (!branchDraft || !onBranchMessage || !branchDraft.content.trim()) return;
+    setBranchBusy(true);
+    try {
+      await onBranchMessage(branchDraft.message, branchDraft.mode, branchDraft.content.trim());
+      setBranchDraft(null);
+    } finally {
+      setBranchBusy(false);
+    }
+  }, [branchDraft, onBranchMessage]);
 
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
     if (!effectiveAgentId) return;
@@ -783,37 +1078,37 @@ export default function AgentChatSection({
         const isImage = !!msg.imageUrl && ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(extension);
         const inlinePlanId = isLeft && msg.role === 'assistant' ? extractPlanIdFromPlanModeMessage(msg.content) : null;
 
-        const timestampHtml = msg.timestamp
-          ? (() => {
-              const date = new Date(msg.timestamp);
-              const now = new Date();
-              const diffMs = now.getTime() - date.getTime();
-              const isToday = date.toDateString() === now.toDateString();
-              let timeStr = '';
-              if (isToday) timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              else if (diffMs < 7 * 86400000)
-                timeStr = `${date.toLocaleDateString([], { weekday: 'short' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-              else
-                timeStr = `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-
-              return (
-                <div
-                  style={{
-                    fontSize: '10px',
-                    color: 'var(--text-tertiary)',
-                    marginTop: '4px',
-                    opacity: 0.6,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: isLeft ? 'flex-start' : 'flex-end',
-                  }}
-                >
-                  {timeStr}
-                  {msg.content && <CopyMessageButton text={msg.content} />}
-                </div>
-              );
-            })()
-          : null;
+        const timestampHtml = (() => {
+          let timeStr = '';
+          if (msg.timestamp) {
+            const date = new Date(msg.timestamp);
+            const now = new Date();
+            const diffMs = now.getTime() - date.getTime();
+            const isToday = date.toDateString() === now.toDateString();
+            if (isToday) timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            else if (diffMs < 7 * 86400000)
+              timeStr = `${date.toLocaleDateString([], { weekday: 'short' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+            else
+              timeStr = `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+          }
+          return (
+            <div
+              style={{
+                fontSize: '10px',
+                color: 'var(--text-tertiary)',
+                marginTop: '4px',
+                opacity: 0.6,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: isLeft ? 'flex-start' : 'flex-end',
+              }}
+            >
+              {timeStr}
+              {msg.content && <CopyMessageButton text={msg.content} />}
+              <MessageBranchActions message={msg} isLeft={isLeft} onBranchMessage={startBranchAction} />
+            </div>
+          );
+        })();
 
         return (
           <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
@@ -947,8 +1242,8 @@ export default function AgentChatSection({
           </div>
         );
       }),
-    [effectiveAgentId, openArtifact, t],
-  );
+		    [effectiveAgentId, startBranchAction, openArtifact, t],
+	  );
 
   const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => (
     <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
@@ -1005,6 +1300,7 @@ export default function AgentChatSection({
               toolRawResult={msg.toolRawResult}
               agentId={effectiveAgentId ?? undefined}
               agentName={agent?.name}
+              submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
               onSendMessage={onSendMessage}
               onEnterPlanMode={onEnterPlanMode}
             />
@@ -1023,6 +1319,7 @@ export default function AgentChatSection({
         toolRawResult={msg.toolRawResult}
         agentId={effectiveAgentId ?? undefined}
         agentName={agent?.name}
+        submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
         onSendMessage={onSendMessage}
         onEnterPlanMode={onEnterPlanMode}
       />
@@ -1238,6 +1535,22 @@ export default function AgentChatSection({
               + {t('agent.chat.newSession')}
             </button>
           </div>
+        )}
+
+        {chatScope === 'mine' && (
+          <BranchLineagePanel
+            activeSessionId={activeSessionId}
+            lineage={branchLineage}
+            loading={branchLineageLoading}
+            onSelectSession={(sessionId) => {
+              if (onSelectBranchSession) {
+                return onSelectBranchSession(sessionId);
+              }
+              const target = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(sessionId));
+              if (target) return onSelectSession(target);
+              return undefined;
+            }}
+          />
         )}
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
@@ -1795,17 +2108,24 @@ export default function AgentChatSection({
                 ))}
               </div>
             )}
+            <BranchComposePanel
+              draft={branchDraft}
+              busy={branchBusy}
+              onChange={(content) => setBranchDraft((draft) => (draft ? { ...draft, content } : draft))}
+              onCancel={() => setBranchDraft(null)}
+              onSubmit={submitBranchDraft}
+            />
             <div style={{ display: 'flex', gap: '8px', padding: '8px 12px', borderTop: '1px solid var(--border-subtle)', alignItems: 'flex-end' }}>
               <input type="file" multiple ref={fileInputRef} onChange={onHandleChatFile} style={{ display: 'none' }} />
               <button
                 className="btn btn-secondary"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={!wsConnected || uploading || isWaiting || isStreaming || attachedFiles.length >= 10}
+	                disabled={!wsConnected || uploading || attachedFiles.length >= 10}
                 style={{
                   padding: '6px 10px',
                   fontSize: '14px',
                   minWidth: 'auto',
-                  ...((!wsConnected || uploading || isWaiting || isStreaming) ? { cursor: 'not-allowed', opacity: 0.4 } : {}),
+	                  ...((!wsConnected || uploading || attachedFiles.length >= 10) ? { cursor: 'not-allowed', opacity: 0.4 } : {}),
                 }}
               >
                 {uploading ? '⏳' : '⦹'}
@@ -1874,11 +2194,11 @@ export default function AgentChatSection({
                 value={chatInput}
                 onChange={(e) => onSetChatInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isWaiting && !isStreaming) {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     onSendChatMsg();
                   }
-                }}
+	                }}
                 onPaste={onHandlePaste}
                 placeholder={
                   !wsConnected
@@ -1899,15 +2219,14 @@ export default function AgentChatSection({
                 }}
                 autoFocus
               />
-              {isStreaming || isWaiting ? (
-                <button className="btn btn-stop-generation" onClick={onAbortGeneration} style={{ padding: '6px 16px' }} title={t('chat.stop', 'Stop')}>
+              {(isStreaming || isWaiting) && (
+                <button className="btn btn-stop-generation" onClick={onAbortGeneration} style={{ padding: '6px 12px' }} title={t('chat.stop', 'Stop')}>
                   <span className="stop-icon" />
                 </button>
-              ) : (
-                <button className="btn btn-primary" onClick={onSendChatMsg} disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)} style={{ padding: '6px 16px' }}>
-                  {t('chat.send')}
-                </button>
               )}
+              <button className="btn btn-primary" onClick={onSendChatMsg} disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)} style={{ padding: '6px 16px' }}>
+                {t('chat.send')}
+              </button>
             </div>
           </>
         )}

@@ -2,8 +2,8 @@
 
 Phase 0: logging-only for SESSION_START, POST_COMPACTION, MEMORY_EXTRACTED.
 Phase 1: T0 session ledger segment boundaries for SESSION_CLOSE/IDLE, plus
-         runtime-session ledger events for TRIGGER_END, DELEGATION_END,
-         HEARTBEAT_TICK_END, DREAM_END.
+         user-work runtime session seals for TRIGGER_END/DELEGATION_END and
+         system audit events for HEARTBEAT_TICK_END/DREAM_END.
 Phase 2: session projection on RESPONSE_COMPLETE/PRE_COMPACTION; canonical
          T0->T2 Segment Package build after T0 segment seal.
 """
@@ -181,17 +181,13 @@ async def _fast_reflection_on_response(ctx: HookContext) -> None:
 
 
 async def _project_on_pre_compaction(ctx: HookContext) -> None:
-    """PRE_COMPACTION → update volatile session projection before compaction.
-
-    It must not write durable T2. The raw evidence remains T0; the sealed
-    segment builder later summarizes the fixed source range.
-    """
+    """PRE_COMPACTION → create a T0 resume checkpoint before context is compacted."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     trigger = ctx.metadata.get("trigger", "?")
     logger.info(
-        "[Hooks] PRE_COMPACTION: agent=%s trigger=%s msgs=%d projection_only=true",
+        "[Hooks] PRE_COMPACTION: agent=%s trigger=%s msgs=%d checkpoint=true",
         ctx.agent_id,
         trigger,
         len(ctx.messages or []),
@@ -200,6 +196,24 @@ async def _project_on_pre_compaction(ctx: HookContext) -> None:
         agent_id,
         build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
     )
+    if not ctx.session_id:
+        return
+    sealed = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=str(ctx.session_id),
+        reason=f"pre_compaction:{trigger}",
+        metadata={**ctx.metadata, "source": ctx.source or "web", "trigger": trigger},
+    )
+    if not sealed:
+        return
+    logger.info(
+        "[Hooks] PRE_COMPACTION: sealed T0 checkpoint agent=%s session=%s segment=%s seq=%d",
+        agent_id,
+        ctx.session_id,
+        sealed.segment_id,
+        sealed.sequence,
+    )
+    await _build_t2_for_sealed_segment(ctx=ctx, agent_id=agent_id, segment_id=sealed.segment_id)
 
 
 # ── T0 writers (Phase 1) ──
@@ -270,6 +284,7 @@ def _append_and_seal_runtime_t0_event(
     event_type: str,
     boundary_reason: str,
     fallback_content: str,
+    include_messages: bool = False,
 ) -> tuple[str, str | None]:
     session_id = _runtime_event_session_id(ctx, event_type)
     source = ctx.source or event_type
@@ -278,7 +293,7 @@ def _append_and_seal_runtime_t0_event(
         session_id=session_id,
         event_type=event_type,
         role="system",
-        content=_runtime_event_content(ctx.messages, fallback_content),
+        content=_runtime_event_content(ctx.messages, fallback_content) if include_messages else fallback_content,
         actor_id=agent_id,
         source=source,
         metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
@@ -290,6 +305,40 @@ def _append_and_seal_runtime_t0_event(
         metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
     )
     return session_id, sealed.segment_id if sealed else None
+
+
+def _seal_existing_runtime_t0_segment(
+    *,
+    agent_id: uuid.UUID,
+    ctx: HookContext,
+    event_type: str,
+    boundary_reason: str,
+) -> tuple[str, str | None]:
+    """Seal an already-written user-work transcript without fabricating evidence.
+
+    Trigger/delegation transcript events must be appended at acceptance,
+    tool-call, and assistant-final points. The end hook is only a physical
+    segment boundary. If no transcript exists, returning no segment is safer
+    than producing a summary-only T0 packet that cannot support resume.
+    """
+
+    session_id = _runtime_event_session_id(ctx, event_type)
+    source = ctx.source or event_type
+    sealed = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason=boundary_reason,
+        metadata={**ctx.metadata, "source": source, "hook_event": str(ctx.event)},
+    )
+    if not sealed:
+        logger.warning(
+            "[Hooks] %s has no open T0 transcript to seal; refusing to fabricate summary evidence agent=%s session=%s",
+            str(ctx.event),
+            agent_id,
+            session_id,
+        )
+        return session_id, None
+    return session_id, sealed.segment_id
 
 
 def _with_t0_runtime_session(ctx: HookContext, session_id: str) -> HookContext:
@@ -315,10 +364,11 @@ async def _t0_session_close(ctx: HookContext) -> None:
     reason = ctx.metadata.get("reason", "unknown")
     messages = ctx.messages or []
     logger.info("[Hooks] SESSION_CLOSE: agent=%s reason=%s msgs=%d", ctx.agent_id, reason, len(messages))
-    update_session_memory(
-        agent_id,
-        build_session_memory_payload_from_messages(messages, metadata=ctx.metadata),
-    )
+    if messages:
+        update_session_memory(
+            agent_id,
+            build_session_memory_payload_from_messages(messages, metadata=ctx.metadata),
+        )
     if ctx.session_id:
         sealed = seal_t0_session_segment(
             agent_id=agent_id,
@@ -395,9 +445,9 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
     tenant_id_raw = ctx.metadata.get("tenant_id")
     tenant_id = uuid.UUID(str(tenant_id_raw)) if tenant_id_raw else None
     try:
-        from app.memory.t2.segment_package import build_t2_segment_package_with_llm
+        from app.memory.t2.segment_package import run_t2_segment_package_job
 
-        result = await build_t2_segment_package_with_llm(
+        result = await run_t2_segment_package_job(
             data_root=_agent_data_root(),
             agent_id=agent_id,
             tenant_id=tenant_id,
@@ -405,7 +455,7 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
             t0_segment_id=segment_id,
         )
         logger.info(
-            "[Hooks] T0->T2 package %s agent=%s session=%s segment=%s job=%s path=%s",
+            "[Hooks] T0->T2 job %s agent=%s session=%s segment=%s job=%s path=%s",
             result.status,
             agent_id,
             ctx.session_id,
@@ -431,23 +481,22 @@ def _t0_segment_t2_eligible(ctx: HookContext) -> tuple[bool, str]:
             return True, "explicit_semantic"
 
     source = (ctx.source or "web").strip().lower()
-    if source in {"heartbeat", "dream", "distiller", "eval", "platform"}:
+    if source in {"heartbeat", "heartbeat_reflection", "dream", "distiller", "eval", "platform"}:
         return False, f"system_source:{source}"
     return True, f"source:{source or 'web'}"
 
 
 async def _t0_trigger_end(ctx: HookContext) -> None:
-    """TRIGGER_END → append/seal T0 runtime-session ledger, then build canonical T2."""
+    """TRIGGER_END → seal the already-written runtime transcript, then build T2."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] TRIGGER_END: agent=%s trigger=%s", ctx.agent_id, ctx.metadata.get("trigger_name", "?"))
-    session_id, segment_id = _append_and_seal_runtime_t0_event(
+    session_id, segment_id = _seal_existing_runtime_t0_segment(
         agent_id=agent_id,
         ctx=ctx,
         event_type="trigger_run",
         boundary_reason="trigger_end",
-        fallback_content="trigger_end",
     )
     if segment_id:
         await _build_t2_for_sealed_segment(
@@ -458,17 +507,16 @@ async def _t0_trigger_end(ctx: HookContext) -> None:
 
 
 async def _t0_delegation_end(ctx: HookContext) -> None:
-    """DELEGATION_END → append/seal T0 runtime-session ledger, then build canonical T2."""
+    """DELEGATION_END → seal the already-written runtime transcript, then build T2."""
     agent_id = _parse_agent_id(ctx)
     if not agent_id:
         return
     logger.info("[Hooks] DELEGATION_END: agent=%s", ctx.agent_id)
-    session_id, segment_id = _append_and_seal_runtime_t0_event(
+    session_id, segment_id = _seal_existing_runtime_t0_segment(
         agent_id=agent_id,
         ctx=ctx,
         event_type="delegation_run",
         boundary_reason="delegation_end",
-        fallback_content="delegation_end",
     )
     if segment_id:
         await _build_t2_for_sealed_segment(
@@ -694,7 +742,7 @@ _MEMORY_HOOK_CONFIGURATION = [
     {
         "event": HookEvent.PRE_COMPACTION.value,
         "handler": "project_on_pre_compaction",
-        "key": "memory.pre_compaction.session_projection",
+        "key": "memory.pre_compaction.t0_checkpoint",
     },
     {"event": HookEvent.SESSION_CLOSE.value, "handler": "t0_session_close", "key": "memory.session_close.t0"},
     {"event": HookEvent.SESSION_IDLE.value, "handler": "t0_session_idle", "key": "memory.session_idle.t0"},

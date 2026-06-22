@@ -52,6 +52,8 @@ RUBRIC_SCORE_NAMES = (
 )
 ACCEPTED_REVIEW_DECISIONS = frozenset({"accept"})
 ACCEPTED_RUBRIC_DECISIONS = frozenset({"accept_new", "merge_required", "supersede_existing", "reinforced"})
+_T0_SESSION_SEGMENT_RE = re.compile(r"t0://session/([^/#\s<>'\"]+)/segment/([^/#\s<>'\"]+)[^\s<>'\"]*")
+_T2_SESSION_SEGMENT_RE = re.compile(r"t2://session/([^/#\s<>'\"]+)/segment/([^/#\s<>'\"]+)[^\s<>'\"]*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,9 +321,41 @@ def _validate_patch_shape(patch: ET.Element, issues: list[str]) -> None:
     for ref in evidence_refs:
         if ref.startswith("t0://") and not any(src.startswith("t2://") or src.startswith("explicit://") for src in evidence_refs):
             issues.append(f"T0 ref is not traceable through T2/explicit source refs: {ref}")
+    _validate_t0_refs_derivable_from_t2(patch, issues)
     _validate_target_labels(patch.find("./target_view_labels"), issues)
     if patch.find("./proposed_changes") is None:
         issues.append("proposed_changes missing")
+
+
+def _validate_t0_refs_derivable_from_t2(patch: ET.Element, issues: list[str]) -> None:
+    provenance_refs = _source_refs_from_patch(patch)
+    allowed_t2_segments = {_session_segment_key(ref, kind="t2") for ref in provenance_refs if ref.startswith("t2://")}
+    allowed_t2_segments.discard(None)
+    patch_refs = _refs_embedded_in_patch(patch)
+    for ref in patch_refs:
+        if not ref.startswith("t0://"):
+            continue
+        key = _session_segment_key(ref, kind="t0")
+        if key is not None and key not in allowed_t2_segments:
+            issues.append(f"T0 ref is not derivable from T2 source refs: {ref}")
+
+
+def _refs_embedded_in_patch(patch: ET.Element) -> list[str]:
+    refs = _source_refs_from_patch(patch)
+    for change in patch.findall("./proposed_changes/*"):
+        text = ET.tostring(change, encoding="unicode", method="xml")
+        refs.extend(match.group(0) for match in _T0_SESSION_SEGMENT_RE.finditer(text))
+        refs.extend(match.group(0) for match in _T2_SESSION_SEGMENT_RE.finditer(text))
+    return _dedupe(refs)
+
+
+def _session_segment_key(ref: str, *, kind: str) -> tuple[str, str] | None:
+    pattern = _T0_SESSION_SEGMENT_RE if kind == "t0" else _T2_SESSION_SEGMENT_RE
+    match = pattern.search(ref.strip())
+    if not match:
+        return None
+    session_id, segment_id = match.groups()
+    return session_id, segment_id
 
 
 def _validate_target_labels(labels: ET.Element | None, issues: list[str]) -> None:

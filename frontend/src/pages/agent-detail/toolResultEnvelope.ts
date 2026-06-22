@@ -69,6 +69,10 @@ export interface UserClarificationToolMeta {
   questions: ClarificationQuestion[];
   blocking: boolean;
   nextAction: string | null;
+  answered?: boolean;
+  answeredByEventId?: string | null;
+  answerText?: string | null;
+  answeredAt?: string | null;
 }
 
 export interface PlanModeRequestToolMeta {

@@ -753,9 +753,120 @@ async def test_execute_heartbeat_marks_runtime_task_skipped_when_no_model(monkey
     assert created[0]["task_type"] == "heartbeat"
     assert created[0]["status"] == "running"
     assert created[0]["parent_agent_id"] == agent_id
+    assert created[0]["metadata_json"]["resume_after_restart"] is True
+    assert created[0]["metadata_json"]["resumable_heartbeat"] is True
+    assert created[0]["metadata_json"]["restart_replay_contract"]["task_type"] == "heartbeat"
+    assert created[0]["metadata_json"]["restart_replay_journal"][0]["phase"] == "spawn_intent_recorded"
     assert updates[-1][0] == "heartbeat-task-1"
     assert updates[-1][1]["status"] == "skipped"
     assert updates[-1][1]["metadata_json"]["skip_reason"] == "no_model"
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_heartbeat_runs_requeues_unstarted_run(monkeypatch):
+    from app.services import heartbeat
+
+    run_id = uuid4().hex
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    updates: list[tuple[str, dict]] = []
+    scheduled: list[tuple[object, object, object]] = []
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": "heartbeat",
+                "parent_agent_id": str(agent_id),
+                "trace_id": f"heartbeat:{run_id}",
+                "child_session_id": None,
+                "metadata": {
+                    "agent_id": str(agent_id),
+                    "tenant_id": str(tenant_id),
+                    "resume_after_restart": True,
+                    "resumable_heartbeat": True,
+                    "side_effect_risk": "internal_governed",
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "task_type": "heartbeat",
+                        "task_id": run_id,
+                        "idempotency_key": f"heartbeat:{run_id}:restart",
+                    },
+                },
+            }
+        ]
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        updates.append((task_id, fields))
+        return True
+
+    def fake_create_task(coro, *args, **kwargs):
+        frame = coro.cr_frame
+        scheduled.append(
+            (
+                frame.f_locals["agent_id"],
+                frame.f_locals["tenant_id"],
+                frame.f_locals["runtime_task_id"],
+            )
+        )
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(heartbeat, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(heartbeat.asyncio, "create_task", fake_create_task)
+
+    resumed = await heartbeat.resume_persisted_heartbeat_runs()
+
+    assert resumed == [run_id]
+    assert scheduled == [(agent_id, tenant_id, run_id)]
+    assert updates[-1][0] == run_id
+    assert updates[-1][1]["status"] == "running"
+    assert updates[-1][1]["metadata_json"]["resumed_after_restart"] is True
+    assert updates[-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_heartbeat_runs_requires_reconciliation_after_session_bind(monkeypatch):
+    from app.services import heartbeat
+
+    run_id = uuid4().hex
+    updates: list[tuple[str, dict]] = []
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": "heartbeat",
+                "parent_agent_id": str(uuid4()),
+                "trace_id": f"heartbeat:{run_id}",
+                "child_session_id": str(uuid4()),
+                "metadata": {
+                    "resume_after_restart": True,
+                    "resumable_heartbeat": True,
+                    "side_effect_risk": "internal_governed",
+                },
+            }
+        ]
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        updates.append((task_id, fields))
+        return True
+
+    def fake_create_task(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("session-bound heartbeat must not be replayed blindly")
+
+    monkeypatch.setattr(heartbeat, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(heartbeat.asyncio, "create_task", fake_create_task)
+
+    resumed = await heartbeat.resume_persisted_heartbeat_runs()
+
+    assert resumed == []
+    assert updates[-1][0] == run_id
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "session_bound_heartbeat"
 
 
 @pytest.mark.asyncio

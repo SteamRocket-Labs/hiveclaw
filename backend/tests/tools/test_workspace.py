@@ -136,20 +136,6 @@ async def test_upload_image_rejects_sibling_prefix_escape(monkeypatch, tmp_path)
     sibling.mkdir()
     (sibling / "secret.png").write_bytes(b"png")
 
-    class _FakeResult:
-        def scalar_one_or_none(self):
-            return SimpleNamespace(id=uuid4(), config={"private_key": "private", "url_endpoint": "https://img.example"})
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def execute(self, _query):
-            return _FakeResult()
-
     class _FakeResponse:
         status_code = 201
 
@@ -169,7 +155,12 @@ async def test_upload_image_rejects_sibling_prefix_escape(monkeypatch, tmp_path)
         async def post(self, *args, **kwargs):
             return _FakeResponse()
 
-    monkeypatch.setattr(image_upload, "async_session", lambda: _FakeSession())
+    async def fake_resolve_tool_config(_tool_name, *, agent_id=None):
+        assert agent_id == agent_id_arg
+        return {"private_key": "private", "url_endpoint": "https://img.example"}
+
+    agent_id_arg = agent_id
+    monkeypatch.setattr("app.services.tool_config_service.resolve_tool_config", fake_resolve_tool_config)
     monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
 
     result = await image_upload._upload_image(

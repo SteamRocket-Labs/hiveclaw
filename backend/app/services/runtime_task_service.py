@@ -55,6 +55,15 @@ def _is_restart_resumable_runtime_task(task: RuntimeTask) -> bool:
         return True
 
     metadata = dict(getattr(task, "metadata_json", None) or {})
+    task_id = getattr(task, "id", None)
+    task_id_text = task_id.hex if isinstance(task_id, uuid.UUID) else str(task_id or "")
+    if task_type in {"trigger", "heartbeat"}:
+        resume_flag = "resumable_trigger" if task_type == "trigger" else "resumable_heartbeat"
+        return bool(
+            metadata.get("resume_after_restart")
+            and metadata.get(resume_flag)
+            and has_restart_replay_contract(metadata, task_type=str(task_type), task_id=task_id_text)
+        )
     return bool(
         metadata.get("resume_after_restart")
         and (metadata.get("resumable_delegation") or metadata.get("resumable_subagent"))
@@ -344,7 +353,7 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                 task.metadata_json = merge_completion_journal(task.metadata_json, entry)
             if status == "running" and task.started_at is None:
                 task.started_at = now
-            if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
+            if status in _TERMINAL_STATUSES and task.completed_at is None:
                 task.completed_at = now
 
             await db.commit()
@@ -460,7 +469,7 @@ async def reconcile_orphaned_runtime_tasks(*, exclude_task_ids: set[str] | None 
                     continue
                 task_type = str(getattr(task, "task_type", None) or "runtime_task")
                 metadata = dict(getattr(task, "metadata_json", None) or {})
-                if task_type in {"delegation", "subagent"}:
+                if task_type in {"delegation", "subagent", "trigger", "heartbeat"}:
                     task.status = "needs_reconciliation"
                     blocker = str(metadata.get("restart_resume_blocker") or "non_idempotent_restart_orphan")
                     if not task.result_summary:

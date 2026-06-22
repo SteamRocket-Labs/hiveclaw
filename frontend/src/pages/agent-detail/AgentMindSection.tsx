@@ -9,7 +9,7 @@ type AgentMindSectionProps = {
   canEdit: boolean;
 };
 
-export default function AgentMindSection({ agentId, canEdit }: AgentMindSectionProps) {
+export default function AgentMindSection({ agentId }: AgentMindSectionProps) {
   const { t } = useTranslation();
 
   const adapter: FileBrowserApi = {
@@ -27,7 +27,18 @@ export default function AgentMindSection({ agentId, canEdit }: AgentMindSectionP
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
           {t('agent.mind.soulDesc', 'Core identity, personality, and behavior boundaries.')}
         </p>
-        <FileBrowser api={adapter} singleFile="soul.md" title="" features={{ edit: canEdit }} />
+        <div
+          style={{
+            padding: '12px 14px',
+            borderRadius: '8px',
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-secondary)',
+            fontSize: '13px',
+            lineHeight: 1.5,
+          }}
+        >
+          {t('agent.mind.soulGovernedNotice', 'soul.md is governed by Dream/Soul promotion.')}
+        </div>
       </div>
 
       <div>

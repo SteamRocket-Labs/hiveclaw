@@ -5,6 +5,8 @@
 ## Current Truth Surface
 
 - `hive-sota-master-goal.md` — Hive SOTA 总目标、总矩阵和以后每轮循环对照的 canonical 第一入口。
+- `cc-python-evolution-north-star-2026-06-22.md` — Hive 作为 CC Python evolution + Memory/Iter + Codex delta 的北极星，以及单 Session 全面排查总纲。
+- `agent-lifecycle-full-cc-parity-review-2026-06-22.md` — Agent 全生命周期 CC 对标 review，覆盖 context composition、Skill、Sub-agent、Workflow、Hooks 和 session-middle 改造顺序。
 - `harness-engineering-audit-2026-06-11.md` — 第一轮 harness 工程审计、整改记录和验收证据。
 - `round2-sota-benchmark-2026.md` — 第二轮 SOTA benchmark、详细竞品对标、当前能力差距和已完成 milestone 证据库。
 - `self-evolution-sota-plan.md` — 自我进化 foundation canonical plan。
@@ -23,6 +25,7 @@
 - Memory / self-evolution: `agent-evolution-memory-redesign-2026-06-20.md`、`self-evolution-sota-plan.md`、`agent-memory-md-first-spec.md`、`agent-memory-purity-spec.md`、`agent-memory-research.md`、`owner-steward-agent-memory-design.md`。
 - Skills / MCP / extension surface: `agent-extension-surface-skill-mcp.md`、`SKILLS_AND_PACKS_V2.md`、`capability-pack-consolidation.md`、`cc-tooling-alignment-and-plugin-system.md`。
 - Trigger / automation: `trigger-cc-alignment.md`、`execution-mode-spectrum.md`。
+- CC/Codex session runtime alignment: `cc-python-evolution-north-star-2026-06-22.md` and `agent-lifecycle-full-cc-parity-review-2026-06-22.md` are the audit entries; `session-loop-cc-alignment-plan.md`、`t0-append-only-session-ledger-redesign-2026-06-18.md`、`conversation-experience-cc-codex-parity-plan-2026-06-22.md`、`chat-runtime-disclosure-cc-codex-alignment-2026-06-22.md` are supporting tracks.
 - Frontend / agent workbench: `frontend-agent-workbench-redesign-2026-06-20.md`；`frontend-claude-design-migration-plan.md` remains the broader prototype-to-frontend migration baseline；`chat-runtime-disclosure-cc-codex-alignment-2026-06-22.md` is the CC/Codex-aligned runtime disclosure and transcript replay design.
 - Office / document / multimodal: `document-conversion-multimodal-design.md`。
 - Web / data source ingestion: `web-data-source-layer-plan-2026-06-20.md`；known URL / OCR / document conversion boundary resolves through `document-conversion-multimodal-design.md`。

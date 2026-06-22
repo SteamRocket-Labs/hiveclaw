@@ -11,7 +11,7 @@ import {
   IconSparkles,
 } from '@tabler/icons-react';
 
-import { evolutionApi, type EvolutionManifest } from '../../api/domains/evolution';
+import { evolutionApi, type EvolutionManifest, type EvolutionTimelineItem } from '../../api/domains/evolution';
 
 type AgentEvolutionSectionProps = {
   agentId: string;
@@ -47,9 +47,11 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
   const pendingSoulCandidates = data?.soul.pending_candidates ?? [];
   const skillCandidates = data?.skill_tuning.candidates ?? [];
   const legacyFiles = data?.legacy_audit.detected_legacy_files ?? [];
+  const timeline = data?.timeline ?? [];
   const hasAny =
     !!summary &&
     (summary.total > 0 ||
+      timeline.length > 0 ||
       pendingT3Jobs.length > 0 ||
       pendingSoulCandidates.length > 0 ||
       skillCandidates.length > 0 ||
@@ -160,6 +162,8 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
             </div>
           </div>
 
+          <TimelineList title={t('agent.evolution.timelineHeading', 'Timeline')} items={timeline} />
+
           {skills.length > 0 && (
             <div>
               <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
@@ -267,6 +271,41 @@ export default function AgentEvolutionSection({ agentId, active }: AgentEvolutio
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function TimelineList({ title, items }: { title: string; items: EvolutionTimelineItem[] }) {
+  if (!items.length) return null;
+  return (
+    <div>
+      <h4 style={{ fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>{title}</h4>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {items.slice(0, 24).map((item) => (
+          <div
+            key={item.id}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0, 1fr) auto',
+              gap: '12px',
+              padding: '10px 12px',
+              borderRadius: '8px',
+              background: 'var(--bg-secondary)',
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: '13px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {item.title}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                {item.lane} · {item.stage}
+                {item.path ? ` · ${item.path}` : ''}
+              </div>
+            </div>
+            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{item.status}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

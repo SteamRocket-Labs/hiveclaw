@@ -13,6 +13,34 @@ Hive exists to be **two things, and every line of code must serve one of them**:
 
 **Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. When a trade-off is unclear, resolve it in favor of these two goals. Current SOTA target entry: `docs/hive-sota-master-goal.md`; foundation roadmap: `docs/self-evolution-sota-plan.md`.
 
+## Reference Baselines — 对照物顺序
+
+Hive is a **Cloud Code Python evolution**, so implementation comparisons must use the current local source baselines in this order:
+
+1. **FreeCode TS runnable baseline**: `/Users/rocky243/vc-saas/free-code-main` — first reference for answering "what is the essential CC runtime semantics?"
+2. **claw-code Python port**: `/Users/rocky243/Context Engineering/claw-code/src` — only for Python-port direction and existing port boundaries; not a full parity baseline.
+3. **claw-code Rust runtime**: `/Users/rocky243/Context Engineering/claw-code/rust` — reference for session hygiene, workspace partition, JSONL rotation, resume/fork/compact.
+4. **claude-code-org TS source**: `/Users/rocky243/Context Engineering/claude-code-org` — cross-check against FreeCode.
+5. **Codex Rust**: `/Users/rocky243/Context Engineering/codex/codex-rs` — Codex delta only; it must not override the CC baseline.
+
+If sources conflict, judge CC parity from FreeCode first, use `claude-code-org` only as cross-check, use `claw-code/rust` for low-level runtime/session lessons, and use Codex Rust only for additive deltas that do not conflict with CC semantics.
+
+## Full Lifecycle Parity — 全生命周期对标
+
+“全面对标” means **agent full-lifecycle parity**, not feature-count parity. Compare the whole agent lifecycle: definition, context assembly, accepted user prompt, transcript write, model loop, tool loop, hook boundaries, compaction, stop, resume, subagent, workflow, skill loading, and session close.
+
+The deliberate non-parity delta is Hive's **Memory / Iter self-evolution system**. Memory stays Hive-native: T0/T2/T3/soul, governed write surfaces, Skill evolution, and Iter are not reduced to CC behavior. Everything else must have an explicit CC/Hive mapping before being called aligned.
+
+Context composition must be mapped one-to-one:
+
+- CC `CLAUDE.md` / project instructions → Hive `soul.md` and governed identity/context sections.
+- CC skill progressive disclosure → Hive `Skill` capsule plus `load_skill` / `tool_search` split.
+- CC task/todo scaffolding → Hive Work Ledger / Progress Ledger.
+- CC transcript/session artifacts → Hive T0 raw evidence plus product read models.
+- CC hooks/session boundaries → Hive hook events with equivalent blocking/resume semantics.
+
+Current session-middle parity priorities are **Skill, Sub-agent, Workflow, and Hooks**. Their prompts, tool descriptions, and lifecycle events must be source-checked against FreeCode first and kept vendor-neutral. Anthropic/Claude/Codex names may appear as documented baselines, but runtime prompts must not privilege a model vendor or product identity.
+
 ## AI-Native Design Law (最高设计法律 — judges every architectural decision)
 
 Hive is an **AI-native system**. Three layers, in strict priority order:

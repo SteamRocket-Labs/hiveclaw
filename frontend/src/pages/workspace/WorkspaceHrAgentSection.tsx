@@ -29,8 +29,6 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
 
     const [soulContent, setSoulContent] = useState('');
     const [soulLoading, setSoulLoading] = useState(false);
-    const [soulSaving, setSoulSaving] = useState(false);
-    const [soulSaved, setSoulSaved] = useState(false);
     const [welcomeMessage, setWelcomeMessage] = useState('');
     const [selectedModelId, setSelectedModelId] = useState('');
     const [settingsSaving, setSettingsSaving] = useState(false);
@@ -50,19 +48,6 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
         }).catch(() => {});
     }, [hrAgent?.id]);
 
-    const saveSoul = async () => {
-        if (!hrAgent?.id) return;
-        setSoulSaving(true);
-        try {
-            await fileApi.write(hrAgent.id, 'soul.md', soulContent);
-            setSoulSaved(true);
-            setTimeout(() => setSoulSaved(false), 2000);
-        } catch (e: any) {
-            alert(t('workspace.hr.saveFailed', 'Failed to save: ') + (e.message || e));
-        }
-        setSoulSaving(false);
-    };
-
     const saveSettings = async () => {
         if (!hrAgent?.id) return;
         setSettingsSaving(true);
@@ -78,9 +63,9 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
         setSettingsSaving(false);
     };
 
-    const resetToDefault = async () => {
+    const refreshSoul = async () => {
         if (!hrAgent?.id) return;
-        if (!confirm(t('workspace.hr.resetConfirm', 'Reset HR Agent to default template? Current customizations will be lost.'))) return;
+        setSoulLoading(true);
         try {
             await refetch();
             if (hrAgent?.id) {
@@ -88,7 +73,9 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
                 setSoulContent(typeof res === 'string' ? res : (res as any).content || '');
             }
         } catch (e: any) {
-            alert(e.message || 'Reset failed');
+            alert(e.message || 'Refresh failed');
+        } finally {
+            setSoulLoading(false);
         }
     };
 
@@ -173,18 +160,27 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
                 </button>
             </div>
 
-            {/* Soul.md Editor */}
+            {/* Soul.md Read Model */}
             <div className="card" style={{ marginBottom: '16px', padding: '16px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
                     <h4 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>{t('workspace.hr.soulEditor', 'System Prompt (soul.md)')}</h4>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={resetToDefault}>
-                            {t('workspace.hr.resetDefault', 'Reset to Default')}
-                        </button>
-                        <button className="btn btn-primary" onClick={saveSoul} disabled={soulSaving || soulLoading}>
-                            {soulSaving ? t('common.saving', 'Saving...') : soulSaved ? '✓' : t('common.save', 'Save')}
+                        <button className="btn btn-ghost" style={{ fontSize: '12px' }} onClick={refreshSoul} disabled={soulLoading}>
+                            {t('common.refresh', 'Refresh')}
                         </button>
                     </div>
+                </div>
+                <div
+                    style={{
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        background: 'var(--bg-secondary)',
+                        color: 'var(--text-secondary)',
+                        fontSize: '13px',
+                        marginBottom: '12px',
+                    }}
+                >
+                    {t('workspace.hr.soulGovernedNotice', 'soul.md is governed by Dream/Soul promotion.')}
                 </div>
                 {soulLoading ? (
                     <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
@@ -194,7 +190,7 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
                     <textarea
                         className="form-input"
                         value={soulContent}
-                        onChange={(e) => setSoulContent(e.target.value)}
+                        readOnly
                         style={{
                             width: '100%', minHeight: '360px', fontFamily: 'var(--font-mono)',
                             fontSize: '12px', lineHeight: 1.6, resize: 'vertical',

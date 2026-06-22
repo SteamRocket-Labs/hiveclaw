@@ -84,6 +84,8 @@ _FORCE_TABLES: tuple[str, ...] = (
     "plugin_dependency_edges",
     "decision_traces",
     "decision_trace_feedback",
+    "local_agent_bridge_connections",
+    "local_agent_bridge_pairing_sessions",
 )
 
 

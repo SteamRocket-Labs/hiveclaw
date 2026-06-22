@@ -38,7 +38,7 @@ async def test_session_close_seals_t0_segment_then_starts_canonical_t2_package(m
 
     async def fake_build(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id="job-test")
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
 
     monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
 
@@ -66,11 +66,32 @@ async def test_trigger_end_seals_runtime_t0_segment_then_starts_canonical_t2_pac
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    session_id = "trigger_run-daily-research"
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="trigger fired",
+        source="trigger",
+        data_root=tmp_path,
+    )
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="assistant_message",
+        role="assistant",
+        content="完成了一次用户配置的定时调研。",
+        source="trigger",
+        data_root=tmp_path,
+    )
     calls: list[dict] = []
 
     async def fake_build(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id="trigger-job")
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
 
     monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
 
@@ -91,8 +112,8 @@ async def test_trigger_end_seals_runtime_t0_segment_then_starts_canonical_t2_pac
     assert len(calls) == 1
     assert calls[0]["agent_id"] == agent_id
     assert calls[0]["tenant_id"] == tenant_id
-    assert calls[0]["session_id"] == "trigger_run-daily-research"
-    assert calls[0]["t0_segment_id"].startswith("seg-")
+    assert calls[0]["session_id"] == session_id
+    assert calls[0]["t0_segment_id"] == first.segment_id
     assert calls[0]["data_root"] == tmp_path
 
 
@@ -101,11 +122,32 @@ async def test_delegation_end_seals_runtime_t0_segment_then_starts_canonical_t2_
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()
     tenant_id = uuid4()
+    session_id = "delegation_run-worker-42"
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="子代理收到用户要求的竞品资料整理任务。",
+        source="agent",
+        data_root=tmp_path,
+    )
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="assistant_message",
+        role="assistant",
+        content="子代理完成了用户要求的竞品资料整理。",
+        source="agent",
+        data_root=tmp_path,
+    )
     calls: list[dict] = []
 
     async def fake_build(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id="delegation-job")
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
 
     monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
 
@@ -125,9 +167,38 @@ async def test_delegation_end_seals_runtime_t0_segment_then_starts_canonical_t2_
     assert len(calls) == 1
     assert calls[0]["agent_id"] == agent_id
     assert calls[0]["tenant_id"] == tenant_id
-    assert calls[0]["session_id"] == "delegation_run-worker-42"
-    assert calls[0]["t0_segment_id"].startswith("seg-")
+    assert calls[0]["session_id"] == session_id
+    assert calls[0]["t0_segment_id"] == first.segment_id
     assert calls[0]["data_root"] == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_trigger_end_does_not_fabricate_t0_when_runtime_transcript_missing(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+
+    async def fail_build(**_kwargs):
+        raise AssertionError("T2 must not build from a fabricated trigger summary")
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fail_build)
+
+    await _t0_trigger_end(
+        HookContext(
+            event=HookEvent.TRIGGER_END,
+            agent_id=str(agent_id),
+            session_id="empty-trigger-session",
+            source="trigger",
+            messages=[{"role": "assistant", "content": "summary-only hook payload"}],
+            metadata={"tenant_id": str(uuid4()), "trigger_id": "empty-trigger"},
+        )
+    )
+
+    source_files = list(
+        (tmp_path / str(agent_id) / "memory" / "t0" / "sessions" / "empty-trigger-session").glob(
+            "segments/*/source.md"
+        )
+    )
+    assert source_files == []
 
 
 @pytest.mark.asyncio
@@ -212,7 +283,7 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
         {
             "event": HookEvent.PRE_COMPACTION.value,
             "handler_name": "project_on_pre_compaction",
-            "key": "memory.pre_compaction.session_projection",
+            "key": "memory.pre_compaction.t0_checkpoint",
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,
@@ -263,6 +334,104 @@ async def test_response_and_pre_compaction_do_not_call_legacy_extractor(monkeypa
 
     assert [item[0] for item in updates] == [agent_id, agent_id]
     assert not (tmp_path / str(agent_id) / "memory" / "learnings").exists()
+
+
+@pytest.mark.asyncio
+async def test_pre_compaction_seals_t0_checkpoint_and_enqueues_t2_job(monkeypatch, tmp_path) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.runtime import hooks_setup
+
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = "long-running-chat"
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="这是一段很长会话，压缩前必须形成可恢复 checkpoint。",
+        data_root=tmp_path,
+    )
+    calls: list[dict] = []
+
+    async def fake_build(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
+
+    await hooks_setup._project_on_pre_compaction(
+        HookContext(
+            event=HookEvent.PRE_COMPACTION,
+            agent_id=str(agent_id),
+            session_id=session_id,
+            source="web",
+            messages=[{"role": "user", "content": "压缩前的可恢复上下文。"}],
+            metadata={"trigger": "budget", "tenant_id": str(tenant_id)},
+        )
+    )
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [event.event_type for event in events] == ["user_message", "segment_boundary"]
+    assert events[-1].content == "pre_compaction:budget"
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == agent_id
+    assert calls[0]["tenant_id"] == tenant_id
+    assert calls[0]["session_id"] == session_id
+    assert calls[0]["t0_segment_id"] == first.segment_id
+    assert (
+        tmp_path
+        / str(agent_id)
+        / "memory"
+        / ".staging"
+        / "t2_jobs"
+        / calls[0]["job_id"]
+        / "job_manifest.json"
+    ).exists()
+
+
+@pytest.mark.asyncio
+async def test_session_close_with_empty_messages_only_seals_t0(monkeypatch, tmp_path) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.runtime import hooks_setup
+
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    session_id = uuid4()
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        event_type="user_message",
+        role="user",
+        content="already persisted before close",
+        data_root=tmp_path,
+    )
+    updates: list[tuple] = []
+
+    def fake_update_session_memory(update_agent_id, payload):
+        updates.append((update_agent_id, payload))
+
+    monkeypatch.setattr("app.runtime.hooks_setup.update_session_memory", fake_update_session_memory)
+
+    await hooks_setup._t0_session_close(
+        HookContext(
+            event=HookEvent.SESSION_CLOSE,
+            agent_id=str(agent_id),
+            session_id=str(session_id),
+            source="web",
+            messages=[],
+            metadata={"reason": "invoke_complete"},
+        )
+    )
+
+    assert updates == []
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role) for event in events] == [
+        ("user_message", "user"),
+        ("segment_boundary", "system"),
+    ]
 
 
 def test_startup_does_not_auto_replay_legacy_extraction_queue() -> None:

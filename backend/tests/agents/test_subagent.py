@@ -216,6 +216,56 @@ async def test_spawn_builds_governed_request():
 
 
 @pytest.mark.asyncio
+async def test_spawn_writes_replayable_t0_sidechain(monkeypatch, tmp_path):
+    from app.memory.t0.ledger import replay_t0_session_events
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    ctx = _ctx(
+        parent_agent_id=parent_agent_id,
+        tenant_id=tenant_id,
+        trace_id="trace-subagent",
+        parent_session_id="parent-session",
+    )
+    long_tool_result = "tool evidence " + ("完整证据" * 600) + " END_OF_SUBAGENT_TOOL"
+
+    monkeypatch.setattr(
+        "app.memory.t0.ledger.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    async def invoke(request):
+        await request.on_tool_call(
+            {
+                "status": "done",
+                "name": "web_fetch",
+                "args": {"url": "https://example.com/report"},
+                "result": long_tool_result,
+            }
+        )
+        return SimpleNamespace(content="subagent final answer", tokens_used=10)
+
+    result = await _spawn_one(ctx, SubagentJob(spec=explorer_spec("scout"), task="investigate X"), invoke=invoke)
+
+    assert result.ok
+    session_dirs = list((tmp_path / str(parent_agent_id) / "memory" / "t0" / "sessions").iterdir())
+    assert len(session_dirs) == 1
+    events = replay_t0_session_events(agent_id=parent_agent_id, session_id=session_dirs[0].name, data_root=tmp_path)
+    assert [(event.event_type, event.role) for event in events] == [
+        ("user_message", "user"),
+        ("tool_result", "tool"),
+        ("assistant_message", "assistant"),
+        ("segment_boundary", "system"),
+    ]
+    assert events[0].content == "investigate X"
+    assert "END_OF_SUBAGENT_TOOL" in events[1].content
+    assert events[2].content == "subagent final answer"
+    assert events[-1].content == "subagent_complete"
+    assert events[0].metadata["subagent_name"] == "scout"
+    assert events[0].metadata["parent_session_id"] == "parent-session"
+
+
+@pytest.mark.asyncio
 async def test_spawn_budget_rounds_when_spec_unset():
     captured: list = []
     ctx = _ctx()

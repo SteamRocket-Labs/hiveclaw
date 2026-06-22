@@ -386,6 +386,25 @@ async def test_kernel_drains_mid_run_user_messages_between_tool_rounds() -> None
     )
 
 
+def test_mid_run_drain_prefers_structured_llm_content_over_display_text() -> None:
+    from app.kernel.engine import _mid_run_items_to_user_messages
+
+    messages = _mid_run_items_to_user_messages(
+        [
+            {
+                "content": "[file:bank.pdf]\nSummarize it.",
+                "display_content": "[file:bank.pdf]\nSummarize it.",
+                "llm_content": "[File: bank.pdf]\nFull extracted text\n\nQuestion: Summarize it.",
+                "attachments": [{"name": "bank.pdf", "path": "workspace/bank.pdf"}],
+            }
+        ]
+    )
+
+    assert len(messages) == 1
+    assert messages[0].role == "user"
+    assert messages[0].content == "[File: bank.pdf]\nFull extracted text\n\nQuestion: Summarize it."
+
+
 def test_split_concatenated_json_splits_double_object():
     """T1-4: DeepSeek-V4 style {"a":1}{"b":2} concatenation is split into separate payloads."""
     from app.kernel.engine import _split_concatenated_json

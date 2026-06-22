@@ -1,6 +1,6 @@
 ---
 name: create_employee
-description: "Use when the company-level HR agent creates a digital employee through a blueprint-first, source-attributed creation flow."
+description: "Use when the company-level HR agent needs to create, hire, preview, or onboard a new digital employee through a blueprint-first, source-attributed creation flow with governance gates."
 tools:
   - preview_agent_blueprint
   - create_digital_employee
@@ -132,6 +132,19 @@ then routes capabilities only after that identity and work contract are clear.
 - present source lanes, creation gates, setup debt, and installs clearly
 - ask for final confirmation
 - call `create_digital_employee` with the matching confirmed blueprint hash
+
+## Workflow
+
+1. Detect creation intent and confirm the user wants a new digital employee,
+   not edits to an existing one.
+2. Gather only missing Identity and Work Contract fields, using company
+   knowledge before history suggestions.
+3. Resolve Governance and Capability / Setup Debt gates before preview.
+4. Call `preview_agent_blueprint` with source attributions for every
+   substantive field.
+5. Present the preview, source lanes, setup debt, and required confirmations.
+6. Only after explicit confirmation, call `create_digital_employee` with the
+   confirmed blueprint hash and matching payload.
 
 ## Capability Routing
 

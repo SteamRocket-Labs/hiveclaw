@@ -114,6 +114,51 @@ def test_runtime_task_view_maps_internal_skip_reason_to_user_reason():
     assert diagnostic_view["diagnostics"]["trigger_ids"] == ["trigger-1"]
 
 
+def test_trigger_view_surfaces_restart_reconciliation_attention():
+    from app.services.autonomy_overview import build_trigger_view
+
+    trigger_id = uuid4()
+    trigger = SimpleNamespace(
+        id=trigger_id,
+        name="daily_news",
+        type="cron",
+        config={"trigger_class": "scheduled_job"},
+        reason="Compile the daily AI news feed",
+        is_enabled=True,
+        fire_count=0,
+        max_fires=None,
+        cooldown_seconds=60,
+        last_fired_at=None,
+        created_at=None,
+        expires_at=None,
+    )
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="trigger",
+        status="needs_reconciliation",
+        result_summary="Trigger run was interrupted after session start; manual reconciliation required.",
+        metadata_json={
+            "trigger_ids": [str(trigger_id)],
+            "needs_reconciliation": True,
+            "reconciliation_reason": "session_bound_mutating_trigger",
+            "restart_resume_blocker": "session_bound_mutating_trigger",
+        },
+        created_at=datetime.now(timezone.utc),
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        child_session_id="session-1",
+    )
+
+    view = build_trigger_view(trigger, attempts=[task])
+
+    assert view["attention_state"] == "needs_reconciliation"
+    assert view["attention_reason"] == "Session-bound mutating trigger needs manual reconciliation after restart."
+    assert view["next_action"] == "inspect_reconciliation"
+    assert view["last_attempt"]["attention_reason"] == (
+        "Session-bound mutating trigger needs manual reconciliation after restart."
+    )
+
+
 def test_artifact_view_defaults_to_output_not_internal_metadata():
     from app.services.autonomy_overview import build_artifact_view
 

@@ -15,9 +15,7 @@ def _route_runtime_accessors(monkeypatch, fake_session, *, tenant_id=None):
     use the fake session instead of opening a real connection.
     """
     monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
-    monkeypatch.setattr(
-        "app.services.runtime_task_service.tenant_scoped_session", lambda *a, **k: fake_session
-    )
+    monkeypatch.setattr("app.services.runtime_task_service.tenant_scoped_session", lambda *a, **k: fake_session)
 
     async def _fake_resolve_tenant(_agent_id, *_a, **_k):
         return tenant_id
@@ -222,7 +220,8 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_workflow_runs(monkeypa
     assert updated == 1
     assert workflow_task.status == "running"
     assert workflow_task.completed_at is None
-    assert trigger_task.status == "failed"
+    assert trigger_task.status == "needs_reconciliation"
+    assert trigger_task.metadata_json["needs_reconciliation"] is True
     assert fake_session.commit_calls == 1
 
 
@@ -331,6 +330,65 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_subagent_rec
 
 
 @pytest.mark.asyncio
+async def test_reconcile_orphaned_runtime_tasks_preserves_resumable_trigger_and_heartbeat(monkeypatch):
+    from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+
+    trigger_id = uuid4()
+    heartbeat_id = uuid4()
+    resumable_trigger = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": trigger_id,
+            "task_type": "trigger",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {
+                "resume_after_restart": True,
+                "resumable_trigger": True,
+                "restart_replay_contract": {
+                    "schema": "runtime_restart_replay_contract.v1",
+                    "task_type": "trigger",
+                    "task_id": trigger_id.hex,
+                    "idempotency_key": f"trigger:{trigger_id.hex}:restart",
+                },
+            },
+        },
+    )()
+    resumable_heartbeat = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": heartbeat_id,
+            "task_type": "heartbeat",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {
+                "resume_after_restart": True,
+                "resumable_heartbeat": True,
+                "restart_replay_contract": {
+                    "schema": "runtime_restart_replay_contract.v1",
+                    "task_type": "heartbeat",
+                    "task_id": heartbeat_id.hex,
+                    "idempotency_key": f"heartbeat:{heartbeat_id.hex}:restart",
+                },
+            },
+        },
+    )()
+    fake_session = _ReconcileSession([resumable_trigger, resumable_heartbeat])
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+
+    updated = await reconcile_orphaned_runtime_tasks()
+
+    assert updated == 0
+    assert resumable_trigger.status == "running"
+    assert resumable_heartbeat.status == "running"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_reconcile_orphaned_runtime_tasks_skips_excluded_ids(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 
@@ -397,4 +455,42 @@ async def test_update_runtime_task_record_marks_skipped_completed(monkeypatch):
     assert task.status == "skipped"
     assert task.completed_at is not None
     assert task.metadata_json["skip_reason"] == "no_model"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_update_runtime_task_record_marks_needs_reconciliation_completed(monkeypatch):
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "trigger",
+            "status": "running",
+            "started_at": None,
+            "completed_at": None,
+            "metadata_json": {"side_effect_risk": "mutating"},
+            "trace_id": "trigger-trace",
+            "child_session_id": None,
+            "parent_session_id": None,
+            "result_summary": None,
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+
+    updated = await update_runtime_task_record(
+        uuid4().hex,
+        status="needs_reconciliation",
+        result_summary="Needs reconciliation",
+        metadata_json={"needs_reconciliation": True},
+    )
+
+    assert updated is True
+    assert task.status == "needs_reconciliation"
+    assert task.completed_at is not None
+    assert task.metadata_json["needs_reconciliation"] is True
+    assert task.metadata_json["completion_journal"][0]["status"] == "needs_reconciliation"
     assert fake_session.commit_calls == 1

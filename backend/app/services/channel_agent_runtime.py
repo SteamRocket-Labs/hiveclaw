@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import traceback
 import uuid
+import inspect
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,6 +15,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.permissions import is_agent_expired
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _tool_event_status(event: Any) -> str:
+    if isinstance(event, dict):
+        return str(event.get("status") or "").lower()
+    return str(getattr(event, "status", "") or "").lower()
+
+
+def _tool_event_terminal(status: str) -> bool:
+    return status in {"done", "completed", "failed", "error"}
+
+
+def _tool_event_content(event: Any, *, terminal: bool) -> str:
+    if isinstance(event, dict) and terminal and "result" in event:
+        return str(event.get("result") or "")
+    try:
+        return json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError:
+        return str(event)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def try_confirm_channel_plan_from_text(
@@ -374,6 +412,72 @@ async def call_agent_llm(
         )
         pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, plan_decline_suffix) if part)
 
+    ledger_session_id = _uuid_or_none(session_id)
+    ledger_user_id = _uuid_or_none(effective_user_id)
+    if ledger_session_id is not None:
+        from app.services.chat_transcript import append_session_event
+
+        try:
+            await append_session_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=getattr(agent, "tenant_id", None),
+                session_id=ledger_session_id,
+                actor_type="user",
+                event_type="user_message",
+                role="user",
+                t0_role="user",
+                user_id=ledger_user_id,
+                content=user_text,
+                metadata={
+                    "source_channel": session_channel,
+                    "session_source": session_source,
+                },
+                source=session_source or session_channel or "channel",
+                materialize_chat_message=False,
+            )
+        except Exception as exc:
+            logger.error("[ChannelRuntime] T0 user append failed; refusing to run non-durable channel turn: {}", exc)
+            return f"⚠️ 会话记录写入失败，已停止执行: {type(exc).__name__}"
+
+    async def _append_channel_tool_event(event: Any) -> None:
+        if ledger_session_id is None:
+            return
+        status = _tool_event_status(event)
+        terminal = _tool_event_terminal(status)
+        await append_session_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=ledger_session_id,
+            actor_type="tool",
+            event_type="tool_result" if terminal else "tool_call",
+            role="tool_call",
+            t0_role="tool",
+            user_id=ledger_user_id,
+            content=_tool_event_content(event, terminal=terminal),
+            metadata={
+                "source_channel": session_channel,
+                "session_source": session_source,
+                "tool_event": event,
+                "tool_status": status,
+            },
+            source=session_source or session_channel or "channel",
+            materialize_chat_message=False,
+        )
+
+    if ledger_session_id is not None:
+
+        async def _replayable_on_tool_call(event: Any) -> Any:
+            await _append_channel_tool_event(event)
+            if on_tool_call is None:
+                return None
+            return await _maybe_await(on_tool_call(event))
+
+        effective_on_tool_call = _replayable_on_tool_call
+    else:
+        effective_on_tool_call = on_tool_call
+
     try:
         reply = await call_llm(
             model,
@@ -385,16 +489,67 @@ async def call_agent_llm(
             user_id=effective_user_id,
             supports_vision=getattr(model, "supports_vision", False),
             on_chunk=on_chunk,
-            on_tool_call=on_tool_call,
+            on_tool_call=effective_on_tool_call,
             on_thinking=on_thinking,
             session_id=session_id,
             memory_messages=messages,
             session_context=session_context,
-            auto_close_session=True,
+            auto_close_session=False,
             session_source=session_source,
             session_channel=session_channel,
             system_prompt_suffix=pending_reply_suffix,
         )
+        if ledger_session_id is not None:
+            await append_session_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=getattr(agent, "tenant_id", None),
+                session_id=ledger_session_id,
+                actor_type="assistant",
+                event_type="assistant_message",
+                role="assistant",
+                t0_role="assistant",
+                user_id=ledger_user_id,
+                content=reply,
+                metadata={
+                    "source_channel": session_channel,
+                    "session_source": session_source,
+                },
+                source=session_source or session_channel or "channel",
+                materialize_chat_message=False,
+            )
+            try:
+                from app.runtime.hooks import HookEvent, emit_hook
+
+                await emit_hook(
+                    HookEvent.SESSION_CLOSE,
+                    agent_id=agent_id,
+                    session_id=str(ledger_session_id),
+                    source=session_source,
+                    messages=[],
+                    metadata={
+                        "reason": "invoke_complete",
+                        "channel": session_channel,
+                        "distillation_scope": "semantic_candidate",
+                    },
+                )
+            except Exception as close_err:
+                logger.debug("[ChannelRuntime] SESSION_CLOSE hook failed (non-fatal): {}", close_err)
+            try:
+                from app.memory.t0.ledger import seal_t0_session_segment
+
+                seal_t0_session_segment(
+                    agent_id=agent_id,
+                    session_id=ledger_session_id,
+                    reason="invoke_complete",
+                    metadata={
+                        "source": session_source or session_channel or "channel",
+                        "channel": session_channel,
+                        "distillation_scope": "semantic_candidate",
+                    },
+                )
+            except Exception as seal_err:
+                logger.debug("[ChannelRuntime] direct T0 seal skipped after SESSION_CLOSE: {}", seal_err)
         return reply
     except Exception as exc:
         traceback.print_exc()

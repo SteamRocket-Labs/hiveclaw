@@ -20,6 +20,7 @@ from app.services.t0_logger import (
     _truncate,
     _yaml_frontmatter,
     audit_t0_logs,
+    backfill_missing_chat_transcript_t0,
     backfill_recent_chat_logs,
     cleanup_old_logs,
     migrate_t0_layout,
@@ -373,6 +374,8 @@ class _BackfillSession:
         self._session_rows = session_rows
         self._message_rows = message_rows
         self._calls = 0
+        self.added = []
+        self.flushed = 0
 
     async def __aenter__(self):
         return self
@@ -382,9 +385,49 @@ class _BackfillSession:
 
     async def execute(self, _stmt):
         self._calls += 1
-        if self._calls == 1:
+        stmt_text = str(_stmt)
+        if "chat_sessions" in stmt_text:
             return _BackfillResult(self._session_rows)
+        if "chat_transcript_events" in stmt_text:
+            return _BackfillResult([])
         return _BackfillResult(self._message_rows)
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        self.flushed += 1
+
+
+class _BackfillEnumerationResult:
+    def __init__(self, rows=None, scalar_value=None):
+        self._rows = list(rows or [])
+        self._scalar_value = scalar_value
+
+    def all(self):
+        return list(self._rows)
+
+    def scalar(self):
+        return self._scalar_value
+
+
+class _BackfillEnumerationSession:
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self.executed = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, _stmt):
+        self.executed += 1
+        stmt_text = str(_stmt)
+        if "chat_transcript_events" in stmt_text:
+            return _BackfillEnumerationResult(scalar_value=0)
+        return _BackfillEnumerationResult(rows=self._rows)
 
 
 @pytest.mark.asyncio
@@ -392,6 +435,7 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
     agent_id: uuid.UUID, tmp_agent_dir: Path, monkeypatch
 ) -> None:
     from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     session_id = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -416,6 +460,7 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
                 "content": "请你把记忆系统收成 md-first",
                 "created_at": datetime(2026, 4, 9, 8, 1, tzinfo=timezone.utc),
                 "conversation_id": "web",
+                "id": uuid.uuid4(),
             },
         )(),
         type(
@@ -426,12 +471,14 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
                 "content": "我会先从 session recall 和 T0 审计开始。",
                 "created_at": datetime(2026, 4, 9, 8, 2, tzinfo=timezone.utc),
                 "conversation_id": "web",
+                "id": uuid.uuid4(),
             },
         )(),
     ]
+    fake_db = _BackfillSession([session], messages)
 
     monkeypatch.setattr(
-        "app.services.t0_logger.tenant_scoped_session", lambda *a, **k: _BackfillSession([session], messages)
+        "app.services.t0_logger.tenant_scoped_session", lambda *a, **k: fake_db
     )
     with patch("app.services.t0_logger.get_settings") as mock_settings:
         mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
@@ -444,11 +491,73 @@ async def test_backfill_recent_chat_logs_creates_t0_files(
     assert report["written"] == 1
     assert len(files) == 1
     assert not list(logs_root.rglob("chat-*.md"))
+    transcript_events = [item for item in fake_db.added if isinstance(item, ChatTranscriptEvent)]
+    assert [(event.event_type, event.role if hasattr(event, "role") else event.actor_type) for event in transcript_events] == [
+        ("user_message", "user"),
+        ("assistant_message", "assistant"),
+    ]
+    assert transcript_events[0].message_id == messages[0].id
+    assert transcript_events[0].created_at == messages[0].created_at
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_agent_dir)
     assert [(event.event_type, event.role, event.content) for event in events] == [
         ("user_message", "user", "请你把记忆系统收成 md-first"),
         ("assistant_message", "assistant", "我会先从 session recall 和 T0 审计开始。"),
         ("segment_boundary", "system", "backfill_recent_chat_logs"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_backfill_missing_chat_transcript_t0_groups_by_tenant_and_session(
+    agent_id: uuid.UUID, tmp_agent_dir: Path, monkeypatch
+) -> None:
+    from app.services import t0_logger as module
+
+    tenant_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    fake_db = _BackfillEnumerationSession([(session_id, agent_id, tenant_id)])
+    calls = []
+
+    class _Bypass:
+        async def __aenter__(self):
+            return fake_db
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_backfill_recent_chat_logs(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return {
+            "sessions_scanned": len(kwargs["session_ids"]),
+            "written": len(kwargs["session_ids"]),
+            "skipped_existing": 0,
+            "skipped_empty": 0,
+            "transcript_events_written": 2,
+            "t0_events_written": 2,
+        }
+
+    monkeypatch.setattr(module, "async_session", lambda: fake_db)
+    monkeypatch.setattr(module, "enter_rls_bypass", lambda *a, **k: _Bypass())
+    monkeypatch.setattr(module, "replay_t0_session_events", lambda **kwargs: [])
+    monkeypatch.setattr(module, "backfill_recent_chat_logs", fake_backfill_recent_chat_logs)
+    with patch("app.services.t0_logger.get_settings") as mock_settings:
+        mock_settings.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+        report = await backfill_missing_chat_transcript_t0(recent_days=3650, max_sessions=50, batch_size=2)
+
+    assert fake_db.executed >= 2
+    assert report["candidate_sessions_scanned"] == 1
+    assert report["sessions_needing_backfill"] == 1
+    assert report["groups_processed"] == 1
+    assert report["written"] == 1
+    assert calls == [
+        {
+            "args": (agent_id,),
+            "kwargs": {
+                "recent_days": 3650,
+                "limit_sessions": 1,
+                "tenant_id": tenant_id,
+                "session_ids": [session_id],
+            },
+        }
     ]
 
 

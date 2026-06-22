@@ -94,6 +94,18 @@ def _skip_reason_to_text(reason: str | None) -> str | None:
     return mapping.get(str(reason or "").strip() or "", reason)
 
 
+def _reconciliation_reason_to_text(reason: str | None) -> str | None:
+    mapping = {
+        "session_bound_mutating_trigger": "Session-bound mutating trigger needs manual reconciliation after restart.",
+        "session_bound_heartbeat": "Session-bound heartbeat needs manual reconciliation after restart.",
+        "missing_trigger_parent_agent": "Restarted trigger run cannot find its parent agent.",
+        "missing_resume_triggers": "Restarted trigger run cannot find its original trigger definitions.",
+        "missing_heartbeat_parent_agent": "Restarted heartbeat run cannot find its parent agent.",
+        "non_idempotent_restart_orphan": "Interrupted mutating run needs manual reconciliation before retry.",
+    }
+    return mapping.get(str(reason or "").strip() or "", reason)
+
+
 def _attempt_metadata(task: Any) -> dict[str, Any]:
     return dict(getattr(task, "metadata_json", None) or {})
 
@@ -110,19 +122,29 @@ def _latest_attempt_for_trigger(trigger: Any, attempts: list[Any]) -> Any | None
     matching = [task for task in attempts if _attempt_matches_trigger(task, trigger)]
     if not matching:
         return None
-    return sorted(matching, key=lambda task: getattr(task, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[0]
+    return sorted(
+        matching,
+        key=lambda task: getattr(task, "created_at", None) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )[0]
 
 
 def build_runtime_task_view(task: Any, *, include_diagnostics: bool = False) -> dict[str, Any]:
     metadata = _attempt_metadata(task)
     skip_reason = metadata.get("skip_reason")
+    reconciliation_reason = metadata.get("reconciliation_reason") or metadata.get("restart_resume_blocker")
+    attention_reason = _skip_reason_to_text(skip_reason)
+    if getattr(task, "status", None) == "needs_reconciliation" or metadata.get("needs_reconciliation"):
+        attention_reason = _reconciliation_reason_to_text(reconciliation_reason) or getattr(
+            task, "result_summary", None
+        )
     artifact = metadata.get("output_artifact") or metadata.get("artifact")
     view = {
         "task_id": str(getattr(task, "id", "")),
         "task_type": getattr(task, "task_type", None),
         "status": getattr(task, "status", None),
-        "display_summary": getattr(task, "result_summary", None) or _skip_reason_to_text(skip_reason) or "",
-        "attention_reason": _skip_reason_to_text(skip_reason),
+        "display_summary": getattr(task, "result_summary", None) or attention_reason or "",
+        "attention_reason": attention_reason,
         "created_at": _dt(getattr(task, "created_at", None)),
         "started_at": _dt(getattr(task, "started_at", None)),
         "completed_at": _dt(getattr(task, "completed_at", None)),
@@ -132,6 +154,7 @@ def build_runtime_task_view(task: Any, *, include_diagnostics: bool = False) -> 
         view["diagnostics"] = {
             "runtime_task_id": str(getattr(task, "id", "")),
             "skip_reason": skip_reason,
+            "reconciliation_reason": reconciliation_reason,
             "trigger_ids": metadata.get("trigger_ids", []),
             "session_id": getattr(task, "child_session_id", None),
         }
@@ -144,6 +167,15 @@ def _attention_from_last_attempt(task: Any | None) -> tuple[str | None, str | No
     status = str(getattr(task, "status", "") or "").strip()
     metadata = _attempt_metadata(task)
     skip_reason = str(metadata.get("skip_reason") or "").strip()
+    reconciliation_reason = str(
+        metadata.get("reconciliation_reason") or metadata.get("restart_resume_blocker") or ""
+    ).strip()
+    if status == "needs_reconciliation" or metadata.get("needs_reconciliation"):
+        return (
+            "needs_reconciliation",
+            _reconciliation_reason_to_text(reconciliation_reason) or getattr(task, "result_summary", None),
+            "inspect_reconciliation",
+        )
     if status == "skipped" and skip_reason in {"no_model", "model_not_found", "model_pin_not_found"}:
         return "missing_model", _skip_reason_to_text(skip_reason), "configure_model"
     if status == "skipped":
@@ -196,7 +228,7 @@ def build_trigger_view(
         next_action = "request_retry"
     else:
         attempt_state, attempt_reason, attempt_action = _attention_from_last_attempt(latest_attempt)
-        if attempt_state in {"missing_model", "failed_recently"}:
+        if attempt_state in {"missing_model", "failed_recently", "needs_reconciliation"}:
             attention_state = attempt_state
             attention_reason = attempt_reason
             next_action = attempt_action
@@ -248,14 +280,16 @@ def build_agent_findings(triggers: list[Any], attempts: list[Any]) -> list[dict[
     findings: list[dict[str, Any]] = []
     for trigger in triggers:
         view = build_trigger_view(trigger, attempts=attempts)
-        if view["attention_state"] in {"missing_model", "failed_recently", "backoff_active"}:
-            findings.append(_finding(
-                "warning",
-                f"trigger_{view['attention_state']}",
-                f"Trigger '{getattr(trigger, 'name', '')}' needs attention: {view.get('attention_reason') or view['attention_state']}.",
-                "Open trigger diagnostics and resolve the blocker before relying on this wake policy.",
-                trigger_id=str(getattr(trigger, "id", "")),
-            ))
+        if view["attention_state"] in {"missing_model", "failed_recently", "backoff_active", "needs_reconciliation"}:
+            findings.append(
+                _finding(
+                    "warning",
+                    f"trigger_{view['attention_state']}",
+                    f"Trigger '{getattr(trigger, 'name', '')}' needs attention: {view.get('attention_reason') or view['attention_state']}.",
+                    "Open trigger diagnostics and resolve the blocker before relying on this wake policy.",
+                    trigger_id=str(getattr(trigger, "id", "")),
+                )
+            )
     return findings
 
 
@@ -316,8 +350,7 @@ async def build_agent_autonomy_overview(
             for trigger in triggers
         ],
         "recent_attempts": [
-            build_runtime_task_view(task, include_diagnostics=include_diagnostics)
-            for task in attempts[:50]
+            build_runtime_task_view(task, include_diagnostics=include_diagnostics) for task in attempts[:50]
         ],
         "findings": findings,
     }
@@ -393,7 +426,9 @@ async def read_agent_trigger_artifact_view(
     if deep_research is not None:
         return deep_research
 
-    artifact_path = (agent_root / "runtime_artifacts" / "triggers" / _safe_runtime_task_filename(runtime_task_id)).resolve()
+    artifact_path = (
+        agent_root / "runtime_artifacts" / "triggers" / _safe_runtime_task_filename(runtime_task_id)
+    ).resolve()
     try:
         artifact_path.relative_to(agent_root)
     except ValueError:

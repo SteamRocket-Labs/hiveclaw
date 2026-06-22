@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     # File Storage
     AGENT_DATA_DIR: str = _default_agent_data_dir()
     AGENT_TEMPLATE_DIR: str = "/app/agent_template"
+    # Startup repair for legacy chat sessions that predate the canonical
+    # chat_transcript_events + memory/t0 session ledger path. Runs inside the
+    # backend container so Railway's /data/agents volume is available.
+    T0_STARTUP_BACKFILL_ENABLED: bool = True
+    T0_STARTUP_BACKFILL_RECENT_DAYS: int = 3650
+    T0_STARTUP_BACKFILL_MAX_SESSIONS: int = 10000
+    T0_STARTUP_BACKFILL_BATCH_SIZE: int = 100
 
     # OfficeCLI (agentic document editing core)
     OFFICECLI_BIN: str = "officecli"

@@ -36,14 +36,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import String, cast, func, select
 
 from app.config import get_settings
-from app.database import tenant_scoped_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.memory.form_lint import lint_memory_form
 from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events, seal_t0_session_segment
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.services.chat_transcript import CHAT_MESSAGE_ROLES, append_session_event
 from app.services.privacy_layer import PrivacyLayer, PrivacyStore
 
 logger = logging.getLogger(__name__)
@@ -834,6 +836,7 @@ async def backfill_recent_chat_logs(
     limit_sessions: int = 20,
     *,
     tenant_id: uuid.UUID | None = None,
+    session_ids: Iterable[uuid.UUID] | None = None,
 ) -> dict[str, int]:
     """Backfill recent chat sessions into the append-only T0 session ledger.
 
@@ -843,16 +846,27 @@ async def backfill_recent_chat_logs(
     """
     data_root = Path(get_settings().AGENT_DATA_DIR)
 
+    explicit_session_ids = [uuid.UUID(str(value)) for value in (session_ids or [])]
     cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
-    session_stmt = (
-        select(ChatSession)
-        .where(
-            ChatSession.agent_id == agent_id,
-            ChatSession.created_at >= cutoff,
+    if explicit_session_ids:
+        session_stmt = (
+            select(ChatSession)
+            .where(
+                ChatSession.agent_id == agent_id,
+                ChatSession.id.in_(explicit_session_ids),
+            )
+            .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
         )
-        .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
-        .limit(limit_sessions)
-    )
+    else:
+        session_stmt = (
+            select(ChatSession)
+            .where(
+                ChatSession.agent_id == agent_id,
+                ChatSession.created_at >= cutoff,
+            )
+            .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
+            .limit(limit_sessions)
+        )
 
     try:
         async with tenant_scoped_session(tenant_id) as db:
@@ -860,10 +874,22 @@ async def backfill_recent_chat_logs(
             written = 0
             skipped_existing = 0
             skipped_empty = 0
+            transcript_events_written = 0
+            t0_events_written = 0
 
             for session in sessions:
                 session_key = str(session.id)
-                if replay_t0_session_events(agent_id=agent_id, session_id=session_key, data_root=data_root):
+                existing_t0 = bool(replay_t0_session_events(agent_id=agent_id, session_id=session_key, data_root=data_root))
+                transcript_stmt = (
+                    select(ChatTranscriptEvent.id)
+                    .where(
+                        ChatTranscriptEvent.agent_id == agent_id,
+                        ChatTranscriptEvent.session_id == session.id,
+                    )
+                    .limit(1)
+                )
+                existing_transcript = bool((await db.execute(transcript_stmt)).scalars().all())
+                if existing_t0 and existing_transcript:
                     skipped_existing += 1
                     continue
 
@@ -872,7 +898,7 @@ async def backfill_recent_chat_logs(
                     .where(
                         ChatMessage.agent_id == agent_id,
                         ChatMessage.conversation_id == session_key,
-                        ChatMessage.role.in_(("user", "assistant")),
+                        ChatMessage.role.in_(tuple(sorted(CHAT_MESSAGE_ROLES))),
                     )
                     .order_by(ChatMessage.created_at.asc())
                 )
@@ -882,32 +908,80 @@ async def backfill_recent_chat_logs(
                     skipped_empty += 1
                     continue
 
-                for message in appendable_messages:
+                for offset, message in enumerate(appendable_messages):
                     role = str(message.role)
-                    append_t0_session_event(
+                    event_type = _backfill_event_type_for_role(role)
+                    actor_type = _backfill_actor_type_for_role(role)
+                    if not existing_transcript and not existing_t0:
+                        await append_session_event(
+                            db=db,
+                            agent_id=agent_id,
+                            tenant_id=tenant_id or getattr(session, "tenant_id", None),
+                            session_id=session.id,
+                            actor_type=actor_type,
+                            event_type=event_type,
+                            role=role,
+                            t0_role=role,
+                            user_id=getattr(session, "user_id", None) if role == "user" else None,
+                            participant_id=getattr(session, "participant_id", None),
+                            message_id=getattr(message, "id", None),
+                            root_session_id=getattr(session, "root_session_id", None),
+                            parent_session_id=getattr(session, "parent_session_id", None),
+                            content=message.content,
+                            metadata={
+                                "source": "backfill_recent_chat_logs",
+                                "session_source": str(session.source_channel or ""),
+                                "legacy_message_id": str(getattr(message, "id", "")),
+                            },
+                            visibility_scope=str(getattr(session, "visibility_scope", None) or "direct_user"),
+                            listed_surface=str(getattr(session, "listed_surface", None) or "chat"),
+                            materialize_chat_message=False,
+                            source=str(session.source_channel or "backfill"),
+                            created_at=getattr(message, "created_at", None),
+                            data_root=data_root,
+                        )
+                        transcript_events_written += 1
+                        t0_events_written += 1
+                        continue
+                    if not existing_t0:
+                        append_t0_session_event(
+                            agent_id=agent_id,
+                            session_id=session_key,
+                            event_type=event_type,
+                            role=role,
+                            content=message.content,
+                            message_id=getattr(message, "id", None),
+                            actor_id=getattr(session, "user_id", None) if role == "user" else agent_id,
+                            source=str(session.source_channel or "backfill"),
+                            data_root=data_root,
+                            created_at=getattr(message, "created_at", None),
+                            metadata={
+                                "source": "backfill_recent_chat_logs",
+                                "session_source": str(session.source_channel or ""),
+                            },
+                        )
+                        t0_events_written += 1
+                    if not existing_transcript:
+                        _add_transcript_backfill_event(
+                            db=db,
+                            agent_id=agent_id,
+                            tenant_id=tenant_id or getattr(session, "tenant_id", None),
+                            session=session,
+                            message=message,
+                            event_type=event_type,
+                            actor_type=actor_type,
+                            offset=offset,
+                        )
+                        transcript_events_written += 1
+                if not existing_t0:
+                    seal_t0_session_segment(
                         agent_id=agent_id,
                         session_id=session_key,
-                        event_type="assistant_message" if role == "assistant" else "user_message",
-                        role=role,
-                        content=message.content,
-                        message_id=getattr(message, "id", None),
-                        actor_id=agent_id if role == "assistant" else getattr(session, "user_id", None),
-                        source=str(session.source_channel or "backfill"),
+                        reason="backfill_recent_chat_logs",
                         data_root=data_root,
-                        created_at=getattr(message, "created_at", None),
-                        metadata={
-                            "source": "backfill_recent_chat_logs",
-                            "session_source": str(session.source_channel or ""),
-                        },
+                        created_at=getattr(session, "last_message_at", None),
+                        metadata={"source": "backfill_recent_chat_logs"},
                     )
-                seal_t0_session_segment(
-                    agent_id=agent_id,
-                    session_id=session_key,
-                    reason="backfill_recent_chat_logs",
-                    data_root=data_root,
-                    created_at=getattr(session, "last_message_at", None),
-                    metadata={"source": "backfill_recent_chat_logs"},
-                )
                 written += 1
     except Exception as exc:
         logger.debug("[T0] Backfill skipped for %s: %s", agent_id, exc)
@@ -916,6 +990,8 @@ async def backfill_recent_chat_logs(
             "written": 0,
             "skipped_existing": 0,
             "skipped_empty": 0,
+            "transcript_events_written": 0,
+            "t0_events_written": 0,
         }
 
     return {
@@ -923,7 +999,255 @@ async def backfill_recent_chat_logs(
         "written": written,
         "skipped_existing": skipped_existing,
         "skipped_empty": skipped_empty,
+        "transcript_events_written": transcript_events_written,
+        "t0_events_written": t0_events_written,
     }
+
+
+def _backfill_event_type_for_role(role: str) -> str:
+    return {
+        "user": "user_message",
+        "assistant": "assistant_message",
+        "system": "system_message",
+        "tool_call": "tool_result",
+    }.get(role, "message")
+
+
+def _backfill_actor_type_for_role(role: str) -> str:
+    return {
+        "user": "user",
+        "assistant": "assistant",
+        "system": "system",
+        "tool_call": "tool",
+    }.get(role, "system")
+
+
+def _backfill_sequence_for_message(message: Any, offset: int) -> int:
+    created_at = _coerce_datetime(getattr(message, "created_at", None))
+    if created_at is not None:
+        return int(created_at.timestamp() * 1_000_000_000) + offset
+    return int(datetime.now(timezone.utc).timestamp() * 1_000_000_000) + offset
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _add_transcript_backfill_event(
+    *,
+    db: Any,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | str | None,
+    session: Any,
+    message: Any,
+    event_type: str,
+    actor_type: str,
+    offset: int,
+) -> None:
+    event_id = uuid.uuid4()
+    sequence = _backfill_sequence_for_message(message, offset)
+    role = str(getattr(message, "role", "") or "")
+    metadata = {
+        "source": "backfill_recent_chat_logs",
+        "session_source": str(getattr(session, "source_channel", "") or ""),
+        "legacy_message_id": str(getattr(message, "id", "") or ""),
+        "transcript_event_id": str(event_id),
+        "transcript_sequence": sequence,
+        "actor_type": actor_type,
+        "event_type": event_type,
+        "role": role,
+        "t0_role": role,
+        "visibility_scope": str(getattr(session, "visibility_scope", "") or "direct_user"),
+        "listed_surface": str(getattr(session, "listed_surface", "") or "chat"),
+    }
+    transcript_event = ChatTranscriptEvent(
+        id=event_id,
+        sequence=sequence,
+        tenant_id=_uuid_or_none(tenant_id),
+        agent_id=agent_id,
+        session_id=_uuid_or_none(getattr(session, "id", None)),
+        run_id=_uuid_or_none(getattr(session, "runtime_task_id", None)),
+        root_session_id=_uuid_or_none(getattr(session, "root_session_id", None)),
+        parent_session_id=_uuid_or_none(getattr(session, "parent_session_id", None)),
+        message_id=_uuid_or_none(getattr(message, "id", None)),
+        actor_type=actor_type,
+        event_type=event_type,
+        visibility_scope=metadata["visibility_scope"],
+        listed_surface=metadata["listed_surface"],
+        content=str(getattr(message, "content", "") or ""),
+        metadata_json=metadata,
+    )
+    created_at = _coerce_datetime(getattr(message, "created_at", None))
+    if created_at is not None:
+        transcript_event.created_at = created_at
+    db.add(transcript_event)
+
+
+def _chunked_session_ids(session_ids: list[uuid.UUID], batch_size: int) -> Iterable[list[uuid.UUID]]:
+    effective_batch_size = max(1, batch_size)
+    for index in range(0, len(session_ids), effective_batch_size):
+        yield session_ids[index : index + effective_batch_size]
+
+
+async def backfill_missing_chat_transcript_t0(
+    *,
+    recent_days: int = 3650,
+    max_sessions: int = 10000,
+    batch_size: int = 100,
+) -> dict[str, int | str]:
+    """Repair legacy chat sessions into both DB transcript events and canonical T0 ledger.
+
+    Enumeration uses audited RLS BYPASS because it has to find cross-tenant
+    legacy gaps at startup. Actual writes are delegated back into
+    ``backfill_recent_chat_logs`` with the original tenant id so DB writes and
+    workspace paths stay on the normal governed backfill path.
+    """
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
+    role_values = tuple(sorted(CHAT_MESSAGE_ROLES))
+    message_exists = (
+        select(ChatMessage.id)
+        .where(
+            ChatMessage.agent_id == ChatSession.agent_id,
+            ChatMessage.conversation_id == cast(ChatSession.id, String),
+            ChatMessage.role.in_(role_values),
+        )
+        .limit(1)
+        .exists()
+    )
+    session_stmt = (
+        select(ChatSession.id, ChatSession.agent_id, ChatSession.tenant_id)
+        .where(
+            ChatSession.created_at >= cutoff,
+            ChatSession.tenant_id.is_not(None),
+            message_exists,
+        )
+        .order_by(ChatSession.last_message_at.desc().nullslast(), ChatSession.created_at.desc())
+        .limit(max(1, max_sessions))
+    )
+
+    grouped_targets: dict[tuple[uuid.UUID, uuid.UUID], list[uuid.UUID]] = {}
+    skipped_existing = 0
+    async with async_session() as db:
+        async with enter_rls_bypass(db, reason="startup legacy chat transcript/T0 backfill enumerate") as bypass_db:
+            rows = (await bypass_db.execute(session_stmt)).all()
+            for row in rows:
+                session_id = uuid.UUID(str(row[0]))
+                agent_id = uuid.UUID(str(row[1]))
+                tenant_id = _uuid_or_none(row[2])
+                if tenant_id is None:
+                    continue
+                existing_t0 = bool(
+                    replay_t0_session_events(agent_id=agent_id, session_id=str(session_id), data_root=data_root)
+                )
+                transcript_count = int(
+                    (
+                        await bypass_db.execute(
+                            select(func.count(ChatTranscriptEvent.id)).where(
+                                ChatTranscriptEvent.agent_id == agent_id,
+                                ChatTranscriptEvent.session_id == session_id,
+                            )
+                        )
+                    ).scalar()
+                    or 0
+                )
+                if existing_t0 and transcript_count > 0:
+                    skipped_existing += 1
+                    continue
+                grouped_targets.setdefault((tenant_id, agent_id), []).append(session_id)
+
+    target_session_count = sum(len(values) for values in grouped_targets.values())
+    logger.info(
+        "[T0] Startup chat transcript/T0 backfill enumeration complete: scanned=%d needing=%d groups=%d skipped_existing=%d",
+        len(rows),
+        target_session_count,
+        len(grouped_targets),
+        skipped_existing,
+    )
+
+    groups_processed = 0
+    batches_processed = 0
+    written = 0
+    skipped_empty = 0
+    transcript_events_written = 0
+    t0_events_written = 0
+    for (tenant_id, agent_id), session_ids in grouped_targets.items():
+        groups_processed += 1
+        group_batch_total = (len(session_ids) + max(1, batch_size) - 1) // max(1, batch_size)
+        group_batch_index = 0
+        for batch in _chunked_session_ids(session_ids, batch_size):
+            group_batch_index += 1
+            batches_processed += 1
+            report = await backfill_recent_chat_logs(
+                agent_id,
+                recent_days=recent_days,
+                limit_sessions=len(batch),
+                tenant_id=tenant_id,
+                session_ids=batch,
+            )
+            written += int(report.get("written", 0))
+            skipped_empty += int(report.get("skipped_empty", 0))
+            skipped_existing += int(report.get("skipped_existing", 0))
+            transcript_events_written += int(report.get("transcript_events_written", 0))
+            t0_events_written += int(report.get("t0_events_written", 0))
+            logger.info(
+                "[T0] Startup chat transcript/T0 backfill batch complete: group=%d/%d tenant=%s agent=%s batch=%d/%d sessions=%d written=%s transcript_events=%s t0_events=%s skipped_existing=%s skipped_empty=%s",
+                groups_processed,
+                len(grouped_targets),
+                tenant_id,
+                agent_id,
+                group_batch_index,
+                group_batch_total,
+                len(batch),
+                report.get("written", 0),
+                report.get("transcript_events_written", 0),
+                report.get("t0_events_written", 0),
+                report.get("skipped_existing", 0),
+                report.get("skipped_empty", 0),
+            )
+
+    return {
+        "schema": "chat_transcript_t0_backfill.v1",
+        "candidate_sessions_scanned": len(rows),
+        "sessions_needing_backfill": target_session_count,
+        "groups_processed": groups_processed,
+        "batches_processed": batches_processed,
+        "written": written,
+        "skipped_existing": skipped_existing,
+        "skipped_empty": skipped_empty,
+        "transcript_events_written": transcript_events_written,
+        "t0_events_written": t0_events_written,
+    }
+
+
+async def run_startup_chat_transcript_t0_backfill() -> dict[str, int | str | bool]:
+    """Run the bounded startup repair using configured production-safe limits."""
+    settings = get_settings()
+    if not settings.T0_STARTUP_BACKFILL_ENABLED:
+        logger.info("[T0] Startup chat transcript/T0 backfill disabled")
+        return {"schema": "chat_transcript_t0_backfill.v1", "enabled": False}
+
+    report = await backfill_missing_chat_transcript_t0(
+        recent_days=settings.T0_STARTUP_BACKFILL_RECENT_DAYS,
+        max_sessions=settings.T0_STARTUP_BACKFILL_MAX_SESSIONS,
+        batch_size=settings.T0_STARTUP_BACKFILL_BATCH_SIZE,
+    )
+    logger.info(
+        "[T0] Startup chat transcript/T0 backfill complete: scanned=%s needing=%s written=%s transcript_events=%s t0_events=%s",
+        report.get("candidate_sessions_scanned", 0),
+        report.get("sessions_needing_backfill", 0),
+        report.get("written", 0),
+        report.get("transcript_events_written", 0),
+        report.get("t0_events_written", 0),
+    )
+    return {"enabled": True, **report}
 
 
 _LAYOUT_MARKER_FILENAME = ".t0_layout_v2"

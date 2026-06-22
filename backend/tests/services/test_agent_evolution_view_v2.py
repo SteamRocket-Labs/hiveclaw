@@ -84,6 +84,11 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
     view = build_agent_evolution_view(tmp_path)
 
     assert view["schema"] == "agent_evolution_view.v2"
+    assert {event["lane"] for event in view["timeline"]} >= {"memory", "soul", "skill_tuning"}
+    assert view["lanes"]["memory"][0]["stage"] == "t3_job"
+    assert view["lanes"]["memory"][0]["source_refs"] == ["memory/t2/sessions/s1/segments/seg1/package.md"]
+    assert view["lanes"]["soul"][0]["stage"] == "soul_candidate"
+    assert view["lanes"]["skill_tuning"][0]["stage"] == "skill_candidate"
     assert (
         view["path_contract"]["t2_segment_packages"]
         == "memory/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}"

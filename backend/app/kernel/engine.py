@@ -1483,7 +1483,14 @@ def _mid_run_items_to_user_messages(items: Any) -> list[LLMMessage]:
         return []
     messages: list[LLMMessage] = []
     for item in items:
-        content: Any = item.get("content") if isinstance(item, dict) else item
+        if isinstance(item, dict):
+            structured_parts = item.get("llm_parts") or item.get("parts")
+            if isinstance(structured_parts, list) and structured_parts:
+                messages.append(LLMMessage(role="user", content=structured_parts))
+                continue
+            content: Any = item.get("llm_content") or item.get("content")
+        else:
+            content = item
         if content is None:
             continue
         text = str(content).strip()

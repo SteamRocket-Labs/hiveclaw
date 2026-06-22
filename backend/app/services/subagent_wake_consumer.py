@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -46,6 +47,41 @@ class SubagentWakeResult:
 
 
 ParentWakeInvoker = Callable[[SubagentWakeRequest], Awaitable[Any]]
+
+
+def _parent_session_id_from_wake_thread(thread_id: str | None) -> uuid.UUID | None:
+    if not thread_id:
+        return None
+    try:
+        return uuid.UUID(str(thread_id))
+    except (TypeError, ValueError):
+        pass
+    parts = str(thread_id).split(":")
+    if len(parts) >= 2 and parts[0] == "subagent":
+        try:
+            return uuid.UUID(parts[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _wake_tool_event_status(event: Any) -> str:
+    if isinstance(event, dict):
+        return str(event.get("status") or "").lower()
+    return str(getattr(event, "status", "") or "").lower()
+
+
+def _wake_tool_event_terminal(status: str) -> bool:
+    return status in {"done", "completed", "failed", "error"}
+
+
+def _wake_tool_event_content(event: Any, *, terminal: bool) -> str:
+    if isinstance(event, dict) and terminal and "result" in event:
+        return str(event.get("result") or "")
+    try:
+        return json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError:
+        return str(event)
 
 
 async def drain_subagent_completion_wakes(
@@ -246,6 +282,7 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
         from app.models.llm import LLMModel
         from app.runtime.invoker import AgentInvocationRequest, invoke_agent
         from app.runtime.session import SessionContext
+        from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
 
         async with tenant_scoped_session(str(request.tenant_id)) as session:
             agent = (
@@ -299,30 +336,111 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
             "consume_subagent_signals to collect their results too."
         )
         runtime_messages = [{"role": "user", "content": wake_message}]
-
-        return await invoke_agent(
-            AgentInvocationRequest(
-                model=model,
-                fallback_model=fallback_model,
-                messages=runtime_messages,
-                memory_messages=runtime_messages,
-                agent_name=agent_name,
-                role_description=role_description,
+        parent_session_id = _parent_session_id_from_wake_thread(request.thread_id)
+        t0_metadata = {
+            "source": "subagent_wake",
+            "channel": "subagent_wake",
+            "tenant_id": str(request.tenant_id),
+            "signal_id": str(request.signal_id),
+            "from_agent_id": request.from_agent_id,
+            "thread_id": request.thread_id,
+            "distillation_scope": "semantic_candidate",
+        }
+        if parent_session_id is not None:
+            append_t0_session_event(
                 agent_id=request.parent_agent_id,
-                user_id=creator_id,
-                execution_identity=ExecutionIdentityRef(
-                    identity_type="agent_bot",
-                    identity_id=request.parent_agent_id,
-                    label=f"Agent: {agent_name} (subagent wake)",
-                ),
-                session_context=SessionContext(
-                    source="subagent_wake",
-                    channel="subagent_wake",
-                    metadata={"woken_by_signal": str(request.signal_id), "thread_id": request.thread_id},
-                ),
-                core_tools_only=True,
-                max_tool_rounds=max_tool_rounds,
+                session_id=parent_session_id,
+                event_type="user_message",
+                role="user",
+                content=wake_message,
+                actor_id=creator_id,
+                tenant_id=request.tenant_id,
+                source="subagent_wake",
+                metadata=t0_metadata,
             )
-        )
+
+        async def _on_tool_call(event: Any) -> None:
+            if parent_session_id is None:
+                return
+            status = _wake_tool_event_status(event)
+            terminal = _wake_tool_event_terminal(status)
+            append_t0_session_event(
+                agent_id=request.parent_agent_id,
+                session_id=parent_session_id,
+                event_type="tool_result" if terminal else "tool_call",
+                role="tool",
+                content=_wake_tool_event_content(event, terminal=terminal),
+                actor_id=request.parent_agent_id,
+                tenant_id=request.tenant_id,
+                source="subagent_wake",
+                metadata={**t0_metadata, "tool_status": status, "tool_event": event},
+            )
+
+        try:
+            result = await invoke_agent(
+                AgentInvocationRequest(
+                    model=model,
+                    fallback_model=fallback_model,
+                    messages=runtime_messages,
+                    memory_messages=runtime_messages,
+                    agent_name=agent_name,
+                    role_description=role_description,
+                    agent_id=request.parent_agent_id,
+                    user_id=creator_id,
+                    execution_identity=ExecutionIdentityRef(
+                        identity_type="agent_bot",
+                        identity_id=request.parent_agent_id,
+                        label=f"Agent: {agent_name} (subagent wake)",
+                    ),
+                    session_context=SessionContext(
+                        session_id=str(parent_session_id) if parent_session_id else None,
+                        source="subagent_wake",
+                        channel="subagent_wake",
+                        metadata={"woken_by_signal": str(request.signal_id), "thread_id": request.thread_id},
+                    ),
+                    on_tool_call=_on_tool_call,
+                    core_tools_only=True,
+                    max_tool_rounds=max_tool_rounds,
+                )
+            )
+        except Exception as exc:
+            if parent_session_id is not None:
+                append_t0_session_event(
+                    agent_id=request.parent_agent_id,
+                    session_id=parent_session_id,
+                    event_type="runtime_error",
+                    role="system",
+                    content=str(exc),
+                    actor_id=request.parent_agent_id,
+                    tenant_id=request.tenant_id,
+                    source="subagent_wake",
+                    metadata={**t0_metadata, "error_type": type(exc).__name__},
+                )
+                seal_t0_session_segment(
+                    agent_id=request.parent_agent_id,
+                    session_id=parent_session_id,
+                    reason="subagent_wake_failed",
+                    metadata=t0_metadata,
+                )
+            raise
+        if parent_session_id is not None:
+            append_t0_session_event(
+                agent_id=request.parent_agent_id,
+                session_id=parent_session_id,
+                event_type="assistant_message",
+                role="assistant",
+                content=getattr(result, "content", "") or "",
+                actor_id=request.parent_agent_id,
+                tenant_id=request.tenant_id,
+                source="subagent_wake",
+                metadata=t0_metadata,
+            )
+            seal_t0_session_segment(
+                agent_id=request.parent_agent_id,
+                session_id=parent_session_id,
+                reason="subagent_wake_complete",
+                metadata=t0_metadata,
+            )
+        return result
 
     return _wake_parent

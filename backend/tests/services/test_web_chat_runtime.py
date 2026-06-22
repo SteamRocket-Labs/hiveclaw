@@ -958,6 +958,98 @@ async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(m
 
 
 @pytest.mark.asyncio
+async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_callback(monkeypatch):
+    """The user can answer immediately after an ask_user_question card appears.
+
+    The web-chat callback must mark the run terminal before raising its internal
+    control signal; otherwise the REST send path sees an active run and queues
+    the user's answer behind the same still-running turn.
+    """
+    import json
+
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="Create an analyst",
+        metadata_json={"user_id": str(user_id), "session_id": session_id},
+        trace_id=None,
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="HR",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    finalized_without_assistant: list[dict] = []
+    broadcasts: list[dict] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, []
+
+    async def fake_invoke(request):
+        try:
+            await request.on_tool_call(
+                {
+                    "name": "ask_user_question",
+                    "args": {"questions": [{"question": "Scope?", "options": [{"label": "Mine"}]}]},
+                    "status": "done",
+                    "result": json.dumps(
+                        {
+                            "status": "awaiting_user_clarification",
+                            "blocking": True,
+                            "questions": [{"question": "Scope?", "options": [{"label": "Mine"}]}],
+                        }
+                    ),
+                }
+            )
+        except runtime._TerminalToolCardSignal:
+            assert finalized_without_assistant, "terminal card callback must release the active run before it returns"
+            raise
+        raise AssertionError("terminal tool card should interrupt invoke_agent")
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalized_without_assistant.append(kwargs)
+        return True
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", noop_async)
+    monkeypatch.setattr(runtime, "_claim_pending_reply_suffix_for_session", noop_async)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert len(finalized_without_assistant) == 1
+    assert finalized_without_assistant[0]["result_summary"] == "awaiting_user_clarification"
+    assert any(event.get("type") == "done" and event.get("content") == "" for event in broadcasts)
+
+
+@pytest.mark.asyncio
 async def test_execute_web_chat_run_stops_after_create_employee_success_card(monkeypatch):
     import json
 
@@ -1345,6 +1437,53 @@ async def test_start_web_chat_run_queues_user_message_when_run_is_active(monkeyp
         ("user_message", "user", "second message")
     ]
     assert events[0].runtime_task_id == existing_run_id.hex
+
+
+@pytest.mark.asyncio
+async def test_start_web_chat_run_preserves_structured_mid_run_attachment_queue(monkeypatch, tmp_path):
+    import app.services.web_chat_runtime as runtime
+    from app.models.audit import ChatMessage
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    existing_run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    active_run = SimpleNamespace(
+        id=existing_run_id,
+        status="running",
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        metadata_json={},
+    )
+    db = _FakeDB(active_run=active_run)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    with pytest.raises(runtime.ActiveWebChatRunExists) as exc_info:
+        await runtime.start_web_chat_run(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content="[File: bank.pdf]\nFull extracted text\n\nQuestion: summarize",
+            display_content="[file:bank.pdf]\nsummarize",
+            file_name="bank.pdf",
+            attachments=[{"name": "bank.pdf", "path": "workspace/bank.pdf"}],
+        )
+
+    queued = exc_info.value.run["queued_user_message"]
+    assert queued["content"] == "[file:bank.pdf]\n[file:bank.pdf]\nsummarize"
+    assert queued["llm_content"] == "[File: bank.pdf]\nFull extracted text\n\nQuestion: summarize"
+    assert queued["display_content"] == "[file:bank.pdf]\nsummarize"
+    assert queued["attachments"] == [{"name": "bank.pdf", "path": "workspace/bank.pdf"}]
+    assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
+    pending = active_run.metadata_json["pending_user_messages"][0]
+    assert pending["llm_content"] == "[File: bank.pdf]\nFull extracted text\n\nQuestion: summarize"
+    assert pending["attachments"] == [{"name": "bank.pdf", "path": "workspace/bank.pdf"}]
 
 
 @pytest.mark.asyncio

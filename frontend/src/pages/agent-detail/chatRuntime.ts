@@ -62,6 +62,21 @@ export interface ChatArtifactPart {
   source?: string;
 }
 
+function mergeClarificationAnswerMetadata(
+  toolMeta: ToolCallMeta | null,
+  metadata: Record<string, unknown> | undefined,
+): ToolCallMeta | null {
+  if (!toolMeta || toolMeta.kind !== 'user_clarification' || !metadata) return toolMeta;
+  if (metadata.answered !== true && !metadata.answered_by_event_id) return toolMeta;
+  return {
+    ...toolMeta,
+    answered: metadata.answered === true || Boolean(metadata.answered_by_event_id),
+    answeredByEventId: typeof metadata.answered_by_event_id === 'string' ? metadata.answered_by_event_id : null,
+    answerText: typeof metadata.answer_text === 'string' ? metadata.answer_text : null,
+    answeredAt: typeof metadata.answered_at === 'string' ? metadata.answered_at : null,
+  };
+}
+
 export type ChatRuntimeSummary = SessionRuntimeSummary;
 
 export type StreamingChunkEvent = {
@@ -463,6 +478,10 @@ export function applyTranscriptEvent(
     const toolPayload = toolResultFromTranscriptEvent(event);
     const normalized = normalizeToolCallResult(toolPayload.toolName, toolPayload.result);
     const toolStatus = toolPayload.status === 'running' ? 'running' : 'done';
+    const toolMeta = mergeClarificationAnswerMetadata(
+      normalized.toolMeta || toolPayload.runtimeStepMeta || null,
+      event.metadata,
+    );
     const toolMessage: AgentChatMessage = {
       role: 'tool_call',
       content: '',
@@ -471,7 +490,7 @@ export function applyTranscriptEvent(
       toolStatus,
       toolResult: normalized.displayResult,
       toolRawResult: normalized.raw,
-      toolMeta: normalized.toolMeta || toolPayload.runtimeStepMeta || null,
+      toolMeta,
       timestamp,
       id: event.message_id || event.id,
     };

@@ -445,6 +445,15 @@ def _parse_tool_result_json(payload: dict) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _create_tool_confirmed_hash(payload: dict) -> str:
+    args = payload.get("args")
+    if not isinstance(args, dict):
+        args = payload.get("arguments")
+    if not isinstance(args, dict):
+        return ""
+    return str(args.get("confirmed_blueprint_hash") or args.get("blueprint_hash") or "").strip()
+
+
 def _is_create_failure_result(result: object) -> bool:
     text = str(result or "").lower()
     return (
@@ -500,17 +509,27 @@ async def _validate_creation_flow_confirmation(request, db) -> str | None:
         .limit(50)
     )
     rows = list(result.scalars().all())
+    pending_scoped_failures = 0
+    pending_legacy_failures = 0
     failed_creates = 0
     preview_found = False
     for row in rows:
         payload = _parse_tool_call_payload(getattr(row, "content", None))
         tool_name = payload.get("name")
         if tool_name == "create_digital_employee" and _is_create_failure_result(payload.get("result")):
-            failed_creates += 1
+            create_hash = _create_tool_confirmed_hash(payload)
+            if create_hash:
+                if create_hash == confirmed_hash:
+                    pending_scoped_failures += 1
+            else:
+                pending_legacy_failures += 1
         if tool_name == "preview_agent_blueprint":
             preview_result = _parse_tool_result_json(payload)
             if preview_result.get("blueprint_hash") == confirmed_hash:
                 preview_found = True
+                failed_creates = pending_scoped_failures + pending_legacy_failures
+                break
+            pending_legacy_failures = 0
 
     if failed_creates >= _HR_CREATE_FAILURE_LIMIT:
         return (

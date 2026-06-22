@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
-import FileBrowser, { type FileBrowserApi } from '../../components/FileBrowser';
 import { fileApi } from '../../api/domains/files';
 import { skillApi } from '../../api/domains/skills';
 
@@ -29,15 +28,6 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
     queryFn: () => skillApi.list(),
     enabled: showImportSkillModal,
   });
-
-  const adapter: FileBrowserApi = {
-    list: (path) => fileApi.list(agentId, path),
-    read: (path) => fileApi.read(agentId, path),
-    write: (path, content) => fileApi.write(agentId, path, content),
-    delete: (path) => fileApi.delete(agentId, path),
-    upload: (file, path, onProgress) => fileApi.upload(agentId, file, path, onProgress),
-    downloadUrl: (path) => fileApi.downloadUrl(agentId, path),
-  };
 
   return (
     <div>
@@ -85,7 +75,22 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
         </div>
       </div>
 
-      <FileBrowser api={adapter} rootPath="skills" features={{ newSkill: true, edit: true, delete: true, newFolder: true, upload: true, directoryNavigation: true }} title={t('agent.skills.skillFiles')} />
+      <div
+        style={{
+          padding: '12px 14px',
+          borderRadius: '8px',
+          background: 'var(--bg-secondary)',
+          color: 'var(--text-secondary)',
+          fontSize: '13px',
+          lineHeight: 1.5,
+          marginBottom: '16px',
+        }}
+      >
+        {t(
+          'agent.skills.governedNotice',
+          'Active skill packages are governed by Skill promotion. Use imports and Evolution candidates instead of editing active skill files directly.',
+        )}
+      </div>
 
       {showAgentClawhub && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowAgentClawhub(false)}>

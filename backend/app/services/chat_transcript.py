@@ -1,8 +1,8 @@
 """Single-path chat transcript event writer.
 
 The service creates the durable event first-class surface for UI replay while
-bridging every event into the canonical T0 Markdown/XML ledger. ChatMessage and
-artifact rows are read models, not a second truth source.
+bridging runtime-authored events into the canonical T0 Markdown/XML ledger.
+ChatMessage and artifact rows are read models, not a second truth source.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +31,7 @@ class AppendSessionEventResult:
     message_id: uuid.UUID | None
     transcript_event: ChatTranscriptEvent
     chat_message: ChatMessage | None
-    t0_result: T0AppendResult
+    t0_result: T0AppendResult | None
 
 
 def _uuid_or_none(value: uuid.UUID | str | None) -> uuid.UUID | None:
@@ -112,8 +113,10 @@ async def append_session_event(
     decision_trace_id: str | None = None,
     source: str = "runtime",
     created_at: datetime | None = None,
+    data_root: Path | str | None = None,
+    bridge_to_t0: bool = True,
 ) -> AppendSessionEventResult:
-    """Append a replayable session event and bridge it into T0.
+    """Append a replayable session event and optionally bridge it into T0.
 
     The caller owns transaction commit/rollback. WebSocket/notification should be
     emitted only after the caller's durable write succeeds.
@@ -146,6 +149,8 @@ async def append_session_event(
             decision_trace_id=decision_trace_id,
             conversation_id=str(session_id),
         )
+        if created_at is not None:
+            chat_message.created_at = created_at
         db.add(chat_message)
 
     event_metadata = _metadata_with_transcript_refs(
@@ -180,24 +185,29 @@ async def append_session_event(
         parts_json=parts,
         metadata_json=event_metadata,
     )
+    if created_at is not None:
+        transcript_event.created_at = created_at
     db.add(transcript_event)
     if hasattr(db, "flush"):
         await db.flush()
 
-    t0_result = append_t0_session_event(
-        agent_id=agent_uuid,
-        session_id=session_id,
-        event_type=event_type,
-        role=t0_role if t0_role is not None else role,
-        content=content_text,
-        message_id=message_uuid,
-        actor_id=user_uuid or agent_uuid,
-        tenant_id=tenant_uuid,
-        runtime_task_id=run_uuid,
-        source=source,
-        metadata=event_metadata,
-        created_at=created_at,
-    )
+    t0_result: T0AppendResult | None = None
+    if bridge_to_t0:
+        t0_result = append_t0_session_event(
+            agent_id=agent_uuid,
+            session_id=session_id,
+            event_type=event_type,
+            role=t0_role if t0_role is not None else role,
+            content=content_text,
+            message_id=message_uuid,
+            actor_id=user_uuid or agent_uuid,
+            tenant_id=tenant_uuid,
+            runtime_task_id=run_uuid,
+            source=source,
+            metadata=event_metadata,
+            created_at=created_at,
+            data_root=data_root,
+        )
     return AppendSessionEventResult(
         event_id=event_id,
         sequence=sequence,

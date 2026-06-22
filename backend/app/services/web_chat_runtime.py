@@ -38,6 +38,7 @@ from app.services.chat_message_parts import (
 )
 from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
 from app.services.chat_transcript import append_session_event
+from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
 from app.services.llm_error_policy import is_llm_error_message
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
 from app.services import plan_mode_core
@@ -263,6 +264,8 @@ async def _queue_mid_run_user_message(
     content: str,
     display_content: str = "",
     file_name: str = "",
+    attachments: list[dict[str, Any]] | None = None,
+    parts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     message_id = uuid.uuid4()
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
@@ -272,13 +275,18 @@ async def _queue_mid_run_user_message(
     queued = {
         "id": message_id.hex,
         "content": saved_content,
+        "llm_content": content,
+        "display_content": display_content if display_content else saved_content,
+        "file_name": file_name,
+        "attachments": attachments or [],
+        "parts": parts or [],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     pending.append(queued)
     metadata["pending_user_messages"] = pending
     metadata["pending_user_message_count"] = len(pending)
     active_run.metadata_json = metadata
-    await append_session_event(
+    user_event = await append_session_event(
         db=db,
         agent_id=agent.id,
         tenant_id=getattr(agent, "tenant_id", None),
@@ -290,14 +298,25 @@ async def _queue_mid_run_user_message(
         user_id=user.id,
         content=saved_content,
         message_id=message_id,
+        parts=parts or None,
         source="web",
         metadata={
             "source": "web",
             "queued": True,
             "display_content": display_content,
             "file_name": file_name,
+            "llm_content_present": bool(content and content != saved_content),
+            "attachments": attachments or [],
         },
     )
+    if getattr(user_event, "event_id", None):
+        await mark_latest_pending_clarification_answered(
+            db=db,
+            agent_id=agent.id,
+            session_id=session.id,
+            answer_event_id=user_event.event_id,
+            answer_text=saved_content,
+        )
     await db.commit()
     return queued
 
@@ -320,7 +339,21 @@ async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[
         metadata["pending_user_message_count"] = 0
         task.metadata_json = metadata
         await db.commit()
-    return [{"role": "user", "content": str(item.get("content") or "")} for item in pending if item.get("content")]
+    drained: list[dict[str, Any]] = []
+    for item in pending:
+        content = item.get("llm_content") or item.get("content")
+        if not content:
+            continue
+        drained.append(
+            {
+                "role": "user",
+                "content": content,
+                "display_content": item.get("display_content") or item.get("content") or content,
+                "attachments": item.get("attachments") or [],
+                "parts": item.get("parts") or [],
+            }
+        )
+    return drained
 
 
 def conversation_from_history_messages(history_messages) -> list[dict]:
@@ -442,6 +475,9 @@ async def start_web_chat_run(
     file_name: str = "",
     plan_mode_requested: bool = False,
     extra_metadata: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    parts: list[dict[str, Any]] | None = None,
+    append_user_message: bool = True,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -450,6 +486,8 @@ async def start_web_chat_run(
 
     active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
     if active:
+        if not append_user_message:
+            raise HTTPException(status_code=409, detail="A web chat run is already active for this branch")
         queued = await _queue_mid_run_user_message(
             db=db,
             active_run=active,
@@ -459,6 +497,8 @@ async def start_web_chat_run(
             content=content,
             display_content=display_content,
             file_name=file_name,
+            attachments=attachments,
+            parts=parts,
         )
         payload = _runtime_task_to_run(active)
         payload["queued_user_message"] = queued
@@ -500,9 +540,12 @@ async def start_web_chat_run(
             "trace_id": f"web-chat:{run_uuid.hex}",
             "display_content": display_content,
             "file_name": file_name,
+            "attachments": attachments or [],
+            "parts": parts or [],
             "source": "web",
             "cancelled_by_user": False,
             "plan_mode_requested": bool(plan_mode_requested),
+            "append_user_message": bool(append_user_message),
             # Plan Mode continuation provenance (approved_plan_id/version/hash,
             # source="plan_mode_handoff"); empty for normal user turns.
             **(extra_metadata or {}),
@@ -511,27 +554,39 @@ async def start_web_chat_run(
     db.add(runtime_task)
     try:
         await db.flush()
-        await append_session_event(
-            db=db,
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session.id,
-            run_id=run_uuid,
-            actor_type="user",
-            event_type="user_message",
-            role="user",
-            user_id=user.id,
-            content=saved_content,
-            message_id=message_id,
-            source="web",
-            metadata={
-                "source": "web",
-                "display_content": display_content,
-                "file_name": file_name,
-                "plan_mode_requested": bool(plan_mode_requested),
-                **(extra_metadata or {}),
-            },
-        )
+        if append_user_message:
+            user_event = await append_session_event(
+                db=db,
+                agent_id=agent.id,
+                tenant_id=getattr(agent, "tenant_id", None),
+                session_id=session.id,
+                run_id=run_uuid,
+                actor_type="user",
+                event_type="user_message",
+                role="user",
+                user_id=user.id,
+                content=saved_content,
+                message_id=message_id,
+                parts=parts or None,
+                source="web",
+                metadata={
+                    "source": "web",
+                    "display_content": display_content,
+                    "file_name": file_name,
+                    "attachments": attachments or [],
+                    "llm_content_present": bool(content and content != saved_content),
+                    "plan_mode_requested": bool(plan_mode_requested),
+                    **(extra_metadata or {}),
+                },
+            )
+            if getattr(user_event, "event_id", None):
+                await mark_latest_pending_clarification_answered(
+                    db=db,
+                    agent_id=agent.id,
+                    session_id=session.id,
+                    answer_event_id=user_event.event_id,
+                    answer_text=saved_content,
+                )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -554,6 +609,8 @@ async def start_web_chat_run(
             file_name=file_name,
             source_channel="web",
             message_already_in_t0=True,
+            attachments=attachments,
+            parts=parts,
         )
         raise ActiveWebChatRunExists(payload) from exc
 
@@ -580,6 +637,8 @@ async def _queue_saved_mid_run_user_message(
     file_name: str = "",
     source_channel: str = "channel",
     message_already_in_t0: bool = False,
+    attachments: list[dict[str, Any]] | None = None,
+    parts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
@@ -587,6 +646,11 @@ async def _queue_saved_mid_run_user_message(
     queued = {
         "id": uuid.uuid4().hex,
         "content": saved_content,
+        "llm_content": content,
+        "display_content": display_content if display_content else saved_content,
+        "file_name": file_name,
+        "attachments": attachments or [],
+        "parts": parts or [],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     pending.append(queued)
@@ -595,7 +659,7 @@ async def _queue_saved_mid_run_user_message(
     active_run.metadata_json = metadata
     session.last_message_at = datetime.now(timezone.utc)
     if not message_already_in_t0:
-        await append_session_event(
+        user_event = await append_session_event(
             db=db,
             agent_id=agent.id,
             tenant_id=getattr(agent, "tenant_id", None),
@@ -607,6 +671,7 @@ async def _queue_saved_mid_run_user_message(
             user_id=user.id,
             content=saved_content,
             message_id=queued["id"],
+            parts=parts or None,
             source=source_channel,
             materialize_chat_message=False,
             metadata={
@@ -615,8 +680,18 @@ async def _queue_saved_mid_run_user_message(
                 "existing_user_message_saved": True,
                 "display_content": display_content,
                 "file_name": file_name,
+                "llm_content_present": bool(content and content != saved_content),
+                "attachments": attachments or [],
             },
         )
+        if getattr(user_event, "event_id", None):
+            await mark_latest_pending_clarification_answered(
+                db=db,
+                agent_id=agent.id,
+                session_id=session.id,
+                answer_event_id=user_event.event_id,
+                answer_text=saved_content,
+            )
     await db.commit()
     payload = _runtime_task_to_run(active_run)
     payload["queued_user_message"] = queued
@@ -665,6 +740,7 @@ async def start_channel_chat_run_from_saved_turn(
 
     run_uuid = uuid.uuid4()
     now = datetime.now(timezone.utc)
+    saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     metadata = {
         "user_id": str(user.id),
         "session_id": str(session.id),
@@ -701,7 +777,7 @@ async def start_channel_chat_run_from_saved_turn(
     db.add(runtime_task)
     try:
         await db.flush()
-        await append_session_event(
+        user_event = await append_session_event(
             db=db,
             agent_id=agent.id,
             tenant_id=getattr(agent, "tenant_id", None),
@@ -711,7 +787,7 @@ async def start_channel_chat_run_from_saved_turn(
             event_type="user_message",
             role="user",
             user_id=user.id,
-            content=_saved_user_content(content=content, display_content=display_content, file_name=file_name),
+            content=saved_content,
             message_id=(extra_metadata or {}).get("message_id"),
             source=source_channel,
             materialize_chat_message=False,
@@ -725,6 +801,14 @@ async def start_channel_chat_run_from_saved_turn(
                 **(extra_metadata or {}),
             },
         )
+        if getattr(user_event, "event_id", None):
+            await mark_latest_pending_clarification_answered(
+                db=db,
+                agent_id=agent.id,
+                session_id=session.id,
+                answer_event_id=user_event.event_id,
+                answer_text=saved_content,
+            )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -1968,6 +2052,28 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
         plan_mode_submitted = False
         interactive_pause_summary: str | None = None
+        terminal_tool_card_finalized = False
+
+        async def _finalize_terminal_tool_card_now(summary: str) -> bool:
+            """Release the active run as soon as a terminal tool card is visible."""
+            nonlocal terminal_tool_card_finalized
+            if terminal_tool_card_finalized:
+                return True
+            metadata_update = {
+                "cancelled_by_user": bool(cancel_event.is_set()),
+                "interactive_pause": summary,
+            }
+            finalized = await _finalize_web_chat_run_without_assistant(
+                run_uuid=run_uuid,
+                agent_id=agent.id,
+                status="killed" if cancel_event.is_set() else "completed",
+                result_summary=summary,
+                metadata_json=metadata_update,
+            )
+            terminal_tool_card_finalized = finalized or terminal_tool_card_finalized
+            if finalized:
+                await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
+            return terminal_tool_card_finalized
 
         def _tool_result_payload(data: dict[str, Any]) -> dict[str, Any]:
             raw_result = data.get("result")
@@ -1986,6 +2092,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
 
         async def tool_call_to_ws(data: dict[str, Any]) -> None:  # type: ignore[no-redef]
             nonlocal interactive_pause_summary, plan_mode_submitted
+            if terminal_tool_card_finalized:
+                return
             data = _tool_step_contract(data, fallback_run_id=run_uuid)
             if data.get("status") != "done":
                 persisted_event = await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
@@ -2026,7 +2134,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 pause_summary = _interactive_pause_summary_for_tool_call(data)
                 if pause_summary:
                     interactive_pause_summary = pause_summary
-                if pause_summary:
+                    await _finalize_terminal_tool_card_now(pause_summary)
                     raise _TerminalToolCardSignal(pause_summary)
 
         plan_mode_token = None
@@ -2074,6 +2182,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             if plan_mode_submitted:
                 _clear_interactive_plan_mode(runtime_session_context)
             runtime_session_context.metadata.pop(plan_mode_core.PLAN_MODE_TRUSTED_DECLINE_SESSION_KEY, None)
+        if terminal_tool_card_finalized:
+            return
         if result is None and interactive_pause_summary:
             metadata_update = {
                 "cancelled_by_user": bool(cancel_event.is_set()),

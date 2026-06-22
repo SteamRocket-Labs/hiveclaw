@@ -747,6 +747,35 @@ def test_platform_gate_holds_patch_with_legacy_target(tmp_path: Path) -> None:
     assert not (tmp_path / str(agent_id) / "memory" / "feedback.md").exists()
 
 
+def test_platform_gate_holds_patch_with_t0_ref_not_derivable_from_t2_source_refs(tmp_path: Path) -> None:
+    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
+
+    agent_id = uuid.uuid4()
+    target = tmp_path / str(agent_id) / "memory" / "t3" / "user.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# T3 User\n", encoding="utf-8")
+    patch = f"""<t3_consolidation_patch id="t3p_bad_t0_ref" schema_version="t3.consolidation_patch.v1">
+  <base_revisions><base_revision path="memory/t3/user.md" sha256="{file_sha256(target)}"/></base_revisions>
+  <source_packages><source_package ref="t2://session/s1/segment/seg-1" status="reviewed"/></source_packages>
+  <target_files><target_file path="memory/t3/user.md"/></target_files>
+  <target_view_labels><target_view>user</target_view><consolidation_mode>create</consolidation_mode><source_coverage>single_session</source_coverage><cue_strength>0.80</cue_strength><stability>stable</stability><behavior_impact>response_style</behavior_impact><prompt_priority>p1_dynamic</prompt_priority></target_view_labels>
+  <proposed_changes><append_block target="memory/t3/user.md" block_id="usr_bad_ref"><block_content><![CDATA[<t3_user_memory id="usr_bad_ref" status="active"><claim>用户偏好先讨论。</claim><source_refs><source_ref>t0://session/s2/segment/seg-9#seq=1..2</source_ref></source_refs></t3_user_memory>]]></block_content></append_block></proposed_changes>
+  <evidence><source_ref>t2://session/s1/segment/seg-1#summary</source_ref><source_ref>t0://session/s2/segment/seg-9#seq=1..2</source_ref></evidence>
+</t3_consolidation_patch>"""
+
+    result = apply_t3_consolidation_patch(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        job_id="job-bad-t0-ref",
+        revised_patch_md=patch,
+        review_md=_accepted_review(),
+    )
+
+    assert result.status == "held"
+    assert any("T0 ref is not derivable from T2 source refs" in issue for issue in result.issues)
+    assert "usr_bad_ref" not in target.read_text(encoding="utf-8")
+
+
 def test_platform_gate_returns_rebase_required_when_base_revision_changed(tmp_path: Path) -> None:
     from app.memory.md_store import ensure_t3_layout
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256

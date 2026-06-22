@@ -35,6 +35,7 @@ from app.api.gateway import router as gateway_router
 from app.api.guard_policies import router as guard_policies_router
 from app.api.deep_research import router as deep_research_router
 from app.api.interoperability import router as interoperability_router
+from app.api.local_bridge import router as local_bridge_router
 from app.api.workflows import router as workflows_router
 from app.api.workflow_definitions import router as workflow_definitions_router
 from app.api.agent_knowledge import router as agent_knowledge_router
@@ -337,19 +338,29 @@ async def lifespan(app: FastAPI):
 
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
+        from app.services.heartbeat import resume_persisted_heartbeat_runs
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
         from app.services.subagent_run_service import resume_persisted_subagent_runs
+        from app.services.trigger_daemon import resume_persisted_trigger_runs
         from app.services.web_chat_runtime import resume_persisted_web_chat_runs
 
         resumed_task_ids = await resume_persisted_async_delegations(limit=50)
         resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
         resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
-        resumed_task_ids = [*resumed_task_ids, *resumed_subagent_ids, *resumed_web_chat_ids]
+        resumed_trigger_ids = await resume_persisted_trigger_runs(limit=50)
+        resumed_heartbeat_ids = await resume_persisted_heartbeat_runs(limit=50)
+        resumed_task_ids = [
+            *resumed_task_ids,
+            *resumed_subagent_ids,
+            *resumed_web_chat_ids,
+            *resumed_trigger_ids,
+            *resumed_heartbeat_ids,
+        ]
         if resumed_task_ids:
-            logger.info("[startup] Resumed %d persisted async runtime task(s)", len(resumed_task_ids))
+            logger.info("[startup] Resumed {} persisted async runtime task(s)", len(resumed_task_ids))
         reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
         if reconciled:
-            logger.warning("[startup] Reconciled %d orphaned runtime task(s) after restart", reconciled)
+            logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
     except Exception as e:
         logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
 
@@ -420,7 +431,7 @@ async def lifespan(app: FastAPI):
         result = await backfill_null_reply_contexts()
         if result["patched"]:
             logger.info(
-                "[startup] Backfilled %d trigger reply_contexts (skipped %d)", result["patched"], result["skipped"]
+                "[startup] Backfilled {} trigger reply_contexts (skipped {})", result["patched"], result["skipped"]
             )
     except Exception as e:
         logger.warning(f"[startup] Trigger reply_context backfill failed: {e}")
@@ -463,7 +474,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning(f"Deep Research leaf preset registration failed: {exc}")
 
-        for name, coro in [
+        startup_background_tasks = [
             ("trigger_daemon", start_trigger_daemon()),
             ("workflow_daemon", start_workflow_daemon()),
             ("evolution_daemon", start_evolution_daemon()),
@@ -472,7 +483,13 @@ async def lifespan(app: FastAPI):
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
             ("wecom_stream", wecom_stream_manager.start_all()),
             ("wechat_personal_stream", wechat_personal_stream_manager.start_all()),
-        ]:
+        ]
+        if settings.T0_STARTUP_BACKFILL_ENABLED:
+            from app.services.t0_logger import run_startup_chat_transcript_t0_backfill
+
+            startup_background_tasks.append(("t0_startup_backfill", run_startup_chat_transcript_t0_backfill()))
+
+        for name, coro in startup_background_tasks:
             if name in {"trigger_daemon", "workflow_daemon", "evolution_daemon"}:
                 from app.services.daemon_liveness import register_daemon
 
@@ -597,6 +614,7 @@ _api_routers = [
     desktop_sync_router,
     desktop_agents_router,
     guard_policies_router,
+    local_bridge_router,
     desktop_audit_router,
     role_templates_router,
     tenant_channels_router,

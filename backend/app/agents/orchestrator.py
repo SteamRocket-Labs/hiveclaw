@@ -921,6 +921,181 @@ async def _delegate_after_cycle_check(
             }
         )
 
+    transcript_enabled = False
+    transcript_tenant_id = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
+    transcript_session_id = _maybe_uuid(child_session_id)
+    transcript_parent_session_id = _maybe_uuid(request.parent_session_id)
+    transcript_runtime_task_id = _maybe_uuid(request.runtime_task_id)
+
+    async def _append_child_transcript_event(
+        *,
+        actor_type: str,
+        event_type: str,
+        role: str | None,
+        content: str,
+        t0_role: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if not transcript_enabled or transcript_tenant_id is None or transcript_session_id is None:
+            return
+        from app.database import tenant_scoped_session
+        from app.services.chat_transcript import append_session_event
+
+        async with tenant_scoped_session(transcript_tenant_id) as db:
+            await append_session_event(
+                db=db,
+                agent_id=request.target.id,
+                tenant_id=transcript_tenant_id,
+                session_id=transcript_session_id,
+                run_id=transcript_runtime_task_id,
+                actor_type=actor_type,
+                event_type=event_type,
+                role=role,
+                t0_role=t0_role,
+                user_id=request.owner_id,
+                content=content,
+                parent_session_id=transcript_parent_session_id,
+                root_session_id=transcript_parent_session_id or transcript_session_id,
+                source="agent",
+                visibility_scope="agent_owner",
+                listed_surface="task_updates",
+                metadata={
+                    "source": "agent",
+                    "interaction_type": request.interaction_type,
+                    "delegation": is_delegation,
+                    "trace_id": trace_id,
+                    "depth": request.depth,
+                    "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                    "to_agent": str(request.target.id),
+                    "to_agent_name": request.target.name,
+                    "runtime_task_id": request.runtime_task_id,
+                    "semantic_memory_eligible": is_delegation,
+                    **(metadata or {}),
+                },
+            )
+            await db.commit()
+
+    if is_delegation and transcript_tenant_id is not None and transcript_session_id is not None:
+        from sqlalchemy import select
+
+        from app.database import tenant_scoped_session
+        from app.models.chat_session import ChatSession
+        from app.models.participant import Participant
+        from app.services.chat_transcript import append_session_event
+
+        async with tenant_scoped_session(transcript_tenant_id) as db:
+            result = await db.execute(select(ChatSession).where(ChatSession.id == transcript_session_id))
+            session = result.scalar_one_or_none()
+            if session is None:
+                participant_result = await db.execute(
+                    select(Participant).where(Participant.type == "agent", Participant.ref_id == request.target.id)
+                )
+                target_participant = participant_result.scalar_one_or_none()
+                session = ChatSession(
+                    id=transcript_session_id,
+                    agent_id=request.target.id,
+                    tenant_id=transcript_tenant_id,
+                    user_id=request.owner_id,
+                    participant_id=target_participant.id if target_participant else None,
+                    peer_agent_id=_maybe_uuid(request.parent_agent_id),
+                    source_channel="agent",
+                    session_kind="delegation_run",
+                    actor_type="agent",
+                    runtime_source="delegation",
+                    visibility_scope="agent_owner",
+                    listed_surface="task_updates",
+                    parent_session_id=transcript_parent_session_id,
+                    root_session_id=transcript_parent_session_id,
+                    runtime_task_id=transcript_runtime_task_id,
+                    title=f"Delegation: {request.target.name}"[:200],
+                    transcript_metadata_json={
+                        "source": "agent",
+                        "interaction_type": request.interaction_type,
+                        "trace_id": trace_id,
+                        "depth": request.depth,
+                        "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                        "to_agent": str(request.target.id),
+                        "to_agent_name": request.target.name,
+                    },
+                )
+                db.add(session)
+                await db.flush()
+            transcript_enabled = True
+            await append_session_event(
+                db=db,
+                agent_id=request.target.id,
+                tenant_id=transcript_tenant_id,
+                session_id=transcript_session_id,
+                run_id=transcript_runtime_task_id,
+                actor_type="user",
+                event_type="user_message",
+                role="user",
+                user_id=request.owner_id,
+                content=delegation_user_message,
+                parent_session_id=transcript_parent_session_id,
+                root_session_id=transcript_parent_session_id or transcript_session_id,
+                source="agent",
+                visibility_scope="agent_owner",
+                listed_surface="task_updates",
+                metadata={
+                    "source": "agent",
+                    "interaction_type": request.interaction_type,
+                    "delegation": True,
+                    "trace_id": trace_id,
+                    "depth": request.depth,
+                    "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                    "to_agent": str(request.target.id),
+                    "to_agent_name": request.target.name,
+                    "runtime_task_id": request.runtime_task_id,
+                    "semantic_memory_eligible": True,
+                },
+            )
+            session.last_message_at = datetime.now(timezone.utc)
+            await db.commit()
+    elif is_delegation:
+        logger.warning(
+            "[Orchestrator] Delegation transcript disabled: tenant/session missing target=%s session=%s tenant=%s",
+            getattr(request.target, "id", None),
+            child_session_id,
+            transcript_tenant_id,
+        )
+
+    async def _on_delegation_tool_call(data: dict[str, Any]) -> None:
+        if not transcript_enabled:
+            return
+        status = str(data.get("status") or "")
+        payload = {
+            "name": data.get("name", ""),
+            "args": data.get("args"),
+            "status": status,
+            "tool_call_id": data.get("tool_call_id"),
+            "step_id": data.get("step_id"),
+            "visibility": data.get("visibility") or "collapsed",
+            "started_at": data.get("started_at") or data.get("startedAt"),
+            "completed_at": data.get("completed_at") or data.get("completedAt"),
+            "duration_ms": data.get("duration_ms"),
+            "reasoning_content": data.get("reasoning_content"),
+            "reasoning_signature": data.get("reasoning_signature"),
+        }
+        if status in {"done", "completed", "failed"} or "result" in data:
+            payload["result"] = str(data.get("result", ""))
+        payload = {key: value for key, value in payload.items() if value is not None}
+        await _append_child_transcript_event(
+            actor_type="tool",
+            event_type="tool_result" if status in {"done", "completed", "failed"} else "tool_call",
+            role="tool_call",
+            t0_role="tool",
+            content=json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+            metadata={
+                "tool_name": data.get("name", ""),
+                "status": status,
+                "tool_call_id": data.get("tool_call_id"),
+                "step_id": data.get("step_id"),
+                "duration_ms": data.get("duration_ms"),
+                "visibility": data.get("visibility") or "collapsed",
+            },
+        )
+
     invocation = AgentInvocationRequest(
         model=request.target_model,
         messages=[{"role": "user", "content": delegation_user_message}],
@@ -939,6 +1114,7 @@ async def _delegate_after_cycle_check(
         execution_identity=request.execution_identity or _capture_execution_identity_ref(),
         system_prompt_suffix=combined_suffix,
         tool_executor=request.tool_executor,
+        on_tool_call=_on_delegation_tool_call if transcript_enabled else None,
         core_tools_only=tool_profile.core_tools_only,
         allowed_tool_names=tool_profile.allowed_tools,
         excluded_tool_names=tool_profile.excluded_tools,
@@ -992,6 +1168,19 @@ async def _delegate_after_cycle_check(
             failed=True,
         )
 
+    await _append_child_transcript_event(
+        actor_type="assistant",
+        event_type="assistant_message",
+        role="assistant",
+        content=delegation_result.content or "",
+        metadata={
+            "status": _delegation_status,
+            "failed": delegation_result.failed,
+            "timed_out": delegation_result.timed_out,
+            "depth_limited": delegation_result.depth_limited,
+        },
+    )
+
     if is_delegation:
         try:
             from app.runtime.hooks import HookEvent, emit_hook
@@ -1000,9 +1189,12 @@ async def _delegate_after_cycle_check(
                 HookEvent.DELEGATION_END,
                 agent_id=request.target.id,
                 session_id=child_session_id,
-                messages=request.conversation_messages,
+                messages=[],
                 source="agent",
                 metadata={
+                    "tenant_id": str(transcript_tenant_id) if transcript_tenant_id else None,
+                    "runtime_task_id": request.runtime_task_id,
+                    "semantic_memory_eligible": True,
                     "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
                     "to_agent": str(request.target.id),
                     "to_agent_name": request.target.name,
@@ -1010,12 +1202,6 @@ async def _delegate_after_cycle_check(
                     "depth": request.depth,
                     "status": _delegation_status,
                     "failed": delegation_result.failed,
-                    "task": (
-                        request.conversation_messages[-1].get("content", "")[:500]
-                        if request.conversation_messages
-                        else ""
-                    ),
-                    "result": (delegation_result.content or "")[:2000],
                 },
             )
         except Exception as _hook_err:

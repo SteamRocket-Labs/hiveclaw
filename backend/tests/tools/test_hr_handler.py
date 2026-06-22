@@ -767,6 +767,73 @@ async def test_validate_creation_flow_confirmation_blocks_after_repeated_failure
         SimpleNamespace(
             content=json.dumps(
                 {
+                    "name": "create_digital_employee",
+                    "status": "done",
+                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
+                },
+                ensure_ascii=False,
+            )
+        ),
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "name": "create_digital_employee",
+                    "status": "done",
+                    "result": "Error: failed to create the digital employee. Please try again or contact support.",
+                },
+                ensure_ascii=False,
+            )
+        ),
+        SimpleNamespace(
+            content=json.dumps(
+                {
+                    "name": "preview_agent_blueprint",
+                    "status": "done",
+                    "result": json.dumps(preview, ensure_ascii=False),
+                },
+                ensure_ascii=False,
+            )
+        ),
+    ]
+    request = ToolExecutionRequest(
+        tool_name="create_digital_employee",
+        arguments={**preview["blueprint"], "confirmed_blueprint_hash": preview["blueprint_hash"]},
+        context=ToolExecutionContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            workspace=__import__("pathlib").Path("/tmp"),
+            session_id=str(uuid4()),
+        ),
+    )
+
+    message = await _validate_creation_flow_confirmation(request, _QueuedDB([_ScalarsResult(rows)]))
+
+    assert message is not None
+    assert "stopped after 2 failed create attempts" in message
+
+
+@pytest.mark.asyncio
+async def test_validate_creation_flow_confirmation_ignores_failures_before_matching_preview() -> None:
+    import json
+
+    from app.tools.handlers.hr import _build_blueprint_preview_payload, _validate_creation_flow_confirmation
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    preview = _build_blueprint_preview_payload(
+        {
+            "name": "研究员",
+            "role_description": "服务投研团队的市场研究员。",
+            "primary_users": ["投研团队"],
+            "core_outputs": ["日报"],
+            "boundaries": "不捏造来源",
+            "focus_content": "先产出日报模板",
+        }
+    )
+    rows = [
+        SimpleNamespace(
+            content=json.dumps(
+                {
                     "name": "preview_agent_blueprint",
                     "status": "done",
                     "result": json.dumps(preview, ensure_ascii=False),
@@ -809,5 +876,4 @@ async def test_validate_creation_flow_confirmation_blocks_after_repeated_failure
 
     message = await _validate_creation_flow_confirmation(request, _QueuedDB([_ScalarsResult(rows)]))
 
-    assert message is not None
-    assert "stopped after 2 failed create attempts" in message
+    assert message is None

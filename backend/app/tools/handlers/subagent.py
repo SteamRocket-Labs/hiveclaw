@@ -313,6 +313,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         fallback_model=fallback_model,
         parent_agent_name=getattr(agent, "name", "Agent"),
         tenant_id=tenant_id,
+        trace_id=f"subagent:{request.context.session_id or agent_id}:{uuid.uuid4().hex}",
         model_resolver=(lambda model_name: _resolve_model_override(model_name, tenant_id)) if tenant_id else None,
         memory_store=memory_store,
         memory_distiller=memory_distiller,

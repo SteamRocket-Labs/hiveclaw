@@ -10,7 +10,7 @@ import AgentApprovalsSection from './agent-detail/AgentApprovalsSection';
 import AgentWorkflowsSection from './agent-detail/AgentWorkflowsSection';
 import AgentActivityLogSection from './agent-detail/AgentActivityLogSection';
 import AgentAwareSection from './agent-detail/AgentAwareSection';
-import AgentChatSection from './agent-detail/AgentChatSection';
+import AgentChatSection, { type BranchLineageItem } from './agent-detail/AgentChatSection';
 import AgentEvolutionSection from './agent-detail/AgentEvolutionSection';
 import AgentKnowledgeSection from './agent-detail/AgentKnowledgeSection';
 import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
@@ -19,6 +19,7 @@ import AgentSkillsSection from './agent-detail/AgentSkillsSection';
 import AgentSubagentsSection from './agent-detail/AgentSubagentsSection';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
 import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
+import LocalAgentLinkCard from './agent-detail/LocalAgentLinkCard';
 import {
     CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
     applySessionActiveRunObservedState,
@@ -56,7 +57,7 @@ import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from 
 import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
-import { chatApi, type SessionRun } from '../api/domains/chat';
+import { chatApi, type ConversationBranchMode, type SessionRun } from '../api/domains/chat';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 
@@ -66,12 +67,13 @@ import { useAuthStore } from '../stores';
 // stay standalone capability modules that Knowledge only deep-links to.
 // C3 (docs/subagent-source-capability.md §12.8): subagents joins as the
 // fourth capability module — the employee's craft-clone work methods.
-const TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'localAgent', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
-const TAB_GROUPS: { tabs: (typeof TABS[number])[]; }[] = [
+export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
     { tabs: ['status', 'chat'] },
-    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents'] },
+    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'localAgent'] },
     { tabs: ['workspace', 'workflows', 'office', 'relationships', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
@@ -82,7 +84,7 @@ function AgentDetailInner() {
     const navigate = useNavigate();
     const queryClient = useQueryClient();
     const location = useLocation();
-    const validTabs = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'];
+    const validTabs = AGENT_DETAIL_TABS as readonly string[];
     // Legacy deep links: #mind was the raw-file memory tab before the
     // Knowledge plane replaced it (P8).
     const rawHashTab = location.hash?.replace('#', '');
@@ -174,6 +176,8 @@ function AgentDetailInner() {
     const [sessions, setSessions] = useState<any[]>([]);
     const [allSessions, setAllSessions] = useState<any[]>([]);
     const [activeSession, setActiveSession] = useState<any | null>(null);
+    const [branchLineage, setBranchLineage] = useState<BranchLineageItem[]>([]);
+    const [branchLineageLoading, setBranchLineageLoading] = useState(false);
     const [chatScope, setChatScope] = useState<'mine' | 'all'>('mine');
     const [allUserFilter, setAllUserFilter] = useState<string>('');  // filter by username in All Users
     const [historyMsgs, setHistoryMsgs] = useState<AgentChatMessage[]>([]);
@@ -429,6 +433,47 @@ function AgentDetailInner() {
             if (err?.name === 'AbortError') return;
             console.error('Failed to load session messages:', err);
         }
+    };
+
+    const fetchBranchLineage = async (agentId: string | undefined = id, sessionId: string | undefined = activeSession?.id ? String(activeSession.id) : undefined) => {
+        if (!agentId || !sessionId) {
+            setBranchLineage([]);
+            return;
+        }
+        setBranchLineageLoading(true);
+        try {
+            const lineage = await chatApi.getSessionLineage(agentId, sessionId);
+            setBranchLineage((lineage || []).map((item: any) => ({
+                id: String(item.id),
+                parent_session_id: item.parent_session_id ?? null,
+                root_session_id: item.root_session_id ?? null,
+                title: item.title ?? null,
+                branch: item.branch ?? null,
+                created_at: item.created_at ?? null,
+            })));
+        } catch (err) {
+            console.warn('Failed to load branch lineage:', err);
+            setBranchLineage([]);
+        } finally {
+            setBranchLineageLoading(false);
+        }
+    };
+
+    const selectBranchSession = async (sessionId: string) => {
+        const known = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(sessionId));
+        if (known) {
+            await selectSession(known);
+            return;
+        }
+        const branch = branchLineage.find((item) => String(item.id) === String(sessionId));
+        await selectSession({
+            id: sessionId,
+            agent_id: id,
+            user_id: currentUser?.id ? String(currentUser.id) : undefined,
+            title: branch?.title || 'Branch',
+            source_channel: 'web',
+            listed_surface: 'chat',
+        });
     };
 
     const createNewSession = async () => {
@@ -905,6 +950,14 @@ function AgentDetailInner() {
     }, [canLoadAgentScopedData, id, token, activeTab, activeSession?.id]);
 
     useEffect(() => {
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !id || !activeSession?.id) {
+            setBranchLineage([]);
+            return;
+        }
+        fetchBranchLineage(id, String(activeSession.id));
+    }, [canLoadAgentScopedData, activeTab, id, activeSession?.id]);
+
+    useEffect(() => {
         return () => {
             sessionMsgAbortRef.current?.abort();
             Object.keys(reconnectDisabledRef.current).forEach((key) => { reconnectDisabledRef.current[key] = true; });
@@ -985,12 +1038,18 @@ function AgentDetailInner() {
     const sendChatMsg = async () => {
         if (!id || !activeSession?.id) return;
         const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-        if (activeRunStateRef.current[activeRuntimeKey]) return;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
         
         let userMsg = chatInput.trim();
         let contentForLLM = userMsg;
         let displayFiles = '';
+        const attachmentPayload = attachedFiles.map((file) => ({
+            name: file.name,
+            path: file.path,
+            is_image: Boolean(file.imageUrl),
+            has_image_data: Boolean(file.imageUrl),
+            conversion: file.conversion || null,
+        }));
 
         if (attachedFiles.length > 0) {
             let filesPrompt = '';
@@ -1042,6 +1101,7 @@ function AgentDetailInner() {
                 content: contentForLLM,
                 display_content: userMsg,
                 file_name: attachedFiles.map(f => f.name).join(', '),
+                attachments: attachmentPayload,
                 plan_mode_requested: planModeRequested,
             });
             setPlanModeRequested(false);
@@ -1059,15 +1119,14 @@ function AgentDetailInner() {
     // Sends an explicit text message (not from the composer). Used by inline
     // chat cards (e.g. the ask_user_question clarification card) to post the
     // user's answer so the agent's blocked turn resumes. Reuses the same
-    // startSessionRun path as sendChatMsg — the answer reaches the backend as a
-    // normal user message. When `planMode` is true the message carries
+    // startSessionRun path as sendChatMsg — if a run is active, the backend
+    // queues it as a mid-run user message. When `planMode` is true the message carries
     // plan_mode_requested=true so the existing Plan Mode entry path activates
     // Plan Mode (used by the plan-mode-request approval card).
     const sendChatMessageText = async (text: string, options?: { planMode?: boolean }) => {
         const userMsg = text.trim();
         if (!id || !activeSession?.id || !userMsg) return;
         const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
-        if (activeRunStateRef.current[activeRuntimeKey]) return;
 
         setIsWaiting(true);
         setIsStreaming(false);
@@ -1094,6 +1153,43 @@ function AgentDetailInner() {
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
             throw err;
+        }
+    };
+
+    const handleBranchMessage = async (message: AgentChatMessage, mode: ConversationBranchMode, branchContent = '') => {
+        if (!id || !activeSession?.id || !message.id) return;
+        const sessionId = String(activeSession.id);
+        const content = branchContent.trim();
+        const displayContent = content;
+        if ((mode === 'edit' || mode === 'insert_before' || mode === 'insert_after' || mode === 'reply') && !content) return;
+
+        try {
+            const response = await chatApi.branchSession(id, sessionId, {
+                mode,
+                anchor_event_id: String(message.id),
+                content,
+                display_content: displayContent,
+                start_run: mode !== 'fork',
+            });
+            const branchSession = response.session;
+            setSessions(prev => {
+                if (prev.some((session: any) => String(session.id) === String(branchSession.id))) return prev;
+                return [branchSession, ...prev];
+            });
+            setAllSessions(prev => {
+                if (prev.some((session: any) => String(session.id) === String(branchSession.id))) return prev;
+                return [branchSession, ...prev];
+            });
+            await selectSession(branchSession);
+            if (response.run?.run_id) {
+                const branchKey = buildSessionRuntimeKey(id, String(branchSession.id));
+                setActiveRunState(branchKey, { runId: response.run.run_id, status: response.run.status || 'running' });
+                invalidateSessionRuntimeQueries(id, String(branchSession.id));
+            }
+            await fetchBranchLineage(id, String(branchSession.id));
+        } catch (err: any) {
+            const msg = err?.message || t('agent.chat.branch.failed', 'Failed to create branch');
+            alert(msg);
         }
     };
 
@@ -1519,10 +1615,10 @@ function AgentDetailInner() {
                 {/* Tabs — hidden for HR system agent */}
                 {!isSystemHr && (
                 <div className="tabs">
-                    {TAB_GROUPS.map((group, gi) => {
+                    {AGENT_DETAIL_TAB_GROUPS.map((group, gi) => {
                         const visibleTabs = group.tabs.filter(tab => {
                             if ((agent as any)?.access_level === 'use') {
-                                if (tab === 'settings' || tab === 'approvals') return false;
+                                if (tab === 'settings' || tab === 'approvals' || tab === 'localAgent') return false;
                             }
                             if ((agent as any)?.agent_type === 'openclaw') {
                                 return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
@@ -1626,6 +1722,13 @@ function AgentDetailInner() {
                     activeTab === 'subagents' && <AgentSubagentsSection agentId={id!} canManage={canManage} />
                 }
 
+                {/* ── Local Agent Tab ── */}
+                {
+                    activeTab === 'localAgent' && (agent as any)?.agent_type !== 'openclaw' && (
+                        <LocalAgentLinkCard agentId={id!} canManage={canManage} />
+                    )
+                }
+
                 {/* ── Relationships Tab ── */}
                 {
                     activeTab === 'relationships' && (
@@ -1656,6 +1759,9 @@ function AgentDetailInner() {
                             sessionsLoading={sessionsLoading}
                             sessions={sessions}
                             activeSession={activeSession}
+                            branchLineage={branchLineage}
+                            branchLineageLoading={branchLineageLoading}
+                            onSelectBranchSession={selectBranchSession}
                             wsConnected={wsConnected}
                             allSessions={allSessions}
                             allSessionsLoading={allSessionsLoading}
@@ -1694,9 +1800,10 @@ function AgentDetailInner() {
                             chatInputRef={chatInputRef}
                             chatInput={chatInput}
                             onSetChatInput={setChatInput}
-                            onHandlePaste={handlePaste}
-                            onSendChatMsg={sendChatMsg}
-                            onSendMessage={sendChatMessageText}
+	                            onHandlePaste={handlePaste}
+	                            onSendChatMsg={sendChatMsg}
+	                            onBranchMessage={handleBranchMessage}
+	                            onSendMessage={sendChatMessageText}
                             onEnterPlanMode={(reason: string) => sendChatMessageText(reason, { planMode: true })}
                             isStreaming={isStreaming}
                             onAbortGeneration={() => {

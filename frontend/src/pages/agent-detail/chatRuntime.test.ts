@@ -117,6 +117,43 @@ describe('chatRuntime helpers', () => {
     expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
   });
 
+  it('hydrates durable clarification answer metadata from transcript events', () => {
+    const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-answered-question',
+      sequence: 13,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'tool',
+      content: JSON.stringify({
+        name: 'ask_user_question',
+        status: 'done',
+        result: JSON.stringify({
+          status: 'awaiting_user_clarification',
+          blocking: true,
+          questions: [{ question: 'Scope?', options: [{ label: 'Mine' }] }],
+        }),
+      }),
+      metadata: {
+        tool_name: 'ask_user_question',
+        answered: true,
+        answered_by_event_id: 'evt-user-answer',
+        answer_text: 'Scope: Mine',
+      },
+      created_at: '2026-06-21T09:10:09Z',
+    });
+
+    expect(next.messages[0]).toMatchObject({
+      role: 'tool_call',
+      toolMeta: {
+        kind: 'user_clarification',
+        answered: true,
+        answeredByEventId: 'evt-user-answer',
+        answerText: 'Scope: Mine',
+      },
+    });
+    expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
   it('preserves runtime step metadata from persisted tool transcript events', () => {
     const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
       id: 'evt-tool-step',

@@ -21,6 +21,18 @@ _SIGNAL_TYPES = {
     "verification_failure",
     "repeated_task_pattern",
 }
+_SYSTEM_REFLECTION_SOURCES = frozenset(
+    {
+        "heartbeat_reflection",
+        "heartbeat",
+        "dream",
+        "distiller",
+        "skill_distiller",
+        "t2_summary_agent",
+        "t2_learning_brain",
+        "t2_memory_gate",
+    }
+)
 
 
 def _message_digest(messages: list[dict[str, Any]]) -> str:
@@ -112,6 +124,17 @@ def create_fast_reflection_candidate(
     """
 
     metadata = metadata or {}
+    source = str(metadata.get("source") or "").strip().lower()
+    if source in _SYSTEM_REFLECTION_SOURCES:
+        if source == "heartbeat_reflection":
+            try:
+                from app.memory.metrics import record_heartbeat_reflection
+
+                record_heartbeat_reflection("skipped_system_source")
+            except Exception:
+                pass
+        return {"status": "skipped", "reason": "system_reflection_source"}
+
     signal = _classify_signal(messages, metadata)
     if signal is None:
         if str(metadata.get("source") or "") == "heartbeat_reflection":

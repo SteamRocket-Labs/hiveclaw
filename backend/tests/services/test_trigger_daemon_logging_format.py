@@ -3,12 +3,25 @@ from pathlib import Path
 
 
 TRIGGER_DAEMON_PATH = Path(__file__).resolve().parents[2] / "app" / "services" / "trigger_daemon.py"
+MAIN_PATH = Path(__file__).resolve().parents[2] / "app" / "main.py"
 LOG_METHODS = {"debug", "info", "warning", "error", "critical", "exception"}
 PERCENT_PLACEHOLDERS = ("%s", "%d", "%r", "%f")
 
 
 def test_trigger_daemon_loguru_calls_use_brace_formatting() -> None:
-    tree = ast.parse(TRIGGER_DAEMON_PATH.read_text(encoding="utf-8"))
+    offenders = _collect_percent_style_loguru_calls(TRIGGER_DAEMON_PATH)
+
+    assert offenders == []
+
+
+def test_main_loguru_calls_use_brace_formatting() -> None:
+    offenders = _collect_percent_style_loguru_calls(MAIN_PATH)
+
+    assert offenders == []
+
+
+def _collect_percent_style_loguru_calls(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     offenders: list[str] = []
 
     for node in ast.walk(tree):
@@ -26,6 +39,6 @@ def test_trigger_daemon_loguru_calls_use_brace_formatting() -> None:
         if not isinstance(first_arg, ast.Constant) or not isinstance(first_arg.value, str):
             continue
         if any(placeholder in first_arg.value for placeholder in PERCENT_PLACEHOLDERS):
-            offenders.append(f"line {node.lineno}: {first_arg.value}")
+            offenders.append(f"{path.name}:{node.lineno}: {first_arg.value}")
 
-    assert offenders == []
+    return offenders

@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timezone as tz
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -27,6 +27,7 @@ from app.services.web_chat_runtime import (
     get_active_web_chat_run,
     start_web_chat_run,
 )
+from app.services.conversation_branch_service import create_conversation_branch
 from app.services.session_feedback import record_session_feedback
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
@@ -98,6 +99,20 @@ class StartSessionRunIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     plan_mode_requested: bool = False
+    attachments: list[dict[str, Any]] = []
+    parts: list[dict[str, Any]] = []
+
+
+class BranchSessionIn(BaseModel):
+    mode: Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate"]
+    anchor_event_id: uuid.UUID
+    content: str = ""
+    display_content: str = ""
+    file_name: str = ""
+    title: Optional[str] = None
+    start_run: bool = True
+    attachments: list[dict[str, Any]] = []
+    parts: list[dict[str, Any]] = []
 
 
 class SessionRunOut(BaseModel):
@@ -107,6 +122,12 @@ class SessionRunOut(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     result_summary: Optional[str] = None
+
+
+class BranchSessionOut(BaseModel):
+    session: SessionOut
+    branch: dict[str, Any]
+    run: Optional[dict[str, Any]] = None
 
 
 class RecordSessionFeedbackIn(BaseModel):
@@ -434,9 +455,155 @@ async def start_session_run(
             display_content=body.display_content,
             file_name=body.file_name,
             plan_mode_requested=body.plan_mode_requested,
+            attachments=body.attachments,
+            parts=body.parts,
         )
     except ActiveWebChatRunExists as exc:
         return JSONResponse(status_code=202, content={"status": "queued", **exc.run})
+
+
+@router.post("/{agent_id}/sessions/{session_id}/branches", status_code=201, response_model=BranchSessionOut)
+async def branch_session(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    body: BranchSessionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a non-destructive conversation branch from a transcript event."""
+    source_session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    branch_result = await create_conversation_branch(
+        db=db,
+        agent=agent,
+        user=current_user,
+        source_session=source_session,
+        mode=body.mode,
+        anchor_event_id=body.anchor_event_id,
+        content=body.content,
+        display_content=body.display_content,
+        file_name=body.file_name,
+        title=body.title,
+        attachments=body.attachments,
+        parts=body.parts,
+    )
+    run_payload: dict[str, Any] | None = None
+    if body.start_run and branch_result.run_request is not None:
+        request = branch_result.run_request
+        try:
+            run_payload = await start_web_chat_run(
+                db=db,
+                agent=agent,
+                user=current_user,
+                session=branch_result.session,
+                content=request.content,
+                display_content=request.display_content,
+                file_name=request.file_name,
+                attachments=getattr(request, "attachments", None) or [],
+                parts=getattr(request, "parts", None) or [],
+                append_user_message=request.append_user_message,
+                extra_metadata=getattr(request, "extra_metadata", None),
+            )
+        except ActiveWebChatRunExists as exc:
+            run_payload = {"status": "queued", **exc.run}
+    else:
+        await db.commit()
+
+    session = branch_result.session
+    session_out = SessionOut(
+        id=str(session.id),
+        agent_id=str(session.agent_id),
+        user_id=str(session.user_id),
+        source_channel=session.source_channel,
+        title=session.title,
+        created_at=session.created_at.isoformat(),
+        last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+        message_count=0,
+        **_session_contract_fields(session),
+    )
+    return BranchSessionOut(session=session_out, branch=branch_result.branch, run=run_payload)
+
+
+@router.get("/{agent_id}/sessions/{session_id}/branches")
+async def list_session_branches(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List direct branches created from a session."""
+    await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    result = await db.execute(
+        select(ChatSession)
+        .where(
+            ChatSession.agent_id == agent_id,
+            ChatSession.parent_session_id == session_id,
+            ChatSession.listed_surface == "chat",
+        )
+        .order_by(ChatSession.created_at.desc())
+    )
+    sessions = result.scalars().all()
+    return [
+        SessionOut(
+            id=str(session.id),
+            agent_id=str(session.agent_id),
+            user_id=str(session.user_id),
+            source_channel=session.source_channel,
+            title=session.title,
+            created_at=session.created_at.isoformat(),
+            last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+            message_count=0,
+            **_session_contract_fields(session),
+        )
+        for session in sessions
+    ]
+
+
+@router.get("/{agent_id}/sessions/{session_id}/lineage")
+async def get_session_lineage(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the branch family for the selected session."""
+    session, _agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    root_id = session.root_session_id or session.id
+    result = await db.execute(
+        select(ChatSession)
+        .where(
+            ChatSession.agent_id == agent_id,
+            ChatSession.listed_surface == "chat",
+            (ChatSession.id == root_id) | (ChatSession.root_session_id == root_id),
+        )
+        .order_by(ChatSession.created_at.asc())
+    )
+    sessions = result.scalars().all()
+    return [
+        {
+            "id": str(item.id),
+            "parent_session_id": str(item.parent_session_id) if item.parent_session_id else None,
+            "root_session_id": str(item.root_session_id) if item.root_session_id else None,
+            "title": item.title,
+            "branch": item.transcript_metadata_json or {},
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        }
+        for item in sessions
+    ]
 
 
 @router.get("/{agent_id}/sessions/{session_id}/runs/active")

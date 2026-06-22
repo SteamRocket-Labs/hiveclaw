@@ -101,6 +101,78 @@ def _labels_xml(source_bundle: dict, *, package_status: str = "closed", continui
 """
 
 
+def test_source_bundle_excludes_projection_only_t0_events(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import _build_source_bundle
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    projection = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="assistant_message",
+        role="assistant",
+        content="copied answer from source branch",
+        source="conversation_branch",
+        metadata={"projection_only": True, "semantic_memory_eligible": False},
+        data_root=tmp_path,
+    )
+    real_event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="assistant_message",
+        role="assistant",
+        content="new regenerated answer",
+        source="web_chat",
+        metadata={"branch_mode": "regenerate"},
+        data_root=tmp_path,
+    )
+
+    source_bundle = _build_source_bundle(
+        root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=projection.segment_id,
+        package_id="pkg-projection-filter",
+    )
+
+    assert source_bundle["source_range"] == {"start_sequence": real_event.sequence, "end_sequence": real_event.sequence}
+    assert source_bundle["source_refs"][0]["uri"].endswith(f"#seq={real_event.sequence}..{real_event.sequence}")
+    assert [event["content"] for event in source_bundle["t0_events"]] == ["new regenerated answer"]
+
+
+def test_source_bundle_rejects_segments_without_semantic_t0_events(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import _build_source_bundle
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    projection = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="assistant_message",
+        role="assistant",
+        content="copied answer from source branch",
+        source="conversation_branch",
+        metadata={"projection_only": True, "semantic_memory_eligible": False},
+        data_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="no semantic T0 events"):
+        _build_source_bundle(
+            root=tmp_path,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            t0_segment_id=projection.segment_id,
+            package_id="pkg-empty-projection",
+        )
+
+
 @pytest.mark.asyncio
 async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import build_t2_segment_package

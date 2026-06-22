@@ -83,6 +83,8 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     "chat_sessions",
     "chat_transcript_events",
     "gateway_messages",
+    "local_agent_bridge_connections",
+    "local_agent_bridge_pairing_sessions",
     "pending_reply_contexts",
     "runtime_tasks",
     "task_logs",

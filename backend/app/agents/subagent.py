@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -135,6 +137,7 @@ _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
 DEFAULT_SUBAGENT_TOOL_ROUNDS = 8  # mirrors the deep-research worker default
 _SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset({"web_fetch", "firecrawl_fetch", "xcrawl_scrape", "read_webpage"})
+_SAFE_T0_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 #: Exec/automation CC-alignment (§5.2): fork is deliberately binary, matching CC's
 #: fresh (subagent_type present) vs full-fork (omitted). The old ``brief`` middle
@@ -574,6 +577,90 @@ def _build_subagent_messages(
     return messages
 
 
+def _safe_subagent_t0_id(value: object, *, max_len: int = 80) -> str:
+    text = _SAFE_T0_SESSION_ID_RE.sub("_", str(value or "").strip()).strip("_")
+    return (text or "unknown")[:max_len]
+
+
+def _subagent_t0_session_id(ctx: SubagentSpawnContext, spec: SubagentSpec, child_depth: int) -> str | None:
+    anchor = str(ctx.trace_id or ctx.parent_session_id or "").strip()
+    if not anchor:
+        return None
+    return "subagent-{anchor}-{name}-d{depth}".format(
+        anchor=_safe_subagent_t0_id(anchor, max_len=96),
+        name=_safe_subagent_t0_id(spec.name, max_len=48),
+        depth=child_depth,
+    )
+
+
+def _append_subagent_t0_event(
+    *,
+    ctx: SubagentSpawnContext,
+    spec: SubagentSpec,
+    session_id: str | None,
+    child_depth: int,
+    event_type: str,
+    role: str | None,
+    content: Any,
+    t0_role: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if not session_id:
+        return
+    from app.memory.t0.ledger import append_t0_session_event
+
+    append_t0_session_event(
+        agent_id=ctx.parent_agent_id,
+        session_id=session_id,
+        event_type=event_type,
+        role=t0_role if t0_role is not None else role,
+        content=content,
+        actor_id=ctx.parent_user_id,
+        tenant_id=ctx.tenant_id,
+        source="subagent",
+        metadata={
+            "source": "subagent",
+            "subagent_name": spec.name,
+            "subagent_type": spec.type,
+            "trace_id": ctx.trace_id or "",
+            "depth": child_depth,
+            "parent_session_id": ctx.parent_session_id or "",
+            "semantic_memory_eligible": True,
+            **(metadata or {}),
+        },
+    )
+
+
+def _seal_subagent_t0_segment(
+    *,
+    ctx: SubagentSpawnContext,
+    spec: SubagentSpec,
+    session_id: str | None,
+    child_depth: int,
+    reason: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if not session_id:
+        return
+    from app.memory.t0.ledger import seal_t0_session_segment
+
+    seal_t0_session_segment(
+        agent_id=ctx.parent_agent_id,
+        session_id=session_id,
+        reason=reason,
+        metadata={
+            "source": "subagent",
+            "subagent_name": spec.name,
+            "subagent_type": spec.type,
+            "trace_id": ctx.trace_id or "",
+            "depth": child_depth,
+            "parent_session_id": ctx.parent_session_id or "",
+            "semantic_memory_eligible": True,
+            **(metadata or {}),
+        },
+    )
+
+
 async def _spawn_one(
     ctx: SubagentSpawnContext,
     job: SubagentJob,
@@ -633,10 +720,57 @@ async def _spawn_one(
     messages = _build_subagent_messages(
         job.task, fork=fork, context_brief=job.context_brief, parent_messages=ctx.parent_messages
     )
+    t0_session_id = _subagent_t0_session_id(ctx, spec, child_depth)
+    for idx, message in enumerate(messages):
+        _append_subagent_t0_event(
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            event_type="user_message",
+            role=str(message.get("role") or "user"),
+            content=message.get("content") or "",
+            metadata={"message_index": idx, "fork": fork},
+        )
     rounds = spec.max_tool_rounds or budget.max_tool_rounds
     captured_sources: list[dict[str, str]] = []
 
     async def on_tool_call(event: dict[str, Any]) -> None:
+        status = str(event.get("status") or "")
+        payload = {
+            "name": event.get("name", ""),
+            "args": event.get("args"),
+            "status": status,
+            "tool_call_id": event.get("tool_call_id"),
+            "step_id": event.get("step_id"),
+            "visibility": event.get("visibility") or "collapsed",
+            "started_at": event.get("started_at") or event.get("startedAt"),
+            "completed_at": event.get("completed_at") or event.get("completedAt"),
+            "duration_ms": event.get("duration_ms"),
+            "reasoning_content": event.get("reasoning_content"),
+            "reasoning_signature": event.get("reasoning_signature"),
+        }
+        if status in {"done", "completed", "failed"} or "result" in event:
+            payload["result"] = str(event.get("result", ""))
+        payload = {key: value for key, value in payload.items() if value is not None}
+        _append_subagent_t0_event(
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            event_type="tool_result" if status in {"done", "completed", "failed"} else "tool_call",
+            role="tool",
+            t0_role="tool",
+            content=json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+            metadata={
+                "tool_name": event.get("name", ""),
+                "status": status,
+                "tool_call_id": event.get("tool_call_id"),
+                "step_id": event.get("step_id"),
+                "duration_ms": event.get("duration_ms"),
+                "visibility": event.get("visibility") or "collapsed",
+            },
+        )
         if budget.max_sources is not None and len(captured_sources) >= budget.max_sources:
             return
         source = _source_from_tool_event(event, budget)
@@ -665,7 +799,7 @@ async def _spawn_one(
         standalone_system_prompt=standalone_system_prompt,
         agent_id=ctx.parent_agent_id,
         user_id=ctx.parent_user_id,
-        on_tool_call=on_tool_call if budget.max_sources is not None or budget.max_source_chars is not None else None,
+        on_tool_call=on_tool_call if t0_session_id or budget.max_sources is not None or budget.max_source_chars is not None else None,
         session_context=SessionContext(
             source="subagent",
             channel="internal",
@@ -698,6 +832,24 @@ async def _spawn_one(
             budget.timeout_seconds,
             ctx.trace_id,
         )
+        _append_subagent_t0_event(
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            event_type="assistant_message",
+            role="assistant",
+            content=f"subagent timed out after {budget.timeout_seconds}s",
+            metadata={"status": "timed_out"},
+        )
+        _seal_subagent_t0_segment(
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            reason="subagent_timeout",
+            metadata={"status": "timed_out"},
+        )
         return SubagentResult(
             name=spec.name,
             type=spec.type,
@@ -712,6 +864,24 @@ async def _spawn_one(
             exc,
             ctx.trace_id,
         )
+        _append_subagent_t0_event(
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            event_type="assistant_message",
+            role="assistant",
+            content=f"{type(exc).__name__}: {exc}",
+            metadata={"status": "failed"},
+        )
+        _seal_subagent_t0_segment(
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            reason="subagent_failed",
+            metadata={"status": "failed", "error_type": type(exc).__name__},
+        )
         return SubagentResult(
             name=spec.name,
             type=spec.type,
@@ -719,7 +889,26 @@ async def _spawn_one(
             error=f"{type(exc).__name__}: {exc}",
         )
 
-    content = str(getattr(result, "content", "") or "").strip()
+    raw_content = str(getattr(result, "content", "") or "").strip()
+    _append_subagent_t0_event(
+        ctx=ctx,
+        spec=spec,
+        session_id=t0_session_id,
+        child_depth=child_depth,
+        event_type="assistant_message",
+        role="assistant",
+        content=raw_content,
+        metadata={"status": "completed"},
+    )
+    _seal_subagent_t0_segment(
+        ctx=ctx,
+        spec=spec,
+        session_id=t0_session_id,
+        child_depth=child_depth,
+        reason="subagent_complete",
+        metadata={"status": "completed"},
+    )
+    content = raw_content
     if budget.max_output_chars and len(content) > budget.max_output_chars:
         content = content[: budget.max_output_chars]
     tokens_used = int(getattr(result, "tokens_used", 0) or 0)

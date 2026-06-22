@@ -254,6 +254,7 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
     tool_call_session = _FakeSession([])
     final_session = _FakeSession([task])
     sessions = [setup_session, prepare_session, tool_call_session, final_session]
+    long_tool_result = "3 sources found " + ("完整证据" * 600) + " END_OF_TOOL_RESULT"
 
     async def fake_invoke_agent(request):
         await request.on_tool_call(
@@ -261,7 +262,7 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
                 "status": "done",
                 "name": "web_search",
                 "args": {"query": "competitor updates"},
-                "result": "3 sources found",
+                "result": long_tool_result,
             }
         )
         return SimpleNamespace(content="任务已完成，已整理竞品动态。")
@@ -296,6 +297,7 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
     assert user_prompt.conversation_id == str(created_session.id)
     assert "准备竞品分析" in user_prompt.content
     assert '"name": "web_search"' in tool_call.content
+    assert "END_OF_TOOL_RESULT" in tool_call.content
     assert assistant_reply.conversation_id == str(created_session.id)
     assert "任务已完成" in assistant_reply.content
 

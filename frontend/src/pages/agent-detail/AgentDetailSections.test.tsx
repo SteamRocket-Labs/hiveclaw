@@ -10,9 +10,13 @@ import AgentAwareSection, {
   workflowDefinitionOptionKey,
 } from './AgentAwareSection';
 import AgentChatSection, {
+  BranchComposePanel,
+  BranchLineagePanel,
   StructuredToolResultBody,
+  buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
   getArtifactOpenMode,
+  isClarificationCardAnsweredByLaterUserMessage,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
@@ -20,10 +24,12 @@ import AgentSkillsSection from './AgentSkillsSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import CopyMessageButton from './CopyMessageButton';
+import LocalAgentLinkCard from './LocalAgentLinkCard';
 import OpenClawSettings from '../OpenClawSettings';
 import PlanCard, { confirmAndHandoffPlan } from './PlanCard';
 import RelationshipEditor from './RelationshipEditor';
 import ToolsManager from './ToolsManager';
+import { AGENT_DETAIL_TABS } from '../AgentDetail';
 import type { PlanRequest } from '../../api/domains/plans';
 
 const queryKeyCalls = vi.hoisted(() => [] as unknown[][]);
@@ -173,6 +179,56 @@ vi.mock('@tanstack/react-query', () => ({
         refetch: vi.fn(),
       };
     }
+    if (key === 'local-bridge-connections') {
+      return {
+        data: {
+          connections: [
+            {
+              id: 'bridge-1',
+              tenant_id: 'tenant-1',
+              agent_id: 'agent-1',
+              user_id: 'user-1',
+              device_name: 'Codex Desktop',
+              client_kind: 'codex',
+              status: 'active',
+              scopes: ['gateway:poll', 'gateway:report', 'files:upload'],
+              last_seen_at: new Date().toISOString(),
+              created_at: new Date().toISOString(),
+              revoked_at: null,
+            },
+          ],
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      };
+    }
+    if (key === 'local-bridge-work-requests') {
+      return {
+        data: {
+          work_requests: [
+            {
+              id: 'work-request-1',
+              agent_id: 'agent-1',
+              tenant_id: 'tenant-1',
+              sender_user_id: 'user-1',
+              conversation_id: 'session-local-bridge',
+              content: 'Upload a markdown report to workspace',
+              status: 'completed',
+              result: 'done by command runtime',
+              attachments: [{ path: 'workspace/local-bridge/report.md', direction: 'result' }],
+              metadata: { kind: 'work_request', report: { runtime: 'command' } },
+              created_at: '2026-06-22T06:20:00Z',
+              delivered_at: '2026-06-22T06:20:03Z',
+              completed_at: '2026-06-22T06:20:08Z',
+            },
+          ],
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      };
+    }
     if (key === 'team-memory') {
       return {
         data: [
@@ -301,10 +357,21 @@ vi.mock('../../stores', () => {
 });
 
 vi.mock('../../components/FileBrowser', () => ({
-  default: ({ title, rootPath, readOnly }: { title?: string; rootPath?: string; readOnly?: boolean }) => (
+  default: ({
+    title,
+    rootPath,
+    readOnly,
+    singleFile,
+  }: {
+    title?: string;
+    rootPath?: string;
+    readOnly?: boolean;
+    singleFile?: string;
+  }) => (
     <div>
       {title || 'File Browser Mock'}
       {rootPath ? ` root=${rootPath}` : ''}
+      {singleFile ? ` single=${singleFile}` : ''}
       {readOnly ? ' readOnly=true' : ''}
     </div>
   ),
@@ -343,6 +410,122 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('title="Copy"');
     expect(markup).toContain('<button');
+  });
+
+  it('renders transcript-anchored conversation branch actions on messages', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agentId="agent-1"
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Branchable run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[{ id: 'event-1', role: 'user', content: 'Use the Railway logs.' }]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        onBranchMessage={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="message-action-fork"');
+    expect(markup).toContain('data-testid="message-action-edit"');
+    expect(markup).toContain('data-testid="message-action-insert-after"');
+  });
+
+  it('renders branch lineage as a selectable tree', () => {
+    const rows = buildBranchLineageRows([
+      { id: 'root', parent_session_id: null, title: 'Original', branch: {} },
+      { id: 'edit', parent_session_id: 'root', title: 'Original (edit)', branch: { branch_mode: 'edit' } },
+      { id: 'reply', parent_session_id: 'edit', title: 'Follow-up', branch: { branch_mode: 'reply' } },
+    ]);
+
+    expect(rows.map((row) => [row.id, row.depth])).toEqual([
+      ['root', 0],
+      ['edit', 1],
+      ['reply', 2],
+    ]);
+
+    const markup = renderToStaticMarkup(
+      <BranchLineagePanel
+        activeSessionId="edit"
+        lineage={[
+          { id: 'root', parent_session_id: null, title: 'Original', branch: {} },
+          { id: 'edit', parent_session_id: 'root', title: 'Original (edit)', branch: { branch_mode: 'edit' } },
+        ]}
+        onSelectSession={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="branch-lineage-panel"');
+    expect(markup).toContain('Original (edit)');
+    expect(markup).toContain('edit');
+  });
+
+  it('renders an in-app branch compose panel instead of relying on browser prompts', () => {
+    const markup = renderToStaticMarkup(
+      <BranchComposePanel
+        draft={{
+          mode: 'edit',
+          message: { id: 'event-1', role: 'user', content: 'Original request' },
+          content: 'Edited request',
+        }}
+        busy={false}
+        onChange={vi.fn()}
+        onCancel={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="branch-compose-panel"');
+    expect(markup).toContain('Edited request');
+    expect(markup).toContain('Create branch');
   });
 
   it('renders AgentStatusSection as a standalone overview module', () => {
@@ -478,7 +661,8 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Import from URL');
     expect(markup).toContain('Browse ClawHub');
-    expect(markup).toContain('skillFiles');
+    expect(markup).toContain('Skill Format:');
+    expect(markup).not.toContain('root=skills');
   });
 
   it('renders AgentWorkspaceSection as a standalone workspace module', () => {
@@ -781,7 +965,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Core identity, personality, and behavior boundaries.');
     expect(markup).toContain('Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.');
     expect(markup).toContain('Curation history, performance scorecard, and blocked approaches.');
-    expect(markup).toContain('File Browser Mock');
+    expect(markup).toContain('soul.md is governed by Dream/Soul promotion.');
+    expect(markup).not.toContain('single=soul.md');
     expect(markup).toContain('root=memory readOnly=true');
   });
 
@@ -898,6 +1083,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Loose (Default)');
     expect(markup).toContain('Approval Guard');
     expect(markup).toContain('Read-only Lockdown');
+    expect(markup).not.toContain('Local Agent Link');
+    expect(markup).not.toContain('Local Agent Workbench');
     expect(markup).toContain('Ordered from loose to strict');
     expect(markup.indexOf('Loose (Default)')).toBeLessThan(markup.indexOf('Approval Guard'));
     expect(markup.indexOf('Approval Guard')).toBeLessThan(markup.indexOf('Read-only Lockdown'));
@@ -916,6 +1103,27 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Access Permissions');
     expect(markup).toContain('Channel Config Mock');
     expect(markup).toContain('deleteAgent');
+  });
+
+  it('places Local Agent immediately after Sub-agents in the agent detail tabs', () => {
+    const tabs = Array.from(AGENT_DETAIL_TABS);
+    expect(tabs[tabs.indexOf('subagents') + 1]).toBe('localAgent');
+  });
+
+  it('renders Local Agent Link as its own agent detail work surface', () => {
+    const markup = renderToStaticMarkup(<LocalAgentLinkCard agentId="agent-1" canManage />);
+
+    expect(markup).toContain('Local Agent Link');
+    expect(markup).toContain('hive-bridge login');
+    expect(markup).toContain('Pairing code');
+    expect(markup).toContain('Approve link');
+    expect(markup).toContain('Local agent online');
+    expect(markup).toContain('Codex Desktop');
+    expect(markup).toContain('Cloud work request');
+    expect(markup).toContain('Send work request');
+    expect(markup).toContain('Local Agent Workbench');
+    expect(markup).toContain('done by command runtime');
+    expect(markup).toContain('workspace/local-bridge/report.md');
   });
 
   it('builds a bound Plan Mode opt-out recommendation for patrol saves', () => {
@@ -2014,6 +2222,71 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('btn-stop-generation');
   });
 
+  it('keeps the send action available while a session run is active', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Long planning run',
+          created_at: '2026-05-21T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting
+        activeRunStatus="running"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput="Add this while it is still running"
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('btn-stop-generation');
+    expect(markup).toContain('btn-primary');
+    expect(markup).toContain('send');
+  });
+
   it('does not render stale chat messages from a different active session', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
@@ -2107,6 +2380,52 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Builtin tools + default skills + memory loop');
     expect(markup).toContain('mcp: github');
     expect(markup).toContain('github-research');
+  });
+
+  it('treats a persisted clarification card as answered when a later user message exists', () => {
+    const messages = [
+      {
+        role: 'tool_call' as const,
+        content: '',
+        toolName: 'ask_user_question',
+        toolStatus: 'done' as const,
+        toolMeta: {
+          kind: 'user_clarification' as const,
+          questions: [{ question: 'Scope?', header: 'Scope', options: [{ label: 'Mine', description: '' }], multiSelect: false }],
+          blocking: true,
+          nextAction: null,
+        },
+      },
+      {
+        role: 'user' as const,
+        content: 'Scope: Mine',
+      },
+    ];
+
+    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 0)).toBe(true);
+    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(false);
+  });
+
+  it('treats durable clarification answer metadata as answered after refresh', () => {
+    const messages = [
+      {
+        role: 'tool_call' as const,
+        content: '',
+        toolName: 'ask_user_question',
+        toolStatus: 'done' as const,
+        toolMeta: {
+          kind: 'user_clarification' as const,
+          answered: true,
+          answeredByEventId: 'evt-user-answer',
+          answerText: 'Scope: Mine',
+          questions: [{ question: 'Scope?', header: 'Scope', options: [{ label: 'Mine', description: '' }], multiSelect: false }],
+          blocking: true,
+          nextAction: null,
+        },
+      },
+    ];
+
+    expect(isClarificationCardAnsweredByLaterUserMessage(messages, 0)).toBe(true);
   });
 
   it('renders PlanCard with plan_json fields and confirmation actions while awaiting', () => {

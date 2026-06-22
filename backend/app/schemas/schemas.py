@@ -533,6 +533,8 @@ class GatewayMessageOut(BaseModel):
     sender_user_name: str | None = None
     sender_user_id: str | None = None
     content: str
+    attachments: list[dict] = []
+    metadata: dict = {}
     created_at: datetime
     history: list[GatewayHistoryItem] = []
 
@@ -545,9 +547,14 @@ class GatewayPollResponse(BaseModel):
 class GatewayReportRequest(BaseModel):
     message_id: uuid.UUID
     result: str = Field(min_length=1)
+    attachments: list[dict] = []
+    metadata: dict = {}
 
 
 class GatewaySendMessageRequest(BaseModel):
     target: str  # Name of target person or agent
     content: str = Field(min_length=1)
     channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
+    client_message_id: str | None = None
+    attachments: list[dict] = []
+    metadata: dict = {}

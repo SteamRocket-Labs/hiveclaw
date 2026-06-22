@@ -78,6 +78,37 @@ def test_fast_reflection_skips_low_signal_chatter(tmp_path) -> None:
     assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
 
 
+def test_heartbeat_reflection_never_creates_fast_reflection_candidate(tmp_path) -> None:
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    agent_id = uuid.uuid4()
+    result = create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="heartbeat-reflection-session",
+        messages=[
+            {"role": "user", "content": "Heartbeat reflected on a distillation cycle."},
+            {"role": "assistant", "content": "Reusable deploy checklist: build, migrate, restart, verify."},
+        ],
+        metadata={
+            "source": "heartbeat_reflection",
+            "skill_candidate_loop_enabled": True,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "repeated_task_pattern",
+                "lesson": "Reusable deploy checklist: build, migrate, restart, verify.",
+                "confidence": 0.95,
+            },
+        },
+    )
+
+    assert result == {"status": "skipped", "reason": "system_reflection_source"}
+    workspace = tmp_path / str(agent_id)
+    assert not (workspace / "evolution" / "evolution_ledger.jsonl").exists()
+    assert not (workspace / "memory").exists()
+    assert not (workspace / "skills").exists()
+
+
 def test_fast_reflection_prefers_llm_classification_over_marker_fallback(tmp_path) -> None:
     from app.services.evolution_ledger import load_evolution_ledger
     from app.services.fast_reflection_service import create_fast_reflection_candidate

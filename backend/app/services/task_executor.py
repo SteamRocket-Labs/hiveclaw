@@ -425,18 +425,28 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
         logger.info(f"[TaskExec] Invoking unified runtime for task: {task_title}")
 
         async def _on_tool_call(data: dict) -> None:
-            if data.get("status") != "done":
-                return
+            status = str(data.get("status") or "")
+            event_type = "tool_result" if status in {"done", "completed", "failed"} else "tool_call"
+            payload = {
+                "name": data.get("name"),
+                "args": data.get("args"),
+                "status": status,
+                "tool_call_id": data.get("tool_call_id"),
+                "step_id": data.get("step_id"),
+                "visibility": data.get("visibility") or "collapsed",
+                "started_at": data.get("started_at") or data.get("startedAt"),
+                "completed_at": data.get("completed_at") or data.get("completedAt"),
+                "duration_ms": data.get("duration_ms"),
+                "reasoning_content": data.get("reasoning_content"),
+                "reasoning_signature": data.get("reasoning_signature"),
+            }
+            if status in {"done", "completed", "failed"} or "result" in data:
+                payload["result"] = str(data.get("result", ""))
+            payload = {key: value for key, value in payload.items() if value is not None}
             tool_payload = json.dumps(
-                {
-                    "name": data.get("name"),
-                    "args": data.get("args"),
-                    "status": "done",
-                    "result": str(data.get("result", ""))[:2000],
-                    "reasoning_content": data.get("reasoning_content"),
-                    "reasoning_signature": data.get("reasoning_signature"),
-                },
+                payload,
                 ensure_ascii=False,
+                sort_keys=True,
                 default=str,
             )
             async with tenant_scoped_session(tenant_id) as tc_db:
@@ -446,7 +456,7 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
                     session_id=reflection_session_id,
                     task_id=task_id,
                     task_type=task_type,
-                    event_type="tool_result",
+                    event_type=event_type,
                     actor_type="agent",
                     role="tool_call",
                     t0_role="tool",

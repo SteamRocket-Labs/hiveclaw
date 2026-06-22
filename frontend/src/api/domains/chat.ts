@@ -12,6 +12,9 @@ export interface ChatSession {
   title: string;
   created_at: string;
   updated_at: string;
+  parent_session_id?: string | null;
+  root_session_id?: string | null;
+  runtime_task_id?: string | null;
 }
 
 export interface UploadedChatFile {
@@ -85,6 +88,28 @@ export interface StartSessionRunInput {
   display_content?: string;
   file_name?: string;
   plan_mode_requested?: boolean;
+  attachments?: Array<Record<string, unknown>>;
+  parts?: Array<Record<string, unknown>>;
+}
+
+export type ConversationBranchMode = 'fork' | 'edit' | 'insert_before' | 'insert_after' | 'reply' | 'regenerate';
+
+export interface BranchSessionInput {
+  mode: ConversationBranchMode;
+  anchor_event_id: string;
+  content?: string;
+  display_content?: string;
+  file_name?: string;
+  title?: string;
+  start_run?: boolean;
+  attachments?: Array<Record<string, unknown>>;
+  parts?: Array<Record<string, unknown>>;
+}
+
+export interface BranchSessionResponse {
+  session: ChatSession;
+  branch: Record<string, unknown>;
+  run?: SessionRun | null;
 }
 
 export interface ChatTranscriptEvent {
@@ -139,6 +164,12 @@ export const chatApi = {
     get<SessionRuntimeSummary>(`/chat/sessions/${sessionId}/runtime-summary`, options),
   startSessionRun: (agentId: string, sessionId: string, input: StartSessionRunInput) =>
     post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs`, input),
+  branchSession: (agentId: string, sessionId: string, input: BranchSessionInput) =>
+    post<BranchSessionResponse>(`/agents/${agentId}/sessions/${sessionId}/branches`, input),
+  listSessionBranches: (agentId: string, sessionId: string) =>
+    get<ChatSession[]>(`/agents/${agentId}/sessions/${sessionId}/branches`),
+  getSessionLineage: (agentId: string, sessionId: string) =>
+    get<Array<Record<string, unknown>>>(`/agents/${agentId}/sessions/${sessionId}/lineage`),
   getActiveSessionRun: (agentId: string, sessionId: string) =>
     get<SessionRun | null>(`/agents/${agentId}/sessions/${sessionId}/runs/active`),
   cancelSessionRun: (agentId: string, sessionId: string, runId: string) =>

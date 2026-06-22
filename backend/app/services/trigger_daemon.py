@@ -31,7 +31,15 @@ from app.models.agent import Agent
 from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
-from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
+from app.services.runtime_task_service import (
+    build_restart_reconciliation_metadata,
+    build_restart_replay_contract,
+    build_restart_replay_journal_entry,
+    create_runtime_task_record,
+    list_active_runtime_task_records,
+    merge_restart_replay_journal,
+    update_runtime_task_record,
+)
 from app.services.trigger_preflight import (
     collect_trigger_runtime_options,
     evaluate_trigger_preflight,
@@ -52,6 +60,15 @@ _last_invoke: dict[uuid.UUID, datetime] = {}
 
 # Track fire timestamps per agent for hourly rate limiting
 _fire_history: dict[uuid.UUID, list[datetime]] = {}
+
+
+def _runtime_task_uuid_or_none(value: str | uuid.UUID | None) -> uuid.UUID | None:
+    if value is None or isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 async def _create_trigger_runtime_task(
@@ -78,12 +95,32 @@ async def _create_trigger_runtime_task(
     try:
         task_id = uuid.uuid4().hex
         trace_id = f"trigger:{task_id}"
+        side_effect_risk = str(metadata.get("side_effect_risk") or "mutating")
         metadata.update(
             {
                 "runtime_task_id": task_id,
                 "request_id": str(uuid.UUID(task_id)),
                 "trace_id": trace_id,
+                "resumable_trigger": True,
+                "resume_after_restart": True,
+                "side_effect_risk": side_effect_risk,
+                "restart_replay_contract": build_restart_replay_contract(
+                    task_type="trigger",
+                    task_id=task_id,
+                    side_effect_risk=side_effect_risk,
+                    trace_id=trace_id,
+                ),
             }
+        )
+        metadata = merge_restart_replay_journal(
+            metadata,
+            build_restart_replay_journal_entry(
+                task_type="trigger",
+                task_id=task_id,
+                side_effect_risk=side_effect_risk,
+                phase="spawn_intent_recorded",
+                trace_id=trace_id,
+            ),
         )
         return await create_runtime_task_record(
             task_id=task_id,
@@ -137,6 +174,133 @@ async def _skip_trigger_runtime_task(
         result_summary=result_summary,
         metadata_json=metadata,
     )
+
+
+async def _mark_trigger_runtime_task_needs_reconciliation(
+    runtime_task_id: str,
+    *,
+    metadata: dict[str, Any] | None,
+    blocker: str,
+    summary: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    await update_runtime_task_record(
+        runtime_task_id,
+        status="needs_reconciliation",
+        result_summary=summary,
+        metadata_json=build_restart_reconciliation_metadata(
+            metadata,
+            task_type="trigger",
+            task_id=runtime_task_id,
+            blocker=blocker,
+            summary=summary,
+            trace_id=trace_id,
+            session_id=session_id,
+        ),
+    )
+
+
+async def _load_triggers_for_resume(agent_id: uuid.UUID, trigger_ids: list[str]) -> list[AgentTrigger]:
+    parsed_ids: list[uuid.UUID] = []
+    for trigger_id in trigger_ids:
+        try:
+            parsed_ids.append(uuid.UUID(str(trigger_id)))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    if not parsed_ids:
+        return []
+
+    tid = await resolve_tenant_for_agent(agent_id)
+    async with tenant_scoped_session(tid) as db:
+        result = await db.execute(
+            select(AgentTrigger).where(AgentTrigger.agent_id == agent_id, AgentTrigger.id.in_(parsed_ids))
+        )
+        triggers = list(result.scalars().all())
+    by_id = {str(trigger.id): trigger for trigger in triggers}
+    return [by_id[str(trigger_id)] for trigger_id in parsed_ids if str(trigger_id) in by_id]
+
+
+async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
+    """Restart-safe recovery for trigger runs that never reached the execution session.
+
+    Once a trigger run has a session id, the previous process may already have
+    executed tools or written transcript rows. Without per-tool checkpoints, a
+    blind replay can duplicate external side effects, so those runs enter
+    ``needs_reconciliation`` instead of being replayed.
+    """
+
+    resumed: list[str] = []
+    records = await list_active_runtime_task_records(limit=limit, statuses=("pending", "running"))
+    for record in records:
+        if record.get("task_type") != "trigger":
+            continue
+        run_id = str(record.get("task_id") or "").strip()
+        if not run_id:
+            continue
+        metadata = dict(record.get("metadata") or {})
+        if not metadata.get("resume_after_restart") or not metadata.get("resumable_trigger"):
+            continue
+        trace_id = str(record.get("trace_id") or metadata.get("trace_id") or "")
+        session_id = str(record.get("child_session_id") or metadata.get("session_id") or "").strip()
+        if session_id:
+            await _mark_trigger_runtime_task_needs_reconciliation(
+                run_id,
+                metadata=metadata,
+                blocker="session_bound_mutating_trigger",
+                summary=(
+                    "Trigger run was interrupted after binding a session; replay could duplicate side effects. "
+                    "Reconciliation is required before retry."
+                ),
+                trace_id=trace_id,
+                session_id=session_id,
+            )
+            continue
+        try:
+            agent_id = uuid.UUID(str(record.get("parent_agent_id") or metadata.get("agent_id") or ""))
+        except (TypeError, ValueError, AttributeError):
+            await _mark_trigger_runtime_task_needs_reconciliation(
+                run_id,
+                metadata=metadata,
+                blocker="missing_trigger_parent_agent",
+                summary="Trigger run could not be resumed after restart because parent agent id is unavailable.",
+                trace_id=trace_id,
+            )
+            continue
+        trigger_ids = [str(item) for item in metadata.get("trigger_ids", []) if str(item).strip()]
+        triggers = await _load_triggers_for_resume(agent_id, trigger_ids)
+        if not triggers:
+            await _mark_trigger_runtime_task_needs_reconciliation(
+                run_id,
+                metadata=metadata,
+                blocker="missing_resume_triggers",
+                summary="Trigger run could not be resumed after restart because its trigger rows are unavailable.",
+                trace_id=trace_id,
+            )
+            continue
+        side_effect_risk = str(metadata.get("side_effect_risk") or "mutating")
+        resume_metadata = merge_restart_replay_journal(
+            metadata,
+            build_restart_replay_journal_entry(
+                task_type="trigger",
+                task_id=run_id,
+                side_effect_risk=side_effect_risk,
+                phase="resume_intent_recorded",
+                trace_id=trace_id,
+            ),
+        )
+        await update_runtime_task_record(
+            run_id,
+            status="running",
+            metadata_json={
+                "resumed_after_restart": True,
+                "restart_replay_contract": metadata.get("restart_replay_contract"),
+                "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
+            },
+        )
+        asyncio.create_task(_invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=run_id))
+        resumed.append(run_id)
+    return resumed
 
 
 # M-16: Persist dedup state to survive process restarts
@@ -1135,10 +1299,10 @@ async def _invoke_agent_for_triggers(
     """
     from app.api.websocket import call_llm
     from app.kernel.contracts import ExecutionIdentityRef
-    from app.models.audit import ChatMessage
     from app.models.chat_session import ChatSession
     from app.models.participant import Participant
     from app.services.audit_logger import write_audit_log
+    from app.services.chat_transcript import append_session_event
 
     # §9 P8 (§6.2): triggers carrying a workflow_ref take the deterministic
     # engine branch; the rest continue down the existing prose-ReAct path.
@@ -1236,6 +1400,7 @@ async def _invoke_agent_for_triggers(
 
             # Create a fresh Reflection Session for this wake.
             title = f"🤖 Reflection: {', '.join(trigger_names)}"
+            run_uuid = _runtime_task_uuid_or_none(runtime_task_id)
             # Find agent's participant
             result = await db.execute(
                 select(Participant).where(Participant.type == "agent", Participant.ref_id == agent_id)
@@ -1253,6 +1418,7 @@ async def _invoke_agent_for_triggers(
                 runtime_source="trigger",
                 visibility_scope="agent_owner",
                 listed_surface="task_updates",
+                runtime_task_id=run_uuid,
                 title=title[:200],
             )
             db.add(session)
@@ -1262,25 +1428,53 @@ async def _invoke_agent_for_triggers(
             memory_messages = [{"role": "user", "content": trigger_context}]
             messages = list(memory_messages)
 
-            # Store trigger context as a message in the session
-            db.add(
-                ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=tid,
-                    conversation_id=str(session_id),
-                    role="user",
-                    content=trigger_context,
-                    user_id=agent.creator_id,
-                    participant_id=agent_participant.id if agent_participant else None,
-                )
+            trigger_metadata = {
+                "source": "trigger",
+                "trigger_ids": [str(getattr(t, "id", "")) for t in triggers],
+                "trigger_names": trigger_names,
+                "trigger_types": [str(getattr(t, "type", "")) for t in triggers],
+                "runtime_task_id": runtime_task_id,
+                "request_id": str(run_uuid) if run_uuid else None,
+                "trace_id": f"trigger:{runtime_task_id}" if runtime_task_id else None,
+                "semantic_memory_eligible": True,
+            }
+            await append_session_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=tid,
+                session_id=session_id,
+                run_id=run_uuid,
+                actor_type="user",
+                event_type="user_message",
+                role="user",
+                user_id=agent.creator_id,
+                participant_id=agent_participant.id if agent_participant else None,
+                content=trigger_context,
+                source="trigger",
+                visibility_scope="agent_owner",
+                listed_surface="task_updates",
+                metadata=trigger_metadata,
             )
             session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
+            if runtime_task_id:
+                await update_runtime_task_record(
+                    runtime_task_id,
+                    status="running",
+                    child_session_id=str(session_id),
+                    result_summary="Trigger session started.",
+                    metadata_json={
+                        "session_id": str(session_id),
+                        "session_bound": True,
+                    },
+                )
             # Cache participant ID + tenant for callbacks (they run after this
             # scoped session closes; stage-2b ChatMessage INSERTs must set
             # tenant_id and run under a tenant-scoped session).
             agent_participant_id = agent_participant.id if agent_participant else None
             agent_tenant_id = tid
+            agent_creator_id = agent.creator_id
+            trigger_run_uuid = run_uuid
 
         # Call LLM (outside the DB session to avoid long transactions)
         collected_content = []
@@ -1292,30 +1486,51 @@ async def _invoke_agent_for_triggers(
         async def on_tool_call(data):
             try:
                 async with tenant_scoped_session(agent_tenant_id) as _tc_db:
-                    if data["status"] == "done":
-                        result_str = str(data.get("result", ""))[:2000]
-                        _tc_db.add(
-                            ChatMessage(
-                                agent_id=agent_id,
-                                tenant_id=agent_tenant_id,
-                                conversation_id=str(session_id),
-                                role="tool_call",
-                                content=_json.dumps(
-                                    {
-                                        "name": data["name"],
-                                        "args": data.get("args"),
-                                        "status": "done",
-                                        "result": result_str,
-                                        "reasoning_content": data.get("reasoning_content"),
-                                        "reasoning_signature": data.get("reasoning_signature"),
-                                    },
-                                    ensure_ascii=False,
-                                    default=str,
-                                ),
-                                user_id=agent.creator_id,
-                                participant_id=agent_participant_id,
-                            )
-                        )
+                    status = str(data.get("status") or "")
+                    payload = {
+                        "name": data.get("name", ""),
+                        "args": data.get("args"),
+                        "status": status,
+                        "tool_call_id": data.get("tool_call_id"),
+                        "step_id": data.get("step_id"),
+                        "visibility": data.get("visibility") or "collapsed",
+                        "started_at": data.get("started_at") or data.get("startedAt"),
+                        "completed_at": data.get("completed_at") or data.get("completedAt"),
+                        "duration_ms": data.get("duration_ms"),
+                        "reasoning_content": data.get("reasoning_content"),
+                        "reasoning_signature": data.get("reasoning_signature"),
+                    }
+                    if status in {"done", "completed", "failed"} or "result" in data:
+                        payload["result"] = str(data.get("result", ""))
+                    payload = {key: value for key, value in payload.items() if value is not None}
+                    event_type = "tool_result" if status in {"done", "completed", "failed"} else "tool_call"
+                    await append_session_event(
+                        db=_tc_db,
+                        agent_id=agent_id,
+                        tenant_id=agent_tenant_id,
+                        session_id=session_id,
+                        run_id=trigger_run_uuid,
+                        actor_type="tool",
+                        event_type=event_type,
+                        role="tool_call",
+                        t0_role="tool",
+                        user_id=agent_creator_id,
+                        participant_id=agent_participant_id,
+                        content=_json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+                        source="trigger",
+                        visibility_scope="agent_owner",
+                        listed_surface="task_updates",
+                        metadata={
+                            "source": "trigger",
+                            "tool_name": data.get("name", ""),
+                            "status": status,
+                            "tool_call_id": data.get("tool_call_id"),
+                            "step_id": data.get("step_id"),
+                            "duration_ms": data.get("duration_ms"),
+                            "visibility": data.get("visibility") or "collapsed",
+                            "runtime_task_id": runtime_task_id,
+                        },
+                    )
                     await _tc_db.commit()
             except Exception as e:
                 logger.warning(f"Failed to persist tool call for trigger session: {e}")
@@ -1406,6 +1621,8 @@ async def _invoke_agent_for_triggers(
             if _delivery_token is not None:
                 channel_delivery_target.reset(_delivery_token)
 
+        final_reply = reply or "".join(collected_content)
+
         # Save assistant reply to Reflection session
         async with tenant_scoped_session(agent_tenant_id) as db:
             result = await db.execute(
@@ -1413,16 +1630,27 @@ async def _invoke_agent_for_triggers(
             )
             agent_participant = result.scalar_one_or_none()
 
-            db.add(
-                ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=agent_tenant_id,
-                    conversation_id=str(session_id),
-                    role="assistant",
-                    content=reply or "".join(collected_content),
-                    user_id=agent.creator_id,
-                    participant_id=agent_participant.id if agent_participant else None,
-                )
+            await append_session_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=agent_tenant_id,
+                session_id=session_id,
+                run_id=trigger_run_uuid,
+                actor_type="assistant",
+                event_type="assistant_message",
+                role="assistant",
+                user_id=agent_creator_id,
+                participant_id=agent_participant.id if agent_participant else None,
+                content=final_reply,
+                source="trigger",
+                visibility_scope="agent_owner",
+                listed_surface="task_updates",
+                metadata={
+                    "source": "trigger",
+                    "runtime_task_id": runtime_task_id,
+                    "trigger_names": trigger_names,
+                    "trigger_types": [str(getattr(t, "type", "")) for t in triggers],
+                },
             )
 
             # NOTE: trigger state (last_fired_at, fire_count, auto-disable)
@@ -1437,7 +1665,6 @@ async def _invoke_agent_for_triggers(
 
         # Outcome metadata only. Durable learning enters the canonical T0 -> T2
         # path through the TRIGGER_END hook below.
-        final_reply = reply or "".join(collected_content)
         trigger_outcome = "unknown"
         trigger_score = None
         try:
@@ -1525,16 +1752,19 @@ async def _invoke_agent_for_triggers(
                 HookEvent.TRIGGER_END,
                 agent_id=agent_id,
                 session_id=str(session_id),
-                messages=messages,
+                messages=[],
                 source="trigger",
                 metadata={
+                    "tenant_id": str(agent_tenant_id) if agent_tenant_id else None,
+                    "runtime_task_id": runtime_task_id,
+                    "semantic_memory_eligible": True,
                     "trigger_name": trigger_names[0] if trigger_names else "unknown",
                     "trigger_type": triggers[0].type if triggers else "unknown",
                     "trigger_names": trigger_names,
                     "trigger_types": [t.type for t in triggers],
                     "status": "success",
-                    "instruction": trigger_context[:1000] if trigger_context else "",
-                    "result": final_reply[:2000] if final_reply else "",
+                    "outcome": trigger_outcome,
+                    "score": trigger_score,
                 },
             )
         except Exception as _hook_err:
@@ -1615,10 +1845,18 @@ async def _tick():
                 agent_triggers,
                 now,
             )
+            runtime_metadata = {
+                **preflight_metadata,
+                "fire_event_keys": {
+                    str(getattr(trigger, "id", "")): fire_event_keys.get(getattr(trigger, "id", None))
+                    for trigger in agent_triggers
+                    if getattr(trigger, "id", None) in fire_event_keys
+                },
+            }
             runtime_task_id = await _create_trigger_runtime_task(
                 agent_id,
                 agent_triggers,
-                metadata_json=preflight_metadata,
+                metadata_json=runtime_metadata,
             )
             if not preflight_ok:
                 await _skip_trigger_runtime_task(

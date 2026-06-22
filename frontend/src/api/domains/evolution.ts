@@ -34,9 +34,22 @@ export type EvolutionManifest = {
   [key: string]: unknown;
 };
 
+export type EvolutionTimelineItem = {
+  id: string;
+  lane: string;
+  stage: string;
+  status: string;
+  title: string;
+  path?: string | null;
+  source_refs?: string[];
+  [key: string]: unknown;
+};
+
 export type AgentEvolutionView = {
   schema: 'agent_evolution_view.v2';
   path_contract: Record<string, string>;
+  lanes: Record<string, EvolutionTimelineItem[]>;
+  timeline: EvolutionTimelineItem[];
   memory_learning: {
     pending_t3_jobs: EvolutionManifest[];
     t3_targets: Record<string, { path: string; line_count: number }>;

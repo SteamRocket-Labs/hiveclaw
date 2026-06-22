@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -19,6 +21,30 @@ def _stub_activity_logger(monkeypatch):
         return True, None
 
     monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", fake_delegation_plan_gate_allows)
+
+
+def test_a2a_tool_call_persistence_uses_replayable_transcript_writer() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "app" / "services" / "agent_tool_domains" / "messaging.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    persist_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_persist_agent_tool_call"
+    )
+
+    direct_chat_message_calls = [
+        node
+        for node in ast.walk(persist_fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "ChatMessage"
+    ]
+    append_session_event_calls = [
+        node
+        for node in ast.walk(persist_fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "append_session_event"
+    ]
+
+    assert direct_chat_message_calls == []
+    assert append_session_event_calls
 
 
 @pytest.mark.asyncio

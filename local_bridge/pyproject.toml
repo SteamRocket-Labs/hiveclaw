@@ -1,0 +1,21 @@
+[project]
+name = "hive-bridge"
+version = "0.1.0"
+description = "Hive Local Agent Bridge CLI and stdio MCP server"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+hive-bridge = "hive_bridge.cli:main"
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["hive_bridge*"]

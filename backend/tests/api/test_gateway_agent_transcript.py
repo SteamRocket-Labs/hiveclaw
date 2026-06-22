@@ -53,6 +53,9 @@ class _FakeDB:
     async def commit(self) -> None:
         self.commit_count += 1
 
+    async def flush(self) -> None:
+        return None
+
     async def execute(self, _stmt):
         self.statements.append(_stmt)
         sql = getattr(_stmt, "text", None) or str(_stmt)
@@ -144,6 +147,7 @@ async def test_gateway_send_message_persists_openclaw_agent_request_to_chat_tran
     result = await gateway_mod.send_message(
         GatewaySendMessageRequest(target=target_agent.name, content="Need the release summary."),
         x_api_key="test-key",
+        authorization=None,
         db=db,
     )
 
@@ -209,6 +213,7 @@ async def test_gateway_report_result_persists_openclaw_agent_reply_to_chat_trans
     result = await gateway_mod.report_result(
         GatewayReportRequest(message_id=queued_message.id, result="Here is the release summary."),
         x_api_key="test-key",
+        authorization=None,
         db=primary_db,
     )
 
@@ -283,7 +288,7 @@ async def test_gateway_poll_history_prefers_participant_display_names(monkeypatc
 
     monkeypatch.setattr(gateway_mod, "_get_agent_by_key", fake_get_agent_by_key)
 
-    response = await gateway_mod.poll_messages(x_api_key="test-key", db=db)
+    response = await gateway_mod.poll_messages(x_api_key="test-key", authorization=None, db=db)
 
     assert queued_message.status == "delivered"
     assert response.messages[0].history[0].sender_name == source_participant.display_name
@@ -291,9 +296,14 @@ async def test_gateway_poll_history_prefers_participant_display_names(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_send_to_agent_background_persists_participant_ids_for_native_agent_transcript(monkeypatch) -> None:
+async def test_send_to_agent_background_persists_participant_ids_for_native_agent_transcript(
+    monkeypatch,
+    tmp_path,
+) -> None:
     from app.api import gateway as gateway_mod
     from app.api import websocket as websocket_mod
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.chat_transcript_event import ChatTranscriptEvent
 
     source_agent_id = uuid4()
     target_agent_id = uuid4()
@@ -308,11 +318,17 @@ async def test_send_to_agent_background_persists_participant_ids_for_native_agen
     async def fake_find_or_create_agent_pair_session(*_args, **_kwargs):
         return chat_session
 
-    async def fake_call_llm(**_kwargs):
+    async def fake_call_llm(**kwargs):
+        assert kwargs["auto_close_session"] is False
+        await kwargs["on_tool_call"]({"tool": "lookup", "status": "running", "args": {"q": "release"}})
+        await kwargs["on_tool_call"](
+            {"tool": "lookup", "status": "done", "result": "full gateway result END_OF_GATEWAY_TOOL"}
+        )
         return "Native reply"
 
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr(gateway_mod, "find_or_create_agent_pair_session", fake_find_or_create_agent_pair_session)
-    monkeypatch.setattr(gateway_mod, "session_conversation_id", lambda _session: "agent-pair-conv")
+    monkeypatch.setattr(gateway_mod, "session_conversation_id", lambda session: str(session.id))
     monkeypatch.setattr(gateway_mod, "tenant_scoped_session", _AsyncSessionFactory([first_db, second_db]))
     monkeypatch.setattr(websocket_mod, "call_llm", fake_call_llm)
 
@@ -329,6 +345,26 @@ async def test_send_to_agent_background_persists_participant_ids_for_native_agen
     )
 
     request_chat = next(obj for obj in first_db.added if isinstance(obj, ChatMessage))
-    reply_chat = next(obj for obj in second_db.added if isinstance(obj, ChatMessage))
+    reply_chat = next(obj for obj in first_db.added if isinstance(obj, ChatMessage) and obj.role == "assistant")
+    transcript_events = [
+        obj for db in (first_db, second_db) for obj in db.added if isinstance(obj, ChatTranscriptEvent)
+    ]
     assert request_chat.participant_id == source_participant.id
     assert reply_chat.participant_id == target_participant.id
+    assert [event.event_type for event in transcript_events] == [
+        "user_message",
+        "tool_call",
+        "tool_result",
+        "assistant_message",
+    ]
+    events = replay_t0_session_events(agent_id=target_agent_id, session_id=chat_session.id, data_root=tmp_path)
+    assert [(event.event_type, event.role) for event in events] == [
+        ("user_message", "user"),
+        ("tool_call", "tool"),
+        ("tool_result", "tool"),
+        ("assistant_message", "assistant"),
+        ("segment_boundary", "system"),
+    ]
+    assert events[0].content == "[Message from agent: Source OpenClaw]\nNeed the release summary."
+    assert "END_OF_GATEWAY_TOOL" in events[2].content
+    assert events[3].content == "Native reply"

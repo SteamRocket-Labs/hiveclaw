@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -27,10 +27,15 @@ class GatewayMessage(Base):
     sender_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     # Chat session tracking for routing responses back
     conversation_id: Mapped[str | None] = mapped_column(String(100))
+    client_message_id: Mapped[str | None] = mapped_column(String(128))
     # Message content
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    attachments_json: Mapped[list[dict]] = mapped_column(JSONB, default=list, nullable=False)
+    metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     # Status tracking
-    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)  # pending | delivered | completed
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", nullable=False
+    )  # pending | delivered | completed
     result: Mapped[str | None] = mapped_column(Text)
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

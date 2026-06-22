@@ -88,6 +88,16 @@ class T2SegmentPackageResult:
 
 
 @dataclass(frozen=True, slots=True)
+class T2SegmentPackageJobResult:
+    status: str
+    job_id: str
+    package_dir: Path
+    staging_dir: Path
+    issues: tuple[str, ...] = ()
+    package_result: T2SegmentPackageResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class T2EpisodeStitchPackageResult:
     status: str
     job_id: str
@@ -290,6 +300,96 @@ async def build_t2_segment_package_with_llm(
         )
 
 
+async def run_t2_segment_package_job(
+    *,
+    agent_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
+    session_id: uuid.UUID | str,
+    t0_segment_id: str,
+    data_root: Path | str | None = None,
+    package_id: str | None = None,
+    job_id: str | None = None,
+) -> T2SegmentPackageJobResult:
+    """Durably record and run a T0->T2 package job.
+
+    The job manifest is the crash/restart boundary: queued/running/terminal
+    state is written before and after the LLM-owned package builder. The
+    builder may still return a held package when model config is unavailable;
+    that held result is a valid terminal state, not a silent failure.
+    """
+
+    root = _data_root(data_root)
+    resolved_package_id = package_id or _stable_t2_package_id(session_id=session_id, t0_segment_id=t0_segment_id)
+    resolved_job_id = job_id or _stable_t2_job_id(session_id=session_id, t0_segment_id=t0_segment_id)
+    staging_dir = _staging_dir(root, agent_id, resolved_job_id)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    package_dir = _package_dir(root, agent_id, session_id, t0_segment_id)
+    manifest_path = staging_dir / "job_manifest.json"
+    base_manifest = {
+        "schema_version": "t2.segment-package-job.v1",
+        "job_id": resolved_job_id,
+        "package_id": resolved_package_id,
+        "agent_id": str(agent_id),
+        "tenant_id": str(tenant_id) if tenant_id else None,
+        "session_id": str(session_id),
+        "t0_segment_id": str(t0_segment_id),
+        "package_dir": _relative_agent_path(root, agent_id, package_dir),
+        "staging_dir": _relative_agent_path(root, agent_id, staging_dir),
+        "created_at": _now(),
+    }
+    if not manifest_path.exists():
+        _write_json(manifest_path, {**base_manifest, "status": "queued", "updated_at": _now(), "issues": []})
+    _write_json(manifest_path, {**base_manifest, "status": "running", "updated_at": _now(), "issues": []})
+    try:
+        result = await build_t2_segment_package_with_llm(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            t0_segment_id=t0_segment_id,
+            data_root=root,
+            package_id=resolved_package_id,
+            job_id=resolved_job_id,
+        )
+        terminal = "committed" if result.status == "committed" else "held"
+        _write_json(
+            manifest_path,
+            {
+                **base_manifest,
+                "status": terminal,
+                "package_status": result.status,
+                "issues": list(result.issues),
+                "package_manifest_path": _relative_agent_path(root, agent_id, result.package_dir / MANIFEST_FILENAME),
+                "updated_at": _now(),
+            },
+        )
+        return T2SegmentPackageJobResult(
+            status=terminal,
+            job_id=resolved_job_id,
+            package_dir=result.package_dir,
+            staging_dir=staging_dir,
+            issues=result.issues,
+            package_result=result,
+        )
+    except Exception as exc:  # noqa: BLE001
+        issue = f"T0->T2 job failed before package builder terminal state: {type(exc).__name__}: {exc}"
+        _write_json(
+            manifest_path,
+            {
+                **base_manifest,
+                "status": "failed",
+                "issues": [issue],
+                "updated_at": _now(),
+            },
+        )
+        return T2SegmentPackageJobResult(
+            status="failed",
+            job_id=resolved_job_id,
+            package_dir=package_dir,
+            staging_dir=staging_dir,
+            issues=(issue,),
+        )
+
+
 async def build_t2_episode_stitch_package(
     *,
     agent_id: uuid.UUID | str,
@@ -465,13 +565,16 @@ def _build_source_bundle(
     t0_segment_id: str,
     package_id: str,
 ) -> dict[str, Any]:
-    events = [
+    segment_events = [
         event
         for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
         if event.segment_id == t0_segment_id
     ]
+    events = [event for event in segment_events if _is_t2_semantic_source_event(event)]
     if not events:
-        raise ValueError(f"no T0 events for session={session_id} segment={t0_segment_id}")
+        raise ValueError(f"no semantic T0 events for session={session_id} segment={t0_segment_id}")
+    if not any(_is_semantic_content_event(event) for event in events):
+        raise ValueError(f"no semantic T0 events for session={session_id} segment={t0_segment_id}")
     source_path = events[0].path
     source_ref = _source_ref(
         root=root, agent_id=agent_id, session_id=session_id, segment_id=t0_segment_id, path=source_path, events=events
@@ -497,6 +600,37 @@ def _build_source_bundle(
         "principal_context": {},
         "created_at": _now(),
     }
+
+
+def _is_t2_semantic_source_event(event: Any) -> bool:
+    metadata = event.metadata or {}
+    if _is_false_metadata_flag(metadata.get("semantic_memory_eligible")):
+        return False
+    if _is_true_metadata_flag(metadata.get("projection_only")):
+        return False
+    return True
+
+
+def _is_semantic_content_event(event: Any) -> bool:
+    if getattr(event, "event_type", None) == "segment_boundary":
+        return False
+    return bool(str(getattr(event, "content", "") or "").strip())
+
+
+def _is_false_metadata_flag(value: Any) -> bool:
+    if value is False:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "no"}
+    return False
+
+
+def _is_true_metadata_flag(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
 
 
 def _work_ledger_payload(*, root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str) -> dict[str, Any]:
@@ -1266,6 +1400,16 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _stable_t2_package_id(*, session_id: uuid.UUID | str, t0_segment_id: str) -> str:
+    digest = hashlib.sha256(f"{session_id}\0{t0_segment_id}".encode("utf-8")).hexdigest()[:16]
+    return f"t2pkg-{digest}"
+
+
+def _stable_t2_job_id(*, session_id: uuid.UUID | str, t0_segment_id: str) -> str:
+    digest = hashlib.sha256(f"{session_id}\0{t0_segment_id}".encode("utf-8")).hexdigest()[:16]
+    return f"t2job-{digest}"
 
 
 def _dedupe(values: list[str]) -> list[str]:

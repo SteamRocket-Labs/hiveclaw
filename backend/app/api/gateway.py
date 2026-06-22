@@ -6,7 +6,9 @@ to poll for messages, report results, send messages, and send heartbeat pings.
 
 import asyncio
 import hashlib
+import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -17,9 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
+from app.models.chat_session import ChatSession
 from app.models.gateway_message import GatewayMessage
 from app.models.participant import Participant
 from app.models.user import User
+from app.services.local_bridge_service import BridgeAuthContext, resolve_bridge_auth_context
 from app.services.agent_pair_session import (
     find_or_create_agent_pair_session,
     get_or_create_agent_participant_id,
@@ -35,6 +39,37 @@ from app.schemas.schemas import (
 )
 
 router = APIRouter(prefix="/gateway", tags=["gateway"])
+
+
+@dataclass(frozen=True)
+class GatewayActor:
+    """Resolved gateway caller identity.
+
+    Legacy OpenClaw callers use X-Api-Key and have no bridge_context. Local
+    Bridge callers use Authorization: Bearer hb_* and are scoped by the
+    connection row, not by request body/header tenant hints.
+    """
+
+    agent: Agent
+    bridge_context: BridgeAuthContext | None = None
+
+
+def _normalize_result_attachments(attachments: list[dict] | None) -> list[dict]:
+    normalized: list[dict] = []
+    for attachment in attachments or []:
+        item = dict(attachment)
+        item.setdefault("direction", "result")
+        normalized.append(item)
+    return normalized
+
+
+def _merge_report_metadata(existing: dict | None, report_metadata: dict | None) -> dict:
+    metadata = dict(existing or {})
+    if report_metadata:
+        report = dict(metadata.get("report") or {})
+        report.update(dict(report_metadata))
+        metadata["report"] = report
+    return metadata
 
 
 def _hash_key(key: str) -> str:
@@ -63,12 +98,32 @@ async def _get_agent_by_key(api_key: str, db: AsyncSession) -> Agent:
     return agent
 
 
+async def _get_gateway_actor(
+    *,
+    x_api_key: str | None,
+    authorization: str | None,
+    db: AsyncSession,
+) -> GatewayActor:
+    """Resolve either legacy OpenClaw X-Api-Key or Local Bridge bearer auth."""
+    if authorization:
+        bridge_context = await resolve_bridge_auth_context(db, authorization=authorization)
+        result = await db.execute(select(Agent).where(Agent.id == bridge_context.agent_id))
+        agent = result.scalar_one_or_none()
+        if not agent:
+            raise HTTPException(status_code=401, detail="Bridge agent not found")
+        return GatewayActor(agent=agent, bridge_context=bridge_context)
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing gateway authentication")
+    return GatewayActor(agent=await _get_agent_by_key(x_api_key, db))
+
+
 # ─── Poll for messages ──────────────────────────────────
 
 
 @router.get("/poll", response_model=GatewayPollResponse)
 async def poll_messages(
-    x_api_key: str = Header(..., alias="X-Api-Key"),
+    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
     """OpenClaw agent polls for pending messages.
@@ -76,8 +131,9 @@ async def poll_messages(
     Returns all pending messages and marks them as delivered.
     Also updates openclaw_last_seen for online status tracking.
     """
-    logger.info(f"[Gateway] poll called, key_prefix={x_api_key[:8]}...")
-    agent = await _get_agent_by_key(x_api_key, db)
+    logger.info(f"[Gateway] poll called, auth={'bearer' if authorization else 'x-api-key'}")
+    actor = await _get_gateway_actor(x_api_key=x_api_key, authorization=authorization, db=db)
+    agent = actor.agent
 
     # Update last seen
     agent.openclaw_last_seen = datetime.now(timezone.utc)
@@ -146,6 +202,8 @@ async def poll_messages(
                 sender_user_name=sender_user_name,
                 sender_user_id=str(msg.sender_user_id) if msg.sender_user_id else None,
                 content=msg.content,
+                attachments=list(getattr(msg, "attachments_json", None) or []),
+                metadata=dict(getattr(msg, "metadata_json", None) or {}),
                 created_at=msg.created_at,
                 history=history,
             )
@@ -209,13 +267,13 @@ async def poll_messages(
 async def report_result(
     body: GatewayReportRequest,
     x_api_key: str = Header(None, alias="X-Api-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
     """OpenClaw agent reports the result of a processed message."""
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="Missing X-Api-Key header")
-    logger.info(f"[Gateway] report called, key_prefix={x_api_key[:8]}..., msg_id={body.message_id}")
-    agent = await _get_agent_by_key(x_api_key, db)
+    logger.info(f"[Gateway] report called, auth={'bearer' if authorization else 'x-api-key'}, msg_id={body.message_id}")
+    actor = await _get_gateway_actor(x_api_key=x_api_key, authorization=authorization, db=db)
+    agent = actor.agent
 
     result = await db.execute(
         select(GatewayMessage).where(
@@ -229,10 +287,16 @@ async def report_result(
 
     msg.status = "completed"
     msg.result = body.result
-    msg.completed_at = datetime.now(timezone.utc)
+    result_attachments = _normalize_result_attachments(body.attachments)
+    if result_attachments:
+        msg.attachments_json = list(getattr(msg, "attachments_json", None) or []) + result_attachments
+    if body.metadata:
+        msg.metadata_json = _merge_report_metadata(getattr(msg, "metadata_json", None), body.metadata)
+    now = datetime.now(timezone.utc)
+    msg.completed_at = now
 
     # Update last seen
-    agent.openclaw_last_seen = datetime.now(timezone.utc)
+    agent.openclaw_last_seen = now
 
     # Save result as assistant chat message and push via WebSocket
     # (only for user-originated messages; agent-to-agent skips this)
@@ -246,6 +310,15 @@ async def report_result(
             conversation_id=msg.conversation_id,
         )
         db.add(assistant_msg)
+        try:
+            session_id = uuid.UUID(str(msg.conversation_id))
+        except (TypeError, ValueError):
+            session_id = None
+        if session_id is not None:
+            session_result = await db.execute(select(ChatSession).where(ChatSession.id == session_id))
+            session = session_result.scalar_one_or_none()
+            if session is not None:
+                session.last_message_at = now
 
     await db.commit()
 
@@ -326,11 +399,13 @@ async def report_result(
 
 @router.post("/heartbeat")
 async def heartbeat(
-    x_api_key: str = Header(..., alias="X-Api-Key"),
+    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
     """Pure heartbeat ping — keeps the OpenClaw agent marked as online."""
-    agent = await _get_agent_by_key(x_api_key, db)
+    actor = await _get_gateway_actor(x_api_key=x_api_key, authorization=authorization, db=db)
+    agent = actor.agent
     agent.openclaw_last_seen = datetime.now(timezone.utc)
     agent.status = "running"
     await db.commit()
@@ -341,6 +416,25 @@ async def heartbeat(
 
 # Track background tasks to prevent garbage collection
 _background_tasks: set = set()
+
+
+def _gateway_tool_event_status(event: object) -> str:
+    if isinstance(event, dict):
+        return str(event.get("status") or "").lower()
+    return str(getattr(event, "status", "") or "").lower()
+
+
+def _gateway_tool_event_terminal(status: str) -> bool:
+    return status in {"done", "completed", "failed", "error"}
+
+
+def _gateway_tool_event_content(event: object, *, terminal: bool) -> str:
+    if isinstance(event, dict) and terminal and "result" in event:
+        return str(event.get("result") or "")
+    try:
+        return json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+    except TypeError:
+        return str(event)
 
 
 async def _send_to_agent_background(
@@ -364,9 +458,14 @@ async def _send_to_agent_background(
         from app.api.websocket import call_llm
         from app.kernel.contracts import ExecutionIdentityRef
         from app.models.llm import LLMModel
+        from app.services.chat_transcript import append_session_event
 
         # Detached bg task (no request ContextVar) — pin to the target tenant.
         async with tenant_scoped_session(target_tenant_id) as db:
+            target_agent_uuid = uuid.UUID(str(target_agent_id))
+            source_agent_uuid = uuid.UUID(str(source_agent_id))
+            tenant_uuid = uuid.UUID(str(target_tenant_id)) if target_tenant_id else None
+            owner_user_uuid = uuid.UUID(str(target_creator_id))
             # Load target agent's LLM model
             if not target_primary_model_id or not target_tenant_id:
                 logger.warning(f"Target agent {target_agent_name} has no LLM model or tenant")
@@ -399,6 +498,7 @@ async def _send_to_agent_background(
             )
             conv_id = session_conversation_id(session)
             session_agent_id = session.agent_id
+            session_uuid = uuid.UUID(str(session.id))
 
             # Update last_message_at
             session.last_message_at = datetime.now(timezone.utc)
@@ -426,71 +526,186 @@ async def _send_to_agent_background(
             memory_messages.append(user_entry)
 
             # Save user message to conversation
+            user_message_id = uuid.uuid4()
             db.add(
                 ChatMessage(
-                    agent_id=session_agent_id,
-                    tenant_id=uuid.UUID(str(target_tenant_id)) if target_tenant_id else None,
+                    id=user_message_id,
+                    agent_id=uuid.UUID(str(session_agent_id)),
+                    tenant_id=tenant_uuid,
                     conversation_id=conv_id,
                     role="user",
                     content=user_msg,
-                    user_id=target_creator_id,
+                    user_id=owner_user_uuid,
                     participant_id=source_participant_id,
                 )
             )
+            await append_session_event(
+                db=db,
+                agent_id=target_agent_uuid,
+                tenant_id=tenant_uuid,
+                session_id=session_uuid,
+                actor_type="agent",
+                event_type="user_message",
+                role="user",
+                t0_role="user",
+                user_id=owner_user_uuid,
+                participant_id=source_participant_id,
+                message_id=user_message_id,
+                content=user_msg,
+                metadata={
+                    "conversation_id": conv_id,
+                    "source_agent_id": str(source_agent_uuid),
+                    "source_agent_name": source_agent_name,
+                    "target_agent_id": str(target_agent_uuid),
+                    "target_agent_name": target_agent_name,
+                },
+                visibility_scope="agent_owner",
+                listed_surface="chat",
+                materialize_chat_message=False,
+                source="gateway",
+            )
             await db.commit()
 
-        # Call LLM
-        collected = []
+            # Call LLM
+            collected = []
 
-        async def on_chunk(text):
-            collected.append(text)
+            async def on_chunk(text):
+                collected.append(text)
 
-        reply = await call_llm(
-            model=model,
-            messages=messages,
-            agent_name=target_agent_name,
-            role_description=target_role_description,
-            agent_id=target_agent_id,
-            user_id=target_creator_id,
-            on_chunk=on_chunk,
-            session_id=conv_id,
-            memory_messages=memory_messages,
-            execution_identity=ExecutionIdentityRef(
-                identity_type="agent_bot",
-                identity_id=uuid.UUID(str(source_agent_id)),
-                label=f"Agent: {source_agent_name} (agent_message)",
-            ),
-            auto_close_session=True,
-            session_source="gateway",
-            session_channel="gateway",
-        )
-        final_reply = reply or "".join(collected)
+            async def on_tool_call(event):
+                status = _gateway_tool_event_status(event)
+                terminal = _gateway_tool_event_terminal(status)
+                await append_session_event(
+                    db=db,
+                    agent_id=target_agent_uuid,
+                    tenant_id=tenant_uuid,
+                    session_id=session_uuid,
+                    actor_type="tool",
+                    event_type="tool_result" if terminal else "tool_call",
+                    role="tool_call",
+                    t0_role="tool",
+                    user_id=owner_user_uuid,
+                    content=_gateway_tool_event_content(event, terminal=terminal),
+                    metadata={
+                        "conversation_id": conv_id,
+                        "source_agent_id": str(source_agent_uuid),
+                        "tool_event": event,
+                        "tool_status": status,
+                    },
+                    visibility_scope="agent_owner",
+                    listed_surface="chat",
+                    materialize_chat_message=False,
+                    source="gateway",
+                )
+                await db.commit()
 
-        # Save assistant reply to conversation
-        async with tenant_scoped_session(target_tenant_id) as db:
+            reply = await call_llm(
+                model=model,
+                messages=messages,
+                agent_name=target_agent_name,
+                role_description=target_role_description,
+                agent_id=target_agent_uuid,
+                user_id=owner_user_uuid,
+                on_chunk=on_chunk,
+                on_tool_call=on_tool_call,
+                session_id=str(session_uuid),
+                memory_messages=memory_messages,
+                execution_identity=ExecutionIdentityRef(
+                    identity_type="agent_bot",
+                    identity_id=source_agent_uuid,
+                    label=f"Agent: {source_agent_name} (agent_message)",
+                ),
+                auto_close_session=False,
+                session_source="gateway",
+                session_channel="gateway",
+            )
+            final_reply = reply or "".join(collected)
+
+            # Save assistant reply to conversation
+            assistant_message_id = uuid.uuid4()
             db.add(
                 ChatMessage(
-                    agent_id=session_agent_id,
-                    tenant_id=uuid.UUID(str(target_tenant_id)) if target_tenant_id else None,
+                    id=assistant_message_id,
+                    agent_id=uuid.UUID(str(session_agent_id)),
+                    tenant_id=tenant_uuid,
                     conversation_id=conv_id,
                     role="assistant",
                     content=final_reply,
-                    user_id=target_creator_id,
+                    user_id=owner_user_uuid,
                     participant_id=target_participant_id,
                 )
+            )
+            await append_session_event(
+                db=db,
+                agent_id=target_agent_uuid,
+                tenant_id=tenant_uuid,
+                session_id=session_uuid,
+                actor_type="assistant",
+                event_type="assistant_message",
+                role="assistant",
+                t0_role="assistant",
+                user_id=owner_user_uuid,
+                participant_id=target_participant_id,
+                message_id=assistant_message_id,
+                content=final_reply,
+                metadata={
+                    "conversation_id": conv_id,
+                    "source_agent_id": str(source_agent_uuid),
+                    "source_agent_name": source_agent_name,
+                    "target_agent_id": str(target_agent_uuid),
+                    "target_agent_name": target_agent_name,
+                },
+                visibility_scope="agent_owner",
+                listed_surface="chat",
+                materialize_chat_message=False,
+                source="gateway",
             )
 
             # Write reply to gateway_messages for source (OpenClaw) to poll
             gw_reply = GatewayMessage(
-                agent_id=source_agent_id,
-                tenant_id=uuid.UUID(str(target_tenant_id)) if target_tenant_id else None,
-                sender_agent_id=target_agent_id,
+                agent_id=source_agent_uuid,
+                tenant_id=tenant_uuid,
+                sender_agent_id=target_agent_uuid,
                 content=final_reply,
                 status="pending",
                 conversation_id=conv_id,
             )
             db.add(gw_reply)
             await db.commit()
+            try:
+                from app.runtime.hooks import HookEvent, emit_hook
+
+                await emit_hook(
+                    HookEvent.SESSION_CLOSE,
+                    agent_id=target_agent_uuid,
+                    session_id=str(session_uuid),
+                    source="gateway",
+                    messages=[],
+                    metadata={
+                        "reason": "invoke_complete",
+                        "channel": "gateway",
+                        "distillation_scope": "semantic_candidate",
+                        "tenant_id": str(tenant_uuid) if tenant_uuid else None,
+                    },
+                )
+            except Exception as close_err:
+                logger.debug("[Gateway] SESSION_CLOSE hook failed (non-fatal): {}", close_err)
+            try:
+                from app.memory.t0.ledger import seal_t0_session_segment
+
+                seal_t0_session_segment(
+                    agent_id=target_agent_uuid,
+                    session_id=session_uuid,
+                    reason="invoke_complete",
+                    metadata={
+                        "source": "gateway",
+                        "channel": "gateway",
+                        "distillation_scope": "semantic_candidate",
+                        "tenant_id": str(tenant_uuid) if tenant_uuid else None,
+                    },
+                )
+            except Exception as seal_err:
+                logger.debug("[Gateway] direct T0 seal skipped after SESSION_CLOSE: {}", seal_err)
 
         logger.info(f"[Gateway] Agent {target_agent_name} replied to {source_agent_name}")
 
@@ -504,7 +719,8 @@ async def _send_to_agent_background(
 @router.post("/send-message")
 async def send_message(
     body: GatewaySendMessageRequest,
-    x_api_key: str = Header(..., alias="X-Api-Key"),
+    x_api_key: str | None = Header(None, alias="X-Api-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
     """OpenClaw agent sends a message to a person or another agent.
@@ -513,7 +729,8 @@ async def send_message(
     - Agent target: triggers LLM processing, reply returned via next poll
     - Human target: sends via available channel (feishu, etc.)
     """
-    agent = await _get_agent_by_key(x_api_key, db)
+    actor = await _get_gateway_actor(x_api_key=x_api_key, authorization=authorization, db=db)
+    agent = actor.agent
     agent.openclaw_last_seen = datetime.now(timezone.utc)
 
     target_name = body.target.strip()

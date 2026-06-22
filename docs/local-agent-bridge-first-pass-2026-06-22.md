@@ -1,12 +1,12 @@
 # Local Agent Bridge First Pass
 
-状态：设计稿，先确认文档再实现
+状态：设计稿 + 2026-06-22 dogfood 修正 + first implementation pass；当前文档是 Local Agent Bridge 的产品/架构 truth surface
 日期：2026-06-22
 范围：任意本地 agent runtime 与 Hive agent 的双向通信、单向文件上传、认证、会话回放；Claude Code / Codex 只是首批适配示例
 
 ## 0. 结论
 
-第一版不要追完整 ACP / A2A JSON-RPC task server，也不要把 MCP 当唯一目标。
+第一版不要追 Hive 云端完整 ACP / A2A JSON-RPC task server，也不要把 MCP 当唯一目标。
 
 最快、最稳的落地方案是做一个 **Hive Local Agent Bridge**：
 
@@ -31,16 +31,434 @@ MCP 只作为本地客户端接入方式之一：
 
 也就是说，产品语义是“本地 agent bridge”，底层第一版复用 Hive 现有 Gateway / ChatSession / Artifact 主链；MCP 是兼容层，不是主架构。
 
-### 0.1 P0 硬指标
+### 0.1 当前统一边界
 
-第一版只有两个不可降级硬指标：
+本文档里后续所有 P0 / P1 / future 表述以本节为准。旧边界是“先把 `hive-bridge login/mcp/run/upload` 链路跑通”；2026-06-22 dogfood 和 cc-connect 源码复盘后，边界已经升级。
 
-1. **单向文件上传**：本地 bridge 可以把本地文件上传到 Hive；Hive 必须保存原文件、生成可引用 artifact，并在 ChatSession transcript 中展示。第一版不要求 Hive 把文件主动推送下载到本地。
-2. **相互通信并可调用本地 agent 干活**：Hive 云端可以向本地 bridge 投递一项工作，任意已适配的本地 agent runtime 可以处理并把结果回传；本地 bridge 也可以主动向 Hive agent 发消息。这里的“通信”不是简单 ping，而是 `request -> local work -> result` 的闭环。
+当前 P0 不是单纯 transport smoke，也不是直接接入 cc-connect。当前 P0 目标已经从“工作台派活”升级为 **Local Agent Channel**：
 
-任何会拖慢这两个指标的能力都不进入 P0：完整 A2A JSON-RPC task server、双向文件同步、push 通知、本地公网入站、复杂 OAuth delegation 都后置。
+```text
+Hive Local Agent Link P0
+  1. Hive control plane binding
+     browser device-flow approve
+     tenant/user/agent/connection scoped bridge token
+     revoke / last_seen / audit
 
-## 1. 为什么不第一版做完整 ACP / A2A
+  2. Local control client
+     hive-bridge login/status/mcp/upload/run
+     outbound HTTPS only
+     no local public server
+     no public package registry blocker
+
+  3. Local runtime layer
+     cc-connect-inspired registry
+     AgentRuntime / AgentSession / RuntimeEvent
+     command runtime as universal fallback
+     ACP runtime as first generic agent protocol
+     Codex / Claude Code native runtime deferred to P1 unless needed for dogfood
+
+  4. Product-visible Local Agent Channel
+     Local Agent tab is the channel surface
+     Web user can chat directly with the local agent
+     cloud agents can delegate work to this local endpoint through governed A2A routing
+     queued / delivered / running / completed / failed visible
+     streaming text / tool events / result text / artifacts visible in ChatSession transcript
+```
+
+两个业务硬指标仍然不变，但它们现在的验收口径更严格：
+
+1. **单向文件上传**：本地 bridge 可以把本地文件上传到 Hive；Hive 必须保存原文件、生成可引用 artifact，并在 ChatSession transcript 和 Workbench 里展示。第一版不要求 Hive 把文件主动推送下载到本地。
+2. **相互通信并可调用本地 agent 干活**：Hive 云端可以像 IM channel 一样给本地 agent 发消息，本地 runtime 可以持续会话、处理、流式回传事件和最终结果；本地 bridge 也可以主动向 Hive agent 发消息。这里的“通信”不是简单 ping，也不是只显示 message id，而是 `Web/A2A message -> local AgentSession -> streaming/result/artifact -> Hive ChatSession visible` 的闭环。
+
+任何会拖慢这条 P0 主线的能力都不进入 P0：完整公网 A2A JSON-RPC task server、双向文件同步、本地公网入站、复杂 OAuth delegation、cc-connect 多 IM platform 矩阵、本地 web management UI、公开 registry / signed installer 都后置。
+
+### 0.2 Dogfood 修正
+
+2026-06-22 的本地 Codex <-> 云端 Web3研究员 dogfood 证明了传输层方向是对的：
+
+- 本地 connection 可以绑定到指定 `tenant_id + agent_id + user_id + connection_id`。
+- 本地 `hive-bridge` 可以通过出站 HTTPS poll 收到云端 work request。
+- 本地 runner 可以调用 command adapter 执行任务，再通过 `/gateway/report` 回传。
+- 本地文件可以通过 bridge upload 写入 Hive workspace，并生成 ChatSession/artifact 记录。
+
+但这次 dogfood 也暴露了最关键的产品缺口：
+
+```text
+Settings / Local Agent Link card 只显示"派活已入队"。
+它没有展示 delivered / running / completed / failed。
+它没有展示本地 agent 的返回结果、workspace_path、artifact、conversation link。
+用户自然会以为"前端完全没有反应"。
+```
+
+所以本文档后续计划必须按新边界统一：Settings 里的 Local Agent Link card 只负责绑定、认证、设备状态、撤销。云端对本地 agent 派活和结果回看，必须进入 Local Agent Workbench，或者至少进入一个可打开的 `Local Agent Bridge` conversation。否则后端即使已经完成任务，产品上仍然是失败的。
+
+### 0.3 当前实现状态（2026-06-22 first implementation pass）
+
+本轮已经把 dogfood 暴露的“前端完全没有反应”问题补到可测试状态：
+
+- Backend 新增 Local Bridge work request read model：
+  - `GET /api/v1/agents/{agent_id}/local-bridge/work-requests`
+  - `GET /api/v1/agents/{agent_id}/local-bridge/work-requests/{message_id}`
+  - 读模型返回当前用户当前 agent 的 `pending / delivered / completed`、result、attachments、metadata、conversation_id。
+- Gateway report contract 已支持 structured completion：
+  - `GatewayReportRequest.attachments`
+  - `GatewayReportRequest.metadata`
+  - report 后写回 `GatewayMessage.attachments_json` 和 `metadata_json.report`，并保留原 ChatSession assistant message 写入。
+- Frontend 已把 Local Agent Link / Local Agent Workbench 挂到 Agent Detail 的独立 `本地 Agent` tab：
+  - tab 位置固定在 `子代理` 后面，作为本地 agent 连接与云端派活的一级工作页。
+  - `Settings` 不再承载 Local Agent Link 主入口，避免用户把它理解成普通配置项。
+  - 显示最近 work requests。
+  - 展示状态、结果正文、runtime metadata、artifact/workspace path。
+  - 发送派活后立即刷新，并持续 polling。
+  - P0 先复用同一个 work surface，后续可再拆成更细的 `LocalAgentWorkbenchSection` / conversation view。
+- Local `hive-bridge` runtime 层已改为 cc-connect-inspired registry：
+  - `noop` runtime：无配置时安全回报收到任务。
+  - `command` runtime：通用命令适配器，回传 stdout / error summary 和 `runtime/exit_code/command` metadata。
+  - `acp` runtime：最小 stdio newline-delimited JSON-RPC ACP adapter，执行 `initialize -> session/new -> session/prompt`，用于任意 ACP-compatible 本地 agent subprocess。
+- 已补测试：
+  - backend work request read model + report attachments/metadata。
+  - frontend Local Agent Workbench rendering。
+  - local bridge client/report payload、poller structured result、runtime registry、command runtime、ACP runtime。
+
+仍需在 production dogfood 中验证的不是协议设计，而是部署后的真实 UI/runner 闭环：在线状态、云端派活、runner 自动执行、result/artifact 在 Workbench 可见、token revoke 后 fail-closed。
+
+### 0.4 2026-06-22 目标修正：Local Agent Channel，不是一次性 Workbench
+
+用户最终要的产品形态与 `cc-connect` 的核心产品语义一致：Hive 云端在本地 runner 看来是一个 IM platform，本地 Codex / Claude Code / ACP agent 是 agent runtime。区别是 Hive 必须保留自己的 tenant/user/agent 权限、ChatSession、Artifact 和审计主链。
+
+```text
+cc-connect mature shape:
+  IM Platform -> Engine -> AgentSession
+
+Hive target shape:
+  Hive Local Agent Channel -> HiveBridgeRunner -> Local AgentSession
+
+Where:
+  Hive Local Agent Channel = Web chat + A2A delegated messages + attachments + approvals
+  HiveBridgeRunner = authenticated outbound client, presence keepalive, poll/stream/report/upload
+  Local AgentSession = Codex / Claude Code / Cursor / Gemini / ACP-compatible runtime
+```
+
+这意味着 `本地 Agent` tab 不能只是一个 “send work request” textarea。它必须变成一个真正 channel：
+
+```text
+Agent Detail / 本地 Agent
+  Header:
+    online / stale / offline
+    bound device
+    runtime kind
+    current session
+    service status
+
+  Conversation:
+    Web user -> local agent message
+    local agent streaming text / thinking / tool events
+    local agent final result
+    uploaded artifacts
+    permission requests when the local runtime needs approval
+
+  Work queue:
+    A2A delegated tasks from other Hive agents
+    scheduled / trigger-origin local work
+    retry / cancel / timeout / diagnostics
+```
+
+常态在线的定义：
+
+```text
+connected:
+  token valid
+  connection has been approved and not revoked
+
+online:
+  runner process is holding an outbound WebSocket/SSE/long-poll, or recently completed poll/report
+  runner advertises runtime availability
+  runner can accept a new message for at least one Local AgentSession
+
+stale:
+  token still valid but no active connection / poll / keepalive has been observed inside the online window
+
+offline:
+  no active outbound connection, or connection revoked/expired
+```
+
+第一版不要求本地开公网端口。长期在线仍然走本地主动出站：
+
+```text
+hive-bridge service
+  -> outbound long-poll / SSE / WebSocket
+  -> optional transport keepalive only when the channel is otherwise idle
+  -> receives channel messages
+  -> dispatches to local AgentSession
+  -> reports streaming events / final result / attachments
+```
+
+这里的 `presence keepalive` 不是 Hive agent 自我进化里的 Heartbeat，也不是一个独立业务任务。它只是连接层在线状态：电脑开机、runner 运行、网络通畅，就保持 online；电脑关机、休眠、断网或 runner 退出，就自然变 stale/offline。优先用长连接本身判断在线，只有不能保持长连接时才用短周期 ping/poll 更新 `last_seen_at`。
+
+### 0.5 Web 直聊与 A2A 指派的最短实现路径
+
+要实现“Web 端直接和本地 agent 聊天”，后端需要把当前 `work_request` 队列升级为 channel message：
+
+```text
+POST /api/v1/agents/{agent_id}/local-agent/sessions
+POST /api/v1/agents/{agent_id}/local-agent/sessions/{session_id}/messages
+GET  /api/v1/agents/{agent_id}/local-agent/sessions/{session_id}/events
+POST /api/v1/local-bridge/channel/ws-ticket
+WS   /api/v1/local-bridge/channel/ws?ticket={short_lived_ticket}
+GET  /api/v1/local-bridge/channel/poll              -- fallback only
+POST /api/v1/local-bridge/channel/events
+POST /api/v1/local-bridge/channel/report
+```
+
+数据模型上应保留现有 `local_agent_bridge_connections`，但新增 channel/session 层：
+
+```text
+local_agent_channels
+  id
+  tenant_id
+  agent_id                 -- Hive cloud employee this local channel belongs to
+  owner_user_id
+  connection_id
+  runtime_kind             -- codex / claude_code / cursor / gemini / acp / command
+  status                   -- online / stale / offline / revoked
+  capabilities_json
+
+local_agent_channel_sessions
+  id
+  tenant_id
+  agent_id
+  channel_id
+  chat_session_id           -- Hive replay surface
+  local_session_id          -- Codex/Claude/ACP session id when available
+  source                    -- web / a2a / trigger / schedule
+  status
+
+local_agent_channel_events
+  id
+  session_id
+  message_id
+  direction                 -- hive_to_local / local_to_hive
+  event_type                -- text / thinking / tool_use / tool_result / permission_request / result / error / artifact
+  payload_json
+  created_at
+```
+
+`ChatSession` 仍然是用户可回放的主面：
+
+```text
+source_channel = "local_agent"
+session_kind = "local_agent_channel"
+participant_type = "local_agent"
+external_conversation_id = "local_agent:{channel_id}:{local_session_id}"
+```
+
+要实现“其他 agent 通过 A2A 指派本地 agent 干活”，不要先做完整公网 A2A server。最短路径是接入 Hive 现有 A2A 工具面：
+
+```text
+Cloud Agent A
+  -> delegate_to_agent(target_agent=B, execution_target="local_agent")
+  -> Hive creates LocalAgentChannelSession(source="a2a")
+  -> Hive enqueues local channel message
+  -> bound hive-bridge runner receives it over WebSocket, or fallback poll
+  -> local AgentSession handles it
+  -> result/artifacts written back to ChatSession + delegation result
+```
+
+如果不想改 `delegate_to_agent` schema，P0.5 可以先提供一个内部工具：
+
+```text
+delegate_to_local_agent(
+  target_agent_id,
+  prompt,
+  attachments,
+  expected_output,
+  timeout_seconds
+)
+```
+
+但长期应该收敛回 `delegate_to_agent` 的 routing policy，而不是让 Local Agent 成为另一套孤立工具。这样它和普通 Hive agent、子代理、workflow 的权限/审计/Plan Mode 规则才能一致。
+
+### 0.6 认证、WebSocket、部署与本地端定义
+
+这一版按“本地 agent channel”设计，不按“远程触发一个脚本”设计。它和飞书、Slack、微信这类 channel 类似：Hive 云端是控制面和消息面，本地机器上的 `hive-bridge service` 是一个长期在线的出站客户端，负责把云端消息交给本地 AgentSession，并把流式回复、文件和最终结果写回 Hive。
+
+#### 0.6.1 认证怎么做
+
+继续沿用 device-flow 绑定，不让用户手工复制长期密钥：
+
+```text
+1. 本地 agent 按 Skill 执行 hive-bridge login。
+2. CLI 调 Hive 创建 pairing，拿到 HIVE-XXXX-XXXX 配对码和 activation URL。
+3. 用户在 Hive Web 已登录态下打开 Local Agent 页面。
+4. 用户在目标员工卡片里批准该 pairing。
+5. 后端把 connection 绑定到 tenant_id + user_id + agent_id + device_fingerprint。
+6. CLI exchange device_code，拿到 hb_ 开头的长期 bridge token。
+7. token 存本地 Keychain；没有 Keychain 时退化到 0600 权限配置文件。
+```
+
+服务端不得信任本地消息里的 `tenant_id`、`user_id`、`agent_id`。这些身份只来自已批准的 `local_agent_bridge_connections` 记录。也就是说：绑定关系不是“本地说自己是谁”，而是“Hive 登录用户在某个员工页批准了某台本地设备”。
+
+WebSocket 不直接把长期 `hb_` token 放在 URL 里。推荐做一层短票据：
+
+```text
+POST /api/v1/local-bridge/channel/ws-ticket
+Authorization: Bearer hb_...
+
+-> returns:
+{
+  "ticket": "hbt_...",
+  "expires_in": 60,
+  "single_use": true
+}
+
+WS /api/v1/local-bridge/channel/ws?ticket=hbt_...
+```
+
+`ws_ticket` 必须是短期、单次使用，并绑定 `connection_id + tenant_id + agent_id + scopes + device_fingerprint`。WebSocket 握手成功后，服务端把该 socket 固定到这条 connection；后续每条消息只做 message_id/session_id 校验，不再从 payload 接受身份声明。
+
+第一版 scopes 建议：
+
+```text
+local_agent:connect       -- 建立 WS / fallback poll
+local_agent:receive       -- 接收 Hive -> local 消息
+local_agent:send          -- 写回 local -> Hive 事件
+local_agent:report        -- 写最终结果 / error / status
+files:upload              -- 单向上传本地文件到 Hive
+presence:write            -- 更新 online/stale/offline 状态
+```
+
+当前已有 `gateway:poll` / `gateway:report` / `gateway:send-message` 可以作为兼容层，但新的 channel 不应该继续把语义叫 gateway poll；应迁到 `local_agent:*` scopes。
+
+#### 0.6.2 WebSocket 具体怎么实现
+
+新增 Local Agent 专用 WebSocket，不复用现有 `/ws/chat/{agent_id}`。现有 `/ws/chat/{agent_id}` 是浏览器用户订阅 Web Chat runtime 的通道；Local Agent Channel 是本地 runner 到 Hive 的出站通道，两者的认证、消息方向、重连语义都不同。
+
+建议新增：
+
+```text
+backend/app/api/local_agent_channel.py
+backend/app/services/local_agent_channel_service.py
+backend/app/services/local_agent_presence.py
+backend/app/models/local_agent_channel.py
+```
+
+最小协议：
+
+```text
+connect:
+  runner -> POST /local-bridge/channel/ws-ticket with hb_ token
+  runner -> WSS /local-bridge/channel/ws?ticket=...
+  server -> hello {connection_id, agent_id, server_time, resume_from}
+
+ready:
+  runner -> ready {runtime_kind, capabilities, local_session_support}
+  server marks channel online
+
+message:
+  server -> message {message_id, session_id, source, content, attachments, metadata}
+  runner -> ack {message_id}
+
+stream:
+  runner -> event {session_id, message_id, type: text|thinking|tool_use|tool_result|artifact|error, payload}
+  server writes ChatMessage / channel event / artifact row
+
+finish:
+  runner -> result {session_id, message_id, status, output, artifacts, usage, error}
+  server completes channel message and wakes web/A2A waiter
+
+control:
+  ping/pong every 20-30s while idle
+  cancel {session_id, message_id}
+  resume {last_event_id}
+```
+
+在线状态以 socket 是否存在为主，不以业务 Heartbeat 为主：
+
+```text
+online  = WS connected and ready
+stale   = WS disconnected but token still valid, inside grace window or recently polled
+offline = no active WS/fallback poll beyond online window, or revoked/expired
+```
+
+断线重连必须支持 resume。runner 本地保存 `last_event_id` / `last_acked_message_id`，重连后服务端补发未 ack 的 message。这样用户电脑睡眠、网络切换、Railway rolling deploy 都不会造成消息永久丢失。
+
+如果 WS 不可用，保留 fallback：
+
+```text
+GET  /api/v1/local-bridge/channel/poll?after={event_id}
+POST /api/v1/local-bridge/channel/events
+POST /api/v1/local-bridge/channel/report
+```
+
+fallback 是兼容手段，不是主路径。
+
+#### 0.6.3 要不要单独微服务
+
+第一版不要单独起微服务，直接放进当前 backend，但代码边界要独立。
+
+原因：
+
+- 认证依赖现有用户登录态、tenant、agent access、RLS、`local_agent_bridge_connections`。
+- Web 聊天回放要写现有 `ChatSession` / `ChatMessage` / file artifact。
+- A2A 指派要接现有 `delegate_to_agent`、RuntimeTask、审计和权限模型。
+- 单独微服务会立刻复制 auth、RLS、session、artifact、A2A wakeup 逻辑，第一版风险更高。
+
+部署形态：
+
+```text
+P0/P1:
+  existing Hive backend
+    + local_agent_channel router
+    + channel/presence service
+    + DB tables
+    + optional Redis pub/sub for multi-process fanout
+
+Future scale-out:
+  hive-local-agent-gateway service
+    + same auth ticket issuer or shared auth introspection
+    + Redis/NATS/Postgres event stream
+    + no business ownership over ChatSession/A2A
+```
+
+只有当长连接数量、跨 region fanout、Railway backend worker 压力成为真实问题时，才拆 `hive-local-agent-gateway`。拆出去后它也只能是连接网关，不能成为新的业务真源。
+
+#### 0.6.4 本地端定义与安装方式
+
+本地端不是 MCP 本身，也不是 Skill 本身，而是三层组合：
+
+```text
+Skill:
+  给本地 Claude Code / Codex / Cursor / 其他 agent 看的安装与操作说明。
+  目标是让小白用户只说一句“帮我安装 Hive Bridge skill，并连接到 Hive”。
+
+CLI:
+  hive-bridge login
+  hive-bridge status
+  hive-bridge service install/start/status/stop
+  hive-bridge run
+  hive-bridge upload
+
+MCP:
+  给本地 agent 的工具面。
+  例如 hive_status / hive_send_message / hive_upload_file / hive_open_session。
+  MCP 不是常驻在线通道；常驻在线由 hive-bridge service 负责。
+```
+
+第一版本地安装按最简单可调通方式：
+
+```text
+1. 发布 hive-bridge 本地包，优先 npm/pipx/brew 中最容易上线的一种。
+2. Skill 里写清楚自动安装命令和 MCP 配置片段。
+3. 本地 agent 执行安装，写入 MCP config: command = ["hive-bridge", "mcp"]。
+4. 本地 agent 执行 hive-bridge login。
+5. 用户在 Hive Web Local Agent 页面批准绑定。
+6. 本地 agent 执行 hive-bridge service start，建立 WS 长连接。
+7. Hive Web Local Agent 页面显示 online，可以直接发起 local chat。
+```
+
+第二版再做签名安装包、macOS launchd、Windows Service、Linux systemd、自动升级和 Keychain 全覆盖。第一版先保证 Skill + CLI + MCP + service 的链路真实跑通。
+
+## 1. 为什么不第一版做完整云端 ACP / A2A
 
 ### 1.1 当前 Hive 已有可用主链
 
@@ -50,7 +468,7 @@ MCP 只作为本地客户端接入方式之一：
   - `GET /api/v1/gateway/poll`
   - `POST /api/v1/gateway/report`
   - `POST /api/v1/gateway/send-message`
-  - `POST /api/v1/gateway/heartbeat`
+  - `POST /api/v1/gateway/presence` or existing lightweight keepalive endpoint
   - `GET /api/v1/gateway/setup-guide/{agent_id}`
 - `backend/app/api/chat_sessions.py`
   - `POST /api/v1/agents/{agent_id}/sessions`
@@ -67,9 +485,11 @@ MCP 只作为本地客户端接入方式之一：
 
 这说明第一版最短路径是把本地桥接接到这些已存在的端点，而不是先补完整标准协议。
 
-### 1.2 完整 A2A / ACP 会扩大第一版风险
+### 1.2 完整 A2A / Cloud ACP Task Server 会扩大第一版风险
 
-完整 A2A / ACP 意味着新增或补齐：
+这里的“不做完整 ACP”指 **Hive 云端不在 P0 暴露完整 ACP/A2A task server**。这不影响本地 runtime 层使用 ACP 作为 agent subprocess protocol。P0 可以做 `hive-bridge run --runtime acp`，但不把 Hive backend 声称为完整 ACP/A2A server。
+
+完整 A2A / cloud task server 意味着新增或补齐：
 
 - public task JSON-RPC endpoint
 - task lifecycle contract
@@ -80,7 +500,15 @@ MCP 只作为本地客户端接入方式之一：
 - cross-owner collaboration policy
 - replay / idempotency / cancel / retry semantics
 
-这些能力长期需要，但不该阻塞“本地 agent runtime 与 Hive 互通”第一版。
+这些能力长期需要，但不该阻塞“本地 agent runtime 与 Hive 互通”第一版。P0 的 ACP 边界只在本地 runtime adapter：
+
+```text
+Hive cloud
+  -> Gateway work_request
+  -> hive-bridge runner
+  -> local ACP subprocess
+  -> report result/artifact back to Hive
+```
 
 ### 1.3 直接采用成熟模式，不重新发明轮子
 
@@ -98,6 +526,10 @@ Local MCP STDIO pattern:
 CLI device-flow auth pattern:
   类似 GitHub CLI 的 `gh auth login`。
   CLI 打开浏览器，用户在 Hive Web 登录、选择/确认 agent；CLI 轮询直到拿到 scoped token。
+
+cc-connect adapter architecture pattern:
+  借鉴 core/agent/session/event/registry 形态。
+  不复制 cc-connect 多 platform、本地 web management 和 TOML project 体验。
 ```
 
 这比自研桌面 app / deep link 更贴近当前用户习惯：
@@ -242,7 +674,7 @@ Local agent runtime
 │ Hive Backend                                            │
 │                                                         │
 │  Gateway API                                            │
-│    - poll / report / send-message / heartbeat           │
+│    - poll / report / send-message / presence keepalive   │
 │                                                         │
 │  ChatSession / Transcript                               │
 │    - replayable session surface                         │
@@ -257,18 +689,36 @@ Local agent runtime
 
 ## 4. First-Pass Scope
 
-第一版必须一次做完这些闭环，不做半成品：
+第一版必须一次做完这些闭环，不做半成品。当前 P0 scope 分四条 lane：
 
-1. 本地 bridge 可注册并认证。
-2. Hive 能给本地 bridge 投递消息。
-3. 本地 bridge 能 poll 消息并返回结果。
-4. 本地 bridge 能主动向 Hive agent / human target 发消息。
-5. 本地 bridge 能上传单个本地文件，Hive 能保存原文件、生成 artifact，并展示在 transcript 中。
-6. Hive 能向本地 bridge 投递一项工作，本地 bridge 能把任务交给本地 Claude / Claude Code / Codex / local agent 处理，并通过 report 回传结果。
-7. 所有 bridge 交互都能在 ChatSession transcript 里回放。
-8. token 可撤销，bridge offline/last_seen 可见。
-9. 权限按 agent / tenant / user scope 收窄，不暴露全租户万能 token。
-10. 关键路径有后端测试和本地 bridge smoke test。
+```text
+Lane A: Binding / auth
+  - 本地 bridge 可注册并认证。
+  - browser device-flow approve 绑定到唯一 tenant/user/agent/connection。
+  - token 可撤销，bridge offline/last_seen 可见。
+  - 权限按 agent / tenant / user scope 收窄，不暴露全租户万能 token。
+
+Lane B: Local package / transport
+  - `hive-bridge login/status/mcp/upload/run` 可用。
+  - 所有本地到 Hive 通信都是出站 HTTPS poll/report/upload。
+  - 不要求本地公网服务、反向代理、本地 Bridge WebSocket 端口。
+
+Lane C: Runtime layer
+  - 本地 runtime 层采用 cc-connect 验证过的 registry + AgentRuntime/AgentSession/Event 形态。
+  - P0 runtime = command adapter + ACP adapter。
+  - Codex / Claude Code native adapter 是 P1，除非 P0 dogfood 必须补最小实现。
+  - cc-connect 作为源码模式参考或 fallback adapter，不作为默认用户路径。
+
+Lane D: Product-visible work loop
+  - Hive 能向本地 bridge 投递 work_request。
+  - 本地 runner poll 后交给 runtime 处理并 report。
+  - 本地 bridge 能主动向 Hive agent / human target 发消息。
+  - 本地 bridge 能上传单个本地文件，Hive 保存原文件、生成 artifact。
+  - ChatSession transcript 和 Local Agent Workbench 都能看到 request/result/artifact。
+  - Workbench 能展示 queued / delivered / completed / failed，不只展示 message_id。
+```
+
+关键路径必须有后端测试、本地 bridge/runtime 测试、前端 Workbench 测试和至少一次生产 dogfood smoke。
 
 ## 5. Backend Design
 
@@ -593,7 +1043,7 @@ get_bridge_auth_context(request, db) -> BridgeAuthContext
 GET  /api/v1/gateway/poll                      -> requires message:read
 POST /api/v1/gateway/report                    -> requires message:write
 POST /api/v1/gateway/send-message              -> requires message:write
-POST /api/v1/gateway/heartbeat                 -> requires heartbeat
+POST /api/v1/gateway/presence                  -> requires presence:write; optional if long-poll/WebSocket is active
 POST /api/v1/agents/{agent_id}/local-bridge/files -> requires file:upload and path agent_id == context.agent_id
 GET  /api/v1/agents/{agent_id}/sessions/{session_id}/transcript -> requires session:read and path agent_id == context.agent_id
 ```
@@ -1057,7 +1507,7 @@ Local agent runtime
   -> HTTPS
   -> existing Hive backend
      - pairing/init / activate / exchange
-     - gateway poll/report/send-message/heartbeat
+     - gateway poll/report/send-message/presence keepalive
      - local-bridge file upload
      - transcript/session APIs
 ```
@@ -1448,7 +1898,7 @@ MCP tool 不直接访问 Hive DB，不绕过 Hive API。
 ```text
 interval: 10s
 backoff: 10s -> 30s -> 60s
-heartbeat: 60s
+presence keepalive: only when no long-poll/WebSocket/SSE is active
 ```
 
 第一版不要求公网入站，不要求 local server 暴露给 Hive。这样可穿透公司网络、家用 NAT、VPN、移动网络。
@@ -1465,7 +1915,7 @@ message:write
 file:upload
 session:read
 session:write
-heartbeat
+presence:write
 ```
 
 每个 token 绑定：
@@ -1656,6 +2106,521 @@ claude mcp add hive-local -- hive-bridge mcp
 
 如果 token 丢失、过期或被撤销，MCP tools 返回 `auth_required`，提示本地 agent 重新执行 `hive-bridge login`。MCP tool 不应要求任意本地 agent 输入 Hive JWT。
 
+### 8.5 Required Product Split After Dogfood
+
+当前前端曾经把绑定、安装指令、配对码、派活 textarea 全塞进 `AgentDetail -> Settings`。这适合 first smoke，但不适合真实用户。
+
+当前产品边界改为：Agent Detail 里单独放一个 `本地 Agent` 页面，并在 tab 顺序上紧跟 `子代理`。这不是普通设置项，也不是 MCP 工具列表；它是“这个云端员工通过 Hive Local Agent Channel 绑定、直聊并调度用户本地 agent”的工作面。
+
+```text
+Agent Detail / 子代理
+Agent Detail / 本地 Agent
+  做连接管理 + Web 直聊 + A2A 派活：
+    - linked devices
+    - online/offline/last_seen
+    - service/runner status
+    - install instruction
+    - pairing approve/reject
+    - revoke
+    - scopes
+    - Web -> local agent conversation composer
+    - A2A -> local agent delegated work
+    - lifecycle: queued -> delivered -> running -> completed/failed
+    - streaming local agent events
+    - local adapter / runtime name
+    - result text
+    - uploaded artifacts and workspace_path
+    - open Local Agent Bridge conversation
+    - retry / cancel / copy diagnostic id
+```
+
+Settings 不应再承载“连接本地 agent / 远程操控本地 agent 干活”的主体验。后续如果设置页保留入口，也只能是跳转到 `本地 Agent` tab 的轻量快捷入口。
+
+### 8.6 Local Agent Channel UX Contract
+
+Local Agent Channel 第一屏不做营销，不做解释页，直接给可操作工作面：
+
+```text
+Header:
+  Local Agent
+  status: online / offline / stale / revoked
+  device: Codex local bridge test
+  runtime: codex / claude_code / custom
+  service: running / not installed / needs attention
+  last seen: 2026-06-22 06:19:04
+
+Conversation:
+  Local Agent Bridge
+  Web user message
+  local agent streaming text
+  local agent thinking/tool events if visible
+  final result
+  upload events / artifacts
+
+Composer:
+  textarea: 直接和本地 agent 说话
+  attachments
+  [Send]
+
+A2A Work Queue:
+  delegated tasks from other Hive agents
+  queued / delivered / running / completed / failed
+  result preview
+  artifacts
+  [Open transcript] [Open workspace file]
+```
+
+用户点击“发送”后，前端必须立刻进入可追踪状态：
+
+```text
+sendLocalAgentMessage response:
+  session_id
+  message_id
+  chat_session_id
+
+UI:
+  show queued state immediately
+  subscribe/poll channel events by session_id
+  when status == delivered: show "local agent received"
+  when local agent emits text/thinking/tool/result: append to conversation
+  when status == completed: show final result + transcript link + artifacts
+  when status == failed/timeout: show failure reason + retry
+```
+
+不能只显示 `派活已入队: <message_id>`。这对工程师有用，对普通用户没有用。
+
+### 8.7 Backend API Needed For A Real Workbench
+
+当前 `POST /api/agents/{agent_id}/local-bridge/work-requests` 已经能创建 work request，并返回 `message_id` 和可选 `conversation_id`。但前端没有一个稳定的 read model 去追踪任务完成态。
+
+P0 workbench 需要新增查询 API：
+
+```text
+GET /api/v1/agents/{agent_id}/local-bridge/work-requests/{message_id}
+
+Response:
+{
+  "id": "...",
+  "agent_id": "...",
+  "connection_id": "...",
+  "conversation_id": "...",
+  "status": "pending|delivered|running|completed|failed|expired",
+  "content": "...",
+  "result": "...",
+  "metadata": {},
+  "attachments": [],
+  "created_at": "...",
+  "delivered_at": "...",
+  "completed_at": "..."
+}
+```
+
+还需要一个 recent list：
+
+```text
+GET /api/v1/agents/{agent_id}/local-bridge/work-requests?limit=20
+```
+
+这个 read model 应只返回当前用户有权管理或查看的当前 agent 数据，并且必须用 `check_agent_access` + tenant RLS。前端不应该直接拼 GatewayMessage 或 ChatMessage 的内部细节。
+
+`GatewayReportRequest` 还需要补完整 artifact contract：
+
+```json
+{
+  "message_id": "...",
+  "result": "...",
+  "attachments": [
+    {
+      "type": "file",
+      "name": "codex_hello_workspace.md",
+      "workspace_path": "workspace/uploads/codex_hello_workspace.md",
+      "artifact_id": "..."
+    }
+  ],
+  "metadata": {
+    "adapter": "codex",
+    "runtime": "hive_bridge_runner"
+  }
+}
+```
+
+这样 local runner 在上传文件后可以把 artifact refs 跟 work request completion 绑定；Workbench 才能展示“本地 agent 上传了什么”。
+
+### 8.8 cc-connect Decision
+
+`cc-connect` 不应该替代 Hive Local Agent Bridge，但值得复用。
+
+截至 2026-06-22，`cc-connect` upstream README（https://github.com/chenhg5/cc-connect）把自己定位为“把本机 AI agents 连接到消息平台”的桥，支持 Claude Code、Codex、Cursor、Gemini CLI，以及 ACP-compatible agent；同时支持 Feishu/Lark、DingTalk、Slack、Telegram、Discord、WeCom 等平台，多数平台不要求用户暴露本地公网 IP。它已经覆盖了大量 Hive 不该重复造的本地 agent session、消息平台、文件发送、安装和配置经验。
+
+但它解决的是这一层：
+
+```text
+local agent runtime
+  - launch / session / command
+  - messaging platform adapter
+  - local file send-back
+  - agent-specific quirks
+```
+
+它不解决 Hive 必须自己拥有的这一层：
+
+```text
+Hive control plane
+  - tenant/user/agent binding
+  - browser device-flow approval
+  - bridge token hashing / revocation
+  - check_agent_access
+  - ChatSession transcript
+  - Artifact/workspace source of truth
+  - audit / RLS / governance
+```
+
+所以推荐策略：
+
+```text
+P0:
+  保留当前 hive-bridge backend/auth/control-plane。
+  补 Local Agent Workbench 和 work_request status read model。
+  local runner 改成 cc-connect-inspired runtime registry。
+  runtime adapter 只要求 command + ACP。
+  证明 cloud -> local runtime -> result/artifact -> Hive UI visible 闭环。
+
+P1:
+  做 Codex / Claude Code native runtime adapter。
+  评估 cc-connect fallback adapter，但不把 cc-connect local web/project/platform 体系暴露给用户。
+
+P2:
+  ACP 作为通用 agent runtime interface。
+  Cursor / Gemini / custom agent 都经同一 AgentRuntimeAdapter contract。
+```
+
+不要做的事：
+
+- 不要让 Hive 后端依赖 cc-connect 的内部 schema。
+- 不要把 cc-connect token 当 Hive tenant auth。
+- 不要用 cc-connect 代替 ChatSession/Artifact。
+- 不要为了 cc-connect 把 Hive Local Bridge 写死成 Feishu/Lark 风格消息平台。
+
+### 8.9 Agent-Agnostic Runtime Adapter Contract
+
+为了保证这套东西适用于所有 agent，而不是 Claude Code / Codex 独特适配，P0 的本地执行层就必须收敛成一个 adapter interface：
+
+```text
+AgentRuntimeAdapter
+  name
+  detect()
+  install_or_configure()
+  start_session(workspace)
+  send_turn(content, attachments)
+  wait_result(timeout)
+  upload_outputs()
+  cancel()
+  status()
+```
+
+首批 adapter：
+
+```text
+command:
+  最小通用 adapter。
+  `hive-bridge run --command-adapter <cmd>`。
+
+codex:
+  调用 Codex CLI/本地能力。
+  不把 Codex 语义写入 Hive 后端。
+
+claude_code:
+  调用 Claude Code CLI/MCP 配置。
+  不把 Claude Code 语义写入 Hive 后端。
+
+acp:
+  对接 ACP-compatible local agent。
+  长期推荐的 vendor-neutral runtime lane。
+
+cc_connect:
+  复用 cc-connect 本地 session/runtime 能力。
+  只作为本地 adapter，不作为 Hive control-plane replacement。
+```
+
+云端永远只看统一的 work request/result/artifact contract：
+
+```text
+Hive cloud
+  -> GatewayMessage(kind=work_request)
+  -> Local Bridge
+  -> AgentRuntimeAdapter
+  -> result + artifacts
+  -> ChatSession / Artifact
+```
+
+这才能保证前端、后端、审计和 artifact 不随某个本地 agent 产品变化。
+
+### 8.10 cc-connect Source-Derived Shape
+
+2026-06-22 进一步读了本地源码 `/Users/rocky243/vc-saas/cc-connect/`。结论不是“直接嵌入 cc-connect”，而是采用它已经跑成熟的形态：
+
+```text
+cc-connect mature shape:
+  core/
+    - Platform interface
+    - Agent interface
+    - AgentSession interface
+    - Engine orchestrator
+    - SessionManager / state store
+    - optional capability interfaces
+
+  agent/*
+    - claudecode / codex / cursor / gemini / acp / devin / ...
+    - each registers itself through core.RegisterAgent()
+    - each owns local process lifecycle and output parsing
+
+  platform/*
+    - feishu / slack / telegram / discord / ...
+    - each registers itself through core.RegisterPlatform()
+    - each owns inbound/outbound platform details
+
+  cmd/cc-connect
+    - reads config
+    - creates one Project = one Agent + many Platforms
+    - wires Engine
+    - starts daemon / web / bridge when configured
+```
+
+关键源码证据：
+
+- `cc-connect/AGENTS.md` 明确要求 `core/` 不 import `agent/*` 或 `platform/*`，agent/platform 通过 registry 解耦。
+- `core/interfaces.go` 里的 `Agent` / `AgentSession` 是本地 agent 抽象：`StartSession`、`Send`、`Events`、`CurrentSessionID`、`Alive`、`Close`。
+- `core/interfaces.go` 里的 `Platform` 是消息平台抽象：`Start`、`Reply`、`Send`、`Stop`。
+- `core/registry.go` 用 `RegisterAgent` / `RegisterPlatform` 和 `CreateAgent` / `CreatePlatform` 做字符串注册。
+- `cmd/cc-connect/main.go` 读取 `[[projects]]`，每个 project 创建 agent、platforms、session store 和 engine。
+- `agent/acp/agent.go` / `agent/acp/session.go` 已经把 ACP 当通用本地 agent protocol 处理，走 stdio JSON-RPC handshake、session/new、session/load、permission/modes。
+- `agent/codex/codex.go` 把 Codex 当普通 agent adapter，而不是让 core 知道 Codex。
+- `core/message.go` 把不同平台的消息收敛成统一 `Message`，并把 images/files/audio/location 做统一 attachment 模型。
+- `core/bridge.go` / `docs/usage.md` 的 Bridge 是本地 cc-connect 的外部 adapter server：WebSocket + REST + token + session APIs。
+
+Hive 应该借这个形式，但要重命名角色：
+
+```text
+cc-connect:
+  Platform = Feishu / Slack / Telegram / Web Bridge
+  Agent = Codex / Claude Code / Cursor / ACP
+  Engine = local message router
+
+Hive Local Bridge:
+  CloudTransport = Hive Gateway / Local Bridge API
+  AgentRuntime = Codex / Claude Code / Cursor / ACP / command
+  Runner = local cloud-to-agent orchestrator
+  Hive backend = tenant/auth/control-plane/source-of-truth
+```
+
+也就是说，Hive 不需要把 Feishu/Slack 这类 platform adapter 搬进来。Hive 自己就是唯一 cloud platform。我们要借的是：
+
+```text
+1. registry pattern
+2. Agent / AgentSession interface
+3. optional capability interfaces
+4. session state model
+5. attachment send-back command
+6. daemon/service install model
+7. source-agnostic event stream
+8. ACP generic adapter
+```
+
+### 8.11 What Is Too Heavy For Hive P0
+
+cc-connect 成熟，但对 Hive P0 来说有几块明显过重：
+
+```text
+Do not copy into Hive P0:
+  - 多 IM platform adapter: feishu/slack/telegram/discord/qq/weixin...
+  - 本地 web management UI 的完整 project CRUD
+  - 本地 Bridge WebSocket + REST server as public local API
+  - cron / timer / relay / speech / TTS / provider marketplace
+  - 多 project TOML 管理面
+  - run_as_user OS 隔离大系统
+  - platform-specific card rendering
+```
+
+这些能力对 cc-connect 合理，因为它的产品是“本地 agent 连接很多聊天平台”。但 Hive 的产品不是本地 IM 聚合器，而是：
+
+```text
+Hive cloud control plane
+  -> approved local bridge connection
+  -> selected local agent runtime
+  -> result/artifact back to Hive transcript
+```
+
+因此 P0 不应该在用户机器上再做一个完整本地 web 管理后台，也不应该要求用户理解 local project/platform config。用户主路径仍然是：
+
+```text
+用户在 Hive 点 Local Agent Link / Local Agent Workbench
+-> 用户对本地 agent 说"帮我连接 Hive"
+-> Skill 安装/配置 hive-bridge
+-> browser device-flow approve
+-> runner 出站 poll Hive
+```
+
+### 8.12 Final Implementation Direction
+
+最终方案改成“两层本地包”，而不是让当前 Python `hive-bridge` 无限长大：
+
+```text
+Layer A: hive-bridge control client
+  responsibility:
+    - login / device flow
+    - token store
+    - Hive API client
+    - mcp stdio server
+    - upload file
+    - poll/report/send-message
+    - service install/start/status/stop
+
+Layer B: local-agent-runtime package
+  responsibility:
+    - AgentRuntime registry
+    - AgentSession abstraction
+    - command adapter
+    - ACP adapter
+    - Codex adapter
+    - Claude Code adapter
+    - optional cc-connect adapter / vendored inspiration
+```
+
+P0 可以仍在现有 `local_bridge/` 内落地，但代码结构应该按 cc-connect 形式拆：
+
+```text
+local_bridge/hive_bridge/
+  client.py              # Hive cloud transport
+  cli.py                 # commands
+  token_store.py
+  mcp_server.py
+  poller.py              # runner loop
+  runtime/
+    __init__.py
+    interfaces.py        # AgentRuntime / AgentSession / Event
+    registry.py          # register_runtime / create_runtime
+    command.py           # generic command adapter
+    acp.py               # stdio ACP adapter
+    codex.py             # Codex adapter, optional P1
+    claude_code.py       # Claude Code adapter, optional P1
+  service/
+    launchd.py
+    systemd.py
+    windows_task.py
+```
+
+P0 runner flow：
+
+```text
+hive-bridge run --runtime command --command "python adapter.py"
+or
+hive-bridge run --runtime acp --command "devin" --args "acp"
+
+loop:
+  cloud.poll()
+  for work_request:
+    runtime.start_or_resume_session(workspace)
+    runtime.send_turn(content, attachments)
+    events = runtime.events()
+    upload generated files if requested
+    cloud.report_result(message_id, result, artifacts, runtime_metadata)
+```
+
+P1 再做：
+
+```text
+hive-bridge run --runtime codex
+hive-bridge run --runtime claude_code
+hive-bridge run --runtime cc_connect
+```
+
+`cc_connect` runtime 的两条可选路线：
+
+```text
+Option 1: subprocess adapter
+  hive-bridge 调用 cc-connect 的已有 local bridge/management API 或 CLI。
+  优点：最快借能力。
+  风险：依赖 cc-connect beta bridge protocol 和本地端口/token，用户配置重。
+
+Option 2: source-inspired native adapters
+  借 cc-connect 的接口和 parsing 思路，在 hive-bridge 内实现最小 ACP/Codex/Claude Code adapter。
+  优点：Hive UX 最干净，不把 cc-connect 本地 web/IM/project 系统带给用户。
+  风险：需要维护适配代码。
+
+Recommended:
+  P0 用 command + ACP。
+  P1 对 Codex/Claude Code 做 native adapter。
+  cc-connect 作为成熟模式参考和必要时的 fallback adapter，不作为默认主路径。
+```
+
+### 8.13 Source-Compatible Contract
+
+Hive 的 runtime interface 应该贴近 cc-connect 的核心接口，但用 Hive 语义：
+
+```python
+class AgentRuntime(Protocol):
+    name: str
+    def detect(self) -> RuntimeDetection: ...
+    def start_session(self, session_id: str | None, workspace: Path) -> AgentSession: ...
+    def list_sessions(self) -> list[RuntimeSessionInfo]: ...
+    def stop(self) -> None: ...
+
+class AgentSession(Protocol):
+    def send(self, prompt: str, files: list[RuntimeFile]) -> None: ...
+    def events(self) -> Iterator[RuntimeEvent]: ...
+    def current_session_id(self) -> str | None: ...
+    def alive(self) -> bool: ...
+    def close(self) -> None: ...
+
+class RuntimeEvent:
+    type: text | thinking | tool_use | tool_result | permission_request | result | error
+    content: str
+    metadata: dict
+```
+
+这和 cc-connect 的 `Agent` / `AgentSession` / `Event` 对齐。与旧判断不同，Hive 需要吸收它的 `Platform` 思想，但不要暴露 cc-connect 的具体 platform/TOML/bridge server 给普通用户。Hive 的 cloud side 应该是一个内置 platform adapter：
+
+```text
+HiveLocalAgentChannelPlatform
+  presence()
+  poll_or_stream_channel_events()
+  ack_message()
+  report_runtime_event()
+  report_result()
+  upload_file()
+```
+
+### 8.14 Product Decision
+
+最终产品不要叫“接入 cc-connect”，也不要让用户知道本地还有 Project/Platform/TOML/Bridge/WebSocket。
+
+最终产品叫：
+
+```text
+Hive Local Agent Link
+```
+
+底层实现借 cc-connect 的成熟 adapter 架构：
+
+```text
+Hive Local Agent Link
+  uses:
+    - device-flow pairing
+    - outbound polling
+    - AgentRuntime registry
+    - ACP-first adapter
+    - command adapter fallback
+    - optional native Codex / Claude Code adapters
+
+  does not expose:
+    - cc-connect platform matrix
+    - cc-connect web management UI
+    - local public bridge port
+    - user-edited TOML as primary path
+```
+
+这样既吃到成熟项目的工程经验，又不把它的产品复杂度压给 Hive 用户。
+
 ## 9. Tests
 
 ### 9.1 Backend Red-Green Tests
@@ -1668,6 +2633,7 @@ backend/tests/api/test_gateway_bridge_auth.py
 backend/tests/api/test_gateway_bridge_attachments.py
 backend/tests/api/test_gateway_agent_transcript.py
 backend/tests/api/test_upload_bridge_files.py
+backend/tests/api/test_local_bridge_work_requests.py
 ```
 
 覆盖：
@@ -1690,7 +2656,9 @@ backend/tests/api/test_upload_bridge_files.py
 16. send-message with client_message_id is idempotent.
 17. upload rejects path traversal filename.
 18. document upload returns markdown artifact path.
-19. heartbeat updates last_seen.
+19. presence keepalive or active poll/stream updates last_seen.
+20. work_request read model returns pending / delivered / completed / failed.
+21. report result includes runtime metadata and artifact refs.
 
 ### 9.2 Local Bridge Tests
 
@@ -1699,6 +2667,9 @@ local_bridge/tests/test_client.py
 local_bridge/tests/test_files.py
 local_bridge/tests/test_mcp_server.py
 local_bridge/tests/test_token_store.py
+local_bridge/tests/test_runtime_registry.py
+local_bridge/tests/test_runtime_command.py
+local_bridge/tests/test_runtime_acp.py
 ```
 
 覆盖：
@@ -1708,8 +2679,28 @@ local_bridge/tests/test_token_store.py
 - upload file multipart request。
 - MCP tool schema loads。
 - network failure backoff。
+- AgentRuntime registry creates command and ACP runtimes by name。
+- command runtime emits result/error events with stable metadata。
+- ACP runtime handshake/session contract is covered with a fake stdio transport。
+- poller reports result + artifact refs from runtime output。
 
-### 9.3 Verification Commands
+### 9.3 Frontend Tests
+
+```text
+frontend/src/pages/agent-detail/AgentDetailSections.test.tsx
+frontend/src/pages/agent-detail/LocalAgentWorkbenchSection.test.tsx
+frontend/src/api/domains/localBridge.test.ts
+```
+
+覆盖：
+
+- Local Agent Link card 只做绑定状态、approve/reject/revoke、open workbench。
+- Local Agent Workbench 发送 work_request 后展示 queued。
+- Workbench polling 能把 delivered/completed/failed 渲染出来。
+- completed 状态展示 result、conversation link、workspace_path/artifact。
+- 只返回 message_id 但没有 read model completion 时，UI 不显示为完成。
+
+### 9.4 Verification Commands
 
 后端：
 
@@ -1724,7 +2715,7 @@ pytest tests/api/test_gateway_agent_transcript.py tests/api/test_chat_sessions_p
 ```bash
 cd backend
 source .venv/bin/activate
-pytest tests/api/test_local_bridge_pairing.py tests/api/test_gateway_bridge_auth.py tests/api/test_gateway_bridge_attachments.py tests/api/test_upload_bridge_files.py -q
+pytest tests/api/test_local_bridge_pairing.py tests/api/test_gateway_bridge_auth.py tests/api/test_gateway_bridge_attachments.py tests/api/test_upload_bridge_files.py tests/api/test_local_bridge_work_requests.py -q
 ```
 
 本地 bridge：
@@ -1732,6 +2723,14 @@ pytest tests/api/test_local_bridge_pairing.py tests/api/test_gateway_bridge_auth
 ```bash
 cd local_bridge
 pytest -q
+```
+
+前端：
+
+```bash
+cd frontend
+npm test -- AgentDetailSections.test.tsx LocalAgentWorkbenchSection.test.tsx localBridge.test.ts
+npm run build
 ```
 
 Manual smoke：
@@ -1756,189 +2755,186 @@ curl -s -X POST "$HIVE_BASE/api/v1/gateway/send-message" \
 
 ## 10. Development Cadence / Rollout Plan
 
-开发节奏按 **vertical slice** 走，不按“后端先全写完、前端再全写完、本地包最后接”走。每个 slice 都必须有测试、可运行命令和一个真实验收动作。
+开发节奏按 **vertical slice** 走，但顺序已经和最初计划不同。最初计划是“绑定 -> MCP 通信 -> 上传 -> work_request -> skill/UX”；dogfood 后证明链路已经能通，当前最大的缺口是用户看不到结果，第二个缺口是本地 runner 还没有按 cc-connect 形态收敛 runtime 层。
 
-### Slice 0: Contract freeze
+当前统一节奏：
 
-目标：先冻结 P0 的协议和 UI 入口，避免后面返工。
+```text
+Now:
+  Fix product visibility first.
+  Then harden runtime shape.
+  Then polish packaging/service.
+```
+
+### Slice 0: Contract Rebaseline
+
+目标：冻结新 P0 边界，删除旧“链路 smoke 即达标”的口径。
 
 产出：
 
-- `local_agent_bridge_pairing_sessions` / `local_agent_bridge_connections` schema 草案。
-- Bridge token auth contract：`Authorization: Bearer hb_<token>`。
-- MCP tool contract：`hive_status` / `hive_poll_inbox` / `hive_send_message` / `hive_upload_file` / `hive_report_result`。
-- Frontend placement contract：AgentDetail -> Settings -> Channel / 消息渠道 -> `Local Agent Link` card。
-- Local package command contract：`hive-bridge login/mcp/run/status/logout/service`。
+- 本文档以 `0.1 当前统一边界` 为 P0/P1 truth source。
+- P0 明确包含 Workbench/read model 和 AgentRuntime registry。
+- P0 明确不包含 cc-connect 多 platform、本地 web management UI、本地 public bridge port。
 
 验收：
 
 ```bash
-rg -n "local_agent_bridge|hive-bridge|Local Agent Link|hive_upload_file" docs/local-agent-bridge-first-pass-2026-06-22.md
+rg -n "当前统一边界|Local Agent Workbench|AgentRuntime|cc-connect Source-Derived Shape" docs/local-agent-bridge-first-pass-2026-06-22.md
 ```
 
-### Slice 1: Pairing loop, no file/message yet
+### Slice 1: Workbench Read Model And UI
 
-目标：先证明“这个本地 bridge 绑定到正确的 Hive tenant/user/agent”，这是所有安全边界的基础。
+目标：先修“前端完全没有反应”的真实产品问题。用户发起云端派活后，必须看到状态和结果。
 
 后端：
 
-- Add migration for bridge pairing + connection tables.
-- Add `POST /api/v1/local-bridge/pairing/init`。
-- Add activation approve/reject/exchange APIs。
-- Add `get_bridge_auth_context` dependency。
-- Tests first: `tests/api/test_local_bridge_pairing.py`。
+- Add `GET /api/v1/agents/{agent_id}/local-bridge/work-requests/{message_id}`。
+- Add `GET /api/v1/agents/{agent_id}/local-bridge/work-requests?limit=20`。
+- Return `status/content/result/metadata/attachments/conversation_id/created_at/delivered_at/completed_at`。
+- `check_agent_access` + tenant RLS，不能让前端直接拼 GatewayMessage internals。
+- Tests first: `backend/tests/api/test_local_bridge_work_requests.py`。
 
 前端：
 
-- Add `Local Agent Link` card skeleton。
-- Add activation page and pending approval card。
-
-本地包：
-
-- Add `local_bridge/` package scaffold。
-- Implement `hive-bridge login` and `hive-bridge status`。
-- Store token in Keychain if available, otherwise `0600` config。
+- Split Settings `Local Agent Link` from working surface。
+- Add `LocalAgentWorkbenchSection` or equivalent conversation panel。
+- Sending work_request shows queued immediately。
+- Poll status until delivered/completed/failed。
+- Completed state shows result, conversation link, workspace_path/artifact。
+- i18n en/zh。
+- Tests first: `LocalAgentWorkbenchSection.test.tsx` + localBridge API tests。
 
 验收：
 
 ```bash
 cd backend
 source .venv/bin/activate
-pytest tests/api/test_local_bridge_pairing.py -q
+pytest tests/api/test_local_bridge_work_requests.py tests/api/test_gateway_bridge_auth.py -q
+
+cd ../frontend
+npm test -- AgentDetailSections.test.tsx LocalAgentWorkbenchSection.test.tsx localBridge.test.ts
+npm run build
+```
+
+Manual smoke:
+
+```text
+1. Open AgentDetail -> Local Agent Workbench.
+2. Send a cloud -> local work_request.
+3. Confirm UI shows queued.
+4. Run local runner.
+5. Confirm UI transitions to delivered/completed.
+6. Confirm result and artifact/workspace_path are visible without inspecting backend logs.
+```
+
+### Slice 2: Report Artifact Contract
+
+目标：让本地 runtime 的结果和上传文件绑定到同一个 work_request completion，而不是用户只能在 workspace 里找。
+
+后端：
+
+- Extend `GatewayReportRequest` with `attachments` and `metadata`。
+- Persist assistant ChatMessage + artifact refs under the Local Agent Bridge session。
+- Preserve `GatewayMessage.result` as summary, but make ChatSession/Artifact the replay surface。
+- Tests first: report result with artifact refs updates work_request read model and transcript。
+
+本地包：
+
+- `hive-bridge upload` returns workspace_path/artifact_id/message_id。
+- runner can include uploaded artifact refs in `report_result`。
+
+验收：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests/api/test_gateway_bridge_attachments.py tests/api/test_upload_bridge_files.py tests/api/test_local_bridge_work_requests.py -q
+
+cd ../local_bridge
+pytest tests/test_client.py tests/test_files.py tests/test_poller.py -q
+```
+
+### Slice 3: Runtime Registry
+
+目标：把本地 runner 从 ad hoc command adapter 收敛成 cc-connect-inspired runtime 层。
+
+本地包：
+
+- Add `hive_bridge/runtime/interfaces.py`。
+- Add `hive_bridge/runtime/registry.py`。
+- Add `hive_bridge/runtime/command.py`。
+- Add `hive_bridge/runtime/acp.py` with fake-transport tests first。
+- Update `hive-bridge run`:
+  - `--runtime command --command ...`
+  - `--runtime acp --command <agent> --args ...`
+  - legacy `--command-adapter` remains as compatibility alias.
+- Runtime emits `RuntimeEvent` with `text/thinking/tool_use/tool_result/permission_request/result/error`。
+
+不做：
+
+- 不做 cc-connect local web/Bridge server。
+- 不做 Codex / Claude Code native runtime unless dogfood requires it.
+- 不做 public package release.
+
+验收：
+
+```bash
+cd local_bridge
+pytest tests/test_runtime_registry.py tests/test_runtime_command.py tests/test_runtime_acp.py tests/test_poller.py -q
+```
+
+Manual smoke:
+
+```bash
+hive-bridge run --runtime command --command python3 local_bridge/hive_bridge_auto_adapter.py
+hive-bridge run --runtime acp --command devin --args acp
+```
+
+### Slice 4: Binding And Transport Hardening
+
+目标：把已跑通的绑定/上传/通信主链补齐回归测试和安全边界，避免后续 Workbench/runtime 改动破坏认证模型。
+
+后端：
+
+- Pairing/device flow regression tests。
+- Bridge bearer auth tests。
+- Upload path safety tests。
+- RLS pin/bypass tests around pairing exchange and token lookup。
+- Revoke/expired token fail-closed tests。
+
+本地包：
+
+- token store permissions。
+- auth_required failure message。
+- network retry/backoff。
+- `hive_status` smoke。
+
+验收：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests/api/test_local_bridge_pairing.py tests/api/test_gateway_bridge_auth.py tests/api/test_upload_bridge_files.py -q
 
 cd ../local_bridge
 pytest -q
-
-hive-bridge login --base-url http://localhost:8008
-hive-bridge status
 ```
 
-### Slice 2: Active communication through MCP
+### Slice 5: Skill And Small-User Install Path
 
-目标：满足“相互通信”的主动部分：本地 agent 能通过 MCP 和 Hive 发/收消息。
-
-后端：
-
-- Gateway poll/send-message/report accepts `Bearer hb_<token>`。
-- Runtime identity only comes from connection row, never request body。
-- Tests first: `tests/api/test_gateway_bridge_auth.py`。
-
-本地包：
-
-- Implement bridge HTTP client。
-- Implement `hive-bridge mcp` stdio server。
-- Expose MCP tools: `hive_status` / `hive_poll_inbox` / `hive_send_message` / `hive_report_result`。
-- Add generic MCP stdio adapter docs in Hive Bridge Skill。
-
-验收：
-
-```bash
-cd backend
-source .venv/bin/activate
-pytest tests/api/test_gateway_bridge_auth.py -q
-
-cd ../local_bridge
-pytest tests/test_mcp_server.py tests/test_client.py -q
-
-hive-bridge mcp
-```
-
-Manual smoke:
-
-```bash
-curl -s "$HIVE_BASE/api/v1/gateway/poll" \
-  -H "Authorization: Bearer $HIVE_BRIDGE_TOKEN"
-```
-
-### Slice 3: Local -> Hive single-file upload
-
-目标：满足第一个硬指标：本地 agent 可以上传一个本地文件，Hive 保存原文件、生成 artifact，并写入 transcript。
-
-后端：
-
-- Add bridge upload endpoint。
-- Reuse existing upload / document conversion path where possible。
-- Add transcript attachment writing。
-- Tests first: `tests/api/test_upload_bridge_files.py`。
-
-本地包：
-
-- Implement `hive_upload_file` MCP tool。
-- Implement CLI smoke command if needed: `hive-bridge upload <path>`。
-- Add file path validation, sha256, mime detection, retry behavior。
-
-验收：
-
-```bash
-cd backend
-source .venv/bin/activate
-pytest tests/api/test_upload_bridge_files.py -q
-
-cd ../local_bridge
-pytest tests/test_files.py -q
-
-hive-bridge upload ./sample.pdf
-```
-
-Manual smoke:
-
-```text
-Upload one PDF from local agent.
-Confirm Hive transcript shows the file artifact.
-Confirm canonical Markdown artifact exists when conversion is supported.
-```
-
-### Slice 4: Cloud -> local work_request
-
-目标：满足第二个硬指标的无人值守部分：Hive cloud 可以投递 work_request，本地 runner 出站 poll，交给本地 adapter 干活并 report 回 Hive。
-
-后端：
-
-- Add `gateway_messages.metadata_json.kind = "work_request"` handling。
-- Add completed/result transcript write path。
-- Add idempotency around report result。
-
-本地包：
-
-- Implement `hive-bridge run` foreground poller。
-- Implement command adapter contract。
-- Implement first generic command adapter for smoke tests。
-- Implement service command stubs with macOS user LaunchAgent first if feasible; otherwise foreground fallback must be explicit。
-
-验收：
-
-```bash
-cd backend
-source .venv/bin/activate
-pytest tests/api/test_gateway_bridge_auth.py tests/api/test_gateway_bridge_attachments.py -q
-
-cd ../local_bridge
-pytest tests/test_poller.py tests/test_client.py -q
-
-hive-bridge run --base-url http://localhost:8008
-```
-
-Manual smoke:
-
-```text
-Create a pending work_request in Hive.
-Run hive-bridge run locally.
-Confirm runner receives the request.
-Confirm local adapter returns a result.
-Confirm Hive transcript shows the completed result.
-```
-
-### Slice 5: Skill-driven install and UX polish
-
-目标：把“小白用户不会自己装”的问题交给 Skill + Local Agent Link UI，而不是要求用户理解命令细节。
+目标：小白用户仍然只需要对本地 agent 说一句话，不需要理解 MCP、token、runtime config。
 
 产出：
 
-- Hive Bridge Skill package with install ladder。
-- Copyable instruction in Local Agent Link card。
-- Runtime-specific examples for generic MCP stdio, Claude Code, Codex。
-- i18n en/zh。
-- Revoke / last_seen / status display。
+- Hive Bridge Skill 更新为当前 P0 边界：
+  - install hive-bridge
+  - login
+  - configure MCP
+  - optional run/service
+  - command runtime / ACP runtime examples
+  - no cc-connect web/TOML/platform path as default
+- Local Agent Link card copy instruction 指向 Workbench。
+- `hive-bridge service install/start/status/stop` 最少支持 foreground fallback；macOS LaunchAgent 可作为 P0.5。
 
 验收：
 
@@ -1946,69 +2942,56 @@ Confirm Hive transcript shows the completed result.
 cd frontend
 npm run build
 
-cd ../backend
-source .venv/bin/activate
-pytest tests/api/test_local_bridge_pairing.py tests/api/test_gateway_bridge_auth.py tests/api/test_upload_bridge_files.py -q
+cd ../local_bridge
+pytest -q
 ```
 
 Manual smoke:
 
 ```text
-Open one Hive agent.
-Go to Settings -> Channel / 消息渠道 -> Local Agent Link.
-Copy the setup instruction.
-Ask a local agent to follow the Skill.
-Approve the pending link.
-Verify status turns connected.
-Revoke it and verify local poll fails.
+Ask a local agent:
+"帮我安装 Hive Bridge skill，并连接到 Hive。"
+
+The local agent should:
+1. Install hive-bridge by the simplest available path.
+2. Run login.
+3. Configure MCP.
+4. Verify hive_status.
+5. Optionally start hive-bridge run with command/ACP runtime.
 ```
 
-### Slice 6: Dogfood release
+### Slice 6: Production Dogfood
 
-目标：不上公开 registry，先做可重复安装的 alpha 包。
-
-产出：
-
-- `local_bridge/pyproject.toml` with `hive-bridge` entrypoint。
-- Editable install works。
-- Git install works。
-- Optional GitHub Release artifact / internal download URL。
-- Final P0 smoke checklist recorded。
-
-验收：
-
-```bash
-python3 -m pip install -e ./local_bridge
-hive-bridge status
-
-python3 -m pip install --user "git+https://github.com/<org>/<repo>.git#subdirectory=local_bridge"
-hive-bridge status
-```
+目标：在生产 Web3研究员 agent 上完成真实端到端验证。
 
 Production smoke:
 
 ```text
-1. Pair one local bridge to a test agent.
-2. Send Hive -> local message.
-3. Send local -> Hive message.
-4. Send Hive -> local work_request, confirm local result is reported back.
-5. Upload one PDF and confirm transcript artifact opens.
-6. Revoke token and confirm poll fails.
+1. Pair one local bridge to a production test agent.
+2. Workbench shows local agent online.
+3. Send cloud -> local work_request from Workbench.
+4. Runner receives it through outbound poll.
+5. Runtime produces result.
+6. Local bridge uploads one markdown file.
+7. Report result includes artifact refs.
+8. Workbench shows completed result + workspace_path/artifact.
+9. Local Agent Bridge chat session can replay request/result/artifact.
+10. Revoke token and confirm poll/report/upload fail.
 ```
 
 ### Merge Rule
 
-不要把 Slice 1-4 全部分散在一个大 PR 里。推荐提交顺序：
+推荐提交顺序：
 
 ```text
-PR 1: backend pairing + minimal frontend approval + local login/status
-PR 2: bridge gateway auth + MCP active communication
-PR 3: file upload + transcript artifact
-PR 4: work_request runner + command adapter
-PR 5: Skill install playbook + UX polish + alpha release artifact
+PR 1: work_request read model + Local Agent Workbench
+PR 2: report attachments/artifact refs
+PR 3: local runtime registry + command/ACP runtime
+PR 4: auth/upload hardening regressions
+PR 5: Skill/install/service polish + production dogfood evidence
 ```
 
-每个 PR 都必须能独立跑对应测试，并保留到最终 P0 smoke checklist。
+每个 PR 都必须能独立跑对应测试，并保留到最终 P0 smoke checklist。不要把 Workbench 留到最后；没有用户可见 completion surface 的链路不算 P0 完成。
 
 ## 11. Future Work
 
@@ -2021,11 +3004,17 @@ PR 5: Skill install playbook + UX polish + alpha release artifact
 - Multi-file upload and directory upload.
 - Browser extension.
 - Windows packaging.
-- Linux .deb/.rpm packaging beyond the P0 tarball.
+- Linux .deb/.rpm packaging beyond alpha artifact.
 - Standalone signed installers that require no Node.js/Python/Homebrew.
 - Cross-owner collaboration group enforcement for external local agents.
 - Local sandbox execution controlled by Hive.
 - Rich MCP app UI.
+- Native Codex runtime adapter.
+- Native Claude Code runtime adapter.
+- cc-connect fallback adapter that talks to its local Bridge/management API.
+- Direct cc-connect Hive platform adapter for power users. Hive must still implement its own built-in Local Agent Channel platform contract first.
+- Local web management UI for hive-bridge, only if CLI/Skill path proves insufficient.
+- Public npm/PyPI/brew registration and signed binary distribution.
 
 但第一版必须保留扩展空间：
 
@@ -2033,27 +3022,56 @@ PR 5: Skill install playbook + UX polish + alpha release artifact
 - attachment schema 应接近 message parts，而不是只支持一种文件。
 - transcript event metadata 应保留 protocol/client fields。
 - interoperability profile 不要声称完整 A2A achieved。
+- runtime registry 不应 hard-code command/ACP only；Codex、Claude Code、Cursor、Gemini 和 cc-connect fallback 都应作为可注册 runtime。
+- local channel message schema 必须接近 cc-connect `Message/Event`，支持 session_key、message_id、reply context、attachments、streaming events 和 permission requests。
 
 ## 12. Acceptance Criteria
 
 第一版完成时必须满足：
 
-1. 用户可以把任意已适配的本地 agent runtime 连接到某个 Hive agent；Claude Code / Codex 只是首批 adapter。
-2. Hive 可以向本地 bridge 发起一项工作，本地 bridge 可以收到、交给本地 agent 处理并回传结果。
-3. 本地 bridge 可以主动向 Hive agent 发消息。
-4. 本地 bridge 可以上传单个文件到 Hive，且文件出现在 ChatSession transcript 中。
-5. PDF/DOCX/XLSX 上传后有 canonical Markdown artifact。
-6. bridge token 可以撤销，撤销后 poll/report/send-message 都失败。
-7. 所有 bridge 结果可从 Hive UI 的会话历史恢复，不需要用户去 workspace 里找。
-8. 后端和 local bridge 测试覆盖认证、幂等、附件、路径安全、transcript。
-9. 文档和 UI 明确这是 Local Bridge first pass，不宣称完整 A2A / ACP / MCP resource-server support。
-10. 每个 connection 都能在后端解析为唯一 `tenant_id + agent_id + user_id + connection_id`，且 runtime 请求不能通过 header/body 改写身份。
-11. 前端 Connections list 能显示实际绑定用户和设备，用户可以撤销自己的设备；管理员可以按权限撤销 tenant 内连接，但不能替普通用户静默 approve 新设备。
-12. 普通用户主流程不要求自己理解终端、MCP 配置或密钥；连接路径是 user tells local agent -> Skill playbook installs CLI/MCP -> browser device-flow approval -> MCP status verified。
-13. P0 必须提供 Hive Bridge Skill、Hive Bridge MCP、`hive-bridge` CLI 三件套；只提供其中一个都不算达标。
-14. CLI command 和 pairing code 可以被本地 agent 按 Skill 执行或展示，但不要求用户手工理解和配置。
-15. AgentDetail 的消息渠道区域必须新增 `Local Agent Link` card；本地 agent 链接的 pending request、Approve、Reject、Revoke、last_seen 都在这个 card 里完成。
-16. Activation page 不能在全局静默 approve；如果没有 agent context，必须让用户选择目标 agent，并回到该 agent 的 Local Agent Link card 完成接受。
-17. P0 不能要求用户本地起公网服务器、配置反向代理、暴露端口、使用 ngrok/Tailscale/Cloudflare Tunnel；所有本地到 Hive 的通信必须是本地主动出站 HTTPS/long-poll/WebSocket。
-18. P0 必须区分 `hive-bridge mcp` 和 `hive-bridge run/service`：前者是本地 agent 启动的 stdio 子进程，后者是可选常驻出站 poller；云端无人值守派活只能依赖 runner/service 或支持 headless command adapter 的本地 agent。
-19. P0 只要求选择一条最简单可用的本地安装路径把链路跑通并上线；standalone binary / signed installer / no-Node-no-Python 的小白安装体验进入 P1。
+### 12.1 Binding / Auth
+
+1. 用户可以把一个本地 bridge connection 绑定到某个 Hive agent；后端解析为唯一 `tenant_id + agent_id + user_id + connection_id`。
+2. Runtime 请求不能通过 header/body 改写身份；`tenant_id/user_id/agent_id` 只能来自 connection row。
+3. Bridge token 可以撤销；撤销后 poll/report/send-message/upload 全部 fail-closed。
+4. Connections list 能显示实际绑定用户、设备、client_kind、last_seen、status、scopes。
+5. 管理员可以按权限撤销 tenant 内 connection，但不能替普通用户静默 approve 新设备。
+6. Activation page 不能全局静默 approve；没有 agent context 时必须选择目标 agent，并回到该 agent 的 Local Agent Link card 完成接受。
+
+### 12.2 Local Package / Transport
+
+7. P0 提供 Hive Bridge Skill、Hive Bridge MCP、`hive-bridge` CLI 三件套。
+8. `hive-bridge login/status/mcp/upload/run` 可用；`service install/start/status/stop` 至少有明确 fallback。
+9. 普通用户主流程不要求理解终端、MCP 配置或密钥；连接路径是 user tells local agent -> Skill installs CLI/MCP -> browser device-flow approval -> MCP status verified。
+10. P0 不要求用户本地起公网服务器、配置反向代理、暴露端口、使用 ngrok/Tailscale/Cloudflare Tunnel；所有本地到 Hive 的通信必须是本地主动出站 HTTPS/long-poll/WebSocket。
+11. `hive-bridge mcp` 和 `hive-bridge run/service` 语义清楚：前者是本地 agent 启动的 stdio 子进程，后者是常驻 Local Agent Channel runner。
+12. `hive-bridge service` 必须能让一次绑定后的本地 agent 长期在线；至少支持 foreground fallback，P1 再做 launchd/systemd/Windows Service 的完整安装器。
+13. P0 只要求选择一条最简单可用的本地安装路径把链路跑通并上线；standalone binary / signed installer / no-Node-no-Python 的小白安装体验进入 P1。
+
+### 12.3 Runtime Layer
+
+14. 本地 runtime 层采用 cc-connect 已验证的 registry + AgentRuntime/AgentSession/Event 形态。
+15. P0 runtime 至少支持 command adapter 和 ACP adapter；Web 直聊可先用 command/noop smoke，但架构必须按 persistent AgentSession 设计。
+16. Codex / Claude Code 不能写死进后端、token、message schema、artifact schema；它们是 P1 native runtime adapter。
+17. Hive 不暴露 cc-connect 的多 platform、TOML project、local web management、local bridge port 作为普通用户主路径。
+18. cc-connect 如采用，只能作为本地 runtime fallback adapter 或源码模式参考，不能替代 Hive 的 binding、ChatSession、Artifact、tenant auth 和审计主链。
+
+### 12.4 Workbench / Transcript / Artifact
+
+19. Local Agent Link card 只做绑定管理；主体验进入 `本地 Agent` 的 Local Agent Channel conversation surface。
+20. Web 用户可以在 `本地 Agent` tab 里直接给本地 agent 发消息，并看到本地 agent 回复、streaming events、tool events、final result。
+21. 用户发起云端派活后，Channel/Queue 能看到 queued / delivered / running / completed / failed。
+22. Completed 状态展示结果正文、conversation link、workspace_path/artifact；只显示 `message_id` 入队不算达标。
+23. Hive 可以向本地 bridge 发起 channel message / delegated work，本地 runner 收到后交给 runtime AgentSession 处理并回传事件和结果。
+24. 其他 Hive agent 可以通过治理后的 A2A routing 指派这个本地 endpoint 干活；P0.5 可先用 `delegate_to_local_agent`，长期收敛到 `delegate_to_agent(..., execution_target="local_agent")`。
+25. 本地 bridge 可以主动向 Hive agent 发消息。
+26. 本地 bridge 可以上传单个文件到 Hive，且文件出现在 ChatSession transcript 和 Local Agent Channel 中。
+27. PDF/DOCX/XLSX 上传后有 canonical Markdown artifact when conversion is supported。
+28. 所有 bridge 结果可从 Hive UI 的会话历史恢复，不需要用户去 workspace 里找。
+
+### 12.5 Tests / Honesty
+
+29. 后端测试覆盖认证、RLS、幂等、附件、路径安全、transcript、channel session、channel event、A2A delegated local endpoint。
+30. Local bridge 测试覆盖 token store、client、MCP server、upload、channel poll/stream、event report、runtime registry、command runtime、ACP runtime。
+31. Frontend 测试覆盖 Local Agent Link、Local Agent Channel chat、状态 polling/streaming、result/artifact rendering、A2A work queue。
+32. 文档和 UI 明确这是 Local Agent Channel first pass：本地可有 ACP runtime adapter，Hive 内部可通过 A2A routing 调度本地 endpoint，但 Hive 云端不宣称完整公网 A2A / ACP task server / MCP resource-server support。

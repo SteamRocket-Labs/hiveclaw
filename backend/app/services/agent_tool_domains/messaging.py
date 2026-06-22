@@ -805,7 +805,7 @@ async def _persist_agent_tool_call(
     tool_result: str,
 ) -> None:
     """Persist A2A tool execution so it remains visible in the shared chat session."""
-    from app.models.audit import ChatMessage
+    from app.services.chat_transcript import append_session_event
 
     try:
         # RLS 阶段2b: chat_messages now bears a USING-only policy. Scope to the
@@ -814,24 +814,38 @@ async def _persist_agent_tool_call(
         # non-owner role.
         tid = await resolve_tenant_for_agent(session_agent_id)
         async with tenant_scoped_session(tid) as db:
-            db.add(
-                ChatMessage(
-                    agent_id=session_agent_id,
-                    tenant_id=tid,
-                    user_id=owner_id,
-                    role="tool_call",
-                    content=json.dumps(
-                        {
-                            "name": tool_name,
-                            "args": tool_args,
-                            "status": "done",
-                            "result": str(tool_result)[:500],
-                        },
-                        ensure_ascii=False,
-                    ),
-                    conversation_id=session_id,
-                    participant_id=participant_id,
-                )
+            await append_session_event(
+                db=db,
+                agent_id=session_agent_id,
+                tenant_id=tid,
+                session_id=session_id,
+                actor_type="tool",
+                event_type="tool_result",
+                role="tool_call",
+                t0_role="tool",
+                user_id=owner_id,
+                participant_id=participant_id,
+                content=json.dumps(
+                    {
+                        "name": tool_name,
+                        "args": tool_args,
+                        "status": "done",
+                        "result": str(tool_result),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
+                source="agent_message",
+                visibility_scope="agent_owner",
+                listed_surface="chat",
+                metadata={
+                    "source": "agent_message",
+                    "interaction_type": "agent_message",
+                    "tool_name": tool_name,
+                    "status": "done",
+                    "semantic_memory_eligible": True,
+                },
             )
             await db.commit()
     except Exception as exc:
@@ -919,6 +933,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     try:
         from app.models.agent import Agent
         from app.models.audit import ChatMessage
+        from app.services.chat_transcript import append_session_event
         from app.services.agent_pair_session import (
             find_or_create_agent_pair_session,
             get_or_create_agent_participant_id,
@@ -1082,16 +1097,29 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             # Save source message. RLS 阶段2b: chat_messages is USING-only —
             # stamp tenant_id so the row isn't globally visible.
             owner_id = source_agent.creator_id if source_agent else from_agent_id
-            db.add(
-                ChatMessage(
-                    agent_id=session_agent_id,
-                    tenant_id=tid,
-                    user_id=owner_id,
-                    role="user",
-                    content=message_text,
-                    conversation_id=session_id,
-                    participant_id=src_participant_id,
-                )
+            await append_session_event(
+                db=db,
+                agent_id=session_agent_id,
+                tenant_id=tid,
+                session_id=session_id,
+                actor_type="agent",
+                event_type="user_message",
+                role="user",
+                user_id=owner_id,
+                participant_id=src_participant_id,
+                content=message_text,
+                source="agent_message",
+                visibility_scope="agent_owner",
+                listed_surface="chat",
+                metadata={
+                    "source": "agent_message",
+                    "interaction_type": "agent_message",
+                    "from_agent": str(from_agent_id),
+                    "from_agent_name": source_name,
+                    "to_agent": str(target.id),
+                    "to_agent_name": target.name,
+                    "semantic_memory_eligible": True,
+                },
             )
             chat_session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
@@ -1115,16 +1143,29 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             # tenant_id — RLS 阶段2b chat_messages is USING-only, so a NULL
             # tenant_id would be globally visible.
             async with tenant_scoped_session(tid) as db2:
-                db2.add(
-                    ChatMessage(
-                        agent_id=session_agent_id,
-                        tenant_id=tid,
-                        user_id=owner_id,
-                        role="assistant",
-                        content=target_reply,
-                        conversation_id=session_id,
-                        participant_id=tgt_participant_id,
-                    )
+                await append_session_event(
+                    db=db2,
+                    agent_id=session_agent_id,
+                    tenant_id=tid,
+                    session_id=session_id,
+                    actor_type="assistant",
+                    event_type="assistant_message",
+                    role="assistant",
+                    user_id=owner_id,
+                    participant_id=tgt_participant_id,
+                    content=target_reply,
+                    source="agent_message",
+                    visibility_scope="agent_owner",
+                    listed_surface="chat",
+                    metadata={
+                        "source": "agent_message",
+                        "interaction_type": "agent_message",
+                        "from_agent": str(from_agent_id),
+                        "from_agent_name": source_name,
+                        "to_agent": str(target.id),
+                        "to_agent_name": target.name,
+                        "semantic_memory_eligible": True,
+                    },
                 )
                 await db2.commit()
 

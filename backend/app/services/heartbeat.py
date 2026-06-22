@@ -25,7 +25,15 @@ from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import execute_tool
 from app.services.heartbeat_policy import managed_heartbeat_interval_minutes
-from app.services.runtime_task_service import create_runtime_task_record, update_runtime_task_record
+from app.services.runtime_task_service import (
+    build_restart_reconciliation_metadata,
+    build_restart_replay_contract,
+    build_restart_replay_journal_entry,
+    create_runtime_task_record,
+    list_active_runtime_task_records,
+    merge_restart_replay_journal,
+    update_runtime_task_record,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 # Single source of truth: app/templates/HEARTBEAT.md
@@ -209,10 +217,38 @@ def _compact_heartbeat_runtime_messages(messages: list[dict]) -> list[dict]:
     return compacted
 
 
-async def _create_heartbeat_runtime_task(agent_id: uuid.UUID) -> str | None:
+async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None) -> str | None:
     try:
         task_id = uuid.uuid4().hex
         trace_id = f"heartbeat:{task_id}"
+        side_effect_risk = "internal_governed"
+        metadata = {
+            "source": "heartbeat",
+            "agent_id": str(agent_id),
+            "tenant_id": str(tenant_id) if tenant_id else None,
+            "runtime_task_id": task_id,
+            "request_id": str(uuid.UUID(task_id)),
+            "trace_id": trace_id,
+            "resumable_heartbeat": True,
+            "resume_after_restart": True,
+            "side_effect_risk": side_effect_risk,
+            "restart_replay_contract": build_restart_replay_contract(
+                task_type="heartbeat",
+                task_id=task_id,
+                side_effect_risk=side_effect_risk,
+                trace_id=trace_id,
+            ),
+        }
+        metadata = merge_restart_replay_journal(
+            metadata,
+            build_restart_replay_journal_entry(
+                task_type="heartbeat",
+                task_id=task_id,
+                side_effect_risk=side_effect_risk,
+                phase="spawn_intent_recorded",
+                trace_id=trace_id,
+            ),
+        )
         return await create_runtime_task_record(
             task_id=task_id,
             task_type="heartbeat",
@@ -220,13 +256,7 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID) -> str | None:
             parent_agent_id=agent_id,
             prompt="Heartbeat self-evolution tick",
             trace_id=trace_id,
-            metadata_json={
-                "source": "heartbeat",
-                "agent_id": str(agent_id),
-                "runtime_task_id": task_id,
-                "request_id": str(uuid.UUID(task_id)),
-                "trace_id": trace_id,
-            },
+            metadata_json=metadata,
         )
     except Exception as exc:
         logger.warning("[Heartbeat] Failed to create RuntimeTask for {}: {}", agent_id, exc)
@@ -271,6 +301,105 @@ async def _skip_heartbeat_runtime_task(
         result_summary=result_summary,
         metadata_json=metadata,
     )
+
+
+async def _mark_heartbeat_runtime_task_needs_reconciliation(
+    runtime_task_id: str,
+    *,
+    metadata: dict | None,
+    blocker: str,
+    summary: str,
+    trace_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    await update_runtime_task_record(
+        runtime_task_id,
+        status="needs_reconciliation",
+        result_summary=summary,
+        metadata_json=build_restart_reconciliation_metadata(
+            metadata,
+            task_type="heartbeat",
+            task_id=runtime_task_id,
+            blocker=blocker,
+            summary=summary,
+            trace_id=trace_id,
+            session_id=session_id,
+        ),
+    )
+
+
+async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
+    """Resume heartbeat runs that were still queued before session binding."""
+
+    resumed: list[str] = []
+    records = await list_active_runtime_task_records(limit=limit, statuses=("pending", "running"))
+    for record in records:
+        if record.get("task_type") != "heartbeat":
+            continue
+        run_id = str(record.get("task_id") or "").strip()
+        if not run_id:
+            continue
+        metadata = dict(record.get("metadata") or {})
+        if not metadata.get("resume_after_restart") or not metadata.get("resumable_heartbeat"):
+            continue
+        trace_id = str(record.get("trace_id") or metadata.get("trace_id") or "")
+        session_id = str(record.get("child_session_id") or metadata.get("session_id") or "").strip()
+        if session_id:
+            await _mark_heartbeat_runtime_task_needs_reconciliation(
+                run_id,
+                metadata=metadata,
+                blocker="session_bound_heartbeat",
+                summary=(
+                    "Heartbeat was interrupted after binding a session; replay could duplicate internal side effects. "
+                    "Reconciliation is required before retry."
+                ),
+                trace_id=trace_id,
+                session_id=session_id,
+            )
+            continue
+        try:
+            agent_id = uuid.UUID(str(record.get("parent_agent_id") or metadata.get("agent_id") or ""))
+        except (TypeError, ValueError, AttributeError):
+            await _mark_heartbeat_runtime_task_needs_reconciliation(
+                run_id,
+                metadata=metadata,
+                blocker="missing_heartbeat_parent_agent",
+                summary="Heartbeat could not be resumed after restart because parent agent id is unavailable.",
+                trace_id=trace_id,
+            )
+            continue
+        tenant_id = None
+        raw_tenant_id = str(metadata.get("tenant_id") or "").strip()
+        if raw_tenant_id:
+            try:
+                tenant_id = uuid.UUID(raw_tenant_id)
+            except ValueError:
+                tenant_id = None
+        if tenant_id is None:
+            tenant_id = await resolve_tenant_for_agent(agent_id)
+        side_effect_risk = str(metadata.get("side_effect_risk") or "internal_governed")
+        resume_metadata = merge_restart_replay_journal(
+            metadata,
+            build_restart_replay_journal_entry(
+                task_type="heartbeat",
+                task_id=run_id,
+                side_effect_risk=side_effect_risk,
+                phase="resume_intent_recorded",
+                trace_id=trace_id,
+            ),
+        )
+        await update_runtime_task_record(
+            run_id,
+            status="running",
+            metadata_json={
+                "resumed_after_restart": True,
+                "restart_replay_contract": metadata.get("restart_replay_contract"),
+                "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
+            },
+        )
+        asyncio.create_task(_execute_heartbeat(agent_id, tenant_id=tenant_id, runtime_task_id=run_id))
+        resumed.append(run_id)
+    return resumed
 
 
 def _reset_heartbeat_session(agent_id: uuid.UUID) -> None:
@@ -1201,7 +1330,13 @@ def _run_memory_lifecycle_maintenance(agent_id: uuid.UUID, *, now: datetime | No
     return run_memory_lifecycle_maintenance(Path(get_settings().AGENT_DATA_DIR), agent_id, now=now)
 
 
-async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None, lease_acquired: bool = False):
+async def _execute_heartbeat(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | None = None,
+    lease_acquired: bool = False,
+    runtime_task_id: str | None = None,
+):
     """Execute a single heartbeat for an agent.
 
     Creates a Reflection Session (like trigger_daemon) so tool calls and
@@ -1222,7 +1357,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
         lease_held = await _try_acquire_heartbeat_lease_async(agent_id)
         if not lease_held:
             logger.info("[Heartbeat] Skip duplicate in-flight heartbeat for {}", agent_id)
-            runtime_task_id = await _create_heartbeat_runtime_task(agent_id)
+            runtime_task_id = runtime_task_id or await _create_heartbeat_runtime_task(agent_id, tenant_id=tenant_id)
             await _skip_heartbeat_runtime_task(
                 runtime_task_id,
                 skip_reason="duplicate_in_flight",
@@ -1230,7 +1365,8 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
             )
             return
 
-    runtime_task_id = await _create_heartbeat_runtime_task(agent_id)
+    if runtime_task_id is None:
+        runtime_task_id = await _create_heartbeat_runtime_task(agent_id, tenant_id=tenant_id)
 
     import json as _json
 
@@ -1438,6 +1574,17 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     )
                 )
                 await db.commit()
+                if runtime_task_id:
+                    await update_runtime_task_record(
+                        runtime_task_id,
+                        status="running",
+                        child_session_id=str(session_id),
+                        result_summary="Heartbeat session started.",
+                        metadata_json={
+                            "session_id": str(session_id),
+                            "session_bound": True,
+                        },
+                    )
                 _save_heartbeat_checkpoint(
                     agent_id,
                     session_id=session_id,
@@ -1455,6 +1602,11 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     )
                     await _release_heartbeat_lease_async(agent_id)
                     await _touch_last_heartbeat(agent_id, tenant_id)
+                    await _skip_heartbeat_runtime_task(
+                        runtime_task_id,
+                        skip_reason="no_pending_t3_intake",
+                        result_summary="Skipped heartbeat because there is no pending canonical T3 intake.",
+                    )
                     return
 
                 session_id = _heartbeat_session_ids[agent_id]
@@ -1481,6 +1633,17 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
                     )
                 )
                 await db.commit()
+                if runtime_task_id:
+                    await update_runtime_task_record(
+                        runtime_task_id,
+                        status="running",
+                        child_session_id=str(session_id),
+                        result_summary="Heartbeat session continued.",
+                        metadata_json={
+                            "session_id": str(session_id),
+                            "session_bound": True,
+                        },
+                    )
                 _save_heartbeat_checkpoint(
                     agent_id,
                     session_id=session_id,
@@ -1665,39 +1828,18 @@ async def _execute_heartbeat(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None
             try:
                 from app.runtime.hooks import HookEvent, emit_hook
 
-                # Derive `reasoning` from the last assistant text so the
-                # heartbeat T0 ledger event records WHY the tick chose this
-                # outcome.
-                reasoning_text = ""
-                for _msg in reversed(runtime_messages or []):
-                    if not isinstance(_msg, dict):
-                        continue
-                    if _msg.get("role") != "assistant":
-                        continue
-                    _c = _msg.get("content")
-                    if isinstance(_c, str) and _c.strip():
-                        reasoning_text = _c.strip()
-                        break
-                    if isinstance(_c, list):
-                        _texts = [str(p.get("text", "")) for p in _c if isinstance(p, dict) and p.get("type") == "text"]
-                        if _texts:
-                            reasoning_text = " ".join(_texts).strip()
-                            break
-
                 await emit_hook(
                     HookEvent.HEARTBEAT_TICK_END,
                     agent_id=agent_id,
                     session_id=str(session_id),
-                    messages=runtime_messages,
+                    messages=[],
                     source="heartbeat",
                     metadata={
                         "tick": tick_count,
                         "outcome": outcome_type,
                         "outcome_lane": outcome_lane,
                         "score": heartbeat_score,
-                        "summary": summary[:200] if summary else "",
-                        "action": _heartbeat_action_label(outcome_type, summary),
-                        "reasoning": reasoning_text,
+                        "distillation_scope": "audit_only",
                         "tenant_id": str(agent.tenant_id) if agent.tenant_id else None,
                     },
                 )

@@ -228,13 +228,15 @@ async def test_wake_respects_global_budget_cap(owner_sessionmaker, tenant_id):
     assert await _signal_count(owner_sessionmaker, tenant_id) == 1
 
 
-async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(monkeypatch):
+async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(monkeypatch, tmp_path):
     """B2 core: the real production invoker re-invokes the parent agent with a
     dedicated subagent_wake source and the child's result in the prompt."""
     from app.services import subagent_wake_consumer as swc
     from app.services.subagent_wake_consumer import SubagentWakeRequest, build_production_parent_wake_invoker
+    from app.memory.t0.ledger import replay_t0_session_events
 
     parent_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
     tid = uuid.uuid4()
     model_id = uuid.uuid4()
     agent = SimpleNamespace(
@@ -249,11 +251,16 @@ async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(mo
         max_tool_rounds=40,
     )
     model = SimpleNamespace(id=model_id, tenant_id=tid)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, model]))
 
     captured: dict = {}
 
     async def fake_invoke_agent(request):
+        await request.on_tool_call({"tool": "read_file", "status": "running", "args": {"path": "x"}})
+        await request.on_tool_call(
+            {"tool": "read_file", "status": "done", "result": "parent wake tool result END_OF_WAKE_TOOL"}
+        )
         captured["request"] = request
         return SimpleNamespace(content="parent handled it")
 
@@ -267,7 +274,7 @@ async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(mo
             parent_agent_id=parent_id,
             signal_id=uuid.uuid4(),
             from_agent_id="subagent:researcher",
-            thread_id="trace-1",
+            thread_id=f"subagent:{parent_session_id}:trace-1",
             content="found 3 sources",
         )
     )
@@ -278,6 +285,17 @@ async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(mo
     assert request.core_tools_only is True
     assert "found 3 sources" in request.messages[0]["content"]
     assert request.model is model
+    events = replay_t0_session_events(agent_id=parent_id, session_id=parent_session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role) for event in events] == [
+        ("user_message", "user"),
+        ("tool_call", "tool"),
+        ("tool_result", "tool"),
+        ("assistant_message", "assistant"),
+        ("segment_boundary", "system"),
+    ]
+    assert "found 3 sources" in events[0].content
+    assert "END_OF_WAKE_TOOL" in events[2].content
+    assert events[3].content == "parent handled it"
 
 
 async def test_production_parent_wake_invoker_skips_non_runnable_agent(monkeypatch):

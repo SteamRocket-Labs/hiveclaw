@@ -134,6 +134,24 @@ async def upload_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a file for chat context. Saves to agent workspace/uploads/ and returns extracted text."""
+    if agent_id:
+        await check_agent_access(db, current_user, agent_id)
+    return await save_upload_for_agent(
+        file=file,
+        agent_id=agent_id,
+        tenant_id=getattr(current_user, "tenant_id", None),
+        user_id=getattr(current_user, "id", None),
+    )
+
+
+async def save_upload_for_agent(
+    *,
+    file: UploadFile,
+    agent_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+):
+    """Save a chat upload for an already-authorized agent/user context."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename")
 
@@ -145,7 +163,6 @@ async def upload_file(
     # Determine save directory
     workspace_path = ""
     if agent_id:
-        await check_agent_access(db, current_user, agent_id)
         # Save to agent's workspace/uploads/
         uploads_dir = WORKSPACE_ROOT / str(agent_id) / "workspace" / "uploads"
         uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -196,9 +213,9 @@ async def upload_file(
                     source_path=save_path,
                     workspace_root=workspace_root,
                     source_uri=None,
-                    tenant_id=getattr(current_user, "tenant_id", None),
+                    tenant_id=tenant_id,
                     agent_id=agent_id,
-                    user_id=getattr(current_user, "id", None),
+                    user_id=user_id,
                     mode="auto",
                     force_refresh=False,
                 )

@@ -20,12 +20,12 @@ import pytest
 
 
 class TestHooksIntegration:
-    """Verify all 15 events exist and handlers are wired."""
+    """Verify all runtime hook events exist and handlers are wired."""
 
-    def test_v1_all_15_events(self) -> None:
+    def test_v1_all_events(self) -> None:
         from app.runtime.hooks import HookEvent
 
-        assert len(HookEvent) == 15
+        assert len(HookEvent) == 32
 
     def test_v2_response_complete_event(self) -> None:
         from app.runtime.hooks import HookEvent
@@ -394,9 +394,7 @@ class TestFullPipeline:
         agent_id = uuid.uuid4()
         learnings = tmp_path / str(agent_id) / "memory" / "learnings"
         learnings.mkdir(parents=True)
-        entries = [
-            f"- [2026-04-{i:02d}][status=absorbed][absorbed_at=2026-04-20] entry {i}" for i in range(1, 21)
-        ]
+        entries = [f"- [2026-04-{i:02d}][status=absorbed][absorbed_at=2026-04-20] entry {i}" for i in range(1, 21)]
         (learnings / "insights.md").write_text("# Insights\n" + "\n".join(entries) + "\n")
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)

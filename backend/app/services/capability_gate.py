@@ -50,6 +50,18 @@ CAPABILITY_MAP: dict[str, str] = {
     "track_todo": "agent.task.track",
     "record_finding": "agent.task.track",
     "read_ledger": "agent.task.read",
+    # CC/Codex command-layer parity. These are command semantics exposed as
+    # governed model tools; TaskCreate/TaskUpdate stay cognitive bookkeeping
+    # over Work Ledger and do not start execution.
+    "task_create": "agent.task.track",
+    "task_update": "agent.task.track",
+    "task_list": "agent.task.read",
+    "task_get": "agent.task.read",
+    "task_output": "agent.async_task.read",
+    "task_stop": "agent.async_task.modify",
+    "goal_start": "agent.goal.modify",
+    "team_create": "agent.team.modify",
+    "advanced_plan": "agent.plan.modify",
     "exit_plan_mode": "agent.plan.modify",
     "ask_user_question": "agent.plan.clarify",
     "request_plan_mode": "agent.plan.request",

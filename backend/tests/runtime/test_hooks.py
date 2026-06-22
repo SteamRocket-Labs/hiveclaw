@@ -186,14 +186,16 @@ class TestHookRegistry:
 
         from app.runtime.hooks import HookRegistrationSpec
 
-        registry.register_many([
-            HookRegistrationSpec(event=HookEvent.POST_TOOL_USE, handler=plain),
-            HookRegistrationSpec(
-                event=HookEvent.POST_TOOL_USE,
-                handler=filtered,
-                matcher_spec={"tool_names": ["write_file"]},
-            ),
-        ])
+        registry.register_many(
+            [
+                HookRegistrationSpec(event=HookEvent.POST_TOOL_USE, handler=plain),
+                HookRegistrationSpec(
+                    event=HookEvent.POST_TOOL_USE,
+                    handler=filtered,
+                    matcher_spec={"tool_names": ["write_file"]},
+                ),
+            ]
+        )
         await registry.emit(HookContext(event=HookEvent.POST_TOOL_USE, tool_name="read_file"))
         await registry.emit(HookContext(event=HookEvent.POST_TOOL_USE, tool_name="write_file"))
         assert calls == [
@@ -211,19 +213,21 @@ class TestHookRegistry:
         def filtered(ctx: HookContext):
             return None
 
-        registry.register_many([
-            HookRegistrationSpec(
-                event=HookEvent.POST_TOOL_USE,
-                handler=plain,
-                key="plain.post_tool",
-            ),
-            HookRegistrationSpec(
-                event=HookEvent.POST_TOOL_USE,
-                handler=filtered,
-                key="filtered.post_tool",
-                matcher_spec={"tool_names": ["write_file"], "sources": ["websocket"]},
-            ),
-        ])
+        registry.register_many(
+            [
+                HookRegistrationSpec(
+                    event=HookEvent.POST_TOOL_USE,
+                    handler=plain,
+                    key="plain.post_tool",
+                ),
+                HookRegistrationSpec(
+                    event=HookEvent.POST_TOOL_USE,
+                    handler=filtered,
+                    key="filtered.post_tool",
+                    matcher_spec={"tool_names": ["write_file"], "sources": ["websocket"]},
+                ),
+            ]
+        )
 
         exported = registry.describe_registrations()
 
@@ -561,23 +565,40 @@ class TestHookContext:
 
 
 class TestHookEvents:
-    """Verify all 16 hook events exist and registry initializes them."""
+    """Verify hook events exist and registry initializes them."""
 
-    def test_all_15_events_defined(self) -> None:
+    def test_all_events_defined(self) -> None:
         events = list(HookEvent)
-        assert len(events) == 15
+        assert len(events) == 32
 
     def test_new_events_exist(self) -> None:
+        assert HookEvent.USER_PROMPT_SUBMIT == "user_prompt_submit"
         assert HookEvent.RESPONSE_COMPLETE == "response_complete"
         assert HookEvent.SESSION_IDLE == "session_idle"
         assert HookEvent.SESSION_CLOSE == "session_close"
+        assert HookEvent.SESSION_END == "session_end"
+        assert HookEvent.STOP == "stop"
+        assert HookEvent.STOP_FAILURE == "stop_failure"
+        assert HookEvent.SUBAGENT_START == "subagent_start"
+        assert HookEvent.SUBAGENT_STOP == "subagent_stop"
         assert HookEvent.TRIGGER_END == "trigger_end"
         assert HookEvent.HEARTBEAT_TICK_END == "heartbeat_tick_end"
         assert HookEvent.DREAM_END == "dream_end"
+        assert HookEvent.PERMISSION_REQUEST == "permission_request"
+        assert HookEvent.TASK_CREATED == "task_created"
+        assert HookEvent.TASK_COMPLETED == "task_completed"
+        assert HookEvent.ELICITATION == "elicitation"
+        assert HookEvent.CONFIG_CHANGE == "config_change"
+        assert HookEvent.INSTRUCTIONS_LOADED == "instructions_loaded"
+        assert HookEvent.WORKSPACE_CONTEXT_CHANGED == "workspace_context_changed"
+        assert HookEvent.ARTIFACT_CHANGED == "artifact_changed"
+        assert HookEvent.TEAM_CREATED == "team_created"
+        assert HookEvent.TEAM_CLOSED == "team_closed"
+        assert HookEvent.TEAMMATE_IDLE == "teammate_idle"
 
-    def test_old_session_end_removed(self) -> None:
+    def test_session_end_restored_for_cc_parity(self) -> None:
         event_values = [e.value for e in HookEvent]
-        assert "session_end" not in event_values
+        assert "session_end" in event_values
 
     def test_registry_initializes_all_events(self) -> None:
         reg = HookRegistry()
@@ -590,11 +611,13 @@ class TestHookEvents:
         reg = HookRegistry()
         calls = []
         reg.register(HookEvent.RESPONSE_COMPLETE, lambda ctx: calls.append(ctx.source))
-        await reg.emit(HookContext(
-            event=HookEvent.RESPONSE_COMPLETE,
-            messages=[{"role": "assistant", "content": "hi"}],
-            source="websocket",
-        ))
+        await reg.emit(
+            HookContext(
+                event=HookEvent.RESPONSE_COMPLETE,
+                messages=[{"role": "assistant", "content": "hi"}],
+                source="websocket",
+            )
+        )
         assert calls == ["websocket"]
         reg.clear()
 

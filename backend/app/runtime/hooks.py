@@ -16,13 +16,21 @@ logger = logging.getLogger(__name__)
 
 
 class HookEvent(StrEnum):
-    """Runtime lifecycle events — 15 events for memory system + tool governance.
+    """Runtime lifecycle events for memory system, tool governance, and CC parity.
 
     Tool lifecycle (3, already wired):
         PRE_TOOL_USE, POST_TOOL_USE, POST_TOOL_FAILURE
 
-    Session lifecycle (4, replaces old SESSION_END):
+    CC-compatible session lifecycle:
+        USER_PROMPT_SUBMIT — accepted prompt after durable append, before model loop
         SESSION_START      — invoke begins, frozen prompt assembled
+        SESSION_END        — logical transcript/session end marker
+        STOP               — assistant final produced, before turn may stop
+        STOP_FAILURE       — Stop hook failed or stop recovery failed
+        SUBAGENT_START     — child session starts
+        SUBAGENT_STOP      — child session final produced, before parent receives result
+
+    Hive session lifecycle:
         RESPONSE_COMPLETE  — each agent response, volatile projection + candidate signals
         SESSION_IDLE       — idle timeout, T0 segment seal/advance
         SESSION_CLOSE      — WebSocket disconnect / new session / invoke return, T0 finalization
@@ -49,7 +57,13 @@ class HookEvent(StrEnum):
     POST_TOOL_FAILURE = "post_tool_failure"
 
     # ── Session lifecycle ──
+    USER_PROMPT_SUBMIT = "user_prompt_submit"
     SESSION_START = "session_start"
+    SESSION_END = "session_end"
+    STOP = "stop"
+    STOP_FAILURE = "stop_failure"
+    SUBAGENT_START = "subagent_start"
+    SUBAGENT_STOP = "subagent_stop"
     RESPONSE_COMPLETE = "response_complete"
     SESSION_IDLE = "session_idle"
     SESSION_CLOSE = "session_close"
@@ -70,17 +84,36 @@ class HookEvent(StrEnum):
     # ── Notification ──
     MEMORY_EXTRACTED = "memory_extracted"
 
+    # ── FreeCode command/team/task parity events ──
+    PERMISSION_REQUEST = "permission_request"
+    TASK_CREATED = "task_created"
+    TASK_COMPLETED = "task_completed"
+    ELICITATION = "elicitation"
+    CONFIG_CHANGE = "config_change"
+    INSTRUCTIONS_LOADED = "instructions_loaded"
+    WORKSPACE_CONTEXT_CHANGED = "workspace_context_changed"
+    ARTIFACT_CHANGED = "artifact_changed"
+    TEAM_CREATED = "team_created"
+    TEAM_CLOSED = "team_closed"
+    TEAMMATE_IDLE = "teammate_idle"
+
 
 @dataclass(slots=True)
 class HookContext:
     """Data passed to every hook handler."""
+
     event: HookEvent
     agent_id: Any = None
     session_id: str | None = None
+    prompt: str | None = None
     tool_name: str | None = None
     tool_args: dict[str, Any] | None = None
     tool_result: str | None = None
     error: str | None = None
+    last_assistant_message: str | None = None
+    stop_hook_active: bool = False
+    agent_type: str | None = None
+    agent_transcript_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     # Session lifecycle fields (RESPONSE_COMPLETE, SESSION_IDLE, SESSION_CLOSE)
     messages: list[dict] | None = None
@@ -90,9 +123,12 @@ class HookContext:
 @dataclass(slots=True)
 class HookResult:
     """Optional result from a hook handler."""
-    block: bool = False  # If True, block the operation (PreToolUse only)
+
+    block: bool = False  # If True, block the operation when the event supports blocking.
     reason: str = ""  # Reason for blocking
     modified_args: dict[str, Any] | None = None  # Modified tool args (PreToolUse only)
+    prevent_continuation: bool = False  # Stop/SubagentStop: return final state without another loop.
+    stop_reason: str = ""  # Human-readable stop/prevent-continuation reason.
 
 
 # Type alias for hook handlers
@@ -131,10 +167,7 @@ def _normalize_matcher_spec(spec: HookMatcherSpec | dict[str, Any]) -> HookMatch
         tenant_ids=tuple(str(tenant_id) for tenant_id in spec.get("tenant_ids", ()) if tenant_id),
         sources=tuple(str(source) for source in spec.get("sources", ()) if source),
         session_ids=tuple(str(session_id) for session_id in spec.get("session_ids", ()) if session_id),
-        metadata_equals=tuple(
-            (str(key), value)
-            for key, value in dict(spec.get("metadata_equals", {})).items()
-        ),
+        metadata_equals=tuple((str(key), value) for key, value in dict(spec.get("metadata_equals", {})).items()),
         metadata_truthy=tuple(str(key) for key in spec.get("metadata_truthy", ()) if key),
     )
 
@@ -235,7 +268,9 @@ def _merge_matcher_specs(base: HookMatcherSpec, override: HookMatcherSpec | None
 def describe_registration_specs(registrations: list[HookRegistrationSpec]) -> list[dict[str, Any]]:
     exported: list[dict[str, Any]] = []
     for registration in registrations:
-        normalized = _normalize_matcher_spec(registration.matcher_spec) if registration.matcher_spec is not None else None
+        normalized = (
+            _normalize_matcher_spec(registration.matcher_spec) if registration.matcher_spec is not None else None
+        )
         exported.append(
             {
                 "event": registration.event.value,
@@ -256,10 +291,7 @@ def load_registration_specs(
 ) -> list[HookRegistrationSpec]:
     registrations: list[HookRegistrationSpec] = []
     seen_keys: set[str] = set()
-    normalized_profiles = {
-        str(name): _normalize_matcher_spec(spec)
-        for name, spec in (matcher_profiles or {}).items()
-    }
+    normalized_profiles = {str(name): _normalize_matcher_spec(spec) for name, spec in (matcher_profiles or {}).items()}
     for index, raw in enumerate(configs):
         raw_event = raw.get("event")
         try:
@@ -353,6 +385,41 @@ class HookRegistry:
 
     def __init__(self) -> None:
         self._handlers: dict[HookEvent, list[_HookBinding]] = {event: [] for event in HookEvent}
+
+    @staticmethod
+    def _blocking_supported(event: HookEvent) -> bool:
+        return event in {
+            HookEvent.PRE_TOOL_USE,
+            HookEvent.USER_PROMPT_SUBMIT,
+            HookEvent.STOP,
+            HookEvent.SUBAGENT_START,
+            HookEvent.SUBAGENT_STOP,
+        }
+
+    async def _emit_stop_failure(self, ctx: HookContext, exc: Exception) -> None:
+        if ctx.event == HookEvent.STOP_FAILURE:
+            return
+        if not self._handlers.get(HookEvent.STOP_FAILURE):
+            return
+        await self.emit(
+            HookContext(
+                event=HookEvent.STOP_FAILURE,
+                agent_id=ctx.agent_id,
+                session_id=ctx.session_id,
+                prompt=ctx.prompt,
+                tool_name=ctx.tool_name,
+                tool_args=ctx.tool_args,
+                tool_result=ctx.tool_result,
+                error=f"{type(exc).__name__}: {exc}",
+                last_assistant_message=ctx.last_assistant_message,
+                stop_hook_active=ctx.stop_hook_active,
+                agent_type=ctx.agent_type,
+                agent_transcript_path=ctx.agent_transcript_path,
+                metadata=dict(ctx.metadata or {}),
+                messages=ctx.messages,
+                source=ctx.source,
+            )
+        )
 
     def register(
         self,
@@ -494,25 +561,39 @@ class HookRegistry:
                             reason=result.reason,
                             modified_args=result.modified_args,
                         )
-                    if result.block and ctx.event == HookEvent.PRE_TOOL_USE:
+                    if result.block and self._blocking_supported(ctx.event):
                         blocked = HookResult(
                             block=True,
                             reason=result.reason,
                             modified_args=ctx.tool_args,
+                            prevent_continuation=result.prevent_continuation,
+                            stop_reason=result.stop_reason,
                         )
                         logger.info(
                             "[Hooks] %s blocked by handler: %s",
-                            ctx.tool_name, result.reason,
+                            ctx.tool_name or ctx.event.value,
+                            result.reason,
                         )
                         return blocked
+                    if result.prevent_continuation and self._blocking_supported(ctx.event):
+                        return HookResult(
+                            block=False,
+                            reason=result.reason,
+                            modified_args=ctx.tool_args,
+                            prevent_continuation=True,
+                            stop_reason=result.stop_reason,
+                        )
             except Exception as exc:
                 from app.memory.metrics import record_hook_failure
 
                 record_hook_failure(event=ctx.event.value, source="registry", reason=type(exc).__name__)
                 logger.warning(
                     "[Hooks] Handler failed for %s: %s",
-                    ctx.event, exc,
+                    ctx.event,
+                    exc,
                 )
+                if ctx.event == HookEvent.STOP:
+                    await self._emit_stop_failure(ctx, exc)
         return final_result
 
     def handler_count(self, event: HookEvent) -> int:

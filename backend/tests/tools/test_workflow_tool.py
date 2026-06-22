@@ -90,7 +90,9 @@ async def test_preview_workflow_returns_hash_and_confirmation_notes():
 
     result = await preview_workflow(uuid.uuid4(), {"definition": _low_risk_definition(), "args": {}})
     payload = json.loads(result)
+    assert payload["preview_id"]
     assert payload["definition_hash"]
+    assert payload["args_hash"]
     assert "risk" not in payload
     assert payload["confirmation_required"] is False
     assert payload["confirmation_reasons"] == []
@@ -102,7 +104,9 @@ async def test_preview_workflow_external_effects_return_confirmation_notes_witho
 
     result = await preview_workflow(uuid.uuid4(), {"definition": _high_risk_definition(), "args": {}})
     payload = json.loads(result)
+    assert payload["preview_id"]
     assert payload["definition_hash"]
+    assert payload["args_hash"]
     assert "risk" not in payload
     assert "risk_reasons" not in payload
     assert payload["confirmation_required"] is True
@@ -133,12 +137,60 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
 
     agent_id = uuid.uuid4()
-    result = await workflow_handlers.start_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
+    result = await workflow_handlers.start_workflow(
+        agent_id,
+        {
+            "definition": _low_risk_definition(),
+            "args": {},
+            "preview_id": preview["preview_id"],
+        },
+    )
     payload = json.loads(result)
 
     assert payload["status"] == "completed"
     assert captured["agent_id"] == agent_id
     assert captured["definition"]["name"] == "read-probe"
+
+
+async def test_start_workflow_rejects_missing_preview_binding():
+    from app.tools.handlers import workflow as workflow_handlers
+
+    result = await workflow_handlers.start_workflow(uuid.uuid4(), {"definition": _low_risk_definition(), "args": {}})
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert "preview_workflow" in payload["error"]
+
+
+async def test_start_workflow_rejects_mutated_definition_after_preview(monkeypatch):
+    from app.tools.handlers import workflow as workflow_handlers
+
+    async def fake_launch(**_kwargs):
+        raise AssertionError("mutated workflow must not launch")
+
+    monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+    agent_id = uuid.uuid4()
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
+    mutated = _low_risk_definition()
+    mutated["steps"][0]["task"] = "Different task"
+
+    result = await workflow_handlers.start_workflow(
+        agent_id,
+        {
+            "definition": mutated,
+            "args": {},
+            "preview_id": preview["preview_id"],
+        },
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert "preview" in payload["error"].lower()
 
 
 async def test_start_workflow_passes_ledger_todo_id(monkeypatch):
@@ -154,8 +206,17 @@ async def test_start_workflow_passes_ledger_todo_id(monkeypatch):
         return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
 
     monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+    agent_id = uuid.uuid4()
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
     await workflow_handlers.start_workflow(
-        uuid.uuid4(),
-        {"definition": _low_risk_definition(), "args": {}, "ledger_todo_id": "todo-9"},
+        agent_id,
+        {
+            "definition": _low_risk_definition(),
+            "args": {},
+            "ledger_todo_id": "todo-9",
+            "preview_id": preview["preview_id"],
+        },
     )
     assert captured["ledger_todo_id"] == "todo-9"

@@ -52,6 +52,10 @@ def test_application_tool_calls_enter_runtime_through_public_boundaries() -> Non
         # deep research's _default_tool_executor delegates to the governed
         # execute_tool with agent/user context (same boundary role as heartbeat)
         "app/services/deep_research/orchestrator.py",
+        # Command execution API is an HTTP public boundary. It delegates to the
+        # governed execute_tool entrypoint and must not construct registry
+        # requests itself.
+        "app/api/commands.py",
     }
     violations: list[str] = []
     for path in _python_files(APP_ROOT):
@@ -83,11 +87,7 @@ def test_tool_runtime_service_is_the_only_class_that_executes_registry_requests(
 def test_tool_runtime_service_exposes_explicit_normal_and_approved_paths() -> None:
     service_source = (APP_ROOT / "tools/service.py").read_text(encoding="utf-8")
     tree = ast.parse(service_source)
-    methods = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
-    }
+    methods = {node.name for node in ast.walk(tree) if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))}
 
     assert {"execute", "execute_approved", "execute_with_context"} <= methods
     assert "execute_direct" in methods

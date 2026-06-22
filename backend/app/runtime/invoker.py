@@ -213,6 +213,19 @@ def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
     return session_context.metadata
 
 
+def _latest_user_prompt(messages: list[dict] | tuple[dict, ...] | None) -> str:
+    for message in reversed(list(messages or [])):
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("role") or "") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        return str(content or "")
+    return ""
+
+
 def _plan_mode_interactive_available(session_context: SessionContext | None) -> bool:
     # Compatibility-only: ToolRuntimeService ignores this for Plan Mode entry.
     from app.runtime.session import is_interactive_plan_eligible
@@ -1174,6 +1187,39 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         delegation_token=request.delegation_token,
     )
 
+    # ── USER_PROMPT_SUBMIT hook ──
+    # Entry points are responsible for durable DB/T0 append before invoking the
+    # runtime. This hook is the shared post-append, pre-model lifecycle boundary.
+    try:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        _session_source = request.session_context.source if request.session_context else "runtime"
+        session_metadata = _session_metadata(request.session_context)
+        prompt_text = _latest_user_prompt(request.messages)
+        prompt_result = await emit_hook(
+            HookEvent.USER_PROMPT_SUBMIT,
+            agent_id=request.agent_id,
+            session_id=request.memory_session_id
+            or (request.session_context.session_id if request.session_context else None),
+            prompt=prompt_text,
+            source=_session_source,
+            metadata={
+                "tenant_id": session_metadata.get("tenant_id"),
+                "runtime_task_id": session_metadata.get("runtime_task_id") or session_metadata.get("task_id"),
+                "agent_name": request.agent_name,
+                "execution_mode": request.invocation_scope,
+            },
+        )
+        if prompt_result and prompt_result.block:
+            return AgentInvocationResult(
+                content=f"Blocked by prompt hook: {prompt_result.reason or 'policy'}",
+                tokens_used=0,
+                final_tools=[],
+                parts=[],
+            )
+    except Exception as _prompt_err:
+        logging.getLogger(__name__).debug("[Invoker] USER_PROMPT_SUBMIT hook failed (non-fatal): %s", _prompt_err)
+
     # ── SESSION_START hook ──
     try:
         from app.runtime.hooks import HookEvent, emit_hook
@@ -1222,6 +1268,14 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             else [],
             "last_successful_step": result.content[:300],
         }
+        await emit_hook(
+            HookEvent.SESSION_END,
+            agent_id=request.agent_id,
+            session_id=request.memory_session_id,
+            source=_session_source,
+            messages=completed_messages,
+            metadata=_hook_metadata,
+        )
         await emit_hook(
             HookEvent.SESSION_CLOSE,
             agent_id=request.agent_id,

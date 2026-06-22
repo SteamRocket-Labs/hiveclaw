@@ -15,6 +15,7 @@ from app.api.auth import router as auth_router
 from app.api.autonomy import router as autonomy_router
 from app.api.capabilities import router as capabilities_router
 from app.api.chat_sessions import router as chat_sessions_router
+from app.api.commands import router as commands_router
 from app.api.config_history import router as config_history_router
 from app.api.custom_api_connectors import router as custom_api_connectors_router
 from app.api.desktop_agents import router as desktop_agents_router
@@ -56,8 +57,11 @@ from app.api.organization import router as org_router
 from app.api.plans import router as plans_router
 from app.api.plaza import router as plaza_router
 from app.api.relationships import router as relationships_router
+from app.api.agent_teams import router as agent_teams_router
+from app.api.advanced_plan import router as advanced_plan_router
 from app.api.role_templates import router as role_templates_router
 from app.api.schedules import router as schedules_router
+from app.api.session_goals import router as session_goals_router
 from app.api.skills import router as skills_router
 from app.api.slack import router as slack_router
 from app.api.tasks import router as tasks_router
@@ -597,6 +601,10 @@ _api_routers = [
     feature_flags_router,
     admin_router,
     chat_sessions_router,
+    commands_router,
+    session_goals_router,
+    agent_teams_router,
+    advanced_plan_router,
     plaza_router,
     triggers_router,
     memory_router,

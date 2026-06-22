@@ -60,6 +60,16 @@ def test_clear_interactive_plan_mode_clears_typed_state_and_metadata_mirror():
     assert "plan_mode" not in context.metadata
 
 
+def test_cc_session_task_types_are_executable_chat_runs():
+    import app.services.web_chat_runtime as runtime
+
+    assert runtime.is_executable_chat_task_type("web_chat_turn")
+    assert runtime.is_executable_chat_task_type("goal_continuation")
+    assert runtime.is_executable_chat_task_type("team_member")
+    assert runtime.is_executable_chat_task_type("advanced_plan")
+    assert not runtime.is_executable_chat_task_type("delegation")
+
+
 def test_clear_stale_plan_mode_for_plain_new_turn():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import PlanModeState, SessionContext
@@ -117,28 +127,34 @@ def test_preserve_plan_mode_for_blocking_clarification_reply():
 def test_interactive_pause_summary_accepts_structured_tool_payloads():
     import app.services.web_chat_runtime as runtime
 
-    assert runtime._interactive_pause_summary_for_tool_call(
-        {
-            "name": "ask_user_question",
-            "status": "done",
-            "result": {
-                "status": "awaiting_user_clarification",
-                "blocking": True,
-                "questions": [{"question": "Scope?", "options": [{"label": "A"}]}],
-            },
-        }
-    ) == "awaiting_user_clarification"
-    assert runtime._interactive_pause_summary_for_tool_call(
-        {
-            "name": "create_digital_employee",
-            "status": "done",
-            "result": {
-                "status": "success",
-                "agent_id": "7a5b31cb-89b4-4053-a48e-6dfb42a8af20",
-                "message": "Successfully created digital employee.",
-            },
-        }
-    ) == "create_digital_employee_success"
+    assert (
+        runtime._interactive_pause_summary_for_tool_call(
+            {
+                "name": "ask_user_question",
+                "status": "done",
+                "result": {
+                    "status": "awaiting_user_clarification",
+                    "blocking": True,
+                    "questions": [{"question": "Scope?", "options": [{"label": "A"}]}],
+                },
+            }
+        )
+        == "awaiting_user_clarification"
+    )
+    assert (
+        runtime._interactive_pause_summary_for_tool_call(
+            {
+                "name": "create_digital_employee",
+                "status": "done",
+                "result": {
+                    "status": "success",
+                    "agent_id": "7a5b31cb-89b4-4053-a48e-6dfb42a8af20",
+                    "message": "Successfully created digital employee.",
+                },
+            }
+        )
+        == "create_digital_employee_success"
+    )
 
 
 def test_explicit_plan_mode_request_does_not_clear_existing_plan_state_before_reactivation():
@@ -853,7 +869,9 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
     monkeypatch.setattr(runtime, "_claim_pending_reply_suffix_for_session", noop_async)
     monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_empty_assistant_finalize)
-    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(
+        runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False
+    )
     monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
     monkeypatch.setattr(runtime, "_persist_tool_call", fake_persist_tool_call)
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
@@ -941,7 +959,9 @@ async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(m
     monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
     monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_assistant_finalize)
-    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(
+        runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False
+    )
     monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
@@ -1032,7 +1052,9 @@ async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_cal
     monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
     monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
     monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
-    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(
+        runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False
+    )
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", noop_async)
     monkeypatch.setattr(runtime, "_claim_pending_reply_suffix_for_session", noop_async)
     monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
@@ -1120,7 +1142,9 @@ async def test_execute_web_chat_run_stops_after_create_employee_success_card(mon
     monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
     monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_assistant_finalize)
-    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False)
+    monkeypatch.setattr(
+        runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False
+    )
     monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
     monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
@@ -1203,6 +1227,60 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     ]
     assert events[0].message_id
     assert events[0].metadata["source"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_start_web_chat_run_accepts_goal_continuation_task_type(monkeypatch, tmp_path):
+    import app.services.web_chat_runtime as runtime
+    from app.models.audit import ChatMessage
+    from app.models.runtime_task import RuntimeTask
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, username="rocky", display_name="Rocky")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        title="Session 05-21",
+        last_message_at=None,
+    )
+    db = _FakeDB(active_run=None)
+    scheduled = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        coro.close()
+        return SimpleNamespace(done=lambda: False, add_done_callback=lambda _cb: None)
+
+    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    result = await runtime.start_web_chat_run(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content="Continue working toward the active goal.",
+        runtime_task_type="goal_continuation",
+        append_user_message=False,
+        extra_metadata={"goal_id": "goal-1"},
+    )
+
+    task = next(item for item in db.added if isinstance(item, RuntimeTask))
+    assert result["run_id"] == task.id.hex
+    assert task.task_type == "goal_continuation"
+    assert task.metadata_json["source"] == "goal_continuation"
+    assert task.metadata_json["goal_id"] == "goal-1"
+    assert not any(isinstance(item, ChatMessage) for item in db.added)
+    assert scheduled
 
 
 @pytest.mark.asyncio

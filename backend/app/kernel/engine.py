@@ -3243,13 +3243,90 @@ class AgentKernel:
                         )
                         if _source_permission_allowed:
                             await _flush_buffered_chunks()
+                        from app.runtime.hooks import HookEvent
+
+                        _session_source = request.session_context.source if request.session_context else "runtime"
+                        _stop_metadata = {
+                            "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
+                            "agent_name": request.agent_name or "Agent",
+                            "turn_count": round_i + 1,
+                            "execution_mode": getattr(runtime_config, "execution_mode", None)
+                            or request.invocation_scope,
+                        }
+                        if request.session_context is not None:
+                            _stop_metadata.update(
+                                {
+                                    "runtime_task_id": request.session_context.metadata.get("runtime_task_id")
+                                    or request.session_context.metadata.get("task_id"),
+                                }
+                            )
+                        _stop_result = await _emit_runtime_hook(
+                            HookEvent.STOP,
+                            agent_id=request.agent_id,
+                            session_id=request.memory_session_id,
+                            source=_session_source,
+                            messages=_llm_messages_to_dicts(api_messages[1:]),
+                            last_assistant_message=final_content,
+                            stop_hook_active=bool(
+                                request.session_context.metadata.get("stop_hook_active")
+                                if request.session_context is not None
+                                else False
+                            ),
+                            metadata=_stop_metadata,
+                        )
+                        if _stop_result and _stop_result.prevent_continuation:
+                            if request.session_context is not None:
+                                request.session_context.metadata.pop("stop_hook_active", None)
+                            await _emit_event(
+                                {
+                                    "type": "stop_hook_prevented_continuation",
+                                    "reason": _stop_result.stop_reason or _stop_result.reason,
+                                }
+                            )
+                        elif _stop_result and _stop_result.block:
+                            _reason = _stop_result.reason or "Stop hook blocked stopping."
+                            api_messages.append(
+                                LLMMessage(
+                                    role="assistant",
+                                    content=final_content,
+                                    reasoning_content=response.reasoning_content,
+                                    reasoning_signature=getattr(response, "reasoning_signature", None),
+                                )
+                            )
+                            api_messages.append(
+                                LLMMessage(
+                                    role="user",
+                                    content=(
+                                        "[Stop hook blocked stopping]\n"
+                                        f"{_reason}\n\n"
+                                        "Continue from where you left off and address the stop-hook requirement."
+                                    ),
+                                )
+                            )
+                            if request.session_context is not None:
+                                request.session_context.metadata["stop_hook_active"] = True
+                            await _emit_event(
+                                {
+                                    "type": "stop_hook_blocked",
+                                    "reason": _reason,
+                                    "part": {
+                                        "type": "event",
+                                        "event_type": "stop_hook_blocked",
+                                        "title": "Stop Hook Blocked",
+                                        "text": _reason,
+                                        "status": "warning",
+                                    },
+                                }
+                            )
+                            continue
+                        elif request.session_context is not None:
+                            request.session_context.metadata.pop("stop_hook_active", None)
                         # Subagent runs execute under the parent's agent_id but are
                         # clean specialists (standalone prompt): their INTERNAL
                         # transcript is not the parent's behavior. The conclusion
                         # reaches the parent's memory through the parent's own main
                         # session (the spawn tool result) — persisting/extracting the
                         # subagent session too would double-count it as tool noise.
-                        _session_source = request.session_context.source if request.session_context else "runtime"
                         _memory_isolated = _session_source == "subagent"
                         if request.agent_id and runtime_config.tenant_id and not _memory_isolated:
                             try:
@@ -3272,8 +3349,6 @@ class AgentKernel:
                         # (skipped for heartbeat — SOP-driven distiller — and for
                         # subagent internals, per the isolation note above)
                         if _session_source != "heartbeat" and not _memory_isolated:
-                            from app.runtime.hooks import HookEvent
-
                             _schedule_runtime_hook(
                                 HookEvent.RESPONSE_COMPLETE,
                                 agent_id=request.agent_id,

@@ -151,6 +151,30 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         ),
         infer_from_tools=False,
     ),
+    RuntimeToolGroupSpec(
+        name="command_pack",
+        summary=(
+            "CC/Codex-style command-layer tools for session task bookkeeping, runtime task output/stop, "
+            "bounded goals, enterable teams, and advanced planning handoff."
+        ),
+        source="system",
+        activation_mode=(
+            "Discover schemas through tool_search when a user asks for slash-command-like Task, Team, Goal, "
+            "or Advanced Plan behavior; TaskCreate/TaskUpdate are Work Ledger bookkeeping and never start execution."
+        ),
+        tools=(
+            "task_create",
+            "task_update",
+            "task_list",
+            "task_get",
+            "task_output",
+            "task_stop",
+            "goal_start",
+            "team_create",
+            "advanced_plan",
+        ),
+        infer_from_tools=False,
+    ),
 )
 
 _ADMIN_PACK_QUERY_KEYWORDS = (

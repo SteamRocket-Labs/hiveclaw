@@ -92,6 +92,23 @@ def test_capability_map_covers_subagent_spawn_tool():
     assert CAPABILITY_MAP.get("spawn_subagent") == "agent.subagent.spawn"
 
 
+def test_capability_map_covers_cc_codex_command_tools():
+    expected = {
+        "task_create": "agent.task.track",
+        "task_update": "agent.task.track",
+        "task_list": "agent.task.read",
+        "task_get": "agent.task.read",
+        "task_output": "agent.async_task.read",
+        "task_stop": "agent.async_task.modify",
+        "goal_start": "agent.goal.modify",
+        "team_create": "agent.team.modify",
+        "advanced_plan": "agent.plan.modify",
+    }
+
+    for tool_name, capability in expected.items():
+        assert CAPABILITY_MAP.get(tool_name) == capability
+
+
 def test_capability_map_covers_memory_write_controls():
     assert CAPABILITY_MAP.get("save_memory") == "agent.memory.write"
     assert CAPABILITY_MAP.get("update_memory") == "agent.memory.write"

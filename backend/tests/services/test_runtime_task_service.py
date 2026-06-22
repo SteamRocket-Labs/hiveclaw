@@ -226,6 +226,58 @@ async def test_reconcile_orphaned_runtime_tasks_preserves_workflow_runs(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_reconcile_orphaned_runtime_tasks_preserves_cc_session_runtime_tasks(monkeypatch):
+    from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+
+    team_member = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "team_member",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    goal_continuation = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "goal_continuation",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    advanced_plan = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "task_type": "advanced_plan",
+            "status": "running",
+            "result_summary": None,
+            "completed_at": None,
+            "metadata_json": {},
+        },
+    )()
+    fake_session = _ReconcileSession([team_member, goal_continuation, advanced_plan])
+    monkeypatch.setattr("app.services.runtime_task_service.async_session", lambda: fake_session)
+
+    updated = await reconcile_orphaned_runtime_tasks()
+
+    assert updated == 0
+    assert team_member.status == "running"
+    assert goal_continuation.status == "running"
+    assert advanced_plan.status == "running"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_reconcile_orphaned_runtime_tasks_preserves_restart_resumable_records(monkeypatch):
     from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
 

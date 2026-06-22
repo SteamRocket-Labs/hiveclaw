@@ -100,11 +100,20 @@ CC CLAUDE.md / project instructions
 
 这四块的 prompts、tool descriptions、hook payloads 和 lifecycle behavior 必须优先回 FreeCode 取证，并去除 Anthropic/Claude/Codex 在 runtime prompt 中的特权身份表达。模型供应商名称可以作为 baseline、provider 或源码引用出现，但不能成为 Hive runtime 的身份前提。
 
+补充：FreeCode command layer 排查后，`Task` / `Team` 不能再只归入 Sub-agent 或 Work Ledger。Hive 的 Work Ledger 已经对齐 Task 的 agent-authored To-Do List / task board 语义，但 FreeCode Task 还承担 Team 共享 task-list 和 background task command 语义；Team 则是一等协作容器，要求可进入的成员 session、共享 task board、mailbox/events 和 member runtime。Worktree 属于 coding-first 能力，当前 Hive organization-first scope 将它后置为可选 coding pack，不阻塞 Team/Task parity。
+
 ## 2. 当前阶段的绝对目标
 
 当前阶段只抓一个大目标：
 
 > 全面排查并补齐 Hive 单 Session 框架，使它在 session recovery、hook boundary、subagent、skill、workflow、Plan Mode 上达到 CC baseline，并在此基础上承载 Memory / Iter 自进化。
+
+补充审计入口：
+
+- `docs/cc-codex-python-optimized-parity-master-plan-2026-06-22.md`：**canonical implementation plan**；当前所有 CC + Codex Python optimized parity 工作以此为总入口，其他文档作为 evidence / appendix。
+- `docs/agent-lifecycle-full-cc-parity-review-2026-06-22.md`：Agent 全生命周期 session-middle parity。
+- `docs/freecode-command-loop-feature-parity-audit-2026-06-22.md`：FreeCode command / loop / task / team / worktree / hook feature surface parity；当前明确 Team runtime 是 P0，Task adapter 是 P1，Worktree 是 optional coding pack。
+- `docs/freecode-non-coding-feature-implementation-plan-2026-06-22.md`：FreeCode non-coding/general-agent feature implementation target；当前明确 command registry、Session Goal、Team runtime、Task adapters、remaining hooks、advanced plan 是核心补齐路径。
 
 这不是局部 bugfix。排查对象必须覆盖：
 

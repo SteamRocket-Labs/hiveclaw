@@ -1,8 +1,30 @@
 # Agent 全生命周期 CC 对标 Review
 
 日期：2026-06-22
-状态：当前 review 结论与改造入口
+状态：review 已转 implementation，2026-06-22 已完成首轮 session-middle parity substrate
 范围：Agent lifecycle、context composition、Skill、Sub-agent、Workflow、Hooks、session resume
+
+## Implementation Closure — 2026-06-22
+
+本 review 中的首轮 session-middle parity substrate 已落地：
+
+1. Hook substrate：新增 `USER_PROMPT_SUBMIT`、`SESSION_END`、`STOP`、`STOP_FAILURE`、`SUBAGENT_START`、`SUBAGENT_STOP`，并扩展 hook payload/result，使 Stop/Subagent/UserPromptSubmit 可返回阻断语义。
+2. UserPromptSubmit：`invoke_agent` 在统一 runtime 入口发出 `USER_PROMPT_SUBMIT -> SESSION_START -> kernel -> SESSION_END -> SESSION_CLOSE`。
+3. Stop Hook：kernel 在 assistant final 之后、返回之前 await `STOP`；blocking result 会把原因作为 continuation 输入，继续下一轮模型调用；Stop handler 异常会触发 `STOP_FAILURE`。
+4. Subagent lifecycle：`_spawn_one` 在 child invoke 前发 `SUBAGENT_START`，在 complete/failed/timeout seal 后发 `SUBAGENT_STOP`，并把 Hive T0 `source.md` 作为 `agent_transcript_path` equivalent 暴露。
+5. Workflow handshake：`preview_workflow` 返回 `preview_id`、`definition_hash`、`args_hash`；`start_workflow` 必须携带 preview binding，并在启动前重新 compile/hash 校验，拒绝未 preview 或 preview 后被篡改的 definition/args。
+6. Context guard：增加全生命周期对标文档入口、skill catalog frozen-prefix 防漂移、runtime prompt vendor-neutral guard。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/runtime/test_hooks.py tests/tools/test_workflow_tool.py tests/agents/test_subagent.py tests/kernel/test_engine_stop_hooks.py tests/runtime/test_invoker_cc_hooks.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_context_cc_parity_contract.py tests/kernel/test_parallel_tool_batch.py::test_parallel_batch_applies_pre_tool_hook_modifications -q
+ruff check app/runtime/hooks.py app/runtime/invoker.py app/kernel/engine.py app/agents/subagent.py app/tools/handlers/workflow.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_invoker_cc_hooks.py tests/kernel/test_engine_stop_hooks.py tests/runtime/test_context_cc_parity_contract.py tests/tools/test_workflow_tool.py tests/agents/test_subagent.py tests/runtime/test_hooks.py
+```
+
+当前结果：`87 passed, 4 warnings`；`ruff check` passed。
 
 ## 0. 结论
 

@@ -639,12 +639,12 @@ def _seal_subagent_t0_segment(
     child_depth: int,
     reason: str,
     metadata: dict[str, Any] | None = None,
-) -> None:
+) -> Any | None:
     if not session_id:
-        return
+        return None
     from app.memory.t0.ledger import seal_t0_session_segment
 
-    seal_t0_session_segment(
+    return seal_t0_session_segment(
         agent_id=ctx.parent_agent_id,
         session_id=session_id,
         reason=reason,
@@ -657,6 +657,41 @@ def _seal_subagent_t0_segment(
             "parent_session_id": ctx.parent_session_id or "",
             "semantic_memory_eligible": True,
             **(metadata or {}),
+        },
+    )
+
+
+async def _emit_subagent_lifecycle_hook(
+    *,
+    event: Any,
+    ctx: SubagentSpawnContext,
+    spec: SubagentSpec,
+    session_id: str | None,
+    child_depth: int,
+    prompt: str = "",
+    last_assistant_message: str = "",
+    transcript_path: str = "",
+    status: str = "",
+) -> Any | None:
+    from app.runtime.hooks import emit_hook
+
+    return await emit_hook(
+        event,
+        agent_id=ctx.parent_agent_id,
+        session_id=session_id or ctx.parent_session_id,
+        prompt=prompt,
+        source="subagent",
+        last_assistant_message=last_assistant_message,
+        agent_type=spec.type,
+        agent_transcript_path=transcript_path,
+        metadata={
+            "subagent_name": spec.name,
+            "subagent_type": spec.type,
+            "trace_id": ctx.trace_id or "",
+            "depth": child_depth,
+            "parent_session_id": ctx.parent_session_id or "",
+            "tenant_id": str(ctx.tenant_id) if ctx.tenant_id else None,
+            "status": status,
         },
     )
 
@@ -732,6 +767,27 @@ async def _spawn_one(
             content=message.get("content") or "",
             metadata={"message_index": idx, "fork": fork},
         )
+    from app.runtime.hooks import HookEvent
+
+    try:
+        start_result = await _emit_subagent_lifecycle_hook(
+            event=HookEvent.SUBAGENT_START,
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            prompt=job.task,
+            status="starting",
+        )
+        if start_result and start_result.block:
+            return SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="failed",
+                error=f"blocked by subagent start hook: {start_result.reason or 'policy'}",
+            )
+    except Exception as exc:  # hook failures are isolated; registry records handler failures
+        logger.warning("[Subagent] SUBAGENT_START hook failed (non-fatal): %s", exc)
     rounds = spec.max_tool_rounds or budget.max_tool_rounds
     captured_sources: list[dict[str, str]] = []
 
@@ -799,7 +855,9 @@ async def _spawn_one(
         standalone_system_prompt=standalone_system_prompt,
         agent_id=ctx.parent_agent_id,
         user_id=ctx.parent_user_id,
-        on_tool_call=on_tool_call if t0_session_id or budget.max_sources is not None or budget.max_source_chars is not None else None,
+        on_tool_call=on_tool_call
+        if t0_session_id or budget.max_sources is not None or budget.max_source_chars is not None
+        else None,
         session_context=SessionContext(
             source="subagent",
             channel="internal",
@@ -842,7 +900,7 @@ async def _spawn_one(
             content=f"subagent timed out after {budget.timeout_seconds}s",
             metadata={"status": "timed_out"},
         )
-        _seal_subagent_t0_segment(
+        sealed = _seal_subagent_t0_segment(
             ctx=ctx,
             spec=spec,
             session_id=t0_session_id,
@@ -850,6 +908,20 @@ async def _spawn_one(
             reason="subagent_timeout",
             metadata={"status": "timed_out"},
         )
+        try:
+            await _emit_subagent_lifecycle_hook(
+                event=HookEvent.SUBAGENT_STOP,
+                ctx=ctx,
+                spec=spec,
+                session_id=t0_session_id,
+                child_depth=child_depth,
+                prompt=job.task,
+                last_assistant_message=f"subagent timed out after {budget.timeout_seconds}s",
+                transcript_path=str(getattr(sealed, "path", "") or ""),
+                status="timed_out",
+            )
+        except Exception as hook_exc:
+            logger.warning("[Subagent] SUBAGENT_STOP hook failed after timeout (non-fatal): %s", hook_exc)
         return SubagentResult(
             name=spec.name,
             type=spec.type,
@@ -874,7 +946,7 @@ async def _spawn_one(
             content=f"{type(exc).__name__}: {exc}",
             metadata={"status": "failed"},
         )
-        _seal_subagent_t0_segment(
+        sealed = _seal_subagent_t0_segment(
             ctx=ctx,
             spec=spec,
             session_id=t0_session_id,
@@ -882,6 +954,20 @@ async def _spawn_one(
             reason="subagent_failed",
             metadata={"status": "failed", "error_type": type(exc).__name__},
         )
+        try:
+            await _emit_subagent_lifecycle_hook(
+                event=HookEvent.SUBAGENT_STOP,
+                ctx=ctx,
+                spec=spec,
+                session_id=t0_session_id,
+                child_depth=child_depth,
+                prompt=job.task,
+                last_assistant_message=f"{type(exc).__name__}: {exc}",
+                transcript_path=str(getattr(sealed, "path", "") or ""),
+                status="failed",
+            )
+        except Exception as hook_exc:
+            logger.warning("[Subagent] SUBAGENT_STOP hook failed after error (non-fatal): %s", hook_exc)
         return SubagentResult(
             name=spec.name,
             type=spec.type,
@@ -900,7 +986,7 @@ async def _spawn_one(
         content=raw_content,
         metadata={"status": "completed"},
     )
-    _seal_subagent_t0_segment(
+    sealed = _seal_subagent_t0_segment(
         ctx=ctx,
         spec=spec,
         session_id=t0_session_id,
@@ -908,6 +994,27 @@ async def _spawn_one(
         reason="subagent_complete",
         metadata={"status": "completed"},
     )
+    try:
+        stop_result = await _emit_subagent_lifecycle_hook(
+            event=HookEvent.SUBAGENT_STOP,
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            prompt=job.task,
+            last_assistant_message=raw_content,
+            transcript_path=str(getattr(sealed, "path", "") or ""),
+            status="completed",
+        )
+        if stop_result and stop_result.block:
+            return SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="failed",
+                error=f"blocked by subagent stop hook: {stop_result.reason or 'policy'}",
+            )
+    except Exception as exc:  # hook failures are isolated; registry records handler failures
+        logger.warning("[Subagent] SUBAGENT_STOP hook failed (non-fatal): %s", exc)
     content = raw_content
     if budget.max_output_chars and len(content) > budget.max_output_chars:
         content = content[: budget.max_output_chars]

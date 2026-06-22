@@ -266,6 +266,56 @@ async def test_spawn_writes_replayable_t0_sidechain(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spawn_emits_cc_subagent_start_and_stop_hooks(monkeypatch, tmp_path):
+    from app.runtime.hooks import HookContext, HookEvent, hook_registry
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    ctx = _ctx(
+        parent_agent_id=parent_agent_id,
+        tenant_id=tenant_id,
+        trace_id="trace-hooks",
+        parent_session_id="parent-session",
+    )
+    seen: list[tuple[str, str, str, str]] = []
+
+    monkeypatch.setattr(
+        "app.memory.t0.ledger.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    def record(ctx: HookContext) -> None:
+        seen.append(
+            (
+                ctx.event.value,
+                ctx.session_id or "",
+                ctx.agent_type or "",
+                ctx.agent_transcript_path or "",
+            )
+        )
+
+    hook_registry.clear()
+    hook_registry.register(HookEvent.SUBAGENT_START, record)
+    hook_registry.register(HookEvent.SUBAGENT_STOP, record)
+    try:
+        result = await _spawn_one(
+            ctx,
+            SubagentJob(spec=explorer_spec("scout"), task="investigate X"),
+            invoke=_ok_invoke(content="subagent final"),
+        )
+    finally:
+        hook_registry.clear()
+
+    assert result.ok
+    assert [item[0] for item in seen] == ["subagent_start", "subagent_stop"]
+    assert seen[0][1].startswith("subagent-trace-hooks-scout-d")
+    assert seen[0][2] == "explorer"
+    assert seen[1][2] == "explorer"
+    assert seen[1][3].endswith("source.md")
+    assert str(tmp_path) in seen[1][3]
+
+
+@pytest.mark.asyncio
 async def test_spawn_budget_rounds_when_spec_unset():
     captured: list = []
     ctx = _ctx()

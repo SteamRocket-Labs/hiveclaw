@@ -13,7 +13,13 @@ from app.models.runtime_task import RuntimeTask
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
-_RESTART_RESUMABLE_TASK_TYPES = ("workflow", "web_chat_turn")
+_RESTART_RESUMABLE_TASK_TYPES = (
+    "workflow",
+    "web_chat_turn",
+    "team_member",
+    "goal_continuation",
+    "advanced_plan",
+)
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
 RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA = "runtime_restart_replay_contract.v1"
 RUNTIME_RESTART_REPLAY_JOURNAL_SCHEMA = "runtime_restart_replay_journal.v1"

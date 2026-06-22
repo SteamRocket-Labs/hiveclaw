@@ -47,6 +47,12 @@ from app.services.web_chat_broker import web_chat_broker
 
 
 WEB_CHAT_TURN_TASK_TYPE = "web_chat_turn"
+_EXECUTABLE_CHAT_TASK_TYPES = (
+    WEB_CHAT_TURN_TASK_TYPE,
+    "goal_continuation",
+    "team_member",
+    "advanced_plan",
+)
 _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME = "uq_runtime_tasks_active_web_chat_session"
 _ACTIVE_STATUSES = ("pending", "running")
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
@@ -72,6 +78,10 @@ class _TerminalToolCardSignal(Exception):
 
 def _run_id(value: str | uuid.UUID) -> uuid.UUID:
     return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def is_executable_chat_task_type(task_type: str | None) -> bool:
+    return str(task_type or "").strip() in _EXECUTABLE_CHAT_TASK_TYPES
 
 
 def _runtime_task_to_run(task: RuntimeTask) -> dict[str, Any]:
@@ -169,7 +179,9 @@ def _tool_step_contract(data: dict[str, Any], *, fallback_run_id: uuid.UUID | st
         tool_call_id = str(tool_call_id)
     step_id = payload.get("step_id") or payload.get("stepId")
     if not step_id:
-        step_id = f"tool:{tool_call_id}" if tool_call_id else f"tool:{payload.get('name') or 'unknown'}:{uuid.uuid4().hex}"
+        step_id = (
+            f"tool:{tool_call_id}" if tool_call_id else f"tool:{payload.get('name') or 'unknown'}:{uuid.uuid4().hex}"
+        )
     duration_ms = _duration_ms_from_tool_step(payload)
     payload["status"] = status
     payload["tool_call_id"] = tool_call_id
@@ -214,10 +226,7 @@ async def _terminal_transcript_event_for_run(
         except (TypeError, ValueError):
             pass
     result = await db.execute(
-        select(ChatTranscriptEvent)
-        .where(*filters)
-        .order_by(ChatTranscriptEvent.sequence.desc())
-        .limit(1)
+        select(ChatTranscriptEvent).where(*filters).order_by(ChatTranscriptEvent.sequence.desc()).limit(1)
     )
     event = result.scalar_one_or_none()
     return event if _terminal_status_from_transcript_event(event) else None
@@ -431,7 +440,7 @@ async def _find_active_run(db: AsyncSession, *, agent_id: uuid.UUID, session_id:
     result = await db.execute(
         select(RuntimeTask)
         .where(
-            RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+            RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
             RuntimeTask.parent_agent_id == agent_id,
             RuntimeTask.parent_session_id == str(session_id),
             RuntimeTask.status.in_(_ACTIVE_STATUSES),
@@ -478,11 +487,14 @@ async def start_web_chat_run(
     attachments: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
     append_user_message: bool = True,
+    runtime_task_type: str = WEB_CHAT_TURN_TASK_TYPE,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
+    if not is_executable_chat_task_type(runtime_task_type):
+        raise HTTPException(status_code=400, detail=f"Unsupported executable chat task type: {runtime_task_type}")
 
     active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
     if active:
@@ -520,13 +532,13 @@ async def start_web_chat_run(
 
     runtime_task = RuntimeTask(
         id=run_uuid,
-        task_type=WEB_CHAT_TURN_TASK_TYPE,
+        task_type=runtime_task_type,
         status="running",
         parent_agent_id=agent.id,
         child_agent_id=agent.id,
         child_agent_name=getattr(agent, "name", None),
         prompt=content,
-        trace_id=f"web-chat:{run_uuid.hex}",
+        trace_id=f"{runtime_task_type}:{run_uuid.hex}",
         parent_session_id=str(session.id),
         child_session_id=str(session.id),
         depth=1,
@@ -537,12 +549,15 @@ async def start_web_chat_run(
             "session_id": str(session.id),
             "runtime_task_id": run_uuid.hex,
             "request_id": str(run_uuid),
-            "trace_id": f"web-chat:{run_uuid.hex}",
+            "trace_id": f"{runtime_task_type}:{run_uuid.hex}",
             "display_content": display_content,
             "file_name": file_name,
             "attachments": attachments or [],
             "parts": parts or [],
-            "source": "web",
+            "source": str(
+                (extra_metadata or {}).get("source")
+                or ("web" if runtime_task_type == WEB_CHAT_TURN_TASK_TYPE else runtime_task_type)
+            ),
             "cancelled_by_user": False,
             "plan_mode_requested": bool(plan_mode_requested),
             "append_user_message": bool(append_user_message),
@@ -856,7 +871,7 @@ async def cancel_web_chat_run(
     result = await db.execute(
         select(RuntimeTask).where(
             RuntimeTask.id == run_uuid,
-            RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+            RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
             RuntimeTask.parent_agent_id == agent_id,
             RuntimeTask.parent_session_id == str(session_id),
             RuntimeTask.status.in_(_ACTIVE_STATUSES),
@@ -889,7 +904,7 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
         result = await db.execute(
             select(RuntimeTask)
             .where(
-                RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+                RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
                 RuntimeTask.status.in_(_ACTIVE_STATUSES),
             )
             .order_by(RuntimeTask.started_at.asc().nulls_last(), RuntimeTask.created_at.asc())
@@ -1051,7 +1066,7 @@ async def _finalize_web_chat_run_with_assistant(
             select(RuntimeTask)
             .where(
                 RuntimeTask.id == run_uuid,
-                RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+                RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
             )
             .with_for_update()
         )
@@ -1252,7 +1267,7 @@ async def _finalize_web_chat_run_without_assistant(
             select(RuntimeTask)
             .where(
                 RuntimeTask.id == run_uuid,
-                RuntimeTask.task_type == WEB_CHAT_TURN_TASK_TYPE,
+                RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
             )
             .with_for_update()
         )
@@ -2096,7 +2111,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 return
             data = _tool_step_contract(data, fallback_run_id=run_uuid)
             if data.get("status") != "done":
-                persisted_event = await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
+                persisted_event = await _persist_tool_call(
+                    agent_id=agent.id, user_id=user.id, session_id=session_id, data=data
+                )
                 ws_event = build_tool_call_event(data)
                 if persisted_event:
                     ws_event.update(
@@ -2113,7 +2130,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 await broadcast_web_chat_event(agent.id, session_id, ws_event)
                 return
 
-            persisted_event = await _persist_tool_call(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
+            persisted_event = await _persist_tool_call(
+                agent_id=agent.id, user_id=user.id, session_id=session_id, data=data
+            )
             ws_event = build_tool_call_event(data)
             if persisted_event:
                 ws_event.update(
@@ -2288,7 +2307,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 {"type": "error", "content": _USER_VISIBLE_WEB_CHAT_ERROR},
             )
         except Exception as terminal_exc:
-            logger.warning("[WebChatRun] Failed to persist visible terminal error for {}: {}", run_uuid.hex, terminal_exc)
+            logger.warning(
+                "[WebChatRun] Failed to persist visible terminal error for {}: {}", run_uuid.hex, terminal_exc
+            )
             await _update_runtime_task(
                 run_uuid,
                 status="failed",

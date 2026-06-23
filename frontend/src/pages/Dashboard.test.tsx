@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ToolFailureSummary } from '../api/domains/activity';
-import { ToolFailureOverview, summarizeCrossAgentToolFailures } from './Dashboard';
+import type { Agent, Task } from '../types';
+import { DashboardHomeShell, ToolFailureOverview, summarizeCrossAgentToolFailures } from './Dashboard';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -93,5 +94,73 @@ describe('Dashboard tool failure overview', () => {
     expect(markup).toContain('firecrawl_fetch');
     expect(markup).toContain('quota_or_billing');
     expect(markup).toContain('402');
+  });
+});
+
+const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
+  id: 'agent-1',
+  name: 'Atlas',
+  role_description: 'Market and competitor research',
+  status: 'running',
+  creator_id: 'user-1',
+  tokens_used_today: 128400,
+  tokens_used_month: 690900,
+  heartbeat_enabled: true,
+  heartbeat_interval_minutes: 60,
+  heartbeat_active_hours: '09:00-18:00',
+  created_at: '2026-06-01T00:00:00Z',
+  last_active_at: '2026-06-23T08:00:00Z',
+  ...overrides,
+});
+
+const makeTask = (overrides: Partial<Task> = {}): Task => ({
+  id: 'task-1',
+  agent_id: 'agent-1',
+  title: 'Q2 competitor report',
+  type: 'todo',
+  status: 'doing',
+  priority: 'high',
+  assignee: 'agent-1',
+  created_by: 'user-1',
+  created_at: '2026-06-23T07:00:00Z',
+  updated_at: '2026-06-23T07:30:00Z',
+  ...overrides,
+});
+
+describe('Dashboard workspace homepage', () => {
+  it('renders the CC Design workspace home instead of the old management table', () => {
+    const markup = renderToStaticMarkup(
+      <DashboardHomeShell
+        agents={[
+          makeAgent(),
+          makeAgent({ id: 'agent-2', name: 'Ledger', status: 'idle', tokens_used_today: 2200, tokens_used_month: 18000 }),
+        ]}
+        isLoading={false}
+        allTasks={[
+          makeTask(),
+          makeTask({ id: 'task-2', agent_id: 'agent-2', title: 'Approve August ledger plan', status: 'pending', priority: 'urgent' }),
+        ]}
+        allActivities={[
+          { id: 'act-1', agent_id: 'agent-1', summary: 'Saved Q2 research outline', created_at: '2026-06-23T08:05:00Z' },
+        ]}
+        agentActivities={{}}
+        toolFailureSnapshots={[]}
+        onNavigate={() => {}}
+      />,
+    );
+
+    expect(markup).toContain('workspace-home');
+    expect(markup).toContain('Create via HR');
+    expect(markup).toContain('Assign task');
+    expect(markup).toContain('Automation');
+    expect(markup).toContain('Assets');
+    expect(markup).toContain('Needs you');
+    expect(markup).toContain('In progress');
+    expect(markup).toContain('This month');
+    expect(markup).toContain('Activity');
+    expect(markup).toContain('Approve August ledger plan');
+    expect(markup).toContain('Q2 competitor report');
+    expect(markup).toContain('708.9K');
+    expect(markup).not.toContain('Latest Activity</span>');
   });
 });

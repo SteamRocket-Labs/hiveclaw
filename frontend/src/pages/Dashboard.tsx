@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -531,10 +531,253 @@ function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent
     );
 }
 
+type WorkspaceHomeAction = {
+    title: string;
+    description: string;
+    to: string;
+    icon: ReactNode;
+};
+
+function SectionHeader({ eyebrow, title, action }: { eyebrow: string; title: string; action?: React.ReactNode }) {
+    return (
+        <div className="workspace-section-header">
+            <div>
+                <span className="workspace-section-eyebrow">{eyebrow}</span>
+                <h2>{title}</h2>
+            </div>
+            {action}
+        </div>
+    );
+}
+
+function EmptyWorkspaceState({ onNavigate }: { onNavigate: (path: string) => void }) {
+    const { t } = useTranslation();
+    return (
+        <section className="workspace-empty-state">
+            <div className="workspace-empty-icon">{Icons.bot}</div>
+            <h2>{t('dashboard.emptyTitle')}</h2>
+            <p>{t('dashboard.emptyDesc')}</p>
+            <button className="btn btn-primary" onClick={() => onNavigate('/agents/new')}>
+                {Icons.plus} {t('dashboard.createFirst')}
+            </button>
+            <small>{t('dashboard.emptyHint')}</small>
+        </section>
+    );
+}
+
+export function DashboardHomeShell({
+    agents,
+    isLoading,
+    allTasks,
+    allActivities,
+    agentActivities,
+    toolFailureSnapshots,
+    onNavigate,
+}: {
+    agents: Agent[];
+    isLoading: boolean;
+    allTasks: Task[];
+    allActivities: any[];
+    agentActivities: Record<string, any[]>;
+    toolFailureSnapshots: AgentToolFailureSnapshot[];
+    onNavigate: (path: string) => void;
+}) {
+    const { t } = useTranslation();
+    const hour = new Date().getHours();
+    const greeting = hour < 6
+        ? t('dashboard.greeting.lateNight')
+        : hour < 12
+            ? t('dashboard.greeting.morning')
+            : hour < 18
+                ? t('dashboard.greeting.afternoon')
+                : t('dashboard.greeting.evening');
+    const activeAgents = agents.filter(a => a.status === 'running' || a.status === 'idle');
+    const pendingTasks = allTasks.filter(task => task.status === 'pending' || task.status === 'doing');
+    const needsYou = pendingTasks
+        .filter(task => task.priority === 'urgent' || task.priority === 'high' || task.status === 'pending')
+        .slice(0, 4);
+    const inProgress = [
+        ...pendingTasks.filter(task => task.status === 'doing').slice(0, 4).map(task => ({
+            id: task.id,
+            title: task.title,
+            detail: agents.find(agent => agent.id === task.agent_id)?.name || task.agent_id,
+            badge: t('dashboard.labels.task', 'Task'),
+            to: `/agents/${task.agent_id}`,
+        })),
+        ...activeAgents.slice(0, Math.max(0, 4 - pendingTasks.filter(task => task.status === 'doing').length)).map(agent => ({
+            id: agent.id,
+            title: agent.name,
+            detail: agent.role_description || t('employees.noRole', 'No role description yet'),
+            badge: statusLabel(agent.status, t),
+            to: `/agents/${agent.id}`,
+        })),
+    ].slice(0, 4);
+    const totalTokensToday = agents.reduce((sum, agent) => sum + (agent.tokens_used_today || 0), 0);
+    const totalTokensMonth = agents.reduce((sum, agent) => sum + (agent.tokens_used_month || 0), 0);
+    const completedToday = allTasks.filter(task => {
+        if (task.status !== 'done' || !task.completed_at) return false;
+        return new Date(task.completed_at).toDateString() === new Date().toDateString();
+    }).length;
+    const latestActivities = allActivities.slice(0, 5);
+    const actionCards: WorkspaceHomeAction[] = [
+        {
+            title: t('dashboard.home.createViaHr', 'Create via HR'),
+            description: t('dashboard.home.createViaHrDesc', 'Start the governed HR Agent creation flow.'),
+            to: '/agents/new',
+            icon: Icons.plus,
+        },
+        {
+            title: t('dashboard.home.assignTask', 'Assign task'),
+            description: t('dashboard.home.assignTaskDesc', 'Open a task or session entry point for an employee.'),
+            to: '/automations',
+            icon: Icons.tasks,
+        },
+        {
+            title: t('dashboard.home.automation', 'Automation'),
+            description: t('dashboard.home.automationDesc', 'Review scheduled work and workflow candidates.'),
+            to: '/automations',
+            icon: Icons.zap,
+        },
+        {
+            title: t('dashboard.home.assets', 'Assets'),
+            description: t('dashboard.home.assetsDesc', 'Browse documents, research outputs, and reusable assets.'),
+            to: '/documents',
+            icon: Icons.activity,
+        },
+    ];
+
+    if (isLoading) {
+        return (
+            <main className="workspace-home">
+                <div className="workspace-loading">{t('common.loading')}</div>
+            </main>
+        );
+    }
+
+    if (agents.length === 0) {
+        return (
+            <main className="workspace-home">
+                <EmptyWorkspaceState onNavigate={onNavigate} />
+            </main>
+        );
+    }
+
+    return (
+        <main className="workspace-home">
+            <header className="workspace-home-hero">
+                <div>
+                    <span className="workspace-home-kicker">{t('dashboard.home.eyebrow', 'My Workspace')}</span>
+                    <h1>{greeting}</h1>
+                    <p>
+                        {t('dashboard.home.summary', '{{attention}} items need confirmation, {{active}} digital employees are working.', {
+                            attention: needsYou.length,
+                            active: activeAgents.length,
+                        })}
+                    </p>
+                </div>
+                <button className="btn btn-primary" onClick={() => onNavigate('/agents/new')}>
+                    {Icons.plus} {t('nav.newAgent')}
+                </button>
+            </header>
+
+            <section className="workspace-action-grid" aria-label={t('dashboard.home.quickActions', 'Quick actions')}>
+                {actionCards.map(action => (
+                    <button key={action.title} type="button" className="workspace-action-card" onClick={() => onNavigate(action.to)}>
+                        <span className="workspace-action-icon">{action.icon}</span>
+                        <strong>{action.title}</strong>
+                        <small>{action.description}</small>
+                    </button>
+                ))}
+            </section>
+
+            <div className="workspace-home-grid">
+                <section className="workspace-panel workspace-panel-wide">
+                    <SectionHeader eyebrow={t('dashboard.home.needsYouEyebrow', 'Needs you')} title={t('dashboard.home.needsYou', 'Needs you')} />
+                    {needsYou.length === 0 ? (
+                        <p className="workspace-muted">{t('dashboard.home.noNeedsYou', 'No pending confirmations right now.')}</p>
+                    ) : (
+                        <div className="workspace-list">
+                            {needsYou.map(task => (
+                                <button key={task.id} type="button" className="workspace-list-row" onClick={() => onNavigate(`/agents/${task.agent_id}`)}>
+                                    <span className={`workspace-priority-dot ${task.priority}`} />
+                                    <span>
+                                        <strong>{task.title}</strong>
+                                        <small>{agents.find(agent => agent.id === task.agent_id)?.name || task.agent_id}</small>
+                                    </span>
+                                    <span className="workspace-row-badge">{t('dashboard.labels.task', 'Task')}</span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </section>
+
+                <section className="workspace-panel">
+                    <SectionHeader eyebrow={t('dashboard.home.thisMonthEyebrow', 'This month')} title={t('dashboard.home.thisMonth', 'This month')} />
+                    <div className="workspace-usage-stack">
+                        <div>
+                            <span>{t('dashboard.stats.todayTokens')}</span>
+                            <strong>{formatTokens(totalTokensToday)}</strong>
+                        </div>
+                        <div>
+                            <span>{t('dashboard.stats.allAgentsTotal')}</span>
+                            <strong>{formatTokens(totalTokensMonth)}</strong>
+                        </div>
+                        <div>
+                            <span>{t('dashboard.stats.activeTasks')}</span>
+                            <strong>{pendingTasks.length}</strong>
+                        </div>
+                        <div>
+                            <span>{t('dashboard.stats.completedToday', { count: completedToday })}</span>
+                            <strong>{completedToday}</strong>
+                        </div>
+                    </div>
+                </section>
+
+                <section className="workspace-panel workspace-panel-wide">
+                    <SectionHeader
+                        eyebrow={t('dashboard.home.inProgressEyebrow', 'In progress')}
+                        title={t('dashboard.home.inProgress', 'In progress')}
+                        action={<button className="workspace-text-action" onClick={() => onNavigate('/automations')}>{t('dashboard.home.viewAllTasks', 'View all')}</button>}
+                    />
+                    <div className="workspace-list">
+                        {inProgress.length === 0 ? (
+                            <p className="workspace-muted">{t('dashboard.home.noInProgress', 'No active work is running.')}</p>
+                        ) : inProgress.map(row => (
+                            <button key={row.id} type="button" className="workspace-list-row" onClick={() => onNavigate(row.to)}>
+                                <span className="workspace-status-dot" />
+                                <span>
+                                    <strong>{row.title}</strong>
+                                    <small>{row.detail}</small>
+                                </span>
+                                <span className="workspace-row-badge">{row.badge}</span>
+                            </button>
+                        ))}
+                    </div>
+                </section>
+
+                <section className="workspace-panel">
+                    <SectionHeader eyebrow={t('dashboard.home.activityEyebrow', 'Activity')} title={t('dashboard.home.activity', 'Activity')} />
+                    {latestActivities.length === 0 ? (
+                        <p className="workspace-muted">{t('dashboard.noActivity')}</p>
+                    ) : (
+                        <ActivityFeed activities={latestActivities} agents={agents} />
+                    )}
+                </section>
+            </div>
+
+            {toolFailureSnapshots.length > 0 && (
+                <ToolFailureOverview
+                    summaries={toolFailureSnapshots}
+                    onSelectAgent={(agentId) => onNavigate(`/agents/${agentId}`)}
+                />
+            )}
+        </main>
+    );
+}
+
 /* ────── Main Dashboard ────── */
 
 export default function Dashboard() {
-    const { t } = useTranslation();
     const navigate = useNavigate();
     const currentTenant = localStorage.getItem('current_tenant_id') || '';
 
@@ -544,12 +787,10 @@ export default function Dashboard() {
         refetchInterval: 15000,
     });
 
-    // Fetch tasks & activities for all agents
     const [allTasks, setAllTasks] = useState<Task[]>([]);
     const [allActivities, setAllActivities] = useState<any[]>([]);
     const [agentActivities, setAgentActivities] = useState<Record<string, any[]>>({});
     const [agentToolFailures, setAgentToolFailures] = useState<Record<string, ToolFailureSummary>>({});
-
 
     useEffect(() => {
         if (agents.length === 0) return;
@@ -592,16 +833,6 @@ export default function Dashboard() {
         return () => clearInterval(interval);
     }, [agents.map(a => a.id).join(',')]);
 
-    // Group tasks by agent
-    const tasksByAgent = new Map<string, Task[]>();
-    allTasks.forEach(t => {
-        if (!tasksByAgent.has(t.agent_id)) tasksByAgent.set(t.agent_id, []);
-        tasksByAgent.get(t.agent_id)!.push(t);
-    });
-
-    // Greeting
-    const hour = new Date().getHours();
-    const greeting = hour < 6 ? '🌙 ' + t('dashboard.greeting.lateNight') : hour < 12 ? '☀️ ' + t('dashboard.greeting.morning') : hour < 18 ? '🌤️ ' + t('dashboard.greeting.afternoon') : '🌙 ' + t('dashboard.greeting.evening');
     const toolFailureSnapshots = agents
         .filter(agent => agentToolFailures[agent.id])
         .map(agent => ({
@@ -611,135 +842,14 @@ export default function Dashboard() {
         }));
 
     return (
-        <div>
-            {/* Header */}
-            <div style={{
-                display: 'flex', justifyContent: 'space-between',
-                alignItems: 'center', marginBottom: '28px',
-            }}>
-                <div>
-                    <h1 style={{ fontSize: '20px', fontWeight: 600, margin: 0, marginBottom: '2px', letterSpacing: '-0.02em' }}>
-                        {greeting}
-                    </h1>
-                    <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', margin: 0 }}>
-                        {t('dashboard.totalAgents', { count: agents.length })}
-                    </p>
-                </div>
-                <button
-                    className="btn btn-primary"
-                    onClick={() => navigate('/agents/new')}
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
-                >
-                    {Icons.plus} {t('nav.newAgent')}
-                </button>
-            </div>
-
-            {isLoading ? (
-                <div style={{ textAlign: 'center', padding: '60px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                    {t('common.loading')}
-                </div>
-            ) : agents.length === 0 ? (
-                <div style={{ maxWidth: '560px', margin: '0 auto', padding: '48px 0' }}>
-                    <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-                        <div style={{ fontSize: '40px', marginBottom: '12px' }}>
-                            {Icons.bot}
-                        </div>
-                        <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                            {t('dashboard.emptyTitle')}
-                        </h2>
-                        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', lineHeight: 1.6, maxWidth: '440px', margin: '0 auto' }}>
-                            {t('dashboard.emptyDesc')}
-                        </p>
-                    </div>
-
-                    <div style={{ textAlign: 'center' }}>
-                        <button className="btn btn-primary" onClick={() => navigate('/agents/new')}>
-                            {Icons.plus} {t('dashboard.createFirst')}
-                        </button>
-                        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)', marginTop: '10px' }}>
-                            {t('dashboard.emptyHint')}
-                        </p>
-                    </div>
-                </div>
-            ) : (
-                <>
-                    {/* Stats Bar */}
-                    <StatsBar agents={agents} allTasks={allTasks} />
-
-                    <ToolFailureOverview
-                        summaries={toolFailureSnapshots}
-                        onSelectAgent={(agentId) => navigate(`/agents/${agentId}`)}
-                    />
-
-                    {/* Agent List Card */}
-                    <div style={{
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: 'var(--radius-lg)',
-                        overflow: 'hidden',
-                        marginBottom: '32px',
-                    }}>
-                        {/* Agent List Header */}
-                        <div style={{
-                            display: 'grid',
-                            gridTemplateColumns: '220px 1fr 150px 100px',
-                            padding: '10px 16px',
-                            fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500,
-                            textTransform: 'uppercase' as const, letterSpacing: '0.05em',
-                            borderBottom: '1px solid var(--border-subtle)',
-                        }}>
-                            <span>{t('dashboard.table.agent')}</span>
-                            <span>{t('dashboard.table.latestActivity')}</span>
-                            <span>Token</span>
-                            <span style={{ textAlign: 'right' }}>{t('dashboard.table.active')}</span>
-                        </div>
-
-                        {/* Agent Rows (scrollable) */}
-                        <div style={{ maxHeight: '350px', overflowY: 'auto' }}>
-                            {agents
-                                .sort((a, b) => {
-                                    const aActive = a.status === 'running' || a.status === 'idle' ? 1 : 0;
-                                    const bActive = b.status === 'running' || b.status === 'idle' ? 1 : 0;
-                                    if (aActive !== bActive) return bActive - aActive;
-                                    const aTime = a.last_active_at ? new Date(a.last_active_at).getTime() : 0;
-                                    const bTime = b.last_active_at ? new Date(b.last_active_at).getTime() : 0;
-                                    return bTime - aTime;
-                                })
-                                .map(agent => (
-                                    <AgentRow
-                                        key={agent.id}
-                                        agent={agent}
-                                        tasks={tasksByAgent.get(agent.id) || []}
-                                        recentActivity={agentActivities[agent.id] || []}
-                                    />
-                                ))}
-                        </div>
-                    </div>
-
-                    {/* Recent Activity */}
-                    <div style={{
-                        border: '1px solid var(--border-subtle)',
-                        borderRadius: 'var(--radius-lg)', overflow: 'hidden',
-                    }}>
-                        <div style={{
-                            padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)',
-                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        }}>
-                            <h3 style={{
-                                margin: 0, fontSize: '13px', fontWeight: 500,
-                                display: 'flex', alignItems: 'center', gap: '6px',
-                                color: 'var(--text-secondary)',
-                            }}>
-                                <span style={{ display: 'flex', opacity: 0.6 }}>{Icons.activity}</span>
-                                {t('dashboard.globalActivity')}
-                            </h3>
-                            <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('dashboard.recentCount', { count: 20 })}</span>
-                        </div>
-                        <div style={{ padding: '4px', maxHeight: '320px', overflowY: 'auto' }}>
-                            <ActivityFeed activities={allActivities} agents={agents} />
-                        </div>
-                    </div>
-                </>
-            )}
-        </div>
+        <DashboardHomeShell
+            agents={agents}
+            isLoading={isLoading}
+            allTasks={allTasks}
+            allActivities={allActivities}
+            agentActivities={agentActivities}
+            toolFailureSnapshots={toolFailureSnapshots}
+            onNavigate={navigate}
+        />
     );
 }

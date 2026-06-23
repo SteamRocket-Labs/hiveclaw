@@ -1,7 +1,7 @@
 # Frontend Agent Workbench Redesign
 
-状态：Part 2 前端代码级闭环完成；live 登录态/生产体验验证仍需单独执行
-日期：2026-06-20；Part 2 更新：2026-06-23；闭环更新：2026-06-23
+状态：Part 2 已有代码级闭环；2026-06-23 按 CC Design 截图进入 IA reset / design-contract 更新，本轮尚未开始实现
+日期：2026-06-20；Part 2 更新：2026-06-23；闭环更新：2026-06-23；IA reset：2026-06-23
 输入原型：`claude-design-for-hiveclaw/`
 目标前端：`frontend/src/`
 参考细节：CC Design prototype、Codex Desktop chat/workbench UI、Hive 当前真实 runtime/API
@@ -46,7 +46,7 @@ As of the 2026-06-23 final closure pass, the implementation has moved beyond rou
 3. `WorkspaceFeatureHub` is no longer only a link hub. It reads real adapters for cross-agent plans, approvals, memory overview, workspace files, workflow definitions, and workflow run evidence, then routes users back to the owning employee/control-plane surface for action.
 4. `WorkspaceFeatureHub kind="team"` now gives A2A / Team a real front-end surface over session-local team, employee relationships, agent subagents, company subagent library, and user-scoped Local Agent Channel.
 5. `/enterprise/dashboard` and every `/enterprise/*` section now render through `ControlPlane`, a new company operations console. The old workspace sections are embedded as implemented capability bodies, not exposed as a long legacy settings tab strip.
-6. Sidebar search is now a workspace-wide quick opener over routes/control-plane pages/local agents plus loaded employee filtering.
+6. Global quick-open/search is route-backed and can include routes/control-plane pages/local agents plus loaded employee filtering, but it is not a permanent workspace-search row in the sidebar.
 7. `DigitalEmployees` now exposes ownership, shared, recommended, running, attention, coordinator, and local-runtime filters; cards deep-link to chat, memory, workflow, team/relationships, detail, and Local Agent where applicable.
 8. `AppDialogs` provides global in-app toast and confirmation. Frontend product code no longer uses browser-native `alert()`, `confirm()`, or `prompt()`; the only remaining `confirm` string is the `planApi.confirm` API method test.
 9. `AgentDetail` session-path interruptions have been reduced: session delete uses `ConfirmModal`, and create/branch/upload failures use non-blocking in-app toast instead of `alert()`.
@@ -68,6 +68,334 @@ Still not claimed as live-closed until a real login/backend/WebSocket pass is ru
 2. HR Agent creation flow in a real tenant.
 3. Mobile/tablet visual verification.
 4. Production/eval deployment verification.
+
+### 1.2 2026-06-23 CC Design IA Reset
+
+This section supersedes the earlier broad-sidebar interpretation for Part 2.
+
+The previous implementation pass made most capabilities reachable, but the user-facing IA is still too much like a feature inventory. The CC Design screenshots and `claude-design-for-hiveclaw/` sources show a stricter product structure:
+
+1. The app shell is not a long navigation catalog. It is a compact workspace rail plus an object-focused main area.
+2. Home is one workspace homepage, not a mixed admin dashboard.
+3. Agent Circle, Automation/Tasks, Bridge, session conversations, and Digital Employees must fit into one coherent Codex-like left rail.
+4. Agent Detail should look like the CC Design employee workspace, while using Hive's real modules and data.
+5. Session is the daily working object. Management surfaces exist, but they should not dominate the first read.
+
+#### 1.2.1 Source Facts Read This Round
+
+CC Design source files reviewed:
+
+1. `claude-design-for-hiveclaw/design-tokens.css`
+   - Warm paper background `--bg`, white `--surface`, sunken `--bg-sunk`, honey as the single brand accent, small radii, low shadows, mono eyebrow labels.
+2. `claude-design-for-hiveclaw/ui.jsx`
+   - Shared compact primitives: hex avatar, chip, button, card, tabs, page head, empty state, icon-first controls, and mock agent capability fields.
+3. `claude-design-for-hiveclaw/app-shell.jsx`
+   - Workspace switcher, global search, notification popover, user footer, left tree navigation, employee/control-plane split.
+4. `claude-design-for-hiveclaw/emp-core.jsx`
+   - Home and Digital Employees list: greeting, quick actions, needs-you, in-progress, this-month usage, activity, employee cards.
+5. `claude-design-for-hiveclaw/emp-workspace.jsx`
+   - Agent/employee detail: hero card, tabs, work record, active task, monthly overview, about, capabilities, source files.
+6. `claude-design-for-hiveclaw/chat-task.jsx`
+   - Conversation/task flow: task composer, plan confirmation, progress, A2A handoff, artifacts, right rail.
+7. `claude-design-for-hiveclaw/emp-more.jsx`
+   - Automations, memory/knowledge, documents/research, approvals.
+8. `claude-design-for-hiveclaw/admin.jsx`
+   - Control Plane reference only. It should not leak into the normal workspace homepage.
+9. `claude-design-for-hiveclaw/create-flow.jsx`
+   - Creation form reference only. Product decision remains HR Agent-only creation.
+10. `claude-design-for-hiveclaw/auth-flow.jsx`
+   - Auth and workspace picker design language already used by the login/setup pass.
+11. `claude-design-for-hiveclaw/shells.js`
+   - IA exploration reference, not implementation source.
+
+Current Hive code facts:
+
+1. `frontend/src/pages/layout/AppSidebar.tsx` currently exposes many top-level workspace routes: Digital Employees, Conversations & Tasks, Plan Review, Automations, Memory & Knowledge, Documents & Research, A2A / Team, Local Agent Channel, Agent Circle. This is discoverable but too wide for the CC/Codex target.
+2. `frontend/src/pages/Dashboard.tsx` is still closer to a management dashboard than the CC Design workspace home.
+3. `frontend/src/pages/DigitalEmployees.tsx` already has ownership/shared/local filters, but it is a separate directory page instead of being integrated into the left project/employee rail.
+4. `frontend/src/pages/AgentDetail.tsx` already groups detail modules into workbench areas, but the first impression is still a management page with tabs, not the CC Design employee detail.
+5. `frontend/src/pages/agent-detail/AgentChatSection.tsx` already has `sessions`, `allSessions`, `chatScope`, source-channel labels, branch lineage, read-only mode, and session workbench header.
+6. `backend/app/models/chat_session.py` and `backend/app/api/chat_sessions.py` already support durable session metadata: `source_channel`, `session_kind`, `runtime_source`, `visibility_scope`, `listed_surface`, `runtime_task_id`, `peer_agent_id`, `parent_session_id`, and `root_session_id`.
+7. `frontend/src/api/domains/chat.ts` currently under-declares `ChatSession`; it omits fields already returned by `SessionOut` such as `user_id`, `username`, `source_channel`, `session_kind`, `runtime_source`, `visibility_scope`, `listed_surface`, `message_count`, `peer_agent_id`, `peer_agent_name`, and `participant_type`.
+
+#### 1.2.2 New Target Shell
+
+The left rail should become the annotated Codex-style object tree:
+
+```text
+Workspace
+  我的工作区 / current workspace
+
+Top Actions
+  Home
+  Agent Circle
+  Automation / Tasks
+  Bridge
+
+Digital Employees
+  ▸ owned employee A
+      private/recent session 1 [任务]
+      private/recent session 2 [IM]
+  ▸ owned employee B
+  ▸ shared employee C [公共]
+      current user's session with C [A2A]
+  ▸ public employee D [公共]
+  ▸ local employee E [本地]
+      local session 1 [本地]
+  + 新建数字员工
+```
+
+Rules:
+
+1. The workspace block is required at the top of the sidebar. It shows the current workspace and owns workspace switching/account context; it is not a search row.
+2. There are no `My Employees` / `Company Employees` group labels in the primary sidebar.
+3. A digital employee row is the Codex Project equivalent. The agent itself represents the project/work object.
+4. Ownership/source is shown inline by the small icon before the agent and the badge after the agent name.
+5. If an agent has no ownership badge, it is treated as the current user's own agent. A `我的` badge may be used only where extra clarity is needed.
+6. Public/non-owned agents use a `公共` badge. Local/Bridge agents use a `本地` badge.
+7. The agent row's disclosure/dropdown expands that agent's sessions. Sessions carry source badges such as `任务`, `IM`, `A2A`, `本地`, `工作流`, and `分叉`.
+8. Clicking the agent row enters `/agents/:id`; clicking the disclosure opens/closes its session list.
+9. `+ 新建数字员工` is a persistent action at the bottom of the `Digital Employees` list and routes through the HR Agent creation path. A Home quick action may duplicate it, but cannot replace this sidebar entry.
+10. The old Codex "Pinned" area is not part of the Hive IA. Do not preserve a primary pinned section in the new shell.
+11. The sidebar should not show every feature module as a top-level item. Feature modules move into Home cards, Agent Detail tabs, Control Plane, or command/search surfaces.
+12. Existing routes can remain for compatibility, but the primary visible shell must follow this compact IA.
+
+This intentionally borrows Codex Desktop's object hierarchy:
+
+```text
+Codex:
+  top commands
+  local projects
+  project sessions
+
+Hive:
+  workspace identity / switcher
+  top actions
+  agents as projects
+  agent dropdowns / sessions with source badges
+```
+
+##### 1.2.2.1 Corrected Homepage Shell Wireframe
+
+This wireframe reflects the annotated screenshot from 2026-06-23. It is the current homepage shell target before implementing the broader Agent Detail redesign.
+
+```text
+┌──────────────────────────┬──────────────────────────────────────────────────────────────┐
+│ ┌ 工作区 ───────────────┐ │ Home / 我的工作区                                             │
+│ │ rocky的实验室         │ │                                                              │
+│ └──────────────────────┘ │  ┌──────────────────────────────────────────────────────────┐ │
+│                          │  │ greeting / needs-you / active-work summary                │ │
+│ Home                     │  └──────────────────────────────────────────────────────────┘ │
+│ Agent Circle             │                                                              │
+│ Tasks / Automation       │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────┐ │
+│ Bridge                   │  │ Create via HR │ │ Assign task  │ │ Automation   │ │Assets│ │
+│                          │  └──────────────┘ └──────────────┘ └──────────────┘ └──────┘ │
+│                          │                                                              │
+│                          │  Needs you                                      This month   │
+│                          │  ┌──────────────────────────────────┐       ┌─────────────┐ │
+│ Digital Employees        │  │ Ledger plan pending      [任务]    │       │ Real usage   │ │
+│   ▾ Atlas                │  │ Requires confirmation              │       │ or empty     │ │
+│       Q2 report [任务]   │  └──────────────────────────────────┘       └─────────────┘ │
+│       Feishu QA [IM]     │  In progress                                  Activity      │
+│   ▸ Ledger               │  ┌──────────────────────────────────┐       ┌─────────────┐ │
+│                          │  │ Atlas Q2 research       [任务]    │       │ Real logs    │ │
+│   ▸ Relay        [公共]  │  │ Relay delegation        [A2A]     │       │ artifacts    │ │
+│   ▸ Warden       [公共]  │  └──────────────────────────────────┘       └─────────────┘ │
+│                          │  首页不保留右侧空白 inspector，主内容吃满可用宽度             │
+│   ▾ Local Bot    [本地]  │                                                              │
+│       Local run [本地]   │                                                              │
+│   + 新建数字员工         │                                                              │
+│                          │                                                              │
+│ User / Settings          │                                                              │
+└──────────────────────────┴──────────────────────────────────────────────────────────────┘
+```
+
+Homepage shell rules from the annotated screenshot:
+
+1. The workspace block stays above navigation and displays the active workspace, for example `我的工作区 / rocky的实验室`.
+2. The top action block maps to Hive actions: Home, Agent Circle, Tasks/Automation, Bridge.
+3. The Codex pinned section is ignored for Hive. Do not allocate a primary pinned band.
+4. The Codex Projects section becomes Digital Employees, and each Agent is the project-equivalent row.
+5. Do not add group labels such as `My Employees` or `Company/Public` in the primary sidebar.
+6. Agent rows use a small leading icon plus an optional trailing badge to distinguish own, public/shared, and local/bridge. No badge means the current user's own agent by default.
+7. The agent disclosure/dropdown expands sessions under that agent. Session rows carry source badges such as `任务`, `IM`, `A2A`, `本地`, and `分叉`.
+8. `+ 新建数字员工` belongs at the bottom of the `Digital Employees` tree because it creates the same object represented by that tree. It must use the governed HR Agent creation flow.
+9. Home should not render a permanent right-side environment/inspector panel. That panel is for session/workbench contexts, not the homepage.
+10. The homepage content should expand into the available width and not leave the right side visually empty.
+11. Do not add a separate "workspace search" row to this shell. If global search is needed later, it belongs to command/quick-open behavior, not this primary left-rail structure.
+
+#### 1.2.3 Home Page Contract
+
+Home is the single workspace homepage. It should follow the first screenshot and `emp-core.jsx`.
+
+Required blocks:
+
+1. Workspace identity and greeting.
+2. Quick actions:
+   - Create digital employee, routed only to the HR Agent creation path.
+   - Assign new task, opening an agent/session picker or task composer.
+   - Save successful task as workflow, only when real candidate evidence exists.
+   - Browse company assets, routed to Control Plane/assets or read-only asset browser depending permission.
+3. Needs you:
+   - Pending plan confirmations.
+   - AskUserQuestion cards.
+   - Approval requests.
+   - Failed runs requiring intervention.
+4. In progress:
+   - Active `RuntimeTask` / web-chat / workflow / channel sessions.
+   - A2A/team handoffs with clear source tags.
+5. This month:
+   - Usage/budget only if backed by real API.
+   - Otherwise show a setup/empty state, not fake counts.
+6. Recent activity:
+   - Real activity logs and recent artifacts.
+
+Non-goals:
+
+1. Do not show full Control Plane controls on Home.
+2. Do not show a long feature grid.
+3. Do not invent usage/activity data.
+4. Do not leave a blank right rail / environment inspector on Home.
+
+#### 1.2.4 Agent Circle Contract
+
+Agent Circle is the company/public employee discovery surface. It replaces the old feel of a social feed as the primary IA.
+
+Required behavior:
+
+1. Show public/company-recommended employees and optionally internal posts/updates.
+2. Use the same CC Design card language as Digital Employees.
+3. Mark whether an employee is owned by me, public, company-standard, or shared by another owner.
+4. Clicking an employee goes to its detail page.
+5. Creation still routes through HR Agent; no alternate direct create path.
+
+#### 1.2.5 Automation / Tasks Contract
+
+Automation / Tasks is a workspace-level task/session entry, not a low-level workflow admin page.
+
+Required behavior:
+
+1. Show scheduled tasks, trigger runs, workflow runs, and long-running runtime tasks as session-like rows.
+2. Every row must bind to or open a `ChatSession` replay surface when available.
+3. Sessions created by scheduled/triggered work must carry a `任务` label in the session UI.
+4. Successful tasks that can become workflows should surface as "save as workflow" candidates only with real evidence.
+5. Admin-only workflow definition controls stay behind Control Plane or manage permissions.
+
+#### 1.2.6 Session Source Labels
+
+Session labels are not styling guesses. They are a frontend projection of durable session metadata.
+
+Canonical label mapping:
+
+| Backend fields | UI label | Meaning |
+| --- | --- | --- |
+| `source_channel = web`, `runtime_source = web_chat` | no label or `对话` | Normal user web chat |
+| `source_channel` in `feishu`, `telegram`, `slack`, `discord`, `dingtalk`, `wecom`, `microsoft_teams`, `wechat_personal` | `IM` plus channel name | IM/channel-originated conversation |
+| `source_channel = trigger` or `runtime_source = trigger` or `session_kind = trigger_run` | `任务` | Scheduled/triggered task session |
+| `source_channel = agent` or `participant_type = agent` | `A2A` | Agent-to-agent conversation |
+| `runtime_source = workflow` or workflow-linked `runtime_task_id` metadata | `工作流` | Workflow run session |
+| local/openclaw metadata | `本地` | Local Agent / bridge session |
+| `parent_session_id` or branch metadata | `分叉` | Fork/edit/rewind branch |
+
+Implementation implication:
+
+1. Update frontend `ChatSession` TypeScript interface to match backend `SessionOut`.
+2. Add a single `getSessionSourceBadges(session)` helper and tests.
+3. Use the same badge helper in sidebar session lists, Agent Detail session dropdown, owner all-user view, and workspace Automation / Tasks.
+
+#### 1.2.7 Agent Detail Contract
+
+Agent Detail should follow screenshots 3 and 4 and `emp-workspace.jsx`, but populated by real Hive modules.
+
+Page structure:
+
+1. Left rail remains global and compact.
+2. Main content starts with a profile hero:
+   - hex/avatar, name, status chip, short id, role/scope/owner metadata.
+   - primary action: Open Conversation.
+   - secondary actions: Edit and more menu, gated by permission.
+3. Below hero, use CC Design-style top tabs:
+   - Overview
+   - Memory & Knowledge
+   - Workspace
+   - Skills
+   - Connectors
+   - Workflows
+   - Expert Roles
+   - A2A
+   - IM
+   - Permissions
+   - Settings
+4. Overview content maps current modules into product sections:
+   - Work record from runtime/activity/session data.
+   - Active task from active run/workflow/task.
+   - This month from usage/budget if available.
+   - About from soul/profile/role configuration.
+   - Capabilities from tools, skills, workflows, MCP/connectors, A2A.
+   - Source files from governed identity/memory/source documents.
+
+Current module mapping:
+
+| Target tab/section | Existing source |
+| --- | --- |
+| Overview | `AgentStatusSection`, `AgentActivityLogSection`, active sessions/runs |
+| Memory & Knowledge | `AgentKnowledgeSection`, `AgentMindSection`, memory read models |
+| Workspace | `AgentWorkspaceSection`, `OfficeWorkbenchSection`, files/artifacts |
+| Skills | `AgentSkillsSection`, skill lifecycle summaries |
+| Connectors | `ToolsManager`, MCP/tool/channel capability data |
+| Workflows | `AgentWorkflowsSection` |
+| Expert Roles | `AgentSubagentsSection` |
+| A2A | `RelationshipEditor`, delegation/team traces |
+| IM | channel sessions filtered by IM `source_channel` |
+| Permissions | approvals, visibility, access level, expiry |
+| Settings | advanced settings only |
+
+#### 1.2.8 Agent Detail Session Model
+
+The Agent Detail page needs a Codex-like session selector, but it must respect privacy.
+
+Required behavior:
+
+1. The default session dropdown/list shows only sessions related to the current user.
+2. Session rows show source labels: `任务`, `IM`, `A2A`, `工作流`, `本地`, `分叉`.
+3. Opening a session enters the Session Workbench, preserving Phase 1 timeline/composer/inspector behavior.
+4. Owner/admin all-user viewing is not mixed into the private left rail.
+5. Public-agent owner review appears as a separate window/panel/tab, e.g. `Public Conversations` or `All User Conversations`.
+6. The owner review panel uses read-only session rendering by default.
+7. The owner review panel must show participant/user/channel labels and should be auditable.
+
+Current code partially supports this:
+
+1. `chatApi.listSessions(agentId, 'mine' | 'all')` exists.
+2. Backend `scope=all` already requires admin/creator/manage access.
+3. `AgentChatSection` already has `chatScope`, `allSessions`, all-user filter, and read-only rendering.
+
+Required cleanup:
+
+1. Rename the UI from a raw scope toggle to a product concept: private sessions vs owner review.
+2. Do not place all-user conversations in the main sidebar.
+3. Ensure public-agent owner access is policy-backed, not just creator/admin convenience.
+4. Add visible audit/permission copy only where it clarifies, not as noisy internal text.
+
+#### 1.2.9 Open Decisions Before Implementation
+
+Recommended decisions:
+
+1. Normal users land on Home after login.
+2. Clicking an employee opens Agent Detail Overview by default; Open Conversation enters the session workbench.
+3. The Agent Detail header session dropdown lists current-user sessions only.
+4. Owner review is a separate read-only panel/tab and must not pollute private session navigation.
+5. Home left rail should include the required workspace block, then Home, Agent Circle, Automation/Tasks, Bridge, and Digital Employees as primary concepts.
+6. The visible `+ 新建数字员工` action lives under Digital Employees and enters `/agents/new` through the HR Agent creation flow.
+7. Control Plane remains accessible for org/admin users but no longer occupies normal workspace IA.
+8. `/messages`, `/plans`, `/memory`, `/documents`, `/team`, and broad workspace hubs may remain as compatibility routes, but should not be primary left-rail items after the IA reset.
+
+Potential backend/API follow-up:
+
+1. Confirm every scheduled/trigger/workflow/channel runtime creates or binds a `ChatSession`.
+2. Confirm `runtime_source` and `session_kind` are consistently set by workflow runs, scheduled tasks, trigger runs, IM channels, A2A, and local agent sessions.
+3. Add tests for session source badge derivation and owner/public visibility.
+4. Extend frontend `ChatSession` type to match backend `SessionOut`.
 
 ## 2. TasteSkill Calibration
 
@@ -181,19 +509,29 @@ These become productized Control Plane areas:
 
 ### 5.1 Global Shell
 
-The shell should expose two first-class modes:
+The normal workspace shell should expose one compact Codex-style object rail plus a role-gated Control Plane entry. Deep feature modules remain accessible from Home cards, Agent Detail tabs, command/search, or Control Plane surfaces; they should not all become permanent left-rail items.
 
 ```text
 My Workspace
+  Workspace
+    我的工作区 / current workspace
+
   Home
+  Agent Circle
+  Tasks / Automation
+  Bridge
+
   Digital Employees
-  Conversations & Tasks
-  Plan Review
-  Automations
-  Memory & Knowledge
-  Documents & Research
-  Local Agent Channel
-  Approvals
+    ▸ owned employee
+        session [任务]
+        session [IM]
+    ▸ public/shared employee [公共]
+    ▸ local employee [本地]
+        session [本地]
+    + 新建数字员工
+
+  User / Settings
+  Company Admin / Control Plane
 
 Control Plane
   Overview
@@ -213,23 +551,24 @@ Rules:
 
 1. The shell mode is route-backed, not a frontend-only pseudo-router.
 2. Workspace switcher uses real tenant/user context.
-3. Global search must search route entries and, later, real agents/tasks/docs; until then it can be route-search only with clear scope.
+3. Search is a command/quick-open surface, not a permanent workspace-search row in the left rail.
 4. Notifications use existing notification center data, not fake counters.
 5. The global sidebar should not duplicate the local agent/session rail inside the conversation workbench.
+6. `+ 新建数字员工` is placed under Digital Employees and remains the only visible create entry into the HR Agent creation flow.
 
-### 5.2 My Workspace Pages
+### 5.2 My Workspace Surfaces
 
 | Page | Purpose | Real sources |
 | --- | --- | --- |
 | Home | Needs attention, running work, quick actions, recent artifacts/activity, usage summary | `Dashboard`, agents API, tasks/activity APIs, notifications |
-| Digital Employees | Search/filter employee cards, ownership/shared/recommended grouping, status and permission chips | agents API, access level, agent status |
-| Conversations & Tasks | Cross-agent sessions/tasks entry; current agent session workbench is the detailed view | chat sessions, RuntimeTask, Work Ledger, plans |
-| Plan Review | Pending plan confirmations and ask-user questions across sessions | plans API, chat runtime state, approval metadata |
-| Automations | Workflows, scheduled/triggered runs, save successful task as workflow | workflows API, schedules/triggers, skill/workflow promotion |
-| Memory & Knowledge | Cross-agent memory/knowledge entry and per-agent drilldown | knowledge API, memory API, workspace memory config |
-| Documents & Research | Generated artifacts, Office docs, deep research outputs | files API, Office API, deep research, artifacts |
-| Local Agent Channel | Local bridge connection, local workspace files, local transcript | localBridge API, existing `LocalAgents` page |
-| Approvals | User-facing approvals for high-risk actions | agent/workspace approvals APIs |
+| Digital Employees | Sidebar object tree plus an independent directory page when users need broader browsing/filtering | agents API, access level, agent status |
+| Conversations & Tasks | Cross-agent sessions/tasks entry from Home or command/search; current agent session workbench is the detailed view | chat sessions, RuntimeTask, Work Ledger, plans |
+| Plan Review | Pending plan confirmations and ask-user questions surfaced from Home attention blocks, Agent Detail, or command/search | plans API, chat runtime state, approval metadata |
+| Automations | Workflows, scheduled/triggered runs, save successful task as workflow from Home or Agent Detail | workflows API, schedules/triggers, skill/workflow promotion |
+| Memory & Knowledge | Per-agent memory/knowledge tabs plus workspace-wide entry from Home/Control Plane | knowledge API, memory API, workspace memory config |
+| Documents & Research | Generated artifacts, Office docs, deep research outputs from Home cards, Agent Detail, and document surfaces | files API, Office API, deep research, artifacts |
+| Local Agent Channel | Local bridge connection, local workspace files, local transcript under Bridge and Agent/session context | localBridge API, existing `LocalAgents` page |
+| Approvals | User-facing approvals from Home needs-you, Agent Detail, and Control Plane | agent/workspace approvals APIs |
 
 ### 5.3 Agent Workbench
 
@@ -308,11 +647,12 @@ Prototype quick actions are valid, but actions must map to real routes:
 
 Required:
 
-1. Independent employee directory page, not only sidebar rows.
-2. Tabs/filters: all, mine, shared, recommended, status, capability, visibility.
+1. Sidebar rows are the primary object tree; an independent employee directory page remains available for broader browsing/filtering.
+2. Do not add `My Employees` / `Company Employees` group headers in the primary sidebar. Directory filters may still expose all/mine/shared/status/capability/visibility.
 3. Cards show status, role, owner/access, last activity, pending attention.
-4. Empty state uses real create route.
+4. Empty state uses the real HR Agent creation route.
 5. Clicking an employee opens Agent Workbench, with Conversation & Tasks available immediately.
+6. The persistent sidebar create action is `+ 新建数字员工` at the bottom of the Digital Employees tree.
 
 ### 6.4 Create Digital Employee
 
@@ -323,10 +663,11 @@ Hive's product feature is that employee creation is handled by the HR Agent as a
 Required behavior:
 
 1. The only exposed path is entering the HR Agent creation session.
-2. The page may show a single HR Agent entry card, loading state, and error recovery.
-3. The HR Agent clarifies role, visibility, capability packs, memory boundaries, approval needs, and the first work session.
-4. Final employee creation still happens through the governed backend, but that direct API is not exposed as a separate frontend path.
-5. If future templates exist, they are HR Agent prompts/presets inside the HR Agent flow, not separate top-level creation options.
+2. The primary shell placement is the `+ 新建数字员工` row under Digital Employees. Home may also show a quick action card, but it is secondary.
+3. The page may show a single HR Agent entry card, loading state, and error recovery.
+4. The HR Agent clarifies role, visibility, capability packs, memory boundaries, approval needs, and the first work session.
+5. Final employee creation still happens through the governed backend, but that direct API is not exposed as a separate frontend path.
+6. If future templates exist, they are HR Agent prompts/presets inside the HR Agent flow, not separate top-level creation options.
 
 ### 6.5 Conversation & Tasks
 
@@ -523,8 +864,9 @@ Scope:
 1. Home attention/running/recent/activity/usage surface.
 2. Independent digital employee list.
 3. `/agents/new` as a single HR Agent creation entry.
-4. No blank/template/direct-create frontend path.
-5. No mock-created agent state.
+4. Persistent `+ 新建数字员工` row under the Digital Employees sidebar tree.
+5. No blank/template/direct-create frontend path.
+6. No mock-created agent state.
 
 Primary files:
 

@@ -57,34 +57,32 @@ describe('Layout extracted sections', () => {
     );
 
     expect(markup).toContain('HiveClaw');
-    expect(markup).toContain('My Workspace');
+    expect(markup).toContain('Workspace');
+    expect(markup).toContain('Company A');
     expect(markup).toContain('Digital Employees');
-    expect(markup).toContain('Conversations &amp; Tasks');
-    expect(markup).toContain('Plan Review');
-    expect(markup).toContain('Automations');
-    expect(markup).toContain('Memory &amp; Knowledge');
-    expect(markup).toContain('Documents &amp; Research');
-    expect(markup).toContain('A2A / Team');
-    expect(markup).toContain('Local Agent Channel');
-    expect(markup).toContain('Control Plane');
-    expect(markup).toContain('Agent Governance');
-    expect(markup).toContain('Models &amp; Budget');
-    expect(markup).toContain('Capabilities &amp; Tools');
-    expect(markup).toContain('Memory Governance');
-    expect(markup).toContain('Channels &amp; Integrations');
-    expect(markup).toContain('Assets &amp; Automation');
+    expect(markup).toContain('Tasks / Automation');
+    expect(markup).toContain('Bridge');
     expect(markup).toContain('Agent Circle');
+    expect(markup).not.toContain('Conversations &amp; Tasks');
+    expect(markup).not.toContain('Plan Review');
+    expect(markup).not.toContain('Memory &amp; Knowledge');
+    expect(markup).not.toContain('Documents &amp; Research');
+    expect(markup).not.toContain('A2A / Team');
+    expect(markup).not.toContain('Workspace search');
+    expect(markup).not.toContain('Control Plane');
     expect(markup).toContain('href="/local-agents"');
-    expect(markup).toContain('href="/team"');
+    expect(markup).not.toContain('href="/team"');
     expect(markup).toContain('href="/agents"');
     expect(markup).toContain('href="/automations"');
-    expect(markup).toContain('href="/enterprise/tools"');
+    expect(markup).not.toContain('href="/enterprise/tools"');
     expect(markup).toContain('Agent One');
+    expect(markup).toContain('New Digital Employee');
+    expect(markup).toContain('Company Admin');
     expect(markup).toContain('Platform Settings');
     expect(markup).toContain('Version Mock');
   });
 
-  it('uses the sidebar search as a workspace-wide launcher before falling back to employee filtering', () => {
+  it('keeps create employee inside the digital employee tree instead of a workspace search block', () => {
     const markup = renderToStaticMarkup(
       <AppSidebar
         user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
@@ -113,10 +111,12 @@ describe('Layout extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Workspace search');
-    expect(markup).toContain('Search workspace, employees, routes...');
-    expect(markup).toContain('Quick open');
-    expect(markup).toContain('Local Agent Channel');
+    expect(markup).not.toContain('Workspace search');
+    expect(markup).not.toContain('Search workspace, employees, routes...');
+    expect(markup).not.toContain('Quick open');
+    expect(markup).toContain('Digital Employees');
+    expect(markup).toContain('Research Lead');
+    expect(markup).toContain('New Digital Employee');
     expect(markup).toContain('href="/local-agents"');
   });
 

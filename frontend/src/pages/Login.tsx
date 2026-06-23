@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
@@ -6,6 +6,7 @@ import { authApi } from '../api/domains/auth';
 import { ApiError } from '../api/core/errors';
 import { showAppToast } from '../components/AppDialogs';
 import { safePostLoginRedirect } from '../routing/authRedirect';
+import { AuthShell } from './auth/AuthShell';
 
 type RegisterConflict = {
     field?: string;
@@ -32,15 +33,7 @@ export default function Login() {
         password: '',
         email: '',
     });
-
-    // Login page always uses dark theme (hero panel is dark)
-    useEffect(() => {
-        document.documentElement.setAttribute('data-theme', 'dark');
-        // Feishu login button is always rendered — whether the backend
-        // actually has Feishu credentials configured is the admin's
-        // responsibility. If a user clicks and it fails, the error banner
-        // tells them to contact their admin.
-    }, []);
+    const isChinese = i18n.language?.toLowerCase().startsWith('zh');
 
     const handleFeishuLogin = useCallback(async () => {
         setError('');
@@ -90,7 +83,7 @@ export default function Login() {
     }, [navigate, postLoginRedirect, setAuth, t]);
 
     const toggleLang = () => {
-        i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh');
+        i18n.changeLanguage(isChinese ? 'en' : 'zh');
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -168,96 +161,69 @@ export default function Login() {
     };
 
     return (
-        <div className="login-page">
-            {/* ── Left: Branding Panel ── */}
-            <div className="login-hero">
-                <div className="login-hero-bg" />
-                <div className="login-hero-content">
-                    <div className="login-hero-badge">
-                        <span className="login-hero-badge-dot" />
-                        {t('login.hero.badge')}
+        <AuthShell languageLabel={isChinese ? 'EN' : '中文'} onToggleLanguage={toggleLang}>
+                <section className="login-auth-card" aria-label={isRegister ? t('auth.register') : t('auth.login')}>
+                    <div className="login-mode-switch" role="tablist" aria-label={t('auth.modeSwitch', 'Authentication mode')}>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={!isRegister}
+                            className={!isRegister ? 'active' : ''}
+                            onClick={() => {
+                                setIsRegister(false);
+                                setError('');
+                                setSuggestLogin(false);
+                            }}
+                        >
+                            {t('auth.login')}
+                        </button>
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={isRegister}
+                            className={isRegister ? 'active' : ''}
+                            onClick={() => {
+                                setIsRegister(true);
+                                setError('');
+                                setSuggestLogin(false);
+                            }}
+                        >
+                            {t('auth.register')}
+                        </button>
                     </div>
-                    <h1 className="login-hero-title">
-                        {t('login.hero.title')}<br />
-                        <span style={{ fontSize: '0.65em', fontWeight: 600, opacity: 0.85 }}>{t('login.hero.subtitle')}</span>
-                    </h1>
-                    <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
-                    <div className="login-hero-features">
-                        <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🧬</span>
-                            <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
-                            </div>
-                        </div>
-                        <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">💭</span>
-                            <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
-                            </div>
-                        </div>
-                        <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🕸️</span>
-                            <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
 
-            {/* ── Right: Form Panel ── */}
-            <div className="login-form-panel">
-                {/* Language Switcher */}
-                <div style={{
-                    position: 'absolute', top: '16px', right: '16px',
-                    cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)',
-                    display: 'flex', alignItems: 'center', gap: '4px',
-                    padding: '6px 12px', borderRadius: '8px',
-                    background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
-                    zIndex: 101,
-                }} onClick={toggleLang}>
-                    🌐
-                </div>
-
-                <div className="login-form-wrapper">
                     <div className="login-form-header">
-                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />HiveClaw</div>
-                        <h2 className="login-form-title">
-                            {isRegister ? t('auth.register') : t('auth.login')}
-                        </h2>
+                        <h2 className="login-form-title">{isRegister ? t('auth.createAccountTitle', '创建你的账户') : t('auth.welcomeBack', '欢迎回来')}</h2>
                         <p className="login-form-subtitle">
-                            {isRegister ? t('auth.subtitleRegister') : t('auth.subtitleLogin')}
+                            {isRegister
+                                ? t('auth.subtitleRegister', '注册后即可加入或创建一个 workspace。')
+                                : t('auth.subtitleLogin', '登录以继续你的数字员工工作区。')}
                         </p>
                     </div>
 
                     {error && (
                         <div className="login-error">
-                            <span>⚠</span> {error}
+                            <span aria-hidden="true">!</span>
+                            <span>{error}</span>
                             {suggestLogin && (
-                                <>
-                                    {' '}
-                                    <button
-                                        type="button"
-                                        className="login-error-action"
-                                        onClick={() => {
-                                            setIsRegister(false);
-                                            setError('');
-                                            setSuggestLogin(false);
-                                        }}
-                                    >
-                                        {t('auth.goLogin', 'Go to login')}
-                                    </button>
-                                </>
+                                <button
+                                    type="button"
+                                    className="login-error-action"
+                                    onClick={() => {
+                                        setIsRegister(false);
+                                        setError('');
+                                        setSuggestLogin(false);
+                                    }}
+                                >
+                                    {t('auth.goLogin', 'Go to login')}
+                                </button>
                             )}
                         </div>
                     )}
 
                     <form onSubmit={handleSubmit} className="login-form">
                         <div className="login-field">
-                            <label>{t('auth.username')}</label>
+                            <label>{isRegister ? t('auth.username') : t('auth.identifierLabel', '用户名或邮箱')}</label>
                             <input
                                 value={form.username}
                                 onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -297,21 +263,21 @@ export default function Login() {
                             ) : (
                                 <>
                                     {isRegister ? t('auth.register') : t('auth.login')}
-                                    <span style={{ marginLeft: '6px' }}>→</span>
+                                    <span className="login-submit-arrow" aria-hidden="true">→</span>
                                 </>
                             )}
                         </button>
                     </form>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0 8px' }}>
-                        <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
-                        <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>{t('auth.feishu.or', 'or')}</span>
-                        <div style={{ flex: 1, height: '1px', background: 'var(--border-subtle)' }} />
+                    <div className="login-divider">
+                        <span />
+                        <em>{t('auth.feishu.or', 'or')}</em>
+                        <span />
                     </div>
 
                     <button
                         type="button"
-                        className="login-submit"
+                        className="login-submit login-submit-secondary"
                         disabled={feishuLoading || loading}
                         onClick={handleFeishuLogin}
                     >
@@ -319,8 +285,8 @@ export default function Login() {
                             <span className="login-spinner" />
                         ) : (
                             <>
+                                <span className="login-sso-mark" aria-hidden="true">飞</span>
                                 {t('auth.feishu.login', 'Login with Feishu')}
-                                <span style={{ marginLeft: '6px' }}>→</span>
                             </>
                         )}
                     </button>
@@ -331,8 +297,13 @@ export default function Login() {
                             {isRegister ? t('auth.goLogin') : t('auth.goRegister')}
                         </a>
                     </div>
-                </div>
-            </div>
-        </div>
+
+                    {isRegister && (
+                        <p className="login-legal">
+                            {t('auth.legalPrefix', '注册即代表同意 Hive 的企业使用条款与隐私政策。')}
+                        </p>
+                    )}
+                </section>
+        </AuthShell>
     );
 }

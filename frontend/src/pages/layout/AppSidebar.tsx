@@ -4,34 +4,22 @@ import { useTranslation } from 'react-i18next';
 import {
   IconArrowUpRight,
   IconBell,
-  IconBrain,
   IconBuilding,
-  IconChartBar,
   IconCheckbox,
   IconChevronUp,
   IconChevronsLeft,
   IconChevronsRight,
-  IconDatabase,
   IconDeviceDesktop,
-  IconFileText,
   IconHome,
   IconLogout,
   IconMoon,
-  IconPin,
-  IconPinnedOff,
-  IconPlugConnected,
   IconPlus,
   IconRefresh,
-  IconRoute,
-  IconSearch,
   IconSettings,
-  IconShieldCheck,
   IconSitemap,
   IconSun,
   IconUser,
-  IconUsers,
   IconWorld,
-  IconX,
 } from '@tabler/icons-react';
 
 const sidebarIcons = {
@@ -56,28 +44,9 @@ type SidebarNavItem = {
 
 const workspaceNavItems: SidebarNavItem[] = [
   { to: '/home', labelKey: 'nav.home', fallback: 'Home', icon: <IconHome size={15} stroke={1.6} />, end: true },
-  { to: '/agents', labelKey: 'nav.digitalEmployees', fallback: 'Digital Employees', icon: <IconUsers size={15} stroke={1.6} />, end: true },
-  { to: '/messages', labelKey: 'nav.conversationsTasks', fallback: 'Conversations & Tasks', icon: <IconCheckbox size={15} stroke={1.6} /> },
-  { to: '/plans', labelKey: 'nav.planReview', fallback: 'Plan Review', icon: <IconShieldCheck size={15} stroke={1.6} /> },
-  { to: '/automations', labelKey: 'nav.automations', fallback: 'Automations', icon: <IconRefresh size={15} stroke={1.6} /> },
-  { to: '/memory', labelKey: 'nav.memoryKnowledge', fallback: 'Memory & Knowledge', icon: <IconBrain size={15} stroke={1.6} /> },
-  { to: '/documents', labelKey: 'nav.documentsResearch', fallback: 'Documents & Research', icon: <IconFileText size={15} stroke={1.6} /> },
-  { to: '/team', labelKey: 'nav.a2aTeam', fallback: 'A2A / Team', icon: <IconRoute size={15} stroke={1.6} /> },
-  { to: '/local-agents', labelKey: 'nav.localAgentChannel', fallback: 'Local Agent Channel', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
   { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
-];
-
-const controlPlaneNavItems: SidebarNavItem[] = [
-  { to: '/enterprise/dashboard', labelKey: 'nav.controlOverview', fallback: 'Overview', icon: <IconChartBar size={15} stroke={1.6} /> },
-  { to: '/enterprise/hr', labelKey: 'nav.agentGovernance', fallback: 'Agent Governance', icon: <IconUsers size={15} stroke={1.6} /> },
-  { to: '/enterprise/llm', labelKey: 'nav.modelsBudget', fallback: 'Models & Budget', icon: <IconDatabase size={15} stroke={1.6} /> },
-  { to: '/enterprise/tools', labelKey: 'nav.capabilitiesTools', fallback: 'Capabilities & Tools', icon: <IconPlugConnected size={15} stroke={1.6} /> },
-  { to: '/enterprise/subagents', labelKey: 'nav.teamDelegation', fallback: 'Team & Delegation', icon: <IconRoute size={15} stroke={1.6} /> },
-  { to: '/enterprise/memory', labelKey: 'nav.memoryGovernance', fallback: 'Memory Governance', icon: <IconBrain size={15} stroke={1.6} /> },
-  { to: '/enterprise/info', labelKey: 'nav.channelsIntegrations', fallback: 'Channels & Integrations', icon: <IconBuilding size={15} stroke={1.6} /> },
-  { to: '/enterprise/approvals', labelKey: 'nav.approvalCenter', fallback: 'Approval Center', icon: <IconShieldCheck size={15} stroke={1.6} /> },
-  { to: '/enterprise/audit', labelKey: 'nav.auditLog', fallback: 'Audit Log', icon: <IconFileText size={15} stroke={1.6} /> },
-  { to: '/enterprise/skills', labelKey: 'nav.assetsAutomation', fallback: 'Assets & Automation', icon: <IconRefresh size={15} stroke={1.6} /> },
+  { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Tasks / Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
+  { to: '/local-agents', labelKey: 'nav.bridge', fallback: 'Bridge', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
 ];
 
 const getAgentBadgeStatus = (agent: any): string | null => {
@@ -94,6 +63,13 @@ const getRoleLabel = (role: string | undefined, t: any) => {
   if (role === 'platform_admin') return t('roles.platformAdmin');
   if (role === 'org_admin') return t('roles.orgAdmin');
   return t('roles.member');
+};
+
+const getAgentSourceBadge = (agent: any, user: any, t: any): string | null => {
+  if (agent.agent_type === 'openclaw') return t('nav.localBadge', 'Local');
+  if (agent.creator_id && user?.id && agent.creator_id !== user.id) return t('nav.publicBadge', 'Public');
+  if (agent.visibility_scope === 'public' || agent.is_public) return t('nav.publicBadge', 'Public');
+  return null;
 };
 
 function SidebarNavLink({ item }: { item: SidebarNavItem }) {
@@ -163,35 +139,15 @@ export default function AppSidebar({
   versionDisplay,
 }: AppSidebarProps) {
   const { t, i18n } = useTranslation();
-  const query = sidebarSearch.trim().toLowerCase();
   const sortedAgents = [...agents]
-    .filter(
-      (agent) =>
-        !query ||
-        (agent.name || '').toLowerCase().includes(query) ||
-        (agent.role_description || '').toLowerCase().includes(query),
-    )
     .sort((a, b) => {
-      const aPinned = pinnedAgents.has(a.id) ? 1 : 0;
-      const bPinned = pinnedAgents.has(b.id) ? 1 : 0;
-      if (aPinned !== bPinned) return bPinned - aPinned;
-      const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+      const aTime = a.last_active_at ? new Date(a.last_active_at).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
+      const bTime = b.last_active_at ? new Date(b.last_active_at).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
       return bTime - aTime;
     });
 
   const canSeeControlPlane = user && ['platform_admin', 'org_admin'].includes(user.role);
   const activeTenantName = tenants.find((tenant) => tenant.id === currentTenant)?.name || t('layout.myCompany', 'My Company');
-  const searchableRouteItems = [
-    ...workspaceNavItems,
-    ...(canSeeControlPlane ? controlPlaneNavItems : []),
-  ];
-  const quickOpenResults = query
-    ? searchableRouteItems.filter((item) => {
-      const label = t(item.labelKey, item.fallback).toLowerCase();
-      return label.includes(query) || item.to.toLowerCase().includes(query);
-    }).slice(0, 6)
-    : [];
 
   return (
     <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
@@ -216,7 +172,7 @@ export default function AppSidebar({
 
       <div className="sidebar-scrollable">
         <div className="sidebar-section sidebar-nav-section">
-          <div className="sidebar-section-title">{t('nav.myWorkspace', 'My Workspace')}</div>
+          <div className="sidebar-section-title">{t('nav.topActions', 'My Workspace')}</div>
           {workspaceNavItems.map((item) => (
             <SidebarNavLink key={item.to} item={item} />
           ))}
@@ -225,40 +181,15 @@ export default function AppSidebar({
         <div className="sidebar-divider" />
 
         <div className="sidebar-section sidebar-nav-section">
-          <div className="sidebar-section-title">{t('nav.workspaceSearch', 'Workspace search')}</div>
-          {!isSidebarCollapsed && (
-            <div className="sidebar-search-wrap">
-              <IconSearch size={14} stroke={2} className="sidebar-search-icon" />
-              <input
-                type="text"
-                value={sidebarSearch}
-                onChange={(event) => onSetSidebarSearch(event.target.value)}
-                placeholder={isChinese ? '搜索工作区、员工、页面...' : 'Search workspace, employees, routes...'}
-                className="sidebar-search-input"
-              />
-              {sidebarSearch && (
-                <button onClick={() => onSetSidebarSearch('')} className="sidebar-search-clear" title={isChinese ? '清除' : 'Clear'}>
-                  <IconX size={14} stroke={2} />
-                </button>
-              )}
-            </div>
-          )}
-          {!isSidebarCollapsed && quickOpenResults.length > 0 && (
-            <div className="sidebar-quick-open">
-              <div className="sidebar-quick-open-title">{t('nav.quickOpen', 'Quick open')}</div>
-              {quickOpenResults.map((item) => (
-                <SidebarNavLink key={`quick-${item.to}`} item={item} />
-              ))}
-            </div>
-          )}
-          {!isSidebarCollapsed && (
-            <div className="sidebar-section-subtitle">{t('nav.digitalEmployees', 'Digital Employees')}</div>
-          )}
+          <NavLink to="/agents" className="sidebar-section-title sidebar-section-title-link">
+            {t('nav.digitalEmployees', 'Digital Employees')}
+          </NavLink>
           {sortedAgents.map((agent) => {
             const badge = getAgentBadgeStatus(agent);
+            const sourceBadge = getAgentSourceBadge(agent, user, t);
             const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
             return (
-              <div key={agent.id} className={`sidebar-agent-item${agent.creator_id === user?.id ? ' owned' : ''}`}>
+              <div key={agent.id} className="sidebar-agent-item">
                 <NavLink to={`/agents/${agent.id}`} className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={agent.name}>
                   <span className="sidebar-item-icon" style={{ position: 'relative' }}>
                     <span className={`agent-avatar${agent.agent_type === 'openclaw' ? ' openclaw' : ''}`}>{avatarChar}</span>
@@ -270,59 +201,25 @@ export default function AppSidebar({
                     {badge && <span className={`agent-avatar-badge ${badge}`} />}
                   </span>
                   <span className="sidebar-item-text">{agent.name}</span>
+                  {sourceBadge && !isSidebarCollapsed && <span className="sidebar-agent-source-badge">{sourceBadge}</span>}
                 </NavLink>
-                {!isSidebarCollapsed && (
-                  <button
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onTogglePin(agent.id);
-                    }}
-                    className={`sidebar-pin-btn ${pinnedAgents.has(agent.id) ? 'pinned' : ''}`}
-                    title={pinnedAgents.has(agent.id) ? (isChinese ? '取消置顶' : 'Unpin') : (isChinese ? '置顶' : 'Pin to top')}
-                  >
-                    {pinnedAgents.has(agent.id) ? (
-                      <>
-                        <IconPin size={14} stroke={1.5} className="pin-default" />
-                        <IconPinnedOff size={14} stroke={1.5} className="pin-hover" />
-                      </>
-                    ) : (
-                      <IconPin size={14} stroke={1.5} className="pin-on" />
-                    )}
-                  </button>
-                )}
               </div>
             );
           })}
           {agents.length === 0 && (
             <div className="sidebar-empty-note">{t('nav.noEmployees', 'No digital employees yet')}</div>
           )}
-          {agents.length > 0 && sortedAgents.length === 0 && query && (
-            <div className="sidebar-empty-note">{isChinese ? '无匹配结果' : 'No matches'}</div>
-          )}
-        </div>
-
-        {canSeeControlPlane && (
-          <>
-            <div className="sidebar-divider" />
-            <div className="sidebar-section sidebar-nav-section">
-              <div className="sidebar-section-title">{t('nav.controlPlane', 'Control Plane')}</div>
-              {controlPlaneNavItems.map((item) => (
-                <SidebarNavLink key={item.to} item={item} />
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="sidebar-bottom">
-        <div className="sidebar-section sidebar-nav-section sidebar-primary-actions">
           {user && (
-            <NavLink to="/agents/new" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.newAgent', 'New Digital Employee')}>
+            <NavLink to="/agents/new" className={({ isActive }) => `sidebar-item sidebar-create-employee ${isActive ? 'active' : ''}`} title={t('nav.newAgent', 'New Digital Employee')}>
               <span className="sidebar-item-icon sidebar-item-icon-centered">{sidebarIcons.plus}</span>
               <span className="sidebar-item-text">{t('nav.newAgent', 'New Digital Employee')}</span>
             </NavLink>
           )}
+        </div>
+      </div>
+
+      <div className="sidebar-bottom">
+        <div className="sidebar-section sidebar-nav-section sidebar-primary-actions">
           {user && ['platform_admin', 'org_admin'].includes(user.role) && (
             <NavLink to="/enterprise/dashboard" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`} title={t('nav.enterprise', 'Company Admin')}>
               <span className="sidebar-item-icon sidebar-item-icon-centered">

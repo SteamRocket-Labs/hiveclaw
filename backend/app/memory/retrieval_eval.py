@@ -23,6 +23,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from app.memory.lifecycle_store import lifecycle_read_path
+
 _EVAL_AGENT_ID = uuid.uuid5(uuid.NAMESPACE_DNS, "hive-memory-eval.fixture")
 
 # ── Retrieval-quality fixture: a small operations wiki ──
@@ -256,7 +258,7 @@ def evaluate_retirement_safety(*, data_root: Path) -> dict:
     )
     archive_text = (mem_dir / "archive.md").read_text(encoding="utf-8") if (mem_dir / "archive.md").exists() else ""
     lifecycle_records: list[dict] = []
-    lifecycle_path = mem_dir / "lifecycle.json"
+    lifecycle_path = lifecycle_read_path(data_root, agent_id)
     if lifecycle_path.exists():
         lifecycle_records = json.loads(lifecycle_path.read_text(encoding="utf-8"))
     archived_ids = {record["id"] for record in lifecycle_records if record.get("status") == "archived"}

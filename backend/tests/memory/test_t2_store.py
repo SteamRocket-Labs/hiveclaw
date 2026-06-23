@@ -231,7 +231,7 @@ def test_append_t2_entries_applies_write_gate_before_persisting(tmp_path: Path) 
     assert entries[0]["version"] == "1"
     assert "access_count" not in entries[0]
     assert "last_accessed" not in entries[0]
-    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    lifecycle = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "control" / "lifecycle.json")
     lifecycle_entry = lifecycle.get(entries[0]["entry_id"])
     assert lifecycle_entry.content == "Owner Alice email is <Email_1> for vendor escalation."
     assert lifecycle_entry.metadata["sensitivity"] == "PL2_pii"
@@ -262,7 +262,7 @@ def test_append_t2_entries_routes_low_confidence_memory_to_lifecycle_sketch(tmp_
     assert written == 0
     body = (tmp_path / str(agent_id) / "memory" / "learnings" / "insights.md").read_text(encoding="utf-8")
     assert "The vendor API may have moved to v3." not in body
-    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "control" / "lifecycle.json")
     entries = store.entries()
     assert len(entries) == 1
     assert entries[0].status == LifecycleStatus.SKETCH
@@ -310,7 +310,7 @@ def test_append_t2_entries_records_conflict_hold_from_extraction_metadata(tmp_pa
     )
 
     assert written == 1
-    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "control" / "lifecycle.json")
     old = store.get("mem-old")
     assert old.metadata["conflict_status"] == "needs_review"
     assert old.metadata["conflicts_with"]
@@ -338,7 +338,7 @@ def test_append_t2_entries_marks_missing_workspace_ref_for_revalidation(tmp_path
     )
 
     assert written == 1
-    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "lifecycle.json")
+    store = MemoryLifecycleStore(tmp_path / str(agent_id) / "memory" / "control" / "lifecycle.json")
     entry = store.entries()[0]
     assert entry.metadata["reference_status"] == "revalidation_required"
     assert entry.metadata["revalidation_reason"] == "source ref not found"

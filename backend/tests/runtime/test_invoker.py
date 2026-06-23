@@ -723,13 +723,14 @@ async def test_invoke_agent_emits_response_complete_and_session_close_hooks(monk
     event_names = [event for event, _ in emitted]
     assert HookEvent.SESSION_START in event_names
     assert HookEvent.RESPONSE_COMPLETE in event_names
-    assert HookEvent.SESSION_CLOSE in event_names
+    assert HookEvent.TURN_STOP in event_names
     response_payload = next(payload for event, payload in emitted if event == HookEvent.RESPONSE_COMPLETE)
-    close_payload = next(payload for event, payload in emitted if event == HookEvent.SESSION_CLOSE)
+    close_payload = next(payload for event, payload in emitted if event == HookEvent.TURN_STOP)
     assert response_payload["messages"][-1]["role"] == "user"
     assert response_payload["metadata"]["skill_candidate_loop_enabled"] is False
     assert close_payload["messages"][-1]["role"] == "assistant"
     assert close_payload["messages"][-1]["content"] == "final answer"
+    assert close_payload["metadata"]["checkpoint_kind"] == "user_turn_stop"
 
 
 @pytest.mark.asyncio
@@ -1183,7 +1184,9 @@ async def test_invoke_agent_records_skill_runtime_usage_and_preserves_tool_callb
     class _FakeKernel:
         async def handle(self, request):
             await request.on_tool_call({"name": "load_skill", "args": {"name": "Incident Response"}, "status": "done"})
-            await request.on_tool_call({"name": "read_file", "args": {"path": "workspace/runbook.md"}, "status": "done"})
+            await request.on_tool_call(
+                {"name": "read_file", "args": {"path": "workspace/runbook.md"}, "status": "done"}
+            )
             return SimpleNamespace(
                 content="[OUTCOME:action_taken] Updated the runbook.",
                 tokens_used=7,
@@ -1601,9 +1604,13 @@ async def test_invoke_agent_loads_and_persists_runtime_memory(monkeypatch):
     _sys_prompt = fake_client.calls[0]["messages"][0].content
     assert "BASE_PROMPT" in _sys_prompt
     assert "RUNTIME_MEMORY" not in _sys_prompt
-    assert any("RUNTIME_MEMORY" in (getattr(message, "content", "") or "") for message in fake_client.calls[0]["messages"])
+    assert any(
+        "RUNTIME_MEMORY" in (getattr(message, "content", "") or "") for message in fake_client.calls[0]["messages"]
+    )
     assert "MANUAL_MEMORY" not in _sys_prompt
-    assert any("MANUAL_MEMORY" in (getattr(message, "content", "") or "") for message in fake_client.calls[0]["messages"])
+    assert any(
+        "MANUAL_MEMORY" in (getattr(message, "content", "") or "") for message in fake_client.calls[0]["messages"]
+    )
     assert "## System" in _sys_prompt
     assert captured["persisted"] == {
         "agent_id": agent_id,

@@ -1795,7 +1795,10 @@ def _build_restoration_context(
                 _safe_session_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(_session_id).strip())
                 if _safe_session_id:
                     _session_memory_rel_paths.append(
-                        (f"memory/sessions/{_safe_session_id}/session_memory.md", "Session Memory")
+                        (f"memory/session_state/{_safe_session_id}/session_memory.md", "Session Memory")
+                    )
+                    _session_memory_rel_paths.append(
+                        (f"memory/sessions/{_safe_session_id}/session_memory.md", "Legacy Session Memory")
                     )
         for rel_path, label in [
             *_session_memory_rel_paths,

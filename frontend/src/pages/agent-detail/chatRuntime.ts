@@ -123,6 +123,13 @@ export interface TranscriptReplayState {
   seenEventIds: Set<string>;
 }
 
+export interface PendingUserMessage {
+  message: AgentChatMessage;
+  anchorMessageCount: number;
+}
+
+export const ACTIVE_RUN_ABSENCE_GRACE_MS = 8_000;
+
 export function sessionBelongsToAgent(session: AgentOwnedSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) return false;
   const sessionAgentId = session.agent_id ?? session.agentId;
@@ -169,6 +176,54 @@ export function applySessionActiveRunObservedState(
         : { isWaiting: true, isStreaming: false },
     },
   };
+}
+
+export function shouldClearStaleRuntimeState({
+  hasStaleRuntimeState,
+  lastRuntimeActivityAt,
+  now,
+  graceMs = ACTIVE_RUN_ABSENCE_GRACE_MS,
+}: {
+  hasStaleRuntimeState: boolean;
+  lastRuntimeActivityAt?: number | null;
+  now: number;
+  graceMs?: number;
+}): boolean {
+  if (!hasStaleRuntimeState) return false;
+  if (!lastRuntimeActivityAt) return true;
+  return now - lastRuntimeActivityAt >= graceMs;
+}
+
+function normalizedUserContent(message: AgentChatMessage): string {
+  return String(message.content || '').replace(/\s+/g, ' ').trim();
+}
+
+function hasMatchingDurableUserMessage(messages: AgentChatMessage[], pending: PendingUserMessage): boolean {
+  const pendingContent = normalizedUserContent(pending.message);
+  if (!pendingContent) return false;
+  return messages.some((message) => (
+    message.role === 'user'
+    && normalizedUserContent(message) === pendingContent
+    && (!pending.message.fileName || pending.message.fileName === message.fileName)
+  ));
+}
+
+export function mergePendingUserMessages(
+  messages: AgentChatMessage[],
+  pending: PendingUserMessage[],
+): { messages: AgentChatMessage[]; pending: PendingUserMessage[] } {
+  if (pending.length === 0) return { messages, pending };
+
+  const remaining = pending.filter((item) => !hasMatchingDurableUserMessage(messages, item));
+  if (remaining.length === 0) return { messages, pending: [] };
+
+  const merged = [...messages];
+  const sorted = [...remaining].sort((a, b) => a.anchorMessageCount - b.anchorMessageCount);
+  sorted.forEach((item, offset) => {
+    const index = Math.max(0, Math.min(item.anchorMessageCount + offset, merged.length));
+    merged.splice(index, 0, item.message);
+  });
+  return { messages: merged, pending: remaining };
 }
 
 export function buildChatSocketKeepaliveMessage(): { type: 'ping' } {

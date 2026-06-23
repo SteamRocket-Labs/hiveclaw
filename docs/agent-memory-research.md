@@ -169,7 +169,7 @@ tags: [memory, architecture]
 
 ### D.3 索引导航层 — Tencent 的"索引转正"答案（④已由 Memory Navigation 收口）
 
-Hive 旧 `INDEX.md` 曾经是孤儿（无消费方）。当前收口后，运行时消费的是 T3 entry manifest / Memory Navigation，唯一持久 Memory Wiki map 是 `memory/wiki_map.md`；旧 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 已退役。Tencent 给出的是这个方向的范本：
+Hive 旧 `INDEX.md` 曾经是孤儿（无消费方）。当前收口后，运行时消费的是 T3 entry manifest / Memory Navigation，唯一持久 Memory Wiki map 是 `memory/indexes/wiki_map.md`；旧 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 已退役。Tencent 给出的是这个方向的范本：
 
 ```
 L2 scene_blocks/*.md（MD 源，含 META: created/updated/summary/heat）

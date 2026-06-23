@@ -82,6 +82,14 @@ def test_t3_prompt_surfaces_use_one_reinforcement_vocabulary() -> None:
     assert "`create`, `merge`, `supersede`, `reinforce`, `contradict`, `retract`, `noop`" in joined
 
 
+def test_t3_memory_gate_output_contract_uses_single_consolidation_decision_set() -> None:
+    gate = (_TEMPLATE_DIR / "T3_MEMORY_GATE.md").read_text(encoding="utf-8")
+
+    expected = "accept_new|reinforced|merge_required|supersede_existing|contest_existing|noop|reject"
+    assert f"<decision>{expected}</decision>" in gate
+    assert "contested|held|keep_overlay_only|retired|rejected" not in gate
+
+
 def test_live_tool_guidance_does_not_route_t3_candidates_through_save_memory() -> None:
     from app.tools.handlers.memory import save_memory
 

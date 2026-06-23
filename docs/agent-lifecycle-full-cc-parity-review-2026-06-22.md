@@ -1,7 +1,7 @@
 # Agent 全生命周期 CC 对标 Review
 
 日期：2026-06-22
-状态：review 已转 implementation，2026-06-22 已完成首轮 session-middle parity substrate
+状态：review 已转 implementation，2026-06-22 已完成首轮 session-middle parity substrate；2026-06-23 已补齐单 Agent turn-native checkpoint
 范围：Agent lifecycle、context composition、Skill、Sub-agent、Workflow、Hooks、session resume
 
 ## Implementation Closure — 2026-06-22
@@ -9,7 +9,7 @@
 本 review 中的首轮 session-middle parity substrate 已落地：
 
 1. Hook substrate：新增 `USER_PROMPT_SUBMIT`、`SESSION_END`、`STOP`、`STOP_FAILURE`、`SUBAGENT_START`、`SUBAGENT_STOP`，并扩展 hook payload/result，使 Stop/Subagent/UserPromptSubmit 可返回阻断语义。
-2. UserPromptSubmit：`invoke_agent` 在统一 runtime 入口发出 `USER_PROMPT_SUBMIT -> SESSION_START -> kernel -> SESSION_END -> SESSION_CLOSE`。
+2. UserPromptSubmit：`invoke_agent` 在统一 runtime 入口发出 `USER_PROMPT_SUBMIT -> SESSION_START -> kernel -> SESSION_END -> TURN_STOP`；durable web/chat/channel 入口会关闭 invoker 自动 `TURN_STOP`，并在 assistant/tool transcript 落盘后自行触发 `TURN_STOP`。
 3. Stop Hook：kernel 在 assistant final 之后、返回之前 await `STOP`；blocking result 会把原因作为 continuation 输入，继续下一轮模型调用；Stop handler 异常会触发 `STOP_FAILURE`。
 4. Subagent lifecycle：`_spawn_one` 在 child invoke 前发 `SUBAGENT_START`，在 complete/failed/timeout seal 后发 `SUBAGENT_STOP`，并把 Hive T0 `source.md` 作为 `agent_transcript_path` equivalent 暴露。
 5. Workflow handshake：`preview_workflow` 返回 `preview_id`、`definition_hash`、`args_hash`；`start_workflow` 必须携带 preview binding，并在启动前重新 compile/hash 校验，拒绝未 preview 或 preview 后被篡改的 definition/args。
@@ -26,7 +26,29 @@ ruff check app/runtime/hooks.py app/runtime/invoker.py app/kernel/engine.py app/
 
 当前结果：`87 passed, 4 warnings`；`ruff check` passed。
 
+## Turn Checkpoint Closure — 2026-06-23
+
+单 Agent session-middle 的正常轮次边界已经从 `SESSION_CLOSE` 收敛到 turn-native checkpoint：
+
+1. `USER_PROMPT_SUBMIT` 是用户输入 durable append 后、模型循环前的 turn 起点。
+2. `TURN_STOP` 是正常用户轮次主边界：web/chat/channel 入口在 assistant/tool transcript durable append 后触发，T0 segment seal 后进入 canonical T2 Segment Package。
+3. `TURN_ABORT` 是取消、失败、stop failure 或半轮中断边界：只 seal dirty T0 segment，并写 `semantic_memory_eligible=false`，不进入语义 T2。
+4. T0 `events.jsonl` 仍是机械真相；`source.md` 与 `index.json` 是确定性投影/索引。segment index 和 boundary event 现在记录 `turn_id`、`intent_id`、`checkpoint_kind`、`turn_stop_event_id` / `turn_abort_event_id`。
+5. `SESSION_IDLE` / `SESSION_CLOSE` 继续存在，但只作为 idle/disconnect/new-session fallback boundary；正常单 Agent 用户轮次不得再依赖它们作为主 checkpoint。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_t0_to_t2_session_close.py tests/runtime/test_invoker_cc_hooks.py tests/runtime/test_invoker.py tests/api/test_websocket_call_llm.py tests/services/test_web_chat_runtime.py tests/services/test_channel_agent_runtime_t0.py -q
+```
+
+当前结果：`164 passed, 4 warnings`。
+
 ## 0. 结论
+
+> 注意：本节以下保留 2026-06-22 review 原始判断，用于解释为什么要改；当前实现状态以前面的 Implementation Closure / Turn Checkpoint Closure 为准。
 
 “全面对标”不是逐项复制功能名，而是把 Agent 从定义、上下文装配、用户输入、模型循环、工具循环、hook、subagent、workflow、skill、compaction、stop、resume、session close 到长期演化的全生命周期逐段对齐。
 

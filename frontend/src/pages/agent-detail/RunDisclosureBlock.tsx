@@ -130,9 +130,67 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
   );
 }
 
+function shouldExpandTimeline(timeline: RunTimelineSnapshot): boolean {
+  return timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed';
+}
+
+function CompactStepSummary({ steps }: { steps: RunStepSnapshot[] }) {
+  const visibleSteps = steps.slice(0, 5);
+  const remaining = steps.length - visibleSteps.length;
+  return (
+    <div
+      data-testid="run-disclosure-compact-summary"
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '5px',
+        padding: '0 10px 10px 32px',
+      }}
+    >
+      {visibleSteps.map((step) => (
+        <span
+          key={step.id}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px',
+            minWidth: 0,
+            maxWidth: '100%',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '6px',
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-secondary)',
+            padding: '3px 6px',
+            fontSize: '11px',
+          }}
+          title={step.summary ? `${step.title} · ${step.summary}` : step.title}
+        >
+          <StepIcon kind={step.kind} running={step.status === 'running'} />
+          <strong style={{ color: 'var(--text-primary)', fontWeight: 600, whiteSpace: 'nowrap' }}>{step.title}</strong>
+          {step.summary && (
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {step.summary}
+            </span>
+          )}
+        </span>
+      ))}
+      {remaining > 0 && (
+        <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', alignSelf: 'center' }}>
+          +{remaining}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export default function RunDisclosureBlock({ timeline }: { timeline: RunTimelineSnapshot }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = React.useState(true);
+  const defaultExpanded = shouldExpandTimeline(timeline);
+  const [expanded, setExpanded] = React.useState(defaultExpanded);
+
+  React.useEffect(() => {
+    setExpanded(defaultExpanded);
+  }, [defaultExpanded, timeline.id]);
 
   if (timeline.steps.length === 0) return null;
   const duration = formatDuration(timeline.durationMs);
@@ -145,12 +203,11 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: timeline.steps.length });
 
   return (
-    <div data-testid="run-disclosure-block" style={{ paddingLeft: '36px', marginBottom: '8px', maxWidth: '75%' }}>
+    <div data-testid="run-disclosure-block" data-status={timeline.status} style={{ marginBottom: '8px', maxWidth: '100%' }}>
       <div
         style={{
-          border: '1px solid var(--border-subtle)',
-          borderRadius: '8px',
-          background: 'var(--bg-elevated)',
+          borderLeft: `2px solid ${timeline.status === 'running' || timeline.status === 'blocked' ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+          background: 'transparent',
           overflow: 'hidden',
         }}
       >
@@ -163,7 +220,7 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
             border: 'none',
             background: 'transparent',
             color: 'var(--text-secondary)',
-            padding: '8px 10px',
+            padding: '7px 10px',
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
@@ -183,6 +240,7 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
             ))}
           </div>
         )}
+        {!expanded && <CompactStepSummary steps={timeline.steps} />}
       </div>
     </div>
   );

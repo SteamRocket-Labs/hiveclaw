@@ -37,6 +37,7 @@ from app.api.guard_policies import router as guard_policies_router
 from app.api.hooks import router as hooks_router
 from app.api.deep_research import router as deep_research_router
 from app.api.interoperability import router as interoperability_router
+from app.api.local_agent_channel import router as local_agent_channel_router
 from app.api.local_bridge import router as local_bridge_router
 from app.api.workflows import router as workflows_router
 from app.api.workflow_definitions import router as workflow_definitions_router
@@ -632,6 +633,7 @@ _api_routers = [
     desktop_agents_router,
     guard_policies_router,
     local_bridge_router,
+    local_agent_channel_router,
     desktop_audit_router,
     role_templates_router,
     tenant_channels_router,

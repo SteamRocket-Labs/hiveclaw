@@ -5,7 +5,7 @@ Design principle: ONE set of file tools covers EVERYTHING.
 The agent's workspace uses well-known paths:
   - tasks.json          → task list (auto-synced from DB)
   - soul.md             → personality definition
-  - memory/*.md         → layered long-term memory (feedback / knowledge / strategies / blocked / user)
+  - governed memory/** → layered long-term memory and memory sidecars; write only via memory tools
   - skills/<slug>/SKILL.md → skill definitions and auxiliary resources
   - runtime_artifacts/  → platform-managed recovery/audit artifacts
   - workspace/          → general working files, reports, etc.

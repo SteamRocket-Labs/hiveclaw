@@ -138,7 +138,7 @@ def test_write_file_tool_refuses_memory_paths(tmp_path: Path) -> None:
         "memory/t3/user.md",
         "memory/t3/capabilities.md",
         "memory/explicit/MEMORY.md",
-        "memory/sessions/session-1/segments/seg-1/summary.md",
+        "memory/t2/sessions/session-1/segments/seg-1/summary.md",
     ):
         out = _write_file(ws, rel, "manual bypass")
         assert "governed" in out.lower() or "managed by platform services" in out

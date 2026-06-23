@@ -28,6 +28,7 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.services.agent_tool_domains.workspace import _normalize_skill_folder_name
 from app.services.skill_lifecycle import (
+    SkillCandidateRecord,
     load_skill_candidates,
     record_skill_execution,
     record_skill_lifecycle_event,
@@ -35,6 +36,7 @@ from app.services.skill_lifecycle import (
 )
 from app.services.skill_candidate_package import (
     update_skill_candidate_package_status,
+    write_skill_referee_review,
     write_skill_candidate_package,
 )
 from app.skills import SkillParser, WorkspaceSkillLoader
@@ -143,6 +145,26 @@ class SkillConflictResolution:
     reason: str = ""
 
 
+@dataclass(slots=True)
+class SkillRefereeReview:
+    decision: str
+    scores: dict[str, int]
+    reason: str
+    review_markdown: str
+
+
+@dataclass(slots=True)
+class DirectSkillCandidate:
+    record: SkillCandidateRecord
+    evidence: list[SessionWorkflowEvidence]
+    distillation_intent: str
+    candidate_id: str
+
+
+_TERMINAL_SKILL_CANDIDATE_STATUSES = {"promoted", "patched", "held", "rejected", "archived"}
+_REFEREE_SCORE_KEYS = ("common_vs_episodic", "scope", "overlap", "safety", "eval_readiness")
+
+
 def _candidate_behavior_report(candidate: dict[str, Any]) -> dict[str, Any] | None:
     metadata = candidate.get("metadata") if isinstance(candidate, dict) else None
     if not isinstance(metadata, dict):
@@ -236,13 +258,13 @@ def load_memory_workflow_candidates(data_root: Path, agent_id: uuid.UUID) -> lis
     return _load_memory_container_candidates(data_root, agent_id, container="workflow_candidate")
 
 
-def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) -> list[dict[str, str]]:
+def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) -> list[dict[str, Any]]:
     """Read inactive skill candidate evidence produced by flywheel/lifecycle loops."""
     root = workspace / "evolution" / "skill_candidates"
     if not root.exists():
         return []
 
-    drafts: list[dict[str, str]] = []
+    drafts: list[dict[str, Any]] = []
     candidate_files = [
         path
         for package_dir in root.iterdir()
@@ -255,11 +277,30 @@ def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) ->
             content = skill_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        manifest: dict[str, Any] = {}
+        manifest_path = skill_path.parent / "manifest.json"
+        if manifest_path.exists():
+            try:
+                loaded_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest = loaded_manifest if isinstance(loaded_manifest, dict) else {}
+            except (OSError, json.JSONDecodeError):
+                manifest = {}
+        status = str(manifest.get("status") or "candidate").strip().lower()
+        if status in _TERMINAL_SKILL_CANDIDATE_STATUSES:
+            continue
+        metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
         drafts.append(
             {
                 "candidate_id": skill_path.parent.name,
                 "path": str(skill_path.relative_to(workspace)),
                 "content": content[:4000],
+                "status": status,
+                "package_type": str(manifest.get("package_type") or ""),
+                "skill_name": str(manifest.get("skill_name") or ""),
+                "target_path": str(manifest.get("target_path") or ""),
+                "created_at": str(manifest.get("created_at") or ""),
+                "source_refs": [str(item) for item in manifest.get("source_refs") or []],
+                "metadata": metadata,
             }
         )
         if len(drafts) >= limit:
@@ -309,6 +350,135 @@ def record_workflow_candidates_from_memory(
         )
         recorded += 1
     return recorded
+
+
+def _compact_candidate_summary(content: str, *, limit: int = 240) -> str:
+    normalized = " ".join(line.strip() for line in (content or "").splitlines() if line.strip())
+    return normalized[:limit] or "Skill candidate evidence is available for writer review."
+
+
+def _candidate_intent_from_manifest(candidate: dict[str, Any], workspace: Path) -> str:
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    status = str(candidate.get("status") or "").strip().lower()
+    package_type = str(candidate.get("package_type") or "").strip().lower()
+    target_path = str(candidate.get("target_path") or "").strip()
+    if status == "patch" or package_type == "patch":
+        return "patch"
+    if bool(metadata.get("overwrite_requested")):
+        return "patch"
+    try:
+        if int(metadata.get("patch_candidate_count") or 0) >= _PATCH_THRESHOLD:
+            return "patch"
+    except (TypeError, ValueError):
+        pass
+    if target_path and (workspace / target_path).exists():
+        return "patch"
+    return "promote"
+
+
+def _direct_candidate_from_package(candidate: dict[str, Any], *, workspace: Path) -> DirectSkillCandidate | None:
+    candidate_id = str(candidate.get("candidate_id") or "").strip()
+    if not candidate_id:
+        return None
+    status = str(candidate.get("status") or "").strip().lower()
+    if status in _TERMINAL_SKILL_CANDIDATE_STATUSES:
+        return None
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    content = str(candidate.get("content") or "")
+    skill_name = str(candidate.get("skill_name") or metadata.get("skill_name") or "").strip()
+    if not skill_name:
+        skill_name = _infer_skill_name(f"skill_candidate_package:{candidate_id}")
+    workflow_signature = str(metadata.get("workflow_signature") or f"skill_candidate_package:{candidate_id}").strip()
+    occurred_at = str(candidate.get("created_at") or metadata.get("last_updated_at") or "").strip()
+    if not occurred_at:
+        occurred_at = datetime.now(timezone.utc).isoformat()
+    intent = _candidate_intent_from_manifest(candidate, workspace)
+    source_refs = [str(item) for item in candidate.get("source_refs") or []]
+    source_refs.append(str(candidate.get("path") or f"evolution/skill_candidates/{candidate_id}"))
+    evidence = [
+        SessionWorkflowEvidence(
+            session_id=f"skill_candidate_package:{candidate_id}",
+            source="skill_candidate_package",
+            occurred_at=occurred_at,
+            status="success" if intent == "promote" else "workaround",
+            used_skill=False,
+            summary=_compact_candidate_summary(content),
+            assistant_reply="[OUTCOME:action_taken] " + _compact_candidate_summary(content),
+            tool_names=("skill_candidate_package", "skill_writer"),
+            loaded_skill_names=(),
+        )
+    ]
+    record = SkillCandidateRecord(
+        skill_name=skill_name,
+        workflow_signature=workflow_signature,
+        promote_candidates=source_refs if intent == "promote" else [],
+        patch_candidates=source_refs if intent == "patch" else [],
+        last_status="success" if intent == "promote" else "workaround",
+        last_note=_compact_candidate_summary(content),
+        blocker="",
+        last_updated_at=occurred_at,
+    )
+    return DirectSkillCandidate(
+        record=record,
+        evidence=evidence,
+        distillation_intent=intent,
+        candidate_id=candidate_id,
+    )
+
+
+def _direct_candidate_from_memory(candidate: dict[str, str]) -> DirectSkillCandidate | None:
+    entry_id = str(candidate.get("entry_id") or "").strip()
+    if not entry_id:
+        return None
+    occurred_at = str(candidate.get("timestamp") or "").strip() or datetime.now(timezone.utc).isoformat()
+    content = str(candidate.get("content") or "")
+    workflow_signature = f"memory_skill_candidate:{entry_id}"
+    evidence = [
+        SessionWorkflowEvidence(
+            session_id=workflow_signature,
+            source="memory_skill_candidate",
+            occurred_at=occurred_at,
+            status="success",
+            used_skill=False,
+            summary=_compact_candidate_summary(content),
+            assistant_reply="[OUTCOME:action_taken] " + _compact_candidate_summary(content),
+            tool_names=("memory_skill_candidate", "skill_writer"),
+            loaded_skill_names=(),
+        )
+    ]
+    record = SkillCandidateRecord(
+        skill_name=_infer_skill_name(workflow_signature),
+        workflow_signature=workflow_signature,
+        promote_candidates=[workflow_signature],
+        patch_candidates=[],
+        last_status="success",
+        last_note=_compact_candidate_summary(content),
+        blocker="",
+        last_updated_at=occurred_at,
+    )
+    return DirectSkillCandidate(
+        record=record,
+        evidence=evidence,
+        distillation_intent="promote",
+        candidate_id=entry_id,
+    )
+
+
+def _select_direct_skill_candidate(
+    *,
+    skill_candidate_drafts: list[dict[str, Any]],
+    memory_skill_candidates: list[dict[str, str]],
+    workspace: Path,
+) -> DirectSkillCandidate | None:
+    for candidate in skill_candidate_drafts:
+        direct = _direct_candidate_from_package(candidate, workspace=workspace)
+        if direct is not None:
+            return direct
+    for candidate in memory_skill_candidates:
+        direct = _direct_candidate_from_memory(candidate)
+        if direct is not None:
+            return direct
+    return None
 
 
 def _state_path(workspace: Path) -> Path:
@@ -637,6 +807,7 @@ def _promotion_gate_metadata(
     behavior_report: dict[str, Any] | None,
     artifact_gate_report: dict[str, Any] | None,
     regression_report: dict[str, Any],
+    referee_review: SkillRefereeReview | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -646,6 +817,7 @@ def _promotion_gate_metadata(
         "artifact_gate_report_id": _stable_report_id("artifact_gate", artifact_gate_report),
         "artifact_gate_report": artifact_gate_report,
         "regression_report": regression_report,
+        "referee_review": _referee_review_payload(referee_review) if referee_review is not None else None,
         **(extra or {}),
     }
 
@@ -948,7 +1120,7 @@ async def _draft_skill_with_llm(
     target_skill_name: str | None = None,
     evidence_contrast: str | None = None,
     memory_candidates: list[dict[str, str]] | None = None,
-    skill_candidate_drafts: list[dict[str, str]] | None = None,
+    skill_candidate_drafts: list[dict[str, Any]] | None = None,
     agent_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | None = None,
 ) -> DistilledSkillDraft:
@@ -1173,6 +1345,215 @@ async def _draft_skill_with_llm(
     )
 
 
+def _render_referee_review_markdown(
+    *,
+    decision: str,
+    scores: dict[str, int],
+    reason: str,
+) -> str:
+    score_lines = "\n".join(f"- {key}: {scores.get(key, 0)}" for key in _REFEREE_SCORE_KEYS)
+    return (
+        "# Skill Referee Review\n\n"
+        f"- decision: {decision}\n"
+        f"- reason: {reason or 'No reason supplied.'}\n\n"
+        "## Rubric Scores\n"
+        f"{score_lines}\n"
+    )
+
+
+def _normalize_referee_review(payload: dict[str, Any]) -> SkillRefereeReview:
+    raw_scores = payload.get("scores")
+    scores: dict[str, int] = {}
+    if isinstance(raw_scores, dict):
+        for key in _REFEREE_SCORE_KEYS:
+            try:
+                scores[key] = max(0, min(5, int(raw_scores.get(key) or 0)))
+            except (TypeError, ValueError):
+                scores[key] = 0
+    else:
+        scores = {key: 0 for key in _REFEREE_SCORE_KEYS}
+
+    decision = str(payload.get("decision") or "hold").strip().lower()
+    if decision not in {"approve", "hold", "reject"}:
+        decision = "hold"
+    reason = str(payload.get("reason") or "").strip()
+    review_markdown = str(payload.get("review_markdown") or "").strip()
+    if not review_markdown:
+        review_markdown = _render_referee_review_markdown(decision=decision, scores=scores, reason=reason)
+    return SkillRefereeReview(
+        decision=decision,
+        scores=scores,
+        reason=reason,
+        review_markdown=review_markdown,
+    )
+
+
+def _referee_review_passed(review: SkillRefereeReview) -> bool:
+    if review.decision != "approve":
+        return False
+    return all(int(review.scores.get(key) or 0) >= 3 for key in _REFEREE_SCORE_KEYS)
+
+
+def _referee_review_payload(review: SkillRefereeReview) -> dict[str, Any]:
+    return {
+        "decision": review.decision,
+        "scores": dict(review.scores),
+        "reason": review.reason,
+        "passed": _referee_review_passed(review),
+    }
+
+
+async def _review_skill_with_llm(
+    *,
+    model: Any,
+    workspace: Path,
+    draft: DistilledSkillDraft,
+    rendered_markdown: str,
+    final_decision: str,
+    evidence: list[SessionWorkflowEvidence],
+    verification_report: dict[str, Any],
+    artifact_gate_report: dict[str, Any] | None,
+    regression_report: dict[str, Any],
+    agent_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
+) -> SkillRefereeReview:
+    system_prompt = (
+        "<role>\n"
+        "You are the independent Skill Referee. You do not write or patch the skill. "
+        "You judge whether the Skill Writer's SKILL.md draft is a reusable, bounded "
+        "capability capsule rather than episodic memory, current task state, or a duplicate.\n"
+        "</role>\n\n"
+        "<rubric>\n"
+        "Score every dimension 0-5. Approval requires all scores >= 3.\n"
+        "- common_vs_episodic: reusable procedure vs one-off/session state\n"
+        "- scope: bounded trigger and non-trigger conditions\n"
+        "- overlap: does not duplicate an existing skill without reason\n"
+        "- safety: no sensitive, tenant-specific, or permission-expanding guidance\n"
+        "- eval_readiness: eval/failure cases and gate evidence are adequate\n"
+        "</rubric>\n\n"
+        "<output_contract>\n"
+        "Return raw JSON only with keys: decision, scores, reason, review_markdown. "
+        "decision must be approve|hold|reject. review_markdown must be a concise Markdown review.\n"
+        "</output_contract>"
+    )
+    evidence_lines = [
+        f"- source={item.source} session={item.session_id} status={item.status} summary={item.summary}"
+        for item in evidence[:8]
+    ]
+    prompt = (
+        f"final_decision: {final_decision}\n"
+        f"skill_name: {draft.name}\n"
+        f"description: {draft.description}\n"
+        f"reason: {draft.reason}\n\n"
+        "existing_skills:\n"
+        f"{_render_existing_skill_summaries(workspace)}\n\n"
+        "evidence:\n"
+        f"{chr(10).join(evidence_lines) or '(none)'}\n\n"
+        "verification_report:\n"
+        f"{json.dumps(verification_report, ensure_ascii=False, sort_keys=True, default=str)[:6000]}\n\n"
+        "artifact_gate_report:\n"
+        f"{json.dumps(artifact_gate_report or {}, ensure_ascii=False, sort_keys=True, default=str)[:4000]}\n\n"
+        "regression_report:\n"
+        f"{json.dumps(regression_report, ensure_ascii=False, sort_keys=True, default=str)[:4000]}\n\n"
+        "SKILL.md draft:\n"
+        f"{rendered_markdown[:12000]}\n"
+    )
+
+    from app.memory.metrics import record_autonomous_llm_call
+
+    client = create_llm_client_from_config(
+        with_llm_usage_context(
+            {
+                "provider": getattr(model, "provider"),
+                "model": getattr(model, "model"),
+                "api_key": getattr(model, "api_key"),
+                "base_url": getattr(model, "base_url", None),
+            },
+            source="skill_referee",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            metadata={"skill_name": draft.name, "final_decision": final_decision},
+        )
+    )
+    try:
+        response = await client.complete(
+            messages=[
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=prompt),
+            ],
+            temperature=0.1,
+            max_tokens=min(getattr(model, "max_output_tokens", None) or 4096, 4096),
+        )
+        payload = _parse_json_object(response.content or "")
+        record_autonomous_llm_call(source="skill_referee", outcome="success")
+        return _normalize_referee_review(payload)
+    except Exception:
+        record_autonomous_llm_call(source="skill_referee", outcome="failure")
+        raise
+    finally:
+        await client.close()
+
+
+async def _run_skill_referee_gate(
+    *,
+    model: Any,
+    workspace: Path,
+    candidate_id: str,
+    draft: DistilledSkillDraft,
+    rendered_markdown: str,
+    final_decision: str,
+    evidence: list[SessionWorkflowEvidence],
+    verification_report: dict[str, Any],
+    artifact_gate_report: dict[str, Any] | None,
+    regression_report: dict[str, Any],
+    agent_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+) -> tuple[SkillRefereeReview, str | None]:
+    try:
+        review = await _review_skill_with_llm(
+            model=model,
+            workspace=workspace,
+            draft=draft,
+            rendered_markdown=rendered_markdown,
+            final_decision=final_decision,
+            evidence=evidence,
+            verification_report=verification_report,
+            artifact_gate_report=artifact_gate_report,
+            regression_report=regression_report,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - referee failures hold, never promote
+        review = SkillRefereeReview(
+            decision="hold",
+            scores={key: 0 for key in _REFEREE_SCORE_KEYS},
+            reason=f"skill referee failed: {type(exc).__name__}",
+            review_markdown=(
+                "# Skill Referee Review\n\n"
+                "- decision: hold\n"
+                f"- reason: skill referee failed: {type(exc).__name__}\n"
+            ),
+        )
+
+    review_payload = {
+        **_referee_review_payload(review),
+        "review_markdown": review.review_markdown,
+    }
+    if (
+        write_skill_referee_review(
+            workspace=workspace,
+            candidate_id=candidate_id,
+            review_markdown=review.review_markdown,
+            review_payload=review_payload,
+        )
+        is None
+    ):
+        return review, "skill referee review could not be recorded"
+    if not _referee_review_passed(review):
+        return review, f"skill referee did not approve: {review.reason or review.decision}"
+    return review, None
+
+
 async def _write_distiller_audit_event(
     *,
     workspace: Path,
@@ -1241,13 +1622,20 @@ async def run_skill_distillation_cycle(
         state=state,
         current_session_id=current_session_id,
     )
+    direct_candidate: DirectSkillCandidate | None = None
     if not evidence:
-        return {
-            "status": "idle",
-            "processed_sessions": 0,
-            "workflow_candidates_recorded": workflow_candidates_recorded,
-            "memory_skill_candidates": len(memory_skill_candidates),
-        }
+        direct_candidate = _select_direct_skill_candidate(
+            skill_candidate_drafts=flywheel_skill_candidate_drafts,
+            memory_skill_candidates=memory_skill_candidates,
+            workspace=workspace,
+        )
+        if direct_candidate is None:
+            return {
+                "status": "idle",
+                "processed_sessions": 0,
+                "workflow_candidates_recorded": workflow_candidates_recorded,
+                "memory_skill_candidates": len(memory_skill_candidates),
+            }
 
     processed = 0
     last_cursor = (state.last_processed_at or "", state.last_processed_session_id or "")
@@ -1313,18 +1701,31 @@ async def run_skill_distillation_cycle(
         and len(record.patch_candidates) == 0
     ]
     promotable.sort(key=lambda item: (len(item.promote_candidates), item.last_updated_at), reverse=True)
-    if (not patchable and not promotable) or model is None:
+    if direct_candidate is None and not patchable and not promotable:
+        direct_candidate = _select_direct_skill_candidate(
+            skill_candidate_drafts=flywheel_skill_candidate_drafts,
+            memory_skill_candidates=memory_skill_candidates,
+            workspace=workspace,
+        )
+    if model is None:
+        return {"status": "candidate", "processed_sessions": processed}
+    if direct_candidate is None and not patchable and not promotable:
         return {"status": "candidate", "processed_sessions": processed}
 
-    distillation_intent = "patch" if patchable else "promote"
-    record = patchable[0] if patchable else promotable[0]
-    evidence_for_candidate = grouped.get(record.workflow_signature, [])
-    if not evidence_for_candidate:
-        evidence_for_candidate = [
-            item
-            for item in evidence
-            if _build_workflow_signature(item.tool_names).workflow_signature == record.workflow_signature
-        ]
+    if direct_candidate is not None:
+        distillation_intent = direct_candidate.distillation_intent
+        record = direct_candidate.record
+        evidence_for_candidate = direct_candidate.evidence
+    else:
+        distillation_intent = "patch" if patchable else "promote"
+        record = patchable[0] if patchable else promotable[0]
+        evidence_for_candidate = grouped.get(record.workflow_signature, [])
+        if not evidence_for_candidate:
+            evidence_for_candidate = [
+                item
+                for item in evidence
+                if _build_workflow_signature(item.tool_names).workflow_signature == record.workflow_signature
+            ]
 
     draft = await _draft_skill_with_llm(
         model=model,
@@ -1576,6 +1977,67 @@ async def run_skill_distillation_cycle(
                 "regression_report": regression_report,
             }
 
+        referee_review, referee_hold_reason = await _run_skill_referee_gate(
+            model=model,
+            workspace=workspace,
+            candidate_id=candidate["candidate_id"],
+            draft=effective_draft,
+            rendered_markdown=rendered,
+            final_decision="patch",
+            evidence=evidence_for_candidate,
+            verification_report=verification_report,
+            artifact_gate_report=artifact_gate_report,
+            regression_report=regression_report,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
+        if referee_hold_reason:
+            record_promotion_decision(
+                workspace,
+                candidate_id=candidate["candidate_id"],
+                decision="held",
+                reason=referee_hold_reason,
+                rollback_ref=patch_relative_path,
+                metadata=_promotion_gate_metadata(
+                    verification_report=verification_report,
+                    behavior_report=behavior_report,
+                    artifact_gate_report=artifact_gate_report,
+                    regression_report=regression_report,
+                    referee_review=referee_review,
+                ),
+            )
+            update_skill_candidate_record(
+                workspace,
+                workflow_signature=record.workflow_signature,
+                skill_name=effective_draft.name,
+                blocker="referee_failed",
+                last_status="defer",
+                last_note=referee_hold_reason,
+                last_updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            record_skill_lifecycle_event(
+                workspace,
+                skill_name=effective_draft.name,
+                status="defer",
+                note=referee_hold_reason,
+            )
+            update_skill_candidate_package_status(
+                workspace=workspace,
+                candidate_id=candidate["candidate_id"],
+                status="held",
+                reason=referee_hold_reason,
+            )
+            return {
+                "status": "deferred",
+                "processed_sessions": processed,
+                "reason": referee_hold_reason,
+                "verification_report": verification_report,
+                "artifact_gate_report": artifact_gate_report,
+                "regression_report": regression_report,
+                "referee_review": _referee_review_payload(referee_review),
+                **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
+            }
+
         save_result = _commit_skill_markdown_exact(
             workspace=workspace,
             target_relative_path=patch_relative_path,
@@ -1598,6 +2060,7 @@ async def run_skill_distillation_cycle(
                     behavior_report=behavior_report,
                     artifact_gate_report=artifact_gate_report,
                     regression_report=regression_report,
+                    referee_review=referee_review,
                     extra={"save_result": save_result[:500]},
                 ),
             )
@@ -1636,6 +2099,7 @@ async def run_skill_distillation_cycle(
                 behavior_report=behavior_report,
                 artifact_gate_report=artifact_gate_report,
                 regression_report=regression_report,
+                referee_review=referee_review,
                 extra={"save_result": save_result[:500]},
             ),
         )
@@ -1678,6 +2142,8 @@ async def run_skill_distillation_cycle(
             "artifact_gate_report": artifact_gate_report,
             "regression_report": regression_report,
             "workflow_candidates_recorded": workflow_candidates_recorded,
+            "referee_review": _referee_review_payload(referee_review),
+            **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
         }
 
     from app.services.evolution_ledger import (
@@ -1807,6 +2273,66 @@ async def run_skill_distillation_cycle(
             "regression_report": regression_report,
         }
 
+    referee_review, referee_hold_reason = await _run_skill_referee_gate(
+        model=model,
+        workspace=workspace,
+        candidate_id=candidate["candidate_id"],
+        draft=draft,
+        rendered_markdown=rendered,
+        final_decision="promote",
+        evidence=evidence_for_candidate,
+        verification_report=verification_report,
+        artifact_gate_report=artifact_gate_report,
+        regression_report=regression_report,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+    )
+    if referee_hold_reason:
+        record_promotion_decision(
+            workspace,
+            candidate_id=candidate["candidate_id"],
+            decision="held",
+            reason=referee_hold_reason,
+            metadata=_promotion_gate_metadata(
+                verification_report=verification_report,
+                behavior_report=behavior_report,
+                artifact_gate_report=artifact_gate_report,
+                regression_report=regression_report,
+                referee_review=referee_review,
+            ),
+        )
+        update_skill_candidate_record(
+            workspace,
+            workflow_signature=record.workflow_signature,
+            skill_name=draft.name,
+            blocker="referee_failed",
+            last_status="defer",
+            last_note=referee_hold_reason,
+            last_updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        record_skill_lifecycle_event(
+            workspace,
+            skill_name=draft.name,
+            status="defer",
+            note=referee_hold_reason,
+        )
+        update_skill_candidate_package_status(
+            workspace=workspace,
+            candidate_id=candidate["candidate_id"],
+            status="held",
+            reason=referee_hold_reason,
+        )
+        return {
+            "status": "deferred",
+            "processed_sessions": processed,
+            "reason": referee_hold_reason,
+            "verification_report": verification_report,
+            "artifact_gate_report": artifact_gate_report,
+            "regression_report": regression_report,
+            "referee_review": _referee_review_payload(referee_review),
+            **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
+        }
+
     save_result = _commit_skill_markdown_exact(
         workspace=workspace,
         target_relative_path=rollback_ref,
@@ -1828,6 +2354,7 @@ async def run_skill_distillation_cycle(
                 behavior_report=behavior_report,
                 artifact_gate_report=artifact_gate_report,
                 regression_report=regression_report,
+                referee_review=referee_review,
                 extra={"save_result": save_result[:500]},
             ),
         )
@@ -1866,6 +2393,7 @@ async def run_skill_distillation_cycle(
             behavior_report=behavior_report,
             artifact_gate_report=artifact_gate_report,
             regression_report=regression_report,
+            referee_review=referee_review,
             extra={"save_result": save_result[:500]},
         ),
     )
@@ -1923,4 +2451,6 @@ async def run_skill_distillation_cycle(
         "promoted_memory_candidates": promoted_memory_ids,
         "artifact_gate_report": artifact_gate_report,
         "regression_report": regression_report,
+        "referee_review": _referee_review_payload(referee_review),
+        **({"direct_candidate_id": direct_candidate.candidate_id} if direct_candidate else {}),
     }

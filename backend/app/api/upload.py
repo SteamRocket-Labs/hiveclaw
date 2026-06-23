@@ -178,12 +178,20 @@ async def save_upload_for_agent(
         save_path.write_bytes(content)
         workspace_path = f"workspace/uploads/{save_path.name}"
     else:
-        # Fallback: save to /tmp (legacy behavior)
-        fallback_dir = Path("/tmp/hive_uploads")
-        fallback_dir.mkdir(exist_ok=True)
-        file_id = str(uuid.uuid4())[:8]
-        save_path = fallback_dir / f"{file_id}_{safe_filename}"
+        tenant_segment = str(tenant_id) if tenant_id else "no_tenant"
+        user_segment = str(user_id) if user_id else "anonymous"
+        uploads_dir = WORKSPACE_ROOT / "local_agents" / tenant_segment / "users" / user_segment / "workspace" / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        save_path = uploads_dir / safe_filename
+        if save_path.exists():
+            stem = save_path.stem
+            suffix = save_path.suffix
+            counter = 1
+            while save_path.exists():
+                save_path = uploads_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
         save_path.write_bytes(content)
+        workspace_path = f"workspace/uploads/{save_path.name}"
 
     # Convert text/documents to canonical Markdown artifacts. Keep image handling
     # separate because vision-capable chat models still consume typed image parts.
@@ -207,7 +215,7 @@ async def save_upload_for_agent(
                 render_conversion_preview,
             )
 
-            workspace_root = (WORKSPACE_ROOT / str(agent_id)).resolve() if agent_id else save_path.parent.resolve()
+            workspace_root = (WORKSPACE_ROOT / str(agent_id)).resolve() if agent_id else uploads_dir.parent.parent.resolve()
             converted = DocumentConversionService().convert(
                 DocumentConversionRequest(
                     source_path=save_path,

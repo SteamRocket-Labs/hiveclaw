@@ -4,7 +4,7 @@
 >
 > Scope: 单 Agent / Giant Agent 的 memory 生命周期。A2A、Team、Workflow、Skill promotion 只在它们和 memory 边界相交时讨论。
 >
-> Status: Implemented substrate. The 2026-06-22 implementation added the session hot-memory lane, Memory Dream workspace staging, conditional T2 reviewer policy, and the Dream compatibility entrypoint that runs Memory Dream before Soul Dream. Prompt wording/eval tuning remains a later prompt-layer pass.
+> Status: Implemented substrate. The 2026-06-22 implementation added the session hot-memory lane, Memory Dream workspace staging, mandatory LLM-authored T2 Memory Gate review, and the Dream compatibility entrypoint that runs Memory Dream before Soul Dream. Prompt wording/eval tuning remains a later prompt-layer pass.
 
 ## 0. Bottom Line
 
@@ -27,13 +27,13 @@ Hive 当前的 auto_dream 更像 T3 -> soul.md 的 IdentityPromoter。
 
 1. 把 Dream 拆成 `Memory Dream` 和 `Soul Dream`。
 2. 为当前 session 增加 CC-style `session_memory.md` 热记忆 lane。
-3. 把过多的 memory "agents" 收敛为少数隔离 worker + 条件升级 reviewer，复杂度放回 Platform Gate、权限、审计、回滚和 soul/skill 高风险晋升上。
+3. 把过多的 memory "agents" 收敛为少数隔离 worker + mandatory Memory Gate review，复杂度放回 Platform Gate、权限、审计、回滚和 soul/skill 高风险晋升上。
 
 Implementation note 2026-06-22:
 
-- `backend/app/services/session_memory.py` now writes CC-style hot session memory under `memory/sessions/<session_id>/session_memory.md`, with old `runtime_artifacts/session_memory.md` and `workspace/session_memory.md` retained as read-only migration fallbacks.
-- `backend/app/memory/t2/segment_package.py` now uses low-risk self-check review for ordinary T2 extraction and escalates to independent Memory Gate only when sensitivity, principal scope, risk flags, low confidence, non-standalone continuity, or high-risk terms require it.
-- `backend/app/services/memory_dream.py` implements the Memory Dream lane: reviewed T2 package selection, `.dream_workspace` sync, rollout summaries, `phase2_workspace_diff.md`, baseline finalization, and T3 consolidation batch staging.
+- `backend/app/services/session_memory.py` now writes CC-style hot session memory under `memory/session_state/<session_id>/session_memory.md`. The writer is LLM-primary (`session_memory.writer.v1`), with deterministic projection only as an observable no-model/failure fallback; old `memory/sessions/<session_id>/session_memory.md`, `runtime_artifacts/session_memory.md`, and `workspace/session_memory.md` are retained as read-only migration fallbacks.
+- `backend/app/memory/t2/segment_package.py` now requires Memory Gate LLM review for every T2 Segment Package. There is no low-risk platform-authored self-review path; if the Memory Gate is unavailable, the package is held rather than committed.
+- `backend/app/services/memory_dream.py` implements the Memory Dream lane: reviewed T2/T2.5 package selection, `.staging/dream_workspace` sync, rollout summaries, `phase2_workspace_diff.md`, baseline finalization, and T3 consolidation batch staging.
 - `backend/app/services/auto_dream.py` remains the compatibility scheduler entrypoint, but now runs Memory Dream first and then the existing Soul Dream / identity-promotion lane.
 
 ## 1. North Star
@@ -282,13 +282,13 @@ Status: implemented.
 Add a CC-style session memory surface:
 
 ```text
-<AGENT_DATA_DIR>/<agent_id>/memory/sessions/<session_id>/session_memory.md
+<AGENT_DATA_DIR>/<agent_id>/memory/session_state/<session_id>/session_memory.md
 ```
 
 Contract:
 
-- Written by restricted forked worker.
-- Triggered by token/tool-call/session-progress thresholds.
+- Written by the Session Memory Writer LLM when a memory model is available; deterministic projection is only the fallback when the writer cannot run.
+- Triggered from the runtime hooks that refresh current continuity: response complete, pre-compaction, turn stop, and session close.
 - Used by resume, compact, interruption recovery, and current session continuation.
 - Contains current state, task spec, files/artifacts touched, open questions, errors/corrections, worklog.
 - Not absorbed into T3 unless later T2/T3 pipeline finds durable signal.
@@ -303,20 +303,19 @@ Change normal T2 from multi-agent pipeline to single structured extraction packa
 source_bundle.json
 summary.md
 labels.md
-self_review.md
+review.md
 manifest.json
 ```
 
-Keep current files for compatibility, but treat reviewer as conditional:
-
-- low-risk: extractor self-check + Platform Gate
-- high-risk: Memory Gate Agent review
+Every Segment Package review is now Memory Gate LLM authored. Platform Gate can
+hold a package when the Memory Gate is unavailable, but it no longer manufactures
+low-risk `self_review.md` or `extractor_self_check` approvals.
 
 2026-06-22 branch/rollback-aware completion:
 
 - `source_bundle.json` now carries `lineage`, `visible_source_view`, `context_refs`, and `excluded_refs`.
 - `projection_only` and `semantic_memory_eligible=false` T0 events stay in JSONL truth but are excluded from semantic T2 input.
-- Branch / rollback / regenerate / edit / compaction-replacement lineage risk forces independent Memory Gate review instead of extractor self-check.
+- Branch / rollback / regenerate / edit / compaction-replacement lineage remains visible in the source bundle and review context; Memory Gate review is mandatory for all packages, not only risky packages.
 - T2 package manifests persist the same lineage and visible-source view so downstream T2.5/T3 jobs can replay the exact branch view.
 - T2.5 episode stitching is lineage-aware: default adjacent-package selection only picks compatible branch lineage; incompatible adjacent packages become `lineage_warnings` and cannot be approved for direct `t3_intake`.
 
@@ -327,7 +326,7 @@ Status: implemented as staging/workspace substrate. Semantic T3 patch writing st
 Add Codex-style consolidation workspace behavior:
 
 ```text
-memory/.dream_workspace/
+memory/.staging/dream_workspace/
   raw_t2_inputs.md
   rollout_summaries/
   phase2_workspace_diff.md
@@ -414,8 +413,8 @@ This work is complete only when:
 
 The 2026-06-22 substrate implementation resolves the pre-implementation questions this way:
 
-1. The Hive-native compact map remains `memory/wiki_map.md`; `memory_summary.md` can be added later as a Codex-compatible alias if prompt-layer work needs it.
-2. `session_memory.md` lives under `memory/sessions/<session_id>/session_memory.md`, not inside the T0 segment and not in `runtime_artifacts` as the primary path.
+1. The Hive-native compact map is `memory/indexes/wiki_map.md`; `memory_summary.md` can be added later as a Codex-compatible alias if prompt-layer work needs it.
+2. `session_memory.md` lives under `memory/session_state/<session_id>/session_memory.md`, not inside the T0 segment and not in `runtime_artifacts` as the primary path.
 3. `auto_dream.py` remains the compatibility scheduler entrypoint; project-memory consolidation moved into `memory_dream.py`, while the existing identity-promotion path is treated as Soul Dream.
 4. Memory Dream uses a manifest/hash baseline and `phase2_workspace_diff.md` first. A real git baseline is optional future optimization, not required for the substrate.
 5. Independent Memory Gate review is triggered by concrete risk signals: PL3/PL4 sensitivity, non-owner principal scope, explicit risk flags, confidence below 0.85, non-closed/non-standalone continuity, branch/rollback/regenerate/edit lineage, compaction-replacement lineage, or high-risk terms such as soul/identity/permission/credential/secret/capability/skill_seed.

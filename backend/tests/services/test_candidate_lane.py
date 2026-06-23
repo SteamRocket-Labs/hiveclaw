@@ -145,6 +145,41 @@ def test_mark_t3_entry_promoted_stamps_marker(tmp_path) -> None:
     assert load_memory_skill_candidates(tmp_path, agent_id) == []
 
 
+def test_mark_t3_xml_entry_promoted_stamps_attributes(tmp_path) -> None:
+    from app.memory.md_store import mark_t3_entry_promoted
+    from app.services.skill_distiller import load_memory_skill_candidates
+
+    agent_id = uuid.uuid4()
+    path = _write_strategies(
+        tmp_path,
+        agent_id,
+        "# T3 Capabilities\n\n"
+        '<t3_capability id="mem_xml_aaa" container="skill_candidate" created_at="2026-06-23T00:00:00Z">\n'
+        "  <title>Reusable research verification loop</title>\n"
+        "  <source_refs>\n"
+        "    <source_ref>memory/t2/sessions/s1/segments/seg1/summary.md#t2_summary</source_ref>\n"
+        "  </source_refs>\n"
+        "</t3_capability>\n",
+    )
+
+    candidates = load_memory_skill_candidates(tmp_path, agent_id)
+    assert [candidate["entry_id"] for candidate in candidates] == ["mem_xml_aaa"]
+
+    ok = mark_t3_entry_promoted(
+        tmp_path,
+        agent_id,
+        entry_id="mem_xml_aaa",
+        promoted_to="skill",
+        target="research-loop",
+    )
+    assert ok
+
+    body = path.read_text(encoding="utf-8")
+    assert 'promoted_to="skill"' in body
+    assert 'promoted_target="research-loop"' in body
+    assert load_memory_skill_candidates(tmp_path, agent_id) == []
+
+
 # ── Workflow candidate lane: recorded into the evolution ledger ──
 
 

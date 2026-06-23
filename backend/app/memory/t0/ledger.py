@@ -56,6 +56,7 @@ class T0SealResult:
     segment_id: str
     sequence: int
     jsonl_path: Path | None = None
+    event_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +162,13 @@ def append_t0_session_event(
     )
     segment["events_path"] = _segment_events_path(segment).as_posix()
     segment["last_event_hash"] = event_record["event_hash"]
+    _record_turn_start_metadata(
+        segment,
+        event_id=event_id,
+        event_type=event_type,
+        role=role,
+        metadata=event_metadata,
+    )
     index["next_sequence"] = sequence + 1
     index["updated_at"] = _iso(now)
     index["truth_surface"] = "events.jsonl"
@@ -208,7 +216,7 @@ def seal_t0_session_segment(
     path = session_dir / segment["path"]
     jsonl_path = session_dir / _segment_events_path(segment)
     event_id = _new_event_id()
-    event_metadata = {"reason": reason, **_clean_metadata(metadata)}
+    event_metadata = _boundary_metadata(reason=reason, event_id=event_id, metadata=metadata)
     event_record = _build_event_record(
         agent_id=agent_id,
         session_id=session_id,
@@ -252,6 +260,7 @@ def seal_t0_session_segment(
     segment["state"] = "sealed"
     segment["sealed_at"] = _iso(now)
     segment["seal_reason"] = reason
+    _record_turn_boundary_metadata(segment, event_id=event_id, metadata=event_metadata)
     index["active_segment_id"] = None
     index["next_sequence"] = sequence + 1
     index["updated_at"] = _iso(now)
@@ -259,7 +268,13 @@ def seal_t0_session_segment(
     index["projection_surface"] = "source.md"
     index["last_event_hash"] = event_record["event_hash"]
     _write_index(session_dir, index)
-    return T0SealResult(path=path, segment_id=str(segment["segment_id"]), sequence=sequence, jsonl_path=jsonl_path)
+    return T0SealResult(
+        path=path,
+        segment_id=str(segment["segment_id"]),
+        sequence=sequence,
+        jsonl_path=jsonl_path,
+        event_id=event_id,
+    )
 
 
 def import_legacy_t0_file(
@@ -831,6 +846,55 @@ def _clean_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
         else:
             cleaned[str(key)] = str(value)
     return cleaned
+
+
+def _record_turn_start_metadata(
+    segment: dict[str, Any],
+    *,
+    event_id: str,
+    event_type: str,
+    role: str | None,
+    metadata: dict[str, Any],
+) -> None:
+    for key in ("turn_id", "intent_id", "runtime_task_id", "request_id", "trace_id"):
+        value = metadata.get(key)
+        if value not in (None, ""):
+            segment.setdefault(key, value)
+
+    normalized_event_type = str(event_type or "").strip().lower()
+    normalized_role = str(role or "").strip().lower()
+    if normalized_role == "user" or normalized_event_type in {"user_message", "user_prompt_submit"}:
+        segment.setdefault("start_event_id", event_id)
+        segment["user_prompt_submit_event_id"] = str(metadata.get("user_prompt_submit_event_id") or event_id)
+
+
+def _boundary_metadata(*, reason: str, event_id: str, metadata: dict[str, Any] | None) -> dict[str, Any]:
+    cleaned = _clean_metadata(metadata)
+    event_metadata = {"reason": reason, **cleaned, "boundary_event_id": event_id}
+    checkpoint_kind = str(event_metadata.get("checkpoint_kind") or "").strip()
+    if checkpoint_kind == "user_turn_stop":
+        event_metadata["turn_stop_event_id"] = event_id
+    elif checkpoint_kind in {"turn_abort", "stop_failure", "turn_failure"}:
+        event_metadata["turn_abort_event_id"] = event_id
+    return event_metadata
+
+
+def _record_turn_boundary_metadata(segment: dict[str, Any], *, event_id: str, metadata: dict[str, Any]) -> None:
+    segment["boundary_event_id"] = event_id
+    for key in (
+        "turn_id",
+        "intent_id",
+        "checkpoint_kind",
+        "turn_stop_event_id",
+        "turn_abort_event_id",
+        "user_prompt_submit_event_id",
+        "runtime_task_id",
+        "request_id",
+        "trace_id",
+    ):
+        value = metadata.get(key)
+        if value not in (None, ""):
+            segment[key] = value
 
 
 def _utc_now(value: datetime | None = None) -> datetime:

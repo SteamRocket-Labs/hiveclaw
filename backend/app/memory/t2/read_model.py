@@ -1,7 +1,8 @@
 """Read-only views over canonical T2 Segment Packages.
 
-This module intentionally reads only
-``memory/sessions/<session_id>/segments/<segment_id>`` packages. Legacy
+This module reads canonical
+``memory/t2/sessions/<session_id>/segments/<segment_id>`` packages first, with
+read-only compatibility for legacy ``memory/sessions`` packages. Legacy
 ``memory/learnings/*.md`` files are compatibility artifacts and must not feed
 runtime memory, heartbeat, or self-evolution context.
 """
@@ -46,26 +47,31 @@ def load_t2_package_snapshots(
 
     root = Path(data_root)
     agent_root = root / str(agent_id)
-    sessions_root = agent_root / "memory" / "sessions"
-    if not sessions_root.exists():
-        return [], {}
 
     snapshots: list[T2PackageSnapshot] = []
     current_mtimes: dict[str, float] = {}
-    manifest_paths = sorted(
-        [*sessions_root.glob("*/segments/*/manifest.json"), *sessions_root.glob("*/episodes/*/manifest.json")]
-    )
-    for manifest_path in manifest_paths:
-        package_dir = manifest_path.parent
-        rel_path = _relative_package_path(agent_root, package_dir)
-        updated_mtime = _package_mtime(package_dir)
-        current_mtimes[rel_path] = updated_mtime
-        if known_mtimes is not None and updated_mtime <= float(known_mtimes.get(rel_path, 0.0)):
+    seen: set[str] = set()
+    for sessions_root in (agent_root / "memory" / "t2" / "sessions", agent_root / "memory" / "sessions"):
+        if not sessions_root.exists():
             continue
+        manifest_paths = sorted(
+            [*sessions_root.glob("*/segments/*/manifest.json"), *sessions_root.glob("*/episodes/*/manifest.json")]
+        )
+        for manifest_path in manifest_paths:
+            package_dir = manifest_path.parent
+            rel_path = _relative_package_path(agent_root, package_dir)
+            updated_mtime = _package_mtime(package_dir)
+            current_mtimes[rel_path] = updated_mtime
+            if known_mtimes is not None and updated_mtime <= float(known_mtimes.get(rel_path, 0.0)):
+                continue
 
-        snapshot = _load_snapshot(package_dir=package_dir, agent_root=agent_root, updated_mtime=updated_mtime)
-        if snapshot is not None:
-            snapshots.append(snapshot)
+            snapshot = _load_snapshot(package_dir=package_dir, agent_root=agent_root, updated_mtime=updated_mtime)
+            if snapshot is not None:
+                dedupe_key = _package_identity_key(snapshot.rel_path)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                snapshots.append(snapshot)
 
     snapshots.sort(key=lambda item: item.updated_mtime, reverse=True)
     if limit is not None:
@@ -158,6 +164,15 @@ def _package_mtime(package_dir: Path) -> float:
 
 def _relative_package_path(agent_root: Path, package_dir: Path) -> str:
     try:
-        return package_dir.relative_to(agent_root / "memory").as_posix()
+        return package_dir.relative_to(agent_root).as_posix()
     except ValueError:
         return package_dir.as_posix()
+
+
+def _package_identity_key(rel_path: str) -> str:
+    normalized = str(rel_path).strip().strip("/")
+    if normalized.startswith("memory/t2/sessions/"):
+        return normalized.removeprefix("memory/t2/")
+    if normalized.startswith("memory/sessions/"):
+        return normalized.removeprefix("memory/")
+    return normalized

@@ -186,6 +186,9 @@ class AgentInvocationRequest:
     # this so the full report is not truncated at the model's chat default; the
     # kernel feeds it into get_max_tokens (still clamped to the hard limit).
     max_output_tokens: int | None = None
+    # Durable chat runtimes append their terminal assistant transcript after the
+    # kernel returns; they emit TURN_STOP themselves once that write has committed.
+    emit_turn_stop: bool = True
 
 
 @dataclass(slots=True)
@@ -211,6 +214,34 @@ def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
         return metadata
     session_context.metadata = {}
     return session_context.metadata
+
+
+def _prefixed_turn_id(prefix: str, value: Any) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith(f"{prefix}-"):
+        return raw
+    if not raw:
+        raw = uuid.uuid4().hex
+    return f"{prefix}-{raw}"
+
+
+def _ensure_turn_metadata(request: AgentInvocationRequest) -> dict[str, Any]:
+    metadata = _session_metadata(request.session_context)
+    seed = (
+        metadata.get("turn_id")
+        or metadata.get("runtime_task_id")
+        or metadata.get("request_id")
+        or request.memory_session_id
+        or uuid.uuid4().hex
+    )
+    turn_id = _prefixed_turn_id("turn", metadata.get("turn_id") or seed)
+    intent_seed = metadata.get("intent_id") or metadata.get("request_id") or turn_id.removeprefix("turn-")
+    intent_id = _prefixed_turn_id("intent", intent_seed)
+    metadata["turn_id"] = turn_id
+    metadata["intent_id"] = intent_id
+    if request.session_context is not None:
+        request.session_context.metadata = metadata
+    return metadata
 
 
 def _latest_user_prompt(messages: list[dict] | tuple[dict, ...] | None) -> str:
@@ -1202,7 +1233,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         from app.runtime.hooks import HookEvent, emit_hook
 
         _session_source = request.session_context.source if request.session_context else "runtime"
-        session_metadata = _session_metadata(request.session_context)
+        session_metadata = _ensure_turn_metadata(request)
         prompt_text = _latest_user_prompt(request.messages)
         prompt_result = await emit_hook(
             HookEvent.USER_PROMPT_SUBMIT,
@@ -1214,6 +1245,10 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             metadata={
                 "tenant_id": session_metadata.get("tenant_id"),
                 "runtime_task_id": session_metadata.get("runtime_task_id") or session_metadata.get("task_id"),
+                "request_id": session_metadata.get("request_id"),
+                "trace_id": session_metadata.get("trace_id"),
+                "turn_id": session_metadata.get("turn_id"),
+                "intent_id": session_metadata.get("intent_id"),
                 "agent_name": request.agent_name,
                 "execution_mode": request.invocation_scope,
             },
@@ -1239,6 +1274,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         from app.runtime.hooks import HookEvent, emit_hook
 
         _session_source = request.session_context.source if request.session_context else "runtime"
+        session_metadata = _ensure_turn_metadata(request)
         await emit_hook(
             HookEvent.SESSION_START,
             agent_id=request.agent_id,
@@ -1251,6 +1287,12 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
                 else None,
                 "turn_route_reason": turn_route_metadata["reason"],
                 "execution_mode": request.invocation_scope,
+                "tenant_id": session_metadata.get("tenant_id"),
+                "runtime_task_id": session_metadata.get("runtime_task_id") or session_metadata.get("task_id"),
+                "request_id": session_metadata.get("request_id"),
+                "trace_id": session_metadata.get("trace_id"),
+                "turn_id": session_metadata.get("turn_id"),
+                "intent_id": session_metadata.get("intent_id"),
             },
         )
     except Exception as _start_err:
@@ -1268,12 +1310,18 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         from app.runtime.hooks import HookEvent, emit_hook
 
         _session_source = request.session_context.source if request.session_context else "runtime"
-        session_metadata = _session_metadata(request.session_context)
+        session_metadata = _ensure_turn_metadata(request)
         _hook_metadata = {
             "agent_name": request.agent_name,
             "tenant_id": session_metadata.get("tenant_id"),
+            "runtime_task_id": session_metadata.get("runtime_task_id") or session_metadata.get("task_id"),
+            "request_id": session_metadata.get("request_id"),
+            "trace_id": session_metadata.get("trace_id"),
+            "turn_id": session_metadata.get("turn_id"),
+            "intent_id": session_metadata.get("intent_id"),
             "turn_count": len(completed_messages),
             "reason": "invoke_return",
+            "checkpoint_kind": "user_turn_stop",
             "important_files": list(getattr(request.session_context, "recent_files", []) or [])
             if request.session_context
             else [],
@@ -1290,14 +1338,15 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             messages=completed_messages,
             metadata=_hook_metadata,
         )
-        await emit_hook(
-            HookEvent.SESSION_CLOSE,
-            agent_id=request.agent_id,
-            session_id=request.memory_session_id,
-            source=_session_source,
-            messages=completed_messages,
-            metadata=_hook_metadata,
-        )
+        if request.emit_turn_stop:
+            await emit_hook(
+                HookEvent.TURN_STOP,
+                agent_id=request.agent_id,
+                session_id=request.memory_session_id,
+                source=_session_source,
+                messages=completed_messages,
+                metadata=_hook_metadata,
+            )
     except Exception as _close_err:
         logging.getLogger(__name__).debug("[Invoker] response/session close hooks failed (non-fatal): %s", _close_err)
     return AgentInvocationResult(

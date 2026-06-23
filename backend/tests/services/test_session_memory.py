@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from uuid import uuid4
+import json
+
+import pytest
 
 
 def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> None:
@@ -32,7 +35,8 @@ def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> Non
 
     content = path.read_text(encoding="utf-8")
 
-    assert path == tmp_path / str(agent_id) / "memory" / "sessions" / session_id / "session_memory.md"
+    assert path == tmp_path / str(agent_id) / "memory" / "session_state" / session_id / "session_memory.md"
+    assert not (tmp_path / str(agent_id) / "memory" / "sessions" / session_id / "session_memory.md").exists()
     assert not (tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md").exists()
     assert not (tmp_path / str(agent_id) / "workspace" / "session_memory.md").exists()
     assert content.startswith("---\n")
@@ -94,6 +98,81 @@ def test_build_session_memory_payload_from_messages_detects_chinese_future_steps
         "下一步我会修复 bakeoff 的 timeout 评分。",
         "然后修复前端删除确认。",
     ]
+
+
+@pytest.mark.asyncio
+async def test_build_session_memory_payload_with_llm_prefers_llm_writer(monkeypatch) -> None:
+    from app.services import session_memory
+
+    async def fake_model_config(_tenant_id):
+        return {"provider": "fake", "model": "fake-session-memory"}
+
+    async def fake_writer(*, model_config, messages, metadata, agent_id, tenant_id):
+        assert model_config["model"] == "fake-session-memory"
+        assert metadata["session_id"] == "session-llm"
+        assert str(agent_id)
+        assert str(tenant_id)
+        assert messages[0]["role"] == "user"
+        return json.dumps(
+            {
+                "session_title": "LLM 写入的会话标题",
+                "current_state": "LLM 识别出的当前状态。",
+                "task_spec": "LLM 识别出的任务目标。",
+                "important_files": ["backend/app/services/session_memory.py"],
+                "workflow": ["检查链路", "修复断点", "跑测试"],
+                "errors_corrections": ["旧路径是机械投影。"],
+                "key_results": ["Session Memory 进入 LLM-primary 写入。"],
+                "pending_work": ["继续验证 hook 接线。"],
+                "last_successful_step": "完成 LLM writer 红测。",
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(session_memory, "_get_session_memory_model_config", fake_model_config)
+    monkeypatch.setattr(session_memory, "_run_session_memory_llm", fake_writer)
+
+    payload = await session_memory.build_session_memory_payload_with_llm(
+        [{"role": "user", "content": "请检查 memory 链路。"}],
+        metadata={"session_id": "session-llm", "source": "turn_stop"},
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+
+    assert payload.session_id == "session-llm"
+    assert payload.source == "turn_stop"
+    assert payload.current_state == "LLM 识别出的当前状态。"
+    assert payload.task_spec == "LLM 识别出的任务目标。"
+    assert payload.pending_work == ["继续验证 hook 接线。"]
+    assert payload.last_successful_step == "完成 LLM writer 红测。"
+
+
+@pytest.mark.asyncio
+async def test_build_session_memory_payload_with_llm_falls_back_without_model(monkeypatch) -> None:
+    from app.services import session_memory
+
+    async def fake_model_config(_tenant_id):
+        return None
+
+    async def unexpected_writer(**_kwargs):
+        raise AssertionError("LLM writer should not run without model config")
+
+    monkeypatch.setattr(session_memory, "_get_session_memory_model_config", fake_model_config)
+    monkeypatch.setattr(session_memory, "_run_session_memory_llm", unexpected_writer)
+
+    payload = await session_memory.build_session_memory_payload_with_llm(
+        [
+            {"role": "user", "content": "请继续补齐 Session Memory。"},
+            {"role": "assistant", "content": "我已经完成了 T2 Memory Gate 修复。"},
+            {"role": "assistant", "content": "下一步我会验证 hook 接线。"},
+        ],
+        metadata={"session_id": "fallback-session", "source": "turn_stop"},
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+
+    assert payload.session_id == "fallback-session"
+    assert payload.current_state == "我已经完成了 T2 Memory Gate 修复。"
+    assert payload.pending_work == ["下一步我会验证 hook 接线。"]
 
 
 def test_merge_session_memory_into_recovery_manifest_restores_pending_work(tmp_path: Path) -> None:
@@ -223,9 +302,32 @@ def test_update_session_memory_migrates_legacy_workspace_file(tmp_path: Path) ->
         data_root=tmp_path,
     )
 
-    assert new_path == tmp_path / str(agent_id) / "memory" / "sessions" / "session-new" / "session_memory.md"
+    assert new_path == tmp_path / str(agent_id) / "memory" / "session_state" / "session-new" / "session_memory.md"
     assert new_path.exists()
     assert not legacy_path.exists()
+
+
+def test_update_session_memory_retires_legacy_memory_sessions_hot_file(tmp_path: Path) -> None:
+    from app.services.session_memory import SessionMemoryPayload, update_session_memory
+
+    agent_id = uuid4()
+    legacy_hot = tmp_path / str(agent_id) / "memory" / "sessions" / "session-new" / "session_memory.md"
+    legacy_hot.parent.mkdir(parents=True, exist_ok=True)
+    legacy_hot.write_text("# Session Memory\n\nlegacy hot state", encoding="utf-8")
+
+    new_path = update_session_memory(
+        agent_id,
+        SessionMemoryPayload(
+            session_id="session-new",
+            current_state="Canonical session_state path.",
+            task_spec="Retire hot files from T2 package namespace.",
+        ),
+        data_root=tmp_path,
+    )
+
+    assert new_path == tmp_path / str(agent_id) / "memory" / "session_state" / "session-new" / "session_memory.md"
+    assert new_path.exists()
+    assert not legacy_hot.exists()
 
 
 def test_update_session_memory_caps_lists_and_worklog(tmp_path: Path) -> None:

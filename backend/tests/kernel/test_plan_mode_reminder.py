@@ -25,12 +25,18 @@ def test_full_reminder_carries_the_load_bearing_constraints():
     assert "read-only" in full
     assert "exit_plan_mode" in full
     assert "assumption" in full
+    assert "only valid ways to end" in full
+    assert "decision-complete" in full
+    assert "targeted read-only exploration" in full
+    assert "private scratchpad" in full
+    assert "not the approval artifact" in full
 
 
 def test_sparse_reminder_is_shorter_but_keeps_exit_and_readonly():
     sparse = _PLAN_MODE_REMINDER_SPARSE
     assert "exit_plan_mode" in sparse
     assert "read-only" in sparse
+    assert "only valid ways to end" in sparse
     # Sparse is a per-round nudge, not the full briefing.
     assert len(sparse) < len(_PLAN_MODE_REMINDER_FULL)
 
@@ -76,6 +82,15 @@ def test_sparse_reminder_routes_clarification_and_plan_body():
     sparse = _PLAN_MODE_REMINDER_SPARSE
     assert "ask_user_question" in sparse
     assert "plan_markdown" in sparse
+
+
+def test_plan_file_hint_makes_file_the_plan_source():
+    from app.runtime.prompts.runtime_reminders import PLAN_MODE_FILE_HINT
+
+    hint = PLAN_MODE_FILE_HINT.format(plan_file="workspace/plans/session.plan.md")
+    assert "workspace/plans/session.plan.md" in hint
+    assert "source of plan_markdown" in hint
+    assert "exact file" in hint
 
 
 # Tool-intercept activation notices were removed with explicit-only Plan Mode.

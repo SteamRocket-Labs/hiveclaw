@@ -1,0 +1,25 @@
+{
+  "name": "@hiveclaw243/hive-bridge",
+  "version": "0.1.4",
+  "description": "Hive Local Agent Bridge CLI, Skill instructions, and WebSocket channel runner",
+  "type": "module",
+  "bin": {
+    "hive-bridge": "bin/hive-bridge.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "skills/hive-bridge/SKILL.md",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test-npm/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "license": "Apache-2.0"
+}

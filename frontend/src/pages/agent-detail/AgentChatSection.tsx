@@ -1,20 +1,32 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { IconChecklist, IconDownload, IconExternalLink, IconFileText } from '@tabler/icons-react';
+import {
+  IconChecklist,
+  IconDownload,
+  IconExternalLink,
+  IconFileText,
+  IconLoader2,
+  IconPaperclip,
+  IconSend2,
+  IconX,
+} from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
 import ChatWorkLedgerDock from './ChatWorkLedgerDock';
-import CommandPalette from './CommandPalette';
 import CopyMessageButton from './CopyMessageButton';
 import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
+import SlashCommandMenu from './SlashCommandMenu';
+import { SessionWorkbenchHeader, SessionWorkbenchInspector } from '../session-workbench/SessionWorkbenchChrome';
+import SessionNativeControls from '../session-workbench/SessionNativeControls';
+import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
+import { chatApi } from '../../api/domains/chat';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
-import { buildRunTimelineFromMessages, isDisclosureStepMessage } from './chatDisclosureReducer';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
@@ -151,6 +163,8 @@ type ArtifactPreviewState = {
   loading?: boolean;
   error?: string;
 };
+
+type Translate = ReturnType<typeof useTranslation>['t'];
 
 const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
 const DEEP_RESEARCH_FALLBACK_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -400,6 +414,111 @@ export function getArtifactOpenMode(artifact: Pick<ChatArtifactPart, 'name' | 'p
     return 'inline_preview';
   }
   return 'download';
+}
+
+function ArtifactPreviewPanel({
+  preview,
+  onClose,
+  t,
+}: {
+  preview: ArtifactPreviewState;
+  onClose: () => void;
+  t: Translate;
+}) {
+  const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
+  return (
+    <section
+      data-testid="session-artifact-inspector"
+      style={{
+        border: '1px solid var(--border-subtle)',
+        borderRadius: '8px',
+        background: 'var(--bg-secondary)',
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <IconFileText size={15} color="var(--text-tertiary)" />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {preview.artifact.name}
+          </div>
+          <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+            {t('agent.chat.artifacts.preview', 'Preview')}
+          </div>
+        </div>
+        {preview.url && (
+          <a
+            href={preview.url}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: 'var(--text-tertiary)', display: 'inline-flex', alignItems: 'center' }}
+            title={t('agent.chat.artifacts.openInNewTab', 'Open in new tab')}
+          >
+            <IconExternalLink size={14} />
+          </a>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t('common.close', 'Close')}
+          title={t('common.close', 'Close')}
+          style={{
+            border: '1px solid var(--border-subtle)',
+            background: 'transparent',
+            borderRadius: '6px',
+            padding: '3px',
+            color: 'var(--text-secondary)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <IconX size={13} />
+        </button>
+      </div>
+      <div style={{ padding: '10px', maxHeight: '42vh', overflow: 'auto' }}>
+        {preview.loading ? (
+          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+            {t('common.loading', 'Loading')}
+          </div>
+        ) : preview.error ? (
+          <div style={{ fontSize: '12px', color: 'var(--danger-text)' }}>
+            {preview.error}
+          </div>
+        ) : previewKind === 'image' && preview.url ? (
+          <img
+            src={preview.url}
+            alt={preview.artifact.name}
+            style={{ maxWidth: '100%', maxHeight: '34vh', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}
+          />
+        ) : previewKind === 'pdf' && preview.url ? (
+          <iframe
+            title={preview.artifact.name}
+            src={preview.url}
+            style={{ width: '100%', height: '34vh', border: '1px solid var(--border-subtle)', borderRadius: '6px' }}
+          />
+        ) : previewKind === 'markdown' ? (
+          <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
+            <MarkdownRenderer content={preview.content || ''} />
+          </div>
+        ) : (
+          <pre
+            style={{
+              margin: 0,
+              fontSize: '11px',
+              lineHeight: 1.55,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            {preview.content || ''}
+          </pre>
+        )}
+      </div>
+    </section>
+  );
 }
 
 function ArtifactCards({
@@ -686,9 +805,6 @@ export function StructuredToolResultBody({
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
             {toolMeta.summary || t('agent.plan.needsConfirmation', 'A plan needs your confirmation.')}
           </div>
-        )}
-        {toolMeta.nextAction && (
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{toolMeta.nextAction}</div>
         )}
       </div>
     );
@@ -1396,37 +1512,60 @@ export default function AgentChatSection({
   const renderConversationMessages = (
     messages: AgentChatMessage[],
     resolveIsLeft: (message: AgentChatMessage, index: number) => boolean,
+    timelineModel?: ThreadTimelineModel,
   ) => {
     const nodes: React.ReactNode[] = [];
-    const pending: Array<{ message: AgentChatMessage; index: number }> = [];
+    const model = timelineModel ?? buildThreadTimeline({
+      messages,
+      activeSession,
+      runtimeSummary,
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
 
-    const flushPending = () => {
-      if (pending.length === 0) return;
-      const first = pending[0];
-      const last = pending[pending.length - 1];
-      nodes.push(
-        <RunDisclosureBlock
-          key={`run-disclosure-${first.index}-${last.index}`}
-          timeline={buildRunTimelineFromMessages(pending.map((entry) => entry.message))}
-        />,
-      );
-      for (const entry of pending) {
-        if (isInlineToolCardMessage(entry.message)) {
-          nodes.push(renderInlinePlanToolCall(entry.message, entry.index));
-        }
-      }
-      pending.length = 0;
-    };
-
-    messages.forEach((message, index) => {
-      if (isDisclosureStepMessage(message)) {
-        pending.push({ message, index });
+    model.cells.forEach((cell) => {
+      if (cell.kind === 'user_turn') {
+        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index)));
         return;
       }
-      flushPending();
-      nodes.push(renderConversationMessage(message, index, resolveIsLeft(message, index)));
+      if (cell.kind === 'assistant_final') {
+        nodes.push(renderConversationMessage(cell.message, cell.index, resolveIsLeft(cell.message, cell.index)));
+        return;
+      }
+      if (cell.kind === 'active_run') {
+        nodes.push(
+          <div key={cell.id} data-testid="active-run-cell" style={{ marginBottom: '8px' }}>
+            <RunDisclosureBlock timeline={cell.timeline} />
+            {cell.sourceMessages.map((entry) => (
+              isInlineToolCardMessage(entry.message) ? renderInlinePlanToolCall(entry.message, entry.index) : null
+            ))}
+            {cell.answer ? renderConversationMessage(cell.answer, cell.answerIndex ?? 0, resolveIsLeft(cell.answer, cell.answerIndex ?? 0)) : null}
+          </div>,
+        );
+        return;
+      }
+      nodes.push(
+        <div
+          key={cell.id}
+          data-testid="session-boundary-cell"
+          style={{
+            margin: '8px auto',
+            width: 'fit-content',
+            maxWidth: '80%',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '999px',
+            background: 'var(--bg-secondary)',
+            color: 'var(--text-tertiary)',
+            fontSize: '11px',
+            padding: '4px 9px',
+          }}
+        >
+          {cell.title}
+          {cell.summary ? ` · ${cell.summary}` : ''}
+        </div>,
+      );
     });
-    flushPending();
 
     return nodes;
   };
@@ -1435,6 +1574,12 @@ export default function AgentChatSection({
   const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : [];
   const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : [];
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
+  const { data: sessionIndexData } = useQuery({
+    queryKey: ['chat-session-index', effectiveAgentId, activeSessionId],
+    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!),
+    enabled: Boolean(effectiveAgentId && activeSessionId),
+    staleTime: 10_000,
+  });
   const hasActiveChatRun = Boolean(activeRunStatus || isWaiting || isStreaming);
   const fallbackWorkLedger = (() => {
     for (const message of [...visibleTimeline].reverse()) {
@@ -1459,10 +1604,22 @@ export default function AgentChatSection({
     return null;
   })();
   const workLedgerLive = Boolean(hasActiveChatRun || fallbackWorkLedger?.live);
+  const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
+  const threadTimelineModel = buildThreadTimeline({
+    messages: visibleTimeline,
+    activeSession,
+    runtimeSummary,
+    sessionIndex,
+    branchLineage,
+    isWaiting,
+    isStreaming,
+    activeRunStatus,
+  });
 
   return (
-    <div style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)' }}>
+    <div data-testid="session-workbench" style={{ display: 'flex', gap: '0', flex: 1, minHeight: 0, height: 'calc(100vh - 206px)', background: 'var(--bg-primary)' }}>
       <div
+        data-testid="session-workbench-sidebar"
         style={{
           width: '220px',
           flexShrink: 0,
@@ -1774,6 +1931,7 @@ export default function AgentChatSection({
       </div>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+        <SessionWorkbenchHeader model={threadTimelineModel.header} />
         {!activeSession ? (
           <div
             style={{
@@ -1860,42 +2018,7 @@ export default function AgentChatSection({
                   <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
                 </div>
               )}
-              {renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant')}
-              {isWaiting && (
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
-                  <div
-                    style={{
-                      width: '28px',
-                      height: '28px',
-                      borderRadius: '50%',
-                      background: 'var(--bg-elevated)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: '11px',
-                      flexShrink: 0,
-                      color: 'var(--text-secondary)',
-                      fontWeight: 600,
-                    }}
-                  >
-                    A
-                  </div>
-                  <div style={{ padding: '8px 12px', borderRadius: '12px', background: 'var(--bg-secondary)', fontSize: '13px' }}>
-                    <div className="thinking-indicator">
-                      <div className="thinking-dots">
-                        <span />
-                        <span />
-                        <span />
-                      </div>
-                      <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                        {activeRunStatus
-                          ? t('agent.chat.continuingRun', 'Agent is continuing this run...')
-                          : t('agent.chat.thinking', 'Thinking...')}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {renderConversationMessages(visibleChatMessages, (message) => message.role === 'assistant', threadTimelineModel)}
               <div ref={chatEndRef} />
             </div>
             {showScrollBtn && (
@@ -1970,180 +2093,124 @@ export default function AgentChatSection({
                 Connecting...
               </div>
             ) : null}
-            {artifactPreview && (
-              <div
-                data-testid="chat-artifact-preview"
-                style={{
-                  borderTop: '1px solid var(--border-subtle)',
-                  background: 'var(--bg-elevated)',
-                  padding: '10px 16px',
-                  maxHeight: '38vh',
-                  overflow: 'auto',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                  <IconFileText size={15} color="var(--text-tertiary)" />
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {artifactPreview.artifact.name}
-                    </div>
-                    <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
-                      {t('agent.chat.artifacts.preview', 'Preview')}
-                    </div>
-                  </div>
-                  {artifactPreview.url && (
-                    <a
-                      href={artifactPreview.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ fontSize: '11px', color: 'var(--accent-primary)', textDecoration: 'none' }}
+            <div
+              data-testid="session-composer"
+              style={{
+                position: 'relative',
+                borderTop: '1px solid var(--border-subtle)',
+                background: 'var(--bg-primary)',
+                padding: '8px 12px',
+              }}
+            >
+              {effectiveAgentId && activeSession?.id && (
+                <SlashCommandMenu
+                  agentId={effectiveAgentId}
+                  sessionId={String(activeSession.id)}
+                  inputValue={chatInput}
+                  disabled={!wsConnected}
+                  onPickCommand={(_command, template) => {
+                    onSetChatInput(template);
+                    setTimeout(() => chatInputRef.current?.focus(), 0);
+                  }}
+                />
+              )}
+              <BranchComposePanel
+                draft={branchDraft}
+                busy={branchBusy}
+                onChange={(content) => setBranchDraft((draft) => (draft ? { ...draft, content } : draft))}
+                onCancel={() => setBranchDraft(null)}
+                onSubmit={submitBranchDraft}
+              />
+              {attachedFiles.length > 0 && (
+                <div
+                  data-testid="session-composer-attachments"
+                  style={{
+                    padding: '0 0 7px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  {attachedFiles.map((file, index) => (
+                    <div
+                      key={index}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        fontSize: '11px',
+                        background: 'var(--bg-secondary)',
+                        padding: '4px 6px',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border-subtle)',
+                        maxWidth: '220px',
+                      }}
                     >
-                      {t('agent.chat.artifacts.openInNewTab', 'Open in new tab')}
-                    </a>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setArtifactPreview(null)}
-                    style={{
-                      border: '1px solid var(--border-subtle)',
-                      background: 'transparent',
-                      borderRadius: '6px',
-                      padding: '3px 7px',
-                      fontSize: '11px',
-                      color: 'var(--text-secondary)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {t('common.close', 'Close')}
-                  </button>
+                      {file.imageUrl ? (
+                        <img src={file.imageUrl} alt={file.name} style={{ width: '20px', height: '20px', borderRadius: '4px', objectFit: 'cover' }} />
+                      ) : (
+                        <IconFileText size={14} color="var(--text-tertiary)" />
+                      )}
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveAttachedFile(index)}
+                        aria-label={t('agent.chat.removeAttachment', 'Remove attachment')}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-tertiary)',
+                          cursor: 'pointer',
+                          padding: '1px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                        }}
+                        title={t('agent.chat.removeAttachment', 'Remove attachment')}
+                      >
+                        <IconX size={13} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
-                {artifactPreview.loading ? (
-                  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                    {t('common.loading', 'Loading')}
-                  </div>
-                ) : artifactPreview.error ? (
-                  <div style={{ fontSize: '12px', color: 'var(--danger-text)' }}>
-                    {artifactPreview.error}
-                  </div>
-                ) : getEffectiveArtifactPreviewKind(artifactPreview.artifact) === 'image' && artifactPreview.url ? (
-                  <img
-                    src={artifactPreview.url}
-                    alt={artifactPreview.artifact.name}
-                    style={{ maxWidth: '100%', maxHeight: '32vh', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}
-                  />
-                ) : getEffectiveArtifactPreviewKind(artifactPreview.artifact) === 'pdf' && artifactPreview.url ? (
-                  <iframe
-                    title={artifactPreview.artifact.name}
-                    src={artifactPreview.url}
-                    style={{ width: '100%', height: '32vh', border: '1px solid var(--border-subtle)', borderRadius: '6px' }}
-                  />
-                ) : getEffectiveArtifactPreviewKind(artifactPreview.artifact) === 'markdown' ? (
-                  <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
-                    <MarkdownRenderer content={artifactPreview.content || ''} />
-                  </div>
-                ) : (
-                  <pre
-                    style={{
-                      margin: 0,
-                      fontSize: '11px',
-                      lineHeight: 1.55,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      color: 'var(--text-secondary)',
-                    }}
-                  >
-                    {artifactPreview.content || ''}
-                  </pre>
-                )}
-              </div>
-            )}
-            {effectiveAgentId && activeSession?.id && (
-              <ChatWorkLedgerDock
-                agentId={effectiveAgentId}
-                sessionId={String(activeSession.id)}
-                runtimeTaskId={fallbackWorkLedger?.runtimeTaskId}
-                live={workLedgerLive}
-              />
-            )}
-            {effectiveAgentId && activeSession?.id && (
-              <CommandPalette
-                agentId={effectiveAgentId}
-                sessionId={String(activeSession.id)}
-                disabled={!wsConnected || isWaiting || isStreaming}
-              />
-            )}
-            {attachedFiles.length > 0 && (
-              <div
-                style={{
-                  padding: '6px 16px',
-                  background: 'var(--bg-elevated)',
-                  borderTop: '1px solid var(--border-subtle)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  flexWrap: 'wrap',
-                }}
-              >
-                {attachedFiles.map((file, index) => (
-                  <div
-                    key={index}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      fontSize: '11px',
-                      background: 'var(--bg-secondary)',
-                      padding: '4px 6px',
-                      borderRadius: '4px',
-                      border: '1px solid var(--border-subtle)',
-                      maxWidth: '200px',
-                    }}
-                  >
-                    {file.imageUrl ? (
-                      <img src={file.imageUrl} alt={file.name} style={{ width: '20px', height: '20px', borderRadius: '4px', objectFit: 'cover' }} />
-                    ) : (
-                      <span>📎</span>
-                    )}
-                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
-                    <button
-                      onClick={() => onRemoveAttachedFile(index)}
-                      style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '14px', padding: '0 2px' }}
-                      title="Remove file"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <BranchComposePanel
-              draft={branchDraft}
-              busy={branchBusy}
-              onChange={(content) => setBranchDraft((draft) => (draft ? { ...draft, content } : draft))}
-              onCancel={() => setBranchDraft(null)}
-              onSubmit={submitBranchDraft}
-            />
-            <div style={{ display: 'flex', gap: '8px', padding: '8px 12px', borderTop: '1px solid var(--border-subtle)', alignItems: 'flex-end' }}>
+              )}
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
               <input type="file" multiple ref={fileInputRef} onChange={onHandleChatFile} style={{ display: 'none' }} />
               <button
                 className="btn btn-secondary"
                 onClick={() => fileInputRef.current?.click()}
-	                disabled={!wsConnected || uploading || attachedFiles.length >= 10}
+                disabled={!wsConnected || uploading || attachedFiles.length >= 10}
+                aria-label={t('agent.chat.attachFile', 'Attach file')}
+                title={t('agent.chat.attachFile', 'Attach file')}
                 style={{
-                  padding: '6px 10px',
-                  fontSize: '14px',
+                  width: '36px',
+                  height: '36px',
+                  padding: 0,
                   minWidth: 'auto',
-	                  ...((!wsConnected || uploading || attachedFiles.length >= 10) ? { cursor: 'not-allowed', opacity: 0.4 } : {}),
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  ...((!wsConnected || uploading || attachedFiles.length >= 10) ? { cursor: 'not-allowed', opacity: 0.4 } : {}),
                 }}
               >
-                {uploading ? '⏳' : '⦹'}
+                {uploading ? <IconLoader2 size={17} /> : <IconPaperclip size={17} />}
               </button>
               {uploading && uploadProgress >= 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 140px' }}>
                   {uploadProgress <= 100 ? (
                     <>
                       <div style={{ flex: 1, height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
-                        <div style={{ height: '100%', borderRadius: '2px', background: 'var(--accent-primary)', width: `${uploadProgress}%`, transition: 'width 0.15s ease' }} />
+                        <div
+                          style={{
+                            height: '100%',
+                            width: '100%',
+                            borderRadius: '2px',
+                            background: 'var(--accent-primary)',
+                            transform: `scaleX(${Math.max(0, Math.min(100, uploadProgress)) / 100})`,
+                            transformOrigin: 'left center',
+                            transition: 'transform 0.15s ease',
+                          }}
+                        />
                       </div>
                       <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{uploadProgress}%</span>
                     </>
@@ -2166,10 +2233,11 @@ export default function AgentChatSection({
                     onClick={() => {
                       uploadAbortRef.current?.();
                     }}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: '12px', padding: '0 2px', lineHeight: 1 }}
+                    aria-label={t('common.cancel', 'Cancel')}
+                    style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', padding: '0 2px', lineHeight: 1, display: 'inline-flex' }}
                     title="Cancel upload"
                   >
-                    ✕
+                    <IconX size={13} />
                   </button>
                 </div>
               )}
@@ -2232,13 +2300,44 @@ export default function AgentChatSection({
                   <span className="stop-icon" />
                 </button>
               )}
-              <button className="btn btn-primary" onClick={onSendChatMsg} disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)} style={{ padding: '6px 16px' }}>
-                {t('chat.send')}
+              <button
+                className="btn btn-primary"
+                onClick={onSendChatMsg}
+                disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
+                aria-label={t('chat.send')}
+                title={t('chat.send')}
+                style={{ width: '40px', height: '36px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <IconSend2 size={18} />
               </button>
+              </div>
             </div>
           </>
         )}
       </div>
+      <SessionWorkbenchInspector model={threadTimelineModel.inspector}>
+        {artifactPreview && (
+          <ArtifactPreviewPanel
+            preview={artifactPreview}
+            onClose={() => setArtifactPreview(null)}
+            t={t}
+          />
+        )}
+        <SessionNativeControls
+          agentId={effectiveAgentId}
+          sessionId={activeSessionId}
+          sessionIndex={sessionIndex}
+          onEnterSession={onSelectBranchSession}
+        />
+        {effectiveAgentId && activeSession?.id && (
+          <ChatWorkLedgerDock
+            agentId={effectiveAgentId}
+            sessionId={String(activeSession.id)}
+            runtimeTaskId={fallbackWorkLedger?.runtimeTaskId}
+            live={workLedgerLive}
+          />
+        )}
+      </SessionWorkbenchInspector>
     </div>
   );
 }

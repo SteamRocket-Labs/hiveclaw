@@ -20,6 +20,7 @@ import {
   IconBuilding,
   IconChevronUp,
   IconUsers,
+  IconDeviceDesktop,
 } from '@tabler/icons-react';
 
 const sidebarIcons = {
@@ -147,6 +148,12 @@ export default function AppSidebar({
               <IconUsers size={14} stroke={1.5} />
             </span>
             <span className="sidebar-item-text">{t('nav.plaza', 'Agent Circle')}</span>
+          </NavLink>
+          <NavLink to="/local-agents" className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
+            <span className="sidebar-item-icon" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+              <IconDeviceDesktop size={14} stroke={1.5} />
+            </span>
+            <span className="sidebar-item-text">{t('nav.localAgents', 'Local Agent')}</span>
           </NavLink>
         </div>
       </div>

@@ -54,7 +54,9 @@ async def test_write_keeps_only_date_and_entry_id_in_prose(tmp_path: Path) -> No
     assert "[last_accessed" not in line
 
     # The stripped metadata is in the sidecar instead.
-    lifecycle = json.loads((tmp_path / str(agent_id) / "memory" / "lifecycle.json").read_text(encoding="utf-8"))
+    lifecycle = json.loads(
+        (tmp_path / str(agent_id) / "memory" / "control" / "lifecycle.json").read_text(encoding="utf-8")
+    )
     record = next(r for r in lifecycle if r["id"] == entry_id)
     assert record["metadata"].get("sensitivity")
     assert record["status"] == "active"

@@ -58,6 +58,8 @@ describe('Layout extracted sections', () => {
 
     expect(markup).toContain('HiveClaw');
     expect(markup).toContain('Agent Circle');
+    expect(markup).toContain('Local Agent');
+    expect(markup).toContain('href="/local-agents"');
     expect(markup).not.toContain('Dashboard');
     expect(markup).toContain('Agent One');
     expect(markup).toContain('Platform Settings');

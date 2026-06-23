@@ -4,10 +4,10 @@ Spec §11 / §12 P7: the frontend stops parsing raw file layout; this service
 assembles stable, structured read models from the MD truth source and its
 sidecars. Pure read side — zero writes, zero LLM calls.
 
-Sources: soul.md, T3 entry manifest, generated memory/wiki_map.md,
-memory/lifecycle.json, memory/distillation_audit.jsonl, derived/compat
-memory/wiki/ and memory/scenes/ pages, memory/auto_dream_state.json,
-legacy learnings cursors, and skill/workflow candidate markers. Raw Markdown
+Sources: soul.md, T3 entry manifest, generated memory/indexes/wiki_map.md,
+memory/control/lifecycle.json, memory/distillation_audit.jsonl, derived/compat
+memory/wiki/ and memory/scenes/ pages, memory/control/auto_dream_state.json,
+canonical T0/T2/T3 freshness anchors, and skill/workflow candidate markers. Raw Markdown
 stays available through the existing workspace file APIs as the advanced view.
 """
 
@@ -115,6 +115,12 @@ def _file_mtime_iso(path: Path) -> str:
         return ""
 
 
+def _mtime_iso(timestamp: float | None) -> str:
+    if timestamp is None:
+        return ""
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+
+
 _STALE_MULTIPLIER = 3  # state more than 3× its pipeline cadence behind the newest input → stale
 _EXTRACTOR_GRACE_SECONDS = 24 * 3600  # per-response extraction has no cadence; a day behind fresh behavior = stale
 
@@ -159,50 +165,124 @@ def _distiller_status(
     return {"name": label, "state": state, "last_run_at": _file_mtime_iso(state_path)}
 
 
+def _distiller_status_from_anchor(
+    output_anchor: float | None,
+    *,
+    label: str,
+    stale_seconds: float | None = None,
+    input_anchor: float | None = None,
+) -> dict:
+    """Status for pipelines whose canonical state is a committed output anchor.
+
+    This avoids resurrecting legacy cursor files as truth. If canonical output
+    never landed, the pipeline has never run. If newer canonical input outruns
+    the output by the stale window, it is stale; otherwise it is active.
+    """
+    if output_anchor is None:
+        return {"name": label, "state": "never_ran", "last_run_at": ""}
+    state = "active"
+    if stale_seconds is not None and input_anchor is not None and input_anchor - output_anchor > stale_seconds:
+        state = "stale"
+    return {"name": label, "state": state, "last_run_at": _mtime_iso(output_anchor)}
+
+
+def _newest_t0_input_anchor(mem_dir: Path) -> float | None:
+    t0_sessions = mem_dir / "t0" / "sessions"
+    return _newest_mtime(
+        chain(
+            t0_sessions.glob("*/index.json"),
+            t0_sessions.glob("*/segments/*/events.jsonl"),
+            t0_sessions.glob("*/segments/*/source.md"),
+        )
+    )
+
+
+def _newest_t2_segment_output_anchor(mem_dir: Path) -> float | None:
+    t2_sessions = mem_dir / "t2" / "sessions"
+    return _newest_mtime(
+        chain(
+            t2_sessions.glob("*/segments/*/manifest.json"),
+            t2_sessions.glob("*/segments/*/summary.md"),
+            t2_sessions.glob("*/segments/*/labels.md"),
+            t2_sessions.glob("*/segments/*/review.md"),
+        )
+    )
+
+
+def _newest_t3_input_anchor(mem_dir: Path) -> float | None:
+    t2_sessions = mem_dir / "t2" / "sessions"
+    return _newest_mtime(
+        chain(
+            t2_sessions.glob("*/segments/*/manifest.json"),
+            t2_sessions.glob("*/episodes/*/manifest.json"),
+            [mem_dir / "explicit" / "manifest.jsonl"],
+        )
+    )
+
+
+def _newest_t3_output_anchor(mem_dir: Path) -> float | None:
+    from app.memory.md_store import T3_FILE_SPECS
+
+    candidate_paths: list[Path] = []
+    for spec in T3_FILE_SPECS:
+        path = mem_dir / spec["filename"]
+        text = _read_text(path)
+        if "<t3_" in text or any(line.strip().startswith("- ") for line in text.splitlines()):
+            candidate_paths.append(path)
+    return _newest_mtime(candidate_paths)
+
+
+def _dream_state_read_path(root: Path) -> Path:
+    canonical = root / "memory" / "control" / "auto_dream_state.json"
+    if canonical.exists():
+        return canonical
+    legacy = root / "memory" / "auto_dream_state.json"
+    if legacy.exists():
+        return legacy
+    return canonical
+
+
 def _build_distiller_statuses(root: Path) -> dict:
     """Per-pipeline freshness, each judged against its own input side.
 
-    extractor consumes the append-only T0 session ledger, heartbeat consumes T2 learnings,
-    dream consumes active T3 files. skill_distiller keeps the two-state
+    extractor consumes the append-only T0 session ledger, the T3 consolidator
+    consumes reviewed T2/explicit packages, and Dream consumes active T3 files.
+    skill_distiller keeps the two-state
     contract: its real input is skill/workflow *candidates* inside T2, so a
-    learnings-mtime anchor would false-positive on agents that learn without
+    T2-mtime anchor would false-positive on agents that learn without
     producing candidates — never mis-report stale.
     """
     from app.config import get_settings
-    from app.memory.md_store import T3_FILE_SPECS
     from app.services.auto_dream import MIN_HOURS_BETWEEN_DREAMS
 
     mem_dir = root / "memory"
-    behavior_anchor = _newest_mtime(
-        chain(
-            (mem_dir / "t0" / "sessions").glob("*/segments/*/source.md"),
-            (root / "logs").glob("*/behavior/*"),
-        )
-    )
-    learnings_anchor = _newest_mtime((mem_dir / "learnings").glob("*.md"))
-    t3_anchor = _newest_mtime(mem_dir / spec["filename"] for spec in T3_FILE_SPECS)
+    t0_input_anchor = _newest_t0_input_anchor(mem_dir)
+    t2_output_anchor = _newest_t2_segment_output_anchor(mem_dir)
+    t3_input_anchor = _newest_t3_input_anchor(mem_dir)
+    t3_output_anchor = _newest_t3_output_anchor(mem_dir)
+    dream_state_path = _dream_state_read_path(root)
 
     heartbeat_window = _STALE_MULTIPLIER * get_settings().HEARTBEAT_DEFAULT_INTERVAL_MINUTES * 60
     dream_window = _STALE_MULTIPLIER * MIN_HOURS_BETWEEN_DREAMS * 3600
 
     return {
-        "extractor": _distiller_status(
-            mem_dir / "learnings" / ".extract_cursor.json",
+        "extractor": _distiller_status_from_anchor(
+            t2_output_anchor,
             label="extractor",
             stale_seconds=_EXTRACTOR_GRACE_SECONDS,
-            input_anchor=behavior_anchor,
+            input_anchor=t0_input_anchor,
         ),
-        "heartbeat": _distiller_status(
-            mem_dir / ".curation_cursor.json",
+        "heartbeat": _distiller_status_from_anchor(
+            t3_output_anchor,
             label="heartbeat",
             stale_seconds=heartbeat_window,
-            input_anchor=learnings_anchor,
+            input_anchor=t3_input_anchor,
         ),
         "dream": _distiller_status(
-            mem_dir / "auto_dream_state.json",
+            dream_state_path,
             label="dream",
             stale_seconds=dream_window,
-            input_anchor=t3_anchor,
+            input_anchor=t3_output_anchor,
         ),
         "skillDistiller": _distiller_status(root / "evolution" / "skill_distiller_state.json", label="skill_distiller"),
     }
@@ -212,7 +292,7 @@ def _build_distiller_statuses(root: Path) -> dict:
 
 
 def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
-    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_path
+    from app.memory.lifecycle_store import MemoryLifecycleStore, lifecycle_read_path
     from app.memory.md_store import build_t3_entry_manifest
 
     root = _agent_root(data_root, agent_id)
@@ -231,7 +311,7 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
     )
 
     lifecycle_counts = {"superseded": 0, "archived": 0, "stale": 0}
-    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    store = MemoryLifecycleStore(lifecycle_read_path(data_root, agent_id))
     for entry in store._entries.values():  # noqa: SLF001 — read model over the same package's store
         status = entry.status.value
         if status in lifecycle_counts:
@@ -408,7 +488,7 @@ def list_knowledge_events(data_root: Path, agent_id: uuid.UUID, *, limit: int = 
             }
         )
 
-    dream_state_path = root / "memory" / "auto_dream_state.json"
+    dream_state_path = _dream_state_read_path(root)
     if dream_state_path.exists():
         try:
             payload = json.loads(dream_state_path.read_text(encoding="utf-8"))

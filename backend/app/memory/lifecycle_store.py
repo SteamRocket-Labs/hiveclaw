@@ -331,7 +331,36 @@ class MemoryLifecycleStore:
 
 
 def lifecycle_path(data_root: Path, agent_id: uuid.UUID | str) -> Path:
+    return Path(data_root) / str(agent_id) / "memory" / "control" / "lifecycle.json"
+
+
+def legacy_lifecycle_path(data_root: Path, agent_id: uuid.UUID | str) -> Path:
     return Path(data_root) / str(agent_id) / "memory" / "lifecycle.json"
+
+
+def _read_lifecycle_path(data_root: Path, agent_id: uuid.UUID | str) -> Path:
+    canonical = lifecycle_path(data_root, agent_id)
+    if canonical.exists():
+        return canonical
+    legacy = legacy_lifecycle_path(data_root, agent_id)
+    if legacy.exists():
+        return legacy
+    return canonical
+
+
+def lifecycle_read_path(data_root: Path, agent_id: uuid.UUID | str) -> Path:
+    return _read_lifecycle_path(data_root, agent_id)
+
+
+def _migrate_legacy_lifecycle_if_needed(data_root: Path, agent_id: uuid.UUID | str) -> Path:
+    canonical = lifecycle_path(data_root, agent_id)
+    if canonical.exists():
+        return canonical
+    legacy = legacy_lifecycle_path(data_root, agent_id)
+    if legacy.exists():
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+    return canonical
 
 
 def record_active_memory_lifecycle(
@@ -341,7 +370,7 @@ def record_active_memory_lifecycle(
     content: str,
     metadata: dict[str, str],
 ) -> MemoryLifecycleEntry:
-    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    store = MemoryLifecycleStore(_migrate_legacy_lifecycle_if_needed(data_root, agent_id))
     try:
         version = int(str(metadata.get("version") or "1").strip())
     except (TypeError, ValueError):
@@ -366,7 +395,7 @@ def bump_access_telemetry(
     now: datetime | None = None,
 ) -> bool:
     """Bump access telemetry for one entry in the agent's lifecycle sidecar."""
-    store = MemoryLifecycleStore(lifecycle_path(data_root, agent_id))
+    store = MemoryLifecycleStore(_migrate_legacy_lifecycle_if_needed(data_root, agent_id))
     return store.bump_access(entry_id, now=now)
 
 
@@ -376,7 +405,7 @@ def read_access_telemetry(data_root: Path, agent_id: uuid.UUID | str) -> dict[st
     Empty dict when the sidecar does not exist yet — read-side callers then fall
     back to each entry's own zero defaults.
     """
-    path = lifecycle_path(data_root, agent_id)
+    path = _read_lifecycle_path(data_root, agent_id)
     if not path.exists():
         return {}
     return MemoryLifecycleStore(path).telemetry_map()
@@ -388,7 +417,7 @@ def read_sidecar_metadata(data_root: Path, agent_id: uuid.UUID | str) -> dict[st
     Empty dict when the sidecar does not exist yet — callers then fall back to
     whatever inline metadata the prose still carries.
     """
-    path = lifecycle_path(data_root, agent_id)
+    path = _read_lifecycle_path(data_root, agent_id)
     if not path.exists():
         return {}
     return MemoryLifecycleStore(path).metadata_map()

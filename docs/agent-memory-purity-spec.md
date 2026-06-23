@@ -50,7 +50,7 @@ Owner 判断（2026-06-08）：
 | **D4 无 reconsolidation/retirement** | 文件只增不减；`archive.md` 存在但没被喂 | §4.8 supersede/archive/stale；§4.9 decay 双 lane（可逆）| lifecycle patch lane 定义了但没接通到真正收缩 T3 | heartbeat/dream 产出 lifecycle patch → 真正 de-index + 归档 |
 | **D5 save_memory 越 lane** | agent 自选 category，episodic 直灌 durable（`memory.py:118`，无 lane 门）| §5「should not bypass governed T3 append」；P2 governed append | save_memory 只治理 sensitivity/PL4，**不治理 lane/episodic** | 走与 extractor 同一 lane 校验；episodic 拒绝并回执「应存 workspace/T0」|
 | **D6 dream 矛盾门盲点** | soul 出现与 Mission 矛盾的 Learned Behavior | §5「does not bypass owner/charter gates」；§4.6 soul=identity | 矛盾门只查 T3-vs-T3，漏 promotion-vs-frozen-Mission | 扩展矛盾门：晋升候选必须与 soul frozen Mission/charter 比对 |
-| **D7 INDEX 镜像 + 双索引** | `INDEX.md` 38KB 全量镜像 + 孤儿 `MEMORY_INDEX.md` | §8「should not be orphan… runtime consumer」；轻量 nav 行；soul≠navigation | INDEX 退化成镜像；第二索引无消费者 | canonical 派生导航改为唯一 generated map `memory/wiki_map.md`（id/path/summary/heat）；`memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 和 `MEMORY_INDEX.md` 全部退役 |
+| **D7 INDEX 镜像 + 双索引** | `INDEX.md` 38KB 全量镜像 + 孤儿 `MEMORY_INDEX.md` | §8「should not be orphan… runtime consumer」；轻量 nav 行；soul≠navigation | INDEX 退化成镜像；第二索引无消费者 | canonical 派生导航改为唯一 generated map `memory/indexes/wiki_map.md`（id/path/summary/heat）；`memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 和 `MEMORY_INDEX.md` 全部退役 |
 | **D8 SQLite 退役未清** | `memory.sqlite3`+`memory.json` 仍在 | §9 索引可重建非写路径；CLAUDE.md「SQLite shadow store 已退役」 | 退役没删文件 | 2026-06-13 改为可逆 quarantine：`memory/retired_artifacts/**` + `archive.md` 留证，不物理静默删除 |
 | **D9 PII 误杀腐蚀正文** | `17:00`→`<Phone_1>`；公开日志标 PL2_pii | §4.2 sensitivity hints 应辅助非破坏内容 | redactor/分类器正则过激 | 修脱敏正则（时间/编号不当电话）；分类器收紧；机械步只兜底不毁内容 |
 | **D10 死桩与结构不一** | `reflections.md` 616B 空模板；file vs dir 不统一 | §7 canonical T3 集不含 reflections | pre-spec 模板脚手架遗留 | 2026-06-13 只 quarantine 死文件 `reflections.md`，保留真实生产路径 `memory/reflections/*.jsonl` |
@@ -60,7 +60,7 @@ Owner 判断（2026-06-08）：
 - **D1/D2**：`access_log.bump_access()` 只写 `lifecycle.json`；`backfill_t3_prose()` 会把旧 inline `sensitivity/status/version/access_count/last_accessed` 迁入 sidecar，其中 `access_count/last_accessed` 进入专用 telemetry 字段，不再作为 inert metadata。新增红测先证明旧实现会把 `access_count=97` 重置为 0。
 - **D3/D4**：`append_t3_memory_candidate()` 的 near-duplicate path 不再追加 prose，而是强化 `reinforcement_count/helpful_count/harmful_count`；dream / retire path 会把 superseded/cap-evicted 行移出 active T3，写 `archive.md` + lifecycle terminal state。
 - **D5/D6**：agent-tool `save_memory` 的 episodic scan/no-change 流水账被拒并回执写 workspace/T0；soul promotion 与 repeated-feedback lane 共享 frozen-Mission gate。
-- **D7/D8/D10**：`memory/wiki_map.md` 是唯一 canonical 轻量 manifest（summary + heat），不再写 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 或 `MEMORY_INDEX.md`；`memory.sqlite3` / `memory.json` / 死 `reflections.md` 在 startup migration 中进入 `memory/retired_artifacts/**`，并在 `archive.md` 留证。
+- **D7/D8/D10**：`memory/indexes/wiki_map.md` 是唯一 canonical 轻量 manifest（summary + heat），不再写 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 或 `MEMORY_INDEX.md`；`memory.sqlite3` / `memory.json` / 死 `reflections.md` 在 startup migration 中进入 `memory/retired_artifacts/**`，并在 `archive.md` 留证。
 - **D9**：clock/date scan line 不再被误 redacted 成 `<Phone_1>`，真实电话号码仍会被 PL2 masking。
 
 **验收证据**：

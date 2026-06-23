@@ -197,7 +197,7 @@ async def test_branch_lineage_requires_independent_t2_review(tmp_path: Path) -> 
     )
 
     assert result.status == "held"
-    assert result.issues == ("independent Memory Gate required: lineage_risk=branch_mode=rewind",)
+    assert result.issues == ("independent Memory Gate required: all T2 reviews must be LLM-authored",)
     assert not result.package_dir.exists()
 
 
@@ -279,7 +279,7 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
         memory_gate=memory_gate,
     )
 
-    package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments" / first.segment_id
+    package_dir = tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
     assert result.status == "committed"
     assert result.package_dir == package_dir
     assert sorted(path.name for path in package_dir.iterdir()) == [
@@ -290,6 +290,9 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     ]
     assert not (package_dir / "raw_refs.md").exists()
     assert not (tmp_path / str(agent_id) / "memory" / "learnings").exists()
+    assert not (
+        tmp_path / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments" / first.segment_id
+    ).exists()
 
     manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "t2.segment-package.manifest.v1"
@@ -298,8 +301,8 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert manifest["files"]["summary.md"]["sha256"]
     assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v1"
     assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.v1"
-    assert manifest["review_mode"] == "self_check"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.extractor_self_review.v1"
+    assert manifest["review_mode"] == "independent_gate"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
 
     source_bundle_path = (
         tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / result.job_id / "source_bundle.json"
@@ -326,12 +329,62 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert labels_node.findtext(".//confidence") == "0.95"
     assert labels_node.findtext(".//continuity_state") == "standalone"
     review_node = _assert_xml_block(package_dir / "review.md", "t2_review")
-    assert review_node.attrib["reviewer"] == "extractor_self_check"
+    assert review_node.attrib["reviewer"] == "memory_gate_agent"
     assert review_node.findtext("decision") == "approved"
 
 
 @pytest.mark.asyncio
-async def test_low_risk_t2_package_uses_self_review_without_independent_gate(tmp_path: Path) -> None:
+async def test_low_risk_t2_package_requires_memory_gate_review(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="以后回复保持简洁，并在改代码前先写测试。",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle)
+
+    async def learning_brain(source_bundle: dict, summary_md: str) -> str:
+        return _labels_xml(source_bundle)
+
+    async def memory_gate(source_bundle: dict, summary_md: str, labels_md: str) -> str:
+        ref = source_bundle["source_refs"][0]["uri"]
+        return _approved_review_xml(package_id=source_bundle["package_id"], ref=ref)
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=learning_brain,
+        memory_gate=memory_gate,
+    )
+
+    package_dir = tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
+    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+    review = _assert_xml_block(package_dir / "review.md", "t2_review")
+
+    assert result.status == "committed"
+    assert review.attrib["reviewer"] == "memory_gate_agent"
+    assert review.findtext("decision") == "approved"
+    assert manifest["review_mode"] == "independent_gate"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
+
+
+@pytest.mark.asyncio
+async def test_t2_package_holds_without_memory_gate_even_for_low_risk(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import build_t2_segment_package
 
     agent_id = uuid4()
@@ -365,15 +418,10 @@ async def test_low_risk_t2_package_uses_self_review_without_independent_gate(tmp
         memory_gate=None,
     )
 
-    package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments" / first.segment_id
-    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
-    review = _assert_xml_block(package_dir / "review.md", "t2_review")
-
-    assert result.status == "committed"
-    assert review.attrib["reviewer"] == "extractor_self_check"
-    assert review.findtext("decision") == "approved"
-    assert manifest["review_mode"] == "self_check"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.extractor_self_review.v1"
+    report = json.loads((result.staging_dir / "platform_gate_report.json").read_text(encoding="utf-8"))
+    assert result.status == "held"
+    assert not result.package_dir.exists()
+    assert report["issues"] == ["independent Memory Gate required: all T2 reviews must be LLM-authored"]
 
 
 @pytest.mark.asyncio
@@ -571,7 +619,7 @@ async def test_platform_gate_holds_invalid_agent_output_without_partial_commit(t
         memory_gate=review,
     )
 
-    package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments" / first.segment_id
+    package_dir = tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "segments" / first.segment_id
     held_dir = tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / result.job_id
     assert result.status == "held"
     assert not package_dir.exists()
@@ -804,7 +852,7 @@ async def test_episode_stitch_package_commits_without_learning_brain(tmp_path: P
     assert episode_result.status == "committed"
     assert (
         episode_result.package_dir
-        == tmp_path / str(agent_id) / "memory" / "sessions" / str(session_id) / "episodes" / "episode-rwa"
+        == tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / str(session_id) / "episodes" / "episode-rwa"
     )
     assert sorted(path.name for path in episode_result.package_dir.iterdir()) == [
         "manifest.json",
@@ -1145,7 +1193,7 @@ async def test_episode_stitch_package_holds_without_episode_review_rubric(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_build_with_llm_skips_review_role_for_low_risk_segments(monkeypatch, tmp_path: Path) -> None:
+async def test_build_with_llm_runs_review_role_for_low_risk_segments(monkeypatch, tmp_path: Path) -> None:
     from app.memory.t2 import segment_package
 
     agent_id = uuid4()
@@ -1190,7 +1238,7 @@ async def test_build_with_llm_skips_review_role_for_low_risk_segments(monkeypatc
     )
 
     assert result.status == "committed"
-    assert phases == ["summary", "labels"]
+    assert phases == ["summary", "labels", "review"]
     assert (result.package_dir / "summary.md").exists()
     assert (result.package_dir / "labels.md").exists()
     assert (result.package_dir / "review.md").exists()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -98,6 +99,60 @@ class HiveBridgeClient:
             },
         )
 
+    def create_channel_ws_ticket(self) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/local-bridge/channel/ws-ticket")
+
+    def channel_ws_url(self, ticket: str) -> str:
+        if self.base_url.startswith("https://"):
+            base = f"wss://{self.base_url[len('https://'):]}"
+        elif self.base_url.startswith("http://"):
+            base = f"ws://{self.base_url[len('http://'):]}"
+        else:
+            base = self.base_url
+        return f"{base}/api/v1/local-bridge/channel/ws?ticket={quote(ticket)}"
+
+    def poll_channel(self) -> dict[str, Any]:
+        return self._request("GET", "/api/v1/local-bridge/channel/poll")
+
+    def report_channel_event(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "session_id": session_id,
+            "message_id": message_id,
+            "type": event_type,
+            "payload": payload or {},
+        }
+        return self._request("POST", "/api/v1/local-bridge/channel/events", json=body)
+
+    def report_channel_result(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        output: str,
+        status: str = "completed",
+        artifacts: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v1/local-bridge/channel/report",
+            json={
+                "session_id": session_id,
+                "message_id": message_id,
+                "status": status,
+                "output": output,
+                "artifacts": artifacts or [],
+                "metadata": metadata or {},
+            },
+        )
+
     def upload_file(self, path: str | Path) -> dict[str, Any]:
         file_path = Path(path).expanduser()
         with file_path.open("rb") as fh:
@@ -106,3 +161,29 @@ class HiveBridgeClient:
                 "/api/v1/local-bridge/upload",
                 files={"file": (file_path.name, fh, "application/octet-stream")},
             )
+
+    def download_channel_file(self, path: str, destination_dir: str | Path) -> dict[str, Any]:
+        destination = Path(destination_dir).expanduser()
+        destination.mkdir(parents=True, exist_ok=True)
+        filename = Path(path.replace("\\", "/")).name or "download"
+        save_path = destination / filename
+        if save_path.exists():
+            stem = save_path.stem
+            suffix = save_path.suffix
+            counter = 1
+            while save_path.exists():
+                save_path = destination / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        response = self._client.get(
+            self._url("/api/v1/local-bridge/channel/workspace/download"),
+            headers=self._headers(),
+            params={"path": path},
+        )
+        response.raise_for_status()
+        save_path.write_bytes(response.content)
+        return {
+            "path": str(save_path),
+            "source_path": path,
+            "size": save_path.stat().st_size,
+        }

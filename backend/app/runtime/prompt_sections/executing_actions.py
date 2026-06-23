@@ -178,8 +178,9 @@ without a tool result to back it up.
 ## Platform Integration
 
 <platform_integration>
-- **Pipeline boundaries**: Never write directly to `memory/t0/`, `memory/sessions/`, \
-`memory/learnings/`, `evolution/`, or `logs/` — the automated memory pipeline manages these. \
+- **Pipeline boundaries**: Never write directly to any `memory/` path, including `memory/t0/`, `memory/t2/`, `memory/t3/`, \
+`memory/session_state/`, `memory/explicit/`, `memory/indexes/`, `memory/control/`, `memory/.staging/`, `memory/.rollback/`, legacy `memory/sessions/`, \
+legacy `memory/learnings/`, `evolution/`, or `logs/` — governed tools and platform services manage these. \
 Writing to them causes conflicts and data corruption.
 - **Memory**: Load the **Memory Guide** skill before calling `save_memory`, \
 `search_memory`, or `load_memory` — it is the single authoritative source for routing, categories, and \

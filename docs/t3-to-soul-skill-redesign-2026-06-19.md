@@ -223,7 +223,7 @@ updated_at: "..."
 - Markdown 是容器，XML block 是可审查、可回滚、可引用的语义单元。
 - Frozen sections 默认不可由 Dream 修改；需要 owner/company 级确认。
 - 非 frozen blocks 也必须有 source refs、stability、applies_when、does_not_apply_when。
-- Soul 不保存导航索引；运行时导航来自 `build_t3_entry_manifest()` / Memory Navigation，唯一持久 Memory Wiki 地图是 generated/read-model `memory/wiki_map.md`，不进入 frozen identity。旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役。
+- Soul 不保存导航索引；运行时导航来自 `build_t3_entry_manifest()` / Memory Navigation，唯一持久 Memory Wiki 地图是 generated/read-model `memory/indexes/wiki_map.md`，不进入 frozen identity。旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役。
 - Soul 不保存完整方法步骤；方法步骤走 `capabilities.md` / Skill。
 - 不存在 `source.md` 作为最高层 identity 文件；T3 -> Soul 只允许更新 `soul.md`。T0 segment 里的 `source.md` 是原始事件账本，和最高层 Soul 没有命名关系。
 
@@ -388,6 +388,7 @@ evolution/skill_candidates/<candidate_id>/
   candidate_signal.md   # optional mechanical evidence; never an active draft
   eval_plan.md
   failure_cases.md
+  referee_review.md     # independent Skill Referee LLM review before commit
   manifest.json
 ```
 
@@ -405,6 +406,8 @@ Platform Skill Gate
 ```
 
 Platform Skill Gate 只做权限、文件路径、命名、eval pass、rollback、audit 和 atomic promotion。它不能替 Skill Writer 改写 `SKILL.md.draft` 的语义内容，也不能把 `candidate_signal.md` 当成可激活 Skill 草稿，不能拆开候选包自行拼装 active skill。
+
+实现注记（2026-06-23）：`skill_distiller` 现在把 inactive Skill Candidate Package / T3 `skill_candidate` / runtime lifecycle signal 作为统一候选入口；即使没有新的 session workflow evidence，也会合成候选 evidence 进入 Skill Writer。active commit 前必须写入 `referee_review.md`，且 Skill Referee LLM 的 `approve` 与全部 rubric >= 3 才能继续进入 Platform Skill Gate exact commit。
 
 ### 7.2 流程
 

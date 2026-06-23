@@ -13,8 +13,9 @@ def _write_reviewed_t2_package(
     segment_id: str,
     package_id: str,
     claim: str,
+    base: str = "memory/t2/sessions",
 ) -> Path:
-    package_dir = root / str(agent_id) / "memory" / "sessions" / session_id / "segments" / segment_id
+    package_dir = root / str(agent_id) / base / session_id / "segments" / segment_id
     package_dir.mkdir(parents=True, exist_ok=True)
     source_ref = f"t0://session/{session_id}/segment/{segment_id}#seq=1..2"
     summary = f"""# T2 Segment Summary
@@ -79,6 +80,63 @@ def _write_reviewed_t2_package(
     return package_dir
 
 
+def _write_reviewed_episode_stitch_package(
+    root: Path,
+    *,
+    agent_id,
+    session_id: str,
+    episode_id: str,
+    package_id: str,
+    claim: str,
+    base: str = "memory/t2/sessions",
+) -> Path:
+    package_dir = root / str(agent_id) / base / session_id / "episodes" / episode_id
+    package_dir.mkdir(parents=True, exist_ok=True)
+    source_ref = f"t0://session/{session_id}/segment/segment-1#seq=1..4"
+    synthesis = f"""# Episode Synthesis
+
+<episode_synthesis schema_version="t2.episode_synthesis.v1" episode_id="{episode_id}" session_id="{session_id}" status="closed">
+  <source_packages><package_ref package_id="{package_id}" t0_segment_id="segment-1" relationship="same_episode"/></source_packages>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+  <episode_summary><scenario>{claim}</scenario></episode_summary>
+</episode_synthesis>
+"""
+    review = f"""# Episode Review
+
+<episode_review schema_version="t2.episode_review.v1" episode_id="{episode_id}" reviewer="memory_gate_agent">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <episode_review_rubric schema_version="t2.episode_review_rubric.v1">
+    <score name="continuity_fidelity" value="0.95"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="correction_quality" value="0.90"/>
+    <score name="closure_quality" value="0.90"/>
+    <score name="safety_scope" value="1.00"/>
+    <review_score>0.95</review_score>
+  </episode_review_rubric>
+  <source_refs_checked><source_ref uri="{source_ref}"/></source_refs_checked>
+</episode_review>
+"""
+    manifest = {
+        "schema_version": "t2.episode-stitch.manifest.v1",
+        "episode_id": episode_id,
+        "package_id": package_id,
+        "agent_id": str(agent_id),
+        "session_id": session_id,
+        "source_refs": [source_ref],
+        "source_packages": [package_id],
+        "package_status": "reviewed",
+        "files": {
+            "synthesis.md": {"sha256": "synthesis"},
+            "review.md": {"sha256": "review"},
+        },
+    }
+    (package_dir / "synthesis.md").write_text(synthesis, encoding="utf-8")
+    (package_dir / "review.md").write_text(review, encoding="utf-8")
+    (package_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return package_dir
+
+
 def test_prepare_memory_dream_workspace_writes_diff_without_touching_t3(tmp_path: Path) -> None:
     from app.services.memory_dream import prepare_memory_dream_workspace
 
@@ -98,6 +156,7 @@ def test_prepare_memory_dream_workspace_writes_diff_without_touching_t3(tmp_path
     result = prepare_memory_dream_workspace(agent_id=agent_id, data_root=tmp_path)
 
     assert result.status == "changed"
+    assert result.workspace_dir == tmp_path / str(agent_id) / "memory" / ".staging" / "dream_workspace"
     assert result.selected_package_dirs == (package_dir,)
     assert result.diff_path.exists()
     assert "pkg-1" in result.diff_path.read_text(encoding="utf-8")
@@ -130,6 +189,49 @@ def test_memory_dream_workspace_baseline_suppresses_unchanged_inputs(tmp_path: P
     assert not second.diff_path.exists()
 
 
+def test_prepare_memory_dream_workspace_reads_legacy_t2_packages(tmp_path: Path) -> None:
+    from app.services.memory_dream import prepare_memory_dream_workspace
+
+    agent_id = uuid4()
+    package_dir = _write_reviewed_t2_package(
+        tmp_path,
+        agent_id=agent_id,
+        session_id="session-legacy",
+        segment_id="segment-legacy",
+        package_id="pkg-legacy",
+        claim="Legacy package remains importable.",
+        base="memory/sessions",
+    )
+
+    result = prepare_memory_dream_workspace(agent_id=agent_id, data_root=tmp_path)
+
+    assert result.status == "changed"
+    assert result.selected_package_dirs == (package_dir,)
+    assert "pkg-legacy" in result.diff_path.read_text(encoding="utf-8")
+
+
+def test_prepare_memory_dream_workspace_reads_episode_stitch_packages(tmp_path: Path) -> None:
+    from app.services.memory_dream import prepare_memory_dream_workspace
+
+    agent_id = uuid4()
+    package_dir = _write_reviewed_episode_stitch_package(
+        tmp_path,
+        agent_id=agent_id,
+        session_id="session-episode",
+        episode_id="episode-1",
+        package_id="episode-pkg-1",
+        claim="Disconnected fragments have been stitched into one episode.",
+    )
+
+    result = prepare_memory_dream_workspace(agent_id=agent_id, data_root=tmp_path)
+
+    assert result.status == "changed"
+    assert result.selected_package_dirs == (package_dir,)
+    raw_inputs = (result.workspace_dir / "raw_t2_inputs.md").read_text(encoding="utf-8")
+    assert "episode-pkg-1" in raw_inputs
+    assert "Disconnected fragments have been stitched into one episode." in raw_inputs
+
+
 def test_run_memory_dream_stages_t3_batch_but_does_not_commit_t3(tmp_path: Path) -> None:
     from app.services.memory_dream import finalize_memory_dream_workspace, run_memory_dream
 
@@ -157,6 +259,30 @@ def test_run_memory_dream_stages_t3_batch_but_does_not_commit_t3(tmp_path: Path)
 
     finalize_memory_dream_workspace(result.workspace_result)
     assert run_memory_dream(agent_id=agent_id, data_root=tmp_path).status == "no_changes"
+
+
+def test_run_memory_dream_stages_episode_stitch_packages(tmp_path: Path) -> None:
+    from app.services.memory_dream import run_memory_dream
+
+    agent_id = uuid4()
+    package_dir = _write_reviewed_episode_stitch_package(
+        tmp_path,
+        agent_id=agent_id,
+        session_id="session-episode",
+        episode_id="episode-1",
+        package_id="episode-pkg-1",
+        claim="Disconnected fragments have been stitched into one episode.",
+    )
+
+    result = run_memory_dream(agent_id=agent_id, data_root=tmp_path)
+
+    assert result.status == "staged"
+    assert result.workspace_result.selected_package_dirs == (package_dir,)
+    assert result.t3_batch_result is not None
+    assert (result.t3_batch_result.job_dir / "source_bundle.json").exists()
+    assert (tmp_path / str(agent_id) / "memory" / "t3" / "episodes.md").read_text(encoding="utf-8") == (
+        "# T3 Episodes\n\n"
+    )
 
 
 def test_run_dream_reports_memory_dream_lane_when_t3_is_empty(tmp_path: Path, monkeypatch) -> None:

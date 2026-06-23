@@ -138,6 +138,10 @@ async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]
         "approved_plan_hash": plan.plan_hash,
         "source": "plan_mode_handoff",
     }
+    plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
+    execution_contract = plan_json.get("execution_contract")
+    if isinstance(execution_contract, dict) and execution_contract:
+        extra_metadata["execution_contract"] = dict(execution_contract)
 
     try:
         run = await start_web_chat_run(

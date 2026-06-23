@@ -375,7 +375,7 @@ memory/
   strategies.md     # compatibility view / legacy entry point
   user.md           # compatibility view / legacy entry point
   lifecycle.json
-  access_log.jsonl
+  access telemetry in memory/control/lifecycle.json
   distillation_audit.jsonl
 skills/
   <skill>/SKILL.md
@@ -389,7 +389,7 @@ runtime_artifacts/
   ...
 ```
 
-`lifecycle.json`, `access_log.jsonl`, and `distillation_audit.jsonl` may be structured sidecars. They still serve the MD-first model because they explain and index Markdown truth, rather than replacing it.
+`memory/control/lifecycle.json` and `memory/distillation_audit.jsonl` may be structured sidecars. They still serve the MD-first model because they explain and index Markdown truth, rather than replacing it.
 
 The directory hierarchy expresses the gradient layers (`t0/`, `t2/`, `t3/`). It must not become an exploding ontology. Topic classification belongs in controlled metadata, Markdown links, and derived indexes. Existing `memory/wiki/**`, `memory/learnings/**`, and legacy flat T3 files may remain as compatibility views during migration, but the target is fewer semantic files with stronger metadata.
 
@@ -407,7 +407,8 @@ T2 is the summary layer. It is not raw evidence and not a random tag dump. Each 
 Canonical target:
 
 ```text
-memory/t2/summary.md
+memory/t2/sessions/<session_id>/segments/<segment_id>/{summary.md,labels.md,review.md,manifest.json}
+memory/t2/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}
 ```
 
 Example:
@@ -688,7 +689,7 @@ Navigation Map:
   compact T3 entry manifest / Memory Navigation excerpt only when retrieval
   needs exploration, when no relevant memory is found, or when the agent must
   decide which entry to load next. Persistent derived navigation is
-  memory/wiki_map.md. Legacy `memory/INDEX.md`, lower-case
+  memory/indexes/wiki_map.md. Legacy `memory/INDEX.md`, lower-case
   `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
 
 Residual Evidence:
@@ -932,7 +933,7 @@ Pure taxonomy differences belong in controlled tags, wikilinks, and derived inde
 
 ## 8. Index And Navigation
 
-The T3 entry manifest should not be an orphan: prompt assembly consumes it through Memory Navigation. The single persistent generated navigation map is `memory/wiki_map.md`. Legacy `memory/INDEX.md`, lower-case `memory/index.md`, and `memory/.derived/t3_index.md` are retired. The map is not always-on prompt memory.
+The T3 entry manifest should not be an orphan: prompt assembly consumes it through Memory Navigation. The single persistent generated navigation map is `memory/indexes/wiki_map.md`. Legacy `memory/INDEX.md`, lower-case `memory/index.md`, and `memory/.derived/t3_index.md` are retired. The map is not always-on prompt memory.
 
 Recommended first form:
 
@@ -1107,12 +1108,12 @@ Initial data sources:
 
 - `soul.md`
 - runtime T3 entry manifest / Memory Navigation
-- `memory/t2/summary.md`
+- reviewed T2 packages: `memory/t2/sessions/<session_id>/segments/<segment_id>/...` and optional `episodes/<episode_id>/...`
 - accepted T3 files: `memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`
-- derived T3 views when present: `memory/wiki_map.md` (single generated persistent navigation map), relation graph, contradiction/staleness views. Legacy `memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
+- derived T3 views when present: `memory/indexes/wiki_map.md` (single generated persistent navigation map), relation graph, contradiction/staleness views. Legacy `memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
 - `build_t3_entry_manifest()`
-- `memory/lifecycle.json`
-- `memory/access_log.jsonl`
+- `memory/control/lifecycle.json`
+- access telemetry in `memory/control/lifecycle.json`
 - `understandings.md`
 - `evolution/*`
 - distillation audit artifacts
@@ -1438,11 +1439,11 @@ Evidence:
 - Every hold/refusal/rejection writes `memory/distillation_audit.jsonl`
   (new `distillation_audit.py` sidecar — spec §3): no LLM, invalid output,
   explicit LLM hold, missing sections, low confidence, privacy rejection.
-- Live entry point (no orphan): `services/memory_curation.py`
-  `run_scene_wiki_curation_tick` wired into the heartbeat tick — cursor-
-  gated (`memory/.curation_cursor.json`, ≥3 new knowledge/strategy entries,
-  batch 8), tenant summary-model wrapped as the injected LLM, dominant
-  `concept` drives the wiki pass, never breaks the tick.
+- Deprecated live entry point: `services/memory_curation.py`
+  `run_scene_wiki_curation_tick` now returns `disabled` because the canonical
+  live lane is T3 Consolidator -> Memory Gate -> Platform Gate. Historical
+  cursor-gated implementations used root `memory/.curation_cursor.json`; that
+  cursor is now legacy compatibility state, not a current output path.
 - Raw writes to `memory/scenes/` and `memory/wiki/` were already refused at
   the workspace layer by P2's `memory/` guard — curator apply functions are
   the only write path.
@@ -1457,7 +1458,7 @@ Evidence:
 
 Acceptance:
 
-- T3 entry manifest has a consumer in prompt assembly via Memory Navigation; `memory/wiki_map.md` is rebuilt as the single persistent generated map. Legacy `memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
+- T3 entry manifest has a consumer in prompt assembly via Memory Navigation; `memory/indexes/wiki_map.md` is rebuilt as the single persistent generated map. Legacy `memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are retired.
 - Entry-level `recall_count` and `last_recalled_at` are updated.
 - Heat drives navigation order and retirement candidates.
 - Activated memory includes activation reasons.

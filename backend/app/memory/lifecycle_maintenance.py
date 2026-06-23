@@ -29,9 +29,11 @@ def _active_hold_entry_ids(store: MemoryLifecycleStore, *, metadata_key: str, me
 
 
 def _write_report(data_root: Path, agent_id: uuid.UUID | str, report: dict[str, Any]) -> None:
-    report_path = Path(data_root) / str(agent_id) / "memory" / "lifecycle_maintenance.json"
+    memory_dir = Path(data_root) / str(agent_id) / "memory"
+    report_path = memory_dir / "control" / "lifecycle_maintenance.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    (memory_dir / "lifecycle_maintenance.json").unlink(missing_ok=True)
 
 
 def run_memory_lifecycle_maintenance(

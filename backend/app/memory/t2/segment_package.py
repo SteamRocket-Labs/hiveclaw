@@ -45,7 +45,6 @@ MANIFEST_FILENAME = "manifest.json"
 SOURCE_BUNDLE_FILENAME = "source_bundle.json"
 SYNTHESIS_FILENAME = "synthesis.md"
 EPISODE_BUNDLE_FILENAME = "episode_bundle.json"
-SELF_REVIEW_PROMPT_VERSION = "t2.extractor_self_review.v1"
 _REVIEW_RUBRIC_SCORE_WEIGHTS = {
     "summary_fidelity": 0.35,
     "source_ref_coverage": 0.25,
@@ -166,13 +165,8 @@ async def build_t2_segment_package(
     (staging_dir / "summary.candidate.md").write_text(summary_md, encoding="utf-8")
     labels_md = await _call_agent(learning_brain, source_bundle, summary_md)
     (staging_dir / "labels.candidate.md").write_text(labels_md, encoding="utf-8")
-    requires_gate, gate_reason = _requires_independent_t2_review(
-        source_bundle=source_bundle,
-        summary_md=summary_md,
-        labels_md=labels_md,
-    )
-    if requires_gate and memory_gate is None:
-        issues = [f"independent Memory Gate required: {gate_reason}"]
+    if memory_gate is None:
+        issues = ["independent Memory Gate required: all T2 reviews must be LLM-authored"]
         _write_json(
             staging_dir / "platform_gate_report.json",
             {
@@ -189,12 +183,8 @@ async def build_t2_segment_package(
             staging_dir=staging_dir,
             issues=tuple(issues),
         )
-    if requires_gate:
-        review_md = await _call_agent(memory_gate, source_bundle, summary_md, labels_md)
-        review_mode = "independent_gate"
-    else:
-        review_md = _build_t2_self_review(source_bundle=source_bundle, summary_md=summary_md, labels_md=labels_md)
-        review_mode = "self_check"
+    review_md = await _call_agent(memory_gate, source_bundle, summary_md, labels_md)
+    review_mode = "independent_gate"
     (staging_dir / "review.candidate.md").write_text(review_md, encoding="utf-8")
 
     issues = _validate_candidate(
@@ -992,39 +982,39 @@ def _build_episode_bundle(
 def _load_t2_packages(
     *, root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str
 ) -> dict[str, dict[str, Any]]:
-    session_segments_dir = root / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments"
     packages: dict[str, dict[str, Any]] = {}
-    if not session_segments_dir.exists():
-        return packages
-    for package_dir in sorted(path for path in session_segments_dir.iterdir() if path.is_dir()):
-        manifest_path = package_dir / MANIFEST_FILENAME
-        if not manifest_path.exists():
+    for session_segments_dir in _segment_package_roots(root, agent_id, session_id):
+        if not session_segments_dir.exists():
             continue
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        package_id = str(manifest.get("package_id") or "").strip()
-        if not package_id:
-            continue
-        summary = (package_dir / SUMMARY_FILENAME).read_text(encoding="utf-8", errors="replace")
-        labels = (package_dir / LABELS_FILENAME).read_text(encoding="utf-8", errors="replace")
-        review = (package_dir / REVIEW_FILENAME).read_text(encoding="utf-8", errors="replace")
-        packages[package_id] = {
-            "package_id": package_id,
-            "path": _relative_agent_path(root, agent_id, package_dir),
-            "t0_segment_id": str(manifest.get("t0_segment_id") or package_dir.name),
-            "source_refs": [str(ref) for ref in manifest.get("source_refs") or [] if str(ref).strip()],
-            "source_range": manifest.get("source_range"),
-            "lineage": manifest.get("lineage") or {},
-            "visible_source_view": manifest.get("visible_source_view") or {},
-            "context_refs": manifest.get("context_refs") or [],
-            "excluded_refs": manifest.get("excluded_refs") or [],
-            "package_status": str(manifest.get("package_status") or ""),
-            "summary_md": summary,
-            "labels_md": labels,
-            "review_md": review,
-        }
+        for package_dir in sorted(path for path in session_segments_dir.iterdir() if path.is_dir()):
+            manifest_path = package_dir / MANIFEST_FILENAME
+            if not manifest_path.exists():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            package_id = str(manifest.get("package_id") or "").strip()
+            if not package_id or package_id in packages:
+                continue
+            summary = (package_dir / SUMMARY_FILENAME).read_text(encoding="utf-8", errors="replace")
+            labels = (package_dir / LABELS_FILENAME).read_text(encoding="utf-8", errors="replace")
+            review = (package_dir / REVIEW_FILENAME).read_text(encoding="utf-8", errors="replace")
+            packages[package_id] = {
+                "package_id": package_id,
+                "path": _relative_agent_path(root, agent_id, package_dir),
+                "t0_segment_id": str(manifest.get("t0_segment_id") or package_dir.name),
+                "source_refs": [str(ref) for ref in manifest.get("source_refs") or [] if str(ref).strip()],
+                "source_range": manifest.get("source_range"),
+                "lineage": manifest.get("lineage") or {},
+                "visible_source_view": manifest.get("visible_source_view") or {},
+                "context_refs": manifest.get("context_refs") or [],
+                "excluded_refs": manifest.get("excluded_refs") or [],
+                "package_status": str(manifest.get("package_status") or ""),
+                "summary_md": summary,
+                "labels_md": labels,
+                "review_md": review,
+            }
     return packages
 
 
@@ -1296,119 +1286,6 @@ def _validate_candidate(*, source_bundle: dict[str, Any], summary_md: str, label
         issues.append("review decision is not approved")
     _validate_review_rubric(summary=summary, labels=labels, review=review, issues=issues)
     return issues
-
-
-def _requires_independent_t2_review(
-    *,
-    source_bundle: dict[str, Any],
-    summary_md: str,
-    labels_md: str,
-) -> tuple[bool, str]:
-    issues: list[str] = []
-    labels = _extract_single_xml(labels_md, "t2_labels", issues)
-    if labels is None:
-        return True, "labels XML is missing or invalid"
-
-    lineage_risk_flags = [
-        str(flag).strip()
-        for flag in (source_bundle.get("visible_source_view") or {}).get("lineage_risk_flags") or []
-        if str(flag).strip()
-    ]
-    if not lineage_risk_flags:
-        lineage_risk_flags = [
-            str(flag).strip()
-            for flag in (source_bundle.get("lineage") or {}).get("risk_flags") or []
-            if str(flag).strip()
-        ]
-    if lineage_risk_flags:
-        return True, f"lineage_risk={lineage_risk_flags[0]}"
-
-    sensitivity = (labels.findtext(".//sensitivity") or "").strip().upper()
-    if sensitivity and sensitivity not in {"PL1", "PL2"}:
-        return True, f"sensitivity={sensitivity}"
-
-    risk_flags = [
-        " ".join(" ".join(flag.itertext()).split()).strip()
-        for flag in labels.findall(".//risk_flags/*")
-        if " ".join(" ".join(flag.itertext()).split()).strip()
-    ]
-    if risk_flags:
-        return True, f"risk_flags={','.join(risk_flags)}"
-
-    principal_scope = (labels.findtext(".//principal_scope") or "").strip().lower()
-    if principal_scope and principal_scope not in {"direct_owner", "self", "owner"}:
-        return True, f"principal_scope={principal_scope}"
-
-    confidence = _parse_unit_score(labels.findtext(".//confidence"))
-    if confidence is None or confidence < 0.85:
-        return True, f"confidence={labels.findtext('.//confidence') or '<missing>'}"
-
-    package_status = (labels.findtext(".//package_status") or "").strip().lower()
-    if package_status and package_status != "closed":
-        return True, f"package_status={package_status}"
-
-    continuity_state = (labels.findtext(".//continuity_state") or "").strip().lower()
-    if continuity_state and continuity_state != "standalone":
-        return True, f"continuity_state={continuity_state}"
-
-    text = "\n".join(
-        [
-            labels_md,
-            summary_md,
-            json.dumps(source_bundle.get("work_ledger") or {}, ensure_ascii=False),
-        ]
-    ).lower()
-    high_risk_terms = (
-        "soul",
-        "identity",
-        "persona",
-        "permission",
-        "credential",
-        "secret",
-        "cross_principal",
-        "pl3",
-        "pl4",
-        "capability",
-        "skill_seed",
-    )
-    for term in high_risk_terms:
-        if term in text:
-            return True, f"high_risk_term={term}"
-
-    return False, "low_risk"
-
-
-def _build_t2_self_review(*, source_bundle: dict[str, Any], summary_md: str, labels_md: str) -> str:
-    expected_refs = [
-        str(ref.get("uri")) for ref in source_bundle.get("source_refs") or [] if str(ref.get("uri") or "").strip()
-    ]
-    source_ref_lines = "\n".join(f'    <source_ref uri="{_xml_escape(uri)}"/>' for uri in expected_refs)
-    package_id = _xml_escape(str(source_bundle.get("package_id") or ""))
-    return f"""# T2 Segment Review
-
-<t2_review schema_version="t2.review.v1" package_id="{package_id}" reviewer="extractor_self_check">
-  <decision>approved</decision>
-  <allowed_next>t3_intake</allowed_next>
-  <review_rubric schema_version="t2.review_rubric.v1">
-    <score name="summary_fidelity" value="0.95"/>
-    <score name="source_ref_coverage" value="0.95"/>
-    <score name="label_alignment" value="0.90"/>
-    <score name="safety_scope" value="1.00"/>
-    <score name="package_closure" value="0.90"/>
-    <review_score>0.95</review_score>
-  </review_rubric>
-  <evidence_coverage>complete</evidence_coverage>
-  <hallucination_risk>low</hallucination_risk>
-  <label_quality>pass</label_quality>
-  <continuity_result>standalone</continuity_result>
-  <sensitivity_result>pass</sensitivity_result>
-  <issues/>
-  <required_changes/>
-  <source_refs_checked>
-{source_ref_lines}
-  </source_refs_checked>
-</t2_review>
-"""
 
 
 def _validate_continuity_fields(
@@ -1694,7 +1571,6 @@ def _build_manifest(
     job_id: str,
     review_mode: str = "independent_gate",
 ) -> dict[str, Any]:
-    review_prompt_version = SELF_REVIEW_PROMPT_VERSION if review_mode == "self_check" else REVIEW_PROMPT_VERSION
     return {
         "schema_version": "t2.segment-package.manifest.v1",
         "package_id": source_bundle["package_id"],
@@ -1714,7 +1590,7 @@ def _build_manifest(
         "prompts": {
             "summary_prompt_version": SUMMARY_PROMPT_VERSION,
             "labels_prompt_version": LABELS_PROMPT_VERSION,
-            "review_prompt_version": review_prompt_version,
+            "review_prompt_version": REVIEW_PROMPT_VERSION,
         },
         "files": {filename: {"sha256": _sha256(content)} for filename, content in files.items()},
         "created_at": _now(),
@@ -1795,12 +1671,29 @@ def _data_root(data_root: Path | str | None) -> Path:
     return Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
 
 
+def _t2_sessions_dir(root: Path, agent_id: uuid.UUID | str) -> Path:
+    return root / str(agent_id) / "memory" / "t2" / "sessions"
+
+
+def _legacy_t2_sessions_dir(root: Path, agent_id: uuid.UUID | str) -> Path:
+    return root / str(agent_id) / "memory" / "sessions"
+
+
+def _segment_package_roots(
+    root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str
+) -> tuple[Path, Path]:
+    return (
+        _t2_sessions_dir(root, agent_id) / str(session_id) / "segments",
+        _legacy_t2_sessions_dir(root, agent_id) / str(session_id) / "segments",
+    )
+
+
 def _package_dir(root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str, t0_segment_id: str) -> Path:
-    return root / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments" / t0_segment_id
+    return _t2_sessions_dir(root, agent_id) / str(session_id) / "segments" / t0_segment_id
 
 
 def _episode_dir(root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str, episode_id: str) -> Path:
-    return root / str(agent_id) / "memory" / "sessions" / str(session_id) / "episodes" / episode_id
+    return _t2_sessions_dir(root, agent_id) / str(session_id) / "episodes" / episode_id
 
 
 def _staging_dir(root: Path, agent_id: uuid.UUID | str, job_id: str) -> Path:

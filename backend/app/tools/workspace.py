@@ -325,9 +325,10 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
             t3_path.parent.mkdir(parents=True, exist_ok=True)
             t3_path.write_text(t3_seed, encoding="utf-8")
 
-    # Pre-create the single generated Memory Wiki map. Root memory/INDEX.md,
-    # lower-case memory/index.md, and the old .derived/t3_index.md path are retired.
-    index_path = ws / "memory" / "wiki_map.md"
+    # Pre-create the single generated Memory Wiki map. Root memory/wiki_map.md,
+    # memory/INDEX.md, lower-case memory/index.md, and the old
+    # .derived/t3_index.md path are retired.
+    index_path = ws / "memory" / "indexes" / "wiki_map.md"
     if not index_path.exists():
         rebuild_index(WORKSPACE_ROOT, agent_id)
 

@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from hive_bridge.client import HiveBridgeClient
-from hive_bridge.mcp_server import HiveBridgeMCPServer
+from hive_bridge.channel_runner import HiveBridgeChannelRunner
 from hive_bridge.poller import HiveBridgeRunner
 from hive_bridge.runtime import create_default_runtime_registry
 from hive_bridge.token_store import BridgeConfig, FileTokenStore
 
 
-DEFAULT_BASE_URL = "https://try.hive.ai"
+DEFAULT_BASE_URL = "https://frontend-production-0346.up.railway.app"
 
 
 def _device_fingerprint() -> str:
@@ -47,7 +47,7 @@ def cmd_login(args: argparse.Namespace) -> int:
         scopes=[],
     )
     print(f"Pairing code: {init['user_code']}")
-    print("Open this Hive activation URL and approve the Local Agent Link:")
+    print("Open this Hive activation URL to finish browser login automatically:")
     print(init["verification_uri_complete"])
     if not args.no_browser:
         webbrowser.open(init["verification_uri_complete"])
@@ -88,11 +88,6 @@ def cmd_logout(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_mcp(_args: argparse.Namespace) -> int:
-    HiveBridgeMCPServer().serve()
-    return 0
-
-
 def cmd_upload(args: argparse.Namespace) -> int:
     client = _load_client(args)
     _print_json(client.upload_file(args.path))
@@ -105,6 +100,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     command = args.command or args.command_adapter
     runtime = args.runtime or ("command" if command else "noop")
     adapter = registry.create(runtime, command=command, timeout_seconds=args.timeout, work_dir=args.work_dir)
+    if args.transport == "websocket":
+        channel_runner = HiveBridgeChannelRunner(
+            client=client,
+            adapter=adapter,
+            runtime_kind=runtime,
+            capabilities={"file_upload": True, "runtime": runtime},
+        )
+        if args.once:
+            processed = channel_runner.run_once()
+            _print_json({"status": "ok", "transport": "websocket", "processed": processed})
+            return 0
+        print("Hive Bridge Local Agent Channel started. Press Ctrl-C to stop.", file=sys.stderr)
+        channel_runner.run_forever()
+        return 0
     runner = HiveBridgeRunner(client=client, adapter=adapter)
     if args.once:
         processed = runner.run_once()
@@ -118,11 +127,22 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_service(args: argparse.Namespace) -> int:
     if args.action == "status":
-        print("Hive Bridge P0 service mode is available through `hive-bridge run` foreground mode.")
+        print("Hive Bridge service mode is available through `hive-bridge run --transport websocket` foreground mode.")
         return 0
+    if args.action == "start":
+        forwarded = argparse.Namespace(**vars(args))
+        forwarded.transport = "websocket"
+        forwarded.once = False
+        forwarded.runtime = args.runtime
+        forwarded.command = args.command
+        forwarded.command_adapter = None
+        forwarded.work_dir = args.work_dir
+        forwarded.timeout = args.timeout
+        forwarded.interval = 3.0
+        return cmd_run(forwarded)
     print(
-        "P0 service installer is not enabled in this package yet. "
-        "Use `hive-bridge run` for foreground polling.",
+        "Native service install/stop is not enabled in this package yet. "
+        "Use `hive-bridge service start` for foreground WebSocket service mode.",
         file=sys.stderr,
     )
     return 2
@@ -131,13 +151,13 @@ def cmd_service(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hive-bridge")
     parser.add_argument("--config", default=None, help="Path to Hive Bridge config JSON.")
-    parser.add_argument("--base-url", default=None, help="Hive base URL. Defaults to saved config or try.hive.ai.")
+    parser.add_argument("--base-url", default=None, help="Hive base URL. Defaults to saved config or Hive production.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     login = sub.add_parser("login")
     login.add_argument("--base-url", default=DEFAULT_BASE_URL)
     login.add_argument("--device-name", default=None)
-    login.add_argument("--client-kind", default="generic_mcp_stdio")
+    login.add_argument("--client-kind", default="generic_cli")
     login.add_argument("--device-fingerprint", default=None)
     login.add_argument("--no-browser", action="store_true")
     login.set_defaults(func=cmd_login)
@@ -148,15 +168,13 @@ def build_parser() -> argparse.ArgumentParser:
     logout = sub.add_parser("logout")
     logout.set_defaults(func=cmd_logout)
 
-    mcp = sub.add_parser("mcp")
-    mcp.set_defaults(func=cmd_mcp)
-
     upload = sub.add_parser("upload")
     upload.add_argument("path")
     upload.set_defaults(func=cmd_upload)
 
     run = sub.add_parser("run")
     run.add_argument("--interval", type=float, default=3.0)
+    run.add_argument("--transport", choices=["websocket", "poll"], default="poll")
     run.add_argument("--runtime", choices=["noop", "command", "acp"], default=None)
     run.add_argument("--command", nargs="+", default=None)
     run.add_argument("--command-adapter", nargs="+", default=None, help="Backward-compatible alias for --runtime command --command.")
@@ -167,6 +185,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     service = sub.add_parser("service")
     service.add_argument("action", choices=["install", "start", "status", "stop"])
+    service.add_argument("--runtime", choices=["noop", "command", "acp"], default="noop")
+    service.add_argument("--command", nargs="+", default=None)
+    service.add_argument("--work-dir", default=".")
+    service.add_argument("--timeout", type=int, default=600)
     service.set_defaults(func=cmd_service)
     return parser
 

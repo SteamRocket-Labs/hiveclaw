@@ -24,7 +24,6 @@ import AgentSkillsSection from './AgentSkillsSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import CopyMessageButton from './CopyMessageButton';
-import LocalAgentLinkCard from './LocalAgentLinkCard';
 import OpenClawSettings from '../OpenClawSettings';
 import PlanCard, { confirmAndHandoffPlan } from './PlanCard';
 import RelationshipEditor from './RelationshipEditor';
@@ -157,6 +156,37 @@ vi.mock('@tanstack/react-query', () => ({
             promoted_from_run_id: null,
           },
         ],
+      };
+    }
+    if (key === 'slash-command-menu') {
+      return {
+        data: [
+          {
+            name: 'goal_start',
+            aliases: ['goal'],
+            description: 'Start a session goal',
+            category: 'goal',
+            source: 'builtin',
+            execution_mode: 'runtime',
+            permission_mode: 'default',
+            bridge_safe: true,
+            remote_safe: true,
+          },
+          {
+            name: 'team_create',
+            aliases: ['team'],
+            description: 'Create an enterable agent team',
+            category: 'team',
+            source: 'builtin',
+            execution_mode: 'runtime',
+            permission_mode: 'default',
+            bridge_safe: true,
+            remote_safe: true,
+          },
+        ],
+        isLoading: false,
+        isError: false,
+        error: null,
       };
     }
     if (key === 'agent-approvals') {
@@ -1105,25 +1135,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('deleteAgent');
   });
 
-  it('places Local Agent immediately after Sub-agents in the agent detail tabs', () => {
+  it('keeps Local Agent out of agent detail tabs because it is user-scoped', () => {
     const tabs = Array.from(AGENT_DETAIL_TABS);
-    expect(tabs[tabs.indexOf('subagents') + 1]).toBe('localAgent');
-  });
-
-  it('renders Local Agent Link as its own agent detail work surface', () => {
-    const markup = renderToStaticMarkup(<LocalAgentLinkCard agentId="agent-1" canManage />);
-
-    expect(markup).toContain('Local Agent Link');
-    expect(markup).toContain('hive-bridge login');
-    expect(markup).toContain('Pairing code');
-    expect(markup).toContain('Approve link');
-    expect(markup).toContain('Local agent online');
-    expect(markup).toContain('Codex Desktop');
-    expect(markup).toContain('Cloud work request');
-    expect(markup).toContain('Send work request');
-    expect(markup).toContain('Local Agent Workbench');
-    expect(markup).toContain('done by command runtime');
-    expect(markup).toContain('workspace/local-bridge/report.md');
+    expect(tabs).not.toContain('localAgent');
   });
 
   it('builds a bound Plan Mode opt-out recommendation for patrol saves', () => {
@@ -1319,12 +1333,83 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Launch sync');
+    expect(markup).toContain('data-testid="session-workbench"');
+    expect(markup).toContain('data-testid="session-workbench-header"');
+    expect(markup).toContain('data-testid="session-workbench-inspector"');
+    expect(markup).toContain('data-testid="session-native-controls"');
+    expect(markup).toContain('Start goal');
+    expect(markup).toContain('Create team');
     expect(markup).toContain('Ship it');
     expect(markup).toContain('notes.md');
     expect(markup).toContain('chat-input');
     expect(markup).toContain('send');
+    expect(markup).not.toContain('agent.chat.commands.title');
+    expect(markup).not.toContain('checkpoints · session');
     expect(markup).not.toContain('Primary Request and Intent');
     expect(markup).not.toContain('Recovery Context');
+  });
+
+  it('shows slash command suggestions only when the composer starts with slash', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Launch sync',
+          created_at: '2026-03-27T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput="/team"
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="slash-command-menu"');
+    expect(markup).toContain('team_create');
   });
 
   it('uses the route agent id for chat runtime queries when cached agent data is stale', () => {
@@ -1829,7 +1914,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Daily Reddit investor monitoring plan');
     expect(markup).not.toContain('Inline tool plan');
     expect(markup).toContain('Confirm and start');
-    expect(markup).toContain('Confirm before creating the trigger.');
+    expect(markup).not.toContain('Confirm before creating the trigger.');
   });
 
   it('renders completed create-digital-employee tool cards in the chat transcript', () => {
@@ -1912,7 +1997,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('数字员工已创建完成。');
   });
 
-  it('renders the running task todo dock above the chat composer', () => {
+  it('renders the running task todo dock inside the session inspector', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Research Bot' }}
@@ -1927,7 +2012,7 @@ describe('AgentDetail extracted sections', () => {
         activeSession={{
           id: 'session-1',
           user_id: 'user-1',
-          title: 'Deep Research run',
+          title: 'Research run',
           created_at: '2026-06-01T09:00:00Z',
         }}
         wsConnected
@@ -1995,7 +2080,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Collect and grade sources');
     expect(markup).toContain('Write final report');
     expect(markup).not.toContain('Deep Research');
-    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeLessThan(markup.indexOf('chat-input'));
+    expect(markup.indexOf('data-testid="session-workbench-inspector"')).toBeLessThan(markup.indexOf('data-testid="chat-work-ledger-dock"'));
+    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeGreaterThan(markup.indexOf('chat-input'));
   });
 
   it('does not keep polling a stale historical Deep Research start result', () => {
@@ -2155,7 +2241,8 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
     expect(markup).toContain('Collect and grade sources');
-    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeLessThan(markup.indexOf('chat-input'));
+    expect(markup.indexOf('data-testid="session-workbench-inspector"')).toBeLessThan(markup.indexOf('data-testid="chat-work-ledger-dock"'));
+    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeGreaterThan(markup.indexOf('chat-input'));
   });
 
   it('shows the durable run continuation state while a session run is active', () => {
@@ -2218,7 +2305,9 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Agent is continuing this run...');
+    expect(markup).toContain('data-testid="active-run-cell"');
+    expect(markup).toContain('Waiting for model');
+    expect(markup).not.toContain('thinking-indicator');
     expect(markup).toContain('btn-stop-generation');
   });
 
@@ -2285,6 +2374,76 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('btn-stop-generation');
     expect(markup).toContain('btn-primary');
     expect(markup).toContain('send');
+  });
+
+  it('keeps slash commands and attachments inside the single session composer', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Composer contract',
+          created_at: '2026-06-23T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[{ name: 'brief.pdf', text: '', path: 'workspace/brief.pdf' }]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput="/team"
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    const composerIndex = markup.indexOf('data-testid="session-composer"');
+    const slashIndex = markup.indexOf('data-testid="slash-command-menu"');
+    const attachmentsIndex = markup.indexOf('data-testid="session-composer-attachments"');
+    expect(composerIndex).toBeGreaterThanOrEqual(0);
+    expect(slashIndex).toBeGreaterThan(composerIndex);
+    expect(attachmentsIndex).toBeGreaterThan(composerIndex);
+    expect(markup).toContain('brief.pdf');
+    expect(markup).not.toContain('data-testid="chat-artifact-preview"');
   });
 
   it('does not render stale chat messages from a different active session', () => {

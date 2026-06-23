@@ -156,6 +156,40 @@ def write_skill_candidate_package(
     return manifest
 
 
+def write_skill_referee_review(
+    *,
+    workspace: Path,
+    candidate_id: str,
+    review_markdown: str,
+    review_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Attach the independent Skill Referee review to an inactive package."""
+
+    package_dir = workspace / "evolution" / "skill_candidates" / candidate_id
+    manifest_path = package_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+    rendered = review_markdown.rstrip() + "\n"
+    review_path = package_dir / "referee_review.md"
+    review_path.write_text(rendered, encoding="utf-8")
+
+    relative_review_path = f"evolution/skill_candidates/{candidate_id}/referee_review.md"
+    manifest["referee_review_path"] = relative_review_path
+    manifest["referee_review_sha256"] = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+    manifest["updated_at"] = _now_iso()
+    manifest.setdefault("metadata", {})["referee_review"] = review_payload
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def update_skill_candidate_package_status(
     *,
     workspace: Path,

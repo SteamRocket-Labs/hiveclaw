@@ -1,7 +1,7 @@
 """Legacy helpers for weighted T2 learnings compatibility views.
 
 Canonical T2 is now the Segment Package under
-``memory/sessions/<session_id>/segments/<segment_id>/``. This module remains
+``memory/t2/sessions/<session_id>/segments/<segment_id>/``. This module remains
 for existing retrieval compatibility, legacy admin repair, and derived view
 generation; default runtime T0→T2 must not write semantic truth here directly.
 """

@@ -257,6 +257,14 @@ async def call_llm(
         source=session_source or "web",
         channel=session_channel or "web",
     )
+    if not isinstance(effective_session_context.metadata, dict):
+        effective_session_context.metadata = {}
+    turn_seed = effective_session_context.metadata.get("runtime_task_id") or session_id or uuid.uuid4().hex
+    effective_session_context.metadata.setdefault("turn_id", f"turn-{turn_seed}")
+    effective_session_context.metadata.setdefault(
+        "intent_id",
+        f"intent-{effective_session_context.metadata.get('request_id') or turn_seed}",
+    )
 
     result = await invoke_agent(
         AgentInvocationRequest(
@@ -280,29 +288,38 @@ async def call_llm(
             system_prompt_suffix=system_prompt_suffix,
             allowed_tool_names=allowed_tool_names,
             excluded_tool_names=excluded_tool_names,
+            emit_turn_stop=False,
         )
     )
 
     if auto_close_session and agent_id is not None:
         close_messages = list(runtime_memory_messages or runtime_messages)
-        if not is_llm_error_message(result.content):
+        llm_error = is_llm_error_message(result.content)
+        if not llm_error:
             close_messages.append({"role": "assistant", "content": result.content})
         try:
             from app.runtime.hooks import HookEvent, emit_hook
 
             await emit_hook(
-                HookEvent.SESSION_CLOSE,
+                HookEvent.TURN_ABORT if llm_error else HookEvent.TURN_STOP,
                 agent_id=agent_id,
                 session_id=effective_session_context.session_id or session_id,
                 source=effective_session_context.source,
                 messages=close_messages,
                 metadata={
-                    "reason": "invoke_complete",
+                    "reason": "invoke_failed" if llm_error else "invoke_complete",
                     "channel": effective_session_context.channel,
+                    "checkpoint_kind": "turn_abort" if llm_error else "user_turn_stop",
+                    "semantic_memory_eligible": False if llm_error else True,
+                    "turn_id": effective_session_context.metadata.get("turn_id"),
+                    "intent_id": effective_session_context.metadata.get("intent_id"),
+                    "runtime_task_id": effective_session_context.metadata.get("runtime_task_id"),
+                    "request_id": effective_session_context.metadata.get("request_id"),
+                    "trace_id": effective_session_context.metadata.get("trace_id"),
                 },
             )
         except Exception as close_err:
-            logger.debug("[call_llm] SESSION_CLOSE hook failed (non-fatal): {}", close_err)
+            logger.debug("[call_llm] TURN_STOP hook failed (non-fatal): {}", close_err)
 
     return result.content
 
@@ -413,13 +430,15 @@ async def websocket_chat(
                     f"[WS] Primary model {agent.primary_model_id} unavailable for agent "
                     f"{agent_id} (deleted/disabled/cross-tenant) — failing loud instead of silent fallback"
                 )
-                await websocket.send_json({
-                    "type": "error",
-                    "content": (
-                        "你为该数字员工配置的主模型当前不可用(可能已删除、被禁用,或不属于本公司),"
-                        "请在「设置 → 模型」中重新选择一个本公司可用的模型。"
-                    ),
-                })
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "content": (
+                            "你为该数字员工配置的主模型当前不可用(可能已删除、被禁用,或不属于本公司),"
+                            "请在「设置 → 模型」中重新选择一个本公司可用的模型。"
+                        ),
+                    }
+                )
                 await websocket.close(code=4002)
                 return
 

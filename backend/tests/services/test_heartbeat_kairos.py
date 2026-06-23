@@ -211,7 +211,7 @@ class TestReadT2Full:
             _read_t2_full(agent_id)
 
         assert agent_id in _t2_mtimes
-        assert "sessions/s1/segments/seg-1" in _t2_mtimes[agent_id]
+        assert "memory/sessions/s1/segments/seg-1" in _t2_mtimes[agent_id]
 
     def test_empty_learnings(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         with patch("app.config.get_settings") as mock:

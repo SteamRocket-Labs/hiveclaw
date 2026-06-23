@@ -107,7 +107,7 @@ T3 Consolidation Batch 只允许纳入成熟的 Segment Package。
 Canonical T2 package：
 
 ```text
-memory/sessions/<session_id>/segments/<t2_segment_id>/
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/
   summary.md
   labels.md
   review.md
@@ -169,7 +169,7 @@ memory/t3/**/<topic>/**
 这些内容如果需要，只能作为 derived read model：
 
 ```text
-memory/wiki_map.md                   # single generated Memory Wiki map / persistent navigation read model
+memory/indexes/wiki_map.md                   # single generated Memory Wiki map / persistent navigation read model
 memory/.derived/relation_graph.md
 memory/.derived/contradictions.md
 ```
@@ -181,7 +181,7 @@ Derived read model 的规则：
 3. 不能成为 semantic truth。
 4. 不能被 Heartbeat / Dream 当作 primary evidence。
 5. 不能在 derived 文件里新增 accepted memory。
-6. Platform Gate 每次 accepted T3 commit 后必须重建唯一 generated map `memory/wiki_map.md`，并清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`；运行时 prompt 仍优先消费实时 T3 entry manifest / Memory Navigation。
+6. Platform Gate 每次 accepted T3 commit 后必须重建唯一 generated map `memory/indexes/wiki_map.md`，并清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`；运行时 prompt 仍优先消费实时 T3 entry manifest / Memory Navigation。
 
 ## 6. T2 -> T3 运行流程
 
@@ -1098,7 +1098,7 @@ Tool Context
 3. T3 是 long-term dynamic memory，按 relevance / owner / company / sensitivity / prompt priority 动态激活。
 4. T2 仍可进入 prompt，但只限新近、未吸收、高优先级、与当前任务相关的 Segment Package。
 5. `rolling_checkpoint` 是短期 carryover，不是 T3。
-6. `memory/wiki_map.md` 这类导航可以作为 optional memory navigation，但不能常驻 prompt。
+6. `memory/indexes/wiki_map.md` 这类导航可以作为 optional memory navigation，但不能常驻 prompt。
 7. prompt builder 只能读，不允许产生写副作用。
 
 ## 16. 旧路径迁移

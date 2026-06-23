@@ -93,6 +93,28 @@ def _llm_skill_markdown(
     )
 
 
+async def _approving_referee_review(*args, **kwargs):
+    del args, kwargs
+    from app.services.skill_distiller import SkillRefereeReview
+
+    return SkillRefereeReview(
+        decision="approve",
+        scores={
+            "common_vs_episodic": 4,
+            "scope": 4,
+            "overlap": 4,
+            "safety": 4,
+            "eval_readiness": 4,
+        },
+        reason="Reusable procedure with bounded scope and passing eval evidence.",
+        review_markdown=(
+            "# Skill Referee Review\n\n"
+            "- decision: approve\n"
+            "- reason: Reusable procedure with bounded scope and passing eval evidence.\n"
+        ),
+    )
+
+
 def test_build_workflow_signature_filters_noise_and_consecutive_duplicates() -> None:
     from app.services.skill_distiller import _build_workflow_signature
 
@@ -369,6 +391,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
@@ -404,6 +427,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     package_dir = workspace / "evolution" / "skill_candidates" / candidate_id
     assert (package_dir / "skill_pitch.md").exists()
     assert (package_dir / "SKILL.md.draft").exists()
+    assert (package_dir / "referee_review.md").exists()
     assert skill_path.read_text(encoding="utf-8") == (package_dir / "SKILL.md.draft").read_text(encoding="utf-8")
     assert (package_dir / "eval_plan.md").exists()
     assert (package_dir / "failure_cases.md").exists()
@@ -412,6 +436,7 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     assert manifest["status"] == "promoted"
     assert manifest["candidate_id"] == candidate_id
     assert manifest["draft_path"] == f"evolution/skill_candidates/{candidate_id}/SKILL.md.draft"
+    assert manifest["referee_review_path"] == f"evolution/skill_candidates/{candidate_id}/referee_review.md"
     eval_runs = [record for record in ledger_records if record["schema"] == "evolution_eval_run.v1"]
     assert eval_runs
     assert eval_runs[-1]["dataset"] == "skill_distiller.verified_skill_guard"
@@ -427,6 +452,187 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
     assert "Build, migrate, restart" in captured_draft_kwargs["skill_candidate_drafts"][0]["content"]
     assert "Market Research Loop" in review
     assert "[promoted]" in review
+
+
+@pytest.mark.asyncio
+async def test_distiller_consumes_skill_candidate_package_without_session_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from app.services.skill_candidate_package import write_skill_candidate_package
+    from app.services.skill_distiller import DistilledSkillDraft, run_skill_distillation_cycle
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+    candidate_id = "save-skill-direct-1"
+    write_skill_candidate_package(
+        workspace=workspace,
+        candidate_id=candidate_id,
+        rendered_markdown=_llm_skill_markdown(
+            name="Deployment Review",
+            description="Review deployment diffs and verify rollback paths.",
+            instructions="Check rollout status, inspect logs, and save rollback evidence.",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+        ),
+        skill_name="Deployment Review",
+        package_type="save_skill",
+        target_path="skills/deployment-review/SKILL.md",
+        source_refs=["tool:save_skill"],
+        reason="Agent submitted a reusable deployment review capsule.",
+        declared_tools=("web_search", "web_fetch", "write_file"),
+        declared_packs=("web_pack",),
+        status="pending_behavior_verification",
+        extra_metadata={"source_tool": "save_skill"},
+    )
+    captured_draft_kwargs: dict = {}
+
+    async def fake_empty_evidence(*, agent_id, since_days, state, current_session_id):
+        del agent_id, since_days, state, current_session_id
+        return []
+
+    async def fake_draft_skill(**kwargs):
+        captured_draft_kwargs.update(kwargs)
+        return DistilledSkillDraft(
+            decision="promote",
+            confidence=0.94,
+            name="Deployment Review",
+            description="Review deployment diffs and verify rollback paths.",
+            instructions_markdown="Check rollout status, inspect logs, and save rollback evidence.",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="The inactive package is already a reusable candidate and passed writer review.",
+            skill_markdown=_llm_skill_markdown(
+                name="Deployment Review",
+                description="Review deployment diffs and verify rollback paths.",
+                instructions="Check rollout status, inspect logs, and save rollback evidence.",
+                declared_tools=("web_search", "web_fetch", "write_file"),
+                declared_packs=("web_pack",),
+            ),
+        )
+
+    monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_empty_evidence)
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
+
+    result = await run_skill_distillation_cycle(
+        agent_id=uuid4(),
+        workspace=workspace,
+        tenant_id=None,
+        runtime_config=SimpleNamespace(
+            skill_candidate_loop_enabled=True,
+            skill_distiller_behavior_report=_passing_behavior_report(),
+        ),
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
+    )
+
+    skill_path = workspace / "skills" / "deployment-review" / "SKILL.md"
+    ledger_records = _jsonl_records(workspace / "evolution" / "evolution_ledger.jsonl")
+    promoted_candidate = [
+        record
+        for record in ledger_records
+        if record["schema"] == "evolution_candidate.v1" and record["target_type"] == "skill"
+    ][-1]
+    package_dir = workspace / "evolution" / "skill_candidates" / promoted_candidate["candidate_id"]
+
+    assert result["status"] == "promoted"
+    assert result["processed_sessions"] == 0
+    assert result["direct_candidate_id"] == candidate_id
+    assert skill_path.exists()
+    assert captured_draft_kwargs["skill_candidate_drafts"][0]["candidate_id"] == candidate_id
+    assert captured_draft_kwargs["evidence"][0].source == "skill_candidate_package"
+    assert (package_dir / "referee_review.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_distiller_holds_when_skill_referee_rejects(monkeypatch, tmp_path: Path) -> None:
+    from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, SkillRefereeReview
+    from app.services.skill_distiller import run_skill_distillation_cycle
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+
+    async def fake_evidence(*, agent_id, since_days, state, current_session_id):
+        del agent_id, since_days, state, current_session_id
+        return [
+            SessionWorkflowEvidence(
+                session_id=f"referee-s-{index}",
+                source="heartbeat",
+                occurred_at=f"2026-04-0{index}T10:00:00Z",
+                status="success",
+                used_skill=False,
+                summary="Repeated a broad operations workflow.",
+                assistant_reply="[OUTCOME:action_taken] [SCORE:8] handled broad operations task",
+                tool_names=("web_search", "web_fetch", "write_file"),
+            )
+            for index in range(1, 4)
+        ]
+
+    async def fake_draft(**kwargs):
+        del kwargs
+        return DistilledSkillDraft(
+            decision="promote",
+            confidence=0.95,
+            name="Broad Operations Loop",
+            description="Handle a broad operations task.",
+            instructions_markdown="Do operations work for the current task.",
+            declared_tools=("web_search", "web_fetch", "write_file"),
+            declared_packs=("web_pack",),
+            reason="Looks reusable but scope is too broad.",
+            skill_markdown=_llm_skill_markdown(
+                name="Broad Operations Loop",
+                description="Handle a broad operations task.",
+                instructions="Do operations work for the current task.",
+                declared_tools=("web_search", "web_fetch", "write_file"),
+                declared_packs=("web_pack",),
+            ),
+        )
+
+    async def rejecting_referee(*args, **kwargs):
+        del args, kwargs
+        return SkillRefereeReview(
+            decision="hold",
+            scores={
+                "common_vs_episodic": 2,
+                "scope": 2,
+                "overlap": 3,
+                "safety": 4,
+                "eval_readiness": 3,
+            },
+            reason="The draft is too episodic and broad to become a reusable skill.",
+            review_markdown="# Skill Referee Review\n\n- decision: hold\n- reason: too episodic and broad\n",
+        )
+
+    monkeypatch.setattr("app.services.skill_distiller._load_internal_session_evidence", fake_evidence)
+    monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft)
+    monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", rejecting_referee)
+
+    result = await run_skill_distillation_cycle(
+        agent_id=uuid4(),
+        workspace=workspace,
+        tenant_id=None,
+        runtime_config=SimpleNamespace(
+            skill_candidate_loop_enabled=True,
+            skill_distiller_behavior_report=_passing_behavior_report(),
+        ),
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test-key", base_url=None),
+    )
+
+    skill_path = workspace / "skills" / "broad-operations-loop" / "SKILL.md"
+    ledger_records = _jsonl_records(workspace / "evolution" / "evolution_ledger.jsonl")
+    promotion_decisions = [record for record in ledger_records if record["schema"] == "evolution_promotion_decision.v1"]
+    candidate_id = promotion_decisions[-1]["candidate_id"]
+    package_dir = workspace / "evolution" / "skill_candidates" / candidate_id
+    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert result["status"] == "deferred"
+    assert "skill referee" in result["reason"]
+    assert not skill_path.exists()
+    assert (package_dir / "referee_review.md").exists()
+    assert manifest["status"] == "held"
+    assert promotion_decisions[-1]["decision"] == "held"
+    assert promotion_decisions[-1]["metadata"]["referee_review"]["decision"] == "hold"
 
 
 @pytest.mark.asyncio
@@ -561,6 +767,7 @@ async def test_distiller_fetches_tenant_behavior_report_before_promotion(monkeyp
         fake_ensure_report,
     )
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
 
     runtime_config = SimpleNamespace(skill_candidate_loop_enabled=True)
     result = await run_skill_distillation_cycle(
@@ -702,6 +909,7 @@ async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatc
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
@@ -791,6 +999,7 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),
@@ -820,6 +1029,7 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
     package_dir = workspace / "evolution" / "skill_candidates" / candidates[-1]["candidate_id"]
     assert (package_dir / "skill_pitch.md").exists()
     assert (package_dir / "SKILL.md.draft").exists()
+    assert (package_dir / "referee_review.md").exists()
     assert skill_path.read_text(encoding="utf-8") == (package_dir / "SKILL.md.draft").read_text(encoding="utf-8")
     assert (package_dir / "eval_plan.md").exists()
     assert (package_dir / "failure_cases.md").exists()
@@ -911,6 +1121,7 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
+    monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
 
     result = await run_skill_distillation_cycle(
         agent_id=uuid4(),

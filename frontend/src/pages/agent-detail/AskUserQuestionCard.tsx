@@ -133,7 +133,6 @@ export function formatClarificationAnswer(
 export default function AskUserQuestionCard({
   questions,
   blocking,
-  nextAction,
   onSubmit,
   dense = false,
   submitted = false,
@@ -340,10 +339,6 @@ export default function AskUserQuestionCard({
         </div>
       </div>
 
-      {nextAction && !done && (
-        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{nextAction}</div>
-      )}
-
       <div style={{ display: 'flex', gap: '6px', alignItems: 'center', justifyContent: 'center' }} aria-hidden="true">
         {questions.map((question, index) => {
           const isActive = index === safeActiveQuestionIndex;
@@ -352,17 +347,28 @@ export default function AskUserQuestionCard({
             <span
               key={index}
               style={{
-                width: isActive ? '18px' : '7px',
+                width: '18px',
                 height: '7px',
-                borderRadius: '999px',
-                background: isActive
-                  ? 'var(--accent-primary)'
-                  : isAnswered
-                    ? 'var(--success-primary, #10b981)'
-                    : 'var(--border-subtle)',
-                transition: 'width 120ms ease, background 120ms ease',
+                display: 'inline-flex',
+                justifyContent: 'center',
               }}
-            />
+            >
+              <span
+                style={{
+                  width: '18px',
+                  height: '7px',
+                  display: 'inline-block',
+                  borderRadius: '999px',
+                  background: isActive
+                    ? 'var(--accent-primary)'
+                    : isAnswered
+                      ? 'var(--success-primary, #10b981)'
+                      : 'var(--border-subtle)',
+                  transform: `scaleX(${isActive ? 1 : 7 / 18})`,
+                  transition: 'transform 120ms ease, background 120ms ease',
+                }}
+              />
+            </span>
           );
         })}
       </div>

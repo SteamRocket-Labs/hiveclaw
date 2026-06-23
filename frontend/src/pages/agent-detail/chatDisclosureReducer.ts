@@ -86,6 +86,9 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
   }
 
   if (message.role === 'tool_call') {
+    if (message.toolName === 'tool_search') {
+      return 'Checking available tools';
+    }
     const entries = Object.entries(message.toolArgs || {});
     if (entries.length > 0) {
       return entries.map(([key, value]) => `${key}: ${compactValue(value)}`).join(', ');
@@ -123,6 +126,11 @@ function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   if (name.includes('subagent') || name.includes('delegate')) return 'subagent';
   if (name.includes('trigger') || name.includes('schedule')) return 'trigger';
   return 'tool';
+}
+
+function titleForToolMessage(message: AgentChatMessage): string {
+  if (message.toolName === 'tool_search') return 'Loading tools';
+  return message.toolName || 'Tool call';
 }
 
 function kindForEventMessage(message: AgentChatMessage): RunStepKind {
@@ -176,7 +184,7 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
       id: stepIdForMessage(message, index),
       toolCallId: message.toolMeta?.kind === 'runtime_step' ? message.toolMeta.toolCallId : undefined,
       kind: kindForToolMessage(message),
-      title: message.toolName || 'Tool call',
+      title: titleForToolMessage(message),
       status,
       startedAt: message.timestamp,
       completedAt: status === 'done' || status === 'blocked' ? message.timestamp : undefined,

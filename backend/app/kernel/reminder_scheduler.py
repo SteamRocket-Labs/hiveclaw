@@ -169,8 +169,13 @@ def _plan_full_content(session_context: Any, _round_state: RoundState) -> str | 
     return text
 
 
-def _plan_sparse_content(_session_context: Any, _round_state: RoundState) -> str | None:
-    return _PLAN_MODE_REMINDER_SPARSE
+def _plan_sparse_content(session_context: Any, _round_state: RoundState) -> str | None:
+    plan_state = getattr(session_context, "plan_mode", None)
+    text = _PLAN_MODE_REMINDER_SPARSE
+    plan_file = getattr(plan_state, "plan_file_path", None)
+    if plan_file:
+        text = text + _PLAN_MODE_FILE_HINT.format(plan_file=plan_file)
+    return text
 
 
 def _ledger_eligible(session_context: Any) -> bool:

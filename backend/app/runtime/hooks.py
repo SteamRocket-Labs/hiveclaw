@@ -25,6 +25,8 @@ class HookEvent(StrEnum):
         USER_PROMPT_SUBMIT — accepted prompt after durable append, before model loop
         SESSION_START      — invoke begins, frozen prompt assembled
         SESSION_END        — logical transcript/session end marker
+        TURN_STOP          — normal user turn is durably complete and checkpointable
+        TURN_ABORT         — user turn ended without a semantic assistant completion
         STOP               — assistant final produced, before turn may stop
         STOP_FAILURE       — Stop hook failed or stop recovery failed
         SUBAGENT_START     — child session starts
@@ -33,7 +35,7 @@ class HookEvent(StrEnum):
     Hive session lifecycle:
         RESPONSE_COMPLETE  — each agent response, volatile projection + candidate signals
         SESSION_IDLE       — idle timeout, T0 segment seal/advance
-        SESSION_CLOSE      — WebSocket disconnect / new session / invoke return, T0 finalization
+        SESSION_CLOSE      — WebSocket disconnect / new session fallback T0 finalization
 
     Context compression (2):
         PRE_COMPACTION     — before LLM summarize, preserve evidence for package builders
@@ -61,6 +63,8 @@ class HookEvent(StrEnum):
     USER_PROMPT_SUBMIT = "user_prompt_submit"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
+    TURN_STOP = "turn_stop"
+    TURN_ABORT = "turn_abort"
     STOP = "stop"
     STOP_FAILURE = "stop_failure"
     SUBAGENT_START = "subagent_start"
@@ -718,11 +722,7 @@ class HookRegistry:
                 if (
                     binding.key
                     and (
-                        (
-                            (_hook_runtime_agent_policies.get(scoped) or {}).get("failure_policy")
-                            if scoped
-                            else None
-                        )
+                        ((_hook_runtime_agent_policies.get(scoped) or {}).get("failure_policy") if scoped else None)
                         or (_hook_runtime_policies.get(binding.key) or {}).get("failure_policy")
                     )
                     == "block"

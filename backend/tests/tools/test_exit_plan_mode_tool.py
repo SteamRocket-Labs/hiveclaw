@@ -67,6 +67,19 @@ class _PlanService:
         )
 
 
+class _FailingPlanService(_PlanService):
+    async def ensure_awaiting_plan_from_fill(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            id=uuid4(),
+            status="planning_failed",
+            plan_version=1,
+            plan_hash=None,
+            plan_json={},
+            metadata_json={"planning_errors": ["user-visible plan leaks internal workflow detail: deep_research_* tool call"]},
+        )
+
+
 @pytest.mark.asyncio
 async def test_exit_plan_mode_requires_active_interactive_plan_mode():
     from app.tools.handlers.plan_mode import exit_plan_mode
@@ -102,7 +115,7 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
         {
             "original_request": "使用 deepresearch做一个web3的全景报告",
             "intent_type": "in_session_execution",
-            "handoff_target": "deep_research",
+            "handoff_target": "continue_current_session",
             "deep_research": True,
             "deep_research_args": {"question": "使用 deepresearch做一个web3的全景报告", "depth": "full"},
         }
@@ -134,8 +147,10 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
     assert result["plan_id"]
     assert result["plan_json"]["title"] == "Web3 全景研究计划"
     assert result["plan_json"]["steps"][0]["order"] == 1
-    assert result["plan_json"]["handoff"]["target"] == "deep_research"
-    assert result["plan_json"]["handoff"]["payload"]["question"] == "使用 deepresearch做一个web3的全景报告"
+    assert result["plan_json"]["handoff"]["target"] == "continue_current_session"
+    assert result["plan_json"]["execution_contract"]["type"] == "workflow"
+    assert result["plan_json"]["execution_contract"]["workflow_ref"] == "deep_research.v1"
+    assert result["plan_json"]["execution_contract"]["args"]["question"] == "使用 deepresearch做一个web3的全景报告"
     assert service.calls
     call = service.calls[0]
     assert call["intent_type"] == "in_session_execution"
@@ -143,6 +158,83 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
     assert call["metadata_json"]["interactive_plan_mode"] is True
     # No pre-armed plan_id → "create new" branch only; generate_plan untouched.
     assert service.generate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_returns_planning_failed_without_needs_plan_success_copy(monkeypatch):
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _FailingPlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    token = set_interactive_plan_mode(
+        {"active": True, "original_request": "使用 deepresearch做一个web3的全景报告", "intent_type": "in_session_execution"}
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Bad plan",
+                        "objective": "Expose internals.",
+                        "plan_markdown": "## Plan\nCall deep_research_start directly.",
+                        "steps": ["Run deep_research_start"],
+                        "success_criteria": ["Report is generated"],
+                        "stop_conditions": ["User rejects"],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "planning_failed"
+    assert "等待用户确认" not in result["summary"]
+    assert "confirm" not in result["next_action"].lower()
+    assert "deep_research_* tool call" in "\n".join(result["planning_errors"])
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_preserves_hidden_execution_contract_without_visible_leak(monkeypatch):
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    contract = {
+        "type": "workflow",
+        "workflow_ref": "deep_research.v1",
+        "workflow_definition_hash": "hash-dr",
+        "args": {
+            "question": "Web3 landscape",
+            "internal_tool_note": "deep_research_start writes runtime_artifacts/workflow_runs/run/deep_research",
+        },
+    }
+    token = set_interactive_plan_mode({"active": True, "original_request": "Plan research", "intent_type": "in_session_execution"})
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Web3 research plan",
+                        "objective": "Produce a source-grounded report.",
+                        "plan_markdown": "## Plan\nUse approved research lanes and write a report.",
+                        "steps": ["Confirm scope", "Collect sources", "Write report"],
+                        "success_criteria": ["Report cites sources"],
+                        "stop_conditions": ["User rejects"],
+                        "execution_contract": contract,
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert result["plan_json"]["execution_contract"] == contract
+    assert service.calls[0]["fill"]["execution_contract"] == contract
 
 
 # ── cut ③a: dual-state submission (plan_id armed → fill existing draft) ──
@@ -380,6 +472,108 @@ async def test_exit_plan_mode_reads_markdown_from_provisioned_plan_file(tmp_path
     assert result["status"] == "needs_plan"
     assert "跨链桥技术架构报告计划" in result["plan_json"]["plan_markdown"]
     assert "只读核验来源" in service.calls[0]["fill"]["plan_markdown"]
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_treats_provisioned_plan_file_as_authoritative(tmp_path, monkeypatch):
+    """When Plan Mode provisions a writable plan file, that file is the approval
+    artifact. A stale or fabricated plan_markdown argument must not override it."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    plan_file = "workspace/plans/authoritative.plan.md"
+    absolute_plan_file = tmp_path / plan_file
+    absolute_plan_file.parent.mkdir(parents=True)
+    absolute_plan_file.write_text(
+        "# 文件里的真实计划\n\n"
+        "## 执行策略\n"
+        "只读核验当前仓库状态，然后提交可确认计划。\n",
+        encoding="utf-8",
+    )
+
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "original_request": "进入计划模式，修复 Plan Mode",
+            "intent_type": "in_session_execution",
+            "plan_file_path": plan_file,
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Plan Mode 修复计划",
+                        "objective": "补齐 Plan Mode 差距。",
+                        "plan_markdown": "# 参数里的旧计划\n\n这段不应该进入 PlanCard。",
+                        "steps": ["确认差距", "修改实现", "验证"],
+                        "success_criteria": ["PlanCard 使用文件计划"],
+                        "stop_conditions": ["用户拒绝计划"],
+                    },
+                    workspace=tmp_path,
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert "文件里的真实计划" in result["plan_json"]["plan_markdown"]
+    assert "参数里的旧计划" not in result["plan_json"]["plan_markdown"]
+    assert "文件里的真实计划" in service.calls[0]["fill"]["plan_markdown"]
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_requires_nonblank_provisioned_plan_file(tmp_path, monkeypatch):
+    """A provisioned plan file narrows the writable/readable plan artifact to one
+    exact path. If it is blank, exit_plan_mode must fail instead of accepting a
+    separate markdown argument."""
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    plan_file = "workspace/plans/blank.plan.md"
+    absolute_plan_file = tmp_path / plan_file
+    absolute_plan_file.parent.mkdir(parents=True)
+    absolute_plan_file.write_text("   \n", encoding="utf-8")
+
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "original_request": "进入计划模式，修复 Plan Mode",
+            "intent_type": "in_session_execution",
+            "plan_file_path": plan_file,
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Plan Mode 修复计划",
+                        "objective": "补齐 Plan Mode 差距。",
+                        "plan_markdown": "# 参数里的计划\n\n不能绕过空文件。",
+                        "steps": ["确认差距", "修改实现", "验证"],
+                        "success_criteria": ["PlanCard 使用文件计划"],
+                        "stop_conditions": ["用户拒绝计划"],
+                    },
+                    workspace=tmp_path,
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "error"
+    assert result["error_code"] == "missing_plan_file_body"
+    assert service.calls == []
+    assert service.generate_calls == []
 
 
 @pytest.mark.asyncio

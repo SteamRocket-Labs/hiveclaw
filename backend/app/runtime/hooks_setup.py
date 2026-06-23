@@ -1,7 +1,8 @@
 """Memory system hook handler registration.
 
 Phase 0: logging-only for SESSION_START, POST_COMPACTION, MEMORY_EXTRACTED.
-Phase 1: T0 session ledger segment boundaries for SESSION_CLOSE/IDLE, plus
+Phase 1: T0 session ledger segment boundaries for TURN_STOP/TURN_ABORT,
+         fallback SESSION_CLOSE/IDLE, plus
          user-work runtime session seals for TRIGGER_END/DELEGATION_END and
          system audit events for HEARTBEAT_TICK_END/DREAM_END.
 Phase 2: session projection on RESPONSE_COMPLETE/PRE_COMPACTION; canonical
@@ -26,7 +27,7 @@ from app.runtime.hooks import (
 from app.memory.t0.ledger import append_t0_session_event, seal_t0_session_segment
 from app.services.pending_reply_service import OUTBOUND_TOOL_NAMES
 from app.services.session_memory import (
-    build_session_memory_payload_from_messages,
+    build_session_memory_payload_with_llm,
     update_session_memory,
     write_compaction_summary,
 )
@@ -88,10 +89,7 @@ async def _project_on_response(ctx: HookContext) -> None:
     logger.info(
         "[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s projection_only=true", ctx.agent_id, ctx.source, turn
     )
-    update_session_memory(
-        agent_id,
-        build_session_memory_payload_from_messages(ctx.messages or [], metadata=_session_memory_metadata(ctx)),
-    )
+    await _update_session_memory_projection(ctx, agent_id, ctx.messages or [])
 
 
 def _agent_data_root() -> Path:
@@ -106,6 +104,16 @@ def _session_memory_metadata(ctx: HookContext) -> dict:
         metadata["session_id"] = str(ctx.session_id)
     metadata.setdefault("source", ctx.source or str(ctx.event))
     return metadata
+
+
+async def _update_session_memory_projection(ctx: HookContext, agent_id: uuid.UUID, messages: list[dict]) -> None:
+    payload = await build_session_memory_payload_with_llm(
+        messages,
+        metadata=_session_memory_metadata(ctx),
+        agent_id=agent_id,
+        tenant_id=ctx.metadata.get("tenant_id"),
+    )
+    update_session_memory(agent_id, payload)
 
 
 async def _run_fast_reflection_learning_brain(
@@ -202,20 +210,24 @@ async def _project_on_pre_compaction(ctx: HookContext) -> None:
         trigger,
         len(ctx.messages or []),
     )
-    update_session_memory(
-        agent_id,
-        build_session_memory_payload_from_messages(ctx.messages or [], metadata=_session_memory_metadata(ctx)),
-    )
+    await _update_session_memory_projection(ctx, agent_id, ctx.messages or [])
     if not ctx.session_id:
         return
     sealed = seal_t0_session_segment(
         agent_id=agent_id,
         session_id=str(ctx.session_id),
         reason=f"pre_compaction:{trigger}",
-        metadata={**ctx.metadata, "source": ctx.source or "web", "trigger": trigger},
+        metadata={
+            **ctx.metadata,
+            "source": ctx.source or "web",
+            "trigger": trigger,
+            "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "pre_compaction_checkpoint",
+        },
     )
     if not sealed:
         return
+    ctx.metadata.setdefault("checkpoint_kind", "pre_compaction_checkpoint")
+    ctx.metadata.setdefault("boundary_event_id", sealed.event_id)
     logger.info(
         "[Hooks] PRE_COMPACTION: sealed T0 checkpoint agent=%s session=%s segment=%s seq=%d",
         agent_id,
@@ -383,11 +395,89 @@ def _session_lineage_metadata(ctx: HookContext) -> dict[str, object] | None:
         "edit_from_event_id",
         "rollback_strategy",
         "command",
+        "turn_id",
+        "intent_id",
+        "checkpoint_kind",
+        "turn_stop_event_id",
+        "turn_abort_event_id",
+        "user_prompt_submit_event_id",
+        "boundary_event_id",
+        "runtime_task_id",
+        "request_id",
+        "trace_id",
     )
     payload = {key: ctx.metadata[key] for key in keys if key in ctx.metadata and ctx.metadata[key] not in (None, "")}
     if ctx.session_id:
         payload.setdefault("session_id", str(ctx.session_id))
     return payload or None
+
+
+async def _t0_turn_stop(ctx: HookContext) -> None:
+    """TURN_STOP → seal the completed user turn and start canonical T2 packaging."""
+    agent_id = _parse_agent_id(ctx)
+    if not agent_id:
+        return
+    messages = ctx.messages or []
+    reason = str(ctx.metadata.get("reason") or "turn_stop")
+    logger.info("[Hooks] TURN_STOP: agent=%s reason=%s msgs=%d", ctx.agent_id, reason, len(messages))
+    if messages:
+        await _update_session_memory_projection(ctx, agent_id, messages)
+    if not ctx.session_id:
+        return
+    metadata = {
+        **ctx.metadata,
+        "source": ctx.source or "web",
+        "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "user_turn_stop",
+        "semantic_memory_eligible": ctx.metadata.get("semantic_memory_eligible", True),
+    }
+    sealed = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=str(ctx.session_id),
+        reason=reason,
+        metadata=metadata,
+    )
+    if not sealed:
+        return
+    ctx.metadata.setdefault("checkpoint_kind", metadata["checkpoint_kind"])
+    ctx.metadata.setdefault("boundary_event_id", sealed.event_id)
+    ctx.metadata.setdefault("turn_stop_event_id", sealed.event_id)
+    logger.info(
+        "[Hooks] TURN_STOP: sealed T0 segment agent=%s session=%s segment=%s seq=%d",
+        agent_id,
+        ctx.session_id,
+        sealed.segment_id,
+        sealed.sequence,
+    )
+    await _build_t2_for_sealed_segment(ctx=ctx, agent_id=agent_id, segment_id=sealed.segment_id)
+
+
+async def _t0_turn_abort(ctx: HookContext) -> None:
+    """TURN_ABORT → seal a dirty/aborted turn without semantic T2 packaging."""
+    agent_id = _parse_agent_id(ctx)
+    if not agent_id or not ctx.session_id:
+        return
+    reason = str(ctx.metadata.get("reason") or ctx.error or "turn_abort")
+    logger.info("[Hooks] TURN_ABORT: agent=%s reason=%s", ctx.agent_id, reason)
+    metadata = {
+        **ctx.metadata,
+        "source": ctx.source or "web",
+        "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "turn_abort",
+        "semantic_memory_eligible": False,
+    }
+    sealed = seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=str(ctx.session_id),
+        reason=reason,
+        metadata=metadata,
+    )
+    if sealed:
+        logger.info(
+            "[Hooks] TURN_ABORT: sealed T0 segment agent=%s session=%s segment=%s seq=%d",
+            agent_id,
+            ctx.session_id,
+            sealed.segment_id,
+            sealed.sequence,
+        )
 
 
 async def _t0_session_close(ctx: HookContext) -> None:
@@ -399,18 +489,21 @@ async def _t0_session_close(ctx: HookContext) -> None:
     messages = ctx.messages or []
     logger.info("[Hooks] SESSION_CLOSE: agent=%s reason=%s msgs=%d", ctx.agent_id, reason, len(messages))
     if messages:
-        update_session_memory(
-            agent_id,
-            build_session_memory_payload_from_messages(messages, metadata=_session_memory_metadata(ctx)),
-        )
+        await _update_session_memory_projection(ctx, agent_id, messages)
     if ctx.session_id:
         sealed = seal_t0_session_segment(
             agent_id=agent_id,
             session_id=str(ctx.session_id),
             reason=str(reason or "session_close"),
-            metadata={**ctx.metadata, "source": ctx.source or "web"},
+            metadata={
+                **ctx.metadata,
+                "source": ctx.source or "web",
+                "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "session_close_fallback",
+            },
         )
         if sealed:
+            ctx.metadata.setdefault("checkpoint_kind", "session_close_fallback")
+            ctx.metadata.setdefault("boundary_event_id", sealed.event_id)
             logger.info(
                 "[Hooks] SESSION_CLOSE: sealed T0 segment agent=%s session=%s segment=%s seq=%d",
                 agent_id,
@@ -453,9 +546,16 @@ async def _t0_session_idle(ctx: HookContext) -> None:
         agent_id=agent_id,
         session_id=str(ctx.session_id),
         reason="session_idle",
-        metadata={**ctx.metadata, "source": ctx.source or "web", "idle_seconds": idle_s},
+        metadata={
+            **ctx.metadata,
+            "source": ctx.source or "web",
+            "idle_seconds": idle_s,
+            "checkpoint_kind": ctx.metadata.get("checkpoint_kind") or "session_idle_fallback",
+        },
     )
     if sealed:
+        ctx.metadata.setdefault("checkpoint_kind", "session_idle_fallback")
+        ctx.metadata.setdefault("boundary_event_id", sealed.event_id)
         logger.info(
             "[Hooks] SESSION_IDLE: sealed T0 segment agent=%s session=%s idle=%ss segment=%s seq=%d",
             ctx.agent_id,
@@ -742,6 +842,8 @@ _MEMORY_HOOK_HANDLERS = {
     "project_on_response": _project_on_response,
     "fast_reflection_on_response": _fast_reflection_on_response,
     "project_on_pre_compaction": _project_on_pre_compaction,
+    "t0_turn_stop": _t0_turn_stop,
+    "t0_turn_abort": _t0_turn_abort,
     "t0_session_close": _t0_session_close,
     "t0_session_idle": _t0_session_idle,
     "t0_trigger_end": _t0_trigger_end,
@@ -779,6 +881,8 @@ _MEMORY_HOOK_CONFIGURATION = [
         "handler": "project_on_pre_compaction",
         "key": "memory.pre_compaction.t0_checkpoint",
     },
+    {"event": HookEvent.TURN_STOP.value, "handler": "t0_turn_stop", "key": "memory.turn_stop.t0"},
+    {"event": HookEvent.TURN_ABORT.value, "handler": "t0_turn_abort", "key": "memory.turn_abort.t0"},
     {"event": HookEvent.SESSION_CLOSE.value, "handler": "t0_session_close", "key": "memory.session_close.t0"},
     {"event": HookEvent.SESSION_IDLE.value, "handler": "t0_session_idle", "key": "memory.session_idle.t0"},
     {"event": HookEvent.TRIGGER_END.value, "handler": "t0_trigger_end", "key": "memory.trigger_end.t0"},

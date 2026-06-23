@@ -51,7 +51,7 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Memory / self-evolution boundary law:** LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。Any memory, heartbeat, dream, skill, workflow, or evolution path that replaces model judgment with counters, regexes, truncated summaries, or platform-authored "semantic" text is an AI-native violation. Any path that lets the model bypass governed write surfaces for durable memory/evolution/soul files is a governance violation.
 
-**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/wiki_map.md` is the single generated navigation map, not always-on prompt memory.
+**Memory target form:** Hive memory is an Agent Markdown Wiki / Learning Vault: T0 raw evidence, T2 tagged Markdown Segment Packages under `memory/t2/sessions/**`, a converged T3 semantic layer (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`), source_refs-backed residual evidence verification, and `soul.md`. Skill is a progressive capability capsule grown from T3 capability evidence and eval-backed candidate packages, not a T3 page. `relations`, `contradictions`, graph/vector/search/UI views are derived and rebuildable; no external memory provider may become the T3 source of truth. `memory/indexes/wiki_map.md` is the single generated navigation map, not always-on prompt memory; control sidecars live under `memory/control/`. Current path contract: `docs/memory-vault-path-contract-2026-06-23.md`.
 
 **T0 session truth:** JSONL is the mechanical truth and Markdown is the deterministic projection. Per-segment `memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl` is the resume/replay/fork/checkpoint/rollback source of truth; same-segment `source.md` is the human/LLM-readable Markdown/XML projection and legacy fallback, not the mechanical truth.
 
@@ -80,6 +80,7 @@ Before making architecture claims, use the current evidence surface:
 - `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark, detailed comparison sources, and milestone evidence.
 - `docs/memory-clean-loop-refactor-plan-2026-06-17.md` — current memory clean-loop redesign and Agent Markdown Wiki / Learning Vault target.
 - `docs/memory-system-flow-map-2026-06-17.md` — end-to-end memory flow map, including source_refs-backed residual evidence verification, T3 semantic layer, and capability candidate lanes.
+- `docs/memory-vault-path-contract-2026-06-23.md` — current single-agent memory filesystem contract: canonical T0/T2/T3/session_state/index/control paths plus legacy import quarantine semantics.
 - `docs/agent-memory-md-first-spec.md` — MD-first memory truth-source contract and lifecycle spec.
 - `docs/self-evolution-sota-plan.md` — canonical self-evolution foundation and completed substrate baseline.
 - `docs/agent-memory-purity-spec.md` — memory purity, lifecycle, and hygiene contract.
@@ -247,13 +248,13 @@ memory/t0/sessions/<chat_session_id>/
 **T2 Segment Package layout:**
 
 ```
-memory/sessions/<session_id>/segments/<t2_segment_id>/
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/
   summary.md      ← LLM-authored session/segment summary with XML blocks
   labels.md       ← LLM-authored event labels + quantified engineering labels
   review.md       ← independent Memory Gate review/rubric output
   manifest.json   ← platform evidence refs, source bundle refs, revisions, audit metadata
 
-memory/sessions/<session_id>/episodes/<episode_id>/
+memory/t2/sessions/<session_id>/episodes/<episode_id>/
   synthesis.md    ← LLM-authored stitched episode for broken/continuing segments
   review.md       ← independent Memory Gate review/rubric output
   manifest.json   ← platform evidence refs, source package refs, revisions, audit metadata
@@ -269,9 +270,9 @@ pointers live in `manifest.json` and in-file `source_refs`.
 |-------|----------|-----------|---------|
 | **T0 session ledger** | `memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl` + deterministic `source.md` projection | `web_chat_runtime` append points; `task_executor` one-off task events; runtime hook events for trigger/delegation/heartbeat/dream; `SESSION_IDLE/CLOSE` seal chat segments | resume/replay/fork/checkpoint/rollback/export read JSONL first; T2/human review may use projection and source refs |
 | **T0 legacy/import logs** | `logs/YYYY-MM-DD/{behavior,system}/` | Legacy import/manual compatibility only; not a runtime T0 writer | legacy import/operators |
-| **T2 Segment Package** | `memory/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + independent review; Platform Gate commits package metadata | T3 Consolidator only when complete/standalone; residual T0 evidence lookup |
-| **T2 Episode Stitch Package** | `memory/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` | Continuity/Episode Stitcher + independent review; Platform Gate commits package metadata | T3 Consolidator for broken/continuing segments after stitching |
-| **Explicit Memory Overlay** | `memory/explicit/<scope>/...` | `save_memory` only for explicit user-commanded memory; write gate enforces sensitivity/privacy | Prompt activation immediately; later T3 absorption candidate |
+| **T2 Segment Package** | `memory/t2/sessions/<session_id>/segments/<t2_segment_id>/{summary.md,labels.md,review.md,manifest.json}` | LLM summary/label agents + independent review; Platform Gate commits package metadata | T3 Consolidator only when complete/standalone; residual T0 evidence lookup |
+| **T2 Episode Stitch Package** | `memory/t2/sessions/<session_id>/episodes/<episode_id>/{synthesis.md,review.md,manifest.json}` | Continuity/Episode Stitcher + independent review; Platform Gate commits package metadata | T3 Consolidator for broken/continuing segments after stitching |
+| **Explicit Memory Overlay** | `memory/explicit/entries/<explicit_id>.md` + `memory/explicit/manifest.jsonl` + generated `memory/explicit/MEMORY.md` | `save_memory` only for explicit user-commanded memory; write gate enforces sensitivity/privacy | Prompt activation immediately; later T3 absorption candidate |
 | **T3 Accepted Memory** | `memory/t3/{episodes.md,user.md,worker.md,capabilities.md}` | T3 Consolidator submits pitch/revised patch; Memory Gate reviews; Platform Gate commits exact accepted XML blocks | Dynamic memory activation and Dream soul evidence |
 | **soul.md** | Root workspace | Dream soul reconsolidation through promotion/frozen-mission gates | Prompt injection (frozen prefix) |
 
@@ -304,7 +305,7 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 | `services/session_feedback.py` | Persists useful/misleading feedback and writes calibrated memory through governed paths. |
 | `memory/hygiene.py` | Retires legacy shadow stores, quarantines dead stubs, and backfills lifecycle metadata with dry-run/apply reports. |
 | `memory/retriever.py` | Read T3 into prompt. High-priority files are injected directly where policy allows; knowledge/strategy/user entries are scored against query. |
-| `memory/md_store.py` | Maintains Markdown T3 stores and generated `memory/wiki_map.md`; the map is a navigation artifact, not the primary retriever route. |
+| `memory/md_store.py` | Maintains Markdown T3 stores and generated `memory/indexes/wiki_map.md`; the map is a navigation artifact, not the primary retriever route. |
 | `runtime/hooks_setup.py` | Hook handlers: T0 writers, extraction triggers, drain on close |
 
 ### Hook System (`app/runtime/hooks.py`)

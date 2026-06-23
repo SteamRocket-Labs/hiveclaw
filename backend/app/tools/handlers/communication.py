@@ -201,6 +201,18 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                         "stamped as the todo's owner and completion writes the terminal status back."
                     ),
                 },
+                "execution_target": {
+                    "type": "string",
+                    "enum": ["cloud_agent", "local_agent"],
+                    "description": (
+                        "Optional execution target. Use local_agent only when the target employee has a bound "
+                        "Hive Bridge local runner and the work should execute on that local machine."
+                    ),
+                },
+                "expected_output": {
+                    "type": "string",
+                    "description": "Optional expected output contract for a local-agent delegated task.",
+                },
             },
             "required": ["agent_name", "message"],
         },

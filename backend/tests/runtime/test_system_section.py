@@ -130,7 +130,9 @@ class TestMemoryIntegration:
         assert "explicitly asks you to remember" in prompt_text
 
     def test_memory_md_files_called_out(self, prompt_text: str) -> None:
-        assert "memory/*.md" in prompt_text
+        assert "governed T3" in prompt_text
+        assert "explicit-overlay" in prompt_text
+        assert "memory/**" in prompt_text
         assert "soul.md" in prompt_text
 
 

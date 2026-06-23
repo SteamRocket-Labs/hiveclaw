@@ -376,14 +376,17 @@ def _package_ref_from_dir(*, root: Path, agent_id: uuid.UUID, package_dir: Path)
 
 
 def _discover_reviewed_t2_packages(*, root: Path, agent_id: uuid.UUID, limit: int) -> list[Path]:
-    sessions_dir = root / str(agent_id) / "memory" / "sessions"
-    if not sessions_dir.exists():
-        return []
     package_dirs: list[Path] = []
-    manifest_paths = sorted(
-        [*sessions_dir.glob("*/segments/*/manifest.json"), *sessions_dir.glob("*/episodes/*/manifest.json")]
-    )
-    for manifest_path in manifest_paths:
+    manifest_paths: list[Path] = []
+    for sessions_dir in (
+        root / str(agent_id) / "memory" / "t2" / "sessions",
+        root / str(agent_id) / "memory" / "sessions",
+    ):
+        if sessions_dir.exists():
+            manifest_paths.extend(
+                [*sessions_dir.glob("*/segments/*/manifest.json"), *sessions_dir.glob("*/episodes/*/manifest.json")]
+            )
+    for manifest_path in sorted(set(manifest_paths)):
         package_dir = manifest_path.parent
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -448,16 +451,20 @@ def _session_and_source_id(
     package_dir: Path,
     manifest: dict[str, Any],
 ) -> tuple[str, str]:
-    try:
-        rel = package_dir.relative_to(root / str(agent_id) / "memory" / "sessions")
-        parts = rel.parts
-        session_id = parts[0]
-        if len(parts) >= 3 and parts[1] == "episodes":
-            return session_id, parts[2]
-        if len(parts) >= 3 and parts[1] == "segments":
-            return session_id, parts[2]
-    except ValueError:
-        pass
+    for sessions_root in (
+        root / str(agent_id) / "memory" / "t2" / "sessions",
+        root / str(agent_id) / "memory" / "sessions",
+    ):
+        try:
+            rel = package_dir.relative_to(sessions_root)
+            parts = rel.parts
+            session_id = parts[0]
+            if len(parts) >= 3 and parts[1] == "episodes":
+                return session_id, parts[2]
+            if len(parts) >= 3 and parts[1] == "segments":
+                return session_id, parts[2]
+        except ValueError:
+            pass
     session_id = str(manifest.get("session_id") or "unknown")
     source_id = str(manifest.get("episode_id") or manifest.get("t0_segment_id") or package_dir.name)
     return session_id, source_id

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi } from '../api/domains/auth';
 import { ApiError } from '../api/core/errors';
+import { safePostLoginRedirect } from '../routing/authRedirect';
 
 type RegisterConflict = {
     field?: string;
@@ -15,7 +16,9 @@ type RegisterConflict = {
 export default function Login() {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
     const setAuth = useAuthStore((s) => s.setAuth);
+    const postLoginRedirect = safePostLoginRedirect(searchParams.get('next'));
     const [isRegister, setIsRegister] = useState(false);
     const [error, setError] = useState('');
     const [suggestLogin, setSuggestLogin] = useState(false);
@@ -58,7 +61,7 @@ export default function Login() {
                     if (res.status === 'completed' && res.access_token && res.user) {
                         popup?.close();
                         setAuth(res.user, res.access_token);
-                        navigate('/');
+                        navigate(postLoginRedirect);
                         return;
                     }
                     if (res.status === 'expired' || res.status === 'error') {
@@ -83,7 +86,7 @@ export default function Login() {
             feishuPollRef.current = false;
             setFeishuLoading(false);
         }
-    }, [navigate, setAuth, t]);
+    }, [navigate, postLoginRedirect, setAuth, t]);
 
     const toggleLang = () => {
         i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh');
@@ -119,7 +122,7 @@ export default function Login() {
             if (res.needs_company_setup) {
                 navigate('/setup-company');
             } else {
-                navigate('/');
+                navigate(postLoginRedirect);
             }
         } catch (err: any) {
             // Structured 409 on register — surface the specific clashing field

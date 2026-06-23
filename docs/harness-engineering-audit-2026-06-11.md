@@ -1085,8 +1085,8 @@ ruff check app/services/skill_distiller.py app/services/evolution_validation.py 
 
 **范围**
 - Agent tool 面新增 `update_memory` 与 `retire_memory`,与 `save_memory/search_memory/load_memory` 一起作为 core memory surface 首轮可见。
-- `update_memory(memory_id, content, category?, reason?)` 先加载旧 T3 entry 并校验可见性;replacement 通过 `append_t3_memory_candidate()` 的 privacy/form/write gate 写入;随后按 exact `entry_id` 退休旧 entry,写入 `memory/archive.md` 和 `memory/lifecycle.json` 的 `supersedes/superseded_by` 边。
-- `retire_memory(memory_id, reason)` 按 exact `entry_id` 把旧 entry 从活跃 T3 文件移入 archive;不物理删除 evidence,并立即 rebuild 唯一 generated map `memory/wiki_map.md`，同时清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`。
+- `update_memory(memory_id, content, category?, reason?)` 先加载旧 T3 entry 并校验可见性;replacement 通过 `append_t3_memory_candidate()` 的 privacy/form/write gate 写入;随后按 exact `entry_id` 退休旧 entry,写入 `memory/archive.md` 和 `memory/control/lifecycle.json` 的 `supersedes/superseded_by` 边。
+- `retire_memory(memory_id, reason)` 按 exact `entry_id` 把旧 entry 从活跃 T3 文件移入 archive;不物理删除 evidence,并立即 rebuild 唯一 generated map `memory/indexes/wiki_map.md`，同时清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`。
 - `append_t3_memory_candidate()` 支持 `parent_id/supersedes/superseded_by/dedup_exclude_entry_ids`,让显式 correction 不会被“与旧 entry 相似”误拦。
 - `CapabilityGate` 把 `update_memory/retire_memory` 映射到 `agent.memory.write`;tool registry/catalog 把它们归入 Memory 分组;runtime memory section 与 `memory-guide` system skill 已同步。
 

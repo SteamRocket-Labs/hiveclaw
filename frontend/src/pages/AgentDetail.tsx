@@ -19,9 +19,9 @@ import AgentSkillsSection from './agent-detail/AgentSkillsSection';
 import AgentSubagentsSection from './agent-detail/AgentSubagentsSection';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
 import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
-import LocalAgentLinkCard from './agent-detail/LocalAgentLinkCard';
 import {
     CHAT_SOCKET_KEEPALIVE_INTERVAL_MS,
+    ACTIVE_RUN_ABSENCE_GRACE_MS,
     applySessionActiveRunObservedState,
     applySessionActiveRunState,
     applyTranscriptEvent,
@@ -34,14 +34,17 @@ import {
     getRuntimeEventMessage,
     getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
+    mergePendingUserMessages,
     filterSessionsForAgent,
     normalizeRuntimeEventMessage,
     normalizeStoredChatMessage,
     replayTranscriptEvents,
     sessionBelongsToAgent,
+    shouldClearStaleRuntimeState,
     type AgentChatMessage,
     type ChatTranscriptEventPayload,
     type ChatRuntimeSummary,
+    type PendingUserMessage,
     type SessionRunState,
     type SessionUiState,
     type TranscriptReplayState,
@@ -58,8 +61,10 @@ import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
 import { chatApi, type ConversationBranchMode, type SessionRun } from '../api/domains/chat';
+import { ccParityApi, type ExecuteCommandResult } from '../api/domains/ccParity';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
+import { parseSlashCommandInput } from './agent-detail/slashCommand';
 
 // P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge replaces the
 // raw-file "mind" tab as the primary memory view (raw Markdown lives in the
@@ -67,16 +72,31 @@ import { useAuthStore } from '../stores';
 // stay standalone capability modules that Knowledge only deep-links to.
 // C3 (docs/subagent-source-capability.md §12.8): subagents joins as the
 // fourth capability module — the employee's craft-clone work methods.
-export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'localAgent', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
     { tabs: ['status', 'chat'] },
-    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'localAgent'] },
+    { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents'] },
     { tabs: ['workspace', 'workflows', 'office', 'relationships', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
+
+function formatSlashCommandResult(response: ExecuteCommandResult): string {
+    const { result } = response;
+    if (typeof result === 'string') return result.trim() || `Command ${response.command} completed.`;
+    if (result && typeof result === 'object' && !Array.isArray(result)) {
+        const record = result as Record<string, unknown>;
+        if (typeof record.message === 'string' && record.message.trim()) {
+            return record.message.trim();
+        }
+    }
+
+    const serialized = result == null ? '' : JSON.stringify(result, null, 2);
+    if (!serialized.trim()) return `Command ${response.command} completed.`;
+    return `Command ${response.command} completed.\n\n\`\`\`json\n${serialized}\n\`\`\``;
+}
 
 function AgentDetailInner() {
     const { t, i18n } = useTranslation();
@@ -195,6 +215,8 @@ function AgentDetailInner() {
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
     const transcriptReplayStateRef = useRef<Record<SessionRuntimeKey, TranscriptReplayState>>({});
     const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
+    const pendingUserMessagesRef = useRef<Record<SessionRuntimeKey, PendingUserMessage[]>>({});
+    const runtimeActivityAtRef = useRef<Record<SessionRuntimeKey, number>>({});
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
     const sessionMsgAbortRef = useRef<AbortController | null>(null);
@@ -212,6 +234,7 @@ function AgentDetailInner() {
     };
 
     const setActiveRunState = (key: SessionRuntimeKey, run: SessionRunState | null) => {
+        if (run) runtimeActivityAtRef.current[key] = Date.now();
         const next = applySessionActiveRunState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
         activeRunStateRef.current = next.activeRuns;
         sessionUiStateRef.current = next.uiStates;
@@ -219,6 +242,7 @@ function AgentDetailInner() {
     };
 
     const observeActiveRunState = (key: SessionRuntimeKey, run: SessionRunState) => {
+        runtimeActivityAtRef.current[key] = Date.now();
         const next = applySessionActiveRunObservedState(activeRunStateRef.current, sessionUiStateRef.current, key, run);
         activeRunStateRef.current = next.activeRuns;
         sessionUiStateRef.current = next.uiStates;
@@ -271,11 +295,38 @@ function AgentDetailInner() {
         if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
         delete wsMapRef.current[key];
         delete sessionUiStateRef.current[key];
+        delete pendingUserMessagesRef.current[key];
+        delete runtimeActivityAtRef.current[key];
     };
 
     const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
         const prev = sessionUiStateRef.current[key] || { isWaiting: false, isStreaming: false };
         sessionUiStateRef.current[key] = { ...prev, ...next };
+        if (next.isWaiting || next.isStreaming) runtimeActivityAtRef.current[key] = Date.now();
+    };
+
+    const mergePendingForSession = (key: SessionRuntimeKey, messages: AgentChatMessage[]): AgentChatMessage[] => {
+        const merged = mergePendingUserMessages(messages, pendingUserMessagesRef.current[key] || []);
+        if (merged.pending.length > 0) {
+            pendingUserMessagesRef.current[key] = merged.pending;
+        } else {
+            delete pendingUserMessagesRef.current[key];
+        }
+        return merged.messages;
+    };
+
+    const appendOptimisticUserMessage = (
+        key: SessionRuntimeKey,
+        messageInput: AgentChatMessage,
+    ) => {
+        const message = parseChatMsg(messageInput);
+        setChatMessages(prev => {
+            pendingUserMessagesRef.current[key] = [
+                ...(pendingUserMessagesRef.current[key] || []),
+                { message, anchorMessageCount: prev.length },
+            ];
+            return [...prev, message];
+        });
     };
 
     const isTerminalTranscriptToolMessage = (message: AgentChatMessage | undefined) => {
@@ -303,6 +354,7 @@ function AgentDetailInner() {
         const next = applyTranscriptEvent(previous, event);
         transcriptReplayStateRef.current[key] = next;
         sessionUiStateRef.current[key] = next.ui;
+        runtimeActivityAtRef.current[key] = Date.now();
 
         const eventType = event.event_type || event.type;
         const lastMessage = next.messages[next.messages.length - 1];
@@ -319,7 +371,7 @@ function AgentDetailInner() {
 
         if (isActiveRuntime) {
             setChatMessagesSessionId(sessionId);
-            setChatMessages(next.messages.map(parseChatMsg));
+            setChatMessages(mergePendingForSession(key, next.messages.map(parseChatMsg)));
             setIsWaiting(next.ui.isWaiting);
             setIsStreaming(next.ui.isStreaming);
         }
@@ -424,7 +476,7 @@ function AgentDetailInner() {
             
             if (!isAgentSession && sess.user_id === String(currentUser?.id)) {
                 setChatMessagesSessionId(sessionId);
-                setChatMessages(preParsed);
+                setChatMessages(mergePendingForSession(runtimeKey, preParsed));
             } else {
                 setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs(preParsed);
@@ -712,6 +764,8 @@ function AgentDetailInner() {
         setWsConnected(false);
         wsRef.current = null;
         activeRunStateRef.current = {};
+        pendingUserMessagesRef.current = {};
+        runtimeActivityAtRef.current = {};
         setActiveRunStateBySession({});
         setChatScope('mine');
         setAgentExpired(false);
@@ -1051,6 +1105,59 @@ function AgentDetailInner() {
             conversion: file.conversion || null,
         }));
 
+        if (attachedFiles.length === 0) {
+            let parsedSlashCommand: ReturnType<typeof parseSlashCommandInput> = null;
+            try {
+                parsedSlashCommand = parseSlashCommandInput(userMsg);
+            } catch (err) {
+                setChatMessagesSessionId(String(activeSession.id));
+                setChatMessages(prev => [
+                    ...prev,
+                    parseChatMsg({ role: 'user', content: userMsg, timestamp: new Date().toISOString() }),
+                    parseChatMsg({
+                        role: 'assistant',
+                        content: `⚠️ ${err instanceof Error ? err.message : t('agent.chat.commands.invalid', 'Invalid slash command.')}`,
+                    }),
+                ]);
+                setChatInput('');
+                return;
+            }
+
+            if (parsedSlashCommand) {
+                setIsWaiting(true);
+                setIsStreaming(false);
+                setTransportNotice(null);
+                setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+                setChatMessagesSessionId(String(activeSession.id));
+                setChatMessages(prev => [...prev, parseChatMsg({
+                    role: 'user',
+                    content: userMsg,
+                    timestamp: new Date().toISOString(),
+                })]);
+                setChatInput('');
+
+                try {
+                    const response = await ccParityApi.executeCommand(id, parsedSlashCommand.name, {
+                        arguments: parsedSlashCommand.args,
+                        session_id: String(activeSession.id),
+                    });
+                    setChatMessages(prev => [...prev, parseChatMsg({
+                        role: 'assistant',
+                        content: formatSlashCommandResult(response),
+                    })]);
+                    invalidateSessionRuntimeQueries(id, String(activeSession.id));
+                } catch (err: any) {
+                    const msg = err?.message || t('agent.chat.commands.failed', 'Failed to run command');
+                    setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+                } finally {
+                    setIsWaiting(false);
+                    setIsStreaming(false);
+                    setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                }
+                return;
+            }
+        }
+
         if (attachedFiles.length > 0) {
             let filesPrompt = '';
             let filesDisplay = '';
@@ -1087,13 +1194,13 @@ function AgentDetailInner() {
         setTransportNotice(null);
         setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
         setChatMessagesSessionId(String(activeSession.id));
-        setChatMessages(prev => [...prev, parseChatMsg({ 
+        appendOptimisticUserMessage(activeRuntimeKey, {
             role: 'user', 
             content: userMsg, 
             fileName: attachedFiles.map(f => f.name).join(', '), 
             imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined, 
             timestamp: new Date().toISOString() 
-        })]);
+        });
         setChatInput(''); 
         setAttachedFiles([]);
         try {
@@ -1133,11 +1240,11 @@ function AgentDetailInner() {
         setTransportNotice(null);
         setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
         setChatMessagesSessionId(String(activeSession.id));
-        setChatMessages(prev => [...prev, parseChatMsg({
+        appendOptimisticUserMessage(activeRuntimeKey, {
             role: 'user',
             content: userMsg,
             timestamp: new Date().toISOString(),
-        })]);
+        });
         try {
             const run = await chatApi.startSessionRun(id, String(activeSession.id), {
                 content: userMsg,
@@ -1342,7 +1449,12 @@ function AgentDetailInner() {
             || sessionUiStateRef.current[key]?.isWaiting
             || sessionUiStateRef.current[key]?.isStreaming
         );
-        if (staleRuntimeState) {
+        if (shouldClearStaleRuntimeState({
+            hasStaleRuntimeState: staleRuntimeState,
+            lastRuntimeActivityAt: runtimeActivityAtRef.current[key],
+            now: Date.now(),
+            graceMs: ACTIVE_RUN_ABSENCE_GRACE_MS,
+        })) {
             setActiveRunState(key, null);
             setIsWaiting(false);
             setIsStreaming(false);
@@ -1618,7 +1730,7 @@ function AgentDetailInner() {
                     {AGENT_DETAIL_TAB_GROUPS.map((group, gi) => {
                         const visibleTabs = group.tabs.filter(tab => {
                             if ((agent as any)?.access_level === 'use') {
-                                if (tab === 'settings' || tab === 'approvals' || tab === 'localAgent') return false;
+                                if (tab === 'settings' || tab === 'approvals') return false;
                             }
                             if ((agent as any)?.agent_type === 'openclaw') {
                                 return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
@@ -1720,13 +1832,6 @@ function AgentDetailInner() {
                 {/* ── Sub-agents Tab (C3, §12.8 fourth capability module) ── */}
                 {
                     activeTab === 'subagents' && <AgentSubagentsSection agentId={id!} canManage={canManage} />
-                }
-
-                {/* ── Local Agent Tab ── */}
-                {
-                    activeTab === 'localAgent' && (agent as any)?.agent_type !== 'openclaw' && (
-                        <LocalAgentLinkCard agentId={id!} canManage={canManage} />
-                    )
                 }
 
                 {/* ── Relationships Tab ── */}

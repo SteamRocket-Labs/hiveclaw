@@ -107,6 +107,11 @@ async def _get_gateway_actor(
     """Resolve either legacy OpenClaw X-Api-Key or Local Bridge bearer auth."""
     if authorization:
         bridge_context = await resolve_bridge_auth_context(db, authorization=authorization)
+        if bridge_context.agent_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="User-scoped bridge tokens must use the Local Agent Channel endpoints, not legacy gateway",
+            )
         result = await db.execute(select(Agent).where(Agent.id == bridge_context.agent_id))
         agent = result.scalar_one_or_none()
         if not agent:

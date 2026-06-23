@@ -24,7 +24,7 @@ T0 session ledger
         v
 
 T2 Segment Package
-  memory/sessions/<session_id>/segments/<t2_segment_id>/
+  memory/t2/sessions/<session_id>/segments/<t2_segment_id>/
     summary.md
     labels.md
     review.md
@@ -107,7 +107,7 @@ T0 禁止：
 当前 canonical T2 已经是 Segment Package：
 
 ```text
-memory/sessions/<session_id>/segments/<segment_id>/
+memory/t2/sessions/<session_id>/segments/<segment_id>/
   summary.md
   labels.md
   review.md
@@ -117,7 +117,7 @@ memory/sessions/<session_id>/segments/<segment_id>/
 当前主链路：
 
 ```text
-SESSION_CLOSE / SESSION_IDLE / TRIGGER_END / DELEGATION_END
+TURN_STOP / PRE_COMPACTION / SESSION_IDLE / SESSION_CLOSE fallback / TRIGGER_END / DELEGATION_END
   -> seal_t0_session_segment(...)
   -> build_t2_segment_package_with_llm(...)
   -> Summary Agent writes summary.md candidate
@@ -138,12 +138,15 @@ manifest.json   # platform source refs, hashes, prompt versions, audit metadata
 
 当前已经完成的边界：
 
-1. `RESPONSE_COMPLETE` 只更新 volatile session projection，不写 durable T2。
-2. `SESSION_CLOSE` / `SESSION_IDLE` 基于 sealed T0 segment 触发 canonical T2 package builder。
-3. trigger / delegation 这类用户工作完成事件先写 T0 runtime-session ledger，再触发同一套 package builder。
-4. heartbeat / dream / distiller / eval / platform background 的运行日志只保留 T0 audit/provenance，不进入 canonical T2。
-5. `summary.md` / `labels.md` / `review.md` 都由 LLM agent 输出；Platform Gate 只做硬校验和原子提交。
-6. `memory/learnings/*.md` 仍可作为 legacy compatibility / migration / repair / derived view，但不能是 canonical runtime T2 truth。
+1. `USER_PROMPT_SUBMIT` 是 turn 起点：用户输入必须先进入 DB/T0 transcript，再进入模型循环。
+2. `RESPONSE_COMPLETE` 只更新 volatile session projection，不写 durable T2。
+3. `TURN_STOP` 是普通单 Agent 用户轮次的主 checkpoint：assistant/tool transcript 已 durable append 后 seal 当前 T0 segment，并触发 canonical T2 package builder，metadata 写入 `checkpoint_kind=user_turn_stop`、`turn_id`、`intent_id`、`turn_stop_event_id`。
+4. `TURN_ABORT` 是取消/失败/半轮中断边界：只 seal dirty T0 segment，metadata 写入 `checkpoint_kind=turn_abort`、`semantic_memory_eligible=false`，不进入语义 T2。
+5. `SESSION_IDLE` / `SESSION_CLOSE` 只保留为空闲、断连、新会话等 fallback seal 边界，metadata 分别写 `session_idle_fallback` / `session_close_fallback`，不再是正常用户轮次主边界。
+6. trigger / delegation 这类用户工作完成事件先写 T0 runtime-session ledger，再触发同一套 package builder。
+7. heartbeat / dream / distiller / eval / platform background 的运行日志只保留 T0 audit/provenance，不进入 canonical T2。
+8. `summary.md` / `labels.md` / `review.md` 都由 LLM agent 输出；Platform Gate 只做硬校验和原子提交。
+9. `memory/learnings/*.md` 仍可作为 legacy compatibility / migration / repair / derived view，但不能是 canonical runtime T2 truth。
 
 当前仍需持续防守的残留面：
 
@@ -206,9 +209,10 @@ Segment 的触发条件：
 
 | 触发 | T2 package 类型 |
 |---|---|
-| `SESSION_IDLE` | `rolling_checkpoint` 或 `closed`，由 Summary Agent 判断 |
-| `SESSION_CLOSE` / `/new` / explicit new session | `closed` |
+| `TURN_STOP` / normal user turn stop | `closed` |
 | `PRE_COMPACTION` / token pressure | `rolling_checkpoint` |
+| `SESSION_IDLE` | fallback `rolling_checkpoint` 或 `closed`，由 Summary Agent 判断 |
+| `SESSION_CLOSE` / `/new` / explicit new session | fallback `closed` |
 | one-off task complete | `closed` |
 | trigger/delegation user-work complete | `closed`，前提是 `distillation_scope=semantic_candidate` |
 | heartbeat/dream/distiller run complete | 不进入 T2；只保留 T0 audit/provenance segment |
@@ -288,7 +292,7 @@ required_rewrite: none | rewrite_episode_summary | request_more_context | hold
 Canonical episode stitch path：
 
 ```text
-memory/sessions/<session_id>/
+memory/t2/sessions/<session_id>/
   episodes/
     <episode_id>/
       synthesis.md                  # Continuity Agent authored episode-level synthesis
@@ -514,7 +518,7 @@ memory/t0/sessions/<session_id>/
 ### 4.2 T2 package
 
 ```text
-memory/sessions/<session_id>/
+memory/t2/sessions/<session_id>/
   segments/
     <t2_segment_id>/
       summary.md                     # Summary Agent authored
@@ -528,7 +532,7 @@ memory/sessions/<session_id>/
 Episode Stitch Package 是 T2 之上、T3 之前的中间层。它只在多个 T2 Segment Package 被判断为同一 episode 时出现。
 
 ```text
-memory/sessions/<session_id>/
+memory/t2/sessions/<session_id>/
   episodes/
     <episode_id>/
       synthesis.md                    # Continuity Agent authored
@@ -635,7 +639,7 @@ existing short-term carryover, if any
 输出：
 
 ```text
-memory/sessions/<session_id>/segments/<t2_segment_id>/summary.md
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/summary.md
 ```
 
 ### 6.2 Summary Prompt 契约
@@ -1287,7 +1291,7 @@ memory/.staging/t2_jobs/<job_id>/
 只有 Platform Gate 通过，才原子提交到：
 
 ```text
-memory/sessions/<session_id>/segments/<t2_segment_id>/
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/
   summary.md
   labels.md
   review.md
@@ -1306,10 +1310,13 @@ staging 规则：
 
 | Hook / event | 目标行为 |
 |---|---|
+| `USER_PROMPT_SUBMIT` | 用户输入 durable append 后、模型循环前触发；创建/携带 `turn_id`、`intent_id` |
 | `RESPONSE_COMPLETE` | 不再直接写 canonical T2；可以保留 short-term candidate / fast reflection candidate，但不得写 `summary.md` |
+| `TURN_STOP` | 正常用户轮次的主边界；assistant/tool transcript 已 durable append 后 seal T0 segment，enqueue closed package |
+| `TURN_ABORT` | 取消/失败/半轮中断边界；seal T0 segment 并标记 `semantic_memory_eligible=false`，不 enqueue canonical T2 |
 | `PRE_COMPACTION` | seal 或 checkpoint 当前 T0 range，然后同步或 high-priority enqueue T2 package，避免上下文丢失 |
-| `SESSION_IDLE` | seal T0 segment，enqueue rolling checkpoint package |
-| `SESSION_CLOSE` | drain pending package tasks，seal T0 segment，enqueue closed package |
+| `SESSION_IDLE` | fallback seal T0 segment，enqueue rolling checkpoint package |
+| `SESSION_CLOSE` | fallback drain pending package tasks，seal T0 segment，enqueue closed package |
 | one-off task complete | seal task T0 segment，enqueue closed package |
 | trigger/delegation user-work end | seal runtime T0 segment；只有 `distillation_scope=semantic_candidate` 才 enqueue closed package |
 | heartbeat/dream/distiller end | seal audit/provenance T0 segment；默认不 enqueue T2 package |
@@ -1759,7 +1766,7 @@ final closure
   continuity_state=same_episode_candidate|needs_previous|needs_next
   review.allowed_next=episode_stitching
   -> enqueue Continuity Agent
-  -> write memory/sessions/<session_id>/episodes/<episode_id>/
+  -> write memory/t2/sessions/<session_id>/episodes/<episode_id>/
 
 拼接后仍不完整:
   episode.status=open
@@ -1794,7 +1801,7 @@ T0 source range + runtime evidence bundle
   -> Learning Brain
   -> Memory Gate Agent
   -> Platform Gate
-  -> memory/sessions/<session_id>/segments/<segment_id>/
+  -> memory/t2/sessions/<session_id>/segments/<segment_id>/
 ```
 
 其他入口都必须变成 source bundle 输入，不允许独立写 T2。
@@ -1867,10 +1874,10 @@ Heartbeat 可以按 source_refs 残差回看 T0，但入口必须来自 reviewed
 2. Runtime canonical T2 只写：
 
 ```text
-memory/sessions/<session_id>/segments/<t2_segment_id>/summary.md
-memory/sessions/<session_id>/segments/<t2_segment_id>/labels.md
-memory/sessions/<session_id>/segments/<t2_segment_id>/review.md
-memory/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/summary.md
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/labels.md
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/review.md
+memory/t2/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
 ```
 
 3. `logs/YYYY-MM-DD/**` 只允许 legacy import。
@@ -1880,13 +1887,15 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
 
 1. `RESPONSE_COMPLETE` 不得直接写 canonical T2。
 2. `PRE_COMPACTION` 必须触发 package builder 或 durable queue。
-3. `SESSION_CLOSE` 必须 drain / enqueue T2 package builder，不能只 drain old extractor。
-4. one-off task、trigger、delegation 只有在 `distillation_scope=semantic_candidate` 时才允许 enqueue package builder。
-5. heartbeat、dream、distiller、eval、platform background job 默认只能写 audit/provenance T0，不能 enqueue canonical T2。
-6. Work Ledger 不能独立写 T2。
-7. 普通 Workflow JSON / workflow runtime 不能修改 T0 -> T2 pipeline 顺序。
-8. 普通 Workflow step 不能持有 canonical T2 write authority。
-9. Continuity Agent 只能由 `review.allowed_next=episode_stitching` 触发，不能对所有 T2 package 做全量拼接。
+3. `TURN_STOP` 必须在 assistant/tool transcript durable append 后 seal T0 并 enqueue T2 package builder。
+4. `TURN_ABORT` 必须 seal T0，但不得进入语义 T2。
+5. `SESSION_IDLE` / `SESSION_CLOSE` 只能作为 fallback seal boundary，不能重新成为正常用户轮次主 checkpoint。
+6. one-off task、trigger、delegation 只有在 `distillation_scope=semantic_candidate` 时才允许 enqueue package builder。
+7. heartbeat、dream、distiller、eval、platform background job 默认只能写 audit/provenance T0，不能 enqueue canonical T2。
+8. Work Ledger 不能独立写 T2。
+9. 普通 Workflow JSON / workflow runtime 不能修改 T0 -> T2 pipeline 顺序。
+10. 普通 Workflow step 不能持有 canonical T2 write authority。
+11. Continuity Agent 只能由 `review.allowed_next=episode_stitching` 触发，不能对所有 T2 package 做全量拼接。
 
 ### 16.3 Prompt 红线
 
@@ -1916,7 +1925,7 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
 5. `rolling_checkpoint` 不能进入 T3 intake。
 6. `continuity_state != standalone` 的 package 不能进入 T3 intake，除非已经被 reviewed closed episode 吸收。
 7. `review.md decision != approved` 不能让 package 状态变 `reviewed`。
-8. Episode Stitch Package 只能写到 `memory/sessions/<session_id>/episodes/<episode_id>/`，不能回写原 `segments/<t2_segment_id>/`。
+8. Episode Stitch Package 只能写到 `memory/t2/sessions/<session_id>/episodes/<episode_id>/`，不能回写原 `segments/<t2_segment_id>/`。
 9. Episode synthesis 必须引用所有参与拼接的 T2 packages 和对应 T0 source refs。
 10. Episode review 未通过时，T3 Curator 不能消费该 episode。
 11. T2 manifest 必须持久化 `lineage`、`visible_source_view`、`context_refs`、`excluded_refs`，以便 T2.5/T3 能重放同一个 branch 视图。
@@ -1986,7 +1995,9 @@ missing source ref rejects package
 pattern fallback creates held candidate, not canonical T2
 RESPONSE_COMPLETE no longer writes memory/learnings/*.md
 PRE_COMPACTION creates rolling checkpoint package
-SESSION_CLOSE creates closed package
+TURN_STOP creates closed package
+TURN_ABORT seals dirty segment without semantic package
+SESSION_CLOSE remains fallback closed package boundary
 Work Ledger verified finding enters source bundle, not direct T2 write
 semantic_candidate T0 can enqueue T2 package builder
 audit_only heartbeat/dream/distiller T0 never enqueues canonical T2
@@ -2003,7 +2014,7 @@ Episode Stitcher prompt requires T0 source refs and forbids summary-only stitchi
 Episode Gate prompt has explicit continuity/correction/closure rubric
 allowed_next=episode_stitching enqueues Continuity Agent
 complete standalone T2 package does not enqueue Continuity Agent
-Episode Stitch Package writes only under memory/sessions/<session_id>/episodes/<episode_id>/
+Episode Stitch Package writes only under memory/t2/sessions/<session_id>/episodes/<episode_id>/
 Episode Stitch Package does not rewrite source T2 packages
 Episode review failure blocks T3 intake
 legacy logs can import but remain marked legacy-t0

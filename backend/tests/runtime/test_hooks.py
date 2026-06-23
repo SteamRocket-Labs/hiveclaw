@@ -572,10 +572,12 @@ class TestHookEvents:
 
     def test_all_events_defined(self) -> None:
         events = list(HookEvent)
-        assert len(events) == 33
+        assert len(events) == 35
 
     def test_new_events_exist(self) -> None:
         assert HookEvent.USER_PROMPT_SUBMIT == "user_prompt_submit"
+        assert HookEvent.TURN_STOP == "turn_stop"
+        assert HookEvent.TURN_ABORT == "turn_abort"
         assert HookEvent.RESPONSE_COMPLETE == "response_complete"
         assert HookEvent.SESSION_IDLE == "session_idle"
         assert HookEvent.SESSION_CLOSE == "session_close"

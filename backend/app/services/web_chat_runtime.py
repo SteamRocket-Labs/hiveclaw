@@ -553,6 +553,9 @@ async def start_web_chat_run(
     now = datetime.now(timezone.utc)
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     message_id = uuid.uuid4()
+    supplied_metadata = dict(extra_metadata or {})
+    turn_id = str(supplied_metadata.get("turn_id") or f"turn-{run_uuid.hex}")
+    intent_id = str(supplied_metadata.get("intent_id") or f"intent-{message_id.hex}")
 
     session.last_message_at = now
     if not getattr(session, "title", "") or str(session.title).startswith("Session "):
@@ -593,9 +596,11 @@ async def start_web_chat_run(
             "cancelled_by_user": False,
             "plan_mode_requested": bool(plan_mode_requested),
             "append_user_message": bool(append_user_message),
+            "turn_id": turn_id,
+            "intent_id": intent_id,
             # Plan Mode continuation provenance (approved_plan_id/version/hash,
             # source="plan_mode_handoff"); empty for normal user turns.
-            **(extra_metadata or {}),
+            **supplied_metadata,
         },
     )
     db.add(runtime_task)
@@ -623,7 +628,9 @@ async def start_web_chat_run(
                     "attachments": attachments or [],
                     "llm_content_present": bool(content and content != saved_content),
                     "plan_mode_requested": bool(plan_mode_requested),
-                    **(extra_metadata or {}),
+                    "turn_id": turn_id,
+                    "intent_id": intent_id,
+                    **supplied_metadata,
                 },
             )
             if getattr(user_event, "event_id", None):
@@ -1349,6 +1356,52 @@ async def _finalize_web_chat_run_without_assistant(
         return True
 
 
+async def _emit_terminal_turn_hook(
+    *,
+    agent_id: uuid.UUID,
+    session_id: str,
+    run_uuid: uuid.UUID,
+    runtime_metadata: dict[str, Any] | None,
+    status: str,
+    reason: str,
+    source: str | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+) -> None:
+    metadata = dict(runtime_metadata or {})
+    metadata.update(extra_metadata or {})
+    turn_id = str(metadata.get("turn_id") or f"turn-{run_uuid.hex}")
+    intent_id = str(metadata.get("intent_id") or metadata.get("request_id") or f"intent-{run_uuid.hex}")
+    terminal_event = "turn_stop" if status == "completed" else "turn_abort"
+    checkpoint_kind = "user_turn_stop" if terminal_event == "turn_stop" else "turn_abort"
+    payload = {
+        **metadata,
+        "reason": reason,
+        "status": status,
+        "source": source or metadata.get("source") or "web",
+        "runtime_task_id": metadata.get("runtime_task_id") or run_uuid.hex,
+        "request_id": metadata.get("request_id") or str(run_uuid),
+        "trace_id": metadata.get("trace_id") or f"web_chat_turn:{run_uuid.hex}",
+        "turn_id": turn_id,
+        "intent_id": intent_id,
+        "checkpoint_kind": checkpoint_kind,
+    }
+    if terminal_event == "turn_abort":
+        payload["semantic_memory_eligible"] = False
+    try:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        await emit_hook(
+            HookEvent.TURN_STOP if terminal_event == "turn_stop" else HookEvent.TURN_ABORT,
+            agent_id=agent_id,
+            session_id=session_id,
+            source=str(payload["source"]),
+            messages=[],
+            metadata=payload,
+        )
+    except Exception as exc:
+        logger.debug("[WebChatRun] {} hook failed (non-fatal): {}", terminal_event.upper(), exc)
+
+
 async def _persist_tool_call(
     *,
     agent_id: uuid.UUID,
@@ -1471,8 +1524,11 @@ def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None
         return None
     if tool_name == "request_plan_mode" and payload.get("status") == "plan_mode_entry_requested":
         return "plan_mode_entry_requested"
-    if tool_name == "exit_plan_mode" and payload.get("status") == "needs_plan":
-        return "plan_mode_needs_confirmation"
+    if tool_name == "exit_plan_mode":
+        if payload.get("status") == "needs_plan":
+            return "plan_mode_needs_confirmation"
+        if payload.get("status") == "planning_failed":
+            return "plan_mode_planning_failed"
     if (
         tool_name == "create_digital_employee"
         and payload.get("status") == "success"
@@ -1480,6 +1536,26 @@ def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None
     ):
         return "create_digital_employee_success"
     return None
+
+
+def _plan_mode_unsubmitted_terminal_error(session_context: Any | None) -> str | None:
+    """Return a visible guardrail message when active Plan Mode ended without a terminal tool.
+
+    Plan Mode's user-visible artifact must be either a clarification card
+    (ask_user_question) or a confirmable/failed plan card (exit_plan_mode). A
+    plain assistant response in this state has no plan hash, no confirmation
+    boundary, and no reliable continuation contract, so web chat must not treat
+    it as successful completion.
+    """
+    if session_context is None:
+        return None
+    plan_state = getattr(session_context, "plan_mode", None)
+    if plan_state is None or not getattr(plan_state, "active", False):
+        return None
+    return (
+        "Plan Mode 没有正确提交：本轮仍处于计划模式，但模型没有调用 ask_user_question "
+        "或 exit_plan_mode 结束回合。为了避免未确认计划被误当成成功结果，本轮已停止。"
+    )
 
 
 def _provision_interactive_plan_file(agent_id: uuid.UUID, plan_file_path: str | None) -> None:
@@ -1516,9 +1592,7 @@ def _activate_interactive_plan_mode(
 
     route_text = routing_request or original_request
     is_deep_research = _is_deep_research_chat_request(route_text)
-    if is_deep_research:
-        handoff_target = "deep_research"
-    elif decision.action_kind == "create_enabled_trigger":
+    if decision.action_kind == "create_enabled_trigger":
         handoff_target = "scheduled_trigger"
     else:
         # CC parity: live chat Plan Mode defaults to continuing in THIS session
@@ -1921,6 +1995,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     thinking_content: list[str] = []
     terminal_agent_id: uuid.UUID | None = None
     terminal_session_id: str | None = None
+    terminal_runtime_metadata: dict[str, Any] | None = None
 
     try:
         runtime_task, agent, user, llm_model, fallback_model, history_messages = await _load_runtime_context(run_uuid)
@@ -1930,6 +2005,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
         metadata = runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {}
+        terminal_runtime_metadata = metadata
         if metadata.get("latest_user_prompt_overrides_history") and prompt:
             for idx in range(len(conversation) - 1, -1, -1):
                 if conversation[idx].get("role") == "user":
@@ -1963,6 +2039,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 result_summary=assistant_response[:500],
             )
             if finalized:
+                await _emit_terminal_turn_hook(
+                    agent_id=agent.id,
+                    session_id=session_id,
+                    run_uuid=run_uuid,
+                    runtime_metadata=metadata,
+                    status="completed",
+                    reason="invoke_complete",
+                    source="web",
+                )
                 await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
             return
 
@@ -1972,6 +2057,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         runtime_session_context.metadata["tenant_id"] = str(agent.tenant_id) if agent.tenant_id else None
         runtime_session_context.metadata["runtime_task_id"] = run_uuid.hex
         runtime_session_context.metadata["request_id"] = str(run_uuid)
+        runtime_session_context.metadata["turn_id"] = str(metadata.get("turn_id") or f"turn-{run_uuid.hex}")
+        runtime_session_context.metadata["intent_id"] = str(
+            metadata.get("intent_id") or metadata.get("request_id") or f"intent-{run_uuid.hex}"
+        )
         runtime_session_context.metadata["trace_id"] = (
             getattr(runtime_task, "trace_id", None)
             or metadata.get("trace_id")
@@ -2007,6 +2096,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 result_summary=plan_mode_response[:500],
             )
             if finalized:
+                await _emit_terminal_turn_hook(
+                    agent_id=agent.id,
+                    session_id=session_id,
+                    run_uuid=run_uuid,
+                    runtime_metadata=metadata,
+                    status="completed",
+                    reason="invoke_complete",
+                    source=runtime_session_context.source,
+                )
                 await broadcast_web_chat_event(agent.id, session_id, build_done_event(plan_mode_response))
             return
 
@@ -2023,6 +2121,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 result_summary=assistant_response[:500],
             )
             if finalized:
+                await _emit_terminal_turn_hook(
+                    agent_id=agent.id,
+                    session_id=session_id,
+                    run_uuid=run_uuid,
+                    runtime_metadata=metadata,
+                    status="failed",
+                    reason="llm_model_missing",
+                    source=runtime_session_context.source,
+                )
                 await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
             return
 
@@ -2144,6 +2251,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             terminal_tool_card_finalized = finalized or terminal_tool_card_finalized
             if finalized:
+                await _emit_terminal_turn_hook(
+                    agent_id=agent.id,
+                    session_id=session_id,
+                    run_uuid=run_uuid,
+                    runtime_metadata=metadata,
+                    status="killed" if cancel_event.is_set() else "completed",
+                    reason="terminal_tool_card",
+                    source=runtime_session_context.source,
+                    extra_metadata=metadata_update,
+                )
                 await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
             return terminal_tool_card_finalized
 
@@ -2157,10 +2274,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 return {}
             return payload if isinstance(payload, dict) else {}
 
-        def _tool_result_needs_plan(data: dict[str, Any]) -> bool:
+        def _tool_result_exits_plan_mode(data: dict[str, Any]) -> bool:
             if data.get("name") != "exit_plan_mode" or data.get("status") != "done":
                 return False
-            return _tool_result_payload(data).get("status") == "needs_plan"
+            return _tool_result_payload(data).get("status") in {"needs_plan", "planning_failed"}
 
         async def tool_call_to_ws(data: dict[str, Any]) -> None:  # type: ignore[no-redef]
             nonlocal interactive_pause_summary, plan_mode_submitted
@@ -2205,7 +2322,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 )
             await broadcast_web_chat_event(agent.id, session_id, ws_event)
             if data.get("status") == "done":
-                if _tool_result_needs_plan(data):
+                if _tool_result_exits_plan_mode(data):
                     plan_mode_submitted = True
                 pause_summary = _interactive_pause_summary_for_tool_call(data)
                 if pause_summary:
@@ -2245,6 +2362,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                         session_context=runtime_session_context,
                         system_prompt_suffix=pending_reply_suffix,
                         mid_run_message_drain=lambda: _claim_pending_mid_run_user_messages(run_uuid),
+                        emit_turn_stop=False,
                     )
                 )
             except _TerminalToolCardSignal as signal:
@@ -2274,16 +2392,40 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             if not finalized:
                 return
+            await _emit_terminal_turn_hook(
+                agent_id=agent.id,
+                session_id=session_id,
+                run_uuid=run_uuid,
+                runtime_metadata=metadata,
+                status="killed" if cancel_event.is_set() else "completed",
+                reason="interactive_pause",
+                source=runtime_session_context.source,
+                extra_metadata=metadata_update,
+            )
             await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
             return
         assistant_response = result.content
+        plan_mode_terminal_error = (
+            None
+            if plan_mode_submitted or interactive_pause_summary
+            else _plan_mode_unsubmitted_terminal_error(runtime_session_context)
+        )
+        if plan_mode_terminal_error:
+            assistant_response = plan_mode_terminal_error
+            _clear_interactive_plan_mode(runtime_session_context)
         thinking = "".join(thinking_content) if thinking_content else None
         status = (
             "killed"
             if cancel_event.is_set()
-            else ("failed" if is_llm_error_message(assistant_response) else "completed")
+            else (
+                "failed"
+                if plan_mode_terminal_error or is_llm_error_message(assistant_response)
+                else "completed"
+            )
         )
         metadata_update = {"cancelled_by_user": bool(cancel_event.is_set())}
+        if plan_mode_terminal_error:
+            metadata_update["interactive_pause"] = "plan_mode_missing_terminal_tool"
         if interactive_pause_summary and not str(assistant_response or "").strip():
             metadata_update["interactive_pause"] = interactive_pause_summary
             finalized = await _finalize_web_chat_run_without_assistant(
@@ -2295,6 +2437,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             if not finalized:
                 return
+            await _emit_terminal_turn_hook(
+                agent_id=agent.id,
+                session_id=session_id,
+                run_uuid=run_uuid,
+                runtime_metadata=metadata,
+                status=status,
+                reason="interactive_pause",
+                source=runtime_session_context.source,
+                extra_metadata=metadata_update,
+            )
             await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
             return
         artifact_paths = list(getattr(runtime_session_context, "recent_writes", []) or [])
@@ -2313,6 +2465,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         )
         if not finalized:
             return
+        await _emit_terminal_turn_hook(
+            agent_id=agent.id,
+            session_id=session_id,
+            run_uuid=run_uuid,
+            runtime_metadata=metadata,
+            status=status,
+            reason="invoke_complete",
+            source=runtime_session_context.source,
+            extra_metadata=metadata_update,
+        )
         await broadcast_web_chat_event(
             agent.id,
             session_id,
@@ -2333,6 +2495,16 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 result_summary="Generation stopped by user.",
                 metadata_json={"cancelled_by_user": True},
             )
+            if terminal_agent_id and terminal_session_id:
+                await _emit_terminal_turn_hook(
+                    agent_id=terminal_agent_id,
+                    session_id=terminal_session_id,
+                    run_uuid=run_uuid,
+                    runtime_metadata=terminal_runtime_metadata,
+                    status="killed",
+                    reason="user_cancelled",
+                    extra_metadata={"cancelled_by_user": True},
+                )
             return
         result_summary = f"Web chat run failed: {type(exc).__name__}"
         metadata_update = {"error": str(exc)[:500]}
@@ -2358,6 +2530,15 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     result_summary=result_summary,
                     metadata_json=metadata_update,
                 )
+            await _emit_terminal_turn_hook(
+                agent_id=agent.id,
+                session_id=session_id,
+                run_uuid=run_uuid,
+                runtime_metadata=terminal_runtime_metadata,
+                status="failed",
+                reason="runtime_exception",
+                extra_metadata=metadata_update,
+            )
             await broadcast_web_chat_event(
                 agent.id,
                 session_id,

@@ -54,7 +54,7 @@ runtime. Treat them as facts about your environment, not suggestions.
 ### Memory Integration
 
 <memory_integration>
-- Long-term memory lives in `memory/*.md` files (read-only during session).
+- Long-term memory lives in governed T3 and explicit-overlay memory surfaces. Treat every `memory/**` path as platform-managed and read-only unless you are using a governed memory tool.
 - The memory pyramid runs in the background:
   - After a T0 session segment is sealed: the T0→T2 pipeline builds a reviewed
     T2 Segment Package from the append-only source range.

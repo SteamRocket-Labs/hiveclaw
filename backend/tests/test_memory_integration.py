@@ -25,7 +25,7 @@ class TestHooksIntegration:
     def test_v1_all_events(self) -> None:
         from app.runtime.hooks import HookEvent
 
-        assert len(HookEvent) == 33
+        assert len(HookEvent) == 35
         assert {event.value for event in HookEvent}.issuperset(
             {
                 "stop",
@@ -55,7 +55,7 @@ class TestHooksIntegration:
         assert hasattr(HookEvent, "SESSION_CLOSE")
         assert hasattr(HookEvent, "SESSION_START")
 
-    def test_hooks_setup_registers_14_handlers(self) -> None:
+    def test_hooks_setup_registers_16_handlers(self) -> None:
         """register_memory_hooks() should register memory + objective intake handlers."""
         from app.runtime.hooks import HookRegistry
 
@@ -70,14 +70,14 @@ class TestHooksIntegration:
 
             register_memory_hooks()
             total = sum(len(handlers) for handlers in registry._handlers.values())
-            assert total == 14
+            assert total == 16
         finally:
             hooks_mod.hook_registry = original
 
     def test_hooks_setup_declares_registration_specs(self) -> None:
         from app.runtime.hooks_setup import _MEMORY_HOOK_REGISTRATIONS
 
-        assert len(_MEMORY_HOOK_REGISTRATIONS) == 14
+        assert len(_MEMORY_HOOK_REGISTRATIONS) == 16
         assert any(spec.key == "memory.response_complete.fast_reflection" for spec in _MEMORY_HOOK_REGISTRATIONS)
         assert any(spec.key == "evolution.heartbeat_tick_end.maintenance" for spec in _MEMORY_HOOK_REGISTRATIONS)
         assert any(spec.key == "pending_reply.post_tool_use.capture" for spec in _MEMORY_HOOK_REGISTRATIONS)
@@ -87,7 +87,7 @@ class TestHooksIntegration:
 
         plan = export_memory_hook_plan()
 
-        assert len(plan) == 14
+        assert len(plan) == 16
         assert plan[0]["key"] == "memory.session_start.log"
         assert plan[0]["handler_name"] == "log_session_start"
         assert any(item["key"] == "memory.response_complete.fast_reflection" for item in plan)
@@ -109,7 +109,7 @@ class TestHooksIntegration:
             register_memory_hooks()
             register_memory_hooks()
             total = sum(len(handlers) for handlers in registry._handlers.values())
-            assert total == 14
+            assert total == 16
         finally:
             hooks_setup_mod.hook_registry = original
 
@@ -327,7 +327,7 @@ class TestDreamIntegration:
         with patch("app.services.auto_dream.get_settings") as mock:
             mock.return_value.AGENT_DATA_DIR = str(tmp_path)
             _update_index_md(agent_id)
-        index = (memory_dir / "wiki_map.md").read_text()
+        index = (memory_dir / "indexes" / "wiki_map.md").read_text()
         assert "t3/user.md" in index
         assert "idx-a" in index
         assert not (memory_dir / "INDEX.md").exists()

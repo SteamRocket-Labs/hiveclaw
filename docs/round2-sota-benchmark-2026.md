@@ -1318,7 +1318,7 @@ cd backend && source .venv/bin/activate && pytest tests/kernel/test_generated_so
 **已关闭的代码缺口**：
 
 1. **G10 connector authoritative ACL ingest 第一批 source**：`authoritative_connector_source_item()` 与 `with_connector_source_items()` 统一构造 tool-result source ACL metadata；Feishu doc、Feishu Drive、Office 成功读取结果会携带 `connector_source_items`。Feishu 按 `agent_ids=[agent_id]`，Office 按 `tenant_ids=[tenant_id]`，无 principal 时 deny-by-default。`extract_connector_source_items()` 现在会读取 `ToolContentEnvelope.metadata`，让 kernel 现有 generated-source ACL registry 能登记这些来源。
-2. **G3 memory TTL/revalidation/conflict maintenance**：新增 `memory_lifecycle_maintenance.v1`。heartbeat 会调用 `run_memory_lifecycle_maintenance()`，对 expired sketch 调 `discard_expired()`，对 `conflict_status=needs_review` 与 `reference_status=revalidation_required` 生成 hold report，并写入 `memory/lifecycle_maintenance.json`。
+2. **G3 memory TTL/revalidation/conflict maintenance**：新增 `memory_lifecycle_maintenance.v1`。heartbeat 会调用 `run_memory_lifecycle_maintenance()`，对 expired sketch 调 `discard_expired()`，对 `conflict_status=needs_review` 与 `reference_status=revalidation_required` 生成 hold report，并写入 `memory/control/lifecycle_maintenance.json`。
 3. **G4/G7 mutating subagent/delegation replay boundary**：新增 `runtime_restart_replay_journal.v1`。subagent/delegation 创建时记录 `spawn_intent_recorded`；restart resume 时，mutating lane 不再只凭 replay contract 自动恢复，必须有 mutating replay journal，否则写 `needs_reconciliation`；成功 resume 会追加 `resume_intent_recorded`。
 
 **TDD red 证据**：

@@ -33,5 +33,6 @@ def test_memory_lifecycle_maintenance_discards_expired_sketches_and_reports_hold
     assert report["conflict_holds"] == ["mem-conflict"]
     assert report["revalidation_holds"] == ["mem-reference"]
 
-    artifact = tmp_path / str(agent_id) / "memory" / "lifecycle_maintenance.json"
+    artifact = tmp_path / str(agent_id) / "memory" / "control" / "lifecycle_maintenance.json"
     assert json.loads(artifact.read_text(encoding="utf-8"))["schema"] == "memory_lifecycle_maintenance.v1"
+    assert not (tmp_path / str(agent_id) / "memory" / "lifecycle_maintenance.json").exists()

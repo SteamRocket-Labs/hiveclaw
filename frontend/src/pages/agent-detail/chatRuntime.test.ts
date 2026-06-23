@@ -19,7 +19,9 @@ import {
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
   filterSessionsForAgent,
+  mergePendingUserMessages,
   sessionBelongsToAgent,
+  shouldClearStaleRuntimeState,
 } from './chatRuntime';
 
 describe('chatRuntime helpers', () => {
@@ -237,6 +239,60 @@ describe('chatRuntime helpers', () => {
 
     expect(result.activeRuns).toEqual({ 'agent-1:session-1': { runId: 'run-1', status: 'running' } });
     expect(result.uiStates).toEqual({ 'agent-1:session-1': { isWaiting: false, isStreaming: true } });
+  });
+
+  it('keeps an optimistic user prompt visible until transcript replay confirms it', () => {
+    const merged = mergePendingUserMessages(
+      [
+        { role: 'user', content: 'previous request' },
+        { role: 'assistant', content: 'previous answer' },
+        { role: 'tool_call', content: '', toolName: 'tool_search', toolStatus: 'running' },
+      ],
+      [{
+        anchorMessageCount: 2,
+        message: { role: 'user', content: 'Use deep research for this.' },
+      }],
+    );
+
+    expect(merged.messages.map((message) => [message.role, message.content || message.toolName])).toEqual([
+      ['user', 'previous request'],
+      ['assistant', 'previous answer'],
+      ['user', 'Use deep research for this.'],
+      ['tool_call', 'tool_search'],
+    ]);
+    expect(merged.pending).toHaveLength(1);
+  });
+
+  it('drops an optimistic user prompt once durable transcript contains the same user message', () => {
+    const merged = mergePendingUserMessages(
+      [
+        { role: 'user', content: 'Use deep research for this.', id: 'durable-user-event' },
+        { role: 'tool_call', content: '', toolName: 'tool_search', toolStatus: 'running' },
+      ],
+      [{
+        anchorMessageCount: 0,
+        message: { role: 'user', content: 'Use deep research for this.' },
+      }],
+    );
+
+    expect(merged.messages).toHaveLength(2);
+    expect(merged.messages[0]).toMatchObject({ id: 'durable-user-event' });
+    expect(merged.pending).toEqual([]);
+  });
+
+  it('defers stale active-run clearing during recent runtime activity', () => {
+    expect(shouldClearStaleRuntimeState({
+      hasStaleRuntimeState: true,
+      lastRuntimeActivityAt: 10_000,
+      now: 12_000,
+      graceMs: 8_000,
+    })).toBe(false);
+    expect(shouldClearStaleRuntimeState({
+      hasStaleRuntimeState: true,
+      lastRuntimeActivityAt: 10_000,
+      now: 19_000,
+      graceMs: 8_000,
+    })).toBe(true);
   });
 
   it('extracts terminal run ids from replayed assistant transcript events', () => {

@@ -26,7 +26,7 @@ async def test_invoker_emits_user_prompt_submit_before_session_start(monkeypatch
     hook_registry.register(HookEvent.USER_PROMPT_SUBMIT, lambda ctx: calls.append((ctx.event.value, ctx.prompt or "")))
     hook_registry.register(HookEvent.SESSION_START, lambda ctx: calls.append((ctx.event.value, ctx.session_id or "")))
     hook_registry.register(HookEvent.SESSION_END, lambda ctx: calls.append((ctx.event.value, ctx.session_id or "")))
-    hook_registry.register(HookEvent.SESSION_CLOSE, lambda ctx: calls.append((ctx.event.value, ctx.session_id or "")))
+    hook_registry.register(HookEvent.TURN_STOP, lambda ctx: calls.append((ctx.event.value, ctx.session_id or "")))
     monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
     monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow_quota, raising=False)
 
@@ -52,7 +52,7 @@ async def test_invoker_emits_user_prompt_submit_before_session_start(monkeypatch
         ("session_start", "session-1"),
         ("kernel", "hello"),
         ("session_end", "session-1"),
-        ("session_close", "session-1"),
+        ("turn_stop", "session-1"),
     ]
 
 

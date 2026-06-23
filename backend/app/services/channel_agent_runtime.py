@@ -383,6 +383,11 @@ async def call_agent_llm(
         source=session_source,
         channel=session_channel,
     )
+    turn_seed = uuid.uuid4().hex
+    session_context.metadata["turn_id"] = f"turn-{turn_seed}"
+    session_context.metadata["intent_id"] = f"intent-{turn_seed}"
+    if getattr(agent, "tenant_id", None):
+        session_context.metadata["tenant_id"] = str(agent.tenant_id)
     trusted_decline = plan_mode_core.trusted_decline_metadata(
         content=user_text,
         messages=history,
@@ -432,6 +437,8 @@ async def call_agent_llm(
                 metadata={
                     "source_channel": session_channel,
                     "session_source": session_source,
+                    "turn_id": session_context.metadata["turn_id"],
+                    "intent_id": session_context.metadata["intent_id"],
                 },
                 source=session_source or session_channel or "channel",
                 materialize_chat_message=False,
@@ -461,6 +468,8 @@ async def call_agent_llm(
                 "session_source": session_source,
                 "tool_event": event,
                 "tool_status": status,
+                "turn_id": session_context.metadata["turn_id"],
+                "intent_id": session_context.metadata["intent_id"],
             },
             source=session_source or session_channel or "channel",
             materialize_chat_message=False,
@@ -514,6 +523,8 @@ async def call_agent_llm(
                 metadata={
                     "source_channel": session_channel,
                     "session_source": session_source,
+                    "turn_id": session_context.metadata["turn_id"],
+                    "intent_id": session_context.metadata["intent_id"],
                 },
                 source=session_source or session_channel or "channel",
                 materialize_chat_message=False,
@@ -522,7 +533,7 @@ async def call_agent_llm(
                 from app.runtime.hooks import HookEvent, emit_hook
 
                 await emit_hook(
-                    HookEvent.SESSION_CLOSE,
+                    HookEvent.TURN_STOP,
                     agent_id=agent_id,
                     session_id=str(ledger_session_id),
                     source=session_source,
@@ -531,10 +542,14 @@ async def call_agent_llm(
                         "reason": "invoke_complete",
                         "channel": session_channel,
                         "distillation_scope": "semantic_candidate",
+                        "checkpoint_kind": "user_turn_stop",
+                        "turn_id": session_context.metadata["turn_id"],
+                        "intent_id": session_context.metadata["intent_id"],
+                        "tenant_id": str(agent.tenant_id) if getattr(agent, "tenant_id", None) else None,
                     },
                 )
             except Exception as close_err:
-                logger.debug("[ChannelRuntime] SESSION_CLOSE hook failed (non-fatal): {}", close_err)
+                logger.debug("[ChannelRuntime] TURN_STOP hook failed (non-fatal): {}", close_err)
             try:
                 from app.memory.t0.ledger import seal_t0_session_segment
 
@@ -546,10 +561,13 @@ async def call_agent_llm(
                         "source": session_source or session_channel or "channel",
                         "channel": session_channel,
                         "distillation_scope": "semantic_candidate",
+                        "checkpoint_kind": "user_turn_stop",
+                        "turn_id": session_context.metadata["turn_id"],
+                        "intent_id": session_context.metadata["intent_id"],
                     },
                 )
             except Exception as seal_err:
-                logger.debug("[ChannelRuntime] direct T0 seal skipped after SESSION_CLOSE: {}", seal_err)
+                logger.debug("[ChannelRuntime] direct T0 seal skipped after TURN_STOP: {}", seal_err)
         return reply
     except Exception as exc:
         traceback.print_exc()

@@ -55,7 +55,14 @@ def _memory_dir(root: Path, agent_id: uuid.UUID) -> Path:
 
 
 def _workspace_dir(root: Path, agent_id: uuid.UUID) -> Path:
-    workspace = _memory_dir(root, agent_id) / ".dream_workspace"
+    mem_dir = _memory_dir(root, agent_id)
+    workspace = mem_dir / ".staging" / "dream_workspace"
+    legacy_workspace = mem_dir / ".dream_workspace"
+    if legacy_workspace.exists() and not workspace.exists():
+        workspace.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy_workspace), str(workspace))
+    elif legacy_workspace.exists():
+        shutil.rmtree(legacy_workspace)
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / ROLLOUT_SUMMARIES_DIRNAME).mkdir(parents=True, exist_ok=True)
     return workspace
@@ -73,22 +80,61 @@ def _review_allows_t3(package_dir: Path) -> bool:
     return "<decision>approved</decision>" in review and "<allowed_next>t3_intake</allowed_next>" in review
 
 
+def _manifest_paths(sessions_dir: Path) -> list[Path]:
+    return sorted([*sessions_dir.glob("*/segments/*/manifest.json"), *sessions_dir.glob("*/episodes/*/manifest.json")])
+
+
+def _is_episode_package(package_dir: Path, manifest: dict[str, Any]) -> bool:
+    return (
+        str(manifest.get("schema_version") or "").strip() == "t2.episode-stitch.manifest.v1"
+        or package_dir.parent.name == "episodes"
+    )
+
+
+def _required_package_files(package_dir: Path, manifest: dict[str, Any]) -> tuple[str, ...]:
+    if _is_episode_package(package_dir, manifest):
+        return ("synthesis.md", "review.md")
+    return ("summary.md", "labels.md", "review.md")
+
+
 def _discover_reviewed_t2_packages(root: Path, agent_id: uuid.UUID, *, max_packages: int) -> tuple[Path, ...]:
-    sessions_dir = root / str(agent_id) / "memory" / "sessions"
-    if not sessions_dir.exists():
-        return ()
     package_dirs: list[Path] = []
-    for manifest_path in sorted(sessions_dir.glob("*/segments/*/manifest.json")):
-        package_dir = manifest_path.parent
-        manifest = _load_json(manifest_path)
-        if manifest.get("package_status") != "reviewed":
+    seen: set[str] = set()
+    for sessions_dir in (
+        root / str(agent_id) / "memory" / "t2" / "sessions",
+        root / str(agent_id) / "memory" / "sessions",
+    ):
+        if not sessions_dir.exists():
             continue
-        if not all((package_dir / name).exists() for name in ("summary.md", "labels.md", "review.md")):
-            continue
-        if not _review_allows_t3(package_dir):
-            continue
-        package_dirs.append(package_dir)
+        for manifest_path in _manifest_paths(sessions_dir):
+            package_dir = manifest_path.parent
+            identity = _package_identity_key(root=root, agent_id=agent_id, package_dir=package_dir)
+            if identity in seen:
+                continue
+            manifest = _load_json(manifest_path)
+            if str(manifest.get("package_status") or "").strip().lower() not in {"reviewed", "closed"}:
+                continue
+            if not all((package_dir / name).exists() for name in _required_package_files(package_dir, manifest)):
+                continue
+            if not _review_allows_t3(package_dir):
+                continue
+            seen.add(identity)
+            package_dirs.append(package_dir)
+            if len(package_dirs) >= max_packages:
+                return tuple(package_dirs)
     return tuple(package_dirs[:max_packages])
+
+
+def _package_identity_key(*, root: Path, agent_id: uuid.UUID, package_dir: Path) -> str:
+    for sessions_root in (
+        root / str(agent_id) / "memory" / "t2" / "sessions",
+        root / str(agent_id) / "memory" / "sessions",
+    ):
+        try:
+            return package_dir.relative_to(sessions_root).as_posix()
+        except ValueError:
+            continue
+    return package_dir.as_posix()
 
 
 def _package_sort_key(package_dir: Path) -> tuple[str, str, str]:
@@ -96,17 +142,37 @@ def _package_sort_key(package_dir: Path) -> tuple[str, str, str]:
     return (
         str(manifest.get("session_id") or ""),
         str((manifest.get("source_range") or {}).get("start_sequence") or ""),
-        str(manifest.get("package_id") or package_dir.name),
+        str(manifest.get("package_id") or manifest.get("episode_id") or package_dir.name),
     )
 
 
 def _render_rollout_summary(package_dir: Path) -> tuple[str, str]:
     manifest = _load_json(package_dir / "manifest.json")
-    package_id = str(manifest.get("package_id") or package_dir.name)
+    package_id = str(manifest.get("package_id") or manifest.get("episode_id") or package_dir.name)
     source_refs = [str(ref) for ref in manifest.get("source_refs") or [] if str(ref).strip()]
+    review = (package_dir / "review.md").read_text(encoding="utf-8", errors="replace").strip()
+    if _is_episode_package(package_dir, manifest):
+        synthesis = (package_dir / "synthesis.md").read_text(encoding="utf-8", errors="replace").strip()
+        body = "\n".join(
+            [
+                f"# T2 Episode Rollout Summary: {package_id}",
+                "",
+                "- package_kind: episode_stitch_package",
+                f"- package_dir: {package_dir.as_posix()}",
+                f"- source_refs: {', '.join(source_refs) if source_refs else '-'}",
+                "",
+                "## Synthesis",
+                synthesis,
+                "",
+                "## Review",
+                review,
+                "",
+            ]
+        )
+        return package_id, body
+
     summary = (package_dir / "summary.md").read_text(encoding="utf-8", errors="replace").strip()
     labels = (package_dir / "labels.md").read_text(encoding="utf-8", errors="replace").strip()
-    review = (package_dir / "review.md").read_text(encoding="utf-8", errors="replace").strip()
     body = "\n".join(
         [
             f"# T2 Rollout Summary: {package_id}",

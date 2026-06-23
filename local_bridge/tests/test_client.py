@@ -63,6 +63,37 @@ def test_client_uploads_file_as_multipart(tmp_path) -> None:
     assert "# Report" in seen["body"]
 
 
+def test_client_downloads_channel_file_to_destination(tmp_path) -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, content=b"# Cloud Brief\n")
+
+    client = HiveBridgeClient(
+        base_url="https://hive.example",
+        token="hb_test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = client.download_channel_file("workspace/uploads/cloud-brief.md", tmp_path / "downloads")
+
+    saved_path = tmp_path / "downloads" / "cloud-brief.md"
+    assert result == {
+        "path": str(saved_path),
+        "source_path": "workspace/uploads/cloud-brief.md",
+        "size": len(b"# Cloud Brief\n"),
+    }
+    assert saved_path.read_bytes() == b"# Cloud Brief\n"
+    assert seen == {
+        "method": "GET",
+        "url": "https://hive.example/api/v1/local-bridge/channel/workspace/download?path=workspace%2Fuploads%2Fcloud-brief.md",
+        "authorization": "Bearer hb_test",
+    }
+
+
 def test_pairing_exchange_pending_and_active() -> None:
     responses = [
         httpx.Response(200, json={"status": "pending", "interval": 3}),
@@ -114,5 +145,71 @@ def test_client_reports_result_with_attachments_and_metadata() -> None:
             "result": "done",
             "attachments": [{"path": "workspace/local-bridge/report.md"}],
             "metadata": {"runtime": "command", "exit_code": 0},
+        },
+    }
+
+
+def test_client_creates_channel_ws_ticket_and_builds_ws_url() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(201, json={"ticket": "hbt_secret", "expires_in": 60, "single_use": True})
+
+    client = HiveBridgeClient(
+        base_url="https://hive.example",
+        token="hb_test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    ticket = client.create_channel_ws_ticket()
+
+    assert ticket == {"ticket": "hbt_secret", "expires_in": 60, "single_use": True}
+    assert client.channel_ws_url("hbt_secret") == "wss://hive.example/api/v1/local-bridge/channel/ws?ticket=hbt_secret"
+    assert seen == {
+        "method": "POST",
+        "url": "https://hive.example/api/v1/local-bridge/channel/ws-ticket",
+        "authorization": "Bearer hb_test",
+    }
+
+
+def test_client_reports_local_agent_channel_result() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        seen["json"] = json.loads(request.read().decode("utf-8"))
+        return httpx.Response(200, json={"status": "completed"})
+
+    client = HiveBridgeClient(
+        base_url="http://localhost:8008",
+        token="hb_test",
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = client.report_channel_result(
+        session_id="session-1",
+        message_id="message-1",
+        output="done over channel",
+        artifacts=[{"path": "workspace/local/done.md"}],
+        metadata={"runtime": "command"},
+    )
+
+    assert result == {"status": "completed"}
+    assert seen == {
+        "method": "POST",
+        "url": "http://localhost:8008/api/v1/local-bridge/channel/report",
+        "authorization": "Bearer hb_test",
+        "json": {
+            "session_id": "session-1",
+            "message_id": "message-1",
+            "status": "completed",
+            "output": "done over channel",
+            "artifacts": [{"path": "workspace/local/done.md"}],
+            "metadata": {"runtime": "command"},
         },
     }

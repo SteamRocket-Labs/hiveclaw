@@ -232,7 +232,7 @@ T0 session ledger ──extract──▶ T2 learnings ──heartbeat──▶ T
 | ①写入 T0→T2 | extract LLM | EXTRACT_PROMPT：9 类标签 + ev/conf 元数据 + autonomy boundary + 反例 | ✅ 明确 |
 | ②蒸馏 T2→T3 | heartbeat LLM | decision matrix（w≥0.85 / repeat≥2）+ good/bad examples | ✅ 明确（§8.3 P1 加四分类抬头后更强） |
 | ③归档（选 T3 文件） | heartbeat LLM | 5 路文件选择；**核实：knowledge/strategies 在 retriever 零运行时差异**（同 0.80 权重、同检索路径、过滤只区分 feedback/blocked），边界纯分类学 | 🔴 模糊 |
-| ④索引 | md_store / prompt assembly | T3 entry manifest 已由 Memory Navigation 消费；`memory/wiki_map.md` 是唯一 generated persistent map；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役 | ✅ 已转正为导航索引 |
+| ④索引 | md_store / prompt assembly | T3 entry manifest 已由 Memory Navigation 消费；`memory/indexes/wiki_map.md` 是唯一 generated persistent map；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役 | ✅ 已转正为导航索引 |
 | ⑤系统检索（被动注入） | retriever 机械初筛 + LLM rerank（A3 已接线） | 权重表+keyword+激活上下文；**注入的记忆不带选择理由**——AI 不知道"为什么是这几条"，无法校准信任 | ⚠️ 半明确 |
 | ⑥AI 主动调用 | agent LLM | 工具说明完整（search→filter→load_memory 协议、save_memory 仅逃生舱、memory-guide skill 路由）；**缺"何时该主动查"的触发判据**（现状仅 scenario 一句"重建过去决策时先查"） | ⚠️ 半明确 |
 | ⑦维护（dedup/降级） | dream LLM + soft dream 机械 | promote/dedup/cap 有，降级通道规划中（§8.3 P1）；**清理决策无 usage 数据**——靠内容判断，不知道"这条到底有没有被用过" | ⚠️ 半明确 |
@@ -250,7 +250,7 @@ T0 session ledger ──extract──▶ T2 learnings ──heartbeat──▶ T
 - 孤儿**文件**检测同理：某 T3 文件长期零召回 = 文件级孤儿信号
 
 **S3 — T3 entry manifest / Memory Navigation 转正为导航层**（§8.3 P2 的具体化，Wiki 直觉的轻量落地）：
-- 从 shadow 变为 AI 可见的**主题地图**：每条目 `id / category / preview / load hint`，由 Memory Navigation 动态注入；唯一持久 read model 是 `memory/wiki_map.md`，旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役——AI 按图索骥（即 claude-mem 的 index+get_observations 模式 / CC 的 MEMORY.md 索引+topic 文件模式）
+- 从 shadow 变为 AI 可见的**主题地图**：每条目 `id / category / preview / load hint`，由 Memory Navigation 动态注入；唯一持久 read model 是 `memory/indexes/wiki_map.md`，旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役——AI 按图索骥（即 claude-mem 的 index+get_observations 模式 / CC 的 MEMORY.md 索引+topic 文件模式）
 - `understandings.md`（subject-relation-object 三元组）已降级为 read-only legacy projection / offline eval material；运行时 `include_derived_sources` 也不得把它重新注入 prompt semantic memory。关系、冲突、图谱视图只能从 accepted T3 + source refs 重建，不能成为第二真相源。**完整知识图谱/embedding 召回为重型方案，不在本轮（后由 MD-first P9 wikilink-KG+PPR 落地；claude-mem-borrow 提案已于 2026-06-07 废除）**
 
 ### 9.3 与 codex §8.5 的合流

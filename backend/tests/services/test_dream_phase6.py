@@ -126,7 +126,9 @@ class TestUpdateIndexMd:
             mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
             _update_index_md(agent_id)
 
-        index = (tmp_agent_dir / str(agent_id) / "memory" / "wiki_map.md").read_text(encoding="utf-8")
+        index = (tmp_agent_dir / str(agent_id) / "memory" / "indexes" / "wiki_map.md").read_text(
+            encoding="utf-8"
+        )
         assert "t3/user.md" in index
         assert "t3/capabilities.md" in index
 
@@ -176,7 +178,8 @@ async def test_run_dream_does_not_mechanically_rewrite_accepted_t3(
 
     assert result["t3_deduped"] == 0
     assert (t3_dir / "user.md").read_text(encoding="utf-8") == before
-    assert (memory_dir / "wiki_map.md").exists()
+    assert (memory_dir / "indexes" / "wiki_map.md").exists()
+    assert not (memory_dir / "wiki_map.md").exists()
 
 
 class TestDreamTemplate:

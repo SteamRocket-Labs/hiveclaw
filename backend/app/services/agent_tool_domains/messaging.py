@@ -1222,8 +1222,17 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             return error
         assert source_agent is not None
         assert target is not None
-        assert target_model is not None
 
+        if str(args.get("execution_target") or "cloud_agent").strip() == "local_agent":
+            queued = await _delegate_to_local_agent_channel(
+                source_agent=source_agent,
+                target_agent=target,
+                message_text=message_text,
+                args=args,
+            )
+            return json.dumps(queued, ensure_ascii=False, default=str)
+
+        assert target_model is not None
         handle = await delegate_async(
             target=target,
             target_model=target_model,
@@ -1259,6 +1268,68 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
     except Exception as e:
         logger.error("delegate_to_agent failed: %s", e, exc_info=True)
         return f"❌ Error delegating to agent: {e}"
+
+
+async def _delegate_to_local_agent_channel(
+    *,
+    source_agent,
+    target_agent,
+    message_text: str,
+    args: dict,
+) -> dict:
+    """Queue delegated work onto the target agent's Local Agent Channel."""
+
+    from app.services import local_agent_channel_service
+
+    tenant_id = getattr(source_agent, "tenant_id", None) or getattr(target_agent, "tenant_id", None)
+    if tenant_id is None:
+        raise ValueError("source/target agent has no tenant for local-agent delegation")
+    owner_id = getattr(source_agent, "creator_id", None)
+    if owner_id is None:
+        raise ValueError("source agent has no creator_id for local-agent delegation")
+
+    async with tenant_scoped_session(tenant_id) as db:
+        session = await local_agent_channel_service.create_channel_session(
+            db,
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            source_agent_id=source_agent.id,
+            source="a2a",
+            title=f"A2A from {getattr(source_agent, 'name', 'agent')}",
+        )
+        message = await local_agent_channel_service.enqueue_channel_message(
+            db,
+            session_id=session["id"],
+            owner_user_id=owner_id,
+            sender_user_id=owner_id,
+            sender_agent_id=source_agent.id,
+            content=message_text,
+            attachments=list(args.get("attachments") or []),
+            metadata={
+                "source": "a2a",
+                "execution_target": "local_agent",
+                "sender_agent_id": str(source_agent.id),
+                "sender_agent_name": getattr(source_agent, "name", None),
+                "expected_output": str(args.get("expected_output") or "").strip() or None,
+                "parent_session_id": args.get("parent_session_id"),
+                "ledger_todo_id": str(args.get("ledger_todo_id") or "").strip() or None,
+            },
+        )
+        try:
+            from app.api.local_agent_channel import channel_ws_manager
+
+            await channel_ws_manager.send_to_user(owner_id, {"type": "message", "message": message})
+        except Exception as exc:
+            logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
+        return {
+            "status": "queued",
+            "execution_target": "local_agent",
+            "target_agent": getattr(target_agent, "name", str(target_agent.id)),
+            "channel_session_id": str(session["id"]),
+            "chat_session_id": str(session["chat_session_id"]),
+            "message_id": str(message["id"]),
+            "next_action": "The bound hive-bridge service will receive this over Local Agent Channel WebSocket or fallback poll.",
+        }
 
 
 async def _check_async_task(from_agent_id: uuid.UUID, args: dict) -> str:

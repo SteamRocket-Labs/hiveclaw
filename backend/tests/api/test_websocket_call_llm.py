@@ -165,6 +165,7 @@ async def test_call_llm_delegates_to_runtime_invoker(monkeypatch):
     assert captured["request"].session_context.session_id == "session-1"
     assert captured["request"].session_context.source == "web"
     assert captured["request"].session_context.channel == "web"
+    assert captured["request"].emit_turn_stop is False
 
 
 @pytest.mark.asyncio
@@ -299,8 +300,61 @@ async def test_call_llm_auto_close_emits_session_close(monkeypatch):
     assert result == "runtime-result"
     assert len(captured["events"]) == 1
     event, payload = captured["events"][0]
-    assert event == HookEvent.SESSION_CLOSE
+    assert event == HookEvent.TURN_STOP
     assert payload["session_id"] == "session-auto-close"
     assert payload["source"] == "feishu"
     assert payload["metadata"]["reason"] == "invoke_complete"
+    assert payload["metadata"]["checkpoint_kind"] == "user_turn_stop"
     assert payload["messages"][-1] == {"role": "assistant", "content": "runtime-result"}
+
+
+@pytest.mark.asyncio
+async def test_call_llm_auto_close_emits_turn_abort_for_llm_error(monkeypatch):
+    from app.api.websocket import call_llm
+    from app.runtime.hooks import HookEvent
+
+    captured = {"events": []}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="[LLM Error] model quota exceeded")
+
+    async def fake_emit_hook(event, **kwargs):
+        captured["events"].append((event, kwargs))
+
+    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+
+    result = await call_llm(
+        model=model,
+        messages=[{"role": "user", "content": "hello"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_id="session-auto-abort",
+        memory_messages=[{"role": "user", "content": "hello"}],
+        auto_close_session=True,
+        session_source="feishu",
+        session_channel="feishu",
+    )
+
+    assert result == "[LLM Error] model quota exceeded"
+    assert captured["request"].emit_turn_stop is False
+    assert len(captured["events"]) == 1
+    event, payload = captured["events"][0]
+    assert event == HookEvent.TURN_ABORT
+    assert payload["session_id"] == "session-auto-abort"
+    assert payload["source"] == "feishu"
+    assert payload["metadata"]["reason"] == "invoke_failed"
+    assert payload["metadata"]["checkpoint_kind"] == "turn_abort"
+    assert payload["metadata"]["semantic_memory_eligible"] is False
+    assert payload["messages"] == [{"role": "user", "content": "hello"}]

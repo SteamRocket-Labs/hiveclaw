@@ -6,7 +6,9 @@
 >
 > 当前目标：Agent Markdown Wiki / Learning Vault 是包含 T0、T2、T3、`soul.md`、skills/evolution/audit sidecars 的完整 Markdown 文件系统；T3 只是其中的语义收敛层。主梯度仍是 `T0 -> T2 -> T3 -> soul.md`。残差连接表示 T3 curation 先看 T2，再沿 T2 `source_refs` 回到目标 T0 evidence 做复核；它不是新记忆层，也不是 T0 -> T3 捷径。
 >
-> Update 2026-06-22: CC/FreeCode/Codex 对照后的 Dream/Memory 目标形态和减复杂度方案见 `docs/memory-dream-cc-codex-alignment-2026-06-22.md`。本文件描述当前链路图；新文档补充目标调整：新增 CC-style `session_memory.md` hot lane，把 Dream 拆成 `Memory Dream` 与 `Soul Dream`，并将普通 T2/T3 记忆路径从多 Agent 常驻形态收敛为少数隔离 worker + 条件升级 reviewer。
+> Update 2026-06-22: CC/FreeCode/Codex 对照后的 Dream/Memory 目标形态和减复杂度方案见 `docs/memory-dream-cc-codex-alignment-2026-06-22.md`。本文件描述当前链路图；新文档补充目标调整：新增 CC-style `session_memory.md` hot lane，把 Dream 拆成 `Memory Dream` 与 `Soul Dream`，并将普通 T2/T3 记忆路径从多 Agent 常驻形态收敛为少数隔离 worker + mandatory Memory Gate review。
+>
+> Update 2026-06-23: 单 Agent chat turn 的主边界已改为 `USER_PROMPT_SUBMIT -> TURN_STOP/TURN_ABORT`。用户输入先 durable append 到 transcript/T0，再进入模型循环；assistant/tool transcript 落盘后由 `TURN_STOP` seal 并进入 T2。`SESSION_IDLE` / `SESSION_CLOSE` 只保留为空闲、断连、新会话 fallback seal。
 
 ```mermaid
 flowchart TB
@@ -14,7 +16,8 @@ flowchart TB
   %% Runtime producers and T0
   %% ---------------------------------------------------------------------------
   subgraph A["A. 运行输入与 T0 证据层"]
-    U["User / channel / web chat"] --> INV["invoke_agent / AgentKernel"]
+    U["User / channel / web chat"] --> UPS["USER_PROMPT_SUBMIT: durable transcript/T0 append"]
+    UPS --> INV["invoke_agent / AgentKernel"]
     TR["Trigger / scheduler / workflow / delegation"] --> INV
     SM["Explicit save_memory signal"] --> EXPLICIT_OVERLAY["Explicit Memory Overlay: immediate activation candidate"]
     SM -. "source evidence" .-> SRC_PACKET
@@ -25,8 +28,10 @@ flowchart TB
     INV --> SPANS["DB: invocation_spans / tool spans"]
     INV --> ACTIVITY["DB: AgentActivityLog"]
     INV --> SRC_PACKET
+    INV --> TURN_BOUNDARY["TURN_STOP / TURN_ABORT seal current T0 segment"]
 
-    SRC_PACKET --> T0_CORE["T0 session ledger: memory/t0/sessions/<session_id>/segments/<segment_id>/source.md"]
+    SRC_PACKET --> T0_CORE["T0 session ledger: events.jsonl mechanical truth + source.md projection"]
+    TURN_BOUNDARY --> T0_CORE
     INV --> T0_RUNTIME["T0 runtime events: chat/task/trigger/delegation/heartbeat/dream ledger events"]
   end
 
@@ -44,8 +49,8 @@ flowchart TB
     SUMMARY --> REVIEW_T2["Memory Gate Agent: review.md"]
     LABELS --> REVIEW_T2
     REVIEW_T2 --> PLATFORM_T2["Platform Gate: hard check, source_refs, permissions, audit, atomic commit"]
-    PLATFORM_T2 --> T2_FILES["T2 Segment Package: memory/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}"]
-    PLATFORM_T2 --> T2_LIFECYCLE["memory/lifecycle.json sidecar"]
+    PLATFORM_T2 --> T2_FILES["T2 Segment Package: memory/t2/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}"]
+    PLATFORM_T2 --> T2_LIFECYCLE["memory/control/lifecycle.json sidecar"]
   end
 
   %% ---------------------------------------------------------------------------

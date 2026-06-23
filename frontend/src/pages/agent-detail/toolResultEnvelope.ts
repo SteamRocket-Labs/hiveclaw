@@ -259,7 +259,11 @@ function buildDeepResearchDisplayResult(meta: DeepResearchToolMeta): string {
 
 function parsePlanNeedsConfirmationResult(rawResult: unknown): PlanNeedsConfirmationToolMeta | null {
   const parsed = parseStructuredToolPayload(rawResult);
-  if (parsed?.status !== 'needs_plan' || typeof parsed.plan_id !== 'string') {
+  if (!parsed) {
+    return null;
+  }
+  const status = parsed.status;
+  if ((status !== 'needs_plan' && status !== 'planning_failed') || typeof parsed.plan_id !== 'string') {
     return null;
   }
   const planJson =
@@ -273,7 +277,7 @@ function parsePlanNeedsConfirmationResult(rawResult: unknown): PlanNeedsConfirma
     planId: parsed.plan_id,
     planVersion: typeof parsed.plan_version === 'number' ? parsed.plan_version : 1,
     planHash: typeof parsed.plan_hash === 'string' ? parsed.plan_hash : null,
-    status: 'needs_plan',
+    status,
     summary: typeof parsed.summary === 'string' ? parsed.summary : null,
     nextAction: typeof parsed.next_action === 'string' ? parsed.next_action : null,
     planJson,
@@ -281,6 +285,9 @@ function parsePlanNeedsConfirmationResult(rawResult: unknown): PlanNeedsConfirma
 }
 
 function buildPlanNeedsConfirmationDisplayResult(meta: PlanNeedsConfirmationToolMeta): string {
+  if (meta.status === 'planning_failed') {
+    return meta.summary || 'Plan failed validation and needs revision.';
+  }
   return meta.summary || 'Plan created — confirm before this autonomous work can begin.';
 }
 

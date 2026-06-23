@@ -17,7 +17,7 @@ state. Automatically managed system directories have stricter ownership.
 
 ## Protected Areas
 
-- `memory/t0/`, `memory/learnings/`, `logs/`, and `evolution/` are managed by platform services.
+- `memory/**`, `logs/`, `evolution/`, and `skills/` are managed by platform services or governed tools. Direct edits bypass gates and are not safe.
 - `soul.md` is not a normal editable document.
 - `runtime_artifacts/` is recovery and audit evidence. Read it only when a tool
   result or recovery task points there; prefer mirrored user-facing files under

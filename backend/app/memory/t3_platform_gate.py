@@ -496,11 +496,19 @@ def _apply_source_lifecycle_updates(
 
 
 def _t2_package_manifest_path(*, root: Path, agent_id: uuid.UUID, ref: str) -> Path | None:
-    match = re.match(r"^t2://session/([^/#]+)/segment/([^/#]+)", ref.strip())
+    match = re.match(r"^t2://session/([^/#]+)/(segment|episode)/([^/#]+)", ref.strip())
     if not match:
         return None
-    session_id, segment_id = match.groups()
-    return root / str(agent_id) / "memory" / "sessions" / session_id / "segments" / segment_id / "manifest.json"
+    session_id, ref_kind, source_id = match.groups()
+    folder = "episodes" if ref_kind == "episode" else "segments"
+    candidates = [
+        root / str(agent_id) / "memory" / "t2" / "sessions" / session_id / folder / source_id / "manifest.json",
+        root / str(agent_id) / "memory" / "sessions" / session_id / folder / source_id / "manifest.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def _explicit_entry_id_from_ref(ref: str) -> str:

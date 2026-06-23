@@ -34,7 +34,7 @@ Request planning first when the task is:
 Do NOT request planning for:
 - Simple, single-step, or read-only requests — just do them.
 - Work whose scope is already clear and cheap to redo.
-- Anything the user has already approved or explicitly asked you to start.
+- Work the user has already approved or explicitly asked you to start, unless it is irreversible, externally visible, high-cost, ambiguous, or multi-system.
 
 How to request: call ``request_plan_mode`` with a concrete ``reason`` — name why
 planning helps for THIS task and what the plan would cover — then END your turn and

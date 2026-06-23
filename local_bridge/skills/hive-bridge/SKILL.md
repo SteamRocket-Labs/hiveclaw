@@ -1,6 +1,6 @@
 ---
 name: hive-bridge
-description: Install Hive Bridge, connect this local agent to Hive, and use Hive MCP tools for messages, file upload, and work requests.
+description: Install Hive Bridge, connect this local agent to the user's Hive Local Agent Channel, and use the CLI/channel runner for messages, file transfer, and work requests.
 ---
 
 # Hive Bridge Skill
@@ -9,42 +9,18 @@ Use this skill when the user asks you to connect this local agent to Hive.
 
 ## Goal
 
-Install `hive-bridge`, configure it as a stdio MCP server, run device-flow login, and verify the connection.
+Install `hive-bridge`, run device-flow login, verify the user-scoped Local Agent Channel connection, and start the WebSocket runner.
+
+Login creates a long-lived binding. Do not ask the user to log in again just because the computer slept, restarted, or the runner disconnected; restart the runner instead.
 
 ## Install
 
-Try these in order. Stop after the first successful install.
+Install the published npm package:
 
 ```bash
-python3 -m pip install -e ./local_bridge
+npm install -g @hiveclaw243/hive-bridge
 hive-bridge status
 ```
-
-```bash
-python3 -m pip install --user "git+https://github.com/<org>/<repo>.git#subdirectory=local_bridge"
-hive-bridge status
-```
-
-```bash
-pipx install "git+https://github.com/<org>/<repo>.git#subdirectory=local_bridge"
-hive-bridge status
-```
-
-## Configure MCP
-
-Add a stdio MCP server with this command:
-
-```bash
-hive-bridge mcp
-```
-
-The MCP server exposes:
-
-- `hive_status`
-- `hive_poll_inbox`
-- `hive_send_message`
-- `hive_report_result`
-- `hive_upload_file`
 
 ## Login
 
@@ -54,7 +30,7 @@ Run:
 hive-bridge login
 ```
 
-Open the activation URL, log in to Hive, choose the target agent, and approve the Local Agent Link card.
+Open the activation URL and let the user log in to Hive. The Hive page should automatically approve the local agent authentication from the `user_code` in the URL; do not ask the user to copy a code into Hive manually.
 
 Then verify:
 
@@ -62,18 +38,26 @@ Then verify:
 hive-bridge status
 ```
 
-## Unattended Work Requests
-
-For cloud-to-local work requests, run:
+To upload a local file to Hive, run:
 
 ```bash
-hive-bridge run
+hive-bridge upload <path>
+```
+
+## Channel Runtime
+
+For cloud-to-local chat, file transfer, and work requests, run the WebSocket channel runner:
+
+```bash
+hive-bridge run --transport websocket
 ```
 
 To dispatch work requests to a local command adapter:
 
 ```bash
-hive-bridge run --command-adapter <command> [args...]
+hive-bridge run --transport websocket --runtime command --command <command> [args...]
 ```
 
-The runner uses outbound HTTPS polling only. Do not expose a local port, reverse proxy, ngrok, Tailscale, or Cloudflare Tunnel.
+The runner uses outbound HTTPS/WebSocket connections only. Do not expose a local port, reverse proxy, ngrok, Tailscale, or Cloudflare Tunnel.
+
+The foreground runner reconnects after transient WebSocket failures. Treat online/offline as runtime presence only; it is separate from the long-lived login binding.

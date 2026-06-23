@@ -40,7 +40,7 @@ def _empty_view() -> dict[str, Any]:
         "path_contract": {
             "t0_raw_evidence": "memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl",
             "t0_readable_projection": "memory/t0/sessions/<session_id>/segments/<segment_id>/source.md",
-            "t2_segment_packages": "memory/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}",
+            "t2_segment_packages": "memory/t2/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}",
             "t3_episodes": "memory/t3/episodes.md",
             "t3_user": "memory/t3/user.md",
             "t3_worker": "memory/t3/worker.md",
@@ -245,29 +245,35 @@ def _load_t0_segment_index_events(workspace: Path) -> list[dict[str, Any]]:
 
 
 def _load_t2_package_events(workspace: Path) -> list[dict[str, Any]]:
-    packages_dir = workspace / "memory" / "sessions"
-    if not packages_dir.exists():
-        return []
     events: list[dict[str, Any]] = []
-    for manifest_path in sorted(packages_dir.glob("*/segments/*/manifest.json")):
-        manifest = _read_json(manifest_path)
-        if not manifest:
+    seen: set[str] = set()
+    for packages_dir in (workspace / "memory" / "t2" / "sessions", workspace / "memory" / "sessions"):
+        if not packages_dir.exists():
             continue
-        segment_id = manifest_path.parent.name
-        session_id = manifest_path.parents[2].name
-        rel_path = _relative_manifest_path(workspace, manifest_path.parent)
-        events.append(
-            _build_event(
-                lane="memory",
-                stage="t2_package",
-                status=str(manifest.get("package_status") or manifest.get("status") or "reviewed"),
-                title=str(manifest.get("package_id") or f"T2 {session_id}/{segment_id}"),
-                path=rel_path,
-                source_refs=[str(ref) for ref in manifest.get("source_refs") or [] if str(ref).strip()],
-                created_at=str(manifest.get("created_at") or "") or None,
-                details={"session_id": session_id, "segment_id": segment_id},
+        for manifest_path in sorted(packages_dir.glob("*/segments/*/manifest.json")):
+            manifest = _read_json(manifest_path)
+            if not manifest:
+                continue
+            package_id = str(manifest.get("package_id") or "").strip()
+            dedupe_key = package_id or _relative_manifest_path(workspace, manifest_path.parent)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            segment_id = manifest_path.parent.name
+            session_id = manifest_path.parents[2].name
+            rel_path = _relative_manifest_path(workspace, manifest_path.parent)
+            events.append(
+                _build_event(
+                    lane="memory",
+                    stage="t2_package",
+                    status=str(manifest.get("package_status") or manifest.get("status") or "reviewed"),
+                    title=package_id or f"T2 {session_id}/{segment_id}",
+                    path=rel_path,
+                    source_refs=[str(ref) for ref in manifest.get("source_refs") or [] if str(ref).strip()],
+                    created_at=str(manifest.get("created_at") or "") or None,
+                    details={"session_id": session_id, "segment_id": segment_id},
+                )
             )
-        )
     return events
 
 

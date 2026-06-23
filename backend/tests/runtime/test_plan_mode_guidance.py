@@ -23,6 +23,7 @@ def test_guidance_has_both_should_and_should_not_lists():
     text = build_plan_mode_guidance_section()
     assert "Request planning first when" in text
     assert "Do NOT request" in text
+    assert "unless it is irreversible, externally visible, high-cost, ambiguous, or multi-system" in text
 
 
 def test_guidance_gated_to_interactive_surfaces():

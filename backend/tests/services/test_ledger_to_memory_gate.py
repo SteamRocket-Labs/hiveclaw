@@ -364,7 +364,7 @@ async def test_session_close_hook_settles_ledger_findings_to_t2(tmp_path, monkey
     t0_events = replay_t0_session_events(agent_id=agent_id, session_id="sess-close-1", data_root=tmp_path)
     assert [event.event_type for event in t0_events] == ["user_message", "segment_boundary"]
     assert not list((tmp_path / str(agent_id) / "logs").glob("**/chat-*.md"))
-    package_root = tmp_path / str(agent_id) / "memory" / "sessions" / "sess-close-1" / "segments"
+    package_root = tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / "sess-close-1" / "segments"
     package_dir = next(package_root.iterdir())
     assert (package_dir / "summary.md").exists()
     staging_bundle = next((tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs").glob("*/source_bundle.json"))

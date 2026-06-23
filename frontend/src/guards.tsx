@@ -6,13 +6,18 @@
  * - AdminGuard: requires platform_admin only
  */
 
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './stores';
+import { protectedLoginRedirect } from './routing/authRedirect';
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const token = useAuthStore((s) => s.token);
     const user = useAuthStore((s) => s.user);
-    if (!token) return <Navigate to="/login" replace />;
+    const location = useLocation();
+    if (!token) {
+        const currentPath = `${location.pathname}${location.search}${location.hash}`;
+        return <Navigate to={protectedLoginRedirect(currentPath)} replace />;
+    }
     if (user && !user.tenant_id) return <Navigate to="/setup-company" replace />;
     return <>{children}</>;
 }

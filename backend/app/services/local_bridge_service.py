@@ -15,12 +15,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.gateway_message import GatewayMessage
 from app.database import enter_rls_bypass, pin_rls_tenant_context
+from app.models.local_agent_channel import LocalAgentChannel
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 
 BRIDGE_TOKEN_PREFIX = "hb_"
 DEFAULT_PAIRING_EXPIRES_SECONDS = 15 * 60
 DEFAULT_PAIRING_POLL_INTERVAL_SECONDS = 3
 DEFAULT_SCOPES = (
+    "local_agent:connect",
+    "local_agent:receive",
+    "local_agent:send",
+    "local_agent:report",
+    "presence:write",
     "gateway:poll",
     "gateway:report",
     "gateway:send-message",
@@ -34,7 +40,7 @@ class BridgeAuthContext:
 
     connection_id: uuid.UUID
     tenant_id: uuid.UUID
-    agent_id: uuid.UUID
+    agent_id: uuid.UUID | None
     user_id: uuid.UUID
     scopes: tuple[str, ...]
     client_kind: str
@@ -159,7 +165,7 @@ async def approve_pairing_session(
     user_code: str,
     user_id: uuid.UUID,
     tenant_id: uuid.UUID,
-    agent_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pairing = await _load_pairing_by_user_code(db, user_code)
@@ -176,7 +182,7 @@ async def approve_pairing_session(
     return {
         "status": "approved",
         "pairing_id": str(pairing.id),
-        "agent_id": str(agent_id),
+        "agent_id": str(agent_id) if agent_id else None,
         "tenant_id": str(tenant_id),
         "user_id": str(user_id),
     }
@@ -188,11 +194,11 @@ async def reject_pairing_session(
     user_code: str,
     user_id: uuid.UUID,
     tenant_id: uuid.UUID,
-    agent_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     pairing = await _load_pairing_by_user_code(db, user_code)
     _ensure_pairing_not_expired(pairing)
-    if pairing.agent_id and pairing.agent_id != agent_id:
+    if agent_id and pairing.agent_id and pairing.agent_id != agent_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pairing request not found")
     pairing.user_id = user_id
     pairing.tenant_id = tenant_id
@@ -212,7 +218,7 @@ async def exchange_pairing_session(db: AsyncSession, *, device_code: str) -> dic
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Pairing request rejected")
     if pairing.status == "claimed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Pairing token already claimed")
-    if pairing.status != "approved" or not pairing.tenant_id or not pairing.agent_id or not pairing.user_id:
+    if pairing.status != "approved" or not pairing.tenant_id or not pairing.user_id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Pairing is {pairing.status}")
 
     await pin_rls_tenant_context(db, pairing.tenant_id)
@@ -242,7 +248,7 @@ async def exchange_pairing_session(db: AsyncSession, *, device_code: str) -> dic
         "token_type": "Bearer",
         "connection_id": str(connection.id),
         "tenant_id": str(connection.tenant_id),
-        "agent_id": str(connection.agent_id),
+        "agent_id": str(connection.agent_id) if connection.agent_id else None,
         "user_id": str(connection.user_id),
         "scopes": list(connection.scopes or []),
     }
@@ -294,38 +300,88 @@ async def resolve_bridge_auth_context(
     )
 
 
-async def list_connections(db: AsyncSession, *, agent_id: uuid.UUID) -> list[dict[str, Any]]:
-    result = await db.execute(
-        select(LocalAgentBridgeConnection)
-        .where(LocalAgentBridgeConnection.agent_id == agent_id)
-        .order_by(LocalAgentBridgeConnection.created_at.desc())
-    )
+def _presence_status_for(connection: LocalAgentBridgeConnection, channel: LocalAgentChannel | None) -> str:
+    if connection.status != "active":
+        return "offline"
+    if channel is None:
+        return "unknown"
+    if channel.status == "online":
+        return "online"
+    if channel.status in {"offline", "stale"}:
+        return "offline"
+    return "unknown"
+
+
+def serialize_connection_for_list(
+    connection: LocalAgentBridgeConnection,
+    *,
+    channel: LocalAgentChannel | None = None,
+) -> dict[str, Any]:
+    presence_status = _presence_status_for(connection, channel)
+    return {
+        "id": str(connection.id),
+        "tenant_id": str(connection.tenant_id),
+        "agent_id": str(connection.agent_id) if connection.agent_id else None,
+        "user_id": str(connection.user_id),
+        "device_name": connection.device_name,
+        "client_kind": connection.client_kind,
+        "status": connection.status,
+        "presence_status": presence_status,
+        "presence_last_seen_at": channel.last_seen_at.isoformat() if channel and channel.last_seen_at else None,
+        "runtime_kind": channel.runtime_kind if channel and channel.runtime_kind else None,
+        "scopes": list(connection.scopes or []),
+        "last_seen_at": connection.last_seen_at.isoformat() if connection.last_seen_at else None,
+        "created_at": connection.created_at.isoformat() if connection.created_at else None,
+        "revoked_at": connection.revoked_at.isoformat() if connection.revoked_at else None,
+    }
+
+
+async def list_connections(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
+    agent_id: uuid.UUID | None = None,
+) -> list[dict[str, Any]]:
+    stmt = select(LocalAgentBridgeConnection).order_by(LocalAgentBridgeConnection.created_at.desc())
+    if agent_id is not None:
+        stmt = stmt.where(LocalAgentBridgeConnection.agent_id == agent_id)
+    if user_id is not None:
+        stmt = stmt.where(LocalAgentBridgeConnection.user_id == user_id)
+    if tenant_id is not None:
+        stmt = stmt.where(LocalAgentBridgeConnection.tenant_id == tenant_id)
+    result = await db.execute(stmt)
     connections = result.scalars().all()
+    if not connections:
+        return []
+
+    connection_ids = [conn.id for conn in connections]
+    channel_result = await db.execute(
+        select(LocalAgentChannel).where(LocalAgentChannel.connection_id.in_(connection_ids))
+    )
+    channels_by_connection = {channel.connection_id: channel for channel in channel_result.scalars().all()}
     return [
-        {
-            "id": str(conn.id),
-            "tenant_id": str(conn.tenant_id),
-            "agent_id": str(conn.agent_id),
-            "user_id": str(conn.user_id),
-            "device_name": conn.device_name,
-            "client_kind": conn.client_kind,
-            "status": conn.status,
-            "scopes": list(conn.scopes or []),
-            "last_seen_at": conn.last_seen_at.isoformat() if conn.last_seen_at else None,
-            "created_at": conn.created_at.isoformat() if conn.created_at else None,
-            "revoked_at": conn.revoked_at.isoformat() if conn.revoked_at else None,
-        }
+        serialize_connection_for_list(conn, channel=channels_by_connection.get(conn.id))
         for conn in connections
     ]
 
 
-async def revoke_connection(db: AsyncSession, *, agent_id: uuid.UUID, connection_id: uuid.UUID) -> dict[str, Any]:
-    result = await db.execute(
-        select(LocalAgentBridgeConnection).where(
-            LocalAgentBridgeConnection.id == connection_id,
-            LocalAgentBridgeConnection.agent_id == agent_id,
-        )
-    )
+async def revoke_connection(
+    db: AsyncSession,
+    *,
+    connection_id: uuid.UUID,
+    user_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
+    agent_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    stmt = select(LocalAgentBridgeConnection).where(LocalAgentBridgeConnection.id == connection_id)
+    if agent_id is not None:
+        stmt = stmt.where(LocalAgentBridgeConnection.agent_id == agent_id)
+    if user_id is not None:
+        stmt = stmt.where(LocalAgentBridgeConnection.user_id == user_id)
+    if tenant_id is not None:
+        stmt = stmt.where(LocalAgentBridgeConnection.tenant_id == tenant_id)
+    result = await db.execute(stmt)
     connection = result.scalar_one_or_none()
     if connection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bridge connection not found")

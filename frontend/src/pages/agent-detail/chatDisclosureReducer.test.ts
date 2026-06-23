@@ -65,6 +65,25 @@ describe('chatDisclosureReducer', () => {
     });
   });
 
+  it('summarizes tool discovery without exposing raw select queries', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'tool_search',
+        toolArgs: { query: 'select:deep_research_run' },
+        toolStatus: 'done',
+      },
+    ]);
+
+    expect(timeline.steps[0]).toMatchObject({
+      kind: 'tool',
+      title: 'Loading tools',
+      summary: 'Checking available tools',
+    });
+    expect(timeline.steps[0].summary).not.toContain('select:deep_research_run');
+  });
+
   it('preserves backend step ids, tool call ids, and duration metadata', () => {
     const timeline = buildRunTimelineFromMessages([
       {

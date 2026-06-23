@@ -85,20 +85,41 @@ def _wake_policy(value: Any, *, handoff_target: str) -> dict[str, Any]:
 
 def _handoff(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     # CC parity default: live chat plans continue in the current session unless an
-    # explicit target (deep_research / scheduled_trigger / delegation / detached)
-    # was set on the args or carried in the plan-mode metadata.
+    # explicit target (scheduled_trigger / delegation / detached) was set on the
+    # args or carried in the plan-mode metadata. Product workflows such as Deep
+    # Research stay in the hidden execution_contract instead of becoming Plan Mode
+    # handoff targets.
     target = (
         str(args.get("handoff_target") or metadata.get("handoff_target") or "continue_current_session").strip()
         or "continue_current_session"
     )
-    payload = args.get("handoff_payload") if isinstance(args.get("handoff_payload"), dict) else {}
     if target == "deep_research":
-        payload = {**dict(metadata.get("deep_research_args") or {}), **dict(payload or {})}
+        target = "continue_current_session"
+    payload = args.get("handoff_payload") if isinstance(args.get("handoff_payload"), dict) else {}
     return {
         "target": target,
         "create_trigger": target == "scheduled_trigger",
         "payload": payload,
     }
+
+
+def _execution_contract(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+    explicit = args.get("execution_contract")
+    if isinstance(explicit, dict) and explicit:
+        return dict(explicit)
+    if metadata.get("deep_research"):
+        deep_args = dict(metadata.get("deep_research_args") or {})
+        if not deep_args:
+            original_request = str(metadata.get("original_request") or args.get("original_request") or "").strip()
+            if original_request:
+                deep_args["question"] = original_request
+        return {
+            "type": "workflow",
+            "workflow_ref": "deep_research.v1",
+            "args": deep_args,
+            "source": "interactive_plan_mode",
+        }
+    return {}
 
 
 def _tenant_id(value: str | None) -> uuid.UUID | None:
@@ -165,7 +186,13 @@ def _read_provisioned_plan_markdown(request: ToolExecutionRequest, metadata: dic
             "properties": {
                 "title": {"type": "string", "description": "Short user-facing plan title."},
                 "objective": {"type": "string", "description": "What the confirmed work will accomplish."},
-                "plan_markdown": {"type": "string", "description": "Concise markdown plan preview for the user."},
+                "plan_markdown": {
+                    "type": "string",
+                    "description": (
+                        "Concise markdown plan preview for the user. If the runtime provisioned a plan file, "
+                        "write/update that exact file first; the runtime reads the file as the trusted plan body."
+                    ),
+                },
                 "plan_markdown_path": {
                     "type": "string",
                     "description": (
@@ -187,6 +214,14 @@ def _read_provisioned_plan_markdown(request: ToolExecutionRequest, metadata: dic
                 "wake_policy": {"type": "object"},
                 "handoff_target": {"type": "string"},
                 "handoff_payload": {"type": "object"},
+                "execution_contract": {
+                    "type": "object",
+                    "description": (
+                        "Hidden machine-readable execution contract for the runtime after the user confirms. "
+                        "Do not copy workflow tool names, internal artifact paths, or audit filenames into "
+                        "user-visible plan text; keep them here when needed."
+                    ),
+                },
             },
             "required": ["title", "objective", "steps", "success_criteria", "stop_conditions"],
         },
@@ -212,11 +247,27 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     args = dict(request.arguments or {})
 
     # plan_markdown is the plan body (CC parity: the plan is a markdown article the
-    # user confirms, not a field form). A blank body means the agent filled fields
-    # without authoring a plan — reject so it writes the real plan, in the same turn.
-    plan_markdown = str(args.get("plan_markdown") or "").strip()
-    if not plan_markdown:
+    # user confirms, not a field form). When Plan Mode provisioned a writable plan
+    # file, that exact file is the trusted approval artifact; tool args cannot
+    # override it because they are not the governed MD-first working plan.
+    provisioned_plan_file = str(metadata.get("plan_file_path") or "").strip()
+    if provisioned_plan_file:
         plan_markdown = _read_provisioned_plan_markdown(request, metadata)
+        if not plan_markdown:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "missing_plan_file_body",
+                    "message": (
+                        "The runtime provisioned an exact Plan Mode plan file, but it is missing or blank. "
+                        "Write the substantive markdown plan to that file first, then call exit_plan_mode. "
+                        "Do not bypass the file with a separate plan_markdown argument."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+    else:
+        plan_markdown = str(args.get("plan_markdown") or "").strip()
     if not plan_markdown:
         return json.dumps(
             {
@@ -233,6 +284,7 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         )
 
     handoff = _handoff(args, metadata)
+    execution_contract = _execution_contract(args, metadata)
     intent_type = str(metadata.get("intent_type") or args.get("intent_type") or "in_session_execution")
     if intent_type not in plan_mode_core.INTENT_TYPES:
         intent_type = "in_session_execution"
@@ -263,11 +315,8 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
         "assumptions": _string_list(args.get("assumptions")),
         "open_questions": _string_list(args.get("open_questions")),
     }
-    if metadata.get("deep_research"):
-        fill["deep_research"] = {
-            "question": (metadata.get("deep_research_args") or {}).get("question") or original_request,
-            "planned_from": "interactive_plan_mode",
-        }
+    if execution_contract:
+        fill["execution_contract"] = execution_contract
     # P1 binding: Plan Mode entered from a blocked gated tool carries the
     # action artifact computed at gate-check time (e.g. start_workflow's
     # definition/args hashes). Landing it in the fill puts it in plan_json —
@@ -321,6 +370,24 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
                 "deep_research_plan": bool(metadata.get("deep_research")),
             },
         )
+
+    if getattr(plan, "status", None) == "planning_failed":
+        plan_metadata = getattr(plan, "metadata_json", None) or {}
+        planning_errors = plan_metadata.get("planning_errors")
+        if not isinstance(planning_errors, list):
+            planning_errors = []
+        payload = {
+            "status": "planning_failed",
+            "plan_id": str(plan.id),
+            "plan_version": getattr(plan, "plan_version", 1),
+            "plan_hash": getattr(plan, "plan_hash", None),
+            "plan_json": getattr(plan, "plan_json", None) or {},
+            "planning_errors": planning_errors,
+            "summary": "计划未通过校验，需要修改后重新生成。",
+            "next_action": "请修改可见计划内容后重新提交；不要确认或开始执行这个失败计划。",
+            "requested_by_user_id": str(request.context.user_id),
+        }
+        return json.dumps(payload, ensure_ascii=False, default=str)
 
     payload = {
         "status": "needs_plan",
@@ -478,7 +545,8 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
             "approval card to the user. If they approve, Plan Mode starts and you draft a confirmable "
             "plan; if they decline, you continue normally. After calling it, END your turn and wait — "
             "the user's decision arrives as the next message. Do not use it for simple, single-step, or "
-            "read-only requests, or for work the user already approved or asked you to start."
+            "read-only requests. A prior 'start' instruction is not a bypass when the work is irreversible, "
+            "externally visible, high-cost, ambiguous, or multi-system."
         ),
         parameters={
             "type": "object",

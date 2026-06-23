@@ -9,7 +9,7 @@ from pathlib import Path
 def _write_reviewed_t2_package(
     root: Path, agent_id: uuid.UUID, session_id: str = "s1", segment_id: str = "seg-1"
 ) -> Path:
-    package_dir = root / str(agent_id) / "memory" / "sessions" / session_id / "segments" / segment_id
+    package_dir = root / str(agent_id) / "memory" / "t2" / "sessions" / session_id / "segments" / segment_id
     package_dir.mkdir(parents=True)
     source_ref = f"t0://session/{session_id}/segment/{segment_id}#seq=1..3"
     (package_dir / "summary.md").write_text(
@@ -83,7 +83,7 @@ def _write_reviewed_t2_package(
 def _write_episode_stitch_package(
     root: Path, agent_id: uuid.UUID, session_id: str = "s1", episode_id: str = "episode-1"
 ) -> Path:
-    package_dir = root / str(agent_id) / "memory" / "sessions" / session_id / "episodes" / episode_id
+    package_dir = root / str(agent_id) / "memory" / "t2" / "sessions" / session_id / "episodes" / episode_id
     package_dir.mkdir(parents=True)
     source_ref = f"t0://session/{session_id}/segment/seg-1#seq=1..3"
     (package_dir / "synthesis.md").write_text(
@@ -444,9 +444,10 @@ def test_platform_gate_rebuilds_wiki_map_after_commit(tmp_path: Path) -> None:
     )
 
     assert result.status == "committed"
-    wiki_map = mem_dir / "wiki_map.md"
+    wiki_map = mem_dir / "indexes" / "wiki_map.md"
     assert wiki_map.exists()
     assert "ep_index_sync" in wiki_map.read_text(encoding="utf-8")
+    assert not (mem_dir / "wiki_map.md").exists()
     assert not (mem_dir / "INDEX.md").exists()
     assert not (mem_dir / "index.md").exists()
     assert not (mem_dir / ".derived" / "t3_index.md").exists()

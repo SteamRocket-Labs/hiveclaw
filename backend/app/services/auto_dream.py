@@ -1,7 +1,7 @@
 """Auto-Dream — background MD-first memory consolidation service.
 
 Dream works on canonical markdown layers:
-  - T2 Segment Packages (`memory/sessions/*/segments/*`)
+  - T2 Segment Packages (`memory/t2/sessions/*/segments/*`, with legacy read-only support for `memory/sessions/*/segments/*`)
   - accepted T3 memory (`memory/t3/{episodes,user,worker,capabilities}.md`)
   - soul.md for high-signal identity promotion
 
@@ -19,6 +19,7 @@ import logging
 import json
 import os
 import re as _re
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1785,7 +1786,30 @@ def _simple_dedup(facts: list[dict]) -> list[dict]:
 
 
 def _dream_state_path(agent_id: uuid.UUID) -> Path:
+    return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / "control" / "auto_dream_state.json"
+
+
+def _legacy_dream_state_path(agent_id: uuid.UUID) -> Path:
     return Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / "auto_dream_state.json"
+
+
+def _migrate_legacy_dream_state_if_needed(agent_id: uuid.UUID) -> Path:
+    canonical = _dream_state_path(agent_id)
+    legacy = _legacy_dream_state_path(agent_id)
+    if canonical.exists():
+        try:
+            legacy.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("[AutoDream] Failed to remove legacy dream state: %s", exc)
+        return canonical
+    if legacy.exists():
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            canonical.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+            legacy.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("[AutoDream] Failed to migrate legacy dream state: %s", exc)
+    return canonical
 
 
 _dream_version: dict[str, int] = {}
@@ -1798,7 +1822,7 @@ def _load_dream_state(agent_id: uuid.UUID) -> tuple[datetime | None, int]:
     if (key in _sessions_since_dream or key in _last_dream_time) and key in _heartbeat_ticks_since_dream:
         return _last_dream_time.get(key), _sessions_since_dream.get(key, 0)
 
-    path = _dream_state_path(agent_id)
+    path = _migrate_legacy_dream_state_if_needed(agent_id)
     if not path.exists():
         return None, 0
     try:
@@ -1829,7 +1853,7 @@ def _load_dream_state(agent_id: uuid.UUID) -> tuple[datetime | None, int]:
 
 def _persist_dream_state(agent_id: uuid.UUID) -> None:
     key = agent_id.hex
-    path = _dream_state_path(agent_id)
+    path = _migrate_legacy_dream_state_if_needed(agent_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     last_time = _last_dream_time.get(key)
     payload = {
@@ -2131,7 +2155,14 @@ _DREAM_BACKUP_MAX = 3
 
 def _backup_facts(agent_id: uuid.UUID, facts: list[dict]) -> None:
     """Write a timestamped backup of facts before consolidation. Keep last 3."""
-    backup_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory" / "dream_backups"
+    memory_dir = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "memory"
+    backup_dir = memory_dir / ".staging" / "dream_backups"
+    legacy_backup_dir = memory_dir / "dream_backups"
+    if legacy_backup_dir.exists() and not backup_dir.exists():
+        backup_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy_backup_dir), str(backup_dir))
+    elif legacy_backup_dir.exists():
+        shutil.rmtree(legacy_backup_dir)
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

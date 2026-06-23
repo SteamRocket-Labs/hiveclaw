@@ -1,7 +1,7 @@
 """Navigation & access telemetry tests (docs/agent-memory-md-first-spec.md §12 P6).
 
 Acceptance:
-- `memory/wiki_map.md` or manifest has consumer in prompt assembly.
+- `memory/indexes/wiki_map.md` or manifest has consumer in prompt assembly.
 - Entry-level recall counters and last-recalled timestamps are updated
   (engine fields: access_count / last_accessed, bumped by the retriever).
 - Heat drives navigation order and retirement candidates.

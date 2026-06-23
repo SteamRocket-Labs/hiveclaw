@@ -22,7 +22,16 @@ import pytest
 import app.services.plan_mode_session_handoff as mod
 
 
-def _confirmed_plan(*, session_id="sess-1", user_id="user-1", plan_markdown="## 思路\n聚焦三条赛道。"):
+def _confirmed_plan(
+    *,
+    session_id="sess-1",
+    user_id="user-1",
+    plan_markdown="## 思路\n聚焦三条赛道。",
+    execution_contract=None,
+):
+    plan_json = {"objective": "出 RWA 周报", "plan_markdown": plan_markdown}
+    if execution_contract:
+        plan_json["execution_contract"] = execution_contract
     return SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
@@ -32,7 +41,7 @@ def _confirmed_plan(*, session_id="sess-1", user_id="user-1", plan_markdown="## 
         plan_version=1,
         plan_hash="sha256:abc",
         original_request="做 RWA 周报",
-        plan_json={"objective": "出 RWA 周报", "plan_markdown": plan_markdown},
+        plan_json=plan_json,
     )
 
 
@@ -78,6 +87,28 @@ async def test_continuation_starts_current_session_run_with_plan_in_prompt(monke
     # Audit provenance stamped on the run metadata.
     assert captured["extra_metadata"]["approved_plan_id"] == str(plan.id)
     assert captured["extra_metadata"]["source"] == "plan_mode_handoff"
+
+
+@pytest.mark.asyncio
+async def test_continuation_carries_hidden_execution_contract_in_run_metadata(monkeypatch):
+    captured = {}
+
+    async def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": "run-contract", "status": "running"}
+
+    _stub_entities(monkeypatch)
+    monkeypatch.setattr("app.services.web_chat_runtime.start_web_chat_run", fake_start)
+
+    contract = {
+        "type": "workflow",
+        "workflow_ref": "deep_research.v1",
+        "args": {"question": "Web3 full landscape"},
+    }
+    plan = _confirmed_plan(execution_contract=contract)
+    await mod.continue_current_session_handoff(db=None, plan=plan)
+
+    assert captured["extra_metadata"]["execution_contract"] == contract
 
 
 @pytest.mark.asyncio

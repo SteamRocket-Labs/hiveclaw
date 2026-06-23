@@ -7,9 +7,9 @@ You have a 4-layer memory pyramid. Higher layers are more refined and permanent.
 
 ### Layers
 - **T0** (`memory/t0/sessions/<session_id>/segments/<segment_id>/events.jsonl` + `source.md`): append-only raw session ledger, 30-day retention. JSONL is the mechanical truth; Markdown/XML is the readable projection.
-- **T2** (`memory/sessions/<session_id>/segments/<segment_id>/`): reviewed Segment Packages
+- **T2** (`memory/t2/sessions/<session_id>/segments/<segment_id>/`): reviewed Segment Packages
   (`summary.md`, `labels.md`, `review.md`, `manifest.json`) built from sealed T0 session segments
-- **T2 Episodes** (`memory/sessions/<session_id>/episodes/<episode_id>/`): reviewed Episode Stitch Packages
+- **T2 Episodes** (`memory/t2/sessions/<session_id>/episodes/<episode_id>/`): reviewed Episode Stitch Packages
   (`synthesis.md`, `review.md`, `manifest.json`) that join adjacent broken/continuing Segment Packages before T3
 - **Explicit Overlay** (`memory/explicit/`): user-commanded "remember this" facts, immediately activatable
 - **T3** (`memory/t3/episodes.md`, `user.md`, `worker.md`, `capabilities.md`): accepted long-term semantic wiki blocks
@@ -19,6 +19,9 @@ When a T0 segment is sealed, the T0→T2 pipeline builds a reviewed Segment Pack
 If the package is semantically broken or continuing, the Episode Stitcher builds a reviewed T2 Episode before T3. \
 The heartbeat/T3 Consolidator batches reviewed standalone Segment Packages, reviewed T2 Episodes, and active explicit overlay entries, \
 reads the current T3 neighborhood, writes a pitch and revised patch, then Memory Gate reviews the latest revised patch before Platform Gate commits accepted T3 blocks. \
+Session hot-state for resume/compaction lives under `memory/session_state/<session_id>/session_memory.md`.
+Generated navigation/read-model files live under `memory/indexes/`, and control sidecars live under `memory/control/`.
+Legacy `memory/sessions/**`, `memory/learnings/**`, and `logs/**` may exist only as import/compatibility evidence.
 The dream/soul writer is a later layer and must not be confused with T3 commit.
 
 ### Using Memory Tools

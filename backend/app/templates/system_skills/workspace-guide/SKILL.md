@@ -35,7 +35,7 @@ and built upon.
 
 <do_not_use_when>
 - You need to write to an integration system (Feishu docs, Confluence) — use the matching integration skill
-- You need to write to an automatically-managed pipeline directory (`memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`) — the memory pipeline owns these, writing breaks consistency
+- You need to write directly to `memory/**` or another automatically-managed pipeline directory (`evolution/`, `logs/`, `skills/`) — governed tools and platform services own these writes, direct edits break consistency
 - You need to create or change an active skill package under `skills/` — use `save_skill` to submit an activation candidate, or wait for Skill Distiller / Platform Skill Gate
 - You just need a short conversational reply — not every response needs a file
 </do_not_use_when>
@@ -74,6 +74,7 @@ evolution/
   skill_review.md    — Skill lifecycle audit events
 
 logs/                — Legacy/import compatibility logs; not runtime T0 truth
+memory/legacy/      — Optional import/quarantine area for old learnings/log imports; not a normal runtime output
 skills/              — Active skill packages; final semantic writes go through Agent/Skill Writer + Skill Gate
 workspace/           — Your work files (reports, documents, artifacts)
   uploads/           — Files uploaded from chat or channels
@@ -199,7 +200,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的兼容视�
 
 <anti_patterns>
 
-- ❌ **Write directly to `memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`, or `skills/`** → the automated memory and skill-promotion pipelines manage these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences, `save_skill` for skill activation candidates, or write to `workspace/` for general notes.
+- ❌ **Write directly to `memory/**`, `evolution/`, `logs/`, or `skills/`** → the automated memory and skill-promotion pipelines manage these. Writing causes conflicts and data corruption. Use `save_memory` for explicit user-level preferences, `save_skill` for skill activation candidates, or write to `workspace/` for general notes.
 - ❌ **Claim a file exists without verifying via `read_file` or `glob_search`** → the tool result is the source of truth; don't assert based on what you wrote earlier in the session (might have failed silently).
 - ❌ **Use absolute paths** like `/data/agents/xxx` for channel file delivery → `send_channel_file` expects workspace-relative paths (`workspace/xxx`). Absolute paths either fail or leak internal infrastructure.
 - ❌ **Hide durable work state in ad hoc scratch files** → durable state belongs in your work ledger or workspace artifacts; create triggers for active follow-up.
@@ -215,7 +216,7 @@ Correct response: `memory/learnings/ 是由记忆管道自动管理的兼容视�
 - Every file claim (exists, contains X, was updated) is backed by a `read_file` or `glob_search` result in this session.
 - Paths delivered via `send_channel_file` are workspace-relative and verified to exist first.
 - Follow-up work is captured as a classified trigger; completed work is recorded with evidence in the work ledger.
-- Automatically-managed directories (`memory/t0/`, `memory/sessions/`, `memory/learnings/`, `evolution/`, `logs/`, `skills/`) are never written to by this agent directly.
+- Automatically-managed directories (`memory/**`, `evolution/`, `logs/`, `skills/`) are never written to by this agent directly.
 - Messages forwarded on behalf of someone else always name the original requester.
 </success_criteria>
 

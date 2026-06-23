@@ -38,7 +38,7 @@ LLM 负责判断、提炼、反思、归纳、候选生成。
 <do_not_use_when>
 - The information is normal conversation, tool output, trigger output, delegation output, heartbeat output, or dream output. T0 append-only session ledger records these automatically.
 - The fact is task-local or intermediate debug state. Put it in the Work Ledger or `workspace/`, not memory.
-- You want to edit `memory/t0/`, `memory/sessions/`, `memory/t3/`, `memory/explicit/`, `evolution/`, or `logs/` directly. These paths are platform-managed.
+- You want to edit any `memory/` path directly, including `memory/t0/`, `memory/t2/`, `memory/session_state/`, `memory/t3/`, `memory/explicit/`, `memory/indexes/`, `memory/control/`, `memory/.staging/`, `memory/.rollback/`, legacy `memory/sessions/`, or legacy `memory/learnings/`. These paths are platform-managed; use governed tools instead.
 - You want to update `soul.md` directly. Dream and the promotion gate own identity changes.
 </do_not_use_when>
 
@@ -52,12 +52,19 @@ T0
   append-only raw session ledger; events.jsonl is mechanical truth, source.md is deterministic projection; no LLM prompt, no summary, no manual edits
 
 T2
-  memory/sessions/<session_id>/segments/<segment_id>/
+  memory/t2/sessions/<session_id>/segments/<segment_id>/
     summary.md
     labels.md
     review.md
     manifest.json
   one reviewed Segment Package per sealed T0 segment
+
+T2.5
+  memory/t2/sessions/<session_id>/episodes/<episode_id>/
+    synthesis.md
+    review.md
+    manifest.json
+  reviewed Episode Stitch Packages for broken/continuing adjacent segments
 
 T3
   memory/t3/episodes.md
@@ -100,7 +107,7 @@ Do not create or write:
 
 Derived views may exist under `memory/.derived/**`; they are rebuildable read
 models, not semantic truth. The single persistent Memory Wiki map is the
-generated read model `memory/wiki_map.md`. Legacy root indexes
+generated read model `memory/indexes/wiki_map.md`. Legacy root indexes
 `memory/INDEX.md`, `memory/index.md`, and `memory/.derived/t3_index.md` are
 retired and must not be recreated or written by agents.
 </accepted_t3_targets>
@@ -237,7 +244,7 @@ Platform Gate:
 <anti_patterns>
 - Do not call `save_memory` for every interesting fact. The automatic T0/T2/T3 pipeline handles normal salience.
 - Do not treat `save_memory` as accepted T3. It writes only the explicit overlay.
-- Do not physically edit or delete `memory/t3/**`, `memory/explicit/**`, `memory/sessions/**`, `memory/t0/**`, `evolution/**`, or `logs/**`.
+- Do not physically edit or delete any `memory/**` path. Governed tools and platform services own all memory writes, including `memory/t0/**`, `memory/t2/**`, `memory/t3/**`, `memory/explicit/**`, `memory/session_state/**`, sidecars, staging, rollback, legacy, audit, and quarantine paths.
 - Do not write old T3 files: `memory/feedback.md`, `memory/knowledge.md`, `memory/strategies.md`, `memory/blocked.md`.
 - Do not use relative dates in durable memory.
 - Do not answer past-session questions from vague recollection; search first.

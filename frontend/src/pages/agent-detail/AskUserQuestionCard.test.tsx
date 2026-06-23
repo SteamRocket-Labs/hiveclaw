@@ -192,4 +192,18 @@ describe('AskUserQuestionCard rendering', () => {
     expect(markup).toContain('Your answer was sent.');
     expect(markup).not.toContain('Submit answer');
   });
+
+  it('does not render internal next-action instructions in the user-facing card', () => {
+    const markup = renderToStaticMarkup(
+      <AskUserQuestionCard
+        questions={TWO_QUESTIONS}
+        blocking
+        nextAction="END your turn now — the question card is shown to the user."
+        onSubmit={() => undefined}
+      />,
+    );
+
+    expect(markup).not.toContain('END your turn');
+    expect(markup).not.toContain('shown to the user');
+  });
 });

@@ -122,7 +122,7 @@ T0:
   memory/t0/sessions/<session_id>/segments/<segment_id>/source.md
 
 T2:
-  memory/sessions/<session_id>/segments/<segment_id>/
+  memory/t2/sessions/<session_id>/segments/<segment_id>/
     summary.md
     labels.md
     review.md
@@ -144,7 +144,7 @@ T3 accepted truth:
   memory/t3/capabilities.md
 
 Lifecycle / audit:
-  memory/lifecycle.json
+  memory/control/lifecycle.json
   memory/distillation_audit.jsonl
 ```
 
@@ -186,7 +186,7 @@ T0 truth:
   memory/t0/sessions/<session_id>/segments/<segment_id>/source.md
 
 T2 package:
-  memory/sessions/<session_id>/segments/<segment_id>/
+  memory/t2/sessions/<session_id>/segments/<segment_id>/
 
 T3 job:
   memory/.staging/t3_jobs/<job_id>/
@@ -198,7 +198,7 @@ T3 accepted truth:
   memory/t3/capabilities.md
 
 Memory lifecycle:
-  memory/lifecycle.json
+  memory/control/lifecycle.json
   memory/distillation_audit.jsonl
 
 Soul candidate:
@@ -372,11 +372,11 @@ collect_legacy_audit_events(workspace: Path) -> list[EvolutionEvent]
 |---|---|---|
 | `memory/t0/sessions/*/segments/*/index.json` | memory | T0 evidence segment 存在 |
 | `memory/t0/sessions/*/segments/*/source.md` | memory | 只暴露 evidence path，不解析语义 |
-| `memory/sessions/*/segments/*/manifest.json` | memory | T2 package status / source refs |
-| `memory/sessions/*/segments/*/review.md` | memory | Memory Gate review 高层状态 |
+| `memory/t2/sessions/*/segments/*/manifest.json` | memory | T2 package status / source refs |
+| `memory/t2/sessions/*/segments/*/review.md` | memory | Memory Gate review 高层状态 |
 | `memory/.staging/t3_jobs/*/manifest.json` | memory | T3 job staged/held/rebase/committed |
 | `memory/t3/*.md` | memory | accepted block count / block ids |
-| `memory/lifecycle.json` | memory | sketch/active/superseded/archived/discarded |
+| `memory/control/lifecycle.json` | memory | sketch/active/superseded/archived/discarded |
 | `memory/distillation_audit.jsonl` | memory | held/rejected audit decisions |
 | `memory/.staging/soul_candidates/*/manifest.json` | soul | soul candidate package status |
 | `soul.md` | soul | 当前 committed identity 文件存在 |
@@ -1166,12 +1166,12 @@ dry-run:
   只报告会迁移什么，不写文件
 
 apply:
-  创建 memory/.legacy/evolution/
-  复制旧 scorecard/lineage/blocklist 到 memory/.legacy/evolution/
-  复制旧 memory/soul evolution ledger records 到 memory/.legacy/evolution/evolution_ledger.memory_legacy.jsonl
+  创建 memory/legacy/evolution/
+  复制旧 scorecard/lineage/blocklist 到 memory/legacy/evolution/
+  复制旧 memory/soul evolution ledger records 到 memory/legacy/evolution/evolution_ledger.memory_legacy.jsonl
   迁移 evolution/soul_candidates/* 到 memory/.staging/soul_candidates/*
   迁移 evolution/rollback/soul/* 到 memory/.rollback/soul/*
-  写 memory/.legacy/evolution/migration_report.json
+  写 memory/legacy/evolution/migration_report.json
 ```
 
 实装命令：
@@ -1275,7 +1275,7 @@ LLM provider 调用链
 5. Dream 不再读取或写入 memory/soul 的 evolution/evolution_ledger.jsonl，不再维护 evolution/blocklist.md。
 6. Heartbeat 不再拥有 legacy evolution writeback，也不再直接执行外围 evolution jobs。
 7. Heartbeat 结束后由 hook 调 evolution_daemon.run_heartbeat_evolution_maintenance() 处理外围维护。
-8. T2 path contract 已统一为 memory/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}。
+8. T2 path contract 已统一为 memory/t2/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}。
 9. Knowledge read model 的 pending soul candidates 已从 memory/.staging/soul_candidates 与 memory/distillation_audit.jsonl 读取。
 ```
 
@@ -1435,7 +1435,7 @@ backend/tests/tools/test_workspace.py
 ```text
 1. build_agent_evolution_view() 从 T2 package manifest 生成 memory lane event
 2. 从 memory/.staging/t3_jobs/*/manifest.json 生成 committed/held/rebase event
-3. 从 memory/lifecycle.json 生成 lifecycle event
+3. 从 memory/control/lifecycle.json 生成 lifecycle event
 4. 从 memory/.staging/soul_candidates/*/manifest.json 生成 soul event
 5. 从 skill sidecars 生成 skill_ecosystem lane event
 6. 从 skill candidate / patch / rollback 生成 skill_tuning lane event
@@ -1656,7 +1656,7 @@ python -m app.scripts.repair_memory_evolution_legacy --apply --confirm
 
 ```text
 是，但只通过 repair script 做。
-原始 JSON 必须完整保存在 memory/.legacy/evolution/。
+原始 JSON 必须完整保存在 memory/legacy/evolution/。
 转换结果进入 memory/distillation_audit.jsonl。
 ```
 
@@ -1727,9 +1727,9 @@ Evolution 页面不是一个新的写入位置。它是 read model，汇总三�
 Memory / Soul 侧的学习轨迹具体写在：
 
 - raw evidence: memory/t0/sessions/<session_id>/segments/<segment_id>/source.md
-- reviewed summaries: memory/sessions/<session_id>/segments/<segment_id>/
+- reviewed summaries: memory/t2/sessions/<session_id>/segments/<segment_id>/
 - semantic memory: memory/t3/{episodes,user,worker,capabilities}.md
-- lifecycle/audit: memory/lifecycle.json and memory/distillation_audit.jsonl
+- lifecycle/audit: memory/control/lifecycle.json and memory/distillation_audit.jsonl
 - soul promotion candidates: memory/.staging/soul_candidates/<candidate_id>/
 - committed identity: soul.md
 
@@ -1779,6 +1779,12 @@ Skill Writer 写的不是“记忆总结”，而是一个完整 Skill Candidate
 - `references/` / `scripts/` / `templates/` / `assets/`: 只在真正需要时进入候选包。
 - `referee_review.md` / `grading.json` / `comparison.json` / `analysis.json`: 记录独立评判、真实任务证据和改动原因。
 - `manifest.json`: 记录 skill_origin、evolvable、source_refs、target_path、validation、resource_paths、rollback_ref、status。
+
+实现状态（2026-06-23）：
+
+- `evolution/skill_candidates/<candidate_id>/SKILL.md.draft`、`candidate_signal.md`、T3 `[container=skill_candidate]` 现在进入同一个 distiller intake；没有新的 session workflow evidence 时也会被送入 Skill Writer，而不是只被计数后 `idle`。
+- `referee_review.md` 已成为 active commit 前的必需候选包产物。Skill Referee LLM 必须 `approve`，且 `common_vs_episodic`、`scope`、`overlap`、`safety`、`eval_readiness` 全部 >= 3；否则 promotion decision 记录为 `held`，不写 `skills/<slug>/SKILL.md`。
+- Platform 仍只做 manifest、路径、SkillGuard、behavior eval、regression、artifact gate、Referee 结果、rollback 与 exact commit，不生成或改写 `SKILL.md.draft` 的语义正文。
 
 平台不能替 Agent 写 Skill。
 Skill Creator 的平台部分只能做 scaffold、证据组织、资源目录、校验、权限、回滚和 exact commit。

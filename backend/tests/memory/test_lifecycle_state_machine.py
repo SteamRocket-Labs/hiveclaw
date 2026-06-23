@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore, record_active_memory_lifecycle
+from app.memory.lifecycle_store import LifecycleStatus, MemoryLifecycleStore, lifecycle_path, record_active_memory_lifecycle
 
 
 def test_sketch_promotes_to_active_with_version_lineage() -> None:
@@ -79,9 +79,41 @@ def test_record_active_memory_lifecycle_uses_memory_entry_id(tmp_path: Path) -> 
     )
 
     assert entry.id == "mem-1"
-    reloaded = MemoryLifecycleStore(tmp_path / agent_id / "memory" / "lifecycle.json")
+    reloaded = MemoryLifecycleStore(tmp_path / agent_id / "memory" / "control" / "lifecycle.json")
     assert reloaded.get("mem-1").content == "Alice prefers concise deployment summaries."
     assert reloaded.get("mem-1").metadata["sensitivity"] == "PL1_public"
+    assert lifecycle_path(tmp_path, agent_id) == tmp_path / agent_id / "memory" / "control" / "lifecycle.json"
+    assert not (tmp_path / agent_id / "memory" / "lifecycle.json").exists()
+
+
+def test_read_lifecycle_metadata_supports_legacy_root_sidecar(tmp_path: Path) -> None:
+    from app.memory.lifecycle_store import read_sidecar_metadata
+
+    agent_id = "agent-legacy"
+    legacy_path = tmp_path / agent_id / "memory" / "lifecycle.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        """[
+  {
+    "id": "mem-legacy",
+    "content": "legacy",
+    "status": "active",
+    "version": 1,
+    "parent_id": null,
+    "supersedes": [],
+    "superseded_by": null,
+    "expires_at": null,
+    "access_count": 0,
+    "last_accessed": null,
+    "metadata": {"source": "legacy"},
+    "created_at": "2026-06-01T00:00:00+00:00",
+    "updated_at": "2026-06-01T00:00:00+00:00"
+  }
+]""",
+        encoding="utf-8",
+    )
+
+    assert read_sidecar_metadata(tmp_path, agent_id)["mem-legacy"]["source"] == "legacy"
 
 
 def test_lifecycle_store_records_conflict_and_reference_revalidation(tmp_path: Path) -> None:

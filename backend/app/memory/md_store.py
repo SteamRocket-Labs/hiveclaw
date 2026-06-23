@@ -60,6 +60,10 @@ _T3_XML_BLOCK_RE = re.compile(
     r"<(?P<tag>t3_[A-Za-z0-9_]+)\b[^>]*>.*?</(?P=tag)>|<(?P<tag_self>t3_[A-Za-z0-9_]+)\b[^>]*/>",
     re.DOTALL,
 )
+_T3_XML_OPEN_TAG_RE = re.compile(
+    r"^(?P<open><t3_[A-Za-z0-9_]+\b)(?P<attrs>[^>]*?)(?P<close>/?>)",
+    re.DOTALL,
+)
 _XML_ATTR_RE = re.compile(r"([A-Za-z_:][A-Za-z0-9_.:-]*)=[\"']([^\"']*)[\"']")
 
 
@@ -200,6 +204,58 @@ def _xml_block_content(node) -> str:
     if not texts:
         texts.append(" ".join(" ".join(node.itertext()).split()))
     return " ".join(part for part in texts if part).strip()
+
+
+def _xml_attr_value(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _safe_promoted_target(target: str) -> str:
+    return " ".join(target.replace("[", "(").replace("]", ")").split())[:120]
+
+
+def _append_t3_xml_attributes(block: str, attrs: dict[str, str]) -> str:
+    match = _T3_XML_OPEN_TAG_RE.match(block)
+    if not match:
+        return block
+    attr_text = "".join(f' {key}="{_xml_attr_value(value)}"' for key, value in attrs.items() if key and value)
+    if not attr_text:
+        return block
+    return (
+        f"{match.group('open')}{match.group('attrs')}{attr_text}{match.group('close')}"
+        f"{block[match.end():]}"
+    )
+
+
+def _stamp_t3_xml_block_promoted(
+    content: str,
+    *,
+    entry_id: str,
+    promoted_to: str,
+    target: str,
+) -> tuple[str, bool]:
+    for match in _T3_XML_BLOCK_RE.finditer(content or ""):
+        block = match.group(0)
+        parsed = parse_t3_xml_block(block)
+        if parsed is None or parsed.block_id != entry_id:
+            continue
+        if parsed.metadata.get("promoted_to"):
+            return content, False
+        attrs = {"promoted_to": promoted_to}
+        safe_target = _safe_promoted_target(target)
+        if safe_target:
+            attrs["promoted_target"] = safe_target
+        stamped = _append_t3_xml_attributes(block, attrs)
+        if stamped == block:
+            return content, False
+        return f"{content[: match.start()]}{stamped}{content[match.end():]}", True
+    return content, False
 
 
 def _normalize_entry_content(content: str) -> str:
@@ -554,11 +610,12 @@ def mark_t3_entry_promoted(
     promoted_to: str,
     target: str = "",
 ) -> bool:
-    """Stamp `[promoted_to=skill|workflow]` on the T3 line carrying entry_id.
+    """Stamp a promoted marker on the T3 entry carrying entry_id.
 
     Spec §12 P4: promoted strategy entries keep their evidence in T3 but
-    leave the candidate pool. Returns True when a line was stamped; False on
-    missing entry, already-promoted entry, or invalid promoted_to value.
+    leave the candidate pool. Returns True when a Markdown line or XML block was
+    stamped; False on missing entry, already-promoted entry, or invalid
+    promoted_to value.
     """
     normalized_target_kind = (promoted_to or "").strip().lower()
     if normalized_target_kind not in {"skill", "workflow", "soul"}:
@@ -570,7 +627,19 @@ def mark_t3_entry_promoted(
         path = mem_dir / spec["filename"]
         if not path.exists():
             continue
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        content = path.read_text(encoding="utf-8", errors="replace")
+        stamped_content, stamped_xml = _stamp_t3_xml_block_promoted(
+            content,
+            entry_id=entry_id,
+            promoted_to=normalized_target_kind,
+            target=target,
+        )
+        if stamped_xml:
+            path.write_text(stamped_content, encoding="utf-8")
+            rebuild_index(data_root, agent_id)
+            return True
+
+        lines = content.splitlines()
         for index, line in enumerate(lines):
             if needle not in line:
                 continue
@@ -578,8 +647,8 @@ def mark_t3_entry_promoted(
                 return False
             record = parse_entry_record(line)
             suffix = f"[promoted_to={normalized_target_kind}]"
-            if target.strip():
-                safe_target = " ".join(target.replace("[", "(").replace("]", ")").split())[:120]
+            safe_target = _safe_promoted_target(target)
+            if safe_target:
                 suffix += f"[promoted_target={safe_target}]"
             # Insert the markers right before the content, after existing metadata.
             content_start = line.find(record.content) if record.content else -1
@@ -652,16 +721,22 @@ def rebuild_index(data_root: Path, agent_id: uuid.UUID) -> Path:
             + " |"
         )
 
-    index_path = mem_dir / "wiki_map.md"
+    index_path = mem_dir / "indexes" / "wiki_map.md"
     rendered = "\n".join(lines) + "\n"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
     index_path.write_text(rendered, encoding="utf-8")
 
     # Retire historical mirrors. The single persistent Memory Wiki map is
-    # memory/wiki_map.md; the prompt/runtime still builds its own live manifest
-    # from accepted T3 files instead of treating this generated map as semantic
-    # truth. Avoid lower-case index.md because it collides with retired
+    # memory/indexes/wiki_map.md; the prompt/runtime still builds its own live
+    # manifest from accepted T3 files instead of treating this generated map as
+    # semantic truth. Avoid lower-case index.md because it collides with retired
     # INDEX.md on case-insensitive filesystems.
-    for legacy_index in (mem_dir / "INDEX.md", mem_dir / "index.md", mem_dir / ".derived" / "t3_index.md"):
+    for legacy_index in (
+        mem_dir / "wiki_map.md",
+        mem_dir / "INDEX.md",
+        mem_dir / "index.md",
+        mem_dir / ".derived" / "t3_index.md",
+    ):
         if legacy_index.is_file():
             legacy_index.unlink()
     return index_path

@@ -75,19 +75,13 @@ def test_pairing_init_returns_device_flow_payload(monkeypatch) -> None:
     assert captured["request"].device_fingerprint == "fp-1"
 
 
-def test_approve_pairing_binds_current_user_agent_and_tenant(monkeypatch) -> None:
-    agent_id = uuid4()
+def test_approve_pairing_binds_current_user_and_tenant_without_agent(monkeypatch) -> None:
     tenant_id = uuid4()
     current_user = _user()
     current_user.tenant_id = tenant_id
     captured = {}
 
-    async def fake_check_agent_access(db, user, requested_agent_id):
-        assert user is current_user
-        assert requested_agent_id == agent_id
-        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
-
-    async def fake_approve_pairing(db, *, user_code, user_id, tenant_id, agent_id, metadata):
+    async def fake_approve_pairing(db, *, user_code, user_id, tenant_id, agent_id=None, metadata):
         captured.update(
             {
                 "user_code": user_code,
@@ -100,43 +94,37 @@ def test_approve_pairing_binds_current_user_agent_and_tenant(monkeypatch) -> Non
         return {
             "status": "approved",
             "pairing_id": str(uuid4()),
-            "agent_id": str(agent_id),
+            "agent_id": None,
             "tenant_id": str(tenant_id),
             "user_id": str(user_id),
         }
 
-    monkeypatch.setattr(local_bridge_api, "check_agent_access", fake_check_agent_access)
     monkeypatch.setattr(local_bridge_api.bridge_service, "approve_pairing_session", fake_approve_pairing)
     client, _ = _client(user=current_user)
 
-    resp = client.post(f"/agents/{agent_id}/local-bridge/pairings/HIVE-ABCD/approve")
+    resp = client.post("/local-bridge/pairings/HIVE-ABCD/approve")
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "approved"
     assert captured["user_code"] == "HIVE-ABCD"
     assert captured["user_id"] == current_user.id
     assert captured["tenant_id"] == tenant_id
-    assert captured["agent_id"] == agent_id
-    assert captured["metadata"]["approval_surface"] == "local_agent_link_card"
+    assert captured["agent_id"] is None
+    assert captured["metadata"]["approval_surface"] == "local_agents_page"
 
 
-def test_approve_pairing_requires_manage_access(monkeypatch) -> None:
-    agent_id = uuid4()
-
-    async def fake_check_agent_access(_db, _user, requested_agent_id):
-        assert requested_agent_id == agent_id
-        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
-
+def test_approve_pairing_requires_current_user_tenant(monkeypatch) -> None:
     async def should_not_approve(*_args, **_kwargs):
-        raise AssertionError("approve must not run without manage access")
+        raise AssertionError("approve must not run without a current tenant")
 
-    monkeypatch.setattr(local_bridge_api, "check_agent_access", fake_check_agent_access)
     monkeypatch.setattr(local_bridge_api.bridge_service, "approve_pairing_session", should_not_approve)
-    client, _ = _client()
+    user = _user()
+    user.tenant_id = None
+    client, _ = _client(user=user)
 
-    resp = client.post(f"/agents/{agent_id}/local-bridge/pairings/HIVE-ABCD/approve")
+    resp = client.post("/local-bridge/pairings/HIVE-ABCD/approve")
 
-    assert resp.status_code == 403
+    assert resp.status_code == 400
 
 
 def test_pairing_exchange_returns_token_only_after_approval(monkeypatch) -> None:
@@ -148,7 +136,7 @@ def test_pairing_exchange_returns_token_only_after_approval(monkeypatch) -> None
             "status": "active",
             "access_token": "hb_secret",
             "token_type": "Bearer",
-            "agent_id": str(uuid4()),
+            "agent_id": None,
             "tenant_id": str(uuid4()),
             "connection_id": str(uuid4()),
         }
@@ -165,13 +153,12 @@ def test_pairing_exchange_returns_token_only_after_approval(monkeypatch) -> None
 
 def test_bridge_status_uses_bearer_context_from_dependency() -> None:
     connection_id = uuid4()
-    agent_id = uuid4()
     tenant_id = uuid4()
     user_id = uuid4()
     context = BridgeAuthContext(
         connection_id=connection_id,
         tenant_id=tenant_id,
-        agent_id=agent_id,
+        agent_id=None,
         user_id=user_id,
         scopes=("gateway:poll", "files:upload"),
         client_kind="generic_mcp_stdio",
@@ -189,7 +176,7 @@ def test_bridge_status_uses_bearer_context_from_dependency() -> None:
         "status": "connected",
         "connection_id": str(connection_id),
         "tenant_id": str(tenant_id),
-        "agent_id": str(agent_id),
+        "agent_id": None,
         "user_id": str(user_id),
         "client_kind": "generic_mcp_stdio",
         "device_name": "Workstation",

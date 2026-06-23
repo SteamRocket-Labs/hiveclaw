@@ -6,6 +6,18 @@
 目标前端：`frontend/src/`
 参考细节：Codex Desktop chat/workbench UI
 
+## 0. Execution Gate
+
+This document is **Phase 2** of the frontend redesign.
+
+Phase 1 is `frontend-session-workbench-cc-codex-parity-gap-2026-06-23.md`: finish every in-session detail first. A session must already behave like a Codex Desktop / CC-grade thread before the broader workbench IA migration starts.
+
+Blocking rule:
+
+1. Do not start broad shell/sidebar/AgentDetail IA migration until Session Workbench is stable.
+2. Do not rewrite conversation UX during Phase 2. Reuse the Phase 1 contract: `ThreadTimeline`, `ActiveRunCell`, Codex-like composer, slash menu, right inspector, session-native Goal/Plan/Team/Checkpoint controls.
+3. Phase 2 may reorganize where the Session Workbench lives in the app, but it must not turn it back into a normal Agent management tab.
+
 ## 1. Decision
 
 Hive 前端要重建为 agent workbench，而不是继续把真实能力堆在一个管理后台式 `AgentDetail` tab 集合里。

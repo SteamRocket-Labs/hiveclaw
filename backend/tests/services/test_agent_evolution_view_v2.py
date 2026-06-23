@@ -91,7 +91,7 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
     assert view["lanes"]["skill_tuning"][0]["stage"] == "skill_candidate"
     assert (
         view["path_contract"]["t2_segment_packages"]
-        == "memory/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}"
+        == "memory/t2/sessions/<session_id>/segments/<segment_id>/{summary,labels,review,manifest}"
     )
     assert view["path_contract"]["t3_capabilities"] == "memory/t3/capabilities.md"
     assert view["path_contract"]["skill_registry"] == "evolution/skill_registry.json"

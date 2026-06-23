@@ -1,9 +1,9 @@
 """Local Agent Bridge API.
 
 This router handles device-flow pairing for local agent runtimes and runtime
-status for bridge bearer tokens. The local bridge never gets to choose tenant,
-user, or agent identity; browser approval derives that from the logged-in Hive
-user plus `check_agent_access`.
+status for bridge bearer tokens. The local bridge never gets to choose tenant
+or user identity; browser approval derives that from the logged-in Hive user.
+Legacy agent-bound approval routes remain for existing links.
 """
 
 from __future__ import annotations
@@ -129,7 +129,7 @@ async def bridge_status(context: BridgeAuthContext = Depends(get_bridge_auth_con
         "status": "connected",
         "connection_id": str(context.connection_id),
         "tenant_id": str(context.tenant_id),
-        "agent_id": str(context.agent_id),
+        "agent_id": str(context.agent_id) if context.agent_id else None,
         "user_id": str(context.user_id),
         "client_kind": context.client_kind,
         "device_name": context.device_name,
@@ -149,6 +149,21 @@ async def save_bridge_upload(
         tenant_id=context.tenant_id,
         user_id=context.user_id,
     )
+    if context.agent_id is None:
+        return {
+            **upload_result,
+            "storage_scope": "local_agent_user",
+            "connection_id": str(context.connection_id),
+            "session_id": None,
+            "message_id": None,
+            "artifacts": [
+                {
+                    "path": upload_result["workspace_path"],
+                    "filename": upload_result["filename"],
+                    "scope": "local_agent_user",
+                }
+            ],
+        }
     session = await create_or_bind_chat_session(
         db=db,
         tenant_id=context.tenant_id,
@@ -202,6 +217,77 @@ async def upload_bridge_file(
     if "files:upload" not in context.scopes:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Bridge token lacks files:upload scope")
     return await save_bridge_upload(file=file, context=context, db=db)
+
+
+@router.get("/local-bridge/connections")
+async def list_current_user_bridge_connections(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current user has no tenant")
+    return {
+        "connections": await bridge_service.list_connections(
+            db,
+            user_id=current_user.id,
+            tenant_id=tenant_id,
+        )
+    }
+
+
+@router.post("/local-bridge/pairings/{user_code}/approve")
+async def approve_current_user_bridge_pairing(
+    user_code: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current user has no tenant")
+    return await bridge_service.approve_pairing_session(
+        db,
+        user_code=user_code,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        agent_id=None,
+        metadata={"approval_surface": "local_agents_page"},
+    )
+
+
+@router.post("/local-bridge/pairings/{user_code}/reject")
+async def reject_current_user_bridge_pairing(
+    user_code: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current user has no tenant")
+    return await bridge_service.reject_pairing_session(
+        db,
+        user_code=user_code,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        agent_id=None,
+    )
+
+
+@router.delete("/local-bridge/connections/{connection_id}")
+async def revoke_current_user_bridge_connection(
+    connection_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current user has no tenant")
+    return await bridge_service.revoke_connection(
+        db,
+        connection_id=connection_id,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+    )
 
 
 @router.get("/agents/{agent_id}/local-bridge/connections")

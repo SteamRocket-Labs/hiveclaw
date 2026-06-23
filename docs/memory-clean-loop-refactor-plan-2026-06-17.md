@@ -92,8 +92,16 @@ memory/
     user.md                         # stable user/principal preferences, constraints, working model
     worker.md                       # agent operating principles, conditional rules, redlines
     capabilities.md                 # reusable methods, SOPs, procedural memory, skill seeds
-  lifecycle.json                    # sidecar, not semantic truth
+  session_state/<session_id>/
+    session_memory.md               # hot resume/compaction continuity; not T2/T3 truth
+  indexes/
+    wiki_map.md                     # generated navigation read model; rebuildable
+  control/
+    lifecycle.json                  # sidecar, not semantic truth
   distillation_audit.jsonl          # audit, not semantic truth
+  legacy/                           # optional import/quarantine only; not runtime output
+    learnings/                      # old memory/learnings snapshots for migration
+    logs_imports/                   # old logs/YYYY-MM-DD imports for migration
 soul.md                             # highest identity / behavioral constitution
 memory/
   t0/
@@ -169,7 +177,7 @@ XML block = 文件内部唯一合法的可切分语义块
   <applies_when>这个记忆在什么条件下适用。</applies_when>
   <does_not_apply_when>这个记忆在什么条件下不适用。</does_not_apply_when>
   <evidence>
-    <source_ref path="memory/sessions/.../summary.md" block_id="..."/>
+    <source_ref path="memory/t2/sessions/.../summary.md" block_id="..."/>
     <source_ref path="memory/t0/sessions/<chat_session_id>/segments/<segment_id>/source.md" range="seq-12..seq-18"/>
   </evidence>
   <links>
@@ -205,13 +213,13 @@ soul.md = 纲领 / 宪法 / 世界观 / 长期人格原则
 | 层级 | 作用 | 文件/存储 | 关键边界 |
 |---|---|---|---|
 | T0 | 原始行为证据、系统审计、可回放上下文 | `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl`、同段 `source.md` 投影、DB `ChatMessage`、`invocation_spans`、runtime artifacts | 不做语义结论；当前实现是 append-only session ledger，JSONL 是 resume/replay/fork/rollback 的机械真相，`source.md` 是 LLM/human-readable 投影；chat/one-off task/trigger/delegation/heartbeat/dream 都写 ledger；idle/close 只 seal segment；`logs/...` 是 legacy/import compatibility，不是 runtime session truth；不能直接写 T3 |
-| T2 | 一个 ChatSession 内 segment 对应一个 Segment Package | `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md` | `summary.md` 只放 XML-style structured summary；`labels.md` 单独放轻量标签；`review.md` 放裁判结论；Platform Gate 只负责格式、权限、证据、去重和原子提交 |
+| T2 | 一个 ChatSession 内 segment 对应一个 Segment Package | `memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md` | `summary.md` 只放 XML-style structured summary；`labels.md` 单独放轻量标签；`review.md` 放裁判结论；Platform Gate 只负责格式、权限、证据、去重和原子提交 |
 | T3 | 稳定长期语义记忆 / converged semantic layer | `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md` | `memory/t3/` 只保存这四个最终 accepted memory files；不保存 index、chapter、关系索引、冲突索引、curation package；T3 patch 只能由 T2 Segment Packages 推导，并用 `source_refs` 回溯 T0 验证；必须经 Memory Gate Agent 复查，再由 Platform Gate 原子提交 |
 | Soul | 身份、使命、长期人格与不可轻易变更的行为原则 | `soul.md` | 必须由 Dream / Soul Writer Agent 产出语义 patch，经 Memory Gate Agent 复查，再由 Platform Gate 原子提交；平台不能机械生成或改写内容 |
 
 ### 2.1 ChatSession、T0 Raw Stream 与 T2 Segment Package
 
-当前代码里的 `ChatSession.id` 是稳定会话锚点，不等同于 T2 切分单位。T0 原始证据目前来自 append-only session ledger：`memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl` 是机械真相，旁路 `source.md` 是确定性 Markdown/XML 投影，同时 DB `ChatMessage` / `invocation_spans` 作为可交叉校验的运行时读模型。`SESSION_IDLE`、`SESSION_CLOSE` 不再写旧 chat logs，而是 seal 当前 segment。one-off task、trigger、delegation、heartbeat、dream 这类非聊天运行事件也必须写入同一套 session ledger。旧 `logs/YYYY-MM-DD/**` 只作为 legacy/import compatibility，不应该被当成当前 session truth。
+当前代码里的 `ChatSession.id` 是稳定会话锚点，不等同于 T2 切分单位。T0 原始证据目前来自 append-only session ledger：`memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl` 是机械真相，旁路 `source.md` 是确定性 Markdown/XML 投影，同时 DB `ChatMessage` / `invocation_spans` 作为可交叉校验的运行时读模型。普通单 Agent 用户轮次以 `USER_PROMPT_SUBMIT` 作为输入已持久化边界，以 `TURN_STOP` 作为 assistant/tool transcript 已持久化后的主 checkpoint；`TURN_ABORT` 只 seal 被取消/失败的 dirty segment，且不进入语义 T2。`SESSION_IDLE`、`SESSION_CLOSE` 不再写旧 chat logs，也不再是正常 turn 主边界，只保留为空闲/断连/新会话 fallback seal。one-off task、trigger、delegation、heartbeat、dream 这类非聊天运行事件也必须写入同一套 session ledger。旧 `logs/YYYY-MM-DD/**` 只作为 legacy/import compatibility，不应该被当成当前 session truth。
 
 因此文档里的 `segment` 应统一改名为 **segment**：
 
@@ -251,7 +259,7 @@ T2 的 canonical body 仍然是 Markdown，不是数据库、不是 JSON、不�
 目标文件形态：
 
 ```text
-memory/sessions/<chat_session_id>/
+memory/t2/sessions/<chat_session_id>/
   index.md
   segments/
     <segment_id>/
@@ -261,7 +269,7 @@ memory/sessions/<chat_session_id>/
       manifest.json
 ```
 
-当前 `memory/t2/**`、`memory/learnings/insights.md`、`errors.md`、`requests.md` 可以作为 compatibility views，但最终要迁移成 Segment Package 的派生视图，而不是继续靠文件名表达语义分类。
+当前 canonical T2 是 `memory/t2/sessions/**` Segment/Episode Packages；旧 `memory/learnings/insights.md`、`errors.md`、`requests.md` 只能作为 compatibility/import views，而不是继续靠文件名表达语义分类。
 
 推荐 package 形态：
 
@@ -389,7 +397,7 @@ type: T2 Segment Labels
 schema_version: t2.segment_labels.v1
 session_id: session-xxx
 segment_id: seg-0001
-summary_ref: memory/sessions/session-xxx/segments/seg-0001/summary.md
+summary_ref: memory/t2/sessions/session-xxx/segments/seg-0001/summary.md
 ---
 
 # Engineering Labels
@@ -442,8 +450,8 @@ type: T2 Review
 schema_version: t2.review.v1
 session_id: session-xxx
 segment_id: seg-0001
-summary_ref: memory/sessions/session-xxx/segments/seg-0001/summary.md
-labels_ref: memory/sessions/session-xxx/segments/seg-0001/labels.md
+summary_ref: memory/t2/sessions/session-xxx/segments/seg-0001/summary.md
+labels_ref: memory/t2/sessions/session-xxx/segments/seg-0001/labels.md
 ---
 
 # Evidence Check
@@ -470,7 +478,7 @@ rationale: "该 session 明确修正了记忆系统的职责边界。"
 ```
 ````
 
-`memory/lifecycle.json`、access telemetry、conflict/revalidation 这类文件是 **Platform Gate 的 sidecar / control metadata**，不是 T2 主体。它们可以解释、治理、隐藏、归档 Markdown package，但不能替代 Markdown package 成为语义记忆本体。
+`memory/control/lifecycle.json`、access telemetry、conflict/revalidation 这类文件是 **Platform Gate 的 sidecar / control metadata**，不是 T2 主体。它们可以解释、治理、隐藏、归档 Markdown package，但不能替代 Markdown package 成为语义记忆本体。
 
 #### 2.1.1 不完整 / 无限 Session 的处理
 
@@ -498,11 +506,12 @@ Segment Package
 
 segment 可以由这些边界切出：
 
-- 明确的 runtime task / web chat turn / workflow step 完成。
+- 明确的 runtime task / web chat turn / workflow step 完成；普通单 Agent chat turn 以 `TURN_STOP` 为主边界。
 - 用户明显换题、目标改变、开始新任务。
 - 关键事件闭合：问题被解决、产物被交付、决策被确认、纠错被接受。
-- `SESSION_IDLE`：当前 websocket 默认 `WS_IDLE_DREAM_SECONDS=180` 秒后触发 idle hook，写增量 T0 和 DB session summary。
-- `SESSION_CLOSE`：当前 websocket 默认 `WS_IDLE_TIMEOUT_SECONDS=3600` 秒后触发 close hook。
+- `TURN_ABORT`：取消、失败、stop failure 或半轮中断时 seal dirty segment，但标记 `semantic_memory_eligible=false`。
+- `SESSION_IDLE`：当前 websocket 默认 `WS_IDLE_DREAM_SECONDS=180` 秒后触发 idle hook，作为 fallback 写增量 T0 和 DB session summary。
+- `SESSION_CLOSE`：当前 websocket 默认 `WS_IDLE_TIMEOUT_SECONDS=3600` 秒后触发 close hook，作为 fallback seal。
 - token/context pressure 触发 rolling checkpoint。
 - channel 长对话达到消息数、工具调用数或时间上限。
 
@@ -663,7 +672,7 @@ T0 raw stream segment
 
 原则：
 
-- 文件夹表达 package 边界：`memory/sessions/<chat_session_id>/segments/<segment_id>/` 表达单 T2 Segment Package；`memory/t3/` 不再表达 package 边界，只表达最终 accepted views。
+- 文件夹表达 package 边界：`memory/t2/sessions/<chat_session_id>/segments/<segment_id>/` 表达单 T2 Segment Package；`memory/t3/` 不再表达 package 边界，只表达最终 accepted views。
 - 工程向标签表达治理位置；事件向标签表达事实内容。
 - T3 主要按事件向标签聚合，而不是按工程模块分类。
 - 不要再用大量 T3 topic folders 表达语义。
@@ -750,7 +759,7 @@ candidate_id: t3-candidate-2026-06-17-001
 target_view: episodes
 consolidation_mode: create_anchor
 source_segment_refs:
-  - memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md#E1
+  - memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md#E1
 targeted_t0_refs:
   - logs/2026-06-17/behavior/chat-1126-abcd.md#turn-12
 proposed_patch: |
@@ -828,7 +837,7 @@ T3 文件不是 T2 细节汇总。T2 保存 session/segment 事实细节；T3 �
     <link type="worker_rule" ref="rule_discuss_before_architecture_edits"/>
   </links>
   <source_refs>
-    <source_ref path="memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="event_memory_t3_design"/>
+    <source_ref path="memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="event_memory_t3_design"/>
   </source_refs>
   <last_verified_at>2026-06-17T00:00:00Z</last_verified_at>
 </episode_memory>
@@ -843,7 +852,7 @@ T3 文件不是 T2 细节汇总。T2 保存 session/segment 事实细节；T3 �
   <applies_when>任务涉及记忆架构、Learning Brain、Memory Gate、T3/soul、系统边界或长期设计。</applies_when>
   <does_not_apply_when>用户明确说“开始改”“写进文档”“全部修复”或要求直接实现。</does_not_apply_when>
   <source_refs>
-    <source_ref path="memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="decision_discuss_first"/>
+    <source_ref path="memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="decision_discuss_first"/>
   </source_refs>
   <last_verified_at>2026-06-17T00:00:00Z</last_verified_at>
 </user_memory>
@@ -858,7 +867,7 @@ T3 文件不是 T2 细节汇总。T2 保存 session/segment 事实细节；T3 �
   <applies_when>Summary、Learning Brain、T3 Curator、Dream、Skill candidate 等语义处理路径。</applies_when>
   <does_not_apply_when>权限检查、source_refs 存在性校验、XML well-formed 校验、审计和原子写入。</does_not_apply_when>
   <source_refs>
-    <source_ref path="memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="principle_llm_platform_boundary"/>
+    <source_ref path="memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="principle_llm_platform_boundary"/>
   </source_refs>
 </worker_rule>
 ```
@@ -877,7 +886,7 @@ T3 文件不是 T2 细节汇总。T2 保存 session/segment 事实细节；T3 �
   </method>
   <verification>必须引用当前代码路径、现有文档和 T2 source_refs；不能只靠抽象架构描述。</verification>
   <source_refs>
-    <source_ref path="memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="method_memory_architecture_review"/>
+    <source_ref path="memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md" block_id="method_memory_architecture_review"/>
   </source_refs>
 </capability_memory>
 ```
@@ -909,7 +918,7 @@ Memory Gate Agent 对 T3 Patch Envelope 的 review 默认结构：
 2. **Active Long-Term Memory**：按目标相关性、owner/company scope、敏感级、lifecycle 选取 T3 的 `episodes.md` / `user.md` / `worker.md` / `capabilities.md` 片段。
 3. **Active Summary Memory**：选取尚未被 T3 吸收、刚被用户纠正、或比 T3 更新鲜的 T2 summary packages / package segments。
 4. **Session Working Memory**：当前会话、session projection、runtime recovery context；只做短期上下文，不是 durable truth。
-5. **Navigation Map**：由读取层从四个 T3 文件实时生成 T3 entry manifest / Memory Navigation；只在需要探索记忆空间、检索失败、或 agent 需要决定加载哪个 entry 时进入 prompt；不默认全文进入。唯一持久 Memory Wiki map 是 `memory/wiki_map.md`，它是 generated/read-model，不是 semantic truth。旧 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 已退役；不使用 lower-case `index.md` 是为了避免在大小写不敏感文件系统上和旧 `INDEX.md` 冲突。
+5. **Navigation Map**：由读取层从四个 T3 文件实时生成 T3 entry manifest / Memory Navigation；只在需要探索记忆空间、检索失败、或 agent 需要决定加载哪个 entry 时进入 prompt；不默认全文进入。唯一持久 Memory Wiki map 是 `memory/indexes/wiki_map.md`，它是 generated/read-model，不是 semantic truth。旧 `memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 已退役；不使用 lower-case `index.md` 是为了避免在大小写不敏感文件系统上和旧 `INDEX.md` 冲突。
 6. **Relation / Conflict Read Models**：由读取层从四个 T3 文件和 source refs 生成，只在 disambiguation、冲突复核、关系跳转时注入，不默认作为长期记忆正文进入 prompt。
 7. **Residual Evidence**：T0 原文只在 T3 curation、debug、replay、争议复核时按 `source_refs` targeted load；普通 prompt 不加载 T0 raw body。
 
@@ -932,7 +941,7 @@ Kernel dynamic suffix
 结论：
 
 - `soul.md` 是 identity 必选项。
-- navigation snapshot 是读取层 read model，不是 identity；它不应默认常驻 prompt，只能作为 compact map 动态注入。Platform Gate 每次 accepted T3 commit 后必须重建唯一持久地图 `memory/wiki_map.md`，并清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`。
+- navigation snapshot 是读取层 read model，不是 identity；它不应默认常驻 prompt，只能作为 compact map 动态注入。Platform Gate 每次 accepted T3 commit 后必须重建唯一持久地图 `memory/indexes/wiki_map.md`，并清理旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md`。
 - 长期记忆默认来自 T3 四个主 accepted views 的选中片段：先用 `episodes.md` 做场景召回，再按链接补 `capabilities.md`、`user.md`、`worker.md`；必要时补充高价值 T2 blocks。
 - 短期记忆来自 session projection / current run state，并带 TTL。
 
@@ -960,7 +969,7 @@ save_memory
 | Overview | 健康度、最近变更、主要 T3 摘要、held candidates | 不展示 raw file dump 作为默认入口 |
 | Evidence / T0 | source packets、行为证据、artifact refs、trace refs | 不做语义结论 |
 | Summary / T2 | per-segment summary packages、XML-style structured summary、工程标签、事件/事实标签、review、source_refs | 不绕过 T3 直接改 soul/skill |
-| Wiki / T3 | `episodes.md`、`user.md`、`worker.md`、`capabilities.md` 的 Markdown 渲染；Memory Navigation 来自实时 T3 entry manifest；`memory/wiki_map.md` 是可重建持久导航读模型；关系图和冲突视图由读取层现场生成 | 不退回 `canon.md` 大杂烩，不在 `memory/t3/` 下生成 index、relations、contradictions 或大量 topic folders；除唯一 generated `memory/wiki_map.md` 外，不把 derived Markdown 当 semantic truth |
+| Wiki / T3 | `episodes.md`、`user.md`、`worker.md`、`capabilities.md` 的 Markdown 渲染；Memory Navigation 来自实时 T3 entry manifest；`memory/indexes/wiki_map.md` 是可重建持久导航读模型；关系图和冲突视图由读取层现场生成 | 不退回 `canon.md` 大杂烩，不在 `memory/t3/` 下生成 index、relations、contradictions 或大量 topic folders；除唯一 generated `memory/indexes/wiki_map.md` 外，不把 derived Markdown 当 semantic truth |
 | Prompt Context | 当前进入 prompt 的 `soul.md`、T3 snippets、T2 blocks、session projection 和 activation reasons | 不写记忆 |
 | Held / Candidate Review | held / contested / duplicate / explicit-memory absorption / promotion candidates | 不替代治理层落盘 |
 | Raw / Audit | advanced raw Markdown、lifecycle、distillation audit、invocation refs | 不作为普通用户默认知识视图 |
@@ -1177,7 +1186,7 @@ Platform Gate
   -> 形成唯一 Segment Package 的 T2 部分
   -> Memory Gate Agents 独立上下文复查、打分、提出晋升建议
   -> Platform Gate 执行权限、证据、去重、审计、rollback ref
-  -> 原子提交 memory/sessions/<chat_session_id>/segments/<segment_id>/{summary.md,labels.md,review.md}
+  -> 原子提交 memory/t2/sessions/<chat_session_id>/segments/<segment_id>/{summary.md,labels.md,review.md}
   -> 后续 T3 Curator / Dream 读取成熟 Segment Packages
   -> 沿 T2 source_refs 回看 T0
   -> T3 Curator 生成 T3 Patch Envelope
@@ -1214,7 +1223,7 @@ ChatSession-scoped T0 source range
        dedupe
        audit
        rollback ref
-  -> memory/sessions/<chat_session_id>/segments/<segment_id>/
+  -> memory/t2/sessions/<chat_session_id>/segments/<segment_id>/
        summary.md
        labels.md
        review.md
@@ -1402,9 +1411,9 @@ class MemoryCandidateEnvelope(TypedDict):
 |---|---|---|
 | 原始可回放证据 | `memory/t0/sessions/<chat_session_id>/segments/<segment_id>/events.jsonl`，同段 `source.md` 为 deterministic readable projection | DB `ChatMessage` / `ChatTranscriptEvent`、`invocation_spans` 是交叉校验/运行时读模型；`source_bundle.json` 是 staging 输入包；`logs/...` 是 legacy/import compatibility |
 | 短期 session projection | runtime session memory、`runtime_artifacts/session_learning_projection.jsonl` | 只允许 TTL / session scoped；不是 durable semantic truth |
-| T2 Segment Package | `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md`、`manifest.json` | `memory/t2/**`、`memory/learnings/*.md` compatibility views |
+| T2 Segment Package | `memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md`、`labels.md`、`review.md`、`manifest.json` | 旧 `memory/learnings/*.md` compatibility/import views |
 | T3 accepted memory files | `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md` | Compatibility `memory/wiki/**/*.md`、`memory/*.md` T3 files；旧 `canon.md`、`relations.md`、`contradictions.md` 只作为迁移输入或 read-only compatibility view |
-| T3 派生读模型 | `memory/wiki_map.md` 是唯一 canonical persistent navigation read model，但可从四个 T3 accepted memory files 和 lifecycle/source refs 重建；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役 | runtime/db cache、graph/vector/关系/冲突/UI read model；不属于 semantic truth |
+| T3 派生读模型 | `memory/indexes/wiki_map.md` 是唯一 canonical persistent navigation read model，但可从四个 T3 accepted memory files 和 lifecycle/source refs 重建；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 已退役 | runtime/db cache、graph/vector/关系/冲突/UI read model；不属于 semantic truth |
 | 身份记忆 | `soul.md` | dream reasoning、promotion candidates、rollback snapshots |
 | 候选/评估/晋升/回滚 | `evolution/evolution_ledger.jsonl` | ActivityLog UI timeline |
 | heartbeat 计数和历史 | `evolution/scorecard.md`、`lineage.md`、`blocklist.md` | 不是语义记忆 |
@@ -1419,12 +1428,12 @@ class MemoryCandidateEnvelope(TypedDict):
 | `logs/.../{behavior,system}/*.md` | Legacy T0 import/manual compatibility only；runtime hooks must not write here |
 | `memory/.staging/t2_jobs/<job_id>/source_bundle.json` | T0ToT2PackageBuilder staging writer；构建期输入包，不是 canonical memory |
 | `runtime_artifacts/session_learning_projection.jsonl` | runtime continuity / session projection writer；TTL/session scoped |
-| `memory/sessions/<chat_session_id>/segments/<segment_id>/summary.md` / `labels.md` / `review.md` / `manifest.json` | Platform Gate atomically commits LLM-authored Summary Agent + Learning Brain + Memory Gate outputs plus mechanical manifest |
+| `memory/t2/sessions/<chat_session_id>/segments/<segment_id>/summary.md` / `labels.md` / `review.md` / `manifest.json` | Platform Gate atomically commits LLM-authored Summary Agent + Learning Brain + Memory Gate outputs plus mechanical manifest |
 | `memory/t2/index.md` / `memory/t2/summary.md` / 兼容 `memory/learnings/*.md` | Derived/rebuildable views from Segment Packages |
 | `memory/t3/episodes.md` / `user.md` / `worker.md` / `capabilities.md` | Platform Gate atomically commits LLM-authored T3 patch after fresh Memory Gate review of the latest patch |
-| T3 navigation / relation / conflict read models | Platform Gate / rebuild job 只写 `memory/wiki_map.md`；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 必须被清理；其他 relation / conflict / graph / vector / UI read model 只能写 runtime/db cache 或 derived 面，且必须可从 T3 accepted memory files 和 source refs 重建 |
+| T3 navigation / relation / conflict read models | Platform Gate / rebuild job 只写 `memory/indexes/wiki_map.md`；旧 `memory/INDEX.md` / `memory/index.md` / `memory/.derived/t3_index.md` 必须被清理；其他 relation / conflict / graph / vector / UI read model 只能写 runtime/db cache 或 derived 面，且必须可从 T3 accepted memory files 和 source refs 重建 |
 | `memory/archive.md` | Platform Gate lifecycle patch |
-| `memory/lifecycle.json` | Platform Gate |
+| `memory/control/lifecycle.json` | Platform Gate |
 | `soul.md` learned behavior / constitution sections | Platform Soul Gate atomically commits Dream / Soul Writer authored patch after fresh Soul Memory Gate review of the latest patch；frozen charter / identity-protected sections fail closed |
 | `evolution/skill_candidates/<candidate_id>/**` | Skill Candidate Builder writes LLM-authored candidate package, eval inputs, failure cases, and review artifacts through Platform Skill Gate staging |
 | `skills/<name>/SKILL.md` and skill package files | Platform Skill Gate atomically promotes eval-backed Skill Writer authored package after Skill Review; active skill files are not written by T3 Curator or Dream |
@@ -1520,7 +1529,7 @@ class MemoryCandidateEnvelope(TypedDict):
   - 交给 Platform Gate 做硬校验、审计、rollback ref、原子提交到四个 T3 accepted memory files；
   - 已记录结果后再 mark T2 absorbed；
   - 写 heartbeat audit。
-- Skill distillation、derived graph/index rebuild、独立 scene/wiki maintenance sweep、Dream scheduling 迁到 `EvolutionScheduler` 或独立 daemon tick；T3 navigation 只允许写唯一 generated map `memory/wiki_map.md`，其他 derived graph/index rebuild 不能把派生 Markdown 当 semantic truth 写入 `memory/`。
+- Skill distillation、derived graph/index rebuild、独立 scene/wiki maintenance sweep、Dream scheduling 迁到 `EvolutionScheduler` 或独立 daemon tick；T3 navigation 只允许写唯一 generated map `memory/indexes/wiki_map.md`，其他 derived graph/index rebuild 不能把派生 Markdown 当 semantic truth 写入 `memory/`。
 - T2 -> T3 semantic layer 的主 curation 属于 T3 Curator / Heartbeat Curator，但它不拥有最终写权。
 
 ### R4. Dream 只返回 soul candidate + held T3 concern
@@ -1586,7 +1595,7 @@ class PlatformGate:
 
 1. 添加 architecture guard tests，覆盖写入边界和外围组件去留。
 2. 建立 ChatSession -> source_bundle -> Segment Package schema、one-segment-one-Segment-Package invariant、受控 tag taxonomy、`source_refs` / residual evidence backreference contract。
-3. 建立 Agent Markdown Wiki schema + T3 accepted memory file schema：T3 accepted truth 只允许 `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md`；T3 runtime navigation 来自 entry manifest / Memory Navigation；持久派生导航只允许唯一 generated map `memory/wiki_map.md`。
+3. 建立 Agent Markdown Wiki schema + T3 accepted memory file schema：T3 accepted truth 只允许 `memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md`；T3 runtime navigation 来自 entry manifest / Memory Navigation；持久派生导航只允许唯一 generated map `memory/indexes/wiki_map.md`。
 4. 建立 Summary Agent output schema：只写 `# Session Summary` 内的 XML-style semantic body，不做晋升裁决。
 5. 建立 Learning Brain T2 labeling schema：独立 `labels.md` 内的 thin `# Engineering Labels`、lightweight `# Event / Fact Labels`。
 6. 建立 open / rolling checkpoint contract：`completeness`、`short_term_carryover`、`continues_from`、禁止未闭合 package 晋升 T3。

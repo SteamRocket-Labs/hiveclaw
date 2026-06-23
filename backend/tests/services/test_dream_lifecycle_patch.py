@@ -60,6 +60,7 @@ def test_dream_merge_concern_is_held_not_applied(agent_env) -> None:
     assert target.read_text(encoding="utf-8") == before
     assert not (mem_dir / "archive.md").exists()
     assert not (mem_dir / "lifecycle.json").exists()
+    assert not (mem_dir / "control" / "lifecycle.json").exists()
     assert report["t3_merges_applied"] == 0
     assert report["t3_patch_candidates_held"] == 1
 
@@ -95,6 +96,7 @@ def test_dream_contradiction_concern_is_held_not_applied(agent_env) -> None:
     assert target.read_text(encoding="utf-8") == before
     assert not (mem_dir / "archive.md").exists()
     assert not (mem_dir / "lifecycle.json").exists()
+    assert not (mem_dir / "control" / "lifecycle.json").exists()
     assert report["contradictions_resolved"] == 0
     assert report["t3_patch_candidates_held"] == 1
 

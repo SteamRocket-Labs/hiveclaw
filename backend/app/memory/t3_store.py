@@ -295,7 +295,7 @@ async def append_t3_memory_candidate(
 # Retirement de-indexes from active recall and archives in Markdown; it never
 # physically deletes evidence. Active T3 files stay clean so every reader
 # (retriever, manifest, prompt injection) naturally sees only
-# active entries; memory/archive.md plus lifecycle.json hold the audit trail.
+# active entries; memory/archive.md plus memory/control/lifecycle.json hold the audit trail.
 
 
 def archive_t3_lines(
@@ -307,7 +307,7 @@ def archive_t3_lines(
     reason: str,
     superseded_by: str = "",
 ) -> int:
-    """Archive already-removed T3 lines into memory/archive.md + lifecycle.
+    """Archive already-removed T3 lines into memory/archive.md + lifecycle control sidecar.
 
     Pure archival: callers own the active-file rewrite. Each line gets an
     archive row (original date preserved) and a lifecycle retirement edge —
@@ -536,7 +536,7 @@ def retire_t3_entries_by_id(
     This is the tool/API retirement path: unlike dream consolidation's
     substring-based ``retire_t3_entries``, it only matches exact entry ids and
     never synthesizes a kept line. The old prose leaves active recall
-    immediately; ``archive.md`` + ``lifecycle.json`` keep the reversible audit
+    immediately; ``archive.md`` + ``memory/control/lifecycle.json`` keep the reversible audit
     trail.
     """
     targets = {str(entry_id).strip() for entry_id in entry_ids if str(entry_id).strip()}

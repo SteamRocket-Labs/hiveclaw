@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from app.memory.t0.ledger import append_t0_session_event
+from app.memory.t0.ledger import append_t0_session_event, replay_t0_session_events
 from app.runtime.hooks import HookContext, HookEvent
 from app.runtime.hooks_setup import (
     _t0_delegation_end,
     _t0_dream_end,
     _t0_heartbeat_tick_end,
+    _t0_turn_abort,
+    _t0_turn_stop,
     _t0_session_close,
     _t0_trigger_end,
 )
@@ -111,13 +114,142 @@ async def test_session_close_passes_branch_lineage_to_t2_package_job(monkeypatch
 
     assert len(calls) == 1
     assert calls[0]["t0_segment_id"] == first.segment_id
-    assert calls[0]["session_lineage"] == {
+    lineage = calls[0]["session_lineage"]
+    assert lineage["checkpoint_kind"] == "session_close_fallback"
+    assert str(lineage["boundary_event_id"]).startswith("evt_")
+    assert {
+        key: lineage[key]
+        for key in (
+            "session_id",
+            "branch_mode",
+            "source_session_id",
+            "anchor_event_id",
+            "anchor_sequence",
+        )
+    } == {
         "session_id": session_id,
         "branch_mode": "rewind",
         "source_session_id": "source-session-1",
         "anchor_event_id": "anchor-event-1",
         "anchor_sequence": 3,
     }
+
+
+@pytest.mark.asyncio
+async def test_turn_stop_seals_user_turn_and_starts_canonical_t2_package(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = "turn-native-session"
+    user = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="用户这一轮的问题。",
+        metadata={"turn_id": "turn-1", "intent_id": "intent-1"},
+        data_root=tmp_path,
+    )
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="assistant_message",
+        role="assistant",
+        content="助手完成这一轮回答。",
+        metadata={"turn_id": "turn-1", "intent_id": "intent-1"},
+        data_root=tmp_path,
+    )
+    calls: list[dict] = []
+
+    async def fake_build(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
+
+    await _t0_turn_stop(
+        HookContext(
+            event=HookEvent.TURN_STOP,
+            agent_id=str(agent_id),
+            session_id=session_id,
+            source="web",
+            messages=[],
+            metadata={
+                "tenant_id": str(tenant_id),
+                "turn_id": "turn-1",
+                "intent_id": "intent-1",
+                "reason": "invoke_complete",
+            },
+        )
+    )
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [event.event_type for event in events] == ["user_message", "assistant_message", "segment_boundary"]
+    assert events[-1].metadata["checkpoint_kind"] == "user_turn_stop"
+    assert events[-1].metadata["turn_id"] == "turn-1"
+    assert events[-1].metadata["intent_id"] == "intent-1"
+    assert events[-1].metadata["turn_stop_event_id"] == events[-1].event_id
+    index_path = tmp_path / str(agent_id) / "memory" / "t0" / "sessions" / session_id / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    segment = index["segments"][0]
+    assert segment["segment_id"] == user.segment_id
+    assert segment["turn_id"] == "turn-1"
+    assert segment["intent_id"] == "intent-1"
+    assert segment["user_prompt_submit_event_id"] == user.event_id
+    assert segment["turn_stop_event_id"] == events[-1].event_id
+    assert segment["checkpoint_kind"] == "user_turn_stop"
+    assert len(calls) == 1
+    assert calls[0]["t0_segment_id"] == user.segment_id
+    assert calls[0]["session_lineage"]["turn_id"] == "turn-1"
+    assert calls[0]["session_lineage"]["intent_id"] == "intent-1"
+    assert calls[0]["session_lineage"]["checkpoint_kind"] == "user_turn_stop"
+
+
+@pytest.mark.asyncio
+async def test_turn_abort_seals_t0_without_semantic_t2_package(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = "aborted-turn-session"
+    append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="用户输入已经持久化，但这一轮被取消。",
+        metadata={"turn_id": "turn-cancelled", "intent_id": "intent-cancelled"},
+        data_root=tmp_path,
+    )
+
+    async def fail_build(**_kwargs):
+        raise AssertionError("aborted turn must not enter semantic T2 packaging")
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fail_build)
+
+    await _t0_turn_abort(
+        HookContext(
+            event=HookEvent.TURN_ABORT,
+            agent_id=str(agent_id),
+            session_id=session_id,
+            source="web",
+            messages=[],
+            metadata={
+                "tenant_id": str(tenant_id),
+                "turn_id": "turn-cancelled",
+                "intent_id": "intent-cancelled",
+                "reason": "user_cancelled",
+            },
+        )
+    )
+
+    events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
+    assert [event.event_type for event in events] == ["user_message", "segment_boundary"]
+    assert events[-1].metadata["checkpoint_kind"] == "turn_abort"
+    assert events[-1].metadata["semantic_memory_eligible"] is False
+    assert events[-1].metadata["turn_abort_event_id"] == events[-1].event_id
 
 
 @pytest.mark.asyncio
@@ -325,6 +457,8 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
         and item["key"] != "memory.response_complete.fast_reflection"
     ]
     pre_compaction = [item for item in plan if item["event"] == HookEvent.PRE_COMPACTION.value]
+    turn_stop = [item for item in plan if item["event"] == HookEvent.TURN_STOP.value]
+    turn_abort = [item for item in plan if item["event"] == HookEvent.TURN_ABORT.value]
 
     assert response == [
         {
@@ -341,6 +475,26 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "event": HookEvent.PRE_COMPACTION.value,
             "handler_name": "project_on_pre_compaction",
             "key": "memory.pre_compaction.t0_checkpoint",
+            "profile_name": None,
+            "has_matcher": False,
+            "matcher_spec": None,
+        }
+    ]
+    assert turn_stop == [
+        {
+            "event": HookEvent.TURN_STOP.value,
+            "handler_name": "t0_turn_stop",
+            "key": "memory.turn_stop.t0",
+            "profile_name": None,
+            "has_matcher": False,
+            "matcher_spec": None,
+        }
+    ]
+    assert turn_abort == [
+        {
+            "event": HookEvent.TURN_ABORT.value,
+            "handler_name": "t0_turn_abort",
+            "key": "memory.turn_abort.t0",
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,

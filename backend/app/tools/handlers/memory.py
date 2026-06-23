@@ -506,7 +506,7 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
         destructive=True,
         description=(
             "Retire an obsolete or incorrect long-term memory entry by ID. The entry is removed from active "
-            "recall and preserved in memory/archive.md plus lifecycle.json; it is never physically deleted."
+            "recall and preserved in memory/archive.md plus memory/control/lifecycle.json; it is never physically deleted."
         ),
         parameters={
             "type": "object",

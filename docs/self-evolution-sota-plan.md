@@ -181,7 +181,7 @@ These are current code facts verified against the repository when this document 
 - `backend/app/services/reflection_service.py:23-61` writes reportable reflection artifacts only; it no longer projects directly into T2 learnings.
 - `backend/app/memory/activation.py:43-74` scores memory with sensitivity, goal, owner, company, open-loop, retention, and confidence signals.
 - `backend/app/memory/retriever.py` activates explicit overlay plus accepted T3 (`memory/t3/{user,worker,episodes,capabilities}.md`) under principal/sensitivity policy; `understandings.md` and legacy learnings are not prompt semantic sources.
-- `backend/app/memory/md_store.py` maintains the rebuildable `memory/wiki_map.md` navigation read model; it is not a second memory store.
+- `backend/app/memory/md_store.py` maintains the rebuildable `memory/indexes/wiki_map.md` navigation read model; it is not a second memory store.
 - `backend/app/services/memory_service.py:102-106,622-625` makes LLM rerank tenant-configured, not unconditional.
 
 ### 2.3 Heartbeat, dream, and skill loop

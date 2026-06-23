@@ -204,6 +204,33 @@ describe('parseCreateEmployeeToolResult', () => {
     });
   });
 
+  it('normalizes a planning_failed tool result so the real failed PlanCard renders inline', () => {
+    const normalized = normalizeToolCallResult(
+      'exit_plan_mode',
+      JSON.stringify({
+        status: 'planning_failed',
+        plan_id: 'plan-uuid-failed',
+        plan_version: 1,
+        plan_hash: null,
+        summary: '计划未通过校验，需要修改后重新生成。',
+        next_action: '请修改可见计划内容后重新提交；不要确认或开始执行这个失败计划。',
+        planning_errors: ['user-visible plan leaks internal workflow detail: deep_research_* tool call'],
+      }),
+    );
+
+    expect(normalized.displayResult).toBe('计划未通过校验，需要修改后重新生成。');
+    expect(normalized.toolMeta).toEqual({
+      kind: 'plan_needs_confirmation',
+      planId: 'plan-uuid-failed',
+      planVersion: 1,
+      planHash: null,
+      status: 'planning_failed',
+      summary: '计划未通过校验，需要修改后重新生成。',
+      nextAction: '请修改可见计划内容后重新提交；不要确认或开始执行这个失败计划。',
+      planJson: {},
+    });
+  });
+
   it('normalizes an awaiting_user_clarification tool result into clarification metadata regardless of tool name', () => {
     const normalized = normalizeToolCallResult(
       'ask_user_question',

@@ -25,7 +25,7 @@ def test_rebuild_index_writes_entry_manifest_with_stable_ids(tmp_path: Path) -> 
     from app.memory.md_store import rebuild_index
 
     rebuild_index(tmp_path, agent_id)
-    index = (mem_dir / "wiki_map.md").read_text(encoding="utf-8")
+    index = (mem_dir / "indexes" / "wiki_map.md").read_text(encoding="utf-8")
     manifest = build_t3_entry_manifest(tmp_path, agent_id)
 
     assert "## Entry Manifest" in index
@@ -39,6 +39,7 @@ def test_rebuild_index_writes_entry_manifest_with_stable_ids(tmp_path: Path) -> 
     assert legacy.preview == "Railway deploys require external health verification"
     assert not (mem_dir / "INDEX.md").exists()
     assert not (mem_dir / "index.md").exists()
+    assert not (mem_dir / "wiki_map.md").exists()
     assert not (mem_dir / ".derived" / "t3_index.md").exists()
 
 

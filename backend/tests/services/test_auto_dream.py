@@ -88,6 +88,44 @@ class TestDreamGates:
         assert should_dream(a1) is True
         assert should_dream(a2) is False
 
+    def test_dream_state_migrates_to_memory_control(self, tmp_path: Path, monkeypatch) -> None:
+        import app.services.auto_dream as auto_dream
+        from app.config import get_settings
+
+        _reset_state()
+        auto_dream._dream_version.clear()
+        auto_dream._dream_history.clear()
+        monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path))
+        agent_id = uuid.uuid4()
+        mem_dir = tmp_path / str(agent_id) / "memory"
+        mem_dir.mkdir(parents=True)
+        legacy = mem_dir / "auto_dream_state.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "last_dream_time": "2026-06-01T00:00:00+00:00",
+                    "sessions_since_dream": 2,
+                    "heartbeat_ticks_since_dream": 3,
+                    "version": 4,
+                    "history": [{"version": 4, "timestamp": "2026-06-01T00:00:00+00:00"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        last, sessions = auto_dream._load_dream_state(agent_id)
+
+        canonical = mem_dir / "control" / "auto_dream_state.json"
+        assert last is not None
+        assert sessions == 2
+        assert canonical.exists()
+        assert not legacy.exists()
+
+        record_session_end(agent_id)
+        payload = json.loads(canonical.read_text(encoding="utf-8"))
+        assert payload["sessions_since_dream"] == 3
+        assert not legacy.exists()
+
     def test_record_dream_activity_skips_noop(self) -> None:
         """An idle heartbeat tick (OUTCOME:noop) is not dream-worthy activity —
         without this, the activity gate is a pure timer and silent agents dream."""
@@ -1149,6 +1187,24 @@ def test_dream_consolidator_template_is_loaded_into_prompt() -> None:
     assert "source_refs" in out
     assert "rollback_ref" in out
     assert "dream may propose candidates" in out.lower()
+
+
+def test_dream_fact_backups_use_staging_path(tmp_path: Path) -> None:
+    from app.services import auto_dream
+
+    agent_id = uuid.uuid4()
+    legacy_dir = tmp_path / str(agent_id) / "memory" / "dream_backups"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "dream_backup_legacy.json").write_text("[]", encoding="utf-8")
+
+    with patch("app.services.auto_dream.get_settings") as mock_settings:
+        mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+        auto_dream._backup_facts(agent_id, [{"content": "fact"}])
+
+    staging_dir = tmp_path / str(agent_id) / "memory" / ".staging" / "dream_backups"
+    backups = list(staging_dir.glob("dream_backup_*.json"))
+    assert backups
+    assert not legacy_dir.exists()
 
 
 def test_auto_dream_does_not_use_legacy_evolution_ledger_for_soul_writeback() -> None:

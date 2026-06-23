@@ -79,7 +79,7 @@ _extract_enqueue_failure_total: dict[tuple[str, str], int] = defaultdict(int)  #
 _extract_task_success_total: dict[str, int] = defaultdict(int)  # by source
 # Task raised after pattern fallback — entry left for replay.
 _extract_task_failure_total: dict[tuple[str, str], int] = defaultdict(int)  # (source, exc_type)
-# Drain timed out (SESSION_CLOSE) — task still running, entry kept.
+# Drain timed out (legacy SESSION_CLOSE/fallback close) — task still running, entry kept.
 _extract_drain_timeout_total: dict[str, int] = defaultdict(int)  # by source-of-truth ("session_close")
 # Startup replay outcome (P0-2b).
 _extract_replay_scheduled_total: int = 0

@@ -741,6 +741,65 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
     assert "plan_confirmed" in errors
 
 
+@pytest.mark.asyncio
+async def test_ensure_awaiting_plan_from_fill_allows_hidden_execution_contract(monkeypatch, tmp_path):
+    from app.services import plan_mode_service as mod
+
+    session = _PlanSession()
+    _patch_plan_session(monkeypatch, mod, session)
+    monkeypatch.setattr(mod, "_agent_data_dir", lambda: tmp_path)
+    service = mod.PlanModeService()
+    contract = {
+        "type": "workflow",
+        "workflow_ref": "deep_research.v1",
+        "args": {
+            "question": "Web3 full landscape",
+            "internal_tool_note": "deep_research_start writes runtime_artifacts/workflow_runs/run/work_ledger.json",
+        },
+    }
+    fill = {
+        "title": "Web3 全景研究计划",
+        "objective": "生成一份有来源支撑的中文 Web3 全景研究报告。",
+        "motivation": "用户需要先确认研究范围、证据标准和交付物。",
+        "steps": [
+            {
+                "order": 1,
+                "description": "确认研究范围、覆盖赛道、证据标准和交付格式。",
+                "expected_output": "用户确认后的研究范围。",
+            },
+            {
+                "order": 2,
+                "description": "按赛道收集来源、交叉核验，并综合成报告。",
+                "expected_output": "带引用的中文研究报告。",
+            },
+        ],
+        "success_criteria": ["关键判断均有来源支撑。"],
+        "wake_policy": {"type": "none"},
+        "required_capabilities": ["Web research", "source verification"],
+        "external_side_effects": [],
+        "risk_assessment": {"level": "medium", "reasons": ["长任务且需要多来源核验。"]},
+        "estimated_cost": {"tokens_per_run": "high", "expected_duration": "about 15-30 minutes"},
+        "stop_conditions": ["用户拒绝计划。"],
+        "handoff": {"target": "continue_current_session", "create_objective": False, "create_trigger": False},
+        "execution_contract": contract,
+    }
+
+    plan = await service.ensure_awaiting_plan_from_fill(
+        agent_id=uuid4(),
+        intent_type="in_session_execution",
+        signature="deep-research:web3:hidden-contract",
+        fill=fill,
+        original_request="使用 deepresearch做一个web3的全景报告",
+        source="web_chat",
+        metadata_json={"interactive_plan_mode": True},
+    )
+
+    assert plan.status == "awaiting_confirmation"
+    assert plan.plan_json["handoff"]["target"] == "continue_current_session"
+    assert plan.plan_json["execution_contract"] == contract
+    assert "planning_errors" not in (plan.metadata_json or {})
+
+
 def test_get_plan_mode_service_returns_shared_singleton():
     from app.services.plan_mode_service import get_plan_mode_service
 

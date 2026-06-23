@@ -2,9 +2,9 @@
 
 This is no longer invoked from application startup. Canonical T0→T2 now starts
 from sealed append-only T0 session segments and commits Segment Packages under
-``memory/sessions/<session_id>/segments/<segment_id>/``. Replaying this legacy
-queue may still write ``memory/learnings/*.md`` and is only for explicit
-operator-led migration or compatibility repair.
+``memory/t2/sessions/<session_id>/segments/<segment_id>/``. Replaying this
+legacy queue may still write ``memory/learnings/*.md`` through the old extractor
+and is only for explicit operator-led migration or compatibility repair.
 
 When a process dies between `extract_queue.enqueue` and the corresponding
 `mark_done` (deploy restart, OOM, crash mid-LLM call, drain timeout) the

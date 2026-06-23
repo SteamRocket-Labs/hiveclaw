@@ -125,7 +125,7 @@ Return a Markdown review containing exactly one XML review block:
     <score name="stability" value="0-4">...</score>
     <score name="future_utility" value="0-4">...</score>
     <score name="conflict_safety" value="0-4">...</score>
-    <decision>accept_new|reinforced|merge_required|supersede_existing|contested|held|keep_overlay_only|retired|rejected</decision>
+    <decision>accept_new|reinforced|merge_required|supersede_existing|contest_existing|noop|reject</decision>
     <decision_rationale>...</decision_rationale>
     <required_followup>clarify_with_user|revise_patch|commit|hold_for_context|none</required_followup>
   </memory_gate_rubric>

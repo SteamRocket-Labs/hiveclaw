@@ -21,6 +21,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Plaza = lazy(() => import('./pages/Plaza'));
 const AgentDetail = lazy(() => import('./pages/AgentDetail'));
 const AgentCreate = lazy(() => import('./pages/AgentCreate'));
+const LocalAgents = lazy(() => import('./pages/LocalAgents'));
 const Chat = lazy(() => import('./pages/Chat'));
 const Messages = lazy(() => import('./pages/Messages'));
 const EnterpriseSettings = lazy(() => import('./pages/EnterpriseSettings'));
@@ -122,6 +123,8 @@ export default function App() {
                         <Route index element={<Navigate to="/plaza" replace />} />
                         <Route path="dashboard" element={<Navigate to="/enterprise/dashboard" replace />} />
                         <Route path="plaza" element={<Plaza />} />
+                        <Route path="local-agents" element={<LocalAgents />} />
+                        <Route path="local-bridge/activate" element={<LocalAgents />} />
                         <Route path="agents/new" element={<AgentCreate />} />
                         <Route path="agents/:id" element={<AgentDetail />} />
                         <Route path="agents/:id/chat" element={<Chat />} />

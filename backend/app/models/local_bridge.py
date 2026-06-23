@@ -49,12 +49,17 @@ class LocalAgentBridgePairingSession(Base):
 
 
 class LocalAgentBridgeConnection(Base):
-    """A tenant/user/agent-scoped bearer token for one local bridge device."""
+    """A tenant/user-scoped bearer token for one local bridge device.
+
+    `agent_id` is kept nullable for legacy agent-bound bridge tokens. The
+    primary Local Agent Channel binding is user-scoped.
+    """
 
     __tablename__ = "local_agent_bridge_connections"
     __table_args__ = (
         UniqueConstraint("token_hash", name="uq_local_bridge_connection_token_hash"),
         Index("ix_local_bridge_connections_agent_status", "agent_id", "status"),
+        Index("ix_local_bridge_connections_user_status", "user_id", "status"),
         Index("ix_local_bridge_connections_tenant_id", "tenant_id"),
         Index("ix_local_bridge_connections_user_id", "user_id"),
     )
@@ -63,7 +68,7 @@ class LocalAgentBridgeConnection(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
     )
-    agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     device_name: Mapped[str] = mapped_column(String(255), nullable=False)
     client_kind: Mapped[str] = mapped_column(String(64), nullable=False)

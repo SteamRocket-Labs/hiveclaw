@@ -193,6 +193,40 @@ def test_interactive_pause_summary_accepts_structured_tool_payloads():
         )
         == "create_digital_employee_success"
     )
+    assert (
+        runtime._interactive_pause_summary_for_tool_call(
+            {
+                "name": "exit_plan_mode",
+                "status": "done",
+                "result": {
+                    "status": "planning_failed",
+                    "plan_id": "09df5e6f-5f3a-42a2-8b53-03b762756d20",
+                    "planning_errors": ["user-visible plan leaks internal workflow detail"],
+                },
+            }
+        )
+        == "plan_mode_planning_failed"
+    )
+
+
+def test_plan_mode_unsubmitted_terminal_error_blocks_plain_assistant_completion():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import PlanModeState, SessionContext
+
+    context = SessionContext(session_id="session-1", source="web_chat", channel="web")
+    context.plan_mode = PlanModeState(
+        active=True,
+        original_request="draft a plan",
+        intent_type="in_session_execution",
+        action_kind="continue_current_session",
+        tool_name="continue_current_session",
+    )
+
+    message = runtime._plan_mode_unsubmitted_terminal_error(context)
+
+    assert message is not None
+    assert "ask_user_question" in message
+    assert "exit_plan_mode" in message
 
 
 def test_explicit_plan_mode_request_does_not_clear_existing_plan_state_before_reactivation():
@@ -2409,8 +2443,9 @@ async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_
 
     session_context = SimpleNamespace(metadata={})
 
-    # A: entry is user-explicit (plan_mode_requested=True). On EXPLICIT entry the
-    # deep-research detection still flips handoff_target to deep_research.
+    # A: entry is user-explicit (plan_mode_requested=True). Deep Research is kept
+    # as hidden execution intent; Plan Mode itself still hands back to the current
+    # session after confirmation instead of becoming a product-specific branch.
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),
@@ -2422,7 +2457,7 @@ async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_
 
     assert result is None
     assert session_context.metadata["plan_mode"]["active"] is True
-    assert session_context.metadata["plan_mode"]["handoff_target"] == "deep_research"
+    assert session_context.metadata["plan_mode"]["handoff_target"] == "continue_current_session"
     assert session_context.metadata["plan_mode"]["deep_research"] is True
     assert (
         session_context.metadata["plan_mode"]["deep_research_args"]["question"]

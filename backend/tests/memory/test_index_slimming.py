@@ -41,7 +41,7 @@ def test_entry_manifest_row_uses_short_summary_not_full_preview(tmp_path: Path) 
 
     agent_id, mem_dir, long_content = _seed_long_entry(tmp_path)
     rebuild_index(tmp_path, agent_id)
-    index = (mem_dir / "wiki_map.md").read_text(encoding="utf-8")
+    index = (mem_dir / "indexes" / "wiki_map.md").read_text(encoding="utf-8")
 
     # The full 160-char preview must NOT be mirrored into the nav index.
     assert long_content not in index
@@ -63,7 +63,7 @@ def test_entry_manifest_carries_heat_column(tmp_path: Path) -> None:
     bump_access(tmp_path, agent_id, file_relpath="memory/knowledge.md", entry_id="knowledge-long-1")
 
     rebuild_index(tmp_path, agent_id)
-    index = (mem_dir / "wiki_map.md").read_text(encoding="utf-8")
+    index = (mem_dir / "indexes" / "wiki_map.md").read_text(encoding="utf-8")
 
     assert "| ID | File | Category | Date | Load | Heat | Summary |" in index
 
@@ -82,7 +82,8 @@ def test_rebuild_index_writes_only_canonical_derived_index(tmp_path: Path) -> No
     agent_id, mem_dir, _ = _seed_long_entry(tmp_path)
     rebuild_index(tmp_path, agent_id)
 
-    assert (mem_dir / "wiki_map.md").exists()
+    assert (mem_dir / "indexes" / "wiki_map.md").exists()
+    assert not (mem_dir / "wiki_map.md").exists()
     assert not (mem_dir / "INDEX.md").exists()
     assert not (mem_dir / "index.md").exists()
     assert not (mem_dir / ".derived" / "t3_index.md").exists()

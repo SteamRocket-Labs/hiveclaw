@@ -216,7 +216,8 @@ async def test_ensure_workspace_creates_standard_structure_and_profile(monkeypat
     assert (workspace / "memory" / "t3" / "worker.md").exists()
     assert (workspace / "memory" / "t3" / "capabilities.md").exists()
     assert (workspace / "memory" / "explicit" / "MEMORY.md").exists()
-    assert (workspace / "memory" / "wiki_map.md").exists()
+    assert (workspace / "memory" / "indexes" / "wiki_map.md").exists()
+    assert not (workspace / "memory" / "wiki_map.md").exists()
     assert not (workspace / "memory" / "learnings").exists()
     assert not (workspace / "evolution" / "skill_candidates.md").exists()
     assert (workspace / "evolution").is_dir()
@@ -277,7 +278,7 @@ async def test_ensure_workspace_rebuilds_canonical_t3_index_without_legacy_index
 
     await ensure_workspace(agent_id, tenant_id="tenant-1")
 
-    wiki_map = workspace / "memory" / "wiki_map.md"
+    wiki_map = workspace / "memory" / "indexes" / "wiki_map.md"
     assert wiki_map.exists()
     assert "Memory Index" in wiki_map.read_text(encoding="utf-8")
     assert not legacy_index.exists()

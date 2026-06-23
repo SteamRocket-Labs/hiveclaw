@@ -33,6 +33,7 @@ def _seed_workspace(tmp_path: Path) -> Path:
     (mem / "t3").mkdir(parents=True)
     (mem / "wiki").mkdir(parents=True)
     (mem / "scenes").mkdir(parents=True)
+    (mem / "control").mkdir(parents=True)
     (root / "evolution").mkdir(parents=True)
     (root / "skills" / "market-research").mkdir(parents=True)
 
@@ -112,7 +113,7 @@ def _seed_workspace(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
 
-    (mem / "auto_dream_state.json").write_text(
+    (mem / "control" / "auto_dream_state.json").write_text(
         json.dumps(
             {
                 "history": [
@@ -129,7 +130,7 @@ def _seed_workspace(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
 
-    (mem / "lifecycle.json").write_text(
+    (mem / "control" / "lifecycle.json").write_text(
         json.dumps(
             [
                 {
@@ -152,6 +153,30 @@ def _seed_workspace(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def _write_t2_segment_manifest(root: Path, *, session_id: str = "sess-1", segment_id: str = "seg-1") -> Path:
+    manifest = root / "memory" / "t2" / "sessions" / session_id / "segments" / segment_id / "manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": "memory_t2_segment_package.v1",
+                "session_id": session_id,
+                "segment_id": segment_id,
+                "status": "reviewed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _age_t3_files(root: Path, *, hours: float) -> None:
+    for name in ("episodes.md", "user.md", "worker.md", "capabilities.md"):
+        path = root / "memory" / "t3" / name
+        if path.exists():
+            _age(path, hours=hours)
 
 
 def test_overview_is_structured(tmp_path: Path) -> None:
@@ -310,47 +335,35 @@ def _age(path: Path, *, hours: float) -> None:
     os.utime(path, (old, old))
 
 
-def test_heartbeat_stale_when_learnings_outrun_cursor(tmp_path: Path) -> None:
+def test_t3_consolidator_stale_when_t2_packages_outrun_t3(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
-    mem = root / "memory"
-    (mem / "learnings").mkdir()
-    (mem / "learnings" / "2026-06-07.md").write_text("- learned x\n", encoding="utf-8")  # fresh T2 input
-    cursor = mem / ".curation_cursor.json"
-    cursor.write_text("{}", encoding="utf-8")
-    _age(cursor, hours=7)  # > 3 × 120min heartbeat cadence behind the input
+    _write_t2_segment_manifest(root)  # fresh reviewed T2 input for T3 consolidation
+    _age_t3_files(root, hours=30)  # safely beyond the default stale window
 
     overview = build_knowledge_overview(tmp_path, AGENT)
     assert overview["distillers"]["heartbeat"]["state"] == "stale"
 
 
-def test_heartbeat_active_when_idle(tmp_path: Path) -> None:
+def test_t3_consolidator_active_when_t2_input_is_idle(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
-    mem = root / "memory"
-    (mem / "learnings").mkdir()
-    entry = mem / "learnings" / "2026-06-01.md"
-    entry.write_text("- learned x\n", encoding="utf-8")
-    _age(entry, hours=200)
-    cursor = mem / ".curation_cursor.json"
-    cursor.write_text("{}", encoding="utf-8")
-    _age(cursor, hours=100)  # very old — but newer than the last input
+    t2_manifest = _write_t2_segment_manifest(root)
+    _age(t2_manifest, hours=200)
+    _age_t3_files(root, hours=100)  # old, but newer than the last T2 input
 
     overview = build_knowledge_overview(tmp_path, AGENT)
     assert overview["distillers"]["heartbeat"]["state"] == "active"
 
 
-def test_extractor_stale_when_behavior_unprocessed(tmp_path: Path) -> None:
+def test_extractor_active_when_t2_keeps_up_with_t0_session_ledger(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
-    behavior = root / "logs" / "2026-06-07" / "behavior"
-    behavior.mkdir(parents=True)
-    (behavior / "chat-1.md").write_text("# chat\n", encoding="utf-8")  # fresh T0 activity
-    learnings = root / "memory" / "learnings"
-    learnings.mkdir()
-    cursor = learnings / ".extract_cursor.json"
-    cursor.write_text("{}", encoding="utf-8")
-    _age(cursor, hours=30)  # > 24h grace behind fresh behavior
+    source = root / "memory" / "t0" / "sessions" / "sess-1" / "segments" / "seg-1" / "source.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("# T0 Session Ledger\n\n<t0_event>old activity</t0_event>\n", encoding="utf-8")
+    _age(source, hours=30)
+    _write_t2_segment_manifest(root)  # fresh enough output after the T0 input
 
     overview = build_knowledge_overview(tmp_path, AGENT)
-    assert overview["distillers"]["extractor"]["state"] == "stale"
+    assert overview["distillers"]["extractor"]["state"] == "active"
 
 
 def test_extractor_stale_when_t0_session_ledger_unprocessed(tmp_path: Path) -> None:
@@ -358,11 +371,8 @@ def test_extractor_stale_when_t0_session_ledger_unprocessed(tmp_path: Path) -> N
     source = root / "memory" / "t0" / "sessions" / "sess-1" / "segments" / "seg-1" / "source.md"
     source.parent.mkdir(parents=True)
     source.write_text("# T0 Session Ledger\n\n<t0_event>fresh activity</t0_event>\n", encoding="utf-8")
-    learnings = root / "memory" / "learnings"
-    learnings.mkdir()
-    cursor = learnings / ".extract_cursor.json"
-    cursor.write_text("{}", encoding="utf-8")
-    _age(cursor, hours=30)  # > 24h grace behind fresh ledger source
+    t2_manifest = _write_t2_segment_manifest(root)
+    _age(t2_manifest, hours=30)  # > 24h grace behind fresh ledger source
 
     overview = build_knowledge_overview(tmp_path, AGENT)
     assert overview["distillers"]["extractor"]["state"] == "stale"
@@ -372,7 +382,7 @@ def test_dream_stale_when_t3_outruns_state(tmp_path: Path) -> None:
     root = _seed_workspace(tmp_path)
     # Canonical memory/t3/*.md files are written fresh by _seed_workspace (T3 input);
     # age the dream state past 3 × 24h full-dream cadence.
-    _age(root / "memory" / "auto_dream_state.json", hours=80)
+    _age(root / "memory" / "control" / "auto_dream_state.json", hours=80)
 
     overview = build_knowledge_overview(tmp_path, AGENT)
     assert overview["distillers"]["dream"]["state"] == "stale"
@@ -382,12 +392,8 @@ def test_stale_threshold_follows_settings(tmp_path: Path, monkeypatch) -> None:
     from app.config import get_settings
 
     root = _seed_workspace(tmp_path)
-    mem = root / "memory"
-    (mem / "learnings").mkdir()
-    (mem / "learnings" / "2026-06-07.md").write_text("- learned x\n", encoding="utf-8")
-    cursor = mem / ".curation_cursor.json"
-    cursor.write_text("{}", encoding="utf-8")
-    _age(cursor, hours=7)  # stale under the default 2h cadence (window 6h)…
+    _write_t2_segment_manifest(root)
+    _age_t3_files(root, hours=7)  # stale under the default 2h cadence (window 6h)...
 
     monkeypatch.setattr(get_settings(), "HEARTBEAT_DEFAULT_INTERVAL_MINUTES", 240)  # window now 12h
     overview = build_knowledge_overview(tmp_path, AGENT)

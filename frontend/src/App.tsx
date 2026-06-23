@@ -13,18 +13,21 @@ import { authApi } from './api/domains/auth';
 import { get } from './api/core';
 import { ProtectedRoute, WorkspaceGuard, AdminGuard } from './guards';
 import { WORKSPACE_SETTINGS_SECTIONS } from './surfaces/workspace/sections';
+import AppDialogs from './components/AppDialogs';
 
 const Login = lazy(() => import('./pages/Login'));
 const SsoEntry = lazy(() => import('./pages/SsoEntry'));
 const CompanySetup = lazy(() => import('./pages/CompanySetup'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const DigitalEmployees = lazy(() => import('./pages/DigitalEmployees'));
+const WorkspaceFeatureHub = lazy(() => import('./pages/WorkspaceFeatureHub'));
 const Plaza = lazy(() => import('./pages/Plaza'));
 const AgentDetail = lazy(() => import('./pages/AgentDetail'));
 const AgentCreate = lazy(() => import('./pages/AgentCreate'));
 const LocalAgents = lazy(() => import('./pages/LocalAgents'));
 const Chat = lazy(() => import('./pages/Chat'));
 const Messages = lazy(() => import('./pages/Messages'));
-const EnterpriseSettings = lazy(() => import('./pages/EnterpriseSettings'));
+const ControlPlane = lazy(() => import('./pages/ControlPlane'));
 const AdminCompanies = lazy(() => import('./pages/AdminCompanies'));
 const AppLayout = lazy(() => import('./surfaces/app/AppLayout'));
 const WorkspaceLayout = lazy(() => import('./surfaces/workspace/WorkspaceLayout'));
@@ -110,6 +113,7 @@ export default function App() {
     return (
         <>
             <NotificationBar />
+            <AppDialogs />
             <Suspense fallback={<RouteFallback />}>
                 <Routes>
                     {/* ─── Public surface ─── */}
@@ -120,8 +124,16 @@ export default function App() {
                     {/* ─── App surface ─── */}
                     <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
 
-                        <Route index element={<Navigate to="/plaza" replace />} />
-                        <Route path="dashboard" element={<Navigate to="/enterprise/dashboard" replace />} />
+                        <Route index element={<Navigate to="/home" replace />} />
+                        <Route path="home" element={<Dashboard />} />
+                        <Route path="dashboard" element={<Navigate to="/home" replace />} />
+                        <Route path="agents" element={<DigitalEmployees />} />
+                        <Route path="plans" element={<WorkspaceFeatureHub kind="plans" />} />
+                        <Route path="automations" element={<WorkspaceFeatureHub kind="automations" />} />
+                        <Route path="memory" element={<WorkspaceFeatureHub kind="memory" />} />
+                        <Route path="documents" element={<WorkspaceFeatureHub kind="documents" />} />
+                        <Route path="approvals" element={<WorkspaceFeatureHub kind="approvals" />} />
+                        <Route path="team" element={<WorkspaceFeatureHub kind="team" />} />
                         <Route path="plaza" element={<Plaza />} />
                         <Route path="local-agents" element={<LocalAgents />} />
                         <Route path="local-bridge/activate" element={<LocalAgents />} />
@@ -134,12 +146,12 @@ export default function App() {
                     {/* ─── Workspace surface ─── */}
                     <Route path="/enterprise" element={<ProtectedRoute><WorkspaceGuard><WorkspaceLayout /></WorkspaceGuard></ProtectedRoute>}>
                         <Route index element={<Navigate to="dashboard" replace />} />
-                        <Route path="dashboard" element={<Dashboard />} />
+                        <Route path="dashboard" element={<ControlPlane />} />
                         {WORKSPACE_SETTINGS_SECTIONS.map((section) => (
                             <Route
                                 key={section.tab}
                                 path={section.slug}
-                                element={<EnterpriseSettings forcedTab={section.tab} hideTabs />}
+                                element={<ControlPlane tab={section.tab} />}
                             />
                         ))}
                     </Route>

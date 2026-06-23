@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
+import { requestAppConfirm } from '../../components/AppDialogs';
 import { subagentApi, type SubagentRow } from '../../api/domains/subagents';
 import { scopeBadgeStyle, toolFaceSummary } from '../agent-detail/AgentSubagentsSection';
 
@@ -109,7 +110,13 @@ export default function WorkspaceSubagentsSection() {
 
   const remove = async (row: SubagentRow) => {
     if (row.scope !== 'tenant') return;
-    if (!window.confirm(t('enterprise.subagents.deleteConfirm', { name: row.name }))) return;
+    const confirmed = await requestAppConfirm({
+      title: t('agent.subagents.deleteButton', 'Delete'),
+      message: t('enterprise.subagents.deleteConfirm', { name: row.name }),
+      confirmLabel: t('common.delete', 'Delete'),
+      danger: true,
+    });
+    if (!confirmed) return;
     setActionError(null);
     try {
       await subagentApi.enterpriseRemove(row.name);

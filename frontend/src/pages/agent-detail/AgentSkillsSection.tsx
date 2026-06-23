@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { fileApi } from '../../api/domains/files';
 import { skillApi } from '../../api/domains/skills';
+import { showAppToast } from '../../components/AppDialogs';
 
 type AgentSkillsSectionProps = {
   agentId: string;
@@ -159,10 +160,10 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                       setAgentClawhubInstalling(result.slug);
                       try {
                         const response = await skillApi.agentImport.fromClawhub(agentId, result.slug);
-                        alert(`Installed "${result.displayName || result.slug}" (${response.files_written} files)`);
+                        showAppToast(`Installed "${result.displayName || result.slug}" (${response.files_written} files)`, 'success');
                         queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
                       } catch (error: any) {
-                        alert(`Import failed: ${error?.message || error}`);
+                        showAppToast(`Import failed: ${error?.message || error}`, 'error');
                       } finally {
                         setAgentClawhubInstalling(null);
                       }
@@ -203,11 +204,11 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                   setAgentUrlImporting(true);
                   try {
                     const response = await skillApi.agentImport.fromUrl(agentId, agentUrlInput.trim());
-                    alert(`Imported ${response.files_written} files`);
+                    showAppToast(`Imported ${response.files_written} files`, 'success');
                     queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
                     setShowAgentUrlImport(false);
                   } catch (error: any) {
-                    alert(`Import failed: ${error?.message || error}`);
+                    showAppToast(`Import failed: ${error?.message || error}`, 'error');
                   } finally {
                     setAgentUrlImporting(false);
                   }
@@ -275,11 +276,11 @@ export default function AgentSkillsSection({ agentId }: AgentSkillsSectionProps)
                         setImportingSkillId(skill.id);
                         try {
                           const response = await fileApi.importSkill(agentId, skill.id);
-                          alert(`✅ Imported "${skill.name}" (${response.files_written} files)`);
+                          showAppToast(`Imported "${skill.name}" (${response.files_written} files)`, 'success');
                           queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
                           setShowImportSkillModal(false);
                         } catch (error: any) {
-                          alert(`❌ Import failed: ${error?.message || error}`);
+                          showAppToast(`Import failed: ${error?.message || error}`, 'error');
                         } finally {
                           setImportingSkillId(null);
                         }

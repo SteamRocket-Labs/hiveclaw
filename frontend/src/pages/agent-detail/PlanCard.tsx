@@ -153,6 +153,8 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const { t } = useTranslation();
   const [busy, setBusy] = React.useState<null | 'confirm' | 'revise' | 'regenerate' | 'reject'>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [revisionRequest, setRevisionRequest] = React.useState('');
+  const [rejectReason, setRejectReason] = React.useState('');
 
   const planJson = plan.plan_json || {};
   const isAwaiting = plan.status === 'awaiting_confirmation';
@@ -203,9 +205,9 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
     return runAction('confirm', () => confirmAndHandoffPlan(agentId, plan));
   };
 
-  const onRequestChanges = () => {
-    const reason = window.prompt(t('agent.plan.requestChangesPrompt', 'What should change about this plan?'));
-    if (reason == null) return;
+  const onRequestChanges = (event?: React.FormEvent) => {
+    event?.preventDefault();
+    const reason = revisionRequest.trim();
     const payload = { fill: reason.trim() ? { revision_request: reason.trim() } : {} };
     return runAction('revise', () =>
       isPlanningFailed
@@ -218,11 +220,11 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
     return runAction('regenerate', () => planApi.regenerate(agentId, plan.id, {}));
   };
 
-  const onReject = () => {
-    const reason = window.prompt(t('agent.plan.rejectPrompt', 'Reason for rejecting this plan (optional)'));
-    if (reason === null) return;
+  const onReject = (event?: React.FormEvent) => {
+    event?.preventDefault();
+    const reason = rejectReason.trim();
     return runAction('reject', () =>
-      planApi.reject(agentId, plan.id, { reason: reason.trim() || undefined }),
+      planApi.reject(agentId, plan.id, { reason: reason || undefined }),
     );
   };
 
@@ -488,31 +490,36 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         </div>
       )}
 
-      {/* Actions: confirmable plans can start; failed drafts can be retried or dismissed. */}
+      {/* Actions stay in the session card: no browser prompts, no context switch. */}
       {isAwaiting ? (
-        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            style={{ fontSize: '12px', padding: '6px 12px', color: 'var(--error, #dc2626)' }}
-            disabled={busy !== null}
-            onClick={onReject}
-          >
-            {busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.reject', 'Reject')}
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            style={{ fontSize: '12px', padding: '6px 12px' }}
-            disabled={busy !== null}
-            onClick={onRequestChanges}
-          >
-            {busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.requestChanges', 'Request changes')}
-          </button>
+        <div style={{ display: 'grid', gap: '10px' }}>
+          <div className="plan-inline-actions">
+            <PlanDecisionComposer
+              testId="plan-revision-composer"
+              title={t('agent.plan.requestChanges', 'Request changes')}
+              label={t('agent.plan.requestChangesPrompt', 'What should change about this plan?')}
+              value={revisionRequest}
+              disabled={busy !== null}
+              submitLabel={busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.sendRevision', 'Send revision request')}
+              onChange={setRevisionRequest}
+              onSubmit={onRequestChanges}
+            />
+            <PlanDecisionComposer
+              testId="plan-reject-composer"
+              title={t('agent.plan.reject', 'Reject')}
+              label={t('agent.plan.rejectPrompt', 'Reason for rejecting this plan (optional)')}
+              value={rejectReason}
+              disabled={busy !== null}
+              danger
+              submitLabel={busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.submitReject', 'Reject plan')}
+              onChange={setRejectReason}
+              onSubmit={onReject}
+            />
+          </div>
           <button
             type="button"
             className="btn btn-primary"
-            style={{ fontSize: '12px', padding: '6px 14px' }}
+            style={{ justifySelf: 'flex-end', fontSize: '12px', padding: '6px 14px' }}
             disabled={busy !== null}
             onClick={onConfirm}
           >
@@ -520,29 +527,34 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           </button>
         </div>
       ) : isPlanningFailed ? (
-        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            style={{ fontSize: '12px', padding: '6px 12px', color: 'var(--error, #dc2626)' }}
-            disabled={busy !== null}
-            onClick={onReject}
-          >
-            {busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.reject', 'Reject')}
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            style={{ fontSize: '12px', padding: '6px 12px' }}
-            disabled={busy !== null}
-            onClick={onRequestChanges}
-          >
-            {busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.reviseAndRetry', 'Revise and retry')}
-          </button>
+        <div style={{ display: 'grid', gap: '10px' }}>
+          <div className="plan-inline-actions">
+            <PlanDecisionComposer
+              testId="plan-revision-composer"
+              title={t('agent.plan.reviseAndRetry', 'Revise and retry')}
+              label={t('agent.plan.requestChangesPrompt', 'What should change about this plan?')}
+              value={revisionRequest}
+              disabled={busy !== null}
+              submitLabel={busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.sendRevision', 'Send revision request')}
+              onChange={setRevisionRequest}
+              onSubmit={onRequestChanges}
+            />
+            <PlanDecisionComposer
+              testId="plan-reject-composer"
+              title={t('agent.plan.reject', 'Reject')}
+              label={t('agent.plan.rejectPrompt', 'Reason for rejecting this plan (optional)')}
+              value={rejectReason}
+              disabled={busy !== null}
+              danger
+              submitLabel={busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.submitReject', 'Reject plan')}
+              onChange={setRejectReason}
+              onSubmit={onReject}
+            />
+          </div>
           <button
             type="button"
             className="btn btn-primary"
-            style={{ fontSize: '12px', padding: '6px 14px' }}
+            style={{ justifySelf: 'flex-end', fontSize: '12px', padding: '6px 14px' }}
             disabled={busy !== null}
             onClick={onRegenerate}
           >
@@ -555,6 +567,51 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
         </div>
       )}
     </div>
+  );
+}
+
+interface PlanDecisionComposerProps {
+  testId: string;
+  title: string;
+  label: string;
+  value: string;
+  submitLabel: string;
+  disabled: boolean;
+  danger?: boolean;
+  onChange: (value: string) => void;
+  onSubmit: (event: React.FormEvent) => void;
+}
+
+function PlanDecisionComposer({
+  testId,
+  title,
+  label,
+  value,
+  submitLabel,
+  disabled,
+  danger = false,
+  onChange,
+  onSubmit,
+}: PlanDecisionComposerProps) {
+  return (
+    <details data-testid={testId} className="plan-inline-composer">
+      <summary className={danger ? 'danger' : undefined}>{title}</summary>
+      <form onSubmit={onSubmit}>
+        <label>
+          <span>{label}</span>
+          <textarea
+            value={value}
+            onChange={(event) => onChange(event.currentTarget.value)}
+            disabled={disabled}
+            rows={3}
+            placeholder={label}
+          />
+        </label>
+        <button type="submit" className={danger ? 'btn btn-danger' : 'btn btn-secondary'} disabled={disabled}>
+          {submitLabel}
+        </button>
+      </form>
+    </details>
   );
 }
 

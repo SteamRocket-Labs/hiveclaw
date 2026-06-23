@@ -6,6 +6,7 @@ import { authApi } from '../api/domains/auth';
 import { enterpriseApi, type EvalRuntimeStatus } from '../api/domains/enterprise';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
+import { requestAppConfirm, showAppToast } from '../components/AppDialogs';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { useAuthStore } from '../stores';
@@ -54,6 +55,7 @@ export type EnterpriseSettingsTab = WorkspaceSettingsSectionTab;
 interface EnterpriseSettingsProps {
     forcedTab?: EnterpriseSettingsTab;
     hideTabs?: boolean;
+    chrome?: 'full' | 'embedded';
 }
 
 const FALLBACK_LLM_PROVIDERS: LLMProviderSpec[] = [
@@ -295,7 +297,7 @@ function BroadcastSection() {
             setTitle('');
             setBody('');
         } catch (e: any) {
-            alert(e.message || 'Failed');
+            showAppToast(e.message || 'Failed', 'error');
         }
         setSending(false);
     };
@@ -340,7 +342,7 @@ function BroadcastSection() {
 }
 
 
-export default function EnterpriseSettings({ forcedTab, hideTabs = false }: EnterpriseSettingsProps) {
+export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome = 'full' }: EnterpriseSettingsProps) {
     const { t } = useTranslation();
     const navigate = useNavigate();
     const setUser = useAuthStore((s) => s.setUser);
@@ -442,8 +444,13 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             } catch (err: any) {
                 if (err?.status === 409) {
                     const agents = err?.detail?.agents || [];
-                    const msg = `This model is used by ${agents.length} agent(s):\n\n${agents.join(', ')}\n\nDelete anyway?`;
-                    if (confirm(msg)) {
+                    const msg = `This model is used by ${agents.length} agent(s): ${agents.join(', ')}. Delete anyway?`;
+                    if (await requestAppConfirm({
+                        title: t('enterprise.llm.deleteModelTitle', 'Delete model'),
+                        message: msg,
+                        confirmLabel: t('common.delete', 'Delete'),
+                        danger: true,
+                    })) {
                         await enterpriseApi.deleteLLMModel(id, true);
                     }
                     return;
@@ -461,7 +468,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             qc.invalidateQueries({ queryKey: ['eval-ci-runtime'] });
         },
         onError: (error: any) => {
-            alert(error?.message || t('enterprise.evalCi.syncFailed', 'Failed to sync live eval model'));
+            showAppToast(error?.message || t('enterprise.evalCi.syncFailed', 'Failed to sync live eval model'), 'error');
         },
     });
 
@@ -538,10 +545,10 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                 }, 3000);
                 return;
             }
-            alert(t('enterprise.llm.testFailed', { error: result.error || 'Unknown error', latency: result.latency_ms }));
+            showAppToast(t('enterprise.llm.testFailed', { error: result.error || 'Unknown error', latency: result.latency_ms }), 'error');
             if (activeButton) activeButton.textContent = originalText;
         } catch (e: any) {
-            alert(t('enterprise.llm.testError', { message: e.message }));
+            showAppToast(t('enterprise.llm.testError', { message: e.message }), 'error');
             if (activeButton) activeButton.textContent = originalText;
         }
     };
@@ -632,7 +639,13 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
     };
 
     const handleDeleteCompany = async () => {
-        if (!confirm(t('enterprise.deleteCompanyConfirm', 'Are you sure you want to delete this company and ALL its data? This cannot be undone.'))) return;
+        const confirmed = await requestAppConfirm({
+            title: t('enterprise.deleteCompany', 'Delete This Company'),
+            message: t('enterprise.deleteCompanyConfirm', 'Are you sure you want to delete this company and ALL its data? This cannot be undone.'),
+            confirmLabel: t('common.delete', 'Delete'),
+            danger: true,
+        });
+        if (!confirmed) return;
         try {
             const res = await systemApi.deleteTenant(selectedTenantId);
             const me = await authApi.getMe().catch(() => null);
@@ -653,13 +666,14 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
             window.dispatchEvent(new StorageEvent('storage', { key: 'current_tenant_id', newValue: null }));
             navigate(res.needs_company_setup ? '/setup-company' : '/', { replace: true });
         } catch (e: any) {
-            alert(e.message || 'Delete failed');
+            showAppToast(e.message || 'Delete failed', 'error');
         }
     };
 
     return (
         <>
-            <div>
+            <div className={chrome === 'embedded' ? 'enterprise-settings-embedded' : undefined}>
+                {chrome !== 'embedded' && (
                 <div className="page-header">
                     <div>
                         <h1 className="page-title">{t('nav.enterprise')}</h1>
@@ -672,8 +686,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false }: Ente
                         )}
                     </div>
                 </div>
+                )}
 
-                {!hideTabs && (
+                {chrome !== 'embedded' && !hideTabs && (
                     <div className="tabs">
                         {([
                             { tabs: ['info', 'org', 'users', 'invites'] as const },

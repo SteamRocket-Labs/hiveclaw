@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { agentApi } from '../../api/domains/agents';
 import { put } from '../../api/core';
 import { usersApi } from '../../api/domains/users';
+import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import { useAuthStore } from '../../stores';
 
 type RelationshipEditorProps = {
@@ -52,20 +53,26 @@ export default function RelationshipEditor({ agentId, agent, readOnly = false }:
       qc.invalidateQueries({ queryKey: ['agent', agentId] });
       setShowPicker(false);
     } catch (e: any) {
-      alert(e.message || 'Failed');
+      showAppToast(e.message || 'Failed', 'error');
     }
     setBinding(false);
   };
 
   const handleUnbind = async () => {
     if (readOnly) return;
-    if (!confirm(t('agent.relationships.confirmUnbind'))) return;
+    const confirmed = await requestAppConfirm({
+      title: t('agent.relationships.unbind', 'Unbind'),
+      message: t('agent.relationships.confirmUnbind'),
+      confirmLabel: t('agent.relationships.unbind', 'Unbind'),
+      danger: true,
+    });
+    if (!confirmed) return;
     setBinding(true);
     try {
       await put(`/agents/${agentId}/owner`, { owner_user_id: null });
       qc.invalidateQueries({ queryKey: ['agent', agentId] });
     } catch (e: any) {
-      alert(e.message || 'Failed');
+      showAppToast(e.message || 'Failed', 'error');
     }
     setBinding(false);
   };

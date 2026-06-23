@@ -41,6 +41,18 @@ export default defineConfig({
             },
         },
     },
+    build: {
+        rollupOptions: {
+            output: {
+                manualChunks(id) {
+                    if (!id.includes('node_modules')) return undefined
+                    if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts'
+                    if (id.includes('@tabler')) return 'vendor-icons'
+                    return 'vendor'
+                },
+            },
+        },
+    },
     test: {
         exclude: ['node_modules/**', 'dist/**', 'e2e/**', 'test-results/**'],
     },

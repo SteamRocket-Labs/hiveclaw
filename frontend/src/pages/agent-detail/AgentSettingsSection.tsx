@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 import ChannelConfig from '../../components/ChannelConfig';
+import { showAppToast } from '../../components/AppDialogs';
 import { agentApi } from '../../api/domains/agents';
 import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../../api/domains/enterprise';
 import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
@@ -1507,7 +1508,7 @@ export default function AgentSettingsSection({
                   queryClient.invalidateQueries({ queryKey: ['agents'] });
                   navigate('/');
                 } catch (err: any) {
-                  alert(err?.message || 'Failed to delete agent');
+                  showAppToast(err?.message || 'Failed to delete agent', 'error');
                 }
               }}
             >

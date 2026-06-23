@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { IconFilter } from '@tabler/icons-react';
 
 import { adminApi } from '../../api/domains/admin';
+import { requestAppConfirm } from '../../components/AppDialogs';
 
 type SortKey = 'name' | 'org_admin_email' | 'user_count' | 'agent_count' | 'total_tokens' | 'created_at';
 type SortDir = 'asc' | 'desc';
@@ -137,7 +138,15 @@ export default function AdminCompaniesSection({ initialCompanies }: AdminCompani
 
   const handleToggle = async (id: string, currentlyActive: boolean) => {
     const action = currentlyActive ? 'disable' : 'enable';
-    if (currentlyActive && !confirm(t('admin.confirmDisable', 'Disable this company? All users and agents will be paused.'))) return;
+    if (currentlyActive) {
+      const confirmed = await requestAppConfirm({
+        title: t('admin.disableCompanyTitle', 'Disable company'),
+        message: t('admin.confirmDisable', 'Disable this company? All users and agents will be paused.'),
+        confirmLabel: t('common.confirm', 'Confirm'),
+        danger: true,
+      });
+      if (!confirmed) return;
+    }
     try {
       await adminApi.toggleCompany(id);
       await loadCompanies();

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { customApiConnectorsApi, type CustomApiConnector } from '../../api/domains/customApiConnectors';
 import { extensionsApi, type InstalledPlugin, type McpServerRecord } from '../../api/domains/extensions';
 import { toolsApi } from '../../api/domains/tools';
+import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
 
 const MCP_STATUS_COLORS: Record<string, string> = {
@@ -328,7 +329,13 @@ export default function WorkspaceToolsSection({
                     className="btn btn-ghost"
                     style={{ color: 'var(--error)', fontSize: '12px' }}
                     onClick={async () => {
-                      if (!confirm(t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }))) return;
+                      const confirmed = await requestAppConfirm({
+                        title: t('common.delete', 'Delete'),
+                        message: t('enterprise.tools.removeFromAgent', { name: row.tool_display_name }),
+                        confirmLabel: t('common.delete', 'Delete'),
+                        danger: true,
+                      });
+                      if (!confirmed) return;
                       try {
                         await toolsApi.removeAgentTool(row.agent_tool_id);
                       } catch {
@@ -485,7 +492,13 @@ export default function WorkspaceToolsSection({
                     style={{ color: 'var(--error)', fontSize: '12px' }}
                     disabled={pluginBusy === plugin.plugin_key}
                     onClick={async () => {
-                      if (!confirm(t('enterprise.tools.uninstallPluginConfirm', { name: plugin.plugin_key, defaultValue: `Uninstall ${plugin.plugin_key}?` }))) return;
+                      const confirmed = await requestAppConfirm({
+                        title: t('enterprise.tools.uninstallPlugin', 'Uninstall plugin'),
+                        message: t('enterprise.tools.uninstallPluginConfirm', { name: plugin.plugin_key, defaultValue: `Uninstall ${plugin.plugin_key}?` }),
+                        confirmLabel: t('common.delete', 'Delete'),
+                        danger: true,
+                      });
+                      if (!confirmed) return;
                       setPluginBusy(plugin.plugin_key);
                       try {
                         await extensionsApi.uninstallEnterprisePlugin({ plugin_key: plugin.plugin_key });
@@ -604,7 +617,13 @@ export default function WorkspaceToolsSection({
                         style={{ color: 'var(--error)', fontSize: '12px' }}
                         disabled={customApiBusy === connector.id}
                         onClick={async () => {
-                          if (!confirm(t('enterprise.tools.deleteConnectorConfirm', { name: connector.display_name, defaultValue: `Delete ${connector.display_name}?` }))) return;
+                          const confirmed = await requestAppConfirm({
+                            title: t('enterprise.tools.deleteConnector', 'Delete connector'),
+                            message: t('enterprise.tools.deleteConnectorConfirm', { name: connector.display_name, defaultValue: `Delete ${connector.display_name}?` }),
+                            confirmLabel: t('common.delete', 'Delete'),
+                            danger: true,
+                          });
+                          if (!confirmed) return;
                           setCustomApiBusy(connector.id);
                           try {
                             await customApiConnectorsApi.delete(connector.id);
@@ -770,7 +789,7 @@ export default function WorkspaceToolsSection({
                                   });
                                   loadAllTools();
                                 } catch (error: any) {
-                                  alert(`${t('enterprise.tools.importFailed', 'Import failed')}: ${error.message}`);
+                                  showAppToast(`${t('enterprise.tools.importFailed', 'Import failed')}: ${error.message}`, 'error');
                                 }
                               }}
                             >
@@ -812,7 +831,9 @@ export default function WorkspaceToolsSection({
                               setMcpForm({ server_url: '', server_name: '' });
                               setMcpRawInput('');
                               if (errors.length > 0) {
-                                alert(`Imported ${successCount}/${tools.length} tools.\nFailed:\n${errors.join('\n')}`);
+                                showAppToast(`Imported ${successCount}/${tools.length} tools. Failed: ${errors.join('; ')}`, 'error');
+                              } else {
+                                showAppToast(`Imported ${successCount}/${tools.length} tools`, 'success');
                               }
                             }}
                           >
@@ -940,7 +961,13 @@ export default function WorkspaceToolsSection({
                                         className="btn btn-danger"
                                         style={{ padding: '4px 8px', fontSize: '11px' }}
                                         onClick={async () => {
-                                          if (!confirm(`${t('common.delete', 'Delete')} ${tool.display_name}?`)) return;
+                                          const confirmed = await requestAppConfirm({
+                                            title: t('common.delete', 'Delete'),
+                                            message: `${t('common.delete', 'Delete')} ${tool.display_name}?`,
+                                            confirmLabel: t('common.delete', 'Delete'),
+                                            danger: true,
+                                          });
+                                          if (!confirmed) return;
                                           await toolsApi.deleteGlobalTool(tool.id);
                                           loadAllTools();
                                           loadAgentInstalledTools();
@@ -1075,7 +1102,13 @@ export default function WorkspaceToolsSection({
                                         style={{ padding: '4px 8px', fontSize: '11px' }}
                                         onClick={async (event) => {
                                           event.stopPropagation();
-                                          if (!confirm(`${t('common.delete', 'Delete')} ${serverName} (${serverTools.length} tools)?`)) return;
+                                          const confirmed = await requestAppConfirm({
+                                            title: t('common.delete', 'Delete'),
+                                            message: `${t('common.delete', 'Delete')} ${serverName} (${serverTools.length} tools)?`,
+                                            confirmLabel: t('common.delete', 'Delete'),
+                                            danger: true,
+                                          });
+                                          if (!confirmed) return;
                                           for (const tool of serverTools) {
                                             await toolsApi.deleteGlobalTool(tool.id);
                                           }

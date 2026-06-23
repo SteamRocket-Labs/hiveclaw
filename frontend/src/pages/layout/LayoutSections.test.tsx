@@ -57,13 +57,67 @@ describe('Layout extracted sections', () => {
     );
 
     expect(markup).toContain('HiveClaw');
+    expect(markup).toContain('My Workspace');
+    expect(markup).toContain('Digital Employees');
+    expect(markup).toContain('Conversations &amp; Tasks');
+    expect(markup).toContain('Plan Review');
+    expect(markup).toContain('Automations');
+    expect(markup).toContain('Memory &amp; Knowledge');
+    expect(markup).toContain('Documents &amp; Research');
+    expect(markup).toContain('A2A / Team');
+    expect(markup).toContain('Local Agent Channel');
+    expect(markup).toContain('Control Plane');
+    expect(markup).toContain('Agent Governance');
+    expect(markup).toContain('Models &amp; Budget');
+    expect(markup).toContain('Capabilities &amp; Tools');
+    expect(markup).toContain('Memory Governance');
+    expect(markup).toContain('Channels &amp; Integrations');
+    expect(markup).toContain('Assets &amp; Automation');
     expect(markup).toContain('Agent Circle');
-    expect(markup).toContain('Local Agent');
     expect(markup).toContain('href="/local-agents"');
-    expect(markup).not.toContain('Dashboard');
+    expect(markup).toContain('href="/team"');
+    expect(markup).toContain('href="/agents"');
+    expect(markup).toContain('href="/automations"');
+    expect(markup).toContain('href="/enterprise/tools"');
     expect(markup).toContain('Agent One');
     expect(markup).toContain('Platform Settings');
     expect(markup).toContain('Version Mock');
+  });
+
+  it('uses the sidebar search as a workspace-wide launcher before falling back to employee filtering', () => {
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'platform_admin', display_name: 'Rocky' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[{ id: 'tenant-1', name: 'Company A' }]}
+        currentTenant="tenant-1"
+        onSwitchTenant={vi.fn()}
+        agents={[{ id: 'agent-1', name: 'Research Lead', role_description: 'Market research', created_at: '2026-03-27T00:00:00Z', status: 'running', agent_type: 'native' }]}
+        pinnedAgents={new Set()}
+        onTogglePin={vi.fn()}
+        isChinese={false}
+        sidebarSearch="local"
+        onSetSidebarSearch={vi.fn()}
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu={false}
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    expect(markup).toContain('Workspace search');
+    expect(markup).toContain('Search workspace, employees, routes...');
+    expect(markup).toContain('Quick open');
+    expect(markup).toContain('Local Agent Channel');
+    expect(markup).toContain('href="/local-agents"');
   });
 
   it('renders NotificationCenter as a standalone notification module', () => {

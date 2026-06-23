@@ -90,6 +90,31 @@
   },
   "nav": {
     "dashboard": "Dashboard",
+    "home": "Home",
+    "currentWorkspace": "Workspace",
+    "myWorkspace": "My Workspace",
+    "digitalEmployees": "Digital Employees",
+    "conversationsTasks": "Conversations & Tasks",
+    "planReview": "Plan Review",
+    "automations": "Automations",
+    "memoryKnowledge": "Memory & Knowledge",
+    "documentsResearch": "Documents & Research",
+    "a2aTeam": "A2A / Team",
+    "localAgentChannel": "Local Agent Channel",
+    "controlPlane": "Control Plane",
+    "controlOverview": "Overview",
+    "agentGovernance": "Agent Governance",
+    "modelsBudget": "Models & Budget",
+    "capabilitiesTools": "Capabilities & Tools",
+    "teamDelegation": "Team & Delegation",
+    "memoryGovernance": "Memory Governance",
+    "channelsIntegrations": "Channels & Integrations",
+    "approvalCenter": "Approval Center",
+    "auditLog": "Audit Log",
+    "assetsAutomation": "Assets & Automation",
+    "noEmployees": "No digital employees yet",
+    "workspaceSearch": "Workspace search",
+    "quickOpen": "Quick open",
     "myAgents": "My Digital Employees",
     "myCreated": "Created by me",
     "companyShared": "Company shared",
@@ -100,6 +125,165 @@
     "language": "Language",
     "plaza": "Agent Circle",
     "localAgents": "Local Agent"
+  },
+  "employees": {
+    "eyebrow": "Agent control surface",
+    "title": "Digital Employees",
+    "subtitle": "Manage employee identity, sessions, memory, capabilities, workflow, delegation, and workspace from one directory.",
+    "create": "Create employee",
+    "search": "Search employees...",
+    "empty": "No employees match this view.",
+    "noRole": "No role description yet",
+    "filters": {
+      "all": "All",
+      "mine": "Owned by me",
+      "shared": "Company shared",
+      "recommended": "Recommended",
+      "running": "Running",
+      "attention": "Needs attention",
+      "coordinator": "Coordinator",
+      "local": "Local runtime"
+    },
+    "metrics": {
+      "total": "Total",
+      "mine": "Owned by me",
+      "shared": "Company shared",
+      "running": "Running",
+      "coordinator": "Coordinator",
+      "attention": "Needs attention",
+      "local": "Local runtime"
+    },
+    "chips": {
+      "mine": "Owned by me",
+      "shared": "Company shared",
+      "recommended": "Recommended",
+      "coordinator": "Coordinator",
+      "local": "Local runtime"
+    },
+    "actions": {
+      "chat": "Chat",
+      "memory": "Memory",
+      "workflows": "Workflows",
+      "team": "Team",
+      "local": "Local",
+      "detail": "Detail"
+    }
+  },
+  "agentCreate": {
+    "eyebrow": "Digital employee setup",
+    "title": "Create digital employee",
+    "subtitle": "Hive creates employees through the HR Agent. It clarifies role, authority, capability packs, memory boundaries, and the first working session before creation is finalized.",
+    "useHr": "Use HR Agent for guided creation",
+    "hrError": "Failed to open HR Agent.",
+    "hrOnlyTitle": "HR Agent is the creation interface",
+    "hrOnlyDesc": "There is only one exposed creation path: enter the HR Agent session, describe the role, confirm governance, and let the HR Agent create the employee through the governed backend.",
+    "governanceTitle": "Capability governance",
+    "governanceDesc": "The platform sets boundaries and audit; the HR Agent owns the creation conversation and final employee definition.",
+    "rails": {
+      "hrOnly": "Employee creation is guided by the HR Agent as the single creation role.",
+      "memoryGate": "Memory writes go through Memory Gate and Platform Gate.",
+      "toolGovernance": "Tools, MCP, workflow, and sub-agent access stay permission-governed.",
+      "auditTrace": "Every durable action remains traceable to the employee, user, and company."
+    }
+  },
+  "featureHub": {
+    "employeeSurfaces": "Employee surfaces",
+    "employeeSurfacesDesc": "Every shortcut opens a real existing employee surface, preserving session and governance ownership.",
+    "noAgents": "Create an employee to use this area.",
+    "controlLinks": "Control plane links",
+    "controlLinksDesc": "Company-level settings remain in the control plane; the employee still owns runtime execution.",
+    "skillRegistry": "Skill registry",
+    "skillRegistryDesc": "Skill capsules and evolution candidates",
+    "workflowWorkbench": "Workflow workbench",
+    "workflowWorkbenchDesc": "Preview, start, inspect, and promote workflow runs",
+    "memoryGovernance": "Memory governance",
+    "memoryGovernanceDesc": "Retention, hygiene, and governed write policy",
+    "officeRuntime": "Office runtime",
+    "officeRuntimeDesc": "Browser document editing backed by agent workspace files",
+    "sessionPlans": "Session plan queue",
+    "sessionPlansDesc": "Plans are accepted or revised in the active session timeline",
+    "approvalCenter": "Approval center",
+    "approvalCenterDesc": "Company approval review, audit, and policy controls",
+    "companySubagents": "Company subagent library",
+    "companySubagentsDesc": "Tenant-level worker definitions shared by employee runtimes",
+    "localAgentChannel": "Local Agent Channel",
+    "localAgentChannelDesc": "User-scoped local runtime presence, channel chat, and workspace transfer",
+    "teamTopologyTitle": "A2A and team topology",
+    "teamTopologyDesc": "Session-local teams are entered from the conversation; durable org delegation and reusable workers stay attached to each employee and the control plane.",
+    "sessionLocalTeam": "Session-local team",
+    "sessionLocalTeamDesc": "Team windows belong to the active conversation timeline and are reconciled back into the main session.",
+    "orgDelegation": "Org delegation",
+    "orgDelegationDesc": "Peer relationships and A2A collaboration stay explicit at employee level when ownership crosses boundaries.",
+    "relationships": "Relationships",
+    "subagents": "Subagents",
+    "registeredWorkflows": "Registered workflows",
+    "registeredWorkflowsDesc": "Read from the workflow definition API; activation and promotion stay in the workflow runtime.",
+    "noWorkflows": "No registered workflows yet.",
+    "planQueueTitle": "Cross-agent plan queue",
+    "planQueueDesc": "Pending and recently confirmed plans stay anchored to the owning employee session.",
+    "noPlans": "No pending plans across employees.",
+    "memoryHealthTitle": "Memory health",
+    "memoryHealthDesc": "A read model over each employee knowledge plane; durable writes still happen inside the governed memory path.",
+    "noMemoryRows": "No memory overview available yet.",
+    "activeMemories": "Active memories",
+    "staleMemories": "Stale",
+    "soulCandidates": "Soul candidates",
+    "skillCandidates": "Skill candidates",
+    "documentsTitle": "Workspace evidence",
+    "documentsDesc": "Recent root workspace files; open the employee workspace for editing and Office runtime actions.",
+    "noDocuments": "No workspace files surfaced yet.",
+    "approvalQueueTitle": "Approval queue",
+    "approvalQueueDesc": "Company-level approval state is visible here; resolution remains in the governed approval center.",
+    "noApprovals": "No approvals are waiting.",
+    "workflowRunsTitle": "Recent workflow runs",
+    "workflowRunsDesc": "Runtime evidence from employee workflow histories; promotion remains inside each employee workbench.",
+    "noWorkflowRuns": "No workflow runs surfaced yet.",
+    "noDescription": "No description",
+    "plans": {
+      "title": "Plan Review",
+      "eyebrow": "Confirmation boundary",
+      "subtitle": "Plan Mode stays session-native: review pending plans in the employee conversation where the evidence and timeline live."
+    },
+    "automations": {
+      "title": "Automations",
+      "eyebrow": "Workflow and trigger assets",
+      "subtitle": "Registered workflows, trigger-backed runs, and skill-grown automation assets remain governed through the existing workflow engine."
+    },
+    "memory": {
+      "title": "Memory & Knowledge",
+      "eyebrow": "Learning vault",
+      "subtitle": "Memory is agent-authored and platform-governed: T0 session truth, T2/T3 distillation, soul, and skill evidence stay under each employee."
+    },
+    "documents": {
+      "title": "Documents & Research",
+      "eyebrow": "Workspace evidence",
+      "subtitle": "Files, Office documents, workspace artifacts, and research exports are surfaced through the employee workspace and Office runtime."
+    },
+    "approvals": {
+      "title": "Approvals",
+      "eyebrow": "Governed action queue",
+      "subtitle": "Sensitive, external-visible, or high-risk actions stay behind confirmation, approval, and audit surfaces."
+    },
+    "team": {
+      "title": "A2A / Team",
+      "eyebrow": "Delegation and collaboration",
+      "subtitle": "Session-local team work, subagent definitions, peer relationships, and user-scoped local runtime channels stay visible without mixing their ownership boundaries."
+    }
+  },
+  "controlPlane": {
+    "eyebrow": "Enterprise operating console",
+    "title": "Control Plane",
+    "subtitle": "Company-scale governance for digital employees: people, models, tools, memory, delegation, approvals, audit, and local runtime channels.",
+    "sectionEyebrow": "Control Plane",
+    "backToOverview": "Back to overview",
+    "operatingAreas": "Operating areas",
+    "operatingAreasDesc": "Every card opens an implemented workspace section or user-scoped runtime page. No old admin capability is hidden behind legacy navigation.",
+    "metrics": {
+      "users": "Users",
+      "agents": "Employees",
+      "approvals": "Pending approvals",
+      "sections": "Admin surfaces"
+    }
   },
   "localAgents": {
     "title": "Local Agent Channel",
@@ -307,6 +491,17 @@
       "capabilitySupported": "Supported",
       "capabilityUnsupported": "Unsupported"
     },
+    "workbench": {
+      "title": "Agent workbench",
+      "sectionTabs": "Section tabs",
+      "overview": "Overview",
+      "conversation": "Conversation & Tasks",
+      "capabilities": "Capabilities",
+      "memory": "Memory & Knowledge",
+      "team": "A2A / Team",
+      "documents": "Documents & Workspace",
+      "permissions": "Permissions & Settings"
+    },
     "tabs": {
       "status": "Overview",
       "tasks": "Tasks",
@@ -484,6 +679,8 @@
       "reject": "Reject",
       "requestChangesPrompt": "What should change about this plan?",
       "rejectPrompt": "Reason for rejecting this plan (optional)",
+      "sendRevision": "Send revision request",
+      "submitReject": "Reject plan",
       "retryGeneration": "Retry plan generation",
       "reviseAndRetry": "Revise and retry",
       "planningTitle": "Planning in progress",
@@ -1212,7 +1409,8 @@
     "upload": {
       "success": "Upload complete",
       "failed": "Upload failed — please try again",
-      "uploading": "Uploading..."
+      "uploading": "Uploading...",
+      "limit": "Limit of 10 attached files reached."
     },
     "subagents": {
       "title": "Sub-agents",
@@ -1382,7 +1580,8 @@
     "placeholder": "Type a message...",
     "send": "Send",
     "deleteSession": "Delete conversation",
-    "deleteConfirm": "Delete this conversation and all its messages? This cannot be undone."
+    "deleteConfirm": "Delete this conversation and all its messages? This cannot be undone.",
+    "deleteConfirmWithTitle": "Delete \"{{title}}\" and all its messages? This cannot be undone."
   },
   "messages": {
     "title": "Notifications",

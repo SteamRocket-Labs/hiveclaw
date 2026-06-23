@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { enterpriseApi } from '../../api/domains/enterprise';
+import { showAppToast } from '../../components/AppDialogs';
 import type { MemoryConfig, LLMModel } from '../../api/domains/enterprise';
 
 const DEFAULT_CONFIG: MemoryConfig = {
@@ -42,7 +43,7 @@ export default function WorkspaceMemorySection({ selectedTenantId }: Props) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
-      alert(t('common.saveFailed', 'Save failed'));
+      showAppToast(t('common.saveFailed', 'Save failed'), 'error');
     } finally {
       setSaving(false);
     }

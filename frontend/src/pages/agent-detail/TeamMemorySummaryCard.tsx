@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { TeamMemoryEntry, TeamMemoryUpsertRequest } from '../../api/domains/memory';
 import { memoryApi } from '../../api/domains/memory';
+import { requestAppConfirm } from '../../components/AppDialogs';
 
 const TEAM_MEMORY_WORKSPACE_KEY = 'workspace';
 
@@ -172,16 +173,13 @@ export default function TeamMemorySummaryCard({ agentId, section }: TeamMemorySu
     },
   });
 
-  const handleDelete = React.useCallback(() => {
-    const confirmed = confirmTeamMemoryDelete(
-      (message) => {
-        if (typeof window === 'undefined' || typeof window.confirm !== 'function') {
-          return false;
-        }
-        return window.confirm(message);
-      },
-      t('agent.workspace.sharedMemoryDeleteConfirm', 'Delete this shared memory entry?'),
-    );
+  const handleDelete = React.useCallback(async () => {
+    const confirmed = await requestAppConfirm({
+      title: t('common.delete', 'Delete'),
+      message: t('agent.workspace.sharedMemoryDeleteConfirm', 'Delete this shared memory entry?'),
+      confirmLabel: t('common.delete', 'Delete'),
+      danger: true,
+    });
     if (!confirmed) {
       return;
     }

@@ -6,6 +6,7 @@ import { chatApi } from '../../api/domains/chat';
 import { triggerApi } from '../../api/domains/triggers';
 import { autonomyApi } from '../../api/domains/autonomy';
 import { listWorkflowDefinitions, type WorkflowDefinitionRecord } from '../../api/domains/workflows';
+import { requestAppConfirm } from '../../components/AppDialogs';
 import { StructuredToolResultBody } from './AgentChatSection';
 import TeamMemorySummaryCard from './TeamMemorySummaryCard';
 import PlanQueueSection from './PlanQueueSection';
@@ -519,10 +520,15 @@ export default function AgentAwareSection({
                       className="btn btn-ghost"
                       style={{ padding: '2px 6px', fontSize: '11px', color: 'var(--error)' }}
                       onClick={async () => {
-                        if (confirm(t('agent.aware.deleteTriggerConfirm', { name: trigger.name }))) {
-                          await triggerApi.delete(agentId, trigger.id);
-                          await onRefetchTriggers();
-                        }
+                        const confirmed = await requestAppConfirm({
+                          title: t('common.delete', 'Delete'),
+                          message: t('agent.aware.deleteTriggerConfirm', { name: trigger.name }),
+                          confirmLabel: t('common.delete', 'Delete'),
+                          danger: true,
+                        });
+                        if (!confirmed) return;
+                        await triggerApi.delete(agentId, trigger.id);
+                        await onRefetchTriggers();
                       }}
                     >
                       {t('common.delete', 'Delete')}

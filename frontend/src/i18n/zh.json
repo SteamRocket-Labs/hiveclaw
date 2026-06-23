@@ -65,6 +65,31 @@
   },
   "nav": {
     "dashboard": "工作台",
+    "home": "首页",
+    "currentWorkspace": "工作区",
+    "myWorkspace": "我的工作台",
+    "digitalEmployees": "数字员工",
+    "conversationsTasks": "对话与任务",
+    "planReview": "计划确认",
+    "automations": "自动化",
+    "memoryKnowledge": "记忆与知识",
+    "documentsResearch": "文档与研究",
+    "a2aTeam": "A2A / Team",
+    "localAgentChannel": "本地 Agent 通道",
+    "controlPlane": "控制中台",
+    "controlOverview": "总览",
+    "agentGovernance": "Agent 治理",
+    "modelsBudget": "模型与预算",
+    "capabilitiesTools": "能力与工具",
+    "teamDelegation": "Team 与委派",
+    "memoryGovernance": "记忆治理",
+    "channelsIntegrations": "渠道与集成",
+    "approvalCenter": "审批中心",
+    "auditLog": "审计日志",
+    "assetsAutomation": "资产与自动化",
+    "noEmployees": "还没有数字员工",
+    "workspaceSearch": "工作区搜索",
+    "quickOpen": "快速打开",
     "myAgents": "我的数字员工",
     "myCreated": "我创建的",
     "companyShared": "公司共用",
@@ -75,6 +100,165 @@
     "language": "语言",
     "plaza": "Agent圈",
     "localAgents": "本地 Agent"
+  },
+  "employees": {
+    "eyebrow": "Agent 控制面",
+    "title": "数字员工",
+    "subtitle": "在一个目录中管理员工身份、会话、记忆、能力、工作流、委派和工作区。",
+    "create": "创建员工",
+    "search": "搜索员工...",
+    "empty": "当前视图下没有匹配的员工。",
+    "noRole": "还没有角色描述",
+    "filters": {
+      "all": "全部",
+      "mine": "我拥有的",
+      "shared": "公司共用",
+      "recommended": "推荐",
+      "running": "运行中",
+      "attention": "需关注",
+      "coordinator": "协调者",
+      "local": "本地运行时"
+    },
+    "metrics": {
+      "total": "总数",
+      "mine": "我拥有的",
+      "shared": "公司共用",
+      "running": "运行中",
+      "coordinator": "协调者",
+      "attention": "需关注",
+      "local": "本地运行时"
+    },
+    "chips": {
+      "mine": "我拥有的",
+      "shared": "公司共用",
+      "recommended": "推荐",
+      "coordinator": "协调者",
+      "local": "本地运行时"
+    },
+    "actions": {
+      "chat": "对话",
+      "memory": "记忆",
+      "workflows": "工作流",
+      "team": "Team",
+      "local": "本地",
+      "detail": "详情"
+    }
+  },
+  "agentCreate": {
+    "eyebrow": "数字员工设置",
+    "title": "创建数字员工",
+    "subtitle": "Hive 通过 HR Agent 创建员工。HR Agent 会澄清角色、权限、能力包、记忆边界和第一个工作会话，然后再完成创建。",
+    "useHr": "使用 HR Agent 引导创建",
+    "hrError": "打开 HR Agent 失败。",
+    "hrOnlyTitle": "HR Agent 是唯一创建入口",
+    "hrOnlyDesc": "当前只暴露一条创建路径：进入 HR Agent 会话，描述角色，确认治理边界，再由 HR Agent 通过受治理后端创建员工。",
+    "governanceTitle": "能力治理",
+    "governanceDesc": "平台负责边界和审计；HR Agent 负责创建会话和最终员工定义。",
+    "rails": {
+      "hrOnly": "员工创建由 HR Agent 作为唯一创建角色来引导。",
+      "memoryGate": "记忆写入经过 Memory Gate 和 Platform Gate。",
+      "toolGovernance": "工具、MCP、工作流和子 Agent 权限都受治理。",
+      "auditTrace": "每个持久动作都能追溯到员工、用户和公司。"
+    }
+  },
+  "featureHub": {
+    "employeeSurfaces": "员工工作面",
+    "employeeSurfacesDesc": "每个快捷入口都打开真实存在的员工页面，保持会话和治理归属不变。",
+    "noAgents": "创建员工后才能使用这个区域。",
+    "controlLinks": "控制中台入口",
+    "controlLinksDesc": "公司级设置保留在控制中台；员工仍然拥有运行时执行。",
+    "skillRegistry": "Skill 注册表",
+    "skillRegistryDesc": "Skill 胶囊和进化候选",
+    "workflowWorkbench": "工作流工作台",
+    "workflowWorkbenchDesc": "预览、启动、检查和提升工作流运行",
+    "memoryGovernance": "记忆治理",
+    "memoryGovernanceDesc": "保留策略、卫生修复和受治理写入策略",
+    "officeRuntime": "Office 运行时",
+    "officeRuntimeDesc": "浏览器文档编辑，由员工工作区文件支撑",
+    "sessionPlans": "会话计划队列",
+    "sessionPlansDesc": "计划在当前会话时间线中确认或修订",
+    "approvalCenter": "审批中心",
+    "approvalCenterDesc": "公司审批、审计和策略控制",
+    "companySubagents": "公司 Subagent 库",
+    "companySubagentsDesc": "供员工运行时共享的租户级 worker 定义",
+    "localAgentChannel": "本地 Agent 通道",
+    "localAgentChannelDesc": "用户级本地运行时在线状态、通道聊天与工作区传输",
+    "teamTopologyTitle": "A2A 与 Team 拓扑",
+    "teamTopologyDesc": "会话内 Team 从对话进入；持久组织委派和可复用 worker 附着在员工与控制中台上。",
+    "sessionLocalTeam": "会话内 Team",
+    "sessionLocalTeamDesc": "Team 窗口归属当前对话时间线，并在结束后汇总回主会话。",
+    "orgDelegation": "组织委派",
+    "orgDelegationDesc": "Peer 关系和 A2A 协作在跨 owner 边界时保持员工级显式关系。",
+    "relationships": "关系",
+    "subagents": "Subagents",
+    "registeredWorkflows": "已注册工作流",
+    "registeredWorkflowsDesc": "读取工作流定义 API；激活与提升仍由工作流运行时负责。",
+    "noWorkflows": "还没有已注册工作流。",
+    "planQueueTitle": "跨员工计划队列",
+    "planQueueDesc": "待确认和最近确认的计划仍然锚定在所属员工会话中。",
+    "noPlans": "当前没有待确认计划。",
+    "memoryHealthTitle": "记忆健康状态",
+    "memoryHealthDesc": "这里读取每个员工的知识面读模型；持久写入仍然走受治理的记忆路径。",
+    "noMemoryRows": "还没有可展示的记忆概览。",
+    "activeMemories": "活跃记忆",
+    "staleMemories": "滞后",
+    "soulCandidates": "Soul 候选",
+    "skillCandidates": "Skill 候选",
+    "documentsTitle": "工作区证据",
+    "documentsDesc": "展示员工根工作区近期文件；编辑与 Office 运行时仍在员工工作区完成。",
+    "noDocuments": "还没有可展示的工作区文件。",
+    "approvalQueueTitle": "审批队列",
+    "approvalQueueDesc": "这里展示公司级审批状态；处理仍然保留在受治理的审批中心。",
+    "noApprovals": "当前没有等待审批的事项。",
+    "workflowRunsTitle": "近期工作流运行",
+    "workflowRunsDesc": "来自员工工作流历史的运行证据；提升仍在每个员工工作台内完成。",
+    "noWorkflowRuns": "还没有可展示的工作流运行。",
+    "noDescription": "没有描述",
+    "plans": {
+      "title": "计划确认",
+      "eyebrow": "确认边界",
+      "subtitle": "Plan Mode 保持会话原生：在证据和时间线所在的员工对话中审阅待确认计划。"
+    },
+    "automations": {
+      "title": "自动化",
+      "eyebrow": "工作流与触发资产",
+      "subtitle": "已注册工作流、触发运行和 Skill 进化出的自动化资产，都通过现有工作流引擎治理。"
+    },
+    "memory": {
+      "title": "记忆与知识",
+      "eyebrow": "学习库",
+      "subtitle": "记忆由 Agent 提炼、平台治理：T0 会话真相、T2/T3 蒸馏、soul 与 Skill 证据都归属到员工。"
+    },
+    "documents": {
+      "title": "文档与研究",
+      "eyebrow": "工作区证据",
+      "subtitle": "文件、Office 文档、工作区产物和研究导出都通过员工工作区与 Office 运行时呈现。"
+    },
+    "approvals": {
+      "title": "审批",
+      "eyebrow": "受治理动作队列",
+      "subtitle": "敏感、对外可见或高风险动作都保留确认、审批和审计面。"
+    },
+    "team": {
+      "title": "A2A / Team",
+      "eyebrow": "委派与协作",
+      "subtitle": "会话内 Team、Subagent 定义、Peer 关系和用户级本地运行时通道都可见，但不会混淆各自归属边界。"
+    }
+  },
+  "controlPlane": {
+    "eyebrow": "企业运行控制台",
+    "title": "控制中台",
+    "subtitle": "面向公司规模治理数字员工：人员、模型、工具、记忆、委派、审批、审计和本地运行时通道。",
+    "sectionEyebrow": "控制中台",
+    "backToOverview": "返回总览",
+    "operatingAreas": "运行区域",
+    "operatingAreasDesc": "每张卡片都打开已经实现的工作区 section 或用户级运行时页面。旧后台能力不会被藏在 legacy 导航后面。",
+    "metrics": {
+      "users": "用户",
+      "agents": "员工",
+      "approvals": "待审批",
+      "sections": "后台页面"
+    }
   },
   "localAgents": {
     "title": "本地 Agent 通道",
@@ -307,6 +491,17 @@
       "capabilitySupported": "支持",
       "capabilityUnsupported": "不支持"
     },
+    "workbench": {
+      "title": "Agent 工作台",
+      "sectionTabs": "区域标签",
+      "overview": "概览",
+      "conversation": "对话与任务",
+      "capabilities": "能力",
+      "memory": "记忆与知识",
+      "team": "A2A / Team",
+      "documents": "文档与工作区",
+      "permissions": "权限与设置"
+    },
     "tabs": {
       "status": "概览",
       "tasks": "任务",
@@ -484,6 +679,8 @@
       "reject": "拒绝",
       "requestChangesPrompt": "这个计划需要修改什么?",
       "rejectPrompt": "拒绝此计划的原因(可选)",
+      "sendRevision": "发送修改请求",
+      "submitReject": "拒绝计划",
       "retryGeneration": "重新生成计划",
       "reviseAndRetry": "修改后重试",
       "planningTitle": "正在规划",
@@ -1239,7 +1436,8 @@
     "upload": {
       "success": "上传完成",
       "failed": "上传失败，请重试",
-      "uploading": "上传中..."
+      "uploading": "上传中...",
+      "limit": "最多只能添加 10 个附件。"
     },
     "subagents": {
       "title": "子代理",
@@ -1409,7 +1607,8 @@
     "placeholder": "输入消息...",
     "send": "发送",
     "deleteSession": "删除对话",
-    "deleteConfirm": "删除这段对话和所有消息？此操作无法撤销。"
+    "deleteConfirm": "删除这段对话和所有消息？此操作无法撤销。",
+    "deleteConfirmWithTitle": "删除「{{title}}」和其中所有消息？此操作无法撤销。"
   },
   "messages": {
     "title": "通知中心",

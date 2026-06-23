@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi } from '../../api/domains/enterprise';
+import { showAppToast } from '../../components/AppDialogs';
 
 interface QuotaForm {
   default_tokens_per_day: number | null;
@@ -45,7 +46,7 @@ export default function WorkspaceQuotasSection() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {
-      alert('Failed to save');
+      showAppToast(t('common.saveFailed', 'Failed to save'), 'error');
     }
     setSaving(false);
   };

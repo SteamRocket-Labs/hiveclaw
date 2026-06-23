@@ -9,6 +9,7 @@ import {
   type McpToolMode,
 } from '../../api/domains/extensions';
 import { toolsApi, type AgentTool } from '../../api/domains/tools';
+import { showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
 import { useAuthStore } from '../../stores';
 
@@ -193,7 +194,7 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
       setConfigTool(null);
       await loadTools();
     } catch (error) {
-      alert(`Save failed: ${error}`);
+      showAppToast(`Save failed: ${error}`, 'error');
     }
     setConfigSaving(false);
   };

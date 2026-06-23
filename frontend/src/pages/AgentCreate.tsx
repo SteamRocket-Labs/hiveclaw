@@ -1,78 +1,96 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
+import {
+  IconArrowRight,
+  IconChecklist,
+  IconMessageCircle,
+  IconShieldCheck,
+  IconSparkles,
+} from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
 
-/**
- * /agents/new — thin redirect to HR Agent's AgentDetail page (chat tab).
- * The HR Agent is fetched (or lazily created) via GET /agents/system/hr,
- * then the user is redirected to /agents/{hrAgentId}#chat where the full
- * AgentDetail UI handles chat, settings, skills, etc.
- *
- * Query key includes current_tenant_id so switching companies re-fetches.
- */
+const capabilityRails = [
+  { key: 'hrOnly', fallback: 'Employee creation is guided by the HR Agent as the single creation role.' },
+  { key: 'memoryGate', fallback: 'Memory writes go through Memory Gate and Platform Gate.' },
+  { key: 'toolGovernance', fallback: 'Tools, MCP, workflow, and sub-agent access stay permission-governed.' },
+  { key: 'auditTrace', fallback: 'Every durable action remains traceable to the employee, user, and company.' },
+];
+
 export default function AgentCreate() {
-    const { t } = useTranslation();
-    const navigate = useNavigate();
-    const [tenantId, setTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-    // Listen for tenant switches
-    useEffect(() => {
-        const handler = (e: StorageEvent) => {
-            if (e.key === 'current_tenant_id') setTenantId(e.newValue || '');
-        };
-        window.addEventListener('storage', handler);
-        return () => window.removeEventListener('storage', handler);
-    }, []);
-
-    const { data: hrAgent, isLoading, error } = useQuery({
-        queryKey: ['hr-agent', tenantId],
-        queryFn: () => agentApi.getHrAgent(),
-        retry: 2,
-    });
-
-    useEffect(() => {
-        if (hrAgent?.id) {
-            navigate(`/agents/${hrAgent.id}#chat`, { replace: true });
-        }
-    }, [hrAgent, navigate]);
-
-    if (isLoading) {
-        return (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh' }}>
-                <div style={{ textAlign: 'center', maxWidth: '320px' }}>
-                    <div style={{ fontSize: '32px', marginBottom: '16px' }}>🤖</div>
-                    <div className="spinner" style={{ margin: '0 auto 12px' }} />
-                    <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-sm)' }}>{t('hrChat.loading')}</p>
-                    <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', marginTop: '6px', lineHeight: 1.5 }}>
-                        {t('hrChat.welcomeDesc')}
-                    </p>
-                </div>
-            </div>
-        );
+  const openHrAgent = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const hrAgent = await agentApi.getHrAgent();
+      navigate(`/agents/${hrAgent.id}#chat`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t('agentCreate.hrError', 'Failed to open HR Agent.'));
+    } finally {
+      setLoading(false);
     }
+  };
 
-    if (error) {
-        return (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh' }}>
-                <div style={{ textAlign: 'center', maxWidth: '400px' }}>
-                    <div style={{ fontSize: '32px', marginBottom: '12px' }}>⚠️</div>
-                    <p style={{ color: 'var(--text-primary)', fontSize: 'var(--text-sm)', fontWeight: 500, marginBottom: '8px' }}>
-                        {t('hrChat.loadError')}
-                    </p>
-                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '16px' }}>
-                        <button className="btn btn-primary" onClick={() => window.location.reload()}>
-                            {t('common.retry')}
-                        </button>
-                        <button className="btn btn-secondary" onClick={() => navigate('/enterprise#llm')}>
-                            {t('enterprise.tabs.llm')}
-                        </button>
-                    </div>
-                </div>
+  return (
+    <div className="workbench-page agent-create-page">
+      <div className="workbench-hero">
+        <div>
+          <span className="workbench-eyebrow">{t('agentCreate.eyebrow', 'Digital employee setup')}</span>
+          <h1 className="page-title">{t('agentCreate.title', 'Create digital employee')}</h1>
+          <p className="page-subtitle">
+            {t(
+              'agentCreate.subtitle',
+              'Hive creates employees through the HR Agent. It clarifies role, authority, capability packs, memory boundaries, and the first working session before creation is finalized.',
+            )}
+          </p>
+        </div>
+      </div>
+
+      <section className="workbench-panel agent-create-assistant">
+        <div className="agent-create-hr-card">
+          <span className="agent-create-method-icon">
+            <IconMessageCircle size={18} stroke={1.7} />
+          </span>
+          <div>
+            <h2>{t('agentCreate.hrOnlyTitle', 'HR Agent is the creation interface')}</h2>
+            <p>
+              {t(
+                'agentCreate.hrOnlyDesc',
+                'There is only one exposed creation path: enter the HR Agent session, describe the role, confirm governance, and let the HR Agent create the employee through the governed backend.',
+              )}
+            </p>
+            {error && <div className="workbench-error">{error}</div>}
+          </div>
+        </div>
+        <button className="btn btn-primary" onClick={openHrAgent} disabled={loading}>
+          <IconSparkles size={16} stroke={1.7} />
+          {loading ? t('common.loading', 'Loading...') : t('agentCreate.useHr', 'Use HR Agent for guided creation')}
+          <IconArrowRight size={16} stroke={1.7} />
+        </button>
+      </section>
+
+      <section className="workbench-panel">
+        <div className="workbench-panel-header">
+          <div>
+            <h2>{t('agentCreate.governanceTitle', 'Capability governance')}</h2>
+            <p>{t('agentCreate.governanceDesc', 'The platform sets boundaries and audit; the HR Agent owns the creation conversation and final employee definition.')}</p>
+          </div>
+          <IconShieldCheck size={20} stroke={1.6} />
+        </div>
+        <div className="workbench-rail-list">
+          {capabilityRails.map((item) => (
+            <div key={item.key} className="workbench-rail-row">
+              <IconChecklist size={15} stroke={1.7} />
+              <span>{t(`agentCreate.rails.${item.key}`, item.fallback)}</span>
             </div>
-        );
-    }
-
-    return null;
+          ))}
+        </div>
+      </section>
+    </div>
+  );
 }

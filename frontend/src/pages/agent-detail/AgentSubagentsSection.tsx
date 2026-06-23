@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { subagentApi, type SubagentRow, type SubagentScope } from '../../api/domains/subagents';
+import { requestAppConfirm } from '../../components/AppDialogs';
 
 type AgentSubagentsSectionProps = {
   agentId: string;
@@ -148,7 +149,13 @@ export default function AgentSubagentsSection({ agentId, canManage }: AgentSubag
 
   const removeAgentDefinition = async () => {
     if (!detail || detail.scope !== 'agent') return;
-    if (!window.confirm(t('agent.subagents.deleteConfirm', { name: detail.name }))) return;
+    const confirmed = await requestAppConfirm({
+      title: t('agent.subagents.deleteButton', 'Delete'),
+      message: t('agent.subagents.deleteConfirm', { name: detail.name }),
+      confirmLabel: t('common.delete', 'Delete'),
+      danger: true,
+    });
+    if (!confirmed) return;
     setSaving(true);
     setActionError(null);
     try {

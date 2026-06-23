@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { agentApi } from '../../api/domains/agents';
 import { enterpriseApi } from '../../api/domains/enterprise';
 import { fileApi } from '../../api/domains/files';
+import { showAppToast } from '../../components/AppDialogs';
 
 interface WorkspaceHrAgentSectionProps {
     selectedTenantId: string;
@@ -58,7 +59,7 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
             } as any);
             queryClient.invalidateQueries({ queryKey: ['hr-agent'] });
         } catch (e: any) {
-            alert(t('workspace.hr.saveFailed', 'Failed to save: ') + (e.message || e));
+            showAppToast(t('workspace.hr.saveFailed', 'Failed to save: ') + (e.message || e), 'error');
         }
         setSettingsSaving(false);
     };
@@ -73,7 +74,7 @@ export default function WorkspaceHrAgentSection({ selectedTenantId }: WorkspaceH
                 setSoulContent(typeof res === 'string' ? res : (res as any).content || '');
             }
         } catch (e: any) {
-            alert(e.message || 'Refresh failed');
+            showAppToast(e.message || 'Refresh failed', 'error');
         } finally {
             setSoulLoading(false);
         }

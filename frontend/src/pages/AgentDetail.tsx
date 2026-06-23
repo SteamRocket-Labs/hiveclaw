@@ -83,6 +83,90 @@ export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
     { tabs: ['settings'] },
 ];
 
+const AGENT_TAB_LABELS: Record<AgentDetailTab, string> = {
+    status: 'Status',
+    aware: 'Awareness',
+    knowledge: 'Knowledge',
+    evolution: 'Evolution',
+    tools: 'Tools',
+    skills: 'Skills',
+    subagents: 'Sub-agents',
+    relationships: 'Relationships',
+    workspace: 'Workspace',
+    workflows: 'Workflows',
+    office: 'Office',
+    chat: 'Chat',
+    activityLog: 'Activity',
+    approvals: 'Approvals',
+    settings: 'Settings',
+};
+
+export const AGENT_WORKBENCH_AREAS: Array<{
+    id: string;
+    labelKey: string;
+    fallback: string;
+    primaryTab: AgentDetailTab;
+    tabs: AgentDetailTab[];
+}> = [
+    {
+        id: 'overview',
+        labelKey: 'agent.workbench.overview',
+        fallback: 'Overview',
+        primaryTab: 'status',
+        tabs: ['status', 'activityLog'],
+    },
+    {
+        id: 'conversation',
+        labelKey: 'agent.workbench.conversation',
+        fallback: 'Conversation & Tasks',
+        primaryTab: 'chat',
+        tabs: ['chat', 'aware'],
+    },
+    {
+        id: 'capabilities',
+        labelKey: 'agent.workbench.capabilities',
+        fallback: 'Capabilities',
+        primaryTab: 'tools',
+        tabs: ['tools', 'skills', 'workflows'],
+    },
+    {
+        id: 'memory',
+        labelKey: 'agent.workbench.memory',
+        fallback: 'Memory & Knowledge',
+        primaryTab: 'knowledge',
+        tabs: ['knowledge', 'evolution'],
+    },
+    {
+        id: 'team',
+        labelKey: 'agent.workbench.team',
+        fallback: 'A2A / Team',
+        primaryTab: 'subagents',
+        tabs: ['subagents', 'relationships'],
+    },
+    {
+        id: 'documents',
+        labelKey: 'agent.workbench.documents',
+        fallback: 'Documents & Workspace',
+        primaryTab: 'workspace',
+        tabs: ['workspace', 'office'],
+    },
+    {
+        id: 'permissions',
+        labelKey: 'agent.workbench.permissions',
+        fallback: 'Permissions & Settings',
+        primaryTab: 'settings',
+        tabs: ['approvals', 'settings'],
+    },
+];
+
+function isAgentDetailTabVisible(agent: any, tab: AgentDetailTab): boolean {
+    if (agent?.access_level === 'use' && (tab === 'settings' || tab === 'approvals')) return false;
+    if (agent?.agent_type === 'openclaw') {
+        return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
+    }
+    return true;
+}
+
 function formatSlashCommandResult(response: ExecuteCommandResult): string {
     const { result } = response;
     if (typeof result === 'string') return result.trim() || `Command ${response.command} completed.`;
@@ -538,12 +622,19 @@ function AgentDetailInner() {
             await selectSession(newSess);
         } catch (err: any) {
             console.error('Failed to create session:', err);
-            alert(`Failed to create session: ${err.message || err}`);
+            showToast(`Failed to create session: ${err.message || err}`, 'error');
         }
     };
 
     const deleteSession = async (sessionId: string) => {
-        if (!confirm(t('chat.deleteConfirm', 'Delete this session and all its messages? This cannot be undone.'))) return;
+        const target = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(sessionId));
+        setDeleteSessionConfirm({ sessionId, title: target?.title || t('agent.chat.session', 'Session') });
+    };
+
+    const confirmDeleteSession = async () => {
+        if (!deleteSessionConfirm) return;
+        const sessionId = deleteSessionConfirm.sessionId;
+        setDeleteSessionConfirm(null);
         try {
             await chatApi.deleteSession(id!, sessionId);
             if (id) closeSessionSocket(buildSessionRuntimeKey(id, sessionId), true);
@@ -563,7 +654,7 @@ function AgentDetailInner() {
             await fetchMySessions(false, id);
             await fetchAllSessions();
         } catch (e: any) {
-            alert(e.message || 'Delete failed');
+            showToast(e.message || 'Delete failed', 'error');
         }
     };
 
@@ -592,7 +683,7 @@ function AgentDetailInner() {
             await agentApi.update(id!, body as any);
             queryClient.invalidateQueries({ queryKey: ['agent', id] });
             setShowExpiryModal(false);
-        } catch (e) { alert('Failed: ' + e); }
+        } catch (e) { showToast(`Failed: ${e}`, 'error'); }
         setExpirySaving(false);
     };
     const [chatMessages, setChatMessages] = useState<AgentChatMessage[]>([]);
@@ -1296,7 +1387,7 @@ function AgentDetailInner() {
             await fetchBranchLineage(id, String(branchSession.id));
         } catch (err: any) {
             const msg = err?.message || t('agent.chat.branch.failed', 'Failed to create branch');
-            alert(msg);
+            showToast(msg, 'error');
         }
     };
 
@@ -1305,7 +1396,7 @@ function AgentDetailInner() {
         if (!files.length) return;
         const allowedFiles = files.slice(0, 10 - attachedFiles.length);
         if (!allowedFiles.length) {
-            alert('Limit of 10 attached files reached.');
+            showToast(t('agent.upload.limit', 'Limit of 10 attached files reached.'), 'error');
             return;
         }
         
@@ -1335,7 +1426,7 @@ function AgentDetailInner() {
             }));
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
+            if (err?.message !== 'Upload cancelled') showToast(t('agent.upload.failed'), 'error');
         } finally { 
             setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; 
             if (fileInputRef.current) fileInputRef.current.value = ''; 
@@ -1363,7 +1454,7 @@ function AgentDetailInner() {
         e.preventDefault();
         const allowedFiles = filesToUpload.slice(0, 10 - attachedFiles.length);
         if (!allowedFiles.length) {
-            alert('Limit of 10 attached files reached.');
+            showToast(t('agent.upload.limit', 'Limit of 10 attached files reached.'), 'error');
             return;
         }
 
@@ -1393,7 +1484,7 @@ function AgentDetailInner() {
             }));
             setAttachedFiles(prev => [...prev, ...newAttached].slice(0, 10));
         } catch (err: any) {
-            if (err?.message !== 'Upload cancelled') alert(t('agent.upload.failed'));
+            if (err?.message !== 'Upload cancelled') showToast(t('agent.upload.failed'), 'error');
         } finally { setUploading(false); setUploadProgress(-1); uploadAbortRef.current = null; }
     };
 
@@ -1527,6 +1618,7 @@ function AgentDetailInner() {
     const [fileDraft, setFileDraft] = useState('');
     const [promptModal, setPromptModal] = useState<{ title: string; placeholder: string; action: string } | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; name: string; isDir: boolean } | null>(null);
+    const [deleteSessionConfirm, setDeleteSessionConfirm] = useState<{ sessionId: string; title: string } | null>(null);
     const [uploadToast, setUploadToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
     const [editingRole, setEditingRole] = useState(false);
     const [roleInput, setRoleInput] = useState('');
@@ -1587,6 +1679,16 @@ function AgentDetailInner() {
     if (isSystemHr && activeTab !== 'chat') {
         setActiveTab('chat');
     }
+
+    const visibleWorkbenchAreas = AGENT_WORKBENCH_AREAS
+        .map((area) => ({
+            ...area,
+            tabs: area.tabs.filter((tab) => isAgentDetailTabVisible(agent, tab)),
+        }))
+        .filter((area) => area.tabs.length > 0);
+    const activeWorkbenchArea =
+        visibleWorkbenchAreas.find((area) => area.tabs.includes(activeTab as AgentDetailTab)) ||
+        visibleWorkbenchAreas[0];
 
     return (
         <>
@@ -1724,41 +1826,36 @@ function AgentDetailInner() {
                 </div>
                 )}
 
-                {/* Tabs — hidden for HR system agent */}
+                {/* Workbench navigation — hidden for HR system agent */}
                 {!isSystemHr && (
-                <div className="tabs">
-                    {AGENT_DETAIL_TAB_GROUPS.map((group, gi) => {
-                        const visibleTabs = group.tabs.filter(tab => {
-                            if ((agent as any)?.access_level === 'use') {
-                                if (tab === 'settings' || tab === 'approvals') return false;
-                            }
-                            if ((agent as any)?.agent_type === 'openclaw') {
-                                return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
-                            }
-                            return true;
-                        });
-                        if (visibleTabs.length === 0) return null;
-                        return (
-                            <React.Fragment key={gi}>
-                                {gi > 0 && <div className="tab-separator" />}
-                                {visibleTabs.map(tab => {
-                                    const tooltipKey = `agent.tabs.${tab}Tooltip`;
-                                    const tooltip = t(tooltipKey, { defaultValue: '' });
-                                    return (
-                                        <div
-                                            key={tab}
-                                            className={`tab ${activeTab === tab ? 'active' : ''}`}
-                                            onClick={() => setActiveTab(tab)}
-                                            title={tooltip || undefined}
-                                        >
-                                            {t(`agent.tabs.${tab}`)}
-                                        </div>
-                                    );
-                                })}
-                            </React.Fragment>
-                        );
-                    })}
-                </div>
+                    <div className="agent-workbench-nav" data-testid="agent-workbench-nav">
+                        <div className="agent-workbench-areas" role="tablist" aria-label={t('agent.workbench.title', 'Agent workbench')}>
+                            {visibleWorkbenchAreas.map((area) => (
+                                <button
+                                    key={area.id}
+                                    type="button"
+                                    className={`agent-workbench-area ${activeWorkbenchArea?.id === area.id ? 'active' : ''}`}
+                                    onClick={() => setActiveTab(area.primaryTab)}
+                                >
+                                    {t(area.labelKey, area.fallback)}
+                                </button>
+                            ))}
+                        </div>
+                        {activeWorkbenchArea && (
+                            <div className="agent-workbench-subnav" aria-label={t('agent.workbench.sectionTabs', 'Section tabs')}>
+                                {activeWorkbenchArea.tabs.map((tab) => (
+                                    <button
+                                        key={tab}
+                                        type="button"
+                                        className={`agent-workbench-subtab ${activeTab === tab ? 'active' : ''}`}
+                                        onClick={() => setActiveTab(tab)}
+                                    >
+                                        {t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
                 )}
 
                 {/* ── Enhanced Status Tab ── */}
@@ -2066,6 +2163,20 @@ function AgentDetailInner() {
                         }
                     }
                 }}
+            />
+
+            <ConfirmModal
+                open={!!deleteSessionConfirm}
+                title={t('chat.deleteSession', 'Delete session')}
+                message={t(
+                    'chat.deleteConfirmWithTitle',
+                    'Delete "{{title}}" and all its messages? This cannot be undone.',
+                    { title: deleteSessionConfirm?.title || t('agent.chat.session', 'Session') },
+                )}
+                confirmLabel={t('common.delete')}
+                danger
+                onCancel={() => setDeleteSessionConfirm(null)}
+                onConfirm={confirmDeleteSession}
             />
 
             {

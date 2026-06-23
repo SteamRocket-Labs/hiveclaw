@@ -109,4 +109,22 @@ describe('AgentDetail aware reflection session gating', () => {
 
     expect(reflectionQuery?.enabled).toBe(true);
   });
+
+  it('renders product workbench areas while preserving legacy hash routing', () => {
+    mockState.accessLevel = 'manage';
+    mockState.hash = '#tools';
+
+    const markup = renderToStaticMarkup(<AgentDetail />);
+
+    expect(markup).toContain('Overview');
+    expect(markup).toContain('Conversation &amp; Tasks');
+    expect(markup).toContain('Capabilities');
+    expect(markup).toContain('Memory &amp; Knowledge');
+    expect(markup).toContain('A2A / Team');
+    expect(markup).toContain('Documents &amp; Workspace');
+    expect(markup).toContain('Permissions &amp; Settings');
+    expect(markup).toContain('Tools');
+    expect(markup).toContain('Skills');
+    expect(markup).toContain('Workflows');
+  });
 });

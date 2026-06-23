@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi } from '../api/domains/auth';
 import { ApiError } from '../api/core/errors';
+import { showAppToast } from '../components/AppDialogs';
 import { safePostLoginRedirect } from '../routing/authRedirect';
 
 type RegisterConflict = {
@@ -110,13 +111,11 @@ export default function Login() {
             }
             setAuth(res.user, res.access_token);
             // Feishu-imported users log in with the shared default "123456".
-            // Nag them to rotate it (first version: plain alert — upgrade to
-            // an in-app banner once the dashboard layout gets one).
             if (res.needs_password_change) {
-                alert(t(
+                showAppToast(t(
                     'auth.passwordChangeReminder',
                     'You are using the default password. For security, please change it in Settings → Account → Change Password.',
-                ));
+                ), 'info');
             }
             // Redirect to company setup if user has no company assigned
             if (res.needs_company_setup) {

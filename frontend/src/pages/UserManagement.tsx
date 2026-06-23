@@ -4,6 +4,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { usersApi } from '../api/domains/users';
+import { requestAppConfirm } from '../components/AppDialogs';
 import { useAuthStore } from '../stores';
 
 interface UserInfo {
@@ -258,7 +259,13 @@ export default function UserManagement() {
                                                 const newRole = e.target.value;
                                                 const roleName = newRole === 'org_admin' ? t('userManagement.roleAdmin') : t('userManagement.roleMember');
                                                 const confirmMsg = t('userManagement.confirmRoleChange', { name: user.display_name || user.username, role: roleName });
-                                                if (confirm(confirmMsg)) handleRoleChange(user.id, newRole);
+                                                void requestAppConfirm({
+                                                    title: t('userManagement.confirmRoleChangeTitle', 'Change role'),
+                                                    message: confirmMsg,
+                                                    confirmLabel: t('common.confirm', 'Confirm'),
+                                                }).then((confirmed) => {
+                                                    if (confirmed) handleRoleChange(user.id, newRole);
+                                                });
                                             }}
                                             style={{ fontSize: '11px', padding: '2px 4px', width: '100%', minWidth: 0 }}
                                         >

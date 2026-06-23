@@ -2659,6 +2659,10 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Confirm and start');
     expect(markup).toContain('Request changes');
     expect(markup).toContain('Reject');
+    expect(markup).toContain('data-testid="plan-revision-composer"');
+    expect(markup).toContain('data-testid="plan-reject-composer"');
+    expect(markup).toContain('What should change about this plan?');
+    expect(markup).toContain('Reason for rejecting this plan');
   });
 
   it('does not expose internal ledger paths or empty side-effect placeholders in PlanCard', () => {

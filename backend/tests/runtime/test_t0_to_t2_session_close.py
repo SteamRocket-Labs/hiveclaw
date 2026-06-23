@@ -8,7 +8,13 @@ import pytest
 
 from app.memory.t0.ledger import append_t0_session_event
 from app.runtime.hooks import HookContext, HookEvent
-from app.runtime.hooks_setup import _t0_delegation_end, _t0_dream_end, _t0_heartbeat_tick_end, _t0_session_close, _t0_trigger_end
+from app.runtime.hooks_setup import (
+    _t0_delegation_end,
+    _t0_dream_end,
+    _t0_heartbeat_tick_end,
+    _t0_session_close,
+    _t0_trigger_end,
+)
 
 
 def _patch_t0_root(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -59,6 +65,59 @@ async def test_session_close_seals_t0_segment_then_starts_canonical_t2_package(m
     assert calls[0]["session_id"] == session_id
     assert calls[0]["t0_segment_id"] == first.segment_id
     assert calls[0]["data_root"] == tmp_path
+
+
+@pytest.mark.asyncio
+async def test_session_close_passes_branch_lineage_to_t2_package_job(monkeypatch, tmp_path) -> None:
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = "branch-session-1"
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="rollback branch 上的新问题。",
+        metadata={"branch_mode": "rewind", "source_session_id": "source-session-1"},
+        data_root=tmp_path,
+    )
+    calls: list[dict] = []
+
+    async def fake_build(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status="committed", package_dir=tmp_path / "pkg", job_id=kwargs["job_id"], issues=())
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", fake_build)
+
+    await _t0_session_close(
+        HookContext(
+            event=HookEvent.SESSION_CLOSE,
+            agent_id=str(agent_id),
+            session_id=session_id,
+            source="web",
+            messages=[{"role": "user", "content": "done"}],
+            metadata={
+                "reason": "user_left",
+                "tenant_id": str(tenant_id),
+                "branch_mode": "rewind",
+                "source_session_id": "source-session-1",
+                "anchor_event_id": "anchor-event-1",
+                "anchor_sequence": 3,
+            },
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["t0_segment_id"] == first.segment_id
+    assert calls[0]["session_lineage"] == {
+        "session_id": session_id,
+        "branch_mode": "rewind",
+        "source_session_id": "source-session-1",
+        "anchor_event_id": "anchor-event-1",
+        "anchor_sequence": 3,
+    }
 
 
 @pytest.mark.asyncio
@@ -194,9 +253,7 @@ async def test_trigger_end_does_not_fabricate_t0_when_runtime_transcript_missing
     )
 
     source_files = list(
-        (tmp_path / str(agent_id) / "memory" / "t0" / "sessions" / "empty-trigger-session").glob(
-            "segments/*/source.md"
-        )
+        (tmp_path / str(agent_id) / "memory" / "t0" / "sessions" / "empty-trigger-session").glob("segments/*/source.md")
     )
     assert source_files == []
 
@@ -382,13 +439,7 @@ async def test_pre_compaction_seals_t0_checkpoint_and_enqueues_t2_job(monkeypatc
     assert calls[0]["session_id"] == session_id
     assert calls[0]["t0_segment_id"] == first.segment_id
     assert (
-        tmp_path
-        / str(agent_id)
-        / "memory"
-        / ".staging"
-        / "t2_jobs"
-        / calls[0]["job_id"]
-        / "job_manifest.json"
+        tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / calls[0]["job_id"] / "job_manifest.json"
     ).exists()
 
 

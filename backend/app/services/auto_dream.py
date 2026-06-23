@@ -1926,6 +1926,10 @@ async def run_soft_dream(agent_id: uuid.UUID) -> dict:
 async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     """Execute memory consolidation for an agent.
 
+    Compatibility entrypoint for both Dream lanes:
+      - Memory Dream: reviewed T2 -> dream workspace diff -> T3 batch staging.
+      - Soul Dream: accepted T3 -> soul.md candidate promotion.
+
     Returns a summary dict with keys: consolidated, removed, added.
 
     PR-10 flow:
@@ -1937,10 +1941,31 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
          preservation sidecar written in step 2.
     """
     key = agent_id.hex
+    memory_dream_report: dict = {"status": "not_run"}
+    try:
+        from app.services.memory_dream import run_memory_dream
+
+        memory_dream = run_memory_dream(agent_id=agent_id)
+        memory_dream_report = {
+            "status": memory_dream.status,
+            "workspace": str(memory_dream.workspace_result.workspace_dir),
+            "diff": str(memory_dream.workspace_result.diff_path)
+            if memory_dream.workspace_result.diff_path.exists()
+            else "",
+            "selected_t2_packages": [
+                str(path) for path in memory_dream.workspace_result.selected_package_dirs
+            ],
+            "t3_batch_job_id": memory_dream.t3_batch_result.job_id if memory_dream.t3_batch_result else "",
+            "issues": list(memory_dream.issues),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[MemoryDream] failed for %s: %s", agent_id, exc)
+        memory_dream_report = {"status": "failed", "issues": [str(exc)]}
+
     t3_files = _read_all_t3(agent_id)
     if not t3_files:
         _mark_dreamed(key)
-        return {"consolidated": 0, "removed": 0, "added": 0}
+        return {"consolidated": 0, "removed": 0, "added": 0, "memory_dream": memory_dream_report}
 
     # Resolve agent name once so both the LLM prompt and downstream logs share it.
     agent_name = "Agent"
@@ -2054,6 +2079,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         "repeated_feedback_held": repeated_feedback_held,
         "soul_contradicted_frozen": int(llm_apply_report.get("soul_contradicted_frozen", 0) or 0)
         + repeated_feedback_contradicted,
+        "memory_dream": memory_dream_report,
     }
 
     # Emit DREAM_END hook → T0 session ledger + heartbeat session reset
@@ -2077,6 +2103,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
                 "repeated_feedback_soul_contradicted_frozen": repeated_feedback_contradicted,
                 "dream_reasoning": dream_reasoning,
                 "llm_apply_report": llm_apply_report,
+                "memory_dream": memory_dream_report,
                 "cleanup_summary": (f"focus cleaned; T2 truncated {t2_removed}"),
             },
         )

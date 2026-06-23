@@ -514,6 +514,7 @@ def build_dynamic_prompt_suffix(
     retrieval_context: str = "",
     continuity_context: str = "",
     runtime_metadata_context: str = "",
+    permissions_context: str = "",
     session_learning_projection: str = "",
     system_prompt_suffix: str = "",
     system_prompt_suffix_sections: list[str] | None = None,
@@ -599,6 +600,11 @@ def build_dynamic_prompt_suffix(
         runtime_block = _trim_block(runtime_metadata_context, budget_chars=runtime_budget)
         if runtime_block:
             parts.append(runtime_block)
+
+    if permissions_context:
+        permissions_block = _trim_block(permissions_context, budget_chars=min(runtime_budget, 2400))
+        if permissions_block:
+            parts.append(permissions_block)
 
     tool_groups_budget = (
         budget_profile.active_tool_groups_budget_chars if budget_profile else _ACTIVE_TOOL_GROUPS_CHAR_BUDGET

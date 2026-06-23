@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from app.runtime.prompts.delegation import DELEGATION_BRIEF_CONTRACT
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
 
 
@@ -158,6 +159,7 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
             "Spawn an async task on another digital employee and return immediately with a task handle.\n\n"
             "Usage:\n"
             "- Use this for coordinator-style delegation when the worker should continue in the background.\n"
+            f"- Brief format: {DELEGATION_BRIEF_CONTRACT}\n"
             "- Provide a precise task with the outcome you expect, any constraints, and the evidence the worker should return.\n"
             "- After delegating, check back later with `check_async_task` or inspect multiple workers with `list_async_tasks`.\n"
             "- Do NOT use this for quick back-and-forth questions — use `send_message_to_agent` for synchronous collaboration."

@@ -85,10 +85,12 @@ async def _project_on_response(ctx: HookContext) -> None:
     if not agent_id:
         return
     turn = ctx.metadata.get("turn_count", "?")
-    logger.info("[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s projection_only=true", ctx.agent_id, ctx.source, turn)
+    logger.info(
+        "[Hooks] RESPONSE_COMPLETE: agent=%s source=%s turn=%s projection_only=true", ctx.agent_id, ctx.source, turn
+    )
     update_session_memory(
         agent_id,
-        build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
+        build_session_memory_payload_from_messages(ctx.messages or [], metadata=_session_memory_metadata(ctx)),
     )
 
 
@@ -96,6 +98,14 @@ def _agent_data_root() -> Path:
     from app.config import get_settings
 
     return Path(get_settings().AGENT_DATA_DIR)
+
+
+def _session_memory_metadata(ctx: HookContext) -> dict:
+    metadata = dict(ctx.metadata or {})
+    if ctx.session_id and not metadata.get("session_id"):
+        metadata["session_id"] = str(ctx.session_id)
+    metadata.setdefault("source", ctx.source or str(ctx.event))
+    return metadata
 
 
 async def _run_fast_reflection_learning_brain(
@@ -194,7 +204,7 @@ async def _project_on_pre_compaction(ctx: HookContext) -> None:
     )
     update_session_memory(
         agent_id,
-        build_session_memory_payload_from_messages(ctx.messages or [], metadata=ctx.metadata),
+        build_session_memory_payload_from_messages(ctx.messages or [], metadata=_session_memory_metadata(ctx)),
     )
     if not ctx.session_id:
         return
@@ -356,6 +366,30 @@ def _with_t0_runtime_session(ctx: HookContext, session_id: str) -> HookContext:
     )
 
 
+def _session_lineage_metadata(ctx: HookContext) -> dict[str, object] | None:
+    """Extract branch/checkpoint lineage metadata for T2 source-bundle construction."""
+
+    keys = (
+        "root_session_id",
+        "parent_session_id",
+        "branch_session_id",
+        "branch_mode",
+        "source_session_id",
+        "anchor_event_id",
+        "anchor_sequence",
+        "visible_prefix_end",
+        "regenerate_from_event_id",
+        "regenerate_prompt_source_event_id",
+        "edit_from_event_id",
+        "rollback_strategy",
+        "command",
+    )
+    payload = {key: ctx.metadata[key] for key in keys if key in ctx.metadata and ctx.metadata[key] not in (None, "")}
+    if ctx.session_id:
+        payload.setdefault("session_id", str(ctx.session_id))
+    return payload or None
+
+
 async def _t0_session_close(ctx: HookContext) -> None:
     """SESSION_CLOSE → seal the append-only T0 segment and start canonical T2 packaging."""
     agent_id = _parse_agent_id(ctx)
@@ -367,7 +401,7 @@ async def _t0_session_close(ctx: HookContext) -> None:
     if messages:
         update_session_memory(
             agent_id,
-            build_session_memory_payload_from_messages(messages, metadata=ctx.metadata),
+            build_session_memory_payload_from_messages(messages, metadata=_session_memory_metadata(ctx)),
         )
     if ctx.session_id:
         sealed = seal_t0_session_segment(
@@ -453,6 +487,7 @@ async def _build_t2_for_sealed_segment(*, ctx: HookContext, agent_id: uuid.UUID,
             tenant_id=tenant_id,
             session_id=str(ctx.session_id),
             t0_segment_id=segment_id,
+            session_lineage=_session_lineage_metadata(ctx),
         )
         logger.info(
             "[Hooks] T0->T2 job %s agent=%s session=%s segment=%s job=%s path=%s",

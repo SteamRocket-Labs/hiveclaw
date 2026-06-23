@@ -33,6 +33,7 @@ describe('chat API adapter', () => {
     });
     await chatApi.listSessionBranches('agent-1', 'session-1');
     await chatApi.getSessionLineage('agent-1', 'session-1');
+    await chatApi.getSessionIndex('agent-1', 'session-1');
 
     expect(post).toHaveBeenCalledWith('/agents/agent-1/sessions/session-1/branches', {
       mode: 'edit',
@@ -43,6 +44,7 @@ describe('chat API adapter', () => {
     });
     expect(get).toHaveBeenNthCalledWith(1, '/agents/agent-1/sessions/session-1/branches');
     expect(get).toHaveBeenNthCalledWith(2, '/agents/agent-1/sessions/session-1/lineage');
+    expect(get).toHaveBeenNthCalledWith(3, '/agents/agent-1/sessions/session-1/index');
   });
 
   it('sends structured attachment metadata when starting a session run', async () => {

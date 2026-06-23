@@ -3,6 +3,7 @@
 import logging
 import re
 
+from app.runtime.prompts.compaction import COMPACTION_LONG_RUN_STATE_CONTRACT
 from app.services.llm_error_policy import is_llm_error_message
 from app.services.token_tracker import estimate_tokens_from_text
 
@@ -299,7 +300,7 @@ def _extract_summary_from_response(content: str) -> str | None:
 # Summarization system prompt — uses <analysis>/<summary> scratchpad pattern.
 # The <analysis> block is stripped by _extract_summary_from_response() before
 # the summary reaches context, letting the model reason without wasting tokens.
-_SUMMARIZE_SYSTEM_PROMPT = """\
+_SUMMARIZE_SYSTEM_PROMPT = f"""\
 <role>
 You are compressing a long conversation into a structured summary so the
 next turn can resume safely when prior messages fall out of context. You are
@@ -337,6 +338,7 @@ turning it into durable memory:
 - Preserve Runtime Task / Attempt ids, trigger/heartbeat run status, output
   artifacts, and artifact paths when they are needed to resume or audit.
 - Preserve attempt evidence exactly enough to audit the run.
+{COMPACTION_LONG_RUN_STATE_CONTRACT}
 - Do not rewrite autonomous run state as long-term memory, soul.md identity,
   user preference, or general policy. Memory extraction and dream promotion
   decide durable lessons separately.

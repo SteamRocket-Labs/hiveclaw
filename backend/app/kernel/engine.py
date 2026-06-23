@@ -842,6 +842,97 @@ async def _record_runtime_span(
     return payload
 
 
+def _coerce_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _build_permissions_context(request: InvocationRequest, runtime_config: RuntimeConfig | None) -> str:
+    if (request.standalone_system_prompt or "").strip():
+        return ""
+    metadata = _span_session_metadata(request)
+    policy = metadata.get("permission_profile")
+    policy_dict = dict(policy) if isinstance(policy, dict) else {}
+    approval_policy = str(
+        policy_dict.get("approval_policy")
+        or metadata.get("approval_policy")
+        or metadata.get("permission_mode")
+        or "platform_gate"
+    )
+    network_access = str(
+        policy_dict.get("network_access")
+        or metadata.get("network_access")
+        or metadata.get("network_policy")
+        or "governed"
+    )
+    allowed_tools = _coerce_str_list(policy_dict.get("allowed_tools") or metadata.get("allowed_tools"))
+    if not allowed_tools and request.allowed_tool_names:
+        allowed_tools = _coerce_str_list(request.allowed_tool_names)
+    denied_actions = _coerce_str_list(policy_dict.get("denied_actions") or metadata.get("denied_actions"))
+    if getattr(runtime_config, "tenant_resolution_error", None):
+        denied_actions.append("tool_execution_without_tenant")
+    from app.runtime.prompts.permissions import PermissionsPromptContext, build_permissions_prompt
+
+    return build_permissions_prompt(
+        PermissionsPromptContext(
+            approval_policy=approval_policy,
+            network_access=network_access,
+            writable_roots=_coerce_str_list(policy_dict.get("writable_roots") or metadata.get("writable_roots")),
+            denied_reads=_coerce_str_list(policy_dict.get("denied_reads") or metadata.get("denied_reads")),
+            allowed_tools=allowed_tools,
+            denied_actions=denied_actions,
+            request_permission_tool_enabled=bool(
+                policy_dict.get("request_permission_tool_enabled")
+                or metadata.get("request_permission_tool_enabled")
+                or "request_permission" in set(allowed_tools)
+            ),
+        )
+    )
+
+
+async def _compress_messages_with_trace(
+    compressor: MaybeCompressMessages,
+    messages: list[dict],
+    *,
+    trace_context: Any = None,
+    tools: list[dict] | None = None,
+    parallel_tool_calls: bool = False,
+    instructions: str = "",
+    **kwargs,
+) -> list[dict]:
+    if trace_context is None or not getattr(trace_context, "enabled_flag", False):
+        return await _maybe_await(compressor(messages, **kwargs))
+
+    from app.runtime.compaction_trace import CompactionRequest
+
+    try:
+        compressed = await _maybe_await(compressor(messages, **kwargs))
+    except Exception:
+        # No compaction lifecycle exists if the compressor failed before it
+        # produced a replacement history. The normal LLM/runtime error path
+        # records the failure.
+        raise
+    if compressed == messages:
+        return compressed
+
+    request = CompactionRequest(
+        model=str(kwargs.get("model_name") or getattr(trace_context, "model", "") or ""),
+        input=list(messages),
+        instructions=instructions,
+        tools=list(tools or []),
+        parallel_tool_calls=parallel_tool_calls,
+    )
+    attempt = await trace_context.start_attempt(request)
+    await attempt.record_completed(output_items=list(compressed), status="completed")
+    await trace_context.record_installed(input_history=list(messages), replacement_history=list(compressed))
+    return compressed
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -1697,7 +1788,17 @@ def _build_restoration_context(
 
     # ── 2.25: Structured session continuity artifacts ──
     if _resolved_ws and parts:
+        _session_memory_rel_paths: list[tuple[str, str]] = []
+        if session_context is not None:
+            _session_id = getattr(session_context, "session_id", None)
+            if _session_id:
+                _safe_session_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(_session_id).strip())
+                if _safe_session_id:
+                    _session_memory_rel_paths.append(
+                        (f"memory/sessions/{_safe_session_id}/session_memory.md", "Session Memory")
+                    )
         for rel_path, label in [
+            *_session_memory_rel_paths,
             ("runtime_artifacts/session_memory.md", "Session Memory"),
             ("runtime_artifacts/compaction_summary.md", "Latest Compaction Summary"),
             ("workspace/session_memory.md", "Legacy Session Memory"),
@@ -2136,6 +2237,7 @@ class AgentKernel:
                     )
                 except Exception as exc:  # noqa: BLE001 — runtime metadata is optional context
                     logger.debug("[Kernel] Runtime metadata skipped for agent %s: %s", request.agent_id, exc)
+            resolved_permissions_context = _build_permissions_context(request, runtime_config)
             current_user_name = await _maybe_await(self._deps.resolve_current_user_name(request.user_id))
 
             # Prompt cache: reuse frozen prefix from session if available
@@ -2211,6 +2313,7 @@ class AgentKernel:
                     memory_navigation=resolved_memory_navigation_context,
                     skill_catalog=request.skill_catalog,
                     runtime_metadata_context=resolved_runtime_metadata_context,
+                    permissions_context=resolved_permissions_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_system_prompt_suffix,
                     system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -2248,6 +2351,7 @@ class AgentKernel:
                     memory_navigation=resolved_memory_navigation_context,
                     skill_catalog=request.skill_catalog,
                     runtime_metadata_context=resolved_runtime_metadata_context,
+                    permissions_context=resolved_permissions_context,
                     retrieval_context=resolved_retrieval_context,
                     system_prompt_suffix=_system_prompt_suffix,
                     system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -2277,6 +2381,26 @@ class AgentKernel:
             if _is_coordinator:
                 tools_for_llm = filter_tools_for_coordinator(tools_for_llm)
                 logger.info("[Kernel] Coordinator mode active for agent %s", request.agent_id)
+
+            async def _record_compaction_fact(fact: dict[str, Any]) -> None:
+                await _record_span(
+                    span_type="compaction",
+                    name=str(fact.get("fact_type") or "compaction_fact"),
+                    started_at_ms=monotonic_ms(),
+                    invocation_id=invocation_id,
+                    metadata=fact,
+                )
+
+            from app.runtime.compaction_trace import CompactionTraceContext
+
+            compaction_trace_context = CompactionTraceContext.enabled(
+                thread_id=request.memory_session_id
+                or (str(getattr(request.session_context, "session_id", "")) if request.session_context else ""),
+                turn_id=invocation_id or new_invocation_id(),
+                model=str(getattr(request.model, "model", "") or ""),
+                provider_name=str(getattr(request.model, "provider", "") or ""),
+                fact_recorder=_record_compaction_fact,
+            )
 
             collected_parts: list[dict[str, Any]] = []
             streamed_chunks: list[str] = []
@@ -2593,8 +2717,12 @@ class AgentKernel:
                     context_usage_anchor_tokens = 0
 
             messages = await _maybe_await(
-                self._deps.maybe_compress_messages(
+                _compress_messages_with_trace(
+                    self._deps.maybe_compress_messages,
                     request.messages,
+                    trace_context=compaction_trace_context,
+                    tools=tools_for_llm,
+                    instructions="initial_context_compaction",
                     model_provider=request.model.provider,
                     model_name=request.model.model,
                     max_input_tokens_override=getattr(request.model, "max_input_tokens", None),
@@ -2843,8 +2971,12 @@ class AgentKernel:
                                     conv_dicts = _llm_messages_to_dicts(api_messages[1:])
                                     _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
                                     compressed = await _maybe_await(
-                                        self._deps.maybe_compress_messages(
+                                        _compress_messages_with_trace(
+                                            self._deps.maybe_compress_messages,
                                             conv_dicts,
+                                            trace_context=compaction_trace_context,
+                                            tools=tools_for_llm,
+                                            instructions="prompt_too_long_full_compress_first",
                                             model_provider=active_model.provider,
                                             model_name=active_model.model,
                                             max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
@@ -2865,6 +2997,7 @@ class AgentKernel:
                                             memory_navigation=resolved_memory_navigation_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
+                                            permissions_context=resolved_permissions_context,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_system_prompt_suffix,
                                             system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -2945,6 +3078,7 @@ class AgentKernel:
                                             memory_navigation=resolved_memory_navigation_context,
                                             skill_catalog=request.skill_catalog,
                                             runtime_metadata_context=resolved_runtime_metadata_context,
+                                            permissions_context=resolved_permissions_context,
                                             retrieval_context=resolved_retrieval_context,
                                             system_prompt_suffix=_system_prompt_suffix,
                                             system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -3000,8 +3134,12 @@ class AgentKernel:
                                         conv_dicts = _llm_messages_to_dicts(api_messages[1:])
                                         _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
                                         compressed = await _maybe_await(
-                                            self._deps.maybe_compress_messages(
+                                            _compress_messages_with_trace(
+                                                self._deps.maybe_compress_messages,
                                                 conv_dicts,
+                                                trace_context=compaction_trace_context,
+                                                tools=tools_for_llm,
+                                                instructions="prompt_too_long_full_compress_fallback",
                                                 model_provider=active_model.provider,
                                                 model_name=active_model.model,
                                                 max_input_tokens_override=getattr(
@@ -3026,6 +3164,7 @@ class AgentKernel:
                                                 memory_navigation=resolved_memory_navigation_context,
                                                 skill_catalog=request.skill_catalog,
                                                 runtime_metadata_context=resolved_runtime_metadata_context,
+                                                permissions_context=resolved_permissions_context,
                                                 retrieval_context=resolved_retrieval_context,
                                                 system_prompt_suffix=_system_prompt_suffix,
                                                 system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -3763,6 +3902,7 @@ class AgentKernel:
                                                     memory_navigation=resolved_memory_navigation_context,
                                                     skill_catalog=request.skill_catalog,
                                                     runtime_metadata_context=resolved_runtime_metadata_context,
+                                                    permissions_context=resolved_permissions_context,
                                                     retrieval_context=resolved_retrieval_context,
                                                     system_prompt_suffix=_system_prompt_suffix,
                                                     system_prompt_suffix_sections=_system_prompt_suffix_sections(),
@@ -3955,8 +4095,12 @@ class AgentKernel:
                             },
                         )
                         compressed = await _maybe_await(
-                            self._deps.maybe_compress_messages(
+                            _compress_messages_with_trace(
+                                self._deps.maybe_compress_messages,
                                 conv_dicts,
+                                trace_context=compaction_trace_context,
+                                tools=tools_for_llm,
+                                instructions="mid_loop_context_compaction",
                                 model_provider=active_model.provider,
                                 model_name=active_model.model,
                                 max_input_tokens_override=getattr(active_model, "max_input_tokens", None),

@@ -130,6 +130,32 @@ export interface ChatTranscriptEvent {
   created_at?: string | null;
 }
 
+export interface SessionIndex {
+  schema: string;
+  thread_id: string;
+  session_id: string;
+  agent_id: string;
+  tenant_id?: string | null;
+  user_id?: string | null;
+  title?: string | null;
+  source?: string | null;
+  thread_source?: string | null;
+  listed_surface?: string | null;
+  visibility_scope?: string | null;
+  session_kind?: string | null;
+  forked_from_id?: string | null;
+  parent_thread_id?: string | null;
+  root_thread_id?: string | null;
+  runtime_task_id?: string | null;
+  event_persistence_mode?: string | null;
+  dynamic_tools: string[];
+  checkpoints: Array<Record<string, unknown>>;
+  event_count: number;
+  last_event_sequence?: number | null;
+  t0_segments: Array<Record<string, unknown>>;
+  resume_health: Record<string, unknown>;
+}
+
 export interface SessionRun {
   run_id: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'skipped' | string;
@@ -170,6 +196,8 @@ export const chatApi = {
     get<ChatSession[]>(`/agents/${agentId}/sessions/${sessionId}/branches`),
   getSessionLineage: (agentId: string, sessionId: string) =>
     get<Array<Record<string, unknown>>>(`/agents/${agentId}/sessions/${sessionId}/lineage`),
+  getSessionIndex: (agentId: string, sessionId: string) =>
+    get<SessionIndex>(`/agents/${agentId}/sessions/${sessionId}/index`),
   getActiveSessionRun: (agentId: string, sessionId: string) =>
     get<SessionRun | null>(`/agents/${agentId}/sessions/${sessionId}/runs/active`),
   cancelSessionRun: (agentId: string, sessionId: string, runId: string) =>

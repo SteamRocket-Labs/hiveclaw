@@ -45,12 +45,18 @@ class RecoveryManifest:
     blocked_patterns: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not any([
-            self.recent_reads, self.recent_writes,
-            self.recent_tool_outcomes, self.active_skills,
-            self.active_tool_groups, self.recent_external_refs,
-            self.pending_items, self.blocked_patterns,
-        ])
+        return not any(
+            [
+                self.recent_reads,
+                self.recent_writes,
+                self.recent_tool_outcomes,
+                self.active_skills,
+                self.active_tool_groups,
+                self.recent_external_refs,
+                self.pending_items,
+                self.blocked_patterns,
+            ]
+        )
 
     def to_restoration_text(self, *, budget_chars: int = 20000) -> str:
         """Render manifest as structured text for prompt injection."""
@@ -77,10 +83,10 @@ class RecoveryManifest:
 
         _add("Recent Reads", [_format_file_item(path) for path in self.recent_reads[-5:]])
         _add("Recent Writes", [_format_file_item(path) for path in self.recent_writes[-5:]])
-        _add("Recent Tool Results", [
-            f"{o.get('tool', '?')}: {o.get('summary', '')}"
-            for o in self.recent_tool_outcomes[-5:]
-        ])
+        _add(
+            "Recent Tool Results",
+            [f"{o.get('tool', '?')}: {o.get('summary', '')}" for o in self.recent_tool_outcomes[-5:]],
+        )
         _add("Active Skills", self.active_skills)
         _add("Active Runtime Tool Groups", self.active_tool_groups)
         _add("External References", self.recent_external_refs[-5:])
@@ -123,7 +129,7 @@ def merge_session_memory_into_manifest(
 ) -> RecoveryManifest:
     """Merge structured session-memory artifact into the recovery manifest."""
     try:
-        payload = load_session_memory(agent_id, data_root=data_root)
+        payload = load_session_memory(agent_id, session_id=manifest.session_id, data_root=data_root)
     except Exception as exc:
         logger.warning("Failed to load session memory for recovery manifest: %s", exc)
         payload = None

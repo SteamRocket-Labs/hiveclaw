@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+import re
 
 from app.config import get_settings
 
@@ -96,11 +97,34 @@ def _runtime_artifacts_dir(agent_id: UUID, *, data_root: str | Path | None = Non
     return runtime_dir
 
 
+def _memory_sessions_dir(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+    sessions_dir = _agent_dir(agent_id, data_root=data_root) / "memory" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    return sessions_dir
+
+
 def _legacy_workspace_dir(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
     return _agent_dir(agent_id, data_root=data_root) / "workspace"
 
 
-def get_session_memory_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+def _safe_session_id(session_id: str | None) -> str:
+    text = str(session_id or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_.:-]+", "_", text)
+
+
+def get_session_memory_path(
+    agent_id: UUID,
+    *,
+    session_id: str | None = None,
+    data_root: str | Path | None = None,
+) -> Path:
+    safe_session_id = _safe_session_id(session_id)
+    if safe_session_id:
+        path = _memory_sessions_dir(agent_id, data_root=data_root) / safe_session_id / "session_memory.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
     return _runtime_artifacts_dir(agent_id, data_root=data_root) / "session_memory.md"
 
 
@@ -110,6 +134,10 @@ def get_compaction_summary_path(agent_id: UUID, *, data_root: str | Path | None 
 
 def _legacy_session_memory_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
     return _legacy_workspace_dir(agent_id, data_root=data_root) / "session_memory.md"
+
+
+def _legacy_runtime_session_memory_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+    return _runtime_artifacts_dir(agent_id, data_root=data_root) / "session_memory.md"
 
 
 def _legacy_compaction_summary_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
@@ -219,11 +247,14 @@ def update_session_memory(
     *,
     data_root: str | Path | None = None,
 ) -> Path:
-    path = get_session_memory_path(agent_id, data_root=data_root)
+    safe_session_id = _safe_session_id(payload.session_id)
+    path = get_session_memory_path(agent_id, session_id=safe_session_id, data_root=data_root)
     normalized = SessionMemoryPayload(
-        session_id=payload.session_id.strip(),
+        session_id=safe_session_id,
         source=payload.source.strip(),
-        session_title=(payload.session_title or _derive_session_title(payload.task_spec, payload.current_state)).strip(),
+        session_title=(
+            payload.session_title or _derive_session_title(payload.task_spec, payload.current_state)
+        ).strip(),
         current_state=payload.current_state.strip(),
         task_spec=payload.task_spec.strip(),
         important_files=_normalize_list(payload.important_files, limit=_MAX_FILES_AND_FUNCTIONS),
@@ -242,6 +273,8 @@ def update_session_memory(
         last_compaction_at=(payload.last_compaction_at or "").strip() or None,
     )
     path.write_text(render_session_memory(normalized), encoding="utf-8")
+    if safe_session_id:
+        _remove_legacy_runtime_file(_legacy_runtime_session_memory_path(agent_id, data_root=data_root))
     _remove_legacy_runtime_file(_legacy_session_memory_path(agent_id, data_root=data_root))
     return path
 
@@ -261,9 +294,7 @@ def write_compaction_summary(
         "",
     ]
     if original_message_count is not None or kept_message_count is not None:
-        lines.append(
-            f"- Original Messages: {original_message_count if original_message_count is not None else '?'}"
-        )
+        lines.append(f"- Original Messages: {original_message_count if original_message_count is not None else '?'}")
         lines.append(f"- Kept Messages: {kept_message_count if kept_message_count is not None else '?'}")
         lines.append("")
     lines.append(summary.strip() or "(empty)")
@@ -322,11 +353,32 @@ def _legacy_updated_at(lines: list[str]) -> str | None:
     return None
 
 
-def load_session_memory(agent_id: UUID, *, data_root: str | Path | None = None) -> SessionMemoryPayload | None:
-    path = get_session_memory_path(agent_id, data_root=data_root)
+def _latest_session_memory_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path | None:
+    sessions_dir = _memory_sessions_dir(agent_id, data_root=data_root)
+    candidates = [path for path in sessions_dir.glob("*/session_memory.md") if path.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+
+
+def load_session_memory(
+    agent_id: UUID,
+    *,
+    session_id: str | None = None,
+    data_root: str | Path | None = None,
+) -> SessionMemoryPayload | None:
+    safe_session_id = _safe_session_id(session_id)
+    path = get_session_memory_path(agent_id, session_id=safe_session_id, data_root=data_root)
+    if not safe_session_id:
+        latest_path = _latest_session_memory_path(agent_id, data_root=data_root)
+        if latest_path is not None:
+            path = latest_path
     if not path.exists():
+        runtime_path = _legacy_runtime_session_memory_path(agent_id, data_root=data_root)
         legacy_path = _legacy_session_memory_path(agent_id, data_root=data_root)
-        if legacy_path.exists():
+        if runtime_path.exists():
+            path = runtime_path
+        elif legacy_path.exists():
             path = legacy_path
     if not path.exists():
         return None
@@ -362,8 +414,13 @@ def load_session_memory(agent_id: UUID, *, data_root: str | Path | None = None) 
     )
 
 
-def load_session_memory_text(agent_id: UUID, *, data_root: str | Path | None = None) -> str:
-    payload = load_session_memory(agent_id, data_root=data_root)
+def load_session_memory_text(
+    agent_id: UUID,
+    *,
+    session_id: str | None = None,
+    data_root: str | Path | None = None,
+) -> str:
+    payload = load_session_memory(agent_id, session_id=session_id, data_root=data_root)
     if payload is None:
         return ""
     return render_session_memory(payload)
@@ -391,7 +448,9 @@ def build_session_memory_payload_from_messages(
     ]
     future_steps = [message for message in assistant_messages if _looks_like_future_step(message)]
     current_candidates = [message for message in assistant_messages if not _looks_like_future_step(message)]
-    current_state = current_candidates[-1] if current_candidates else (assistant_messages[-1] if assistant_messages else "")
+    current_state = (
+        current_candidates[-1] if current_candidates else (assistant_messages[-1] if assistant_messages else "")
+    )
     workflow = [str(item).strip() for item in metadata.get("workflow", []) if str(item).strip()]
     key_results = [str(item).strip() for item in metadata.get("key_results", []) if str(item).strip()]
     worklog = [
@@ -402,7 +461,10 @@ def build_session_memory_payload_from_messages(
     return SessionMemoryPayload(
         session_id=str(metadata.get("session_id") or metadata.get("conversation_id") or "").strip(),
         source=str(metadata.get("source") or metadata.get("event") or "").strip(),
-        session_title=str(metadata.get("session_title") or _derive_session_title(user_messages[0] if user_messages else "", current_state)).strip(),
+        session_title=str(
+            metadata.get("session_title")
+            or _derive_session_title(user_messages[0] if user_messages else "", current_state)
+        ).strip(),
         current_state=current_state,
         task_spec=str(metadata.get("task_spec") or (user_messages[0] if user_messages else "")).strip(),
         important_files=_normalize_list(
@@ -415,9 +477,7 @@ def build_session_memory_payload_from_messages(
         ),
         key_results=key_results,
         pending_work=[
-            str(item).strip()
-            for item in (metadata.get("pending_work") or future_steps)
-            if str(item).strip()
+            str(item).strip() for item in (metadata.get("pending_work") or future_steps) if str(item).strip()
         ],
         last_successful_step=str(metadata.get("last_successful_step") or current_state).strip(),
         worklog=_normalize_list(worklog, limit=_MAX_WORKLOG_ITEMS, item_char_limit=_MAX_WORKLOG_ITEM_CHARS),

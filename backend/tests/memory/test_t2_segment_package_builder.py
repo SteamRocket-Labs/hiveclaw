@@ -137,11 +137,68 @@ def test_source_bundle_excludes_projection_only_t0_events(tmp_path: Path) -> Non
         session_id=session_id,
         t0_segment_id=projection.segment_id,
         package_id="pkg-projection-filter",
+        session_lineage={
+            "root_session_id": str(session_id),
+            "parent_session_id": "source-session-1",
+            "branch_mode": "rewind",
+            "source_session_id": "source-session-1",
+            "anchor_event_id": "anchor-event-1",
+            "anchor_sequence": 7,
+        },
     )
 
     assert source_bundle["source_range"] == {"start_sequence": real_event.sequence, "end_sequence": real_event.sequence}
     assert source_bundle["source_refs"][0]["uri"].endswith(f"#seq={real_event.sequence}..{real_event.sequence}")
     assert [event["content"] for event in source_bundle["t0_events"]] == ["new regenerated answer"]
+    assert source_bundle["lineage"]["branch_mode"] == "rewind"
+    assert source_bundle["lineage"]["anchor_sequence"] == 7
+    assert source_bundle["visible_source_view"]["semantic_sequences"] == [real_event.sequence]
+    assert source_bundle["excluded_refs"][0]["reason"] == "semantic_memory_eligible=false"
+    assert source_bundle["visible_source_view"]["lineage_risk_flags"] == [
+        "branch_mode=rewind",
+        "source_session_id=source-session-1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_branch_lineage_requires_independent_t2_review(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="在 rollback branch 上重新确认新的方案。",
+        source="web",
+        metadata={"branch_mode": "rewind", "source_session_id": "source-session-1"},
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle)
+
+    async def labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle)
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=event.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=labels,
+        memory_gate=None,
+    )
+
+    assert result.status == "held"
+    assert result.issues == ("independent Memory Gate required: lineage_risk=branch_mode=rewind",)
+    assert not result.package_dir.exists()
 
 
 def test_source_bundle_rejects_segments_without_semantic_t0_events(tmp_path: Path) -> None:
@@ -241,7 +298,8 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert manifest["files"]["summary.md"]["sha256"]
     assert manifest["prompts"]["summary_prompt_version"] == "t2.summary_agent.v1"
     assert manifest["prompts"]["labels_prompt_version"] == "t2.learning_brain_labels.v1"
-    assert manifest["prompts"]["review_prompt_version"] == "t2.memory_gate_review.v1"
+    assert manifest["review_mode"] == "self_check"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.extractor_self_review.v1"
 
     source_bundle_path = (
         tmp_path / str(agent_id) / "memory" / ".staging" / "t2_jobs" / result.job_id / "source_bundle.json"
@@ -267,7 +325,122 @@ async def test_build_t2_segment_package_commits_agent_outputs_atomically(tmp_pat
     assert summary_node.find("segment_state").attrib["value"] == "complete"
     assert labels_node.findtext(".//confidence") == "0.95"
     assert labels_node.findtext(".//continuity_state") == "standalone"
-    assert _assert_xml_block(package_dir / "review.md", "t2_review").findtext("decision") == "approved"
+    review_node = _assert_xml_block(package_dir / "review.md", "t2_review")
+    assert review_node.attrib["reviewer"] == "extractor_self_check"
+    assert review_node.findtext("decision") == "approved"
+
+
+@pytest.mark.asyncio
+async def test_low_risk_t2_package_uses_self_review_without_independent_gate(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="以后回复保持简洁，并在改代码前先写测试。",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle)
+
+    async def learning_brain(source_bundle: dict, summary_md: str) -> str:
+        return _labels_xml(source_bundle)
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=learning_brain,
+        memory_gate=None,
+    )
+
+    package_dir = tmp_path / str(agent_id) / "memory" / "sessions" / str(session_id) / "segments" / first.segment_id
+    manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+    review = _assert_xml_block(package_dir / "review.md", "t2_review")
+
+    assert result.status == "committed"
+    assert review.attrib["reviewer"] == "extractor_self_check"
+    assert review.findtext("decision") == "approved"
+    assert manifest["review_mode"] == "self_check"
+    assert manifest["prompts"]["review_prompt_version"] == "t2.extractor_self_review.v1"
+
+
+@pytest.mark.asyncio
+async def test_high_risk_t2_package_requires_independent_memory_gate(tmp_path: Path) -> None:
+    from app.memory.t2.segment_package import build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="请记住这个跨公司权限边界的行为规则。",
+        source="web",
+        data_root=tmp_path,
+    )
+
+    async def summary_agent(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle)
+
+    async def high_risk_labels(source_bundle: dict, summary_md: str) -> str:
+        ref = source_bundle["source_refs"][0]["uri"]
+        return f"""# T2 Segment Labels
+
+<t2_labels schema_version="t2.labels.v1" package_id="{source_bundle["package_id"]}" session_id="{source_bundle["session_id"]}" t2_segment_id="{source_bundle["t0_segment_id"]}">
+  <control_metadata>
+    <source_integrity>complete</source_integrity>
+    <sensitivity>PL3</sensitivity>
+    <principal_scope>company</principal_scope>
+    <package_status>closed</package_status>
+    <confidence>0.92</confidence>
+    <continuity_state>standalone</continuity_state>
+    <systems><system>memory</system></systems>
+    <risk_flags><risk_flag>cross_principal</risk_flag></risk_flags>
+  </control_metadata>
+  <event_labels>
+    <event_label event_ref="evt-1">
+      <event_type>instruction</event_type>
+      <memory_domain>permission_memory</memory_domain>
+      <outcome>accepted</outcome>
+      <actionability>t3_candidate</actionability>
+      <stability>stable</stability>
+      <completeness>closed</completeness>
+      <salience>high</salience>
+      <source_refs><source_ref uri="{ref}"/></source_refs>
+    </event_label>
+  </event_labels>
+</t2_labels>
+"""
+
+    result = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=summary_agent,
+        learning_brain=high_risk_labels,
+        memory_gate=None,
+    )
+
+    report = json.loads((result.staging_dir / "platform_gate_report.json").read_text(encoding="utf-8"))
+    assert result.status == "held"
+    assert any("independent Memory Gate required" in issue for issue in report["issues"])
 
 
 @pytest.mark.asyncio
@@ -304,7 +477,34 @@ async def test_source_bundle_includes_verified_work_ledger_findings(tmp_path: Pa
         return _summary_xml(source_bundle)
 
     async def labels(source_bundle: dict, _summary_md: str) -> str:
-        return _labels_xml(source_bundle)
+        ref = source_bundle["source_refs"][0]["uri"]
+        return f"""# T2 Segment Labels
+
+<t2_labels schema_version="t2.labels.v1" package_id="{source_bundle["package_id"]}" session_id="{source_bundle["session_id"]}" t2_segment_id="{source_bundle["t0_segment_id"]}">
+  <control_metadata>
+    <source_integrity>complete</source_integrity>
+    <sensitivity>PL3</sensitivity>
+    <principal_scope>company</principal_scope>
+    <package_status>closed</package_status>
+    <confidence>0.95</confidence>
+    <continuity_state>standalone</continuity_state>
+    <systems><system>memory</system></systems>
+    <risk_flags><risk_flag>cross_principal</risk_flag></risk_flags>
+  </control_metadata>
+  <event_labels>
+    <event_label event_ref="evt-1">
+      <event_type>instruction</event_type>
+      <memory_domain>permission_memory</memory_domain>
+      <outcome>accepted</outcome>
+      <actionability>t3_candidate</actionability>
+      <stability>stable</stability>
+      <completeness>closed</completeness>
+      <salience>high</salience>
+      <source_refs><source_ref uri="{ref}"/></source_refs>
+    </event_label>
+  </event_labels>
+</t2_labels>
+"""
 
     async def review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
         ref = source_bundle["source_refs"][0]["uri"]
@@ -403,7 +603,34 @@ async def test_platform_gate_holds_approved_review_without_rubric(tmp_path: Path
         return _summary_xml(source_bundle)
 
     async def labels(source_bundle: dict, _summary_md: str) -> str:
-        return _labels_xml(source_bundle)
+        ref = source_bundle["source_refs"][0]["uri"]
+        return f"""# T2 Segment Labels
+
+<t2_labels schema_version="t2.labels.v1" package_id="{source_bundle["package_id"]}" session_id="{source_bundle["session_id"]}" t2_segment_id="{source_bundle["t0_segment_id"]}">
+  <control_metadata>
+    <source_integrity>complete</source_integrity>
+    <sensitivity>PL3</sensitivity>
+    <principal_scope>company</principal_scope>
+    <package_status>closed</package_status>
+    <confidence>0.95</confidence>
+    <continuity_state>standalone</continuity_state>
+    <systems><system>memory</system></systems>
+    <risk_flags><risk_flag>cross_principal</risk_flag></risk_flags>
+  </control_metadata>
+  <event_labels>
+    <event_label event_ref="evt-1">
+      <event_type>instruction</event_type>
+      <memory_domain>permission_memory</memory_domain>
+      <outcome>accepted</outcome>
+      <actionability>t3_candidate</actionability>
+      <stability>stable</stability>
+      <completeness>closed</completeness>
+      <salience>high</salience>
+      <source_refs><source_ref uri="{ref}"/></source_refs>
+    </event_label>
+  </event_labels>
+</t2_labels>
+"""
 
     async def review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
         ref = source_bundle["source_refs"][0]["uri"]
@@ -720,6 +947,140 @@ async def test_episode_bundle_includes_adjacent_t2_refs_by_default(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_episode_stitch_package_holds_when_previous_package_is_different_lineage(tmp_path: Path) -> None:
+    from app.memory.t0.ledger import seal_t0_session_segment
+    from app.memory.t2.segment_package import build_t2_episode_stitch_package, build_t2_segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="原始分支里先讨论 RWA 调研员。",
+        source="web",
+        data_root=tmp_path,
+    )
+    seal_t0_session_segment(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason="test_segment_boundary",
+        data_root=tmp_path,
+    )
+    second = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="rollback 后在新分支继续这个 RWA 调研员。",
+        source="web",
+        metadata={"branch_mode": "rewind", "source_session_id": "source-session-1"},
+        data_root=tmp_path,
+    )
+
+    async def complete_summary(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle)
+
+    async def complete_labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(source_bundle)
+
+    async def complete_review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        return _approved_review_xml(package_id=source_bundle["package_id"], ref=source_bundle["source_refs"][0]["uri"])
+
+    async def continuing_summary(source_bundle: dict) -> str:
+        return _summary_xml(source_bundle, status="rolling_checkpoint", segment_state="continuation")
+
+    async def continuing_labels(source_bundle: dict, _summary_md: str) -> str:
+        return _labels_xml(
+            source_bundle,
+            package_status="rolling_checkpoint",
+            continuity_state="needs_previous",
+        )
+
+    async def stitching_review(source_bundle: dict, _summary_md: str, _labels_md: str) -> str:
+        return _approved_review_xml(
+            package_id=source_bundle["package_id"],
+            ref=source_bundle["source_refs"][0]["uri"],
+            allowed_next="episode_stitching",
+        )
+
+    await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+        summary_agent=complete_summary,
+        learning_brain=complete_labels,
+        memory_gate=complete_review,
+        package_id="t2pkg-prev",
+    )
+    current = await build_t2_segment_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=second.segment_id,
+        summary_agent=continuing_summary,
+        learning_brain=continuing_labels,
+        memory_gate=stitching_review,
+        package_id="t2pkg-current",
+        session_lineage={
+            "root_session_id": str(session_id),
+            "parent_session_id": "source-session-1",
+            "branch_mode": "rewind",
+            "source_session_id": "source-session-1",
+            "anchor_event_id": "anchor-event-1",
+            "anchor_sequence": 3,
+        },
+    )
+    assert current.status == "committed"
+
+    async def stitcher_agent(episode_bundle: dict) -> str:
+        assert [package["package_id"] for package in episode_bundle["source_packages"]] == ["t2pkg-current"]
+        assert episode_bundle["lineage_warnings"] == ["missing_compatible_adjacent_source"]
+        source_ref = episode_bundle["t0_source_refs"][0]
+        return f"""<episode_synthesis schema_version="t2.episode_synthesis.v1" episode_id="{episode_bundle["episode_id"]}" session_id="{episode_bundle["session_id"]}" status="closed">
+  <source_packages><package_ref package_id="t2pkg-current" relationship="same_episode"/></source_packages>
+  <source_refs><source_ref uri="{source_ref}"/></source_refs>
+  <episode_summary><scenario>缺少同 lineage 前文，不能闭合。</scenario></episode_summary>
+</episode_synthesis>"""
+
+    async def episode_gate(episode_bundle: dict, _synthesis_md: str) -> str:
+        return f"""<episode_review schema_version="t2.episode_review.v1" episode_id="{episode_bundle["episode_id"]}">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <episode_review_rubric schema_version="t2.episode_review_rubric.v1">
+    <score name="continuity_fidelity" value="0.90"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="correction_quality" value="0.90"/>
+    <score name="closure_quality" value="0.90"/>
+    <score name="safety_scope" value="1.00"/>
+    <review_score>0.90</review_score>
+  </episode_review_rubric>
+</episode_review>"""
+
+    result = await build_t2_episode_stitch_package(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        trigger_package_id="t2pkg-current",
+        stitcher_agent=stitcher_agent,
+        memory_gate=episode_gate,
+        episode_id="episode-cross-lineage",
+    )
+
+    report = json.loads((result.staging_dir / "platform_gate_report.json").read_text(encoding="utf-8"))
+    assert result.status == "held"
+    assert any("missing compatible adjacent source package" in issue for issue in report["issues"])
+
+
+@pytest.mark.asyncio
 async def test_episode_stitch_package_holds_without_episode_review_rubric(tmp_path: Path) -> None:
     from app.memory.t2.segment_package import build_t2_episode_stitch_package, build_t2_segment_package
 
@@ -784,7 +1145,7 @@ async def test_episode_stitch_package_holds_without_episode_review_rubric(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_build_with_llm_runs_three_agent_roles(monkeypatch, tmp_path: Path) -> None:
+async def test_build_with_llm_skips_review_role_for_low_risk_segments(monkeypatch, tmp_path: Path) -> None:
     from app.memory.t2 import segment_package
 
     agent_id = uuid4()
@@ -829,11 +1190,88 @@ async def test_build_with_llm_runs_three_agent_roles(monkeypatch, tmp_path: Path
     )
 
     assert result.status == "committed"
-    assert phases == ["summary", "labels", "review"]
+    assert phases == ["summary", "labels"]
     assert (result.package_dir / "summary.md").exists()
     assert (result.package_dir / "labels.md").exists()
     assert (result.package_dir / "review.md").exists()
     assert (result.package_dir / "manifest.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_build_with_llm_runs_review_role_for_high_risk_segments(monkeypatch, tmp_path: Path) -> None:
+    from app.memory.t2 import segment_package
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    first = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="这个 session 涉及跨主体权限边界，需要独立 reviewer。",
+        source="web",
+        data_root=tmp_path,
+    )
+    phases: list[str] = []
+
+    async def fake_model_config(_tenant_id):
+        return {"provider": "fake", "model": "fake"}
+
+    async def fake_run_agent(**kwargs):
+        phases.append(kwargs["phase"])
+        payload = kwargs["payload"]
+        source_bundle = payload if kwargs["phase"] == "summary" else payload["source_bundle"]
+        ref = source_bundle["source_refs"][0]["uri"]
+        package_id = source_bundle["package_id"]
+        if kwargs["phase"] == "summary":
+            return _summary_xml(source_bundle)
+        if kwargs["phase"] == "labels":
+            return f"""# T2 Segment Labels
+
+<t2_labels schema_version="t2.labels.v1" package_id="{package_id}" session_id="{source_bundle["session_id"]}" t2_segment_id="{source_bundle["t0_segment_id"]}">
+  <control_metadata>
+    <source_integrity>complete</source_integrity>
+    <sensitivity>PL3</sensitivity>
+    <principal_scope>company</principal_scope>
+    <package_status>closed</package_status>
+    <confidence>0.95</confidence>
+    <continuity_state>standalone</continuity_state>
+    <systems><system>memory</system></systems>
+    <risk_flags><risk_flag>cross_principal</risk_flag></risk_flags>
+  </control_metadata>
+  <event_labels>
+    <event_label event_ref="evt-1">
+      <event_type>instruction</event_type>
+      <memory_domain>permission_memory</memory_domain>
+      <outcome>accepted</outcome>
+      <actionability>t3_candidate</actionability>
+      <stability>stable</stability>
+      <completeness>closed</completeness>
+      <salience>high</salience>
+      <source_refs><source_ref uri="{ref}"/></source_refs>
+    </event_label>
+  </event_labels>
+</t2_labels>
+"""
+        return _approved_review_xml(package_id=package_id, ref=ref)
+
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", fake_model_config)
+    monkeypatch.setattr(segment_package, "_run_t2_llm_agent", fake_run_agent)
+
+    result = await segment_package.build_t2_segment_package_with_llm(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        t0_segment_id=first.segment_id,
+    )
+
+    assert result.status == "committed"
+    assert phases == ["summary", "labels", "review"]
+    manifest = json.loads((result.package_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["review_mode"] == "independent_gate"
 
 
 @pytest.mark.asyncio

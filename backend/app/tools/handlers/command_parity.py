@@ -9,6 +9,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.runtime.prompts.command_parity import (
+    ADVANCED_PLAN_DESCRIPTION,
+    GOAL_START_DESCRIPTION,
+    TASK_CREATE_DESCRIPTION,
+    TASK_UPDATE_DESCRIPTION,
+    TEAM_CREATE_DESCRIPTION,
+    VERIFY_PLAN_DESCRIPTION,
+)
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_work_ledger import read_agent_work_ledger_view, upsert_agent_work_ledger_todo
 from app.services.plan_verification_service import verify_plan_artifact
@@ -36,10 +44,7 @@ def _can_access_runtime_task(record: dict[str, Any] | None, request: ToolExecuti
 @tool(
     ToolMeta(
         name="task_create",
-        description=(
-            "Create a cognitive task in your Work Ledger or a Team shared ledger. "
-            "This never starts execution; use workflow/subagent/delegation tools for executable work."
-        ),
+        description=TASK_CREATE_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -91,7 +96,7 @@ async def task_create(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="task_update",
-        description="Update a cognitive Work Ledger task. This never starts execution.",
+        description=TASK_UPDATE_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -246,10 +251,7 @@ async def task_stop(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="goal_start",
-        description=(
-            "Declare a session-scoped goal for bounded continuation. The durable goal is created "
-            "through the session goals API so it remains tied to user/session permissions."
-        ),
+        description=GOAL_START_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -283,10 +285,7 @@ async def goal_start(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="team_create",
-        description=(
-            "Create an enterable Team workspace under the current session. The durable Team is "
-            "created through the agent-teams API so member sessions remain permission-governed."
-        ),
+        description=TEAM_CREATE_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -319,10 +318,7 @@ async def team_create(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="advanced_plan",
-        description=(
-            "Start an advanced planning pass for the current session. This is the model-visible command "
-            "handoff; the durable advanced_plan RuntimeTask is created through the advanced-plan API."
-        ),
+        description=ADVANCED_PLAN_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -356,10 +352,7 @@ async def advanced_plan(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="verify_plan",
-        description=(
-            "Verify a plan artifact against its success criteria and explicit evidence references. "
-            "This is an evidence check; it does not execute the plan."
-        ),
+        description=VERIFY_PLAN_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {

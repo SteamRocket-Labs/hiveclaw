@@ -1742,6 +1742,8 @@ final closure
 4. 如果 episode synthesis 纠正了某个单段 Summary 的理解，必须写明 `corrects=<t2_segment_id>` 和原因。
 5. 只要 episode 仍未闭合，就保持 `status=open`，进入 short-term carryover，不进入 T3。
 6. 只有 `closed episode` 或 `segment_state=complete` 且 `continuity_state=standalone` 的 T2 package 才能作为 Heartbeat / T3 Curator 的直接输入。
+7. Fork / rewind / rollback / regenerate / edit 不会物理删除 T0；T2 必须基于当前 branch 的 visible source view 生成，不能把 JSONL 中已被当前 branch 隐藏的 suffix 当作仍然有效的语义输入。
+8. T2.5 只允许自动拼接同 lineage 的相邻 packages；跨 lineage package 只能作为 context / alternative / superseded evidence，由 Memory Gate 明确判断，不能自动闭合进入 T3。
 
 触发和落盘规则：
 
@@ -1917,6 +1919,9 @@ memory/sessions/<session_id>/segments/<t2_segment_id>/manifest.json
 8. Episode Stitch Package 只能写到 `memory/sessions/<session_id>/episodes/<episode_id>/`，不能回写原 `segments/<t2_segment_id>/`。
 9. Episode synthesis 必须引用所有参与拼接的 T2 packages 和对应 T0 source refs。
 10. Episode review 未通过时，T3 Curator 不能消费该 episode。
+11. T2 manifest 必须持久化 `lineage`、`visible_source_view`、`context_refs`、`excluded_refs`，以便 T2.5/T3 能重放同一个 branch 视图。
+12. `projection_only`、`semantic_memory_eligible=false`、rollback-hidden、copied-prefix 事件可以留在 T0 JSONL，但不能进入 `t0_events` 语义输入，只能作为 `excluded_refs` 或 `context_refs`。
+13. Episode Stitch 的 `lineage_warnings` 存在时，review 不能给出可直接 `t3_intake` 的闭合结论，除非后续显式补齐同 lineage source package 并重新 review。
 
 ### 16.5 AI-Native 红线
 

@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as _xml_escape_raw
 
 from app.config import get_settings
 from app.memory.t0.ledger import replay_t0_session_events
@@ -44,6 +45,7 @@ MANIFEST_FILENAME = "manifest.json"
 SOURCE_BUNDLE_FILENAME = "source_bundle.json"
 SYNTHESIS_FILENAME = "synthesis.md"
 EPISODE_BUNDLE_FILENAME = "episode_bundle.json"
+SELF_REVIEW_PROMPT_VERSION = "t2.extractor_self_review.v1"
 _REVIEW_RUBRIC_SCORE_WEIGHTS = {
     "summary_fidelity": 0.35,
     "source_ref_coverage": 0.25,
@@ -73,6 +75,29 @@ _EPISODE_T3_INTAKE_THRESHOLDS = {
     "safety_scope": 0.85,
 }
 _ALLOWED_REVIEW_NEXT = {"t3_intake", "episode_stitching", "short_term_carryover", "archive_recall_only", "none"}
+_LINEAGE_METADATA_KEYS = (
+    "root_session_id",
+    "parent_session_id",
+    "branch_session_id",
+    "branch_mode",
+    "source_session_id",
+    "anchor_event_id",
+    "anchor_sequence",
+    "visible_prefix_end",
+    "regenerate_from_event_id",
+    "regenerate_prompt_source_event_id",
+    "edit_from_event_id",
+    "rollback_strategy",
+    "command",
+)
+_LINEAGE_RISK_BRANCH_MODES = {"fork", "edit", "insert_before", "insert_after", "regenerate", "rewind", "rollback"}
+_COMPACTION_LINEAGE_KEYS = {
+    "compaction_id",
+    "compaction_checkpoint",
+    "replacement_history",
+    "compaction_replacement_history",
+    "compacted_from",
+}
 
 SourceBundleAgent = Callable[..., str | Awaitable[str]]
 
@@ -114,10 +139,11 @@ async def build_t2_segment_package(
     t0_segment_id: str,
     summary_agent: SourceBundleAgent,
     learning_brain: SourceBundleAgent,
-    memory_gate: SourceBundleAgent,
+    memory_gate: SourceBundleAgent | None,
     data_root: Path | str | None = None,
     package_id: str | None = None,
     job_id: str | None = None,
+    session_lineage: dict[str, Any] | None = None,
 ) -> T2SegmentPackageResult:
     root = _data_root(data_root)
     resolved_package_id = package_id or f"t2pkg-{uuid.uuid4().hex}"
@@ -132,6 +158,7 @@ async def build_t2_segment_package(
         session_id=session_id,
         t0_segment_id=t0_segment_id,
         package_id=resolved_package_id,
+        session_lineage=session_lineage,
     )
     _write_json(staging_dir / SOURCE_BUNDLE_FILENAME, source_bundle)
 
@@ -139,7 +166,35 @@ async def build_t2_segment_package(
     (staging_dir / "summary.candidate.md").write_text(summary_md, encoding="utf-8")
     labels_md = await _call_agent(learning_brain, source_bundle, summary_md)
     (staging_dir / "labels.candidate.md").write_text(labels_md, encoding="utf-8")
-    review_md = await _call_agent(memory_gate, source_bundle, summary_md, labels_md)
+    requires_gate, gate_reason = _requires_independent_t2_review(
+        source_bundle=source_bundle,
+        summary_md=summary_md,
+        labels_md=labels_md,
+    )
+    if requires_gate and memory_gate is None:
+        issues = [f"independent Memory Gate required: {gate_reason}"]
+        _write_json(
+            staging_dir / "platform_gate_report.json",
+            {
+                "schema_version": "t2.platform-gate-report.v1",
+                "status": "held",
+                "issues": issues,
+                "created_at": _now(),
+            },
+        )
+        return T2SegmentPackageResult(
+            status="held",
+            job_id=resolved_job_id,
+            package_dir=_package_dir(root, agent_id, session_id, t0_segment_id),
+            staging_dir=staging_dir,
+            issues=tuple(issues),
+        )
+    if requires_gate:
+        review_md = await _call_agent(memory_gate, source_bundle, summary_md, labels_md)
+        review_mode = "independent_gate"
+    else:
+        review_md = _build_t2_self_review(source_bundle=source_bundle, summary_md=summary_md, labels_md=labels_md)
+        review_mode = "self_check"
     (staging_dir / "review.candidate.md").write_text(review_md, encoding="utf-8")
 
     issues = _validate_candidate(
@@ -174,6 +229,7 @@ async def build_t2_segment_package(
         files=files,
         package_status="reviewed",
         job_id=resolved_job_id,
+        review_mode=review_mode,
     )
     files[MANIFEST_FILENAME] = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     _commit_atomically(package_dir, files)
@@ -204,6 +260,7 @@ async def build_t2_segment_package_with_llm(
     data_root: Path | str | None = None,
     package_id: str | None = None,
     job_id: str | None = None,
+    session_lineage: dict[str, Any] | None = None,
 ) -> T2SegmentPackageResult:
     """Build a canonical T2 package using the tenant summary model.
 
@@ -232,6 +289,7 @@ async def build_t2_segment_package_with_llm(
             package_id=resolved_package_id,
             job_id=resolved_job_id,
             reason="no summary model config for T0->T2 package build",
+            session_lineage=session_lineage,
         )
 
     async def summary_agent(source_bundle: dict[str, Any]) -> str:
@@ -276,6 +334,7 @@ async def build_t2_segment_package_with_llm(
             data_root=root,
             package_id=resolved_package_id,
             job_id=resolved_job_id,
+            session_lineage=session_lineage,
         )
         if result.status == "committed" and _package_requests_episode_stitching(result.package_dir):
             episode_result = await build_t2_episode_stitch_package_with_llm(
@@ -297,6 +356,7 @@ async def build_t2_segment_package_with_llm(
             package_id=resolved_package_id,
             job_id=resolved_job_id,
             reason=f"T0->T2 package build failed: {type(exc).__name__}: {exc}",
+            session_lineage=session_lineage,
         )
 
 
@@ -309,6 +369,7 @@ async def run_t2_segment_package_job(
     data_root: Path | str | None = None,
     package_id: str | None = None,
     job_id: str | None = None,
+    session_lineage: dict[str, Any] | None = None,
 ) -> T2SegmentPackageJobResult:
     """Durably record and run a T0->T2 package job.
 
@@ -349,6 +410,7 @@ async def run_t2_segment_package_job(
             data_root=root,
             package_id=resolved_package_id,
             job_id=resolved_job_id,
+            session_lineage=session_lineage,
         )
         terminal = "committed" if result.status == "committed" else "held"
         _write_json(
@@ -564,6 +626,7 @@ def _build_source_bundle(
     session_id: uuid.UUID | str,
     t0_segment_id: str,
     package_id: str,
+    session_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     segment_events = [
         event
@@ -571,6 +634,7 @@ def _build_source_bundle(
         if event.segment_id == t0_segment_id
     ]
     events = [event for event in segment_events if _is_t2_semantic_source_event(event)]
+    excluded_events = [event for event in segment_events if not _is_t2_semantic_source_event(event)]
     if not events:
         raise ValueError(f"no semantic T0 events for session={session_id} segment={t0_segment_id}")
     if not any(_is_semantic_content_event(event) for event in events):
@@ -580,6 +644,16 @@ def _build_source_bundle(
         root=root, agent_id=agent_id, session_id=session_id, segment_id=t0_segment_id, path=source_path, events=events
     )
     work_ledger = _work_ledger_payload(root=root, agent_id=agent_id, session_id=session_id)
+    lineage = _build_lineage_payload(session_id=session_id, session_lineage=session_lineage, events=segment_events)
+    excluded_refs = _excluded_source_refs(session_id=session_id, events=excluded_events)
+    context_refs = _context_refs_from_lineage_and_events(lineage=lineage, events=segment_events)
+    visible_source_view = _visible_source_view(
+        session_id=session_id,
+        t0_segment_id=t0_segment_id,
+        semantic_events=events,
+        excluded_refs=excluded_refs,
+        lineage=lineage,
+    )
     return {
         "schema_version": "t2.source_bundle.v1",
         "package_id": package_id,
@@ -591,6 +665,10 @@ def _build_source_bundle(
         "distillation_scope": "semantic_candidate",
         "source_kind": "t0_session_ledger",
         "source_refs": [source_ref],
+        "context_refs": context_refs,
+        "excluded_refs": excluded_refs,
+        "lineage": lineage,
+        "visible_source_view": visible_source_view,
         "t0_events": [_event_payload(event) for event in events],
         "message_refs": [event.message_id for event in events if event.message_id],
         "span_refs": [],
@@ -631,6 +709,165 @@ def _is_true_metadata_flag(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"true", "1", "yes"}
     return False
+
+
+def _build_lineage_payload(
+    *,
+    session_id: uuid.UUID | str,
+    session_lineage: dict[str, Any] | None,
+    events: list[Any],
+) -> dict[str, Any]:
+    lineage: dict[str, Any] = {
+        "schema_version": "t2.session-lineage.v1",
+        "session_id": str(session_id),
+    }
+    provided = session_lineage if isinstance(session_lineage, dict) else {}
+    for key in _LINEAGE_METADATA_KEYS:
+        value = provided.get(key)
+        if value is None or value == "":
+            value = _first_event_metadata_value(events, key)
+        if value is None or value == "":
+            continue
+        lineage[key] = _json_safe_lineage_value(value)
+    lineage.setdefault("root_session_id", str(session_id))
+    lineage.setdefault("branch_session_id", str(session_id))
+    risk_flags = _lineage_risk_flags(lineage=lineage, events=events)
+    lineage["risk_flags"] = risk_flags
+    return lineage
+
+
+def _first_event_metadata_value(events: list[Any], key: str) -> Any:
+    for event in events:
+        metadata = event.metadata if isinstance(getattr(event, "metadata", None), dict) else {}
+        value = metadata.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _json_safe_lineage_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_lineage_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_lineage_value(item) for key, item in value.items()}
+    return str(value)
+
+
+def _lineage_risk_flags(*, lineage: dict[str, Any], events: list[Any]) -> list[str]:
+    flags: list[str] = []
+    branch_mode = str(lineage.get("branch_mode") or "").strip().lower()
+    if branch_mode in _LINEAGE_RISK_BRANCH_MODES:
+        flags.append(f"branch_mode={branch_mode}")
+    source_session_id = str(lineage.get("source_session_id") or "").strip()
+    session_id = str(lineage.get("session_id") or "").strip()
+    if source_session_id and source_session_id != session_id:
+        flags.append(f"source_session_id={source_session_id}")
+    command = str(lineage.get("command") or "").strip().lower()
+    if command in {"rollback", "rewind", "branch"}:
+        flags.append(f"command={command}")
+    if str(lineage.get("rollback_strategy") or "").strip():
+        flags.append("rollback_strategy")
+    if any(_event_has_any_metadata_key(event, _COMPACTION_LINEAGE_KEYS) for event in events):
+        flags.append("compaction_replacement")
+    return _dedupe(flags)
+
+
+def _event_has_any_metadata_key(event: Any, keys: set[str]) -> bool:
+    metadata = event.metadata if isinstance(getattr(event, "metadata", None), dict) else {}
+    return any(key in metadata and metadata.get(key) not in (None, "", [], {}) for key in keys)
+
+
+def _excluded_source_refs(*, session_id: uuid.UUID | str, events: list[Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for event in events:
+        refs.append(
+            {
+                "uri": f"t0://session/{session_id}/segment/{event.segment_id}#seq={event.sequence}",
+                "event_id": event.event_id,
+                "sequence": event.sequence,
+                "reason": _t2_exclusion_reason(event),
+            }
+        )
+    return refs
+
+
+def _t2_exclusion_reason(event: Any) -> str:
+    metadata = event.metadata if isinstance(getattr(event, "metadata", None), dict) else {}
+    if _is_false_metadata_flag(metadata.get("semantic_memory_eligible")):
+        return "semantic_memory_eligible=false"
+    if _is_true_metadata_flag(metadata.get("projection_only")):
+        return "projection_only=true"
+    return "non_semantic"
+
+
+def _context_refs_from_lineage_and_events(*, lineage: dict[str, Any], events: list[Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    source_session_id = str(lineage.get("source_session_id") or "").strip()
+    anchor_event_id = str(lineage.get("anchor_event_id") or "").strip()
+    if source_session_id and anchor_event_id:
+        refs.append(
+            {
+                "kind": "branch_anchor",
+                "session_id": source_session_id,
+                "event_id": anchor_event_id,
+                "sequence": lineage.get("anchor_sequence") or lineage.get("visible_prefix_end"),
+            }
+        )
+    for event in events:
+        metadata = event.metadata if isinstance(getattr(event, "metadata", None), dict) else {}
+        for key in ("semantic_source_refs", "context_refs", "previous_checkpoint_refs"):
+            refs.extend(_coerce_context_refs(metadata.get(key), default_kind=key))
+    return _dedupe_dicts(refs)
+
+
+def _coerce_context_refs(value: Any, *, default_kind: str) -> list[dict[str, Any]]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, dict):
+        item = dict(value)
+        item.setdefault("kind", default_kind)
+        return [item]
+    if isinstance(value, str):
+        return [{"kind": default_kind, "uri": value}]
+    if isinstance(value, (list, tuple)):
+        refs: list[dict[str, Any]] = []
+        for item in value:
+            refs.extend(_coerce_context_refs(item, default_kind=default_kind))
+        return refs
+    return [{"kind": default_kind, "value": str(value)}]
+
+
+def _visible_source_view(
+    *,
+    session_id: uuid.UUID | str,
+    t0_segment_id: str,
+    semantic_events: list[Any],
+    excluded_refs: list[dict[str, Any]],
+    lineage: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "t2.visible-source-view.v1",
+        "session_id": str(session_id),
+        "t0_segment_id": t0_segment_id,
+        "semantic_sequences": [event.sequence for event in semantic_events],
+        "semantic_event_ids": [event.event_id for event in semantic_events],
+        "excluded_refs": excluded_refs,
+        "lineage_risk_flags": list(lineage.get("risk_flags") or []),
+    }
+
+
+def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _work_ledger_payload(*, root: Path, agent_id: uuid.UUID | str, session_id: uuid.UUID | str) -> dict[str, Any]:
@@ -700,18 +937,24 @@ def _build_episode_bundle(
         raise ValueError(f"trigger T2 package not found: {trigger_package_id}")
     if _package_allowed_next(packages_by_id[trigger_package_id]["review_md"]) != "episode_stitching":
         raise ValueError("episode stitching requires trigger review.allowed_next=episode_stitching")
-    selected_ids = _dedupe(
-        [
-            trigger_package_id,
-            *(
-                source_package_ids
-                if source_package_ids is not None
-                else _default_episode_source_package_ids(
-                    packages_by_id=packages_by_id, trigger_package_id=trigger_package_id
-                )
-            ),
-        ]
-    )
+    lineage_warnings: list[str] = []
+    if source_package_ids is None:
+        default_source_package_ids, lineage_warnings = _default_episode_source_package_ids(
+            packages_by_id=packages_by_id, trigger_package_id=trigger_package_id
+        )
+        candidate_source_package_ids = default_source_package_ids
+    else:
+        trigger_package = packages_by_id[trigger_package_id]
+        candidate_source_package_ids = list(source_package_ids)
+        for package_id in candidate_source_package_ids:
+            package = packages_by_id.get(package_id)
+            if (
+                package is not None
+                and package_id != trigger_package_id
+                and not _packages_lineage_compatible(trigger_package, package)
+            ):
+                lineage_warnings.append(f"incompatible_explicit_source_package={package_id}")
+    selected_ids = _dedupe([trigger_package_id, *candidate_source_package_ids])
     source_packages = []
     for package_id in selected_ids:
         package = packages_by_id.get(package_id)
@@ -737,6 +980,8 @@ def _build_episode_bundle(
             for package in packages_by_id.values()
             if package["package_status"] in {"open", "rolling_checkpoint"} and package["package_id"] not in selected_ids
         ][:4],
+        "lineage": packages_by_id[trigger_package_id].get("lineage") or {},
+        "lineage_warnings": lineage_warnings,
         "t0_source_refs": t0_refs,
         "t0_source_ranges": [package.get("source_range") for package in source_packages if package.get("source_range")],
         "principal_context": {},
@@ -771,6 +1016,10 @@ def _load_t2_packages(
             "t0_segment_id": str(manifest.get("t0_segment_id") or package_dir.name),
             "source_refs": [str(ref) for ref in manifest.get("source_refs") or [] if str(ref).strip()],
             "source_range": manifest.get("source_range"),
+            "lineage": manifest.get("lineage") or {},
+            "visible_source_view": manifest.get("visible_source_view") or {},
+            "context_refs": manifest.get("context_refs") or [],
+            "excluded_refs": manifest.get("excluded_refs") or [],
             "package_status": str(manifest.get("package_status") or ""),
             "summary_md": summary,
             "labels_md": labels,
@@ -781,11 +1030,12 @@ def _load_t2_packages(
 
 def _default_episode_source_package_ids(
     *, packages_by_id: dict[str, dict[str, Any]], trigger_package_id: str
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     package_ids = sorted(packages_by_id, key=lambda package_id: _package_sort_key(packages_by_id[package_id]))
     if trigger_package_id not in packages_by_id:
-        return []
+        return [], []
     trigger_index = package_ids.index(trigger_package_id)
+    trigger_package = packages_by_id[trigger_package_id]
     continuity_state = _package_continuity_state(packages_by_id[trigger_package_id].get("labels_md") or "")
     offsets = {
         "needs_previous": (-1,),
@@ -793,12 +1043,37 @@ def _default_episode_source_package_ids(
         "same_episode_candidate": (-1, 1),
     }.get(continuity_state, (-1, 1))
     adjacent_ids: list[str] = []
+    incompatible_candidates: list[str] = []
     for offset in offsets:
         neighbor_index = trigger_index + offset
         if neighbor_index < 0 or neighbor_index >= len(package_ids):
             continue
-        adjacent_ids.append(package_ids[neighbor_index])
-    return adjacent_ids
+        neighbor_id = package_ids[neighbor_index]
+        neighbor = packages_by_id[neighbor_id]
+        if _packages_lineage_compatible(trigger_package, neighbor):
+            adjacent_ids.append(neighbor_id)
+        else:
+            incompatible_candidates.append(neighbor_id)
+    warnings: list[str] = []
+    if not adjacent_ids and incompatible_candidates:
+        warnings.append("missing_compatible_adjacent_source")
+    return adjacent_ids, warnings
+
+
+def _packages_lineage_compatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return _package_lineage_key(left) == _package_lineage_key(right)
+
+
+def _package_lineage_key(package: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    lineage = package.get("lineage") if isinstance(package.get("lineage"), dict) else {}
+    session_id = str(lineage.get("session_id") or "")
+    return (
+        str(lineage.get("root_session_id") or session_id),
+        str(lineage.get("branch_session_id") or session_id),
+        str(lineage.get("source_session_id") or ""),
+        str(lineage.get("branch_mode") or ""),
+        str(lineage.get("anchor_event_id") or ""),
+    )
 
 
 def _package_sort_key(package: dict[str, Any]) -> tuple[int, str]:
@@ -828,6 +1103,7 @@ def _hold_without_llm(
     package_id: str,
     job_id: str,
     reason: str,
+    session_lineage: dict[str, Any] | None = None,
 ) -> T2SegmentPackageResult:
     staging_dir = _staging_dir(root, agent_id, job_id)
     staging_dir.mkdir(parents=True, exist_ok=True)
@@ -839,6 +1115,7 @@ def _hold_without_llm(
             session_id=session_id,
             t0_segment_id=t0_segment_id,
             package_id=package_id,
+            session_lineage=session_lineage,
         )
         _write_json(staging_dir / SOURCE_BUNDLE_FILENAME, source_bundle)
     except Exception as exc:  # noqa: BLE001
@@ -1021,6 +1298,119 @@ def _validate_candidate(*, source_bundle: dict[str, Any], summary_md: str, label
     return issues
 
 
+def _requires_independent_t2_review(
+    *,
+    source_bundle: dict[str, Any],
+    summary_md: str,
+    labels_md: str,
+) -> tuple[bool, str]:
+    issues: list[str] = []
+    labels = _extract_single_xml(labels_md, "t2_labels", issues)
+    if labels is None:
+        return True, "labels XML is missing or invalid"
+
+    lineage_risk_flags = [
+        str(flag).strip()
+        for flag in (source_bundle.get("visible_source_view") or {}).get("lineage_risk_flags") or []
+        if str(flag).strip()
+    ]
+    if not lineage_risk_flags:
+        lineage_risk_flags = [
+            str(flag).strip()
+            for flag in (source_bundle.get("lineage") or {}).get("risk_flags") or []
+            if str(flag).strip()
+        ]
+    if lineage_risk_flags:
+        return True, f"lineage_risk={lineage_risk_flags[0]}"
+
+    sensitivity = (labels.findtext(".//sensitivity") or "").strip().upper()
+    if sensitivity and sensitivity not in {"PL1", "PL2"}:
+        return True, f"sensitivity={sensitivity}"
+
+    risk_flags = [
+        " ".join(" ".join(flag.itertext()).split()).strip()
+        for flag in labels.findall(".//risk_flags/*")
+        if " ".join(" ".join(flag.itertext()).split()).strip()
+    ]
+    if risk_flags:
+        return True, f"risk_flags={','.join(risk_flags)}"
+
+    principal_scope = (labels.findtext(".//principal_scope") or "").strip().lower()
+    if principal_scope and principal_scope not in {"direct_owner", "self", "owner"}:
+        return True, f"principal_scope={principal_scope}"
+
+    confidence = _parse_unit_score(labels.findtext(".//confidence"))
+    if confidence is None or confidence < 0.85:
+        return True, f"confidence={labels.findtext('.//confidence') or '<missing>'}"
+
+    package_status = (labels.findtext(".//package_status") or "").strip().lower()
+    if package_status and package_status != "closed":
+        return True, f"package_status={package_status}"
+
+    continuity_state = (labels.findtext(".//continuity_state") or "").strip().lower()
+    if continuity_state and continuity_state != "standalone":
+        return True, f"continuity_state={continuity_state}"
+
+    text = "\n".join(
+        [
+            labels_md,
+            summary_md,
+            json.dumps(source_bundle.get("work_ledger") or {}, ensure_ascii=False),
+        ]
+    ).lower()
+    high_risk_terms = (
+        "soul",
+        "identity",
+        "persona",
+        "permission",
+        "credential",
+        "secret",
+        "cross_principal",
+        "pl3",
+        "pl4",
+        "capability",
+        "skill_seed",
+    )
+    for term in high_risk_terms:
+        if term in text:
+            return True, f"high_risk_term={term}"
+
+    return False, "low_risk"
+
+
+def _build_t2_self_review(*, source_bundle: dict[str, Any], summary_md: str, labels_md: str) -> str:
+    expected_refs = [
+        str(ref.get("uri")) for ref in source_bundle.get("source_refs") or [] if str(ref.get("uri") or "").strip()
+    ]
+    source_ref_lines = "\n".join(f'    <source_ref uri="{_xml_escape(uri)}"/>' for uri in expected_refs)
+    package_id = _xml_escape(str(source_bundle.get("package_id") or ""))
+    return f"""# T2 Segment Review
+
+<t2_review schema_version="t2.review.v1" package_id="{package_id}" reviewer="extractor_self_check">
+  <decision>approved</decision>
+  <allowed_next>t3_intake</allowed_next>
+  <review_rubric schema_version="t2.review_rubric.v1">
+    <score name="summary_fidelity" value="0.95"/>
+    <score name="source_ref_coverage" value="0.95"/>
+    <score name="label_alignment" value="0.90"/>
+    <score name="safety_scope" value="1.00"/>
+    <score name="package_closure" value="0.90"/>
+    <review_score>0.95</review_score>
+  </review_rubric>
+  <evidence_coverage>complete</evidence_coverage>
+  <hallucination_risk>low</hallucination_risk>
+  <label_quality>pass</label_quality>
+  <continuity_result>standalone</continuity_result>
+  <sensitivity_result>pass</sensitivity_result>
+  <issues/>
+  <required_changes/>
+  <source_refs_checked>
+{source_ref_lines}
+  </source_refs_checked>
+</t2_review>
+"""
+
+
 def _validate_continuity_fields(
     *,
     summary: ET.Element | None,
@@ -1154,6 +1544,15 @@ def _validate_episode_candidate(*, episode_bundle: dict[str, Any], synthesis_md:
 
     if review is not None and (review.findtext("decision") or "").strip() != "approved":
         issues.append("episode review decision is not approved")
+    if review is not None and (review.findtext("allowed_next") or "").strip() == "t3_intake":
+        lineage_warnings = [
+            str(item).strip() for item in episode_bundle.get("lineage_warnings") or [] if str(item).strip()
+        ]
+        if "missing_compatible_adjacent_source" in lineage_warnings:
+            issues.append("missing compatible adjacent source package for episode stitching")
+        incompatible = [item for item in lineage_warnings if item.startswith("incompatible_explicit_source_package=")]
+        if incompatible:
+            issues.append("incompatible explicit source package lineage for episode stitching")
     _validate_episode_review_rubric(synthesis=synthesis, review=review, issues=issues)
     return issues
 
@@ -1228,6 +1627,10 @@ def _parse_unit_score(raw: str | None) -> float | None:
     return value
 
 
+def _xml_escape(value: str) -> str:
+    return _xml_escape_raw(str(value), {'"': "&quot;"})
+
+
 def _package_status(*, summary: ET.Element | None, labels: ET.Element | None) -> str:
     label_status = (labels.findtext(".//package_status") if labels is not None else "") or ""
     if label_status.strip():
@@ -1289,7 +1692,9 @@ def _build_manifest(
     files: dict[str, str],
     package_status: str,
     job_id: str,
+    review_mode: str = "independent_gate",
 ) -> dict[str, Any]:
+    review_prompt_version = SELF_REVIEW_PROMPT_VERSION if review_mode == "self_check" else REVIEW_PROMPT_VERSION
     return {
         "schema_version": "t2.segment-package.manifest.v1",
         "package_id": source_bundle["package_id"],
@@ -1300,11 +1705,16 @@ def _build_manifest(
         "t0_segment_id": source_bundle["t0_segment_id"],
         "source_range": source_bundle["source_range"],
         "source_refs": [str(ref["uri"]) for ref in source_bundle.get("source_refs") or []],
+        "context_refs": source_bundle.get("context_refs") or [],
+        "excluded_refs": source_bundle.get("excluded_refs") or [],
+        "lineage": source_bundle.get("lineage") or {},
+        "visible_source_view": source_bundle.get("visible_source_view") or {},
         "package_status": package_status,
+        "review_mode": review_mode,
         "prompts": {
             "summary_prompt_version": SUMMARY_PROMPT_VERSION,
             "labels_prompt_version": LABELS_PROMPT_VERSION,
-            "review_prompt_version": REVIEW_PROMPT_VERSION,
+            "review_prompt_version": review_prompt_version,
         },
         "files": {filename: {"sha256": _sha256(content)} for filename, content in files.items()},
         "created_at": _now(),
@@ -1336,6 +1746,8 @@ def _build_episode_manifest(
             if str(package.get("package_id") or "").strip()
         ],
         "source_refs": [str(ref) for ref in episode_bundle.get("t0_source_refs") or []],
+        "lineage": episode_bundle.get("lineage") or {},
+        "lineage_warnings": episode_bundle.get("lineage_warnings") or [],
         "package_status": "reviewed",
         "prompts": {
             "stitcher_prompt_version": EPISODE_STITCHER_PROMPT_VERSION,

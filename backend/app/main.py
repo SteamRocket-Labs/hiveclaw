@@ -427,6 +427,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Plugin hooks registration failed: {e}")
 
+    try:
+        from app.services.hook_runtime_config import apply_all_persisted_hook_runtime_configs
+
+        await apply_all_persisted_hook_runtime_configs()
+    except Exception as e:
+        logger.warning(f"[startup] Hook runtime config load failed: {e}")
+
     # Backfill reply_context for triggers created before the unified-delivery
     # refactor — those triggers have reply_context=NULL and cannot deliver
     # results back to TG/WeChat/Feishu channels.

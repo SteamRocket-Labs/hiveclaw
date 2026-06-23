@@ -5,6 +5,8 @@
 > Core boundary: LLM 负责判断、提炼、反思、归纳、候选生成；平台负责证据引用、权限、去重、回滚、审计、最终落盘。
 >
 > 当前目标：Agent Markdown Wiki / Learning Vault 是包含 T0、T2、T3、`soul.md`、skills/evolution/audit sidecars 的完整 Markdown 文件系统；T3 只是其中的语义收敛层。主梯度仍是 `T0 -> T2 -> T3 -> soul.md`。残差连接表示 T3 curation 先看 T2，再沿 T2 `source_refs` 回到目标 T0 evidence 做复核；它不是新记忆层，也不是 T0 -> T3 捷径。
+>
+> Update 2026-06-22: CC/FreeCode/Codex 对照后的 Dream/Memory 目标形态和减复杂度方案见 `docs/memory-dream-cc-codex-alignment-2026-06-22.md`。本文件描述当前链路图；新文档补充目标调整：新增 CC-style `session_memory.md` hot lane，把 Dream 拆成 `Memory Dream` 与 `Soul Dream`，并将普通 T2/T3 记忆路径从多 Agent 常驻形态收敛为少数隔离 worker + 条件升级 reviewer。
 
 ```mermaid
 flowchart TB

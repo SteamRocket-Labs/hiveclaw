@@ -11,6 +11,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from app.runtime.prompts.deep_research import DEEP_RESEARCH_RUN_DESCRIPTION, DEEP_RESEARCH_START_DESCRIPTION
 from app.services.deep_research.artifact_composer import compose_deep_research_artifact
 from app.services.deep_research.plan_mode import (
     build_deep_research_plan_preview,
@@ -193,10 +194,7 @@ def _deep_research_confirmation_required_payload(preview: dict[str, Any]) -> dic
 @tool(
     ToolMeta(
         name="deep_research_run",
-        description=(
-            "Run a source-ledger-backed deep research workflow synchronously for quick or standard scopes. "
-            "Produces report.md, sources.jsonl, claims.jsonl, steps.jsonl, and final.json artifacts."
-        ),
+        description=DEEP_RESEARCH_RUN_DESCRIPTION,
         parameters=_schema(_REQUEST_PROPERTIES, ["question"]),
         category="deep_research_pack",
         display_name="Deep Research Run",
@@ -251,10 +249,7 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
 @tool(
     ToolMeta(
         name="deep_research_start",
-        description=(
-            "Start a long-running source-ledger-backed deep research workflow. "
-            "Creates a RuntimeTask and writes resumable artifacts under runtime_artifacts/long_tasks."
-        ),
+        description=DEEP_RESEARCH_START_DESCRIPTION,
         parameters=_schema(_REQUEST_PROPERTIES, ["question"]),
         category="deep_research_pack",
         display_name="Deep Research Start",

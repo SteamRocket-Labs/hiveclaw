@@ -1,6 +1,9 @@
 """§ System section — kernel execution model, governance, memory integration."""
 
-_SYSTEM_SECTION = """\
+from app.runtime.prompts.behavior import BEHAVIOR_CONTRACT
+
+
+_SYSTEM_SECTION = f"""\
 ## System
 
 <runtime_environment>
@@ -8,6 +11,8 @@ You run inside the Hive agent kernel — a multi-round LLM loop with governed
 tool execution. Every section below describes the invariants of that
 runtime. Treat them as facts about your environment, not suggestions.
 </runtime_environment>
+
+{BEHAVIOR_CONTRACT}
 
 ### Execution Model
 

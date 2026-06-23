@@ -8,10 +8,11 @@ def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> Non
     from app.services.session_memory import SessionMemoryPayload, update_session_memory
 
     agent_id = uuid4()
+    session_id = "session-123"
     path = update_session_memory(
         agent_id,
         SessionMemoryPayload(
-            session_id="session-123",
+            session_id=session_id,
             source="response_complete",
             session_title="Claude 对标补齐",
             current_state="Comparing Clawith with external agents and fixing gaps.",
@@ -31,7 +32,8 @@ def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> Non
 
     content = path.read_text(encoding="utf-8")
 
-    assert path == tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md"
+    assert path == tmp_path / str(agent_id) / "memory" / "sessions" / session_id / "session_memory.md"
+    assert not (tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md").exists()
     assert not (tmp_path / str(agent_id) / "workspace" / "session_memory.md").exists()
     assert content.startswith("---\n")
     assert "version: 2" in content
@@ -119,8 +121,35 @@ def test_merge_session_memory_into_recovery_manifest_restores_pending_work(tmp_p
 
     assert "Re-inject session memory" in manifest.pending_items
     assert "Verify long-context benchmark" in manifest.pending_items
-    assert any("Compaction completed and restore is in progress." in item for item in manifest.recent_tool_outcomes[0].values())
-    assert any("Continuation restore logic was written before compaction." in item for item in manifest.recent_tool_outcomes[0].values())
+    assert any(
+        "Compaction completed and restore is in progress." in item for item in manifest.recent_tool_outcomes[0].values()
+    )
+    assert any(
+        "Continuation restore logic was written before compaction." in item
+        for item in manifest.recent_tool_outcomes[0].values()
+    )
+
+
+def test_load_session_memory_prefers_matching_session_lane(tmp_path: Path) -> None:
+    from app.services.session_memory import SessionMemoryPayload, load_session_memory, update_session_memory
+
+    agent_id = uuid4()
+    update_session_memory(
+        agent_id,
+        SessionMemoryPayload(session_id="session-a", current_state="State A.", task_spec="Task A."),
+        data_root=tmp_path,
+    )
+    update_session_memory(
+        agent_id,
+        SessionMemoryPayload(session_id="session-b", current_state="State B.", task_spec="Task B."),
+        data_root=tmp_path,
+    )
+
+    payload = load_session_memory(agent_id, session_id="session-a", data_root=tmp_path)
+
+    assert payload is not None
+    assert payload.session_id == "session-a"
+    assert payload.current_state == "State A."
 
 
 def test_merge_session_memory_into_manifest_logs_load_failures(caplog) -> None:
@@ -166,7 +195,7 @@ def test_load_session_memory_supports_legacy_schema_without_frontmatter(tmp_path
         encoding="utf-8",
     )
 
-    payload = load_session_memory(agent_id, data_root=tmp_path)
+    payload = load_session_memory(agent_id, session_id="legacy-session", data_root=tmp_path)
 
     assert payload is not None
     assert payload.current_state == "Legacy state."
@@ -186,11 +215,15 @@ def test_update_session_memory_migrates_legacy_workspace_file(tmp_path: Path) ->
 
     new_path = update_session_memory(
         agent_id,
-        SessionMemoryPayload(current_state="New runtime state.", task_spec="Keep runtime files out of workspace."),
+        SessionMemoryPayload(
+            session_id="session-new",
+            current_state="New runtime state.",
+            task_spec="Keep runtime files out of workspace.",
+        ),
         data_root=tmp_path,
     )
 
-    assert new_path == tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md"
+    assert new_path == tmp_path / str(agent_id) / "memory" / "sessions" / "session-new" / "session_memory.md"
     assert new_path.exists()
     assert not legacy_path.exists()
 

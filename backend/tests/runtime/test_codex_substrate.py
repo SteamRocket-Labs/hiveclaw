@@ -162,3 +162,49 @@ def test_permissions_prompt_is_derived_from_effective_policy() -> None:
     assert "/workspace/project/.env" in text
     assert "raw_subprocess" in text
     assert "request_permission_tool_enabled: true" in text
+
+
+@pytest.mark.asyncio
+async def test_compaction_wrapper_records_attempt_completion_and_checkpoint() -> None:
+    from app.kernel.engine import _compress_messages_with_trace
+    from app.runtime.compaction_trace import CompactionTraceContext
+
+    facts: list[dict] = []
+
+    async def recorder(fact: dict) -> None:
+        facts.append(fact)
+
+    async def fake_compress(messages: list[dict], **_kwargs) -> list[dict]:
+        return [{"role": "assistant", "content": "compact summary"}, messages[-1]]
+
+    trace = CompactionTraceContext.enabled(
+        thread_id="thread-1",
+        turn_id="turn-1",
+        model="gpt-test",
+        provider_name="openai",
+        fact_recorder=recorder,
+        compaction_id="cmp_test",
+    )
+
+    result = await _compress_messages_with_trace(
+        fake_compress,
+        [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "world"}],
+        trace_context=trace,
+        model_provider="openai",
+        model_name="gpt-test",
+        tenant_id=None,
+        tools=[{"type": "function", "function": {"name": "tool_search"}}],
+        parallel_tool_calls=True,
+        instructions="compress carefully",
+    )
+
+    assert result[0]["content"] == "compact summary"
+    assert [fact["fact_type"] for fact in facts] == [
+        "compaction_attempt_started",
+        "compaction_attempt_completed",
+        "compaction_checkpoint_installed",
+    ]
+    assert all(fact["compaction_id"] == "cmp_test" for fact in facts)
+    assert facts[0]["request"]["tools"][0]["function"]["name"] == "tool_search"
+    assert facts[2]["checkpoint"]["input_history"][0]["content"] == "hello"
+    assert facts[2]["checkpoint"]["replacement_history"][0]["content"] == "compact summary"

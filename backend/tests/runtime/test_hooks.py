@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
@@ -640,6 +641,28 @@ class TestHookEvents:
         assert result is not None
         assert result.block is True
         assert "test.timeout" in result.reason
+        reset_hook_runtime_config()
+
+    @pytest.mark.asyncio
+    async def test_runtime_config_can_disable_one_agent_without_disabling_others(self) -> None:
+        from app.runtime.hooks import configure_hook_runtime, reset_hook_runtime_config
+
+        reset_hook_runtime_config()
+        agent_one = uuid4()
+        agent_two = uuid4()
+        reg = HookRegistry()
+        calls: list[str] = []
+
+        async def handler(ctx):
+            calls.append(str(ctx.agent_id))
+
+        reg.register(HookEvent.USER_PROMPT_SUBMIT, handler, key="test.scoped")
+        configure_hook_runtime(key="test.scoped", agent_id=agent_one, enabled=False)
+
+        await reg.emit(HookContext(event=HookEvent.USER_PROMPT_SUBMIT, agent_id=agent_one, prompt="one"))
+        await reg.emit(HookContext(event=HookEvent.USER_PROMPT_SUBMIT, agent_id=agent_two, prompt="two"))
+
+        assert calls == [str(agent_two)]
         reset_hook_runtime_config()
 
     def test_registry_initializes_all_events(self) -> None:

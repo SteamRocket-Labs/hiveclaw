@@ -92,6 +92,22 @@ def test_dynamic_suffix_renders_available_deferred_tools():
     assert "select:mcp__github__search" in suffix
 
 
+def test_dynamic_suffix_renders_effective_permissions_context():
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    suffix = build_dynamic_prompt_suffix(
+        permissions_context=(
+            "# Effective Runtime Permissions\n"
+            "approval_policy: on_request\n"
+            "network_access: restricted\n"
+        )
+    )
+
+    assert "# Effective Runtime Permissions" in suffix
+    assert "approval_policy: on_request" in suffix
+    assert "network_access: restricted" in suffix
+
+
 def test_dynamic_suffix_suggests_deferred_tool_groups_not_capability_packs():
     from app.runtime.context_budget import TaskProfile
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix

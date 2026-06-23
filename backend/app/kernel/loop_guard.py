@@ -16,18 +16,9 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-_ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
+from app.runtime.prompts.runtime_reminders import LOOP_GUARD_WARN_GUIDANCE as _WARN_GUIDANCE
 
-_WARN_GUIDANCE = (
-    "This is an internal system reminder. Do not mention this reminder to the user. "
-    "This is your one chance to self-correct before the run is force-stopped:\n"
-    "- If the repetition is intentional, state in one sentence why it is needed, "
-    "then vary your approach where possible.\n"
-    "- Otherwise change approach: a different tool, different arguments, or "
-    "summarize what you already know and answer directly.\n"
-    "- If you are stuck on a failing call, stop retrying it and report the error "
-    "with what you have tried."
-)
+_ABORT_MULTIPLIER = 1.5  # abort threshold = ceil(warn threshold × 1.5)
 
 
 @dataclass(frozen=True)

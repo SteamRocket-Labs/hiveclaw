@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import uuid
 
+from app.runtime.prompts.mcp import (
+    CALL_MCP_TOOL_DESCRIPTION,
+    IMPORT_MCP_SERVER_DESCRIPTION,
+    INSPECT_MCP_TOOL_DESCRIPTION,
+    LIST_MCP_TOOLS_DESCRIPTION,
+    MCP_LIST_RESOURCES_DESCRIPTION,
+    MCP_READ_RESOURCE_DESCRIPTION,
+)
 from app.tools.decorator import ToolMeta, tool
 from app.tools.result_envelope import render_tool_error
 
@@ -14,7 +22,7 @@ from app.tools.result_envelope import render_tool_error
 @tool(
     ToolMeta(
         name="list_mcp_tools",
-        description="List all MCP servers and their tools currently imported and available to this agent.",
+        description=LIST_MCP_TOOLS_DESCRIPTION,
         parameters={"type": "object", "properties": {}},
         category="mcp",
         display_name="List MCP Tools",
@@ -99,7 +107,7 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="inspect_mcp_tool",
-        description="Inspect a specific imported MCP tool, including its parameters schema and server configuration.",
+        description=INSPECT_MCP_TOOL_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -217,7 +225,7 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="import_mcp_server",
-        description="Import an MCP server from Smithery registry into the platform. Treat this as an explicit platform-extension workflow, not a normal task-execution step. Use discover_resources first to find the server ID. If previously imported tools stopped working (e.g. OAuth expired), set reauthorize=true to re-run the authorization flow.",
+        description=IMPORT_MCP_SERVER_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -259,12 +267,7 @@ async def import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="call_mcp_tool",
-        description=(
-            "Invoke an imported MCP tool against its remote server. "
-            "Pass `tool_name` (the Hive-side name from list_mcp_tools) and "
-            "an `arguments` dict matching the tool's input schema. The result "
-            "is returned as a string."
-        ),
+        description=CALL_MCP_TOOL_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -477,7 +480,7 @@ async def _resolve_agent_mcp_server(agent_id: uuid.UUID, server: str | None) -> 
 @tool(
     ToolMeta(
         name="mcp_list_resources",
-        description="List the first-class resources an imported MCP server exposes (protocol resources/list, distinct from its tools).",
+        description=MCP_LIST_RESOURCES_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {
@@ -528,7 +531,7 @@ async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="mcp_read_resource",
-        description="Read one MCP server resource by URI (protocol resources/read). Large binary blobs spill to workspace artifacts.",
+        description=MCP_READ_RESOURCE_DESCRIPTION,
         parameters={
             "type": "object",
             "properties": {

@@ -153,6 +153,46 @@ async def test_commands_api_hides_optional_coding_pack_without_policy(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_chat_sessions_api_exposes_session_index(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+    captured = {}
+
+    async def fake_access(db_arg, user_arg, requested_agent_id):
+        assert db_arg is db
+        assert user_arg is current_user
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id), "use"
+
+    async def fake_read_session_index(db_arg, *, agent_id, session_id):
+        captured.update({"db": db_arg, "agent_id": agent_id, "session_id": session_id})
+        return {
+            "schema": "hive.session_index.v1",
+            "session_id": str(session_id),
+            "checkpoints": [{"checkpoint_event_id": "event-1"}],
+            "dynamic_tools": ["web_search"],
+        }
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(chat_sessions_api, "read_session_index", fake_read_session_index)
+
+    result = await chat_sessions_api.get_session_index(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result["schema"] == "hive.session_index.v1"
+    assert result["checkpoints"][0]["checkpoint_event_id"] == "event-1"
+    assert captured == {"db": db, "agent_id": agent_id, "session_id": session_id}
+
+
+@pytest.mark.asyncio
 async def test_commands_api_executes_builtin_command_tool(monkeypatch, tmp_path):
     import app.api.commands as commands_api
 

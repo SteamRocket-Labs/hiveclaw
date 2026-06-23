@@ -28,6 +28,7 @@ from app.services.web_chat_runtime import (
     start_web_chat_run,
 )
 from app.services.conversation_branch_service import create_conversation_branch
+from app.services.session_index import read_session_index
 from app.services.session_feedback import record_session_feedback
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
@@ -604,6 +605,20 @@ async def get_session_lineage(
         }
         for item in sessions
     ]
+
+
+@router.get("/{agent_id}/sessions/{session_id}/index")
+async def get_session_index(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await check_agent_access(db, current_user, agent_id)
+    index = await read_session_index(db, agent_id=agent_id, session_id=session_id)
+    if index is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return index
 
 
 @router.get("/{agent_id}/sessions/{session_id}/runs/active")

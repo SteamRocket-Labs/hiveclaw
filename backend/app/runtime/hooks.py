@@ -381,11 +381,24 @@ class _HookBinding:
 
 _disabled_hook_keys: set[str] = set()
 _hook_runtime_policies: dict[str, dict[str, Any]] = {}
+_disabled_hook_agent_keys: set[tuple[str, str]] = set()
+_hook_runtime_agent_policies: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _agent_scope(agent_id: Any | None, key: str) -> tuple[str, str] | None:
+    if agent_id is None:
+        return None
+    clean_agent_id = str(agent_id).strip()
+    clean_key = str(key or "").strip()
+    if not clean_agent_id or not clean_key:
+        return None
+    return clean_agent_id, clean_key
 
 
 def configure_hook_runtime(
     *,
     key: str,
+    agent_id: Any | None = None,
     enabled: bool | None = None,
     timeout_seconds: float | None = None,
     failure_policy: str | None = None,
@@ -398,12 +411,16 @@ def configure_hook_runtime(
     clean_key = str(key or "").strip()
     if not clean_key:
         raise ValueError("hook key is required")
+    scoped = _agent_scope(agent_id, clean_key)
+    disabled_keys = _disabled_hook_keys if scoped is None else _disabled_hook_agent_keys
+    policies = _hook_runtime_policies if scoped is None else _hook_runtime_agent_policies
+    policy_key: str | tuple[str, str] = clean_key if scoped is None else scoped
     if enabled is not None:
         if enabled:
-            _disabled_hook_keys.discard(clean_key)
+            disabled_keys.discard(policy_key)
         else:
-            _disabled_hook_keys.add(clean_key)
-    policy = dict(_hook_runtime_policies.get(clean_key) or {})
+            disabled_keys.add(policy_key)
+    policy = dict(policies.get(policy_key) or {})
     if timeout_seconds is not None:
         if timeout_seconds <= 0:
             policy.pop("timeout_seconds", None)
@@ -415,31 +432,43 @@ def configure_hook_runtime(
             raise ValueError("failure_policy must be 'continue' or 'block'")
         policy["failure_policy"] = clean_policy
     if policy:
-        _hook_runtime_policies[clean_key] = policy
+        policies[policy_key] = policy
     else:
-        _hook_runtime_policies.pop(clean_key, None)
-    return describe_hook_runtime_config(clean_key)
+        policies.pop(policy_key, None)
+    return describe_hook_runtime_config(clean_key, agent_id=agent_id)
 
 
-def describe_hook_runtime_config(key: str | None = None) -> dict[str, Any]:
+def describe_hook_runtime_config(key: str | None = None, *, agent_id: Any | None = None) -> dict[str, Any]:
     def _one(item_key: str) -> dict[str, Any]:
-        policy = dict(_hook_runtime_policies.get(item_key) or {})
+        scoped = _agent_scope(agent_id, item_key)
+        scoped_policy = _hook_runtime_agent_policies.get(scoped) if scoped else None
+        policy = dict(scoped_policy or _hook_runtime_policies.get(item_key) or {})
+        scoped_disabled = scoped in _disabled_hook_agent_keys if scoped else False
+        global_disabled = item_key in _disabled_hook_keys
         return {
             "key": item_key,
-            "enabled": item_key not in _disabled_hook_keys,
+            "agent_id": str(agent_id) if agent_id is not None else None,
+            "enabled": not (scoped_disabled or (scoped_policy is None and global_disabled)),
             "timeout_seconds": policy.get("timeout_seconds"),
             "failure_policy": policy.get("failure_policy", "continue"),
         }
 
     if key is not None:
         return _one(str(key))
-    keys = sorted({*_disabled_hook_keys, *_hook_runtime_policies.keys()})
+    keys = set(_disabled_hook_keys) | set(_hook_runtime_policies.keys())
+    if agent_id is not None:
+        clean_agent_id = str(agent_id)
+        keys.update(item_key for agent_key, item_key in _disabled_hook_agent_keys if agent_key == clean_agent_id)
+        keys.update(item_key for (agent_key, item_key) in _hook_runtime_agent_policies if agent_key == clean_agent_id)
+    keys = sorted(keys)
     return {"items": [_one(item_key) for item_key in keys]}
 
 
 def reset_hook_runtime_config() -> None:
     _disabled_hook_keys.clear()
     _hook_runtime_policies.clear()
+    _disabled_hook_agent_keys.clear()
+    _hook_runtime_agent_policies.clear()
 
 
 class HookRegistry:
@@ -612,7 +641,11 @@ class HookRegistry:
         final_result: HookResult | None = None
         for binding in handlers:
             try:
-                if binding.key and binding.key in _disabled_hook_keys:
+                scoped = _agent_scope(ctx.agent_id, binding.key) if binding.key else None
+                if binding.key and (
+                    scoped in _disabled_hook_agent_keys
+                    or (scoped not in _hook_runtime_agent_policies and binding.key in _disabled_hook_keys)
+                ):
                     continue
                 if binding.matcher and not binding.matcher(ctx):
                     continue
@@ -621,7 +654,11 @@ class HookRegistry:
                 if asyncio.iscoroutine(result):
                     timeout_seconds = None
                     if binding.key:
-                        timeout_seconds = (_hook_runtime_policies.get(binding.key) or {}).get("timeout_seconds")
+                        timeout_seconds = (
+                            (_hook_runtime_agent_policies.get(scoped) or {}).get("timeout_seconds") if scoped else None
+                        )
+                        if timeout_seconds is None:
+                            timeout_seconds = (_hook_runtime_policies.get(binding.key) or {}).get("timeout_seconds")
                     if timeout_seconds:
                         result = await asyncio.wait_for(result, timeout=float(timeout_seconds))
                     else:
@@ -680,7 +717,15 @@ class HookRegistry:
                     await self._emit_stop_failure(ctx, exc)
                 if (
                     binding.key
-                    and (_hook_runtime_policies.get(binding.key) or {}).get("failure_policy") == "block"
+                    and (
+                        (
+                            (_hook_runtime_agent_policies.get(scoped) or {}).get("failure_policy")
+                            if scoped
+                            else None
+                        )
+                        or (_hook_runtime_policies.get(binding.key) or {}).get("failure_policy")
+                    )
+                    == "block"
                     and self._blocking_supported(ctx.event)
                 ):
                     return HookResult(block=True, reason=f"Hook {binding.key} failed: {type(exc).__name__}")

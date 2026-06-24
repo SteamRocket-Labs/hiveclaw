@@ -21,6 +21,13 @@ class SkillMetadata:
     allowed_tools: tuple[str, ...] = ()  # Step 9: surfaced as load_skill scope guidance
     pack: str | None = None
     requires_skills: tuple[str, ...] = ()
+    disable_model_invocation: bool = False
+    user_invocable: bool = True
+    hidden: bool = False
+    when_to_use: str = ""
+    context: str = ""
+    agent: str = ""
+    hooks: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

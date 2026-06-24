@@ -1124,7 +1124,7 @@ async def _execute_tool_with_hooks(
         except Exception as exc:  # noqa: BLE001 - source registry must not break tool execution
             logger.warning("[Kernel] connector source registration failed for tool %s: %s", tool_name, exc)
 
-    await emit_hook(
+    post_tool_hook_result = await emit_hook(
         HookEvent.POST_TOOL_USE,
         agent_id=request.agent_id,
         session_id=request.memory_session_id,
@@ -1139,6 +1139,9 @@ async def _execute_tool_with_hooks(
             "source": getattr(request.session_context, "source", None) if request.session_context else None,
         },
     )
+    if post_tool_hook_result and post_tool_hook_result.output_rewrite is not None:
+        rewrite = post_tool_hook_result.output_rewrite
+        result_str = rewrite if isinstance(rewrite, str) else json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
     if record_span:
         span_metadata = {
             "status": "ok",

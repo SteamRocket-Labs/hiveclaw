@@ -80,6 +80,14 @@ metadata:
     requires_skills:
       - industry-research
       - source-ledger-audit
+    disable_model_invocation: true
+    user_invocable: false
+    hidden: true
+    when_to_use: Only when explicitly selected.
+    context: Use audited source mode.
+    agent: audit-worker
+    hooks:
+      - post_tool_use
     estimated_runtime_minutes: 15
 ---
 # Source Audit
@@ -93,9 +101,48 @@ metadata:
 
     assert parsed.metadata.pack == "web_pack"
     assert parsed.metadata.requires_skills == ("industry-research", "source-ledger-audit")
+    assert parsed.metadata.disable_model_invocation is True
+    assert parsed.metadata.user_invocable is False
+    assert parsed.metadata.hidden is True
+    assert parsed.metadata.when_to_use == "Only when explicitly selected."
+    assert parsed.metadata.context == "Use audited source mode."
+    assert parsed.metadata.agent == "audit-worker"
+    assert parsed.metadata.hooks == ("post_tool_use",)
     # Step 9: nested hive.version / hive.estimated_runtime_minutes still parse
     # without error but are no longer surfaced on SkillMetadata.
     assert not hasattr(parsed.metadata, "estimated_runtime_minutes")
+
+
+def test_skill_access_parser_consumes_access_control_and_cc_frontmatter_keys(tmp_path):
+    content = """---
+name: Hidden Research
+description: Hidden from model catalog but still loadable by explicit name.
+disable-model-invocation: true
+user-invocable: false
+hidden: true
+when_to_use: Only after an admin-approved workflow asks for it.
+context: Use the private analyst context.
+agent: research-worker
+hooks:
+  - stop
+  - pre_tool_use
+---
+# Hidden Research
+"""
+
+    parsed = SkillParser().parse_content(
+        content,
+        path=tmp_path / "SKILL.md",
+        relative_path="skills/hidden-research/SKILL.md",
+    )
+
+    assert parsed.metadata.disable_model_invocation is True
+    assert parsed.metadata.user_invocable is False
+    assert parsed.metadata.hidden is True
+    assert parsed.metadata.when_to_use == "Only after an admin-approved workflow asks for it."
+    assert parsed.metadata.context == "Use the private analyst context."
+    assert parsed.metadata.agent == "research-worker"
+    assert parsed.metadata.hooks == ("stop", "pre_tool_use")
 
 
 def test_parser_is_tolerant_of_invalid_yaml_frontmatter(tmp_path):

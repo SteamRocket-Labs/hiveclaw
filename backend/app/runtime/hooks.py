@@ -429,6 +429,7 @@ class HookResult:
     additional_contexts: list[str] = field(default_factory=list)  # Extra model context from hook output.
     prevent_continuation: bool = False  # Stop/SubagentStop: return final state without another loop.
     stop_reason: str = ""  # Human-readable stop/prevent-continuation reason.
+    output_rewrite: str | dict[str, Any] | None = None  # POST_TOOL_USE model-visible result rewrite.
 
 
 # Type alias for hook handlers
@@ -995,6 +996,13 @@ class HookRegistry:
                             reason=result.reason,
                             modified_args=ctx.tool_args if ctx.event == HookEvent.PRE_TOOL_USE else None,
                             additional_contexts=list(result.additional_contexts),
+                            output_rewrite=result.output_rewrite,
+                        )
+                    elif ctx.event == HookEvent.POST_TOOL_USE and result.output_rewrite is not None:
+                        final_result = HookResult(
+                            block=False,
+                            reason=result.reason,
+                            output_rewrite=result.output_rewrite,
                         )
                     if result.block and self._blocking_supported(ctx.event):
                         blocked = HookResult(
@@ -1004,6 +1012,7 @@ class HookRegistry:
                             additional_contexts=list(result.additional_contexts or []),
                             prevent_continuation=result.prevent_continuation,
                             stop_reason=result.stop_reason,
+                            output_rewrite=result.output_rewrite,
                         )
                         logger.info(
                             "[Hooks] %s blocked by handler: %s",

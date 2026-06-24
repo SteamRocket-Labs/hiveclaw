@@ -71,6 +71,16 @@ class SkillParser:
         def hive_value(key: str, default: Any = None) -> Any:
             return metadata.get(f"hive.{key}", nested_hive.get(key, default))
 
+        def frontmatter_value(*keys: str, default: Any = None) -> Any:
+            for key in keys:
+                if key in frontmatter:
+                    return frontmatter[key]
+            for key in keys:
+                value = hive_value(key, None)
+                if value is not None:
+                    return value
+            return default
+
         if not description:
             for line in body.splitlines():
                 line = line.strip()
@@ -91,6 +101,24 @@ class SkillParser:
                 allowed_tools=allowed_tools,
                 pack=self._string_value(hive_value("pack")),
                 requires_skills=self._string_tuple(hive_value("requires_skills")),
+                disable_model_invocation=self._bool_value(
+                    frontmatter_value(
+                        "disable-model-invocation",
+                        "disable_model_invocation",
+                        default=False,
+                    ),
+                    default=False,
+                )
+                or not self._bool_value(frontmatter_value("model-invocable", "model_invocable", default=True), default=True),
+                user_invocable=self._bool_value(
+                    frontmatter_value("user-invocable", "user_invocable", default=True),
+                    default=True,
+                ),
+                hidden=self._bool_value(frontmatter_value("hidden", "isHidden", "is_hidden", default=False), default=False),
+                when_to_use=self._string_value(frontmatter_value("when_to_use", "when-to-use")),
+                context=self._string_value(frontmatter_value("context")),
+                agent=self._string_value(frontmatter_value("agent")),
+                hooks=self._string_tuple(frontmatter_value("hooks")),
             ),
             body=body,
             file_path=path,

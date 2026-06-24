@@ -736,6 +736,48 @@ async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.hooks import HookEvent, HookResult
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(event, **_kwargs):
+        if event == HookEvent.POST_TOOL_USE:
+            return HookResult(output_rewrite="[redacted by hook]")
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "call tool"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=SessionContext(session_id="s-rewrite"),
+        memory_session_id="s-rewrite",
+    )
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+        return "raw secret output"
+
+    async def emit_event(_event):
+        return None
+
+    result, effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="mcp__server__secret_tool",
+        tool_args={"id": "secret"},
+        emit_event=emit_event,
+    )
+
+    assert result == "[redacted by hook]"
+    assert effective_args == {"id": "secret"}
+    assert executed is True
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_handles_tool_round_and_collects_parts():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig

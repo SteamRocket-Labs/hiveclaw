@@ -6,6 +6,19 @@ from collections import OrderedDict
 
 from .types import ParsedSkill
 
+_CATALOG_DESCRIPTION_CHAR_LIMIT = 250
+
+
+def _model_catalog_visible(skill: ParsedSkill) -> bool:
+    return not skill.metadata.hidden and not skill.metadata.disable_model_invocation
+
+
+def _catalog_description(skill: ParsedSkill, *, max_chars: int = _CATALOG_DESCRIPTION_CHAR_LIMIT) -> str:
+    description = skill.metadata.description or ""
+    if len(description) <= max_chars:
+        return description
+    return description[:max_chars].rstrip() + "..."
+
 
 class SkillRegistry:
     """Deduplicated registry keyed by display name."""
@@ -73,7 +86,8 @@ class SkillRegistry:
         2. Truncated descriptions (system skills preserved, others truncated)
         3. Names-only for non-system skills (extreme budget pressure)
         """
-        if not self._skills:
+        visible_skills = [skill for skill in self._skills.values() if _model_catalog_visible(skill)]
+        if not visible_skills:
             return ""
 
         header = (
@@ -100,18 +114,18 @@ class SkillRegistry:
 
         # Level 1: try full descriptions
         full_rows = [
-            f"| {s.metadata.name} | {s.metadata.description} | {s.relative_path} |"
-            for s in self._skills.values()
+            f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |"
+            for s in visible_skills
         ]
         if sum(len(r) + 1 for r in full_rows) <= row_budget:
             return header + table_header + "\n".join(full_rows) + footer
 
         # Level 2: truncate non-system skill descriptions
-        system_skills = [s for s in self._skills.values() if s.metadata.is_system]
-        user_skills = [s for s in self._skills.values() if not s.metadata.is_system]
+        system_skills = [s for s in visible_skills if s.metadata.is_system]
+        user_skills = [s for s in visible_skills if not s.metadata.is_system]
 
         system_rows = [
-            f"| {s.metadata.name} | {s.metadata.description} | {s.relative_path} |"
+            f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |"
             for s in system_skills
         ]
         system_chars = sum(len(r) + 1 for r in system_rows)

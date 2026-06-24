@@ -513,3 +513,109 @@ Migration / Backfill / Rollback：
 
 - Hive Memory 仍是 Hive-native：T0/T2/T3/soul、Memory Gate、Platform Gate、source_refs、rollback/audit 不被 CC/Codex exact-copy 覆盖。
 - Codex/CC 只被吸收为 recall UX、stale disclosure、verify-before-assert discipline；不能把外部 memory provider 或 Codex thread memory 设为 Hive T3 truth。
+
+## 7. Package G：Extension / Command / Hook / Skill / MCP
+
+状态：完成本轮确认的 Package G 必修断点闭环。
+
+变更范围：
+
+- `backend/app/skills/types.py` / `backend/app/skills/parser.py` / `backend/app/skills/registry.py`：
+  - `SkillMetadata` 新增 access-control 与 CC frontmatter 字段：`disable_model_invocation`、`user_invocable`、`hidden`、`when_to_use`、`context`、`agent`、`hooks`。
+  - parser 消费 kebab/snake frontmatter 与 `metadata.hive` fallback；nested `metadata.hive` 下的 access-control 字段有回归断言。
+  - `render_catalog()` 按 model catalog 可见性过滤 hidden / disable-model-invocation skill。
+  - catalog 单条 description 截断到 250 字符，避免 skill listing 预算被单 skill 描述撑爆。
+- `backend/app/runtime/hooks.py` / `backend/app/kernel/engine.py`：
+  - `HookResult` 增加 `output_rewrite`。
+  - `POST_TOOL_USE` hook 返回 `output_rewrite` 时，kernel 将其作为模型实际看到的 tool result。
+  - D-30 `updatedMCPToolOutput` / output rewrite 不再只是 schema 声明。
+- `backend/app/services/extension_registry.py`：
+  - 新增 `build_extension_registry_projection()`，把 skill、hook catalog、command、MCP server、workflow/tool/plugin records 统一投影成 `ExtensionRegistryV1`。
+  - MCP prompts/resources 进入 projection runtime effects：`mcp_prompt:<name>->command`、`mcp_resource:skill://...->skill`，用于 backfill/replay/audit，不冒充已经绕过治理自动安装。
+- 更新测试：
+  - `backend/tests/skills/test_parser_v2.py`
+  - `backend/tests/skills/test_registry.py`
+  - `backend/tests/kernel/test_engine.py`
+  - `backend/tests/services/test_extension_registry.py`
+
+Red phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/kernel/test_engine.py::test_execute_tool_with_hooks_consumes_post_tool_output_rewrite tests/services/test_extension_registry.py -q
+```
+
+失败证据：
+
+```text
+AttributeError: 'SkillMetadata' object has no attribute 'disable_model_invocation'
+TypeError: HookResult.__init__() got an unexpected keyword argument 'output_rewrite'
+ModuleNotFoundError: No module named 'app.services.extension_registry'
+```
+
+Green phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/kernel/test_engine.py::test_hook_emitter_consumes_post_tool_output_rewrite tests/services/test_extension_registry.py -q
+```
+
+结果：
+
+```text
+17 passed, 3 warnings
+```
+
+Package acceptance：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests -q -k "extension_registry or command_registry or skill_access or hook_emitter or mcp_discovery"
+```
+
+结果：
+
+```text
+8 passed, 5135 deselected, 4 warnings
+```
+
+Additional regression：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/services/test_extension_registry.py -q
+```
+
+结果：
+
+```text
+61 passed, 4 warnings
+```
+
+Lint：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/ruff check app/skills/types.py app/skills/parser.py app/skills/registry.py app/runtime/hooks.py app/kernel/engine.py app/services/extension_registry.py tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/kernel/test_engine.py tests/services/test_extension_registry.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
+Migration / Backfill / Rollback：
+
+- Migration：无 schema migration；本包新增 read projection 与 metadata fields。
+- Backfill：现有 skill/hook/command/MCP records 可通过 `build_extension_registry_projection()` 投影到 `ExtensionRegistryV1`；不改写 tenant installs。
+- Rollback：可回滚本提交；不会删除已安装 MCP、skill、hook、workflow、plugin，只会停用新 projection 与 catalog filtering/output rewrite consumer。
+
+显式裁决：
+
+- D-28 已代码闭环：skill catalog 按 hidden / disable-model-invocation 过滤，`user_invocable` 进入 metadata/projection。
+- D-30 已代码闭环：`POST_TOOL_USE.output_rewrite` 被 kernel 消费。
+- D-11 已建立 projection：`ExtensionRegistryV1` 可统一 skill、hook、command、MCP、workflow/tool/plugin read model。
+- D-29 裁决：7 个 `_DISABLED_NOOP` hook 仍不宣称 live emitter parity；catalog 继续以 `lifecycle_state=disabled_noop` / `runtime_consumer=disabled_noop_audit` 暴露，不伪装为已接 emitter。
+- D-31 裁决：skill frontmatter 的 `context/agent/hooks/when_to_use` 已被 parser 与 registry projection 消费；inline-fork skill execution 不作为 V1 必须复刻项，Hive 的可执行组件仍必须通过 governed workflow/subagent/sandbox tool。
+- D-32 裁决：MCP prompts/resources 已进入 ExtensionRegistry projection，用于 prompts->commands、skill://resources->skills 的可回放映射；自动 runtime install 仍必须走 MCP authz / skill install governance，不做隐式安装。

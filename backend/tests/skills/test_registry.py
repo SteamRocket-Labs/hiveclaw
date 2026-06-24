@@ -8,9 +8,24 @@ from app.skills.registry import SkillRegistry
 from app.skills.types import ParsedSkill, SkillMetadata
 
 
-def _make_skill(name: str, description: str, *, is_system: bool = False) -> ParsedSkill:
+def _make_skill(
+    name: str,
+    description: str,
+    *,
+    is_system: bool = False,
+    disable_model_invocation: bool = False,
+    user_invocable: bool = True,
+    hidden: bool = False,
+) -> ParsedSkill:
     return ParsedSkill(
-        metadata=SkillMetadata(name=name, description=description, is_system=is_system),
+        metadata=SkillMetadata(
+            name=name,
+            description=description,
+            is_system=is_system,
+            disable_model_invocation=disable_model_invocation,
+            user_invocable=user_invocable,
+            hidden=hidden,
+        ),
         body="# " + name,
         file_path=Path("skills/" + name + ".md"),
         relative_path=name + ".md",
@@ -69,3 +84,24 @@ class TestCatalogBudgetControl:
         reg.register(_make_skill("a", "Short desc"))
         result = reg.render_catalog()
         assert "Short desc" in result
+
+    def test_skill_access_catalog_filters_hidden_and_model_disabled_skills(self) -> None:
+        reg = SkillRegistry()
+        reg.register(_make_skill("visible", "Visible to the model"))
+        reg.register(_make_skill("disabled", "Do not list", disable_model_invocation=True))
+        reg.register(_make_skill("hidden", "Also do not list", hidden=True))
+
+        result = reg.render_catalog()
+
+        assert "visible" in result
+        assert "disabled" not in result
+        assert "hidden" not in result
+
+    def test_catalog_truncates_each_description_to_250_chars(self) -> None:
+        reg = SkillRegistry()
+        reg.register(_make_skill("verbose", "B" * 400))
+
+        result = reg.render_catalog(budget_chars=4000)
+
+        assert "B" * 250 in result
+        assert "B" * 300 not in result

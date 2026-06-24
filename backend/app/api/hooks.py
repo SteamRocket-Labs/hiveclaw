@@ -80,8 +80,12 @@ async def list_agent_hooks(
     await _apply_agent_hook_runtime_configs(db, agent_id=agent_id)
     registrations = hook_registry.describe_registrations()
     config_by_key = {item["key"]: item for item in _describe_runtime_config_for_agent(agent_id).get("items", []) if item.get("key")}
+    registered_events = sorted({item["event"] for item in registrations})
     return {
-        "events": sorted({item["event"] for item in registrations}),
+        "schema": "hive.ccplus.hooks_control_plane.v1",
+        "agent_id": str(agent_id),
+        "events": hook_registry.describe_event_catalog(),
+        "registered_events": registered_events,
         "registrations": [
             {
                 **item,

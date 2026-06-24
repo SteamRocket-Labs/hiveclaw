@@ -470,6 +470,185 @@ async def test_spawn_tool_agent_definition_resolves_without_tenant(monkeypatch, 
     assert captured["spec"].system_prompt == "agent def"
 
 
+@pytest.mark.asyncio
+async def test_spawn_tool_background_returns_child_session_and_wake_first_contract(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.services import subagent_run_service as run_svc
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return run_svc.SubagentRunStart(run_id="run-1", child_session_id="child-session")
+
+    def fake_completer(run_id):
+        captured["completer_run_id"] = run_id
+
+        async def _complete(_result):
+            return None
+
+        return _complete
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ctx"] = ctx
+        captured["spec"] = spec
+        captured["task"] = task
+        captured["spawn_kwargs"] = kwargs
+        return SubagentHandle(name=spec.name, trace_id="trace", depth=2, result=None)
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(run_svc, "start_subagent_run", fake_start)
+    monkeypatch.setattr(run_svc, "make_run_completer", fake_completer)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(
+        _tool_request({"task": "investigate", "name": "scout", "run_in_background": True})
+    )
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["mode"] == "background"
+    assert data["run_id"] == "run-1"
+    assert data["child_session_id"] == "child-session"
+    assert data["session_state"] == "running"
+    assert data["continuation"]["address"] == "child-session"
+    assert data["continuation"]["tool"] == "send_agent_session_message"
+    assert "wait for the completion wake" in data["message"]
+    assert "poll" not in data["message"].lower()
+    assert captured["start"]["parent_user_id"] == captured["ctx"].parent_user_id
+    assert captured["start"]["parent_session_id"] == "sess-1"
+    assert captured["start"]["context_mode"] == "none"
+    assert captured["completer_run_id"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_check_subagent_returns_child_session_refs_and_fallback_language(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+    from app.services import subagent_run_service as run_svc
+
+    owner = uuid.uuid4()
+
+    async def fake_get(run_id, parent_agent_id):
+        assert run_id == "run-1"
+        assert parent_agent_id == owner
+        return {
+            "task_type": "subagent",
+            "parent_agent_id": str(owner),
+            "child_agent_name": "scout",
+            "status": "completed",
+            "result": "",
+            "result_summary": "done",
+            "child_session_id": "child-session",
+            "metadata": {
+                "subagent_name": "scout",
+                "subagent_type": "explorer",
+                "child_session_id": "child-session",
+                "session_contract": {
+                    "kind": "subagent_child_session",
+                    "continuation_address": "child-session",
+                },
+            },
+        }
+
+    monkeypatch.setattr(run_svc, "get_subagent_run", fake_get)
+
+    out = await handler_mod.check_subagent(owner, {"run_id": "run-1"})
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["run_id"] == "run-1"
+    assert data["child_session_id"] == "child-session"
+    assert data["session_state"]["status"] == "completed"
+    assert data["transcript_refs"]["session_id"] == "child-session"
+    assert data["continuation"]["address"] == "child-session"
+    assert data["result"] == "done"
+    assert data["model_guidance"] == "fallback_inspection_only"
+
+
+@pytest.mark.asyncio
+async def test_send_agent_session_message_appends_child_mailbox_event(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    class _ScalarResult:
+        def __init__(self, row):
+            self._row = row
+
+        def scalar_one_or_none(self):
+            return self._row
+
+    class _FakeDB:
+        def __init__(self, row):
+            self.row = row
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.row)
+
+        async def commit(self):
+            self.commits += 1
+
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    fake_session = SimpleNamespace(
+        id=child_session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        parent_session_id=parent_session_id,
+        root_session_id=parent_session_id,
+        visibility_scope="team",
+        listed_surface="parent",
+    )
+    fake_db = _FakeDB(fake_session)
+    captured: dict = {}
+
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "queued", "consumer": "mid_run_message_drain", "run_id": "run-1"}
+
+    monkeypatch.setattr(handler_mod, "tenant_scoped_session", lambda _tenant_id: fake_db)
+    monkeypatch.setattr(handler_mod, "continue_agent_session_from_mailbox", fake_continue_agent_session_from_mailbox)
+
+    request = ToolExecutionRequest(
+        tool_name="send_agent_session_message",
+        arguments={"child_session_id": str(child_session_id), "message": "please inspect the new evidence"},
+        context=ToolExecutionContext(
+            agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=str(tenant_id),
+            workspace=Path("/tmp"),
+            session_id=str(parent_session_id),
+        ),
+    )
+
+    out = await handler_mod.send_agent_session_message(request)
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["child_session_id"] == str(child_session_id)
+    assert data["status"] == "queued"
+    assert data["consumer"] == "mid_run_message_drain"
+    assert captured["session"] is fake_session
+    assert captured["message"] == "please inspect the new evidence"
+    assert captured["parent_session_id"] == str(parent_session_id)
+
+
 # ── T1.3 (§8.1 #5) — ledger_todo_id exposed on the spawn contract ──
 
 

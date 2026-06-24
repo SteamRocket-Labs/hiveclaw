@@ -13,7 +13,7 @@ from app.database import Base
 
 
 class LocalAgentBridgePairingSession(Base):
-    """Short-lived device-flow session created by a local hive-bridge CLI."""
+    """Short-lived device-flow session created by a local Hive Connect CLI."""
 
     __tablename__ = "local_agent_bridge_pairing_sessions"
     __table_args__ = (

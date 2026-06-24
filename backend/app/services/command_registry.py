@@ -310,6 +310,44 @@ def build_default_command_registry(
             },
         ),
         _command("branch", "Fork a conversation from a transcript event.", category="session"),
+        _command(
+            "btw",
+            "Ask a one-turn side question in a durable side session without polluting the main thread.",
+            category="session",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string"},
+                    "anchor_event_id": {"type": "string"},
+                    "title": {"type": "string"},
+                },
+                "required": ["question"],
+            },
+        ),
+        _command(
+            "turn_steer",
+            "Steer the currently active turn by queuing an additional user message.",
+            category="session",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string"},
+                    "expected_turn_id": {"type": "string"},
+                },
+                "required": ["content"],
+            },
+        ),
+        _command(
+            "interrupt",
+            "Interrupt the current active session turn.",
+            category="session",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string"},
+                },
+            },
+        ),
         _command("rename", "Rename the current session.", category="session"),
         _command("tag", "Tag the current session for later lookup.", category="session"),
         _command("export", "Export session transcript, artifacts, plan, and ledger evidence.", category="session"),
@@ -345,22 +383,87 @@ def build_default_command_registry(
         _command("team_delete", "Close or delete a team workspace.", category="team", execution_mode="runtime"),
         _command(
             "task_create",
-            "Create a cognitive Work Ledger task or Team shared task.",
+            "Create a FreeCode-style task: current-session Work Ledger step by default, or delegated agent work when kind=delegation.",
             category="task",
             execution_mode="runtime",
             input_schema={
                 "type": "object",
-                "properties": {"subject": {"type": "string"}, "owner": {"type": "string"}},
-                "required": ["subject"],
+                "properties": {
+                    "kind": {"type": "string", "enum": ["todo", "delegation"], "default": "todo"},
+                    "subject": {"type": "string"},
+                    "description": {"type": "string"},
+                    "owner": {"type": "string"},
+                    "agent_name": {"type": "string"},
+                    "target_agent_id": {"type": "string"},
+                    "message": {"type": "string"},
+                },
             },
         ),
-        _command("task_list", "List Work Ledger or Team scoped tasks.", category="task", execution_mode="runtime"),
-        _command("task_get", "Get one Work Ledger or runtime task view.", category="task", execution_mode="runtime"),
-        _command("task_update", "Update a Work Ledger task.", category="task", execution_mode="runtime"),
         _command(
-            "task_output", "Read output from an executable RuntimeTask.", category="task", execution_mode="runtime"
+            "task_list",
+            "List current Work Ledger tasks, or delegated async tasks when kind=delegation.",
+            category="task",
+            execution_mode="runtime",
+            input_schema={
+                "type": "object",
+                "properties": {"kind": {"type": "string", "enum": ["todo", "delegation"], "default": "todo"}},
+            },
         ),
-        _command("task_stop", "Stop an executable RuntimeTask.", category="task", execution_mode="runtime"),
+        _command(
+            "task_get",
+            "Get one Work Ledger task, or a delegated async task when kind=delegation.",
+            category="task",
+            execution_mode="runtime",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["todo", "delegation"], "default": "todo"},
+                    "task_id": {"type": "string"},
+                },
+            },
+        ),
+        _command(
+            "task_update",
+            "Update a current-session Work Ledger task.",
+            category="task",
+            execution_mode="runtime",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                    "owner": {"type": "string"},
+                },
+                "required": ["task_id"],
+            },
+        ),
+        _command(
+            "task_output",
+            "Read output from an executable RuntimeTask.",
+            category="task",
+            execution_mode="runtime",
+            input_schema={
+                "type": "object",
+                "properties": {"runtime_task_id": {"type": "string"}},
+                "required": ["runtime_task_id"],
+            },
+        ),
+        _command(
+            "task_stop",
+            "Stop an executable RuntimeTask, or a delegated async task when kind=delegation.",
+            category="task",
+            execution_mode="runtime",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["runtime", "delegation"], "default": "runtime"},
+                    "runtime_task_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+            },
+        ),
         _command(
             "goal_start",
             "Start a session-scoped goal with bounded continuation.",

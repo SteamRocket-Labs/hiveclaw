@@ -89,10 +89,16 @@ def _handoff(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     # args or carried in the plan-mode metadata. Product workflows such as Deep
     # Research stay in the hidden execution_contract instead of becoming Plan Mode
     # handoff targets.
-    target = (
-        str(args.get("handoff_target") or metadata.get("handoff_target") or "continue_current_session").strip()
-        or "continue_current_session"
+    explicit_target = args.get("handoff_target") or metadata.get("handoff_target")
+    contract = args.get("execution_contract")
+    if not isinstance(contract, dict):
+        contract = metadata.get("execution_contract")
+    inferred_target = (
+        "agent_team"
+        if isinstance(contract, dict) and str(contract.get("type") or "").strip() in {"agent_team", "team"}
+        else "continue_current_session"
     )
+    target = str(explicit_target or inferred_target).strip() or inferred_target
     if target == "deep_research":
         target = "continue_current_session"
     payload = args.get("handoff_payload") if isinstance(args.get("handoff_payload"), dict) else {}

@@ -4,6 +4,8 @@
 状态：当前北极星与审计入口
 范围：单 Session runtime、resume、hooks、Plan Mode、Sub-agent、Skill、Workflow、Memory/Iter、Codex delta
 
+> 2026-06-24 更新：CCPlus 的边界判定以 `docs/ccplus-north-star-contract-2026-06-24.md` 为准。本文仍是单 Session 排查总纲；若出现冲突，新的 boundary contract 优先。
+
 ## 0. 术语与定位
 
 本文沿用 owner 口径把目标称为 **Cloud Code 的 Python 进化版本**。工程取证时，CC baseline 不能只看一个仓库；本轮优先级以 runnable source 和当前可运行实现为准。
@@ -49,8 +51,9 @@ Claude Code runtime baseline
 
 1. 先问：是否对齐 CC 的核心 runtime 语义。
 2. 再问：是否保留 Hive 的 Memory / Iter / governance delta。
-3. 再问：Codex 是否有更好的 transcript、compaction、thread、verification、tooling 机制可以吸收。
-4. 最后才问：UI 或产品形态是否舒服。
+3. 再问：Codex 是否有更好的 transcript、compaction、thread、verification、tooling、approval、sandbox、workbench 机制可以吸收，且这些机制是否没有改变 CC 的能力边界。
+4. 再问：该能力是否只是供应商远程独占能力。如果是，它不属于 CC parity 要求，只能作为未来 Hive-native replacement 讨论。
+5. 最后才问：UI 或产品形态是否舒服。
 
 ## 0.1 Source 优先级
 
@@ -63,6 +66,19 @@ Claude Code runtime baseline
 5. **Codex Rust**：`/Users/rocky243/Context Engineering/codex/codex-rs`。只作为 Codex delta，不覆盖 CC baseline。
 
 如果这些仓库之间出现冲突，默认以 FreeCode 的 runnable TS baseline 判定 CC parity，以 Codex Rust 判定 Codex delta，以 Hive 当前 checkout 判定 Hive 真实状态。
+
+## 0.2 Local CLI / Remote Proprietary Scope
+
+不能再把“本地 CLI 实现”整体排除在考虑范围之外。正确边界是：
+
+```text
+本地 CLI 语义在 scope 内。
+供应商远程独占能力不作为 CC parity 要求。
+```
+
+如果一个 CC local CLI 能力依赖的是本地 process、filesystem、workspace、session、transcript、tool、sandbox、hook、terminal-state 语义，它就应该进入 Hive 对齐范围，并转译成 Web UI、API、RuntimeTask、ChatSession、T0、Session Workbench 或 Hive Bridge 形态。
+
+如果一个能力依赖 S-Work / CCR / Ant-only / Claude Code on the web / 供应商 first-party hosted session，则不作为 CC parity 必须实现的层。UltraPlan 属于这一类：它的远程规划链路可以作为启发，但不能反向定义 Hive 的 Plan Mode 或 Agent Team 边界。
 
 ## 1. 北极星
 

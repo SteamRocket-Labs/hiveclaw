@@ -13,8 +13,9 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.gateway_message import GatewayMessage
 from app.database import enter_rls_bypass, pin_rls_tenant_context
+from app.models.agent import Agent
+from app.models.gateway_message import GatewayMessage
 from app.models.local_agent_channel import LocalAgentChannel
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 
@@ -32,6 +33,46 @@ DEFAULT_SCOPES = (
     "gateway:send-message",
     "files:upload",
 )
+HIVE_CONNECT_PRODUCT_NAME = "Hive Connect"
+HIVE_CONNECT_SKILL_REPO_URL = "https://github.com/rocky2431/hive-connect-skill"
+HIVE_CONNECT_SKILL_NAME = "hive-connect"
+HIVE_CONNECT_NPM_PACKAGE = "@hiveclaw243/hive-connect"
+HIVE_CONNECT_BINARY_NAME = "hive-connect"
+HIVE_CONNECT_CLIENT_KIND = "hive-connect"
+
+
+def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]:
+    """Return the product-owned local runtime install guide for Hub surfaces."""
+
+    install_skill = f"npx skills add {HIVE_CONNECT_SKILL_REPO_URL} --skill {HIVE_CONNECT_SKILL_NAME}"
+    install_cli = f"npm install -g {HIVE_CONNECT_NPM_PACKAGE}"
+    login = f"{HIVE_CONNECT_BINARY_NAME} login"
+    status = f"{HIVE_CONNECT_BINARY_NAME} status"
+    run = f"{HIVE_CONNECT_BINARY_NAME} run"
+    user_prompt = "帮我安装 Hive Connect skill，并连接到 Hive。"
+    return {
+        "product_name": HIVE_CONNECT_PRODUCT_NAME,
+        "skill_repo_url": HIVE_CONNECT_SKILL_REPO_URL,
+        "skill_name": HIVE_CONNECT_SKILL_NAME,
+        "npm_package": HIVE_CONNECT_NPM_PACKAGE,
+        "binary_name": HIVE_CONNECT_BINARY_NAME,
+        "install_skill_command": install_skill,
+        "install_cli_command": install_cli,
+        "login_command": login,
+        "status_command": status,
+        "run_command": run,
+        "user_prompt": user_prompt,
+        "instructions": [
+            user_prompt,
+            "请按下面流程自动完成：",
+            f"1. 执行 {install_skill} 安装 Hive Connect skill。",
+            f"2. 按 skill 执行 {install_cli} 安装本地 CLI。",
+            f"3. 执行 {login}。",
+            "4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。",
+            f"5. 执行 {status} 验证连接。",
+            f"6. 执行 {run}，保持本地 Agent 在线。",
+        ],
+    }
 
 
 @dataclass(frozen=True)
@@ -113,7 +154,7 @@ async def create_pairing_session(db: AsyncSession, request: Any, *, base_url: st
         pairing_code_hash=hash_secret(normalize_user_code(user_code)),
         device_code_hash=hash_secret(device_code),
         device_name=str(request.device_name or "Local Agent").strip()[:255],
-        client_kind=str(request.client_kind or "generic_mcp_stdio").strip()[:64],
+        client_kind=str(request.client_kind or HIVE_CONNECT_CLIENT_KIND).strip()[:64],
         device_fingerprint=str(request.device_fingerprint or "unknown").strip()[:255],
         scopes=normalize_scopes(getattr(request, "scopes", None)),
         status="pending",
@@ -157,6 +198,84 @@ def _ensure_pairing_not_expired(pairing: LocalAgentBridgePairingSession) -> None
     if pairing.expires_at <= utcnow():
         pairing.status = "expired"
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Pairing request expired")
+
+
+def _local_agent_name_from_pairing(pairing: LocalAgentBridgePairingSession) -> str:
+    raw_name = str(pairing.device_name or "").strip()
+    return (raw_name or "Local Agent")[:100]
+
+
+async def ensure_default_local_agent_for_pairing(
+    db: AsyncSession,
+    *,
+    user_code: str,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> Agent:
+    """Return the real Hive Agent identity for a user-level local bridge login."""
+
+    pairing = await _load_pairing_by_user_code(db, user_code)
+    _ensure_pairing_not_expired(pairing)
+    if pairing.status not in {"pending", "approved"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Pairing is {pairing.status}")
+
+    if pairing.agent_id:
+        existing = await db.get(Agent, pairing.agent_id)
+        if existing is not None:
+            return existing
+
+    if pairing.device_fingerprint and pairing.device_fingerprint != "unknown":
+        result = await db.execute(
+            select(LocalAgentBridgeConnection)
+            .where(
+                LocalAgentBridgeConnection.user_id == user_id,
+                LocalAgentBridgeConnection.tenant_id == tenant_id,
+                LocalAgentBridgeConnection.device_fingerprint == pairing.device_fingerprint,
+                LocalAgentBridgeConnection.agent_id.is_not(None),
+                LocalAgentBridgeConnection.status == "active",
+            )
+            .order_by(LocalAgentBridgeConnection.created_at.desc(), LocalAgentBridgeConnection.id.desc())
+            .limit(1)
+        )
+        connection = result.scalar_one_or_none()
+        if connection and connection.agent_id:
+            existing = await db.get(Agent, connection.agent_id)
+            if existing is not None and getattr(existing, "deleted_at", None) is None:
+                return existing
+
+    agent_name = _local_agent_name_from_pairing(pairing)
+    result = await db.execute(
+        select(Agent)
+        .where(
+            Agent.creator_id == user_id,
+            Agent.tenant_id == tenant_id,
+            Agent.agent_type == "local_agent",
+            Agent.name == agent_name,
+            Agent.deleted_at.is_(None),
+        )
+        .order_by(Agent.created_at.desc(), Agent.id.desc())
+        .limit(1)
+    )
+    existing_agent = result.scalar_one_or_none()
+    if existing_agent is not None:
+        return existing_agent
+
+    local_agent = Agent(
+        name=agent_name,
+        role_description="Local runtime connected through Hive Connect.",
+        welcome_message="I am your local agent endpoint connected through Hive Connect.",
+        creator_id=user_id,
+        sponsor_user_id=user_id,
+        owner_user_id=user_id,
+        tenant_id=tenant_id,
+        agent_type="local_agent",
+        agent_class="internal_tenant",
+        security_zone="standard",
+        status="running",
+    )
+    db.add(local_agent)
+    await db.flush()
+    return local_agent
 
 
 async def approve_pairing_session(

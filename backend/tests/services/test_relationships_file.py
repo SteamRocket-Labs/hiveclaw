@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def test_render_relationships_markdown_uses_explicit_relationships_and_current_tool_name():
+def test_render_relationships_markdown_projects_safe_collaborators_not_legacy_relationships():
     from app.services.relationships_file import render_relationships_markdown
 
     owner = SimpleNamespace(display_name="张三", username="zhangsan", title="产品经理")
@@ -43,14 +43,41 @@ def test_render_relationships_markdown_uses_explicit_relationships_and_current_t
         owner=owner,
         human_relationships=human_relationships,
         agent_relationships=agent_relationships,
+        same_owner_agents=[
+            SimpleNamespace(
+                id=uuid4(),
+                name="同主员工",
+                role_description="同 owner 可直接协作",
+                status="running",
+            )
+        ],
+        collaboration_groups=[
+            SimpleNamespace(
+                group_id=uuid4(),
+                group_name="Launch room",
+                status="active",
+                members=[
+                    SimpleNamespace(
+                        agent_id=uuid4(),
+                        name="跨主员工",
+                        role_description="已批准的跨 owner 成员",
+                        role="member",
+                        status="active",
+                    )
+                ],
+            )
+        ],
     )
 
     assert "## 我的主人" in content
     assert "## 👤 人类同事" in content
-    assert "## 🤖 数字员工同事" in content
-    assert "send_message_to_agent" in content
-    assert "send_agent_message" not in content
-    assert "同公司数字员工" not in content
+    assert "## 我的数字员工团队" in content
+    assert "同主员工" in content
+    assert "## A2A 协作组" in content
+    assert "Launch room" in content
+    assert "跨主员工" in content
+    assert "代码助手" not in content
+    assert "可以用 send_message_to_agent" not in content
 
 
 @pytest.mark.asyncio

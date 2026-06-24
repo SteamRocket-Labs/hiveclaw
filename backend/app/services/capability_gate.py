@@ -137,6 +137,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "import_mcp_server": "agent.tool.install",
     "delegate_to_agent": "agent.message.send",
     "send_message_to_agent": "agent.message.send",
+    "send_agent_session_message": "agent.message.send",
     "spawn_subagent": "agent.subagent.spawn",
     "check_subagent": "agent.subagent.read",
     "preview_workflow": "agent.workflow.preview",

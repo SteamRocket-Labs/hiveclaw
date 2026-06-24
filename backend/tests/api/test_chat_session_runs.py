@@ -139,3 +139,84 @@ def test_cancel_session_run_routes_to_runtime_service(monkeypatch):
     assert response.json()["status"] == "killed"
     assert captured["run_id"] == run_id
     assert captured["user_id"] == user_id
+
+
+def test_steer_session_turn_routes_to_runtime_service(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    db = _FakeDB(session)
+    captured = {}
+
+    async def fake_steer(**kwargs):
+        captured.update(kwargs)
+        return {
+            "run_id": "run-1",
+            "turn_id": kwargs["expected_turn_id"],
+            "queued": {"content": kwargs["content"]},
+            "steer_strategy": "pending_mid_run_user_message",
+        }
+
+    monkeypatch.setattr(chat_sessions_api, "steer_active_web_chat_turn", fake_steer)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/turns/steer",
+        json={"content": "Narrow the answer.", "expected_turn_id": "turn-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["steer_strategy"] == "pending_mid_run_user_message"
+    assert captured["session"] is session
+    assert captured["content"] == "Narrow the answer."
+    assert captured["expected_turn_id"] == "turn-1"
+
+
+def test_thread_turn_interrupt_alias_routes_to_runtime_service(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    db = _FakeDB(session)
+    captured = {}
+
+    async def fake_cancel(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": str(kwargs["run_id"]), "status": "killed"}
+
+    monkeypatch.setattr(chat_sessions_api, "cancel_web_chat_run", fake_cancel)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.post(f"/agents/{agent_id}/threads/{session_id}/turns/{run_id}/interrupt")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "killed"
+    assert captured["run_id"] == run_id
+    assert captured["user_id"] == user_id
+
+
+def test_thread_read_alias_returns_json_export(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id)
+    db = _FakeDB(session)
+
+    async def fake_export(_db, **kwargs):
+        return {"session": {"id": str(kwargs["session"].id)}, "transcript_events": []}
+
+    monkeypatch.setattr(chat_sessions_api, "build_session_json_export", fake_export)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.get(f"/agents/{agent_id}/threads/{session_id}/read")
+
+    assert response.status_code == 200
+    assert response.json()["session"]["id"] == str(session_id)

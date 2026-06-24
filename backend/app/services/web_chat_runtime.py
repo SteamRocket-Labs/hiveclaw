@@ -88,7 +88,8 @@ def _runtime_task_to_run(task: RuntimeTask) -> dict[str, Any]:
     created_at = getattr(task, "created_at", None)
     started_at = getattr(task, "started_at", None)
     completed_at = getattr(task, "completed_at", None)
-    return {
+    metadata = dict(getattr(task, "metadata_json", None) or {})
+    payload = {
         "run_id": task.id.hex,
         "status": task.status,
         "created_at": created_at.isoformat() if created_at else None,
@@ -96,6 +97,9 @@ def _runtime_task_to_run(task: RuntimeTask) -> dict[str, Any]:
         "completed_at": completed_at.isoformat() if completed_at else None,
         "result_summary": getattr(task, "result_summary", None),
     }
+    if metadata.get("turn_id"):
+        payload["turn_id"] = str(metadata["turn_id"])
+    return payload
 
 
 def _saved_user_content(*, content: str, display_content: str = "", file_name: str = "") -> str:
@@ -503,6 +507,51 @@ async def get_active_web_chat_run(
 ) -> dict[str, Any] | None:
     task = await _find_active_run(db, agent_id=agent_id, session_id=session_id)
     return _runtime_task_to_run(task) if task else None
+
+
+async def steer_active_web_chat_turn(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    content: str,
+    display_content: str = "",
+    file_name: str = "",
+    expected_turn_id: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    parts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Queue a user steering message into the currently active durable turn."""
+    if not (content or "").strip():
+        raise HTTPException(status_code=400, detail="content is required")
+    active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
+    if active is None:
+        raise HTTPException(status_code=404, detail="No active turn to steer")
+    metadata = dict(getattr(active, "metadata_json", None) or {})
+    active_turn_id = str(metadata.get("turn_id") or f"turn-{active.id.hex}")
+    if expected_turn_id and str(expected_turn_id) != active_turn_id:
+        raise HTTPException(status_code=409, detail="active turn has changed; refresh before steering this turn")
+
+    queued = await _queue_mid_run_user_message(
+        db=db,
+        active_run=active,
+        agent=agent,
+        user=user,
+        session=session,
+        content=content,
+        display_content=display_content,
+        file_name=file_name,
+        attachments=attachments,
+        parts=parts,
+    )
+    payload = _runtime_task_to_run(active)
+    payload["turn_id"] = active_turn_id
+    payload["queued"] = queued
+    payload["queued_user_message"] = queued
+    payload["steer_strategy"] = "pending_mid_run_user_message"
+    await broadcast_web_chat_event(agent.id, session.id, {"type": "turn_steered", **payload})
+    return payload
 
 
 async def start_web_chat_run(
@@ -2068,6 +2117,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         )
         if metadata.get("parent_trace_id"):
             runtime_session_context.metadata["parent_trace_id"] = metadata.get("parent_trace_id")
+        if metadata.get("side_session"):
+            runtime_session_context.metadata["side_session"] = True
+            runtime_session_context.metadata["side_session_kind"] = metadata.get("side_session_kind") or "btw"
+        if metadata.get("tool_policy"):
+            runtime_session_context.metadata["tool_policy"] = metadata.get("tool_policy")
 
         _clear_stale_plan_mode_for_new_turn(
             runtime_session_context,
@@ -2228,6 +2282,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         # this keeps the frozen prefix cacheable. The metadata mirror below only
         # arms the interactive read-only ContextVar for tool governance.
         active_plan_mode_metadata = runtime_session_context.metadata.get("plan_mode")
+        disable_tools_for_turn = bool(
+            metadata.get("disable_tools") or metadata.get("tool_policy") == "disabled_by_default"
+        )
 
         plan_mode_submitted = False
         interactive_pause_summary: str | None = None
@@ -2362,6 +2419,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                         session_context=runtime_session_context,
                         system_prompt_suffix=pending_reply_suffix,
                         mid_run_message_drain=lambda: _claim_pending_mid_run_user_messages(run_uuid),
+                        disable_tools=disable_tools_for_turn,
                         emit_turn_stop=False,
                     )
                 )

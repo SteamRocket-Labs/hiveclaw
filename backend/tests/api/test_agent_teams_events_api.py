@@ -12,6 +12,11 @@ class _ScalarResult:
     def __init__(self, value):
         self._value = value
 
+    def scalar_one_or_none(self):
+        if isinstance(self._value, list):
+            return self._value[0] if self._value else None
+        return self._value
+
     def scalars(self):
         value = self._value if isinstance(self._value, list) else ([] if self._value is None else [self._value])
         return SimpleNamespace(all=lambda: value)
@@ -159,3 +164,201 @@ async def test_list_team_events_returns_mailbox_stream(monkeypatch):
 
     assert result[0]["event_type"] == "message"
     assert result[0]["payload"] == {"text": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_start_team_member_run_starts_runtime_and_records_event(monkeypatch):
+    import app.api.agent_teams as teams_api
+
+    agent_id = uuid4()
+    team_id = uuid4()
+    member_id = uuid4()
+    member_session_id = uuid4()
+    tenant_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="Lead")
+    team = AgentTeam(id=team_id, tenant_id=tenant_id, lead_agent_id=agent_id, parent_session_id=uuid4(), name="T")
+    member = AgentTeamMember(id=member_id, team_id=team_id, member_name="critic", chat_session_id=member_session_id)
+    session = SimpleNamespace(
+        id=member_session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=user.id,
+        session_kind="team_member",
+        runtime_source="team_member",
+        transcript_metadata_json={},
+    )
+    db = _DB()
+    captured: dict = {}
+
+    async def fake_access(*_args, **_kwargs):
+        return agent, "manage"
+
+    async def fake_load_team_or_404(*_args, **_kwargs):
+        return team
+
+    async def fake_load_member_or_404(*_args, **_kwargs):
+        return member
+
+    async def fake_load_member_session_or_404(*_args, **_kwargs):
+        return session
+
+    async def fake_start(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": "00112233445566778899aabbccddeeff", "status": "running"}
+
+    monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(teams_api, "_load_team_or_404", fake_load_team_or_404)
+    monkeypatch.setattr(teams_api, "_load_team_member_or_404", fake_load_member_or_404, raising=False)
+    monkeypatch.setattr(teams_api, "_load_member_session_or_404", fake_load_member_session_or_404, raising=False)
+    monkeypatch.setattr(teams_api, "start_web_chat_run", fake_start, raising=False)
+
+    result = await teams_api.start_agent_team_member_run(
+        agent_id=agent_id,
+        team_id=team_id,
+        member_id=member_id,
+        body=teams_api.StartAgentTeamMemberRunIn(content="review the hook implementation"),
+        current_user=user,
+        db=db,
+    )
+
+    assert result["status"] == "running"
+    assert result["runtime_task_type"] == "team_member"
+    assert member.status == "running"
+    assert str(member.runtime_task_id) == "00112233-4455-6677-8899-aabbccddeeff"
+    assert captured["runtime_task_type"] == "team_member"
+    assert captured["extra_metadata"]["team_id"] == str(team_id)
+    assert captured["extra_metadata"]["member_id"] == str(member_id)
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "member_run_started" for item in db.added)
+
+
+@pytest.mark.asyncio
+async def test_message_team_member_uses_mailbox_continuation_consumer(monkeypatch):
+    import app.api.agent_teams as teams_api
+
+    agent_id = uuid4()
+    team_id = uuid4()
+    member_id = uuid4()
+    member_session_id = uuid4()
+    tenant_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="Lead")
+    team = AgentTeam(id=team_id, tenant_id=tenant_id, lead_agent_id=agent_id, parent_session_id=uuid4(), name="T")
+    member = AgentTeamMember(id=member_id, team_id=team_id, member_name="critic", chat_session_id=member_session_id)
+    session = SimpleNamespace(
+        id=member_session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=user.id,
+        session_kind="team_member",
+        runtime_source="team_member",
+        transcript_metadata_json={"session_state": "open"},
+    )
+    db = _DB()
+    captured: dict = {}
+
+    async def fake_access(*_args, **_kwargs):
+        return agent, "manage"
+
+    async def fake_load_team_or_404(*_args, **_kwargs):
+        return team
+
+    async def fake_load_member_or_404(*_args, **_kwargs):
+        return member
+
+    async def fake_load_member_session_or_404(*_args, **_kwargs):
+        return session
+
+    async def fake_continue(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "queued", "run_id": "run-1", "consumer": "mid_run_message_drain"}
+
+    monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(teams_api, "_load_team_or_404", fake_load_team_or_404)
+    monkeypatch.setattr(teams_api, "_load_team_member_or_404", fake_load_member_or_404, raising=False)
+    monkeypatch.setattr(teams_api, "_load_member_session_or_404", fake_load_member_session_or_404, raising=False)
+    monkeypatch.setattr(teams_api, "continue_agent_session_from_mailbox", fake_continue, raising=False)
+
+    result = await teams_api.message_agent_team_member(
+        agent_id=agent_id,
+        team_id=team_id,
+        member_id=member_id,
+        body=teams_api.MessageAgentTeamMemberIn(message="tighten the review"),
+        current_user=user,
+        db=db,
+    )
+
+    assert result["status"] == "queued"
+    assert result["consumer"] == "mid_run_message_drain"
+    assert captured["runtime_task_type"] == "team_member"
+    assert captured["message"] == "tighten the review"
+    assert member.status == "running"
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "member_message_queued" for item in db.added)
+
+
+@pytest.mark.asyncio
+async def test_close_team_writes_consolidation_back_to_parent_session(monkeypatch):
+    import app.api.agent_teams as teams_api
+
+    agent_id = uuid4()
+    team_id = uuid4()
+    tenant_id = uuid4()
+    parent_session_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member")
+    team = AgentTeam(
+        id=team_id, tenant_id=tenant_id, lead_agent_id=agent_id, parent_session_id=parent_session_id, name="T"
+    )
+    members = [
+        AgentTeamMember(
+            id=uuid4(),
+            team_id=team_id,
+            member_name="critic",
+            chat_session_id=uuid4(),
+            metadata_json={
+                "summary": "审查了 A2A gate",
+                "artifacts": ["workspace/a2a.md"],
+                "work_ledger_deltas": [{"id": "todo-1", "status": "done"}],
+                "t0_refs": ["session-a#event-1"],
+            },
+        )
+    ]
+    db = _DB()
+    appended: dict = {}
+
+    async def fake_access(*_args, **_kwargs):
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
+
+    async def fake_load_team_or_404(*_args, **_kwargs):
+        return team
+
+    async def fake_load_team_members(*_args, **_kwargs):
+        return members
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    async def fake_append_session_event(**kwargs):
+        appended.update(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=1)
+
+    monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(teams_api, "_load_team_or_404", fake_load_team_or_404)
+    monkeypatch.setattr(teams_api, "_load_team_members", fake_load_team_members)
+    monkeypatch.setattr(teams_api, "emit_hook", fake_emit_hook)
+    monkeypatch.setattr(teams_api, "append_session_event", fake_append_session_event, raising=False)
+
+    result = await teams_api.close_agent_team(
+        agent_id=agent_id,
+        team_id=team_id,
+        current_user=user,
+        db=db,
+    )
+
+    assert result["status"] == "closed"
+    assert "consolidation_plan" in result
+    assert appended["session_id"] == parent_session_id
+    assert appended["agent_id"] == agent_id
+    assert appended["event_type"] == "assistant_message"
+    assert appended["metadata"]["source"] == "agent_team_close"
+    assert appended["metadata"]["team_id"] == str(team_id)
+    assert appended["metadata"]["member_outputs"][0]["t0_refs"] == ["session-a#event-1"]

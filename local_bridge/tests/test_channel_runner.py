@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import types
+import sys
 
 from hive_bridge.channel_runner import HiveBridgeChannelRunner
-from hive_bridge.runtime import WorkResult
+from hive_bridge.runtime import CommandAdapter, WorkResult
 
 
 class _FakeClient:
@@ -82,6 +83,41 @@ class _AttachmentConnection(_FakeConnection):
         ]
 
 
+class _MultiMessageConnection(_FakeConnection):
+    def __init__(self):
+        super().__init__()
+        self.received = [
+            {"type": "hello", "connection_id": "conn-1", "owner_user_id": "user-1"},
+            {"type": "ready_ack", "status": "online"},
+            {
+                "type": "message",
+                "message": {
+                    "id": "message-1",
+                    "session_id": "session-1",
+                    "content": "first",
+                    "attachments": [],
+                    "metadata": {"source": "web"},
+                },
+            },
+            {
+                "type": "message",
+                "message": {
+                    "id": "message-2",
+                    "session_id": "session-1",
+                    "content": "second",
+                    "attachments": [],
+                    "metadata": {"source": "web"},
+                },
+            },
+        ]
+
+
+class _StreamingAdapter:
+    def handle_stream(self, message, emit_event):
+        emit_event("delta", {"text": f"working on {message['content']}"})
+        return WorkResult(result="stream done", metadata={"runtime": "stream-test"})
+
+
 def test_channel_runner_processes_one_websocket_message() -> None:
     client = _FakeClient()
     connection = _FakeConnection()
@@ -117,6 +153,13 @@ def test_channel_runner_processes_one_websocket_message() -> None:
     assert connection.sent == [
         {"type": "ready", "runtime_kind": "codex", "capabilities": {"file_upload": True}},
         {"type": "ack", "message_id": "message-1"},
+        {
+            "type": "event",
+            "session_id": "session-1",
+            "message_id": "message-1",
+            "event_type": "typing",
+            "payload": {"status": "running"},
+        },
         {
             "type": "result",
             "session_id": "session-1",
@@ -155,6 +198,69 @@ def test_channel_runner_downloads_message_attachments_before_adapter(tmp_path) -
     assert (tmp_path / "downloads" / "message-1" / "cloud-brief.md").read_text(encoding="utf-8") == "downloaded from Hive\n"
 
 
+def test_channel_runner_processes_multiple_messages_on_one_websocket_session() -> None:
+    connection = _MultiMessageConnection()
+    runner = HiveBridgeChannelRunner(
+        client=_FakeClient(),
+        adapter=_FakeAdapter(),
+        connection_factory=lambda _url: connection,
+        runtime_kind="codex",
+    )
+
+    assert runner.run_session(max_messages=2) == 2
+    assert [payload["message_id"] for payload in connection.sent if payload["type"] == "ack"] == [
+        "message-1",
+        "message-2",
+    ]
+    assert [payload["message_id"] for payload in connection.sent if payload["type"] == "result"] == [
+        "message-1",
+        "message-2",
+    ]
+
+
+def test_channel_runner_streams_adapter_delta_events_before_result() -> None:
+    connection = _FakeConnection()
+    runner = HiveBridgeChannelRunner(
+        client=_FakeClient(),
+        adapter=_StreamingAdapter(),
+        connection_factory=lambda _url: connection,
+        runtime_kind="codex",
+    )
+
+    assert runner.run_once() == 1
+    events = [payload for payload in connection.sent if payload["type"] == "event"]
+    assert {
+        "type": "event",
+        "session_id": "session-1",
+        "message_id": "message-1",
+        "event_type": "delta",
+        "payload": {"text": "working on do local work"},
+    } in events
+    assert connection.sent[-1]["type"] == "result"
+
+
+def test_channel_runner_streams_command_adapter_output_before_result() -> None:
+    connection = _FakeConnection()
+    runner = HiveBridgeChannelRunner(
+        client=_FakeClient(),
+        adapter=CommandAdapter(
+            command=[
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write('alpha\\n'); sys.stdout.flush(); sys.stdout.write('beta\\n')",
+            ],
+        ),
+        connection_factory=lambda _url: connection,
+        runtime_kind="command",
+    )
+
+    assert runner.run_once() == 1
+    deltas = [payload for payload in connection.sent if payload["type"] == "event" and payload["event_type"] == "delta"]
+    assert "".join(str(payload["payload"]["text"]) for payload in deltas).startswith("alpha")
+    assert connection.sent[-1]["type"] == "result"
+    assert "beta" in connection.sent[-1]["output"]
+
+
 def test_channel_runner_foreground_loop_retries_after_transient_disconnect() -> None:
     runner = HiveBridgeChannelRunner(
         client=_FakeClient(),
@@ -163,13 +269,13 @@ def test_channel_runner_foreground_loop_retries_after_transient_disconnect() -> 
     )
     attempts = {"count": 0}
 
-    def fake_run_once(self):
+    def fake_run_session(self):
         attempts["count"] += 1
         if attempts["count"] == 1:
             raise RuntimeError("network dropped")
         return 0
 
-    runner.run_once = types.MethodType(fake_run_once, runner)
+    runner.run_session = types.MethodType(fake_run_session, runner)
 
     assert runner.run_forever(max_runs=2, reconnect_delay_seconds=0) == 2
     assert attempts["count"] == 2

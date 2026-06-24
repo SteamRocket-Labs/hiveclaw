@@ -52,11 +52,11 @@ TOOL_TIMEOUTS: dict[str, float] = {
     "spawn_subagent": 180.0,
     "start_workflow": 180.0,
     "deep_research_run": 180.0,
-    # Synchronous A2A: wraps the target's full LLM turn (incl. its own tool
-    # calls like feishu_wiki_list) + the reply write-back. Must exceed the
-    # inner OrchestrationPolicy timeout (120s) so the write-back isn't
-    # cancelled mid-flight (the "timed out, no final reply persisted" bug).
-    "send_message_to_agent": 180.0,
+    # Synchronous A2A wraps the target's full LLM turn (including tools like
+    # feishu_wiki_list / document reads) plus reply write-back. Keep this
+    # above AGENT_MESSAGE_TIMEOUT_SECONDS so the wrapper does not preempt the
+    # orchestrator's explicit timeout handling.
+    "send_message_to_agent": 360.0,
     "web_fetch": 60.0,
     "web_search": 60.0,
     "exa_search": 60.0,

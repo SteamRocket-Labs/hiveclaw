@@ -33,7 +33,7 @@ hive-bridge run --transport websocket
 - CLI: login, token storage, upload, and channel runner.
 - WebSocket runner: long-lived outbound channel for cloud-to-local chat, file transfer, and work requests.
 
-`hive-bridge login` creates a long-lived binding. `hive-bridge run --transport websocket` is the online runner and reconnects after transient WebSocket failures.
+`hive-bridge login` creates a long-lived binding. `hive-bridge run --transport websocket` is the online runner: it keeps one WebSocket session open for consecutive cloud messages, streams command stdout/stderr as `delta` events, and reconnects after transient WebSocket failures.
 
 The GitHub skill package and the npm CLI package are intentionally separate:
 

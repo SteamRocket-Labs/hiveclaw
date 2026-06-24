@@ -1,7 +1,8 @@
 """Prompt-facing team context for subagent/workflow coordination.
 
-This is a renderer over existing durable primitives. It does not create new
-coordination state; RuntimeTask and CoordinationSignal remain the truth sources.
+This renderer surfaces Session/T0-backed coordination context. RuntimeTask and
+CoordinationSignal are read/execution models used to find active work and
+mailbox updates; they are not transcript truth.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ def render_team_context_block(
     lines: list[str] = []
     if task_rows:
         lines.append("## Team Context")
-        lines.append("Current teammate/workflow state from durable RuntimeTask records:")
+        lines.append("Current teammate/workflow state projected from Session/T0-backed runtime records:")
         for task in task_rows[: max(1, task_limit)]:
             lines.append(_task_line(task))
         if len(task_rows) > task_limit:

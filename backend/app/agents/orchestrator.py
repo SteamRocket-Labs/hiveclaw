@@ -32,6 +32,11 @@ from app.services.runtime_task_service import (
 
 logger = logging.getLogger(__name__)
 
+AGENT_MESSAGE_TIMEOUT_SECONDS = 300.0
+ASYNC_DELEGATION_TIMEOUT_SECONDS = 600.0
+ASYNC_DELEGATION_CANCEL_GRACE_SECONDS = 180.0
+MAX_DELEGATION_TIMEOUT_SECONDS = 3600.0
+
 ToolExecutor = Callable[..., Awaitable[str] | str]
 _DELEGATION_BASE_EXCLUDED_TOOLS = (
     "delegate_to_agent",
@@ -290,7 +295,9 @@ class AsyncDelegationState:
     task: asyncio.Task["AgentDelegationResult"]
     parent_agent_id: uuid.UUID | None
     child_agent_name: str | None
+    child_session_id: str
     trace_id: str
+    started_at: datetime
 
 
 # ── Async delegation registry (in-process, per-worker) ──────────────
@@ -306,6 +313,46 @@ def _maybe_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
     except (TypeError, ValueError, AttributeError) as exc:
         logger.debug("[orchestrator] _maybe_uuid could not coerce %r: %s", value, exc)
         return None
+
+
+def _coerce_aware_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _deferred_cancellation_result(
+    task_id: str,
+    *,
+    elapsed_seconds: float,
+    min_runtime_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "status": "running",
+        "result": (
+            "Task is still running; cancellation was deferred because the worker "
+            f"has only run for {elapsed_seconds:.1f}s of the {min_runtime_seconds:.1f}s grace window. "
+            "Use check_async_task to inspect progress, or retry cancel_async_task with force=true "
+            "only if the task is truly runaway or no longer needed."
+        ),
+        "timed_out": False,
+        "cancellation_deferred": True,
+        "elapsed_seconds": elapsed_seconds,
+        "min_runtime_seconds": min_runtime_seconds,
+    }
 
 
 def _capture_execution_identity_ref() -> ExecutionIdentityRef | None:
@@ -1309,7 +1356,9 @@ def _spawn_async_delegation_task(
         task=task,
         parent_agent_id=_maybe_uuid(request.parent_agent_id),
         child_agent_name=getattr(request.target, "name", None),
+        child_session_id=request.session_id,
         trace_id=trace_id,
+        started_at=datetime.now(timezone.utc),
     )
 
 
@@ -1367,7 +1416,7 @@ async def delegate_async(
         parent_session_id=parent_session_id,
         trace_id=real_trace_id,
         depth=depth,
-        policy=policy or OrchestrationPolicy(timeout_seconds=120.0),
+        policy=policy or OrchestrationPolicy(timeout_seconds=ASYNC_DELEGATION_TIMEOUT_SECONDS),
         interaction_type=interaction_type,
         execution_identity=execution_identity or _capture_execution_identity_ref(),
         confirmed_plan_id=confirmed_plan_id,
@@ -1471,6 +1520,15 @@ async def check_async_delegation(
     parent_agent_id: str | uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Check status of an async delegation. Returns status + result if done."""
+
+    def _session_payload(child_session_id: str | None, parent_session_id: str | None = None) -> dict[str, Any]:
+        session_id = str(child_session_id or "").strip() or None
+        return {
+            "session_id": session_id,
+            "child_session_id": session_id,
+            "parent_session_id": str(parent_session_id or "").strip() or None,
+        }
+
     state = _async_tasks.get(task_id)
     if state is None:
         try:
@@ -1485,6 +1543,7 @@ async def check_async_delegation(
             "status": persisted.get("status", "not_found"),
             "result": persisted.get("result"),
             "timed_out": bool((persisted.get("metadata") or {}).get("timed_out", False)),
+            **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
         }
     request_parent_agent_id = _maybe_uuid(parent_agent_id)
     if (
@@ -1494,7 +1553,12 @@ async def check_async_delegation(
     ):
         return {"task_id": task_id, "status": "forbidden", "result": None}
     if not state.task.done():
-        return {"task_id": task_id, "status": "running", "result": None}
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "result": None,
+            **_session_payload(state.child_session_id),
+        }
     # Remove completed task from registry after reading
     _async_tasks.pop(task_id, None)
     try:
@@ -1514,6 +1578,7 @@ async def check_async_delegation(
             "status": "failed" if delegation_result.failed else "completed",
             "result": delegation_result.content,
             "timed_out": delegation_result.timed_out,
+            **_session_payload(delegation_result.child_session_id),
         }
     except asyncio.CancelledError:
         await _persist_delegation_event(
@@ -1529,6 +1594,7 @@ async def check_async_delegation(
             "status": "killed",
             "result": "Task cancelled by parent agent",
             "timed_out": False,
+            **_session_payload(state.child_session_id),
         }
     except Exception as exc:
         await _persist_delegation_event(
@@ -1539,17 +1605,34 @@ async def check_async_delegation(
             child_agent_name=state.child_agent_name,
             trace_id=state.trace_id,
         )
-        return {"task_id": task_id, "status": "error", "result": str(exc)}
+        return {
+            "task_id": task_id,
+            "status": "error",
+            "result": str(exc),
+            **_session_payload(state.child_session_id),
+        }
 
 
 async def cancel_async_delegation(
     task_id: str,
     *,
     parent_agent_id: str | uuid.UUID | None = None,
+    force: bool = False,
+    min_runtime_seconds: float = ASYNC_DELEGATION_CANCEL_GRACE_SECONDS,
 ) -> dict[str, Any]:
     """Cancel a running async delegation if it belongs to the caller."""
+
+    def _session_payload(child_session_id: str | None, parent_session_id: str | None = None) -> dict[str, Any]:
+        session_id = str(child_session_id or "").strip() or None
+        return {
+            "session_id": session_id,
+            "child_session_id": session_id,
+            "parent_session_id": str(parent_session_id or "").strip() or None,
+        }
+
     state = _async_tasks.get(task_id)
     request_parent_agent_id = _maybe_uuid(parent_agent_id)
+    min_runtime_seconds = max(float(min_runtime_seconds), 0.0)
 
     if state is None:
         try:
@@ -1568,11 +1651,32 @@ async def cancel_async_delegation(
             return {"task_id": task_id, "status": "forbidden", "result": None}
         status = persisted.get("status") or "not_found"
         if status in {"completed", "failed", "killed"}:
-            return {"task_id": task_id, "status": status, "result": persisted.get("result")}
+            return {
+                "task_id": task_id,
+                "status": status,
+                "result": persisted.get("result"),
+                **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
+            }
+        if status == "running" and not force and min_runtime_seconds > 0:
+            started_at = _coerce_aware_datetime(
+                persisted.get("started_at")
+                or persisted.get("startedAt")
+                or persisted.get("created_at")
+                or persisted.get("createdAt")
+            )
+            if started_at is not None:
+                elapsed_seconds = max((datetime.now(timezone.utc) - started_at).total_seconds(), 0.0)
+                if elapsed_seconds < min_runtime_seconds:
+                    return _deferred_cancellation_result(
+                        task_id,
+                        elapsed_seconds=elapsed_seconds,
+                        min_runtime_seconds=min_runtime_seconds,
+                    )
         return {
             "task_id": task_id,
             "status": "not_running_here",
             "result": "Task exists but is not running in this worker process.",
+            **_session_payload(persisted.get("child_session_id"), persisted.get("parent_session_id")),
         }
 
     if (
@@ -1584,6 +1688,15 @@ async def cancel_async_delegation(
 
     if state.task.done():
         return await check_async_delegation(task_id, parent_agent_id=request_parent_agent_id)
+
+    if not force and min_runtime_seconds > 0:
+        elapsed_seconds = max((datetime.now(timezone.utc) - state.started_at).total_seconds(), 0.0)
+        if elapsed_seconds < min_runtime_seconds:
+            return _deferred_cancellation_result(
+                task_id,
+                elapsed_seconds=elapsed_seconds,
+                min_runtime_seconds=min_runtime_seconds,
+            )
 
     state.task.cancel()
     try:
@@ -1616,6 +1729,7 @@ async def cancel_async_delegation(
         "task_id": task_id,
         "status": "killed",
         "result": "Task cancelled by parent agent",
+        **_session_payload(state.child_session_id),
     }
 
 
@@ -1638,6 +1752,8 @@ def list_async_delegations(
                 "task_id": task_id,
                 "status": status,
                 "target_agent": state.child_agent_name,
+                "session_id": state.child_session_id,
+                "child_session_id": state.child_session_id,
                 "trace_id": state.trace_id,
             }
         )

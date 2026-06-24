@@ -15,9 +15,18 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.user import User
 from app.services.chat_transcript import append_session_event
 
-ConversationBranchMode = Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate", "rewind"]
+ConversationBranchMode = Literal[
+    "fork",
+    "edit",
+    "insert_before",
+    "insert_after",
+    "reply",
+    "regenerate",
+    "rewind",
+    "side_question",
+]
 
-_CONTENT_REQUIRED_MODES = {"edit", "insert_before", "insert_after", "reply"}
+_CONTENT_REQUIRED_MODES = {"edit", "insert_before", "insert_after", "reply", "side_question"}
 _VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "regenerate", "rewind"}
 
 
@@ -65,7 +74,7 @@ def _event_t0_role(event: ChatTranscriptEvent, role: str | None) -> str | None:
 
 
 def _prefix_includes_anchor(mode: str) -> bool:
-    return mode in {"fork", "insert_after", "reply"}
+    return mode in {"fork", "insert_after", "reply", "side_question"}
 
 
 def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> str:
@@ -80,8 +89,51 @@ def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> 
         "reply": "reply",
         "regenerate": "regenerate",
         "rewind": "rewind",
+        "side_question": "btw",
     }.get(mode, "branch")
     return f"{source_title} ({suffix})"[:200]
+
+
+def _session_contract_overrides(source_session: ChatSession, mode: str) -> dict[str, str]:
+    if mode == "side_question":
+        return {
+            "session_kind": "side_question",
+            "runtime_source": "side_question",
+            "listed_surface": "sidechain",
+        }
+    return {
+        "session_kind": getattr(source_session, "session_kind", None) or "human_chat",
+        "runtime_source": getattr(source_session, "runtime_source", None) or "web_chat",
+        "listed_surface": getattr(source_session, "listed_surface", None) or "chat",
+    }
+
+
+def _branch_metadata(
+    *,
+    source_session: ChatSession,
+    mode: str,
+    root_session_id: uuid.UUID,
+    anchor: ChatTranscriptEvent,
+    user: User,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "branch_mode": mode,
+        "source_session_id": str(source_session.id),
+        "root_session_id": str(root_session_id),
+        "anchor_event_id": str(anchor.id),
+        "anchor_sequence": anchor.sequence,
+        "created_by_user_id": str(getattr(user, "id", "")),
+    }
+    if mode == "side_question":
+        metadata.update(
+            {
+                "side_session": True,
+                "side_session_kind": "btw",
+                "tool_policy": "disabled_by_default",
+                "max_turns": 1,
+            }
+        )
+    return metadata
 
 
 async def _load_anchor_event(
@@ -233,6 +285,7 @@ async def create_conversation_branch(
     )
     root_session_id = getattr(source_session, "root_session_id", None) or source_session.id
     now = datetime.now(timezone.utc)
+    contract_overrides = _session_contract_overrides(source_session, mode_text)
     branch_session = ChatSession(
         id=uuid.uuid4(),
         agent_id=agent.id,
@@ -243,21 +296,20 @@ async def create_conversation_branch(
         participant_id=getattr(source_session, "participant_id", None),
         peer_agent_id=getattr(source_session, "peer_agent_id", None),
         delivery_target_json=getattr(source_session, "delivery_target_json", None),
-        session_kind=getattr(source_session, "session_kind", None) or "human_chat",
+        session_kind=contract_overrides["session_kind"],
         actor_type=getattr(source_session, "actor_type", None) or "user",
-        runtime_source=getattr(source_session, "runtime_source", None) or "web_chat",
+        runtime_source=contract_overrides["runtime_source"],
         visibility_scope=getattr(source_session, "visibility_scope", None) or "direct_user",
-        listed_surface=getattr(source_session, "listed_surface", None) or "chat",
+        listed_surface=contract_overrides["listed_surface"],
         parent_session_id=source_session.id,
         root_session_id=root_session_id,
-        transcript_metadata_json={
-            "branch_mode": mode_text,
-            "source_session_id": str(source_session.id),
-            "root_session_id": str(root_session_id),
-            "anchor_event_id": str(anchor.id),
-            "anchor_sequence": anchor.sequence,
-            "created_by_user_id": str(getattr(user, "id", "")),
-        },
+        transcript_metadata_json=_branch_metadata(
+            source_session=source_session,
+            mode=mode_text,
+            root_session_id=root_session_id,
+            anchor=anchor,
+            user=user,
+        ),
         created_at=now,
         last_message_at=now if mode_text != "fork" else getattr(source_session, "last_message_at", None),
     )
@@ -278,6 +330,22 @@ async def create_conversation_branch(
     run_request: BranchRunRequest | None = None
     if mode_text in _CONTENT_REQUIRED_MODES:
         visible_content = display_content if display_content else content
+        extra_metadata = {
+            "branch_mode": mode_text,
+            "source_session_id": str(source_session.id),
+            "branch_session_id": str(branch_session.id),
+            "anchor_event_id": str(anchor.id),
+        }
+        if mode_text == "side_question":
+            extra_metadata.update(
+                {
+                    "side_session": True,
+                    "side_session_kind": "btw",
+                    "tool_policy": "disabled_by_default",
+                    "disable_tools": True,
+                    "max_turns": 1,
+                }
+            )
         run_request = BranchRunRequest(
             content=content,
             display_content=visible_content,
@@ -285,12 +353,7 @@ async def create_conversation_branch(
             append_user_message=True,
             attachments=attachments or [],
             parts=parts or [],
-            extra_metadata={
-                "branch_mode": mode_text,
-                "source_session_id": str(source_session.id),
-                "branch_session_id": str(branch_session.id),
-                "anchor_event_id": str(anchor.id),
-            },
+            extra_metadata=extra_metadata,
         )
     elif mode_text == "regenerate":
         last_user = _last_user_event(prefix_events)

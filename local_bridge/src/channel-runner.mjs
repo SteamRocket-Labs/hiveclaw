@@ -6,17 +6,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function commandResult(command, input, { cwd = process.cwd(), timeout = 600_000 } = {}) {
+function commandResult(command, input, { cwd = process.cwd(), timeout = 600_000, onEvent = null } = {}) {
   return new Promise((resolve) => {
     const child = spawn(command[0], command.slice(1), { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => child.kill('SIGTERM'), timeout);
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      onEvent?.('delta', { stream: 'stdout', text });
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      onEvent?.('delta', { stream: 'stderr', text });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
@@ -84,14 +88,28 @@ export class HiveBridgeChannelRunner {
     return prepared;
   }
 
+  sendEvent(ws, sessionId, messageId, eventType, payload = {}) {
+    ws.send(JSON.stringify({
+      type: 'event',
+      session_id: sessionId,
+      message_id: messageId,
+      event_type: eventType,
+      payload,
+    }));
+  }
+
   async handleMessage(ws, message) {
     await mkdir(this.downloadsDir, { recursive: true });
     const messageId = String(message.id);
     const sessionId = String(message.session_id);
     ws.send(JSON.stringify({ type: 'ack', message_id: messageId }));
     const prepared = await this.prepareMessage(message);
+    this.sendEvent(ws, sessionId, messageId, 'typing', { status: 'running' });
     const result = this.runtime === 'command' && this.command
-      ? await commandResult(this.command, prepared.content || '', { cwd: this.workDir })
+      ? await commandResult(this.command, prepared.content || '', {
+        cwd: this.workDir,
+        onEvent: (eventType, payload) => this.sendEvent(ws, sessionId, messageId, eventType, payload),
+      })
       : await noopResult(prepared);
     ws.send(JSON.stringify({
       type: 'result',
@@ -104,13 +122,14 @@ export class HiveBridgeChannelRunner {
     }));
   }
 
-  async runOnce() {
+  async runSession({ maxMessages = Number.POSITIVE_INFINITY } = {}) {
     const WebSocket = this.webSocketClass || (await import('ws')).WebSocket;
     const url = await this.connectUrl();
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
       let processed = 0;
       let settled = false;
+      let pending = Promise.resolve();
       const settle = (fn, value) => {
         if (settled) return;
         settled = true;
@@ -130,10 +149,14 @@ export class HiveBridgeChannelRunner {
           }
           if (incoming.type === 'ready_ack' || incoming.type === 'pong') return;
           if (incoming.type === 'message') {
-            await this.handleMessage(ws, incoming.message);
-            processed += 1;
-            settle(resolve, processed);
-            ws.close();
+            pending = pending.then(async () => {
+              await this.handleMessage(ws, incoming.message);
+              processed += 1;
+              if (processed >= maxMessages) {
+                ws.close();
+              }
+            });
+            await pending;
             return;
           }
           if (incoming.type === 'error') settle(reject, new Error(String(incoming.error || 'Hive channel error')));
@@ -141,9 +164,15 @@ export class HiveBridgeChannelRunner {
           settle(reject, error);
         }
       });
-      ws.on('close', () => settle(resolve, processed));
+      ws.on('close', () => {
+        pending.then(() => settle(resolve, processed)).catch((error) => settle(reject, error));
+      });
       ws.on('error', (error) => settle(reject, error));
     });
+  }
+
+  async runOnce() {
+    return this.runSession({ maxMessages: 1 });
   }
 
   async runForever({ maxRuns = Number.POSITIVE_INFINITY } = {}) {
@@ -151,7 +180,7 @@ export class HiveBridgeChannelRunner {
     while (runs < maxRuns) {
       runs += 1;
       try {
-        await this.runOnce();
+        await this.runSession();
       } catch (_error) {
         if (this.reconnectDelayMs > 0) await sleep(this.reconnectDelayMs);
       }

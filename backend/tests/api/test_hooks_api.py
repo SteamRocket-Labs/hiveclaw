@@ -27,6 +27,27 @@ async def test_hooks_api_lists_registrations_with_runtime_config(monkeypatch):
         lambda: [{"event": "stop", "handler_name": "h", "key": "hook.stop", "matcher_spec": None}],
     )
     monkeypatch.setattr(
+        hooks_api.hook_registry,
+        "describe_event_catalog",
+        lambda: [
+            {
+                "event": "pre_tool_use",
+                "category": "tool",
+                "handler_count": 0,
+                "blocking_supported": True,
+                "cc_parity": True,
+            },
+            {
+                "event": "stop",
+                "category": "turn",
+                "handler_count": 1,
+                "blocking_supported": True,
+                "cc_parity": True,
+            },
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(
         hooks_api,
         "describe_hook_runtime_config",
         lambda: {"items": [{"key": "hook.stop", "enabled": False, "timeout_seconds": 1.0, "failure_policy": "block"}]},
@@ -34,7 +55,24 @@ async def test_hooks_api_lists_registrations_with_runtime_config(monkeypatch):
 
     result = await hooks_api.list_agent_hooks(agent_id=agent_id, current_user=user, db=db)
 
-    assert result["events"] == ["stop"]
+    assert result["schema"] == "hive.ccplus.hooks_control_plane.v1"
+    assert result["registered_events"] == ["stop"]
+    assert result["events"] == [
+        {
+            "event": "pre_tool_use",
+            "category": "tool",
+            "handler_count": 0,
+            "blocking_supported": True,
+            "cc_parity": True,
+        },
+        {
+            "event": "stop",
+            "category": "turn",
+            "handler_count": 1,
+            "blocking_supported": True,
+            "cc_parity": True,
+        },
+    ]
     assert result["registrations"][0]["runtime_config"] == {
         "key": "hook.stop",
         "enabled": False,

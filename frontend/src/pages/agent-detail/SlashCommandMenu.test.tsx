@@ -30,6 +30,17 @@ const queryHarness = vi.hoisted(() => ({
       bridge_safe: true,
       remote_safe: true,
     },
+    ...Array.from({ length: 9 }, (_, index) => ({
+      name: `task_helper_${index}`,
+      aliases: [],
+      description: `Task helper ${index}`,
+      category: 'task',
+      source: 'builtin',
+      execution_mode: 'runtime',
+      permission_mode: 'default',
+      bridge_safe: true,
+      remote_safe: true,
+    })),
   ] as CommandIndexEntry[],
 }));
 
@@ -85,5 +96,20 @@ describe('SlashCommandMenu', () => {
     expect(markup).not.toContain('goal_start');
     const listCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'slash-command-menu');
     expect(listCall?.enabled).toBe(true);
+  });
+
+  it('does not truncate the slash command list before all matching task commands are visible', () => {
+    const markup = renderToStaticMarkup(
+      <SlashCommandMenu
+        agentId="agent-1"
+        sessionId="session-1"
+        inputValue="/task"
+        disabled={false}
+        onPickCommand={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('task_helper_0');
+    expect(markup).toContain('task_helper_8');
   });
 });

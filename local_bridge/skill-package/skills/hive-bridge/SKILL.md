@@ -50,7 +50,7 @@ hive-bridge run --transport websocket
 
 This runner uses outbound HTTPS/WebSocket connections only. Do not expose a local port, reverse proxy, tunnel, or public callback server.
 
-The foreground runner reconnects after transient WebSocket failures. Treat online/offline as runtime presence only; it is separate from the long-lived login binding.
+The foreground runner keeps one WebSocket session open for consecutive cloud messages and reconnects after transient WebSocket failures. Command adapters stream stdout/stderr back to Hive as `delta` events before the final result. Treat online/offline as runtime presence only; it is separate from the long-lived login binding.
 
 ## Upload A Local File To Hive
 

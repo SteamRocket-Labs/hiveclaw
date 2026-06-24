@@ -25,6 +25,7 @@ from app.services.command_registry import build_default_command_registry
 from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, execute_diagnostic_command
 from app.services.pack_policy_service import get_agent_pack_policies
 from app.services.session_command_runtime import SESSION_COMMAND_NAMES, execute_session_command
+from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
 
 router = APIRouter(prefix="/agents/{agent_id}/commands", tags=["commands"])
@@ -430,6 +431,18 @@ async def _execute_team_command(
 
 def _normalize_tool_command(command_name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     args = dict(arguments or {})
+    if command_name.startswith("task_"):
+        plan = adapt_task_command(command_name, args, current_session_id=None)
+        if plan.kind == TaskCommandKind.DELEGATION_TASK:
+            if plan.delegate_action == "create":
+                return "delegate_to_agent", plan.delegate_payload
+            if plan.delegate_action == "list":
+                return "list_async_tasks", plan.delegate_payload
+            if plan.delegate_action == "get":
+                return "check_async_task", plan.delegate_payload
+            if plan.delegate_action == "stop":
+                return "cancel_async_task", plan.delegate_payload
+        return command_name, args
     if command_name == "load_skill":
         if "name" not in args and "skill_name" in args:
             args["name"] = args.pop("skill_name")

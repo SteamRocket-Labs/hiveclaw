@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router-dom';
 import {
   localBridgeApi,
   type LocalAgentChannelEvent,
+  type LocalAgentChannelSession,
+  type LocalAgentChannelTimeline,
   type LocalAgentWorkspaceFile,
   type LocalAgentWorkspaceUpload,
   type LocalBridgeConnection,
+  type LocalBridgeInstallGuide,
 } from '../api/domains/localBridge';
 
 const parseSeenAt = (value?: string | null) => {
@@ -37,6 +41,30 @@ const channelEventText = (event: LocalAgentChannelEvent) => {
   return String(payload.text || payload.content || payload.output || payload.error || event.type);
 };
 
+export const mergeChannelEvents = (
+  current: LocalAgentChannelEvent[] = [],
+  incoming: LocalAgentChannelEvent[] = [],
+) => {
+  const byId = new Map<string, LocalAgentChannelEvent>();
+  for (const event of current) {
+    byId.set(event.id, event);
+  }
+  for (const event of incoming) {
+    byId.set(event.id, event);
+  }
+  return Array.from(byId.values());
+};
+
+export const browserChannelWsUrl = (
+  sessionId: string,
+  ticket: string,
+  locationLike: Pick<Location, 'protocol' | 'host'> = window.location,
+) => {
+  const protocol = locationLike.protocol === 'https:' ? 'wss:' : 'ws:';
+  const params = new URLSearchParams({ ticket });
+  return `${protocol}//${locationLike.host}/api/local-agents/sessions/${encodeURIComponent(sessionId)}/ws?${params.toString()}`;
+};
+
 const formatBytes = (size: number) => {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -54,14 +82,80 @@ export const activationCodeFromSearch = (search: string) => {
   return new URLSearchParams(search).get('user_code')?.trim().toUpperCase() || '';
 };
 
+export const channelSessionIdFromSearch = (search: string) => {
+  const params = new URLSearchParams(search);
+  return params.get('session_id') || params.get('session') || '';
+};
+
+export const resolveActiveLocalChannelSessionId = ({
+  explicitSessionId,
+  routeChannelSession,
+  defaultChannelSession,
+}: {
+  explicitSessionId?: string | null;
+  routeChannelSession?: Pick<LocalAgentChannelSession, 'id'> | null;
+  defaultChannelSession?: Pick<LocalAgentChannelSession, 'id'> | null;
+}) => explicitSessionId || routeChannelSession?.id || defaultChannelSession?.id || null;
+
 const initialActivationCodeFromUrl = () => {
   if (typeof window === 'undefined') return '';
   return activationCodeFromSearch(window.location.search);
 };
 
-export default function LocalAgents() {
+export const DEFAULT_HIVE_CONNECT_INSTALL_GUIDE: LocalBridgeInstallGuide = {
+  product_name: 'Hive Connect',
+  skill_repo_url: 'https://github.com/rocky2431/hive-connect-skill',
+  skill_name: 'hive-connect',
+  npm_package: '@hiveclaw243/hive-connect',
+  binary_name: 'hive-connect',
+  install_skill_command: 'npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect',
+  install_cli_command: 'npm install -g @hiveclaw243/hive-connect',
+  login_command: 'hive-connect login',
+  status_command: 'hive-connect status',
+  run_command: 'hive-connect run',
+  user_prompt: '帮我安装 Hive Connect skill，并连接到 Hive。',
+  instructions: [
+    '帮我安装 Hive Connect skill，并连接到 Hive。',
+    '',
+    '请按下面流程自动完成：',
+    '1. 执行 npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect 安装 Hive Connect skill。',
+    '2. 按 skill 执行 npm install -g @hiveclaw243/hive-connect 安装本地 CLI。',
+    '3. 执行 hive-connect login。',
+    '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
+    '5. 执行 hive-connect status 验证连接。',
+    '6. 执行 hive-connect run，保持本地 Agent 在线。',
+  ],
+};
+
+export const buildSetupInstruction = (guide: LocalBridgeInstallGuide = DEFAULT_HIVE_CONNECT_INSTALL_GUIDE) => {
+  const instructions = guide.instructions?.length
+    ? guide.instructions
+    : [
+        guide.user_prompt,
+        '',
+        '请按下面流程自动完成：',
+        `1. 执行 ${guide.install_skill_command} 安装 ${guide.product_name} skill。`,
+        `2. 按 skill 执行 ${guide.install_cli_command} 安装本地 CLI。`,
+        `3. 执行 ${guide.login_command}。`,
+        '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
+        `5. 执行 ${guide.status_command} 验证连接。`,
+        `6. 执行 ${guide.run_command}，保持本地 Agent 在线。`,
+      ];
+  return instructions.join('\n');
+};
+
+interface LocalAgentsProps {
+  agentId?: string;
+  agentName?: string;
+  embedded?: boolean;
+  initialTab?: 'chat' | 'workspace';
+}
+
+export default function LocalAgents({ agentId, agentName, embedded = false, initialTab = 'chat' }: LocalAgentsProps = {}) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'chat' | 'workspace'>('chat');
+  const location = useLocation();
+  const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<'chat' | 'workspace'>(initialTab);
   const [copied, setCopied] = useState(false);
   const [activationCode] = useState(initialActivationCodeFromUrl);
   const [activationBusy, setActivationBusy] = useState(false);
@@ -71,7 +165,7 @@ export default function LocalAgents() {
   const [messageContent, setMessageContent] = useState(() =>
     t(
       'localAgents.defaultMessage',
-      'Please confirm that the local Hive Bridge runner received this message and report the local runtime name.',
+      'Please confirm that the local Hive Connect runner received this message and report the local runtime name.',
     ),
   );
   const [messageBusy, setMessageBusy] = useState(false);
@@ -89,20 +183,47 @@ export default function LocalAgents() {
     isLoading: connectionsLoading,
     refetch: refetchConnections,
   } = useQuery({
-    queryKey: ['local-bridge-connections'],
-    queryFn: () => localBridgeApi.listConnections(),
+    queryKey: agentId ? ['local-bridge-connections', agentId] : ['local-bridge-connections'],
+    queryFn: () => (agentId ? localBridgeApi.listAgentConnections(agentId) : localBridgeApi.listConnections()),
     refetchInterval: 15000,
   });
 
+  const { data: installGuide = DEFAULT_HIVE_CONNECT_INSTALL_GUIDE } = useQuery({
+    queryKey: ['local-bridge-install-guide'],
+    queryFn: localBridgeApi.getInstallGuide,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const routeSessionId = agentId ? channelSessionIdFromSearch(location.search) : '';
+
+  const { data: routeChannelSession } = useQuery({
+    queryKey: ['local-agent-channel-route-session', agentId, routeSessionId],
+    queryFn: () => localBridgeApi.getAgentChannelSession(agentId!, routeSessionId),
+    enabled: Boolean(agentId && routeSessionId),
+  });
+
+  const { data: defaultChannelSession } = useQuery({
+    queryKey: agentId ? ['local-agent-channel-default-session', agentId] : ['local-agent-channel-default-session'],
+    queryFn: () =>
+      agentId ? localBridgeApi.getAgentDefaultChannelSession(agentId) : localBridgeApi.getDefaultChannelSession(),
+    enabled: !agentId || !routeSessionId,
+  });
+
+  const activeChannelSessionId = resolveActiveLocalChannelSessionId({
+    explicitSessionId: channelSessionId,
+    routeChannelSession,
+    defaultChannelSession,
+  });
+
   const {
-    data: channelEventData,
+    data: channelTimelineData,
     isLoading: channelEventsLoading,
-    refetch: refetchChannelEvents,
+    refetch: refetchChannelTimeline,
   } = useQuery({
-    queryKey: ['local-agent-channel-events', channelSessionId],
-    queryFn: () => localBridgeApi.listChannelEvents(channelSessionId!),
-    enabled: Boolean(channelSessionId),
-    refetchInterval: channelSessionId ? 3000 : false,
+    queryKey: ['local-agent-channel-timeline', activeChannelSessionId],
+    queryFn: () => localBridgeApi.getChannelTimeline(activeChannelSessionId!),
+    enabled: Boolean(activeChannelSessionId),
+    refetchInterval: activeChannelSessionId ? 10000 : false,
   });
 
   const {
@@ -120,21 +241,10 @@ export default function LocalAgents() {
   const primaryConnection = onlineConnections[0] ?? activeConnections[0] ?? null;
   const localAgentOnline = onlineConnections.length > 0;
   const primaryPresence = primaryConnection ? connectionPresenceStatus(primaryConnection) : 'unknown';
-  const channelEvents = channelEventData?.events ?? [];
+  const channelEvents = channelTimelineData?.events ?? [];
+  const displayTitle = agentName || t('localAgents.title', 'Local Agent Channel');
 
-  const setupInstruction = useMemo(() => {
-    return [
-      '帮我安装 Hive Bridge skill，并连接到 Hive。',
-      '',
-      '请按下面流程自动完成：',
-      '1. 执行 npx skills add https://github.com/rocky2431/hive-bridge-skill --skill hive-bridge 安装 Hive Bridge skill。',
-      '2. 按 skill 执行 npm install -g @hiveclaw243/hive-bridge 安装本地 CLI。',
-      '3. 执行 hive-bridge login。',
-      '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
-      '5. 执行 hive-bridge status 验证连接。',
-      '6. 执行 hive-bridge run --transport websocket，保持本地 Agent 在线。',
-    ].join('\n');
-  }, []);
+  const setupInstruction = useMemo(() => buildSetupInstruction(installGuide), [installGuide]);
 
   const copyInstruction = async () => {
     await navigator.clipboard?.writeText(setupInstruction);
@@ -153,7 +263,7 @@ export default function LocalAgents() {
         kind: 'success',
         message: t(
           'localAgents.autoAuthSuccess',
-          'Hive Bridge login approved. Return to the local agent and wait for it to show connected.',
+          'Hive Connect login approved. Return to the local agent and wait for it to show connected.',
         ),
       });
       await refetchConnections();
@@ -165,7 +275,7 @@ export default function LocalAgents() {
     } catch (error: any) {
       setActivationStatus({
         kind: 'error',
-        message: error?.message || t('localAgents.autoAuthError', 'Failed to finish Hive Bridge login.'),
+        message: error?.message || t('localAgents.autoAuthError', 'Failed to finish Hive Connect login.'),
       });
     } finally {
       setActivationBusy(false);
@@ -178,22 +288,75 @@ export default function LocalAgents() {
     void approveActivationCode(activationCode);
   }, [activationCode, approveActivationCode]);
 
+  useEffect(() => {
+    if (defaultChannelSession?.id && !channelSessionId) {
+      setChannelSessionId(defaultChannelSession.id);
+    }
+  }, [channelSessionId, defaultChannelSession?.id]);
+
+  useEffect(() => {
+    if (!activeChannelSessionId || typeof window === 'undefined') return;
+    let disposed = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    const queryKey = ['local-agent-channel-timeline', activeChannelSessionId] as const;
+
+    const connect = async () => {
+      try {
+        const ticket = await localBridgeApi.createBrowserChannelWsTicket(activeChannelSessionId);
+        if (disposed) return;
+        socket = new WebSocket(browserChannelWsUrl(activeChannelSessionId, ticket.ticket));
+        socket.onclose = () => {
+          if (!disposed) {
+            reconnectTimer = window.setTimeout(() => void connect(), 2000);
+          }
+        };
+        socket.onerror = () => {
+          socket?.close();
+        };
+        socket.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload?.type !== 'event' || !payload.event) return;
+            queryClient.setQueryData<LocalAgentChannelTimeline | undefined>(queryKey, (current) => {
+              if (!current) return current;
+              return {
+                ...current,
+                events: mergeChannelEvents(current.events, [payload.event as LocalAgentChannelEvent]),
+              };
+            });
+          } catch (_error) {
+            // Ignore malformed transport messages; polling remains the fallback.
+          }
+        };
+      } catch (_error) {
+        // Polling remains the fallback when a browser websocket cannot be opened.
+      }
+    };
+
+    void connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [activeChannelSessionId, queryClient]);
+
   const sendMessage = async () => {
     const content = messageContent.trim();
     if (!content) return;
     setMessageBusy(true);
     setMessageStatus(null);
     try {
-      let sessionId = channelSessionId;
+      let sessionId = activeChannelSessionId;
       if (!sessionId) {
-        const session = await localBridgeApi.createChannelSession({
-          source: 'web',
-          title: 'Local Agent Channel',
-        });
+        const session = agentId
+          ? await localBridgeApi.getAgentDefaultChannelSession(agentId)
+          : await localBridgeApi.getDefaultChannelSession();
         sessionId = session.id;
         setChannelSessionId(session.id);
       }
-      const result = await localBridgeApi.sendChannelMessage(sessionId, {
+      const messageInput = {
         content,
         attachments: pendingAttachments.map((attachment) => ({
           path: attachment.workspace_path,
@@ -202,18 +365,21 @@ export default function LocalAgents() {
           source: 'local_agent_workspace',
         })),
         metadata: {
-          source: 'local_agents_page',
+          source: agentId ? 'local_agent_detail' : 'local_agents_page',
           purpose: 'direct_local_chat',
           attachment_count: pendingAttachments.length,
         },
-      });
+      };
+      const result = agentId
+        ? await localBridgeApi.sendAgentChannelMessage(agentId, sessionId, messageInput)
+        : await localBridgeApi.sendChannelMessage(sessionId, messageInput);
       setPendingAttachments([]);
       setMessageStatus({
         kind: 'success',
         message: t('localAgents.messageQueued', 'Message queued: {{messageId}}', { messageId: result.id }),
       });
       await refetchConnections();
-      await refetchChannelEvents();
+      await refetchChannelTimeline();
     } catch (error: any) {
       setMessageStatus({
         kind: 'error',
@@ -333,9 +499,27 @@ export default function LocalAgents() {
   };
 
   return (
-    <div style={{ padding: '24px 36px', maxWidth: '1120px', margin: '0 auto' }}>
+    <div style={{ padding: embedded ? 0 : '24px 36px', maxWidth: embedded ? 'none' : '1120px', margin: embedded ? 0 : '0 auto' }}>
       <div style={{ marginBottom: '18px' }}>
-        <h2 style={{ margin: '0 0 6px' }}>{t('localAgents.title', 'Local Agent Channel')}</h2>
+        {embedded ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>{displayTitle}</h3>
+            <span
+              style={{
+                fontSize: '11px',
+                padding: '2px 6px',
+                borderRadius: '999px',
+                color: 'var(--success)',
+                background: 'var(--success-subtle, rgba(34, 197, 94, 0.12))',
+                border: '1px solid rgba(34, 197, 94, 0.24)',
+              }}
+            >
+              {t('nav.localBadge', 'Local')}
+            </span>
+          </div>
+        ) : (
+          <h2 style={{ margin: '0 0 6px' }}>{displayTitle}</h2>
+        )}
         <p style={{ margin: 0, color: 'var(--text-tertiary)', fontSize: '13px', lineHeight: 1.5 }}>
           {t(
             'localAgents.description',
@@ -455,16 +639,16 @@ export default function LocalAgents() {
               {activationCode
                 ? t(
                     'localAgents.autoAuthDetected',
-                    'Hive Bridge login link detected. Hive is completing this local agent authentication automatically.',
+                    'Hive Connect login link detected. Hive is completing this local agent authentication automatically.',
                   )
                 : t(
                     'localAgents.autoAuthHint',
-                    'Run hive-bridge login. The browser opens this page, you sign in, and Hive completes authentication automatically.',
+                    'Run hive-connect login. The browser opens this page, you sign in, and Hive completes authentication automatically.',
                   )}
             </div>
             {activationBusy && (
               <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                {t('localAgents.autoAuthCompleting', 'Completing Hive Bridge login...')}
+                {t('localAgents.autoAuthCompleting', 'Completing Hive Connect login...')}
               </div>
             )}
             {activationStatus && (
@@ -539,7 +723,7 @@ export default function LocalAgents() {
                 {messageStatus.message}
               </div>
             )}
-            {channelSessionId && (
+            {activeChannelSessionId && (
               <div style={{ marginTop: '14px', borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
                 <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>
                   {t('localAgents.transcript', 'Local channel transcript')}

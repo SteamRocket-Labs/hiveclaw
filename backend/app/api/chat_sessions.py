@@ -26,10 +26,12 @@ from app.services.web_chat_runtime import (
     cancel_web_chat_run,
     get_active_web_chat_run,
     start_web_chat_run,
+    steer_active_web_chat_turn,
 )
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.session_index import read_session_index
 from app.services.session_feedback import record_session_feedback
+from app.services.session_control_plane import build_session_json_export, build_session_workbench
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 
@@ -105,13 +107,22 @@ class StartSessionRunIn(BaseModel):
 
 
 class BranchSessionIn(BaseModel):
-    mode: Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate", "rewind"]
+    mode: Literal["fork", "edit", "insert_before", "insert_after", "reply", "regenerate", "rewind", "side_question"]
     anchor_event_id: uuid.UUID
     content: str = ""
     display_content: str = ""
     file_name: str = ""
     title: Optional[str] = None
     start_run: bool = True
+    attachments: list[dict[str, Any]] = []
+    parts: list[dict[str, Any]] = []
+
+
+class SteerSessionTurnIn(BaseModel):
+    content: str
+    display_content: str = ""
+    file_name: str = ""
+    expected_turn_id: Optional[str] = None
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -621,6 +632,38 @@ async def get_session_index(
     return index
 
 
+@router.get("/{agent_id}/sessions/{session_id}/workbench")
+async def get_session_workbench(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return await build_session_workbench(db, agent=agent, session=session)
+
+
+@router.get("/{agent_id}/sessions/{session_id}/export")
+async def export_session_json(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return await build_session_json_export(db, agent=agent, session=session)
+
+
 @router.get("/{agent_id}/sessions/{session_id}/runs/active")
 async def get_active_session_run(
     agent_id: uuid.UUID,
@@ -636,6 +679,52 @@ async def get_active_session_run(
         current_user=current_user,
     )
     return await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+
+
+@router.post("/{agent_id}/sessions/{session_id}/turns/steer")
+async def steer_session_turn(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    body: SteerSessionTurnIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Queue an additional user message into the currently active turn."""
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return await steer_active_web_chat_turn(
+        db=db,
+        agent=agent,
+        user=current_user,
+        session=session,
+        content=body.content,
+        display_content=body.display_content,
+        file_name=body.file_name,
+        expected_turn_id=body.expected_turn_id,
+        attachments=body.attachments,
+        parts=body.parts,
+    )
+
+
+@router.get("/{agent_id}/threads/{session_id}/read")
+async def read_thread(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Thread-style alias for reading a durable session JSON export."""
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return await build_session_json_export(db, agent=agent, session=session)
 
 
 @router.get("/{agent_id}/sessions/{session_id}/transcript")
@@ -687,6 +776,30 @@ async def cancel_session_run(
     db: AsyncSession = Depends(get_db),
 ):
     """Explicitly stop an active durable web chat run."""
+    await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    return await cancel_web_chat_run(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        user_id=current_user.id,
+    )
+
+
+@router.post("/{agent_id}/threads/{session_id}/turns/{run_id}/interrupt")
+async def interrupt_thread_turn(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Thread-style alias for interrupting an active durable turn."""
     await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,

@@ -92,7 +92,15 @@ export interface StartSessionRunInput {
   parts?: Array<Record<string, unknown>>;
 }
 
-export type ConversationBranchMode = 'fork' | 'edit' | 'insert_before' | 'insert_after' | 'reply' | 'regenerate' | 'rewind';
+export type ConversationBranchMode =
+  | 'fork'
+  | 'edit'
+  | 'insert_before'
+  | 'insert_after'
+  | 'reply'
+  | 'regenerate'
+  | 'rewind'
+  | 'side_question';
 
 export interface BranchSessionInput {
   mode: ConversationBranchMode;

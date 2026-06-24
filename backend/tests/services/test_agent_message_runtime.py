@@ -106,6 +106,7 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
     assert captured["kwargs"]["tool_executor"] is orchestrator_executor
     assert captured["kwargs"]["max_tool_rounds"] == 9
     assert captured["kwargs"]["interaction_type"] == "agent_message"
+    assert captured["kwargs"]["policy"].timeout_seconds == 300.0
     assert captured["kwargs"]["policy"].tool_profile == "agent_message"
     # PR-19 rewrote A2A_SYSTEM_PROMPT_SUFFIX with XML structure; the A2A
     # identity signal is now carried by "agent-to-agent\ncommunication, 'A2A'"
@@ -193,10 +194,51 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
 
     payload = json.loads(result)
     assert payload["task_id"] == "task-1"
+    assert payload["session_id"] == captured["kwargs"]["session_id"]
+    assert payload["child_session_id"] == captured["kwargs"]["session_id"]
+    assert "send_agent_session_message" in payload["next_action"]
     assert captured["kwargs"]["policy"].tool_profile == "memory_readonly"
+    assert captured["kwargs"]["policy"].timeout_seconds == 600.0
     assert captured["kwargs"]["confirmed_plan_id"] == "plan-1"
     assert captured["kwargs"]["confirmed_plan_version"] == 2
     assert captured["kwargs"]["confirmed_plan_hash"] == "sha256:plan"
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_agent_async_accepts_timeout_override(monkeypatch):
+    from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
+
+    from_agent_id = uuid4()
+    source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4())
+    target = SimpleNamespace(id=uuid4(), name="Knowledge Agent", role_description="Knowledge worker")
+    target_model = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+    )
+    captured = {}
+
+    async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
+        return source_agent, target, target_model, None
+
+    async def fake_delegate_async(**kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(task_id="task-timeout", trace_id="trace-timeout", target_name="Knowledge Agent")
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._resolve_target_agent_runtime", fake_resolve)
+    monkeypatch.setattr("app.agents.orchestrator.delegate_async", fake_delegate_async)
+
+    result = await _delegate_to_agent_async(
+        from_agent_id,
+        {
+            "agent_name": "Knowledge Agent",
+            "message": "scan the knowledge base and return cited findings",
+            "timeout_seconds": 900,
+        },
+    )
+
+    payload = json.loads(result)
+    assert payload["task_id"] == "task-timeout"
+    assert payload["session_id"] == captured["kwargs"]["session_id"]
+    assert captured["kwargs"]["policy"].timeout_seconds == 900.0
 
 
 @pytest.mark.asyncio
@@ -232,6 +274,7 @@ async def test_delegate_to_agent_async_accepts_research_readonly_profile(monkeyp
 
     payload = json.loads(result)
     assert payload["task_id"] == "task-2"
+    assert payload["session_id"] == captured["kwargs"]["session_id"]
     assert captured["kwargs"]["policy"].tool_profile == "research_readonly"
 
 

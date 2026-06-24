@@ -21,6 +21,58 @@ def test_cc_core_lifecycle_hook_events_are_exposed() -> None:
     }.issubset(values)
 
 
+def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() -> None:
+    registry = HookRegistry()
+    catalog = {item["event"]: item for item in registry.describe_event_catalog()}
+
+    required = {
+        "pre_tool_use",
+        "post_tool_use",
+        "post_tool_failure",
+        "notification",
+        "permission_request",
+        "permission_denied",
+        "user_prompt_submit",
+        "session_start",
+        "session_end",
+        "stop",
+        "stop_failure",
+        "subagent_start",
+        "subagent_stop",
+        "pre_compaction",
+        "post_compaction",
+        "setup",
+        "config_change",
+        "instructions_loaded",
+        "task_created",
+        "task_completed",
+        "teammate_idle",
+        "elicitation",
+        "elicitation_result",
+        "worktree_create",
+        "worktree_remove",
+        "cwd_changed",
+        "file_changed",
+    }
+    assert required.issubset(catalog)
+
+    for event_name in required:
+        entry = catalog[event_name]
+        assert entry["cc_parity"] is True
+        assert entry["lifecycle_state"] in {"active", "active_observe", "disabled_noop"}
+        assert entry["trigger_point"]
+        assert isinstance(entry["matcher_fields"], list)
+        assert entry["input_schema"]["type"] == "object"
+        assert entry["output_schema"]["type"] == "object"
+        assert entry["runtime_consumer"]
+
+    assert catalog["worktree_create"]["lifecycle_state"] == "disabled_noop"
+    assert catalog["worktree_create"]["runtime_consumer"] == "disabled_noop_audit"
+    assert "worktree_path" in catalog["worktree_create"]["output_schema"]["properties"]
+    assert "permission_decision" in catalog["permission_request"]["output_schema"]["properties"]
+    assert catalog["pre_tool_use"]["runtime_consumer"] == "kernel_pre_tool_use"
+
+
 def test_cc_lifecycle_hook_context_carries_standard_payload_fields() -> None:
     ctx = HookContext(
         event=HookEvent.SUBAGENT_STOP,

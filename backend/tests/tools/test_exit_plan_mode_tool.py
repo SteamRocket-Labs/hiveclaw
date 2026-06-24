@@ -76,7 +76,9 @@ class _FailingPlanService(_PlanService):
             plan_version=1,
             plan_hash=None,
             plan_json={},
-            metadata_json={"planning_errors": ["user-visible plan leaks internal workflow detail: deep_research_* tool call"]},
+            metadata_json={
+                "planning_errors": ["user-visible plan leaks internal workflow detail: deep_research_* tool call"]
+            },
         )
 
 
@@ -169,7 +171,11 @@ async def test_exit_plan_mode_returns_planning_failed_without_needs_plan_success
     monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
 
     token = set_interactive_plan_mode(
-        {"active": True, "original_request": "使用 deepresearch做一个web3的全景报告", "intent_type": "in_session_execution"}
+        {
+            "active": True,
+            "original_request": "使用 deepresearch做一个web3的全景报告",
+            "intent_type": "in_session_execution",
+        }
     )
     try:
         result = json.loads(
@@ -212,7 +218,9 @@ async def test_exit_plan_mode_preserves_hidden_execution_contract_without_visibl
             "internal_tool_note": "deep_research_start writes runtime_artifacts/workflow_runs/run/deep_research",
         },
     }
-    token = set_interactive_plan_mode({"active": True, "original_request": "Plan research", "intent_type": "in_session_execution"})
+    token = set_interactive_plan_mode(
+        {"active": True, "original_request": "Plan research", "intent_type": "in_session_execution"}
+    )
     try:
         result = json.loads(
             await handler.exit_plan_mode(
@@ -235,6 +243,46 @@ async def test_exit_plan_mode_preserves_hidden_execution_contract_without_visibl
     assert result["status"] == "needs_plan"
     assert result["plan_json"]["execution_contract"] == contract
     assert service.calls[0]["fill"]["execution_contract"] == contract
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_routes_agent_team_contract_to_agent_team_handoff(monkeypatch):
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+
+    contract = {
+        "type": "agent_team",
+        "name": "Parity Review Team",
+        "members": [{"name": "critic", "role": "Review implementation", "prompt": "Review the runtime."}],
+    }
+    token = set_interactive_plan_mode(
+        {"active": True, "original_request": "Review with a team", "intent_type": "in_session_execution"}
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Team review plan",
+                        "objective": "Review the parity work with a team.",
+                        "plan_markdown": "## Plan\nUse a critic teammate for review.",
+                        "steps": ["Create critic teammate", "Run review", "Merge result"],
+                        "success_criteria": ["Critic output is visible"],
+                        "stop_conditions": ["User rejects"],
+                        "execution_contract": contract,
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert result["plan_json"]["handoff"]["target"] == "agent_team"
+    assert result["plan_json"]["execution_contract"] == contract
 
 
 # ── cut ③a: dual-state submission (plan_id armed → fill existing draft) ──
@@ -488,9 +536,7 @@ async def test_exit_plan_mode_treats_provisioned_plan_file_as_authoritative(tmp_
     absolute_plan_file = tmp_path / plan_file
     absolute_plan_file.parent.mkdir(parents=True)
     absolute_plan_file.write_text(
-        "# 文件里的真实计划\n\n"
-        "## 执行策略\n"
-        "只读核验当前仓库状态，然后提交可确认计划。\n",
+        "# 文件里的真实计划\n\n## 执行策略\n只读核验当前仓库状态，然后提交可确认计划。\n",
         encoding="utf-8",
     )
 

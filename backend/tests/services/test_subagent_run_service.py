@@ -20,10 +20,11 @@ async def test_start_subagent_run_records_running_subagent_task(monkeypatch):
 
     monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
     parent = uuid.uuid4()
-    run_id = await svc.start_subagent_run(
+    started = await svc.start_subagent_run(
         parent_agent_id=parent, spec_name="scout", spec_type=SUBAGENT_TYPE_WORKER, task="do x"
     )
-    assert run_id == captured["task_id"]
+    assert started.run_id == captured["task_id"]
+    assert started.child_session_id is None
     assert captured["task_type"] == svc.SUBAGENT_RUN_TASK_TYPE == "subagent"
     assert captured["status"] == "running"
     assert captured["parent_agent_id"] == parent
@@ -33,12 +34,59 @@ async def test_start_subagent_run_records_running_subagent_task(monkeypatch):
     assert captured["metadata_json"]["resume_after_restart"] is True
     assert captured["metadata_json"]["side_effect_risk"] == "mutating"
     assert captured["metadata_json"]["restart_replay_contract"]["schema"] == "runtime_restart_replay_contract.v1"
-    assert captured["metadata_json"]["restart_replay_contract"]["idempotency_key"] == f"subagent:{run_id}:restart"
+    assert (
+        captured["metadata_json"]["restart_replay_contract"]["idempotency_key"] == f"subagent:{started.run_id}:restart"
+    )
     assert captured["metadata_json"]["restart_replay_journal"][0]["phase"] == "spawn_intent_recorded"
     assert captured["metadata_json"]["restart_replay_journal"][0]["idempotency_key"] == (
-        f"subagent:{run_id}:restart:spawn_intent_recorded"
+        f"subagent:{started.run_id}:restart:spawn_intent_recorded"
     )
     assert "restart_resume_blocker" not in captured["metadata_json"]
+
+
+@pytest.mark.asyncio
+async def test_start_subagent_run_creates_child_session_and_records_session_contract(monkeypatch):
+    captured: dict = {}
+
+    async def _fake_create_child_session(**kwargs):
+        captured["child_session_kwargs"] = kwargs
+        return "child-session"
+
+    async def _fake_create(**kwargs):
+        captured["runtime_task"] = kwargs
+        return kwargs["task_id"]
+
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_create_child_session, raising=False)
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+
+    parent = uuid.uuid4()
+    user = uuid.uuid4()
+    started = await svc.start_subagent_run(
+        parent_agent_id=parent,
+        parent_user_id=user,
+        spec_name="scout",
+        spec_type="explorer",
+        task="read x",
+        parent_session_id="parent-session",
+        trace_id="trace-1",
+        context_mode="none",
+    )
+
+    assert started.run_id == captured["runtime_task"]["task_id"]
+    assert started.child_session_id == "child-session"
+    assert captured["child_session_kwargs"]["parent_agent_id"] == parent
+    assert captured["child_session_kwargs"]["parent_user_id"] == user
+    assert captured["child_session_kwargs"]["parent_session_id"] == "parent-session"
+    assert captured["child_session_kwargs"]["spec_name"] == "scout"
+    assert captured["child_session_kwargs"]["spec_type"] == "explorer"
+    assert captured["child_session_kwargs"]["run_id"] == started.run_id
+    assert captured["runtime_task"]["child_session_id"] == "child-session"
+    metadata = captured["runtime_task"]["metadata_json"]
+    assert metadata["child_session_id"] == "child-session"
+    assert metadata["context_mode"] == "none"
+    assert metadata["session_contract"]["kind"] == "subagent_child_session"
+    assert metadata["session_contract"]["continuation_address"] == "child-session"
+    assert metadata["session_contract"]["run_id"] == started.run_id
 
 
 @pytest.mark.asyncio
@@ -68,7 +116,11 @@ async def test_run_completer_maps_ok_to_completed(monkeypatch):
         captured.update(fields)
         return True
 
+    async def _fake_session_state(**kwargs):
+        captured["session_state_update"] = kwargs
+
     monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", _fake_session_state)
     completer = svc.make_run_completer("run-1")
     await completer(SubagentResult(name="scout", type="worker", status="completed", content="done", tokens_used=42))
     assert captured["run_id"] == "run-1"
@@ -77,6 +129,9 @@ async def test_run_completer_maps_ok_to_completed(monkeypatch):
     assert captured["token_usage"] == {"total_tokens": 42}
     assert captured["metadata_json"]["completion_journal"][-1]["status"] == "completed"
     assert captured["metadata_json"]["completion_journal"][-1]["idempotency_key"] == "subagent:run-1:completed"
+    assert captured["session_state_update"]["run_id"] == "run-1"
+    assert captured["session_state_update"]["status"] == "completed"
+    assert captured["session_state_update"]["summary"] == "done"
 
 
 @pytest.mark.asyncio
@@ -87,7 +142,11 @@ async def test_run_completer_maps_failure_to_failed(monkeypatch):
         captured.update(fields)
         return True
 
+    async def _fake_session_state(**_kwargs):
+        return None
+
     monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", _fake_session_state)
     completer = svc.make_run_completer("run-2")
     await completer(SubagentResult(name="scout", type="worker", status="failed", error="boom"))
     assert captured["status"] == "failed"
@@ -256,6 +315,7 @@ async def test_resume_persisted_subagent_runs_marks_mutating_record_for_reconcil
     assert updates[-1][1]["status"] == "needs_reconciliation"
     assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
     assert updates[-1][1]["metadata_json"]["side_effect_risk"] == "mutating"
+
 
 @pytest.mark.asyncio
 async def test_resume_persisted_subagent_runs_reconciles_mutating_worker_even_with_spawn_journal(monkeypatch):

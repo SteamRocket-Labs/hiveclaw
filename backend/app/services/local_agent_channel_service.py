@@ -14,9 +14,11 @@ from datetime import timedelta
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from jose import JWTError, jwt
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -31,7 +33,11 @@ from app.services.chat_artifact_delivery import create_or_bind_chat_session
 from app.services.local_bridge_service import BridgeAuthContext, hash_secret, utcnow
 
 WS_TICKET_PREFIX = "hbt_"
+BROWSER_WS_TICKET_PREFIX = "hbwt_"
 DEFAULT_WS_TICKET_SECONDS = 60
+DEFAULT_BROWSER_WS_TICKET_SECONDS = 60
+
+settings = get_settings()
 
 
 def _generate_ws_ticket() -> str:
@@ -43,6 +49,13 @@ def _parse_ws_ticket(ticket: str) -> str:
     if not normalized.startswith(WS_TICKET_PREFIX):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid local agent channel ticket")
     return normalized
+
+
+def _parse_browser_ws_ticket(ticket: str) -> str:
+    normalized = (ticket or "").strip()
+    if not normalized.startswith(BROWSER_WS_TICKET_PREFIX):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid local agent browser ticket")
+    return normalized[len(BROWSER_WS_TICKET_PREFIX) :]
 
 
 def _require_scope(context: BridgeAuthContext, *accepted_scopes: str) -> None:
@@ -83,6 +96,25 @@ def _message_payload(message: LocalAgentChannelMessage) -> dict[str, Any]:
         "created_at": message.created_at.isoformat() if message.created_at else None,
         "delivered_at": message.delivered_at.isoformat() if message.delivered_at else None,
         "completed_at": message.completed_at.isoformat() if message.completed_at else None,
+    }
+
+
+def _session_payload(session: LocalAgentChannelSession, chat_session: ChatSession | None = None) -> dict[str, Any]:
+    title = getattr(chat_session, "title", None) or "Local Agent"
+    last_message_at = getattr(chat_session, "last_message_at", None)
+    updated_at = last_message_at or getattr(session, "updated_at", None) or getattr(session, "created_at", None)
+    return {
+        "id": session.id,
+        "chat_session_id": session.chat_session_id,
+        "agent_id": session.source_agent_id,
+        "title": title,
+        "source": session.source,
+        "source_channel": getattr(chat_session, "source_channel", None) or "local_agent",
+        "session_kind": getattr(chat_session, "session_kind", None) or "local_agent_channel",
+        "status": session.status,
+        "created_at": session.created_at,
+        "updated_at": updated_at,
+        "last_message_at": last_message_at,
     }
 
 
@@ -150,6 +182,249 @@ async def resolve_ws_ticket(
         client_kind=str((row.metadata_json or {}).get("client_kind") or "local_agent"),
         device_name=str((row.metadata_json or {}).get("device_name") or "Local Agent"),
     )
+
+
+async def get_channel_session(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    owner_user_id: uuid.UUID,
+) -> dict[str, Any]:
+    result = await db.execute(
+        select(LocalAgentChannelSession).where(
+            LocalAgentChannelSession.id == session_id,
+            LocalAgentChannelSession.owner_user_id == owner_user_id,
+        )
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
+    return _session_payload(session)
+
+
+def _tenant_filter(column, tenant_id: uuid.UUID | None):
+    if tenant_id is None:
+        return column.is_(None)
+    return column == tenant_id
+
+
+async def list_agent_channel_sessions(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+    source_agent_id: uuid.UUID,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List active local-channel sessions for one local Agent row."""
+
+    stmt = (
+        select(LocalAgentChannelSession, ChatSession)
+        .outerjoin(ChatSession, ChatSession.id == LocalAgentChannelSession.chat_session_id)
+        .where(
+            _tenant_filter(LocalAgentChannelSession.tenant_id, tenant_id),
+            LocalAgentChannelSession.owner_user_id == owner_user_id,
+            LocalAgentChannelSession.source_agent_id == source_agent_id,
+            LocalAgentChannelSession.status == "active",
+        )
+        .order_by(
+            ChatSession.last_message_at.desc().nulls_last(),
+            LocalAgentChannelSession.created_at.desc(),
+            LocalAgentChannelSession.id.desc(),
+        )
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    return [_session_payload(session, chat_session) for session, chat_session in result.all()]
+
+
+async def resolve_agent_channel_session(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+    source_agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Resolve either a LocalAgentChannelSession id or its mirrored ChatSession id."""
+
+    session, chat_session = await _resolve_agent_channel_session_row(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=source_agent_id,
+        session_id=session_id,
+    )
+    return _session_payload(session, chat_session)
+
+
+async def _resolve_agent_channel_session_row(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+    source_agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+) -> tuple[LocalAgentChannelSession, ChatSession | None]:
+    stmt = (
+        select(LocalAgentChannelSession, ChatSession)
+        .outerjoin(ChatSession, ChatSession.id == LocalAgentChannelSession.chat_session_id)
+        .where(
+            _tenant_filter(LocalAgentChannelSession.tenant_id, tenant_id),
+            LocalAgentChannelSession.owner_user_id == owner_user_id,
+            LocalAgentChannelSession.source_agent_id == source_agent_id,
+            LocalAgentChannelSession.status == "active",
+            or_(
+                LocalAgentChannelSession.id == session_id,
+                LocalAgentChannelSession.chat_session_id == session_id,
+            ),
+        )
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
+    return rows[0]
+
+
+async def archive_agent_channel_session(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+    source_agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+) -> dict[str, Any]:
+    """Archive one local-channel session without deleting its replayable event history."""
+
+    session, chat_session = await _resolve_agent_channel_session_row(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=source_agent_id,
+        session_id=session_id,
+    )
+    session.status = "archived"
+    if chat_session is not None:
+        chat_session.listed_surface = "archived"
+        if getattr(chat_session, "external_conv_id", None):
+            chat_session.external_conv_id = f"{chat_session.external_conv_id}#archived:{session.id.hex[:12]}"
+    await db.commit()
+    return {"status": "archived"}
+
+
+async def get_or_create_default_channel_session(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+    source_agent_id: uuid.UUID | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Return the durable default Local Agent Channel session."""
+
+    stmt = (
+        select(LocalAgentChannelSession)
+        .where(
+            LocalAgentChannelSession.tenant_id == tenant_id,
+            LocalAgentChannelSession.owner_user_id == owner_user_id,
+            LocalAgentChannelSession.source == "web",
+            LocalAgentChannelSession.status == "active",
+        )
+        .order_by(LocalAgentChannelSession.created_at.desc(), LocalAgentChannelSession.id.desc())
+        .limit(1)
+    )
+    if source_agent_id is None:
+        stmt = stmt.where(LocalAgentChannelSession.source_agent_id.is_(None))
+    else:
+        stmt = stmt.where(LocalAgentChannelSession.source_agent_id == source_agent_id)
+    result = await db.execute(
+        stmt
+    )
+    existing = result.scalar_one_or_none()
+    if existing is not None:
+        return _session_payload(existing)
+
+    chat_session: ChatSession | None = None
+    if source_agent_id is not None:
+        external_conversation_id = f"local_agent:{owner_user_id}:{source_agent_id}:web"
+        chat_session = await create_or_bind_chat_session(
+            db=db,
+            tenant_id=tenant_id,
+            agent_id=source_agent_id,
+            user_id=owner_user_id,
+            runtime_source="local_agent_channel",
+            actor_type="local_agent",
+            external_conversation_id=external_conversation_id,
+            source_channel="local_agent",
+            title_seed=title or "Local Agent",
+            session_kind="local_agent_channel",
+            visibility_scope="direct_user",
+            listed_surface="chat",
+        )
+
+    channel_session = LocalAgentChannelSession(
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=source_agent_id,
+        chat_session_id=chat_session.id if chat_session else None,
+        source="web",
+        status="active",
+    )
+    db.add(channel_session)
+    await db.flush()
+    await db.commit()
+    return _session_payload(channel_session)
+
+
+async def create_browser_session_ws_ticket(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    ttl_seconds: int = DEFAULT_BROWSER_WS_TICKET_SECONDS,
+) -> dict[str, Any]:
+    """Create a short-lived browser ticket for subscribing to one local-agent session."""
+
+    await get_channel_session(db, session_id=session_id, owner_user_id=owner_user_id)
+    expires_at = utcnow() + timedelta(seconds=ttl_seconds)
+    token = jwt.encode(
+        {
+            "sub": str(owner_user_id),
+            "tid": str(tenant_id) if tenant_id else None,
+            "sid": str(session_id),
+            "scope": "local_agent:browser_ws",
+            "exp": expires_at,
+        },
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    return {"ticket": f"{BROWSER_WS_TICKET_PREFIX}{token}", "expires_in": ttl_seconds, "single_use": False}
+
+
+async def resolve_browser_session_ws_ticket(
+    db: AsyncSession,
+    *,
+    ticket: str,
+    session_id: uuid.UUID,
+) -> dict[str, uuid.UUID | None]:
+    """Validate a browser session ticket and return the user/session binding."""
+
+    raw_token = _parse_browser_ws_ticket(ticket)
+    try:
+        payload = jwt.decode(raw_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid local agent browser ticket")
+    if payload.get("scope") != "local_agent:browser_ws" or payload.get("sid") != str(session_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Local agent browser ticket scope mismatch")
+    owner_user_id = uuid.UUID(str(payload["sub"]))
+    tenant_id = uuid.UUID(str(payload["tid"])) if payload.get("tid") else None
+    if tenant_id is not None:
+        await pin_rls_tenant_context(db, tenant_id)
+    await get_channel_session(db, session_id=session_id, owner_user_id=owner_user_id)
+    return {"tenant_id": tenant_id, "owner_user_id": owner_user_id, "session_id": session_id}
 
 
 async def _get_active_channel(db: AsyncSession, *, context: BridgeAuthContext) -> LocalAgentChannel | None:
@@ -305,20 +580,20 @@ async def enqueue_channel_message(
             )
         )
     await db.flush()
-    db.add(
-        LocalAgentChannelEvent(
-            tenant_id=session.tenant_id,
-            owner_user_id=session.owner_user_id,
-            source_agent_id=session.source_agent_id,
-            session_id=session.id,
-            message_id=message.id,
-            direction="hive_to_local",
-            event_type="message",
-            payload_json=_message_payload(message),
-        )
+    event = LocalAgentChannelEvent(
+        tenant_id=session.tenant_id,
+        owner_user_id=session.owner_user_id,
+        source_agent_id=session.source_agent_id,
+        session_id=session.id,
+        message_id=message.id,
+        direction="hive_to_local",
+        event_type="message",
+        payload_json=_message_payload(message),
     )
+    db.add(event)
+    await db.flush()
     await db.commit()
-    return _message_payload(message)
+    return {**_message_payload(message), "event": _event_payload(event)}
 
 
 async def list_channel_events(

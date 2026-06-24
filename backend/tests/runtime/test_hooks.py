@@ -572,7 +572,7 @@ class TestHookEvents:
 
     def test_all_events_defined(self) -> None:
         events = list(HookEvent)
-        assert len(events) == 35
+        assert len(events) == 42
 
     def test_new_events_exist(self) -> None:
         assert HookEvent.USER_PROMPT_SUBMIT == "user_prompt_submit"
@@ -591,13 +591,20 @@ class TestHookEvents:
         assert HookEvent.DREAM_END == "dream_end"
         assert HookEvent.NOTIFICATION == "notification"
         assert HookEvent.PERMISSION_REQUEST == "permission_request"
+        assert HookEvent.PERMISSION_DENIED == "permission_denied"
         assert HookEvent.TASK_CREATED == "task_created"
         assert HookEvent.TASK_COMPLETED == "task_completed"
         assert HookEvent.ELICITATION == "elicitation"
+        assert HookEvent.ELICITATION_RESULT == "elicitation_result"
+        assert HookEvent.SETUP == "setup"
         assert HookEvent.CONFIG_CHANGE == "config_change"
         assert HookEvent.INSTRUCTIONS_LOADED == "instructions_loaded"
         assert HookEvent.WORKSPACE_CONTEXT_CHANGED == "workspace_context_changed"
         assert HookEvent.ARTIFACT_CHANGED == "artifact_changed"
+        assert HookEvent.WORKTREE_CREATE == "worktree_create"
+        assert HookEvent.WORKTREE_REMOVE == "worktree_remove"
+        assert HookEvent.CWD_CHANGED == "cwd_changed"
+        assert HookEvent.FILE_CHANGED == "file_changed"
         assert HookEvent.TEAM_CREATED == "team_created"
         assert HookEvent.TEAM_CLOSED == "team_closed"
         assert HookEvent.TEAMMATE_IDLE == "teammate_idle"
@@ -671,6 +678,27 @@ class TestHookEvents:
         reg = HookRegistry()
         for event in HookEvent:
             assert reg.handler_count(event) == 0
+        reg.clear()
+
+    def test_registry_describes_full_event_catalog_for_hook_management(self) -> None:
+        reg = HookRegistry()
+
+        async def handler(_ctx):
+            return None
+
+        reg.register(HookEvent.STOP, handler, key="test.stop", handler_name="stop_guard")
+
+        catalog = reg.describe_event_catalog()
+
+        assert len(catalog) == len(HookEvent)
+        stop = next(item for item in catalog if item["event"] == HookEvent.STOP.value)
+        post_tool = next(item for item in catalog if item["event"] == HookEvent.POST_TOOL_USE.value)
+        assert stop["handler_count"] == 1
+        assert stop["blocking_supported"] is True
+        assert stop["category"] == "turn"
+        assert stop["cc_parity"] is True
+        assert post_tool["handler_count"] == 0
+        assert post_tool["blocking_supported"] is False
         reg.clear()
 
     @pytest.mark.asyncio

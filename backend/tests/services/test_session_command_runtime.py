@@ -360,6 +360,169 @@ async def test_branch_command_is_non_destructive_session_fork(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_btw_command_creates_side_question_session(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    source = _session(agent.id, user.id)
+    side_session = _session(agent.id, user.id, title="Side question")
+    side_session.parent_session_id = source.id
+    side_session.root_session_id = source.id
+    side_session.session_kind = "side_question"
+    side_session.runtime_source = "side_question"
+    side_session.listed_surface = "sidechain"
+    anchor = _event(source, "assistant_message", sequence=2, content="answer", role="assistant")
+    db = _DB(source, [anchor])
+    captured = {}
+
+    async def fake_create_conversation_branch(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            session=side_session,
+            branch={"anchor_event_id": str(kwargs["anchor_event_id"]), "branch_mode": kwargs["mode"]},
+            run_request=SimpleNamespace(
+                content=kwargs["content"],
+                display_content=kwargs["display_content"],
+                file_name="",
+                append_user_message=True,
+                attachments=[],
+                parts=[],
+                extra_metadata={"side_session": True, "max_turns": 1, "tool_policy": "disabled_by_default"},
+            ),
+        )
+
+    monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="btw",
+        session_id=source.id,
+        arguments={"question": "What does this acronym mean?", "title": "Acronym side note"},
+    )
+
+    assert captured["mode"] == "side_question"
+    assert captured["anchor_event_id"] == anchor.id
+    assert captured["content"] == "What does this acronym mean?"
+    assert result["session"]["id"] == str(side_session.id)
+    assert result["session"]["session_kind"] == "side_question"
+    assert result["session"]["listed_surface"] == "sidechain"
+    assert result["run_request"]["max_turns"] == 1
+    assert result["run_request"]["tool_policy"] == "disabled_by_default"
+
+
+@pytest.mark.asyncio
+async def test_turn_steer_command_queues_message_to_active_turn(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    db = _DB(session)
+    captured = {}
+
+    async def fake_steer_active_web_chat_turn(**kwargs):
+        captured.update(kwargs)
+        return {
+            "run_id": "run-1",
+            "turn_id": "turn-1",
+            "queued": {"content": kwargs["content"]},
+            "steer_strategy": "pending_mid_run_user_message",
+        }
+
+    monkeypatch.setattr(runtime, "steer_active_web_chat_turn", fake_steer_active_web_chat_turn)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="turn_steer",
+        session_id=session.id,
+        arguments={"content": "Use the stricter interpretation.", "expected_turn_id": "turn-1"},
+    )
+
+    assert captured["session"] is session
+    assert captured["content"] == "Use the stricter interpretation."
+    assert captured["expected_turn_id"] == "turn-1"
+    assert result["steer_strategy"] == "pending_mid_run_user_message"
+    assert result["queued"]["content"] == "Use the stricter interpretation."
+
+
+@pytest.mark.asyncio
+async def test_interrupt_command_cancels_current_active_turn(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    db = _DB(session)
+    run_id = uuid4()
+    captured = {}
+
+    async def fake_get_active_web_chat_run(**kwargs):
+        return {"run_id": str(run_id), "status": "running"}
+
+    async def fake_cancel_web_chat_run(**kwargs):
+        captured.update(kwargs)
+        return {"run_id": str(kwargs["run_id"]), "status": "killed"}
+
+    monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_get_active_web_chat_run)
+    monkeypatch.setattr(runtime, "cancel_web_chat_run", fake_cancel_web_chat_run)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="interrupt",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert captured["agent_id"] == agent.id
+    assert captured["session_id"] == session.id
+    assert captured["run_id"] == run_id
+    assert captured["user_id"] == user.id
+    assert result["status"] == "killed"
+    assert result["interrupt_strategy"] == "cancel_active_web_chat_run"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_command_rejects_invalid_run_id(monkeypatch):
+    from fastapi import HTTPException
+
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    db = _DB(session)
+
+    async def fake_get_active_web_chat_run(**kwargs):
+        return {"run_id": str(uuid4()), "status": "running"}
+
+    monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_get_active_web_chat_run)
+
+    with pytest.raises(HTTPException) as exc:
+        await runtime.execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="interrupt",
+            session_id=session.id,
+            arguments={"run_id": "not-a-uuid"},
+        )
+
+    assert exc.value.status_code == 400
+    assert "run_id must be a UUID" in exc.value.detail
+
+
+@pytest.mark.asyncio
 async def test_checkpoints_lists_user_turn_boundaries():
     from app.services.session_command_runtime import execute_session_command
 

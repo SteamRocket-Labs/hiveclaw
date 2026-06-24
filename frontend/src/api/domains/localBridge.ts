@@ -33,12 +33,33 @@ export interface LocalBridgeWorkRequest {
   completed_at?: string | null;
 }
 
+export interface LocalBridgeInstallGuide {
+  product_name: string;
+  skill_repo_url: string;
+  skill_name: string;
+  npm_package: string;
+  binary_name: string;
+  install_skill_command: string;
+  install_cli_command: string;
+  login_command: string;
+  status_command: string;
+  run_command: string;
+  user_prompt: string;
+  instructions: string[];
+}
+
 export interface LocalAgentChannelSession {
   id: string;
   chat_session_id: string | null;
+  agent_id?: string | null;
+  title?: string | null;
   source: string;
+  source_channel?: string;
+  session_kind?: string;
   status: string;
   created_at?: string | null;
+  updated_at?: string | null;
+  last_message_at?: string | null;
 }
 
 export interface LocalAgentChannelMessage {
@@ -59,6 +80,17 @@ export interface LocalAgentChannelEvent {
   type: string;
   payload: Record<string, unknown>;
   created_at?: string | null;
+}
+
+export interface LocalAgentChannelTimeline {
+  session: LocalAgentChannelSession;
+  events: LocalAgentChannelEvent[];
+}
+
+export interface LocalAgentBrowserWsTicket {
+  ticket: string;
+  expires_in: number;
+  single_use: boolean;
 }
 
 export interface LocalAgentWorkspaceFile {
@@ -89,6 +121,8 @@ export interface LocalAgentWorkspaceUpload {
 export const localBridgeApi = {
   listConnections: () =>
     get<{ connections: LocalBridgeConnection[] }>('/local-bridge/connections'),
+  getInstallGuide: () =>
+    get<LocalBridgeInstallGuide>('/local-bridge/install-guide'),
   listWorkRequests: (agentId: string) =>
     get<{ work_requests: LocalBridgeWorkRequest[] }>(`/agents/${agentId}/local-bridge/work-requests`),
   getWorkRequest: (agentId: string, messageId: string) =>
@@ -107,6 +141,21 @@ export const localBridgeApi = {
         metadata,
       },
     ),
+  getDefaultChannelSession: () =>
+    post<LocalAgentChannelSession>('/local-agents/sessions/default'),
+  getAgentDefaultChannelSession: (agentId: string) =>
+    post<LocalAgentChannelSession>(`/agents/${agentId}/local-agent/sessions/default`),
+  listAgentChannelSessions: (agentId: string) =>
+    get<LocalAgentChannelSession[]>(`/agents/${agentId}/local-agent/sessions`),
+  createAgentChannelSession: (agentId: string, input: { source?: string; title?: string } = {}) =>
+    post<LocalAgentChannelSession>(`/agents/${agentId}/local-agent/sessions`, {
+      source: input.source ?? 'web',
+      title: input.title,
+    }),
+  getAgentChannelSession: (agentId: string, sessionId: string) =>
+    get<LocalAgentChannelSession>(`/agents/${agentId}/local-agent/sessions/${encodeURIComponent(sessionId)}`),
+  deleteAgentChannelSession: (agentId: string, sessionId: string) =>
+    del(`/agents/${agentId}/local-agent/sessions/${encodeURIComponent(sessionId)}`),
   createChannelSession: (input: { source?: string; title?: string } = {}) =>
     post<LocalAgentChannelSession>('/local-agents/sessions', {
       source: input.source ?? 'web',
@@ -125,6 +174,24 @@ export const localBridgeApi = {
       attachments: input.attachments ?? [],
       metadata: input.metadata ?? {},
     }),
+  sendAgentChannelMessage: (
+    agentId: string,
+    sessionId: string,
+    input: {
+      content: string;
+      attachments?: Array<Record<string, unknown>>;
+      metadata?: Record<string, unknown>;
+    },
+  ) =>
+    post<LocalAgentChannelMessage>(`/agents/${agentId}/local-agent/sessions/${sessionId}/messages`, {
+      content: input.content,
+      attachments: input.attachments ?? [],
+      metadata: input.metadata ?? {},
+    }),
+  getChannelTimeline: (sessionId: string) =>
+    get<LocalAgentChannelTimeline>(`/local-agents/sessions/${sessionId}/timeline`),
+  createBrowserChannelWsTicket: (sessionId: string) =>
+    post<LocalAgentBrowserWsTicket>(`/local-agents/sessions/${sessionId}/ws-ticket`),
   listChannelEvents: (sessionId: string) =>
     get<{ events: LocalAgentChannelEvent[] }>(`/local-agents/sessions/${sessionId}/events`),
   listWorkspaceFiles: (path = 'workspace') =>

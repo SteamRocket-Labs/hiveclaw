@@ -92,16 +92,309 @@ class HookEvent(StrEnum):
 
     # ── FreeCode command/team/task parity events ──
     PERMISSION_REQUEST = "permission_request"
+    PERMISSION_DENIED = "permission_denied"
     TASK_CREATED = "task_created"
     TASK_COMPLETED = "task_completed"
     ELICITATION = "elicitation"
+    ELICITATION_RESULT = "elicitation_result"
+    SETUP = "setup"
     CONFIG_CHANGE = "config_change"
     INSTRUCTIONS_LOADED = "instructions_loaded"
     WORKSPACE_CONTEXT_CHANGED = "workspace_context_changed"
     ARTIFACT_CHANGED = "artifact_changed"
+    WORKTREE_CREATE = "worktree_create"
+    WORKTREE_REMOVE = "worktree_remove"
+    CWD_CHANGED = "cwd_changed"
+    FILE_CHANGED = "file_changed"
     TEAM_CREATED = "team_created"
     TEAM_CLOSED = "team_closed"
     TEAMMATE_IDLE = "teammate_idle"
+
+
+_CC_PARITY_HOOK_EVENTS: set[HookEvent] = {
+    HookEvent.PRE_TOOL_USE,
+    HookEvent.POST_TOOL_USE,
+    HookEvent.POST_TOOL_FAILURE,
+    HookEvent.USER_PROMPT_SUBMIT,
+    HookEvent.SESSION_START,
+    HookEvent.SESSION_END,
+    HookEvent.TURN_STOP,
+    HookEvent.TURN_ABORT,
+    HookEvent.STOP,
+    HookEvent.STOP_FAILURE,
+    HookEvent.SUBAGENT_START,
+    HookEvent.SUBAGENT_STOP,
+    HookEvent.PRE_COMPACTION,
+    HookEvent.POST_COMPACTION,
+    HookEvent.NOTIFICATION,
+    HookEvent.PERMISSION_REQUEST,
+    HookEvent.PERMISSION_DENIED,
+    HookEvent.TASK_CREATED,
+    HookEvent.TASK_COMPLETED,
+    HookEvent.ELICITATION,
+    HookEvent.ELICITATION_RESULT,
+    HookEvent.SETUP,
+    HookEvent.CONFIG_CHANGE,
+    HookEvent.INSTRUCTIONS_LOADED,
+    HookEvent.WORKSPACE_CONTEXT_CHANGED,
+    HookEvent.ARTIFACT_CHANGED,
+    HookEvent.WORKTREE_CREATE,
+    HookEvent.WORKTREE_REMOVE,
+    HookEvent.CWD_CHANGED,
+    HookEvent.FILE_CHANGED,
+    HookEvent.TEAM_CREATED,
+    HookEvent.TEAM_CLOSED,
+    HookEvent.TEAMMATE_IDLE,
+}
+
+_HOOK_EVENT_CATEGORIES: dict[HookEvent, str] = {
+    HookEvent.PRE_TOOL_USE: "tool",
+    HookEvent.POST_TOOL_USE: "tool",
+    HookEvent.POST_TOOL_FAILURE: "tool",
+    HookEvent.USER_PROMPT_SUBMIT: "turn",
+    HookEvent.SESSION_START: "session",
+    HookEvent.SESSION_END: "session",
+    HookEvent.TURN_STOP: "turn",
+    HookEvent.TURN_ABORT: "turn",
+    HookEvent.STOP: "turn",
+    HookEvent.STOP_FAILURE: "turn",
+    HookEvent.SUBAGENT_START: "subagent",
+    HookEvent.SUBAGENT_STOP: "subagent",
+    HookEvent.RESPONSE_COMPLETE: "session",
+    HookEvent.SESSION_IDLE: "session",
+    HookEvent.SESSION_CLOSE: "session",
+    HookEvent.PRE_COMPACTION: "compaction",
+    HookEvent.POST_COMPACTION: "compaction",
+    HookEvent.DELEGATION_START: "delegation",
+    HookEvent.DELEGATION_END: "delegation",
+    HookEvent.TRIGGER_END: "schedule",
+    HookEvent.HEARTBEAT_TICK_END: "schedule",
+    HookEvent.DREAM_END: "memory",
+    HookEvent.MEMORY_EXTRACTED: "memory",
+    HookEvent.NOTIFICATION: "notification",
+    HookEvent.PERMISSION_REQUEST: "permission",
+    HookEvent.PERMISSION_DENIED: "permission",
+    HookEvent.TASK_CREATED: "task",
+    HookEvent.TASK_COMPLETED: "task",
+    HookEvent.ELICITATION: "turn",
+    HookEvent.ELICITATION_RESULT: "turn",
+    HookEvent.SETUP: "setup",
+    HookEvent.CONFIG_CHANGE: "config",
+    HookEvent.INSTRUCTIONS_LOADED: "context",
+    HookEvent.WORKSPACE_CONTEXT_CHANGED: "workspace",
+    HookEvent.ARTIFACT_CHANGED: "workspace",
+    HookEvent.WORKTREE_CREATE: "workspace",
+    HookEvent.WORKTREE_REMOVE: "workspace",
+    HookEvent.CWD_CHANGED: "workspace",
+    HookEvent.FILE_CHANGED: "workspace",
+    HookEvent.TEAM_CREATED: "team",
+    HookEvent.TEAM_CLOSED: "team",
+    HookEvent.TEAMMATE_IDLE: "team",
+}
+
+_DISABLED_NOOP_HOOK_EVENTS: set[HookEvent] = {
+    HookEvent.SETUP,
+    HookEvent.PERMISSION_DENIED,
+    HookEvent.ELICITATION_RESULT,
+    HookEvent.WORKTREE_CREATE,
+    HookEvent.WORKTREE_REMOVE,
+    HookEvent.CWD_CHANGED,
+    HookEvent.FILE_CHANGED,
+}
+
+_ACTIVE_OBSERVE_ONLY_HOOK_EVENTS: set[HookEvent] = {
+    HookEvent.POST_TOOL_USE,
+    HookEvent.POST_TOOL_FAILURE,
+    HookEvent.NOTIFICATION,
+    HookEvent.PERMISSION_REQUEST,
+    HookEvent.TASK_CREATED,
+    HookEvent.TASK_COMPLETED,
+    HookEvent.ELICITATION,
+    HookEvent.CONFIG_CHANGE,
+    HookEvent.INSTRUCTIONS_LOADED,
+    HookEvent.TEAM_CREATED,
+    HookEvent.TEAM_CLOSED,
+    HookEvent.TEAMMATE_IDLE,
+    HookEvent.PRE_COMPACTION,
+    HookEvent.POST_COMPACTION,
+}
+
+_HOOK_RUNTIME_CONSUMERS: dict[HookEvent, str] = {
+    HookEvent.PRE_TOOL_USE: "kernel_pre_tool_use",
+    HookEvent.USER_PROMPT_SUBMIT: "invoker_user_prompt_submit",
+    HookEvent.SESSION_START: "invoker_session_start",
+    HookEvent.SESSION_END: "invoker_session_end",
+    HookEvent.TURN_STOP: "invoker_turn_stop",
+    HookEvent.TURN_ABORT: "invoker_turn_abort",
+    HookEvent.STOP: "kernel_stop_continuation",
+    HookEvent.STOP_FAILURE: "hook_registry_stop_failure",
+    HookEvent.SUBAGENT_START: "subagent_lifecycle_start",
+    HookEvent.SUBAGENT_STOP: "subagent_lifecycle_stop",
+    HookEvent.POST_TOOL_USE: "kernel_post_tool_observer",
+    HookEvent.POST_TOOL_FAILURE: "kernel_post_tool_failure_observer",
+    HookEvent.PRE_COMPACTION: "memory_compaction_observer",
+    HookEvent.POST_COMPACTION: "memory_compaction_observer",
+    HookEvent.NOTIFICATION: "notification_observer",
+    HookEvent.PERMISSION_REQUEST: "approval_service_equivalent_observer",
+    HookEvent.TASK_CREATED: "command_task_event_observer",
+    HookEvent.TASK_COMPLETED: "command_task_event_observer",
+    HookEvent.ELICITATION: "plan_mode_elicitation_observer",
+    HookEvent.CONFIG_CHANGE: "runtime_config_refresh_observer",
+    HookEvent.INSTRUCTIONS_LOADED: "context_refresh_observer",
+    HookEvent.WORKSPACE_CONTEXT_CHANGED: "workspace_context_observer",
+    HookEvent.ARTIFACT_CHANGED: "workspace_artifact_observer",
+    HookEvent.TEAM_CREATED: "agent_team_event_observer",
+    HookEvent.TEAM_CLOSED: "agent_team_event_observer",
+    HookEvent.TEAMMATE_IDLE: "agent_team_event_observer",
+}
+
+_HOOK_TRIGGER_POINTS: dict[HookEvent, str] = {
+    HookEvent.PRE_TOOL_USE: "before governed tool execution",
+    HookEvent.POST_TOOL_USE: "after successful governed tool execution",
+    HookEvent.POST_TOOL_FAILURE: "after failed governed tool execution",
+    HookEvent.USER_PROMPT_SUBMIT: "after durable user prompt append, before model loop",
+    HookEvent.SESSION_START: "when an invocation starts and prompt context is assembled",
+    HookEvent.SESSION_END: "when invocation/session close marker is emitted",
+    HookEvent.TURN_STOP: "after a normal user turn becomes checkpointable",
+    HookEvent.TURN_ABORT: "after a turn exits without semantic assistant completion",
+    HookEvent.STOP: "after final assistant content, before turn finalization",
+    HookEvent.STOP_FAILURE: "when a stop hook fails or stop recovery fails",
+    HookEvent.SUBAGENT_START: "before a child agent session starts",
+    HookEvent.SUBAGENT_STOP: "after a child agent produces terminal output",
+    HookEvent.PRE_COMPACTION: "before compaction summarizes context",
+    HookEvent.POST_COMPACTION: "after compaction writes compacted context",
+    HookEvent.NOTIFICATION: "when runtime emits a user/system notification",
+    HookEvent.PERMISSION_REQUEST: "when a permission/approval request is created",
+    HookEvent.PERMISSION_DENIED: "when a permission decision denies execution",
+    HookEvent.TASK_CREATED: "when a task/work item is created",
+    HookEvent.TASK_COMPLETED: "when a task/work item completes",
+    HookEvent.ELICITATION: "when runtime asks the user for structured input",
+    HookEvent.ELICITATION_RESULT: "after elicitation result returns, before upstream receives it",
+    HookEvent.SETUP: "workspace/session setup boundary",
+    HookEvent.CONFIG_CHANGE: "after runtime configuration changes",
+    HookEvent.INSTRUCTIONS_LOADED: "after project/user instructions are loaded",
+    HookEvent.WORKSPACE_CONTEXT_CHANGED: "after workspace context changes",
+    HookEvent.ARTIFACT_CHANGED: "after workspace artifact mutation",
+    HookEvent.WORKTREE_CREATE: "before/after workspace worktree creation",
+    HookEvent.WORKTREE_REMOVE: "before/after workspace worktree removal",
+    HookEvent.CWD_CHANGED: "when runtime working directory changes",
+    HookEvent.FILE_CHANGED: "when watched workspace files change",
+    HookEvent.TEAM_CREATED: "when an Agent Team is created",
+    HookEvent.TEAM_CLOSED: "when an Agent Team is closed",
+    HookEvent.TEAMMATE_IDLE: "when a teammate/member is idle or blocked",
+}
+
+
+def _hook_lifecycle_state(event: HookEvent) -> str:
+    if event in _DISABLED_NOOP_HOOK_EVENTS:
+        return "disabled_noop"
+    if event in _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS:
+        return "active_observe"
+    return "active"
+
+
+def _hook_runtime_consumer(event: HookEvent) -> str:
+    if event in _DISABLED_NOOP_HOOK_EVENTS:
+        return "disabled_noop_audit"
+    return _HOOK_RUNTIME_CONSUMERS.get(event, "hook_registry_observer")
+
+
+def _hook_matcher_fields(event: HookEvent) -> list[str]:
+    category = _HOOK_EVENT_CATEGORIES.get(event, "runtime")
+    fields = ["agent_id", "tenant_id", "session_id", "source", "metadata"]
+    if category == "tool":
+        fields.extend(["tool_name", "mcp_tool_name"])
+    elif category == "subagent":
+        fields.extend(["agent_type", "subagent_kind"])
+    elif category == "workspace":
+        fields.extend(["workspace_path", "file_pattern", "worktree_path"])
+    elif category == "permission":
+        fields.extend(["permission_name", "capability", "tool_name"])
+    elif category == "task":
+        fields.extend(["task_type", "runtime_task_id"])
+    elif category == "team":
+        fields.extend(["team_id", "member_id"])
+    elif category == "compaction":
+        fields.extend(["trigger", "utilization"])
+    return fields
+
+
+def _schema(properties: dict[str, Any], *, required: list[str] | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "object", "properties": properties, "additionalProperties": True}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _hook_input_schema(event: HookEvent) -> dict[str, Any]:
+    common = {
+        "agent_id": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "source": {"type": ["string", "null"]},
+        "metadata": {"type": "object"},
+    }
+    category = _HOOK_EVENT_CATEGORIES.get(event, "runtime")
+    if category == "tool":
+        common.update(
+            {
+                "tool_name": {"type": ["string", "null"]},
+                "tool_args": {"type": ["object", "null"]},
+                "tool_result": {"type": ["string", "null"]},
+                "error": {"type": ["string", "null"]},
+            }
+        )
+    elif category == "subagent":
+        common.update(
+            {
+                "agent_type": {"type": ["string", "null"]},
+                "agent_transcript_path": {"type": ["string", "null"]},
+                "prompt": {"type": ["string", "null"]},
+            }
+        )
+    elif category == "workspace":
+        common.update(
+            {
+                "workspace_path": {"type": ["string", "null"]},
+                "worktree_path": {"type": ["string", "null"]},
+                "file_path": {"type": ["string", "null"]},
+            }
+        )
+    elif category == "permission":
+        common.update({"permission": {"type": ["object", "null"]}, "reason": {"type": ["string", "null"]}})
+    elif category == "turn":
+        common.update({"prompt": {"type": ["string", "null"]}, "last_assistant_message": {"type": ["string", "null"]}})
+    elif category == "team":
+        common.update({"team_id": {"type": ["string", "null"]}, "member_id": {"type": ["string", "null"]}})
+    return _schema(common)
+
+
+def _hook_output_schema(event: HookEvent) -> dict[str, Any]:
+    props: dict[str, Any] = {
+        "continue": {"type": "boolean"},
+        "block": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "stop_reason": {"type": "string"},
+        "additional_contexts": {"type": "array", "items": {"type": "string"}},
+        "suppress_output": {"type": "boolean"},
+        "async": {"type": "boolean"},
+        "timeout_seconds": {"type": "number"},
+    }
+    if event == HookEvent.PRE_TOOL_USE:
+        props["modified_args"] = {"type": ["object", "null"]}
+    if event == HookEvent.POST_TOOL_USE:
+        props["output_rewrite"] = {"type": ["string", "object", "null"]}
+    if event in {HookEvent.PERMISSION_REQUEST, HookEvent.PERMISSION_DENIED}:
+        props["permission_decision"] = {"type": "string", "enum": ["allow", "deny", "ask", "noop"]}
+    if event in {HookEvent.ELICITATION, HookEvent.ELICITATION_RESULT}:
+        props["elicitation_action"] = {"type": "string", "enum": ["accept", "decline", "cancel", "noop"]}
+        props["elicitation_content"] = {"type": ["string", "object", "null"]}
+    if event in {HookEvent.WORKTREE_CREATE, HookEvent.WORKTREE_REMOVE}:
+        props["worktree_path"] = {"type": ["string", "null"]}
+    if event in {HookEvent.SESSION_START, HookEvent.SETUP, HookEvent.CWD_CHANGED, HookEvent.FILE_CHANGED}:
+        props["watch_paths"] = {"type": "array", "items": {"type": "string"}}
+    if event == HookEvent.STOP:
+        props["prevent_continuation"] = {"type": "boolean"}
+    return _schema(props)
 
 
 @dataclass(slots=True)
@@ -606,6 +899,25 @@ class HookRegistry:
                     }
                 )
         return exported
+
+    def describe_event_catalog(self) -> list[dict[str, Any]]:
+        """Export every supported hook event for control-plane management."""
+        return [
+            {
+                "event": event.value,
+                "category": _HOOK_EVENT_CATEGORIES.get(event, "runtime"),
+                "handler_count": self.handler_count(event),
+                "blocking_supported": self._blocking_supported(event),
+                "cc_parity": event in _CC_PARITY_HOOK_EVENTS,
+                "lifecycle_state": _hook_lifecycle_state(event),
+                "trigger_point": _HOOK_TRIGGER_POINTS.get(event, "runtime hook emission"),
+                "matcher_fields": _hook_matcher_fields(event),
+                "input_schema": _hook_input_schema(event),
+                "output_schema": _hook_output_schema(event),
+                "runtime_consumer": _hook_runtime_consumer(event),
+            }
+            for event in HookEvent
+        ]
 
     def unregister(self, event: HookEvent, handler: HookHandler) -> None:
         """Remove a specific handler."""

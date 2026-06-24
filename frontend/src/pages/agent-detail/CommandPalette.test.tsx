@@ -30,6 +30,28 @@ const queryHarness = vi.hoisted(() => ({
       bridge_safe: false,
       remote_safe: false,
     },
+    {
+      name: 'task_create',
+      aliases: [],
+      description: 'Create or delegate a CC-style task',
+      category: 'task',
+      source: 'builtin',
+      execution_mode: 'runtime',
+      permission_mode: 'default',
+      bridge_safe: true,
+      remote_safe: true,
+    },
+    {
+      name: 'task_output',
+      aliases: [],
+      description: 'Read runtime task output',
+      category: 'task',
+      source: 'builtin',
+      execution_mode: 'runtime',
+      permission_mode: 'default',
+      bridge_safe: true,
+      remote_safe: true,
+    },
   ] as CommandIndexEntry[],
 }));
 
@@ -82,5 +104,8 @@ describe('CommandPalette', () => {
   it('builds command-specific argument templates', () => {
     expect(defaultCommandArguments(queryHarness.commands[0])).toContain('"objective"');
     expect(defaultCommandArguments(queryHarness.commands[1])).toBe('{}');
+    expect(defaultCommandArguments(queryHarness.commands[2])).toContain('"subject"');
+    expect(defaultCommandArguments(queryHarness.commands[2])).toContain('"kind"');
+    expect(defaultCommandArguments(queryHarness.commands[3])).toContain('"runtime_task_id"');
   });
 });

@@ -12,6 +12,7 @@ from __future__ import annotations
 from app.services.deep_research.plan_mode import deep_research_handoff_handler
 from app.services.plan_mode_delegation_handoff import delegation_handoff_handler
 from app.services.plan_mode_detached_handoff import detached_runtime_task_handoff
+from app.services.plan_mode_agent_team_handoff import agent_team_handoff
 from app.services.plan_mode_handoff import scheduled_trigger_handoff_handler
 from app.services.plan_mode_registry import register_plan_mode_handoffs
 from app.services.plan_mode_service import PlanModeService
@@ -38,6 +39,7 @@ def test_register_plan_mode_handoffs_registers_continuation_and_detached_targets
     assert service._handoff_handlers["continue_current_session"] is continue_current_session_handoff
     assert service._handoff_handlers["long_task"] is continue_current_session_handoff
     assert service._handoff_handlers["detached_runtime_task"] is detached_runtime_task_handoff
+    assert service._handoff_handlers["agent_team"] is agent_team_handoff
 
 
 def test_every_intent_handoff_target_has_registered_handler():

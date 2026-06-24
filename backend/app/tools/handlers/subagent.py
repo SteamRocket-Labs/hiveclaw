@@ -35,13 +35,31 @@ from app.agents.subagent_definition import (
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.agent import Agent
+from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
+from app.models.user import User
+from app.services.agent_session_continuation import continue_agent_session_from_mailbox
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
 
 def _json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except ValueError:
+        return None
 
 
 async def _resolve_parent_runtime(
@@ -152,9 +170,9 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         "run_in_background": {
             "type": "boolean",
             "description": (
-                "When true, fire-and-forget: returns a run_id immediately instead of waiting for the "
-                "result, so you can keep working and spawn more. Poll the result later with "
-                "check_subagent(run_id). Default false (run to completion and return the digest now)."
+                "When true, returns immediately with run_id and child_session_id while the worker continues. "
+                "Do not busy-poll by default: keep working and wait for the completion wake. Use check_subagent "
+                "only for explicit fallback inspection. Default false runs to completion and returns the digest now."
             ),
         },
         "ledger_todo_id": {
@@ -327,13 +345,17 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         # (not a forever-"running" poll), then schedule the worker and return now.
         from app.services.subagent_run_service import make_run_completer, start_subagent_run
 
-        run_id = await start_subagent_run(
+        started = await start_subagent_run(
             parent_agent_id=agent_id,
+            parent_user_id=request.context.user_id,
             spec_name=spec.name,
             spec_type=spec.type,
             task=task,
             parent_session_id=request.context.session_id,
+            trace_id=ctx.trace_id,
+            context_mode=spec.isolation,
         )
+        run_id = started.run_id
         await spawn_subagent(
             ctx,
             spec,
@@ -343,18 +365,30 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             run_in_background=True,
             on_complete=make_run_completer(run_id),
         )
+        child_session_id = started.child_session_id
         return _json(
             {
                 "ok": True,
                 "mode": "background",
                 "run_id": run_id,
+                "child_session_id": child_session_id,
                 "subagent": spec.name,
                 "type": spec.type,
                 "definition_scope": definition_scope,
                 "status": "running",
+                "session_state": "running",
+                "continuation": {
+                    "address": child_session_id,
+                    "tool": "send_agent_session_message",
+                    "interrupt_supported": False,
+                },
+                "transcript_refs": {
+                    "session_id": child_session_id,
+                    "parent_session_id": request.context.session_id,
+                },
                 "message": (
-                    f"Subagent {spec.name!r} is running in the background. Keep working and poll the "
-                    f"result later with check_subagent(run_id={run_id!r})."
+                    f"Subagent {spec.name!r} is running in the background. Keep working and wait for the "
+                    "completion wake; use check_subagent only if you explicitly need fallback status inspection."
                 ),
             }
         )
@@ -380,10 +414,9 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         name="check_subagent",
         description=(
             "Check a background subagent spawned with spawn_subagent(run_in_background=true). "
-            "Pass run_id to get one run's status and (when finished) its conclusion digest; omit run_id "
-            "to list your recent background runs. A run is 'running', 'completed' (result ready), or "
-            "'failed' — including a worker that died in a process restart, which resolves as failed rather "
-            "than staying 'running' forever, so this poll always terminates."
+            "This is a fallback inspection tool, not the normal wait path: parent agents should usually "
+            "keep working and react to the completion wake. Pass run_id to get one run's status, child "
+            "session refs, and any terminal conclusion digest; omit run_id to list recent background runs."
         ),
         parameters={
             "type": "object",
@@ -412,14 +445,128 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
         if record is None:
             return _json({"ok": False, "error": f"no background subagent run {run_id!r} for this agent"})
         metadata = record.get("metadata") or {}
+        session_contract = (
+            metadata.get("session_contract") if isinstance(metadata.get("session_contract"), dict) else {}
+        )
+        child_session_id = (
+            str(record.get("child_session_id") or "").strip()
+            or str(metadata.get("child_session_id") or "").strip()
+            or str(session_contract.get("continuation_address") or "").strip()
+            or None
+        )
+        status = record.get("status")
+        result = record.get("result") or record.get("result_summary") or ""
         return _json(
             {
                 "ok": True,
                 "run_id": run_id,
                 "name": record.get("child_agent_name"),
-                "status": record.get("status"),
-                "result": record.get("result") or "",
+                "status": status,
+                "result": result,
+                "child_session_id": child_session_id,
+                "session_state": {
+                    "status": status,
+                    "active_run_id": run_id if status in {"pending", "running", "in_progress"} else None,
+                    "child_session_id": child_session_id,
+                    "parent_session_id": record.get("parent_session_id"),
+                },
+                "transcript_refs": {
+                    "session_id": child_session_id,
+                    "parent_session_id": record.get("parent_session_id"),
+                    "trace_id": record.get("trace_id"),
+                },
+                "continuation": {
+                    "address": child_session_id,
+                    "tool": session_contract.get("continuation_tool") or "send_agent_session_message",
+                    "available": bool(child_session_id),
+                },
+                "model_guidance": "fallback_inspection_only",
                 "orphaned_by_restart": bool(metadata.get("orphaned_by_restart")),
             }
         )
     return _json({"ok": True, "runs": await list_subagent_runs(agent_id)})
+
+
+@tool(
+    ToolMeta(
+        name="send_agent_session_message",
+        description=(
+            "Append a follow-up message to an existing child agent session mailbox. Use this for Agent Team "
+            "member sessions or background subagent child_session_id values returned by spawn_subagent. This "
+            "records the continuation in the Session/T0 transcript; active runtimes consume it through the "
+            "session mailbox layer."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "child_session_id": {
+                    "type": "string",
+                    "description": "The child_session_id returned by spawn_subagent or an Agent Team member session id.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Follow-up instruction to append to the child session mailbox.",
+                },
+                "interrupt": {
+                    "type": "boolean",
+                    "description": "Whether the follow-up should interrupt an active child run when a runtime supports it.",
+                },
+            },
+            "required": ["child_session_id", "message"],
+        },
+        category="coordination",
+        display_name="Send Agent Session Message",
+        icon="✉️",
+        governance="sensitive",
+        adapter="request",
+    )
+)
+async def send_agent_session_message(request: ToolExecutionRequest) -> str:
+    child_session_uuid = _uuid_or_none(request.arguments.get("child_session_id"))
+    message = str(request.arguments.get("message") or "").strip()
+    if child_session_uuid is None:
+        return _json({"ok": False, "error": "child_session_id must be a valid session UUID"})
+    if not message:
+        return _json({"ok": False, "error": "message is required"})
+
+    tenant_id = _uuid_or_none(request.context.tenant_id) or await resolve_tenant_for_agent(request.context.agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == child_session_uuid,
+                ChatSession.agent_id == request.context.agent_id,
+            )
+        )
+        session = result.scalar_one_or_none()
+        if session is None:
+            return _json({"ok": False, "error": "child agent session not found for this agent"})
+
+        agent = (await db.execute(select(Agent).where(Agent.id == request.context.agent_id))).scalar_one_or_none()
+        user_id = _uuid_or_none(getattr(session, "user_id", None)) or _uuid_or_none(request.context.user_id)
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none() if user_id else None
+        if agent is None or user is None:
+            return _json({"ok": False, "error": "child agent session continuation principal could not be loaded"})
+
+        interrupt = bool(request.arguments.get("interrupt"))
+        result = await continue_agent_session_from_mailbox(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            message=message,
+            parent_session_id=request.context.session_id,
+            interrupt_requested=interrupt,
+        )
+
+    return _json(
+        {
+            "ok": bool(result.get("ok", True)),
+            "child_session_id": str(child_session_uuid),
+            "status": result.get("status") or "queued",
+            "interrupt_requested": interrupt,
+            "consumer": result.get("consumer"),
+            "run_id": result.get("run_id"),
+            "reason": result.get("reason"),
+            "message": "Follow-up sent to child session continuation controls.",
+        }
+    )

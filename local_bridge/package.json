@@ -1,6 +1,6 @@
 {
   "name": "@hiveclaw243/hive-bridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Hive Local Agent Bridge CLI, Skill instructions, and WebSocket channel runner",
   "type": "module",
   "bin": {

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
+from app.services.a2a_collaboration_policy import resolve_a2a_collaboration_policy
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import render_tool_error
 
@@ -110,6 +111,34 @@ def _normalize_messaging_result(tool_name: str, result: str) -> str:
     )
 
 
+def _parse_bool_arg(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def _parse_timeout_seconds_arg(
+    value,
+    *,
+    default_seconds: float,
+    max_seconds: float,
+    field_name: str = "timeout_seconds",
+) -> tuple[float | None, str | None]:
+    if value in (None, ""):
+        return default_seconds, None
+    try:
+        timeout_seconds = float(value)
+    except (TypeError, ValueError):
+        return None, f"❌ {field_name} must be a number"
+    if timeout_seconds <= 0:
+        return None, f"❌ {field_name} must be greater than zero"
+    if timeout_seconds > max_seconds:
+        return None, f"❌ {field_name} must be at most {max_seconds:.0f} seconds"
+    return timeout_seconds, None
+
+
 def _channel_extra_config(config) -> dict | None:
     return getattr(config, "extra_config", None)
 
@@ -171,6 +200,10 @@ async def _resolve_target_agent_runtime(
                 None,
                 (f"⚠️ {target.name} is currently {target.status} and cannot receive messages."),
             )
+
+        policy = await resolve_a2a_collaboration_policy(db, source_agent, target, action="delegate")
+        if not policy.allowed:
+            return source_agent, target, None, f"❌ {policy.message}"
 
         if getattr(target, "agent_type", "native") == "openclaw":
             return (
@@ -891,7 +924,7 @@ async def _invoke_agent_message_runtime(
     participant_id: uuid.UUID | None,
 ) -> str:
     """Run the target agent reply through the shared runtime kernel."""
-    from app.agents.orchestrator import OrchestrationPolicy, delegate_to_agent
+    from app.agents.orchestrator import AGENT_MESSAGE_TIMEOUT_SECONDS, OrchestrationPolicy, delegate_to_agent
 
     return await delegate_to_agent(
         target=target,
@@ -912,10 +945,10 @@ async def _invoke_agent_message_runtime(
         system_prompt_suffix=A2A_SYSTEM_PROMPT_SUFFIX,
         max_tool_rounds=getattr(target, "max_tool_rounds", None) or 200,
         interaction_type="agent_message",
-        # A2A is a real multi-tool turn (the target may call feishu_wiki_list etc.);
-        # the default 30s OrchestrationPolicy cancels before the final reply is
-        # synthesised + written back. Give it a turn budget under the 180s outer cap.
-        policy=OrchestrationPolicy(timeout_seconds=120.0, tool_profile="agent_message"),
+        # A2A is a real multi-tool turn (the target may call feishu_wiki_list,
+        # read documents, and synthesize a final answer). Keep the inner budget
+        # below the tool wrapper cap, but well above short consult latency.
+        policy=OrchestrationPolicy(timeout_seconds=AGENT_MESSAGE_TIMEOUT_SECONDS, tool_profile="agent_message"),
     )
 
 
@@ -926,8 +959,15 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
     """
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
+    target_agent_id = None
+    target_agent_id_raw = args.get("target_agent_id")
+    if target_agent_id_raw:
+        try:
+            target_agent_id = uuid.UUID(str(target_agent_id_raw))
+        except (TypeError, ValueError, AttributeError):
+            return "❌ target_agent_id is invalid"
 
-    if not agent_name or not message_text:
+    if (not agent_name and target_agent_id is None) or not message_text:
         return "❌ Please provide target agent name and message content"
 
     try:
@@ -950,12 +990,19 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             source_agent = src_result.scalar_one_or_none()
             source_name = source_agent.name if source_agent else "Unknown agent"
 
-            # Find target agent by name (scoped to same tenant)
-            _tenant_filter = [Agent.name.ilike(f"%{agent_name}%"), Agent.id != from_agent_id]
-            if source_agent and source_agent.tenant_id:
-                _tenant_filter.append(Agent.tenant_id == source_agent.tenant_id)
-            result = await db.execute(select(Agent).where(*_tenant_filter))
-            target = result.scalars().first()
+            # Find target agent by id or name (scoped to same tenant)
+            if target_agent_id is not None:
+                _tenant_filter = [Agent.id == target_agent_id, Agent.id != from_agent_id]
+                if source_agent and source_agent.tenant_id:
+                    _tenant_filter.append(Agent.tenant_id == source_agent.tenant_id)
+                result = await db.execute(select(Agent).where(*_tenant_filter))
+                target = result.scalar_one_or_none()
+            else:
+                _tenant_filter = [Agent.name.ilike(f"%{agent_name}%"), Agent.id != from_agent_id]
+                if source_agent and source_agent.tenant_id:
+                    _tenant_filter.append(Agent.tenant_id == source_agent.tenant_id)
+                result = await db.execute(select(Agent).where(*_tenant_filter))
+                target = result.scalars().first()
             if not target:
                 _avail_filter = [Agent.id != from_agent_id]
                 if source_agent and source_agent.tenant_id:
@@ -966,6 +1013,10 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
 
             if target.status in ("expired", "stopped", "archived"):
                 return f"⚠️ {target.name} is currently {target.status} and cannot receive messages."
+
+            policy = await resolve_a2a_collaboration_policy(db, source_agent, target, action="message")
+            if not policy.allowed:
+                return f"❌ {policy.message}"
 
             # ── OpenClaw target: queue message for gateway poll ──
             if getattr(target, "agent_type", "native") == "openclaw":
@@ -1114,6 +1165,9 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 metadata={
                     "source": "agent_message",
                     "interaction_type": "agent_message",
+                    "a2a_policy_reason": policy.reason,
+                    "a2a_collaboration_group_id": str(policy.group_id) if policy.group_id else None,
+                    "a2a_collaboration_group_name": policy.group_name,
                     "from_agent": str(from_agent_id),
                     "from_agent_name": source_name,
                     "to_agent": str(target.id),
@@ -1160,6 +1214,9 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                     metadata={
                         "source": "agent_message",
                         "interaction_type": "agent_message",
+                        "a2a_policy_reason": policy.reason,
+                        "a2a_collaboration_group_id": str(policy.group_id) if policy.group_id else None,
+                        "a2a_collaboration_group_name": policy.group_name,
                         "from_agent": str(from_agent_id),
                         "from_agent_name": source_name,
                         "to_agent": str(target.id),
@@ -1211,7 +1268,12 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
         return "❌ Please provide target agent name and message content"
 
     try:
-        from app.agents.orchestrator import OrchestrationPolicy, delegate_async
+        from app.agents.orchestrator import (
+            ASYNC_DELEGATION_TIMEOUT_SECONDS,
+            MAX_DELEGATION_TIMEOUT_SECONDS,
+            OrchestrationPolicy,
+            delegate_async,
+        )
 
         source_agent, target, target_model, error = await _resolve_target_agent_runtime(
             from_agent_id,
@@ -1233,6 +1295,15 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             return json.dumps(queued, ensure_ascii=False, default=str)
 
         assert target_model is not None
+        timeout_seconds, timeout_error = _parse_timeout_seconds_arg(
+            args.get("timeout_seconds"),
+            default_seconds=ASYNC_DELEGATION_TIMEOUT_SECONDS,
+            max_seconds=MAX_DELEGATION_TIMEOUT_SECONDS,
+        )
+        if timeout_error:
+            return timeout_error
+        assert timeout_seconds is not None
+        child_session_id = uuid.uuid4().hex
         handle = await delegate_async(
             target=target,
             target_model=target_model,
@@ -1243,12 +1314,12 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
                 }
             ],
             owner_id=source_agent.creator_id,
-            session_id=uuid.uuid4().hex,
+            session_id=child_session_id,
             parent_agent_id=from_agent_id,
             parent_agent_name=source_agent.name,
             parent_session_id=args.get("parent_session_id"),
             max_tool_rounds=args.get("max_tool_rounds"),
-            policy=OrchestrationPolicy(timeout_seconds=120.0, tool_profile=tool_profile),
+            policy=OrchestrationPolicy(timeout_seconds=timeout_seconds, tool_profile=tool_profile),
             tenant_id=getattr(source_agent, "tenant_id", None),
             confirmed_plan_id=args.get("confirmed_plan_id"),
             confirmed_plan_version=args.get("confirmed_plan_version"),
@@ -1258,10 +1329,18 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
         return json.dumps(
             {
                 "task_id": handle.task_id,
-                "status": "running",
+                "runtime_task_id": handle.task_id,
+                "session_id": child_session_id,
+                "child_session_id": child_session_id,
+                "status": getattr(handle, "status", "running"),
                 "target_agent": handle.target_name,
+                "target_agent_id": str(target.id),
                 "trace_id": handle.trace_id,
-                "next_action": "Use check_async_task with this task_id to inspect progress.",
+                "continuation_tool": "send_agent_session_message",
+                "next_action": (
+                    "Use send_agent_session_message with child_session_id to continue this delegated "
+                    "agent session; use check_async_task only for runtime status."
+                ),
             },
             ensure_ascii=False,
         )
@@ -1328,7 +1407,7 @@ async def _delegate_to_local_agent_channel(
             "channel_session_id": str(session["id"]),
             "chat_session_id": str(session["chat_session_id"]),
             "message_id": str(message["id"]),
-            "next_action": "The bound hive-bridge service will receive this over Local Agent Channel WebSocket or fallback poll.",
+            "next_action": "The bound hive-connect service will receive this over Local Agent Channel WebSocket or fallback poll.",
         }
 
 
@@ -1365,7 +1444,7 @@ async def _cancel_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
         return "❌ Please provide task_id"
 
     try:
-        from app.agents.orchestrator import cancel_async_delegation
+        from app.agents.orchestrator import ASYNC_DELEGATION_CANCEL_GRACE_SECONDS, cancel_async_delegation
         from app.services.runtime_task_service import get_runtime_task_record
 
         try:
@@ -1375,7 +1454,21 @@ async def _cancel_async_task(from_agent_id: uuid.UUID, args: dict) -> str:
         if record and record.get("parent_agent_id") not in {None, str(from_agent_id)}:
             return "❌ This task does not belong to the current agent"
 
-        status = await cancel_async_delegation(task_id, parent_agent_id=from_agent_id)
+        min_runtime_seconds, timeout_error = _parse_timeout_seconds_arg(
+            args.get("min_runtime_seconds"),
+            default_seconds=ASYNC_DELEGATION_CANCEL_GRACE_SECONDS,
+            max_seconds=3600.0,
+            field_name="min_runtime_seconds",
+        )
+        if timeout_error:
+            return timeout_error
+        assert min_runtime_seconds is not None
+        status = await cancel_async_delegation(
+            task_id,
+            parent_agent_id=from_agent_id,
+            force=_parse_bool_arg(args.get("force")),
+            min_runtime_seconds=min_runtime_seconds,
+        )
         if status.get("status") == "forbidden":
             return "❌ This task does not belong to the current agent"
         return json.dumps(status, ensure_ascii=False)

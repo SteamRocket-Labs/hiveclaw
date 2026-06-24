@@ -18,7 +18,6 @@ import AppDialogs from './components/AppDialogs';
 const Login = lazy(() => import('./pages/Login'));
 const SsoEntry = lazy(() => import('./pages/SsoEntry'));
 const CompanySetup = lazy(() => import('./pages/CompanySetup'));
-const Dashboard = lazy(() => import('./pages/Dashboard'));
 const DigitalEmployees = lazy(() => import('./pages/DigitalEmployees'));
 const WorkspaceFeatureHub = lazy(() => import('./pages/WorkspaceFeatureHub'));
 const Plaza = lazy(() => import('./pages/Plaza'));
@@ -124,9 +123,9 @@ export default function App() {
                     {/* ─── App surface ─── */}
                     <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
 
-                        <Route index element={<Navigate to="/home" replace />} />
-                        <Route path="home" element={<Dashboard />} />
-                        <Route path="dashboard" element={<Navigate to="/home" replace />} />
+                        <Route index element={<Navigate to="/agents" replace />} />
+                        <Route path="home" element={<Navigate to="/agents" replace />} />
+                        <Route path="dashboard" element={<Navigate to="/agents" replace />} />
                         <Route path="agents" element={<DigitalEmployees />} />
                         <Route path="plans" element={<WorkspaceFeatureHub kind="plans" />} />
                         <Route path="automations" element={<WorkspaceFeatureHub kind="automations" />} />

@@ -301,3 +301,73 @@ async def test_regenerate_branch_runs_from_previous_user_without_appending_dupli
             "kind": "regenerate_prompt",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_side_question_branch_is_durable_unlisted_one_turn_session(monkeypatch):
+    from app.models.chat_session import ChatSession
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id = uuid4()
+    user_event = _event(session_id=source_session_id, sequence=10, event_type="user_message", role="user", content="question")
+    assistant_event = _event(
+        session_id=source_session_id,
+        sequence=20,
+        event_type="assistant_message",
+        role="assistant",
+        content="answer",
+    )
+    db = _FakeDB(anchor=assistant_event, prefix=[user_event, assistant_event])
+    copied = []
+
+    async def fake_append_session_event(**kwargs):
+        copied.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id"))
+
+    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    result = await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=SimpleNamespace(
+            id=source_session_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            title="Original",
+            parent_session_id=None,
+            root_session_id=None,
+            source_channel="web",
+            session_kind="human_chat",
+            actor_type="user",
+            runtime_source="web_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
+        ),
+        mode="side_question",
+        anchor_event_id=assistant_event.id,
+        content="What does btw mean here?",
+        display_content="btw: What does this mean?",
+    )
+
+    branch_session = next(item for item in db.added if isinstance(item, ChatSession))
+    assert branch_session.parent_session_id == source_session_id
+    assert branch_session.root_session_id == source_session_id
+    assert branch_session.session_kind == "side_question"
+    assert branch_session.runtime_source == "side_question"
+    assert branch_session.listed_surface == "sidechain"
+    assert branch_session.transcript_metadata_json["branch_mode"] == "side_question"
+    assert branch_session.transcript_metadata_json["side_session"] is True
+    assert branch_session.transcript_metadata_json["tool_policy"] == "disabled_by_default"
+    assert branch_session.transcript_metadata_json["max_turns"] == 1
+    assert [item["content"] for item in copied] == ["question", "answer"]
+    assert result.run_request is not None
+    assert result.run_request.content == "What does btw mean here?"
+    assert result.run_request.display_content == "btw: What does this mean?"
+    assert result.run_request.extra_metadata["side_session"] is True
+    assert result.run_request.extra_metadata["tool_policy"] == "disabled_by_default"
+    assert result.run_request.extra_metadata["max_turns"] == 1

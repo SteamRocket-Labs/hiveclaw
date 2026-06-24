@@ -16,6 +16,10 @@ from app.config import get_settings
 from app.models.agent import Agent
 from app.models.org import AgentAgentRelationship, AgentRelationship
 from app.models.user import User
+from app.services.a2a_collaboration_policy import (
+    list_active_collaboration_groups_for_agent,
+    list_same_owner_agents,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +51,15 @@ def render_relationships_markdown(
     owner: Any | None,
     human_relationships: list[Any] | tuple[Any, ...],
     agent_relationships: list[Any] | tuple[Any, ...],
+    same_owner_agents: list[Any] | tuple[Any, ...] = (),
+    collaboration_groups: list[Any] | tuple[Any, ...] = (),
 ) -> str:
-    """Render relationships.md from explicit relationship records only."""
+    """Render relationships.md from governed relationship records.
+
+    Legacy `AgentAgentRelationship` rows are intentionally not rendered as
+    executable A2A authority. Runtime A2A access comes from same-owner policy or
+    active A2A Collaboration Group membership only.
+    """
     lines = ["# 关系网络", ""]
 
     if owner is not None:
@@ -85,23 +96,37 @@ def render_relationships_markdown(
                 lines.append(f"- {description}")
             lines.append("")
 
-    if agent_relationships:
-        lines.append("## 🤖 数字员工同事")
+    if same_owner_agents:
+        lines.append("## 我的数字员工团队")
         lines.append("")
-        for relation in agent_relationships:
-            target_agent = getattr(relation, "target_agent", None)
-            if target_agent is None:
-                continue
-            label = AGENT_RELATION_LABELS.get(getattr(relation, "relation", ""), getattr(relation, "relation", "其他"))
+        for target_agent in same_owner_agents:
             lines.append(
                 f"### {getattr(target_agent, 'name', '未命名数字员工')} — "
                 f"{getattr(target_agent, 'role_description', '') or '数字员工'}"
             )
-            lines.append(f"- 关系：{label}")
-            lines.append(f"- 可以用 send_message_to_agent 工具给 {target_agent.name} 发消息协作")
-            description = getattr(relation, "description", "")
-            if description:
-                lines.append(f"- {description}")
+            lines.append("- 协作边界：同 owner，可直接通过 A2A 会话协作。")
+            status = getattr(target_agent, "status", "")
+            if status:
+                lines.append(f"- 状态：{status}")
+            lines.append("")
+
+    if collaboration_groups:
+        lines.append("## A2A 协作组")
+        lines.append("")
+        for group in collaboration_groups:
+            lines.append(f"### {getattr(group, 'group_name', '未命名协作组')}")
+            purpose = getattr(group, "purpose", "")
+            if purpose:
+                lines.append(f"- 目的：{purpose}")
+            lines.append(f"- 状态：{getattr(group, 'status', 'unknown')}")
+            members = list(getattr(group, "members", []) or [])
+            if members:
+                lines.append("- 已批准成员：")
+                for member in members:
+                    lines.append(
+                        f"  - {getattr(member, 'name', '未命名数字员工')} "
+                        f"({getattr(member, 'role_description', '') or '数字员工'})"
+                    )
             lines.append("")
 
     if len(lines) == 2:
@@ -116,10 +141,10 @@ async def _load_relationship_context(
     *,
     agent_id: uuid.UUID,
     include_owner: bool,
-) -> tuple[Any | None, list[Any], list[Any]]:
+) -> tuple[Any | None, list[Any], list[Any], list[Any], list[Any]]:
     agent = await db.get(Agent, agent_id)
     if agent is None:
-        return None, [], []
+        return None, [], [], [], []
 
     owner = None
     if include_owner and agent.owner_user_id:
@@ -138,7 +163,9 @@ async def _load_relationship_context(
         .options(selectinload(AgentAgentRelationship.target_agent))
     )
     agent_relationships = list(agent_result.scalars().all())
-    return owner, human_relationships, agent_relationships
+    same_owner_agents = await list_same_owner_agents(db, agent)
+    collaboration_groups = await list_active_collaboration_groups_for_agent(db, agent)
+    return owner, human_relationships, agent_relationships, same_owner_agents, collaboration_groups
 
 
 async def write_relationships_file(
@@ -153,17 +180,25 @@ async def write_relationships_file(
     unchanged — relationships rarely change but this is called from the
     heartbeat hot path on every tenant tick.
     """
-    owner, human_relationships, agent_relationships = await _load_relationship_context(
+    context = await _load_relationship_context(
         db,
         agent_id=agent_id,
         include_owner=include_owner,
     )
+    if len(context) == 3:
+        owner, human_relationships, agent_relationships = context
+        same_owner_agents: list[Any] = []
+        collaboration_groups: list[Any] = []
+    else:
+        owner, human_relationships, agent_relationships, same_owner_agents, collaboration_groups = context
     workspace_dir = _workspace_root() / str(agent_id)
     path = workspace_dir / "relationships.md"
     content = render_relationships_markdown(
         owner=owner,
         human_relationships=human_relationships,
         agent_relationships=agent_relationships,
+        same_owner_agents=same_owner_agents,
+        collaboration_groups=collaboration_groups,
     )
     return await asyncio.to_thread(_write_if_changed_sync, path, workspace_dir, content)
 

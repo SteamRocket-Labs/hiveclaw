@@ -38,7 +38,7 @@ export interface Agent {
     execution_mode?: 'standard' | 'coordinator';
     smart_model_routing?: { enabled: boolean; max_simple_chars: number; max_simple_words: number } | null;
     context_window_size?: number;
-    agent_type?: 'native' | 'openclaw';
+    agent_type?: 'native' | 'openclaw' | 'local_agent';
     openclaw_last_seen?: string;
     api_key?: string;
     created_at: string;

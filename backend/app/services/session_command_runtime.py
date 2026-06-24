@@ -25,9 +25,26 @@ from app.memory.t0.ledger import T0SessionEvent, replay_t0_session_events
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_transcript import append_session_event
 from app.services.conversation_branch_service import create_conversation_branch
+from app.services.web_chat_runtime import cancel_web_chat_run, get_active_web_chat_run, steer_active_web_chat_turn
 
 SESSION_COMMAND_NAMES = frozenset(
-    {"resume", "checkpoints", "rewind", "rollback", "branch", "rename", "tag", "export", "copy", "clear", "compact"}
+    {
+        "resume",
+        "checkpoints",
+        "rewind",
+        "rollback",
+        "branch",
+        "btw",
+        "interrupt",
+        "turn_steer",
+        "steer",
+        "rename",
+        "tag",
+        "export",
+        "copy",
+        "clear",
+        "compact",
+    }
 )
 
 _REPLAYABLE_TURN_EVENT_TYPES = {"user_message", "assistant_message", "tool_call", "tool_result", "assistant_delta"}
@@ -103,6 +120,15 @@ def _branch_anchor_event_id(event: ChatTranscriptEvent | T0SessionEvent) -> uuid
         ) from exc
 
 
+def _parse_uuid_argument(value: Any, *, field: str) -> uuid.UUID:
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be a UUID") from exc
+
+
 def _created_at_value(event: ChatTranscriptEvent | T0SessionEvent) -> str | None:
     created_at = getattr(event, "created_at", None)
     if hasattr(created_at, "isoformat"):
@@ -124,6 +150,33 @@ def _event_payload(event: ChatTranscriptEvent | T0SessionEvent) -> dict[str, Any
         "truth_path": str(getattr(event, "truth_path", None) or "") or None,
         "projection_path": str(getattr(event, "path", None) or "") or None,
         "event_hash": getattr(event, "event_hash", None),
+    }
+
+
+def _session_payload(session: ChatSession) -> dict[str, Any]:
+    return {
+        "id": str(session.id),
+        "title": session.title,
+        "parent_session_id": str(session.parent_session_id) if session.parent_session_id else None,
+        "root_session_id": str(session.root_session_id) if session.root_session_id else None,
+        "session_kind": getattr(session, "session_kind", None) or "human_chat",
+        "runtime_source": getattr(session, "runtime_source", None) or "web_chat",
+        "listed_surface": getattr(session, "listed_surface", None) or "chat",
+    }
+
+
+def _run_request_payload(run_request: Any | None) -> dict[str, Any] | None:
+    if run_request is None:
+        return None
+    extra_metadata = dict(getattr(run_request, "extra_metadata", None) or {})
+    return {
+        "content": getattr(run_request, "content", ""),
+        "display_content": getattr(run_request, "display_content", ""),
+        "file_name": getattr(run_request, "file_name", ""),
+        "append_user_message": bool(getattr(run_request, "append_user_message", True)),
+        "attachments": getattr(run_request, "attachments", None) or [],
+        "parts": getattr(run_request, "parts", None) or [],
+        **extra_metadata,
     }
 
 
@@ -520,6 +573,78 @@ async def execute_session_command(
                 else None,
             },
             "branch": branch_metadata,
+        }
+
+    if command_name == "btw":
+        question = str(
+            arguments.get("question") or arguments.get("content") or arguments.get("message") or arguments.get("prompt") or ""
+        ).strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="question or content is required")
+        anchor_event_id = await _resolve_anchor_event_id(db, agent=agent, session=session, arguments=arguments)
+        branch_result = await create_conversation_branch(
+            db=db,
+            agent=agent,
+            user=user,
+            source_session=session,
+            mode="side_question",
+            anchor_event_id=anchor_event_id,
+            content=question,
+            display_content=str(arguments.get("display_content") or f"btw: {question}"),
+            title=str(arguments.get("title") or f"{session.title} (btw)"),
+        )
+        branch_metadata = dict(branch_result.branch)
+        branch_metadata["command"] = "btw"
+        return {
+            "ok": True,
+            "command": "btw",
+            "source_session_id": str(session.id),
+            "session": _session_payload(branch_result.session),
+            "branch": branch_metadata,
+            "run_request": _run_request_payload(branch_result.run_request),
+        }
+
+    if command_name in {"turn_steer", "steer"}:
+        content = str(arguments.get("content") or arguments.get("message") or arguments.get("input") or "").strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="content is required")
+        result = await steer_active_web_chat_turn(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content=content,
+            display_content=str(arguments.get("display_content") or ""),
+            file_name=str(arguments.get("file_name") or ""),
+            expected_turn_id=str(arguments.get("expected_turn_id") or "") or None,
+            attachments=arguments.get("attachments") if isinstance(arguments.get("attachments"), list) else None,
+            parts=arguments.get("parts") if isinstance(arguments.get("parts"), list) else None,
+        )
+        return {
+            "ok": True,
+            "command": command_name,
+            "session_id": str(session.id),
+            **result,
+        }
+
+    if command_name == "interrupt":
+        active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
+        run_id = arguments.get("run_id") or (active_run or {}).get("run_id")
+        if not run_id:
+            raise HTTPException(status_code=404, detail="No active turn to interrupt")
+        result = await cancel_web_chat_run(
+            db=db,
+            agent_id=agent.id,
+            session_id=session.id,
+            run_id=_parse_uuid_argument(run_id, field="run_id"),
+            user_id=user.id,
+        )
+        return {
+            "ok": True,
+            "command": "interrupt",
+            "session_id": str(session.id),
+            "interrupt_strategy": "cancel_active_web_chat_run",
+            **result,
         }
 
     if command_name in {"rewind", "rollback"}:

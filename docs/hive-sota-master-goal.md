@@ -43,9 +43,10 @@ Hive 的总目标只有两个，所有路线都服务这两个目标：
 5. Agent Markdown Wiki / Learning Vault：长期记忆目标形态是 Markdown-first LLM Wiki，而不是外部记忆 provider。主梯度是 `T0 -> T2 -> T3 -> soul.md`；residual verification 只表示 T3 curation 沿 T2 `source_refs` 回看 T0 证据，不是新增层、也不是 T0 直达 T3。T2 是 tagged Markdown Segment Packages（`memory/t2/sessions/<session_id>/segments/<segment_id>/`，必要时先形成 `episodes/<episode_id>/`），T3 是收敛的 semantic layer（`memory/t3/episodes.md`、`user.md`、`worker.md`、`capabilities.md`），运行时导航来自 T3 entry manifest / Memory Navigation，唯一持久派生地图是 generated/read-model `memory/indexes/wiki_map.md`；控制元数据在 `memory/control/lifecycle.json`；旧 `memory/sessions/**`、root `memory/wiki_map.md`、root `memory/lifecycle.json`、`memory/INDEX.md`、`memory/index.md`、`memory/.derived/t3_index.md` 已退役为兼容/迁移面且不是常驻 prompt 记忆，Skill 是从 T3 capability evidence 和 eval-backed candidate package 中长出的 progressive capability capsule；`relations`、`contradictions`、graph/vector/index/UI read model 都是可重建派生面。当前路径契约见 `docs/memory-vault-path-contract-2026-06-23.md`。
 6. 多租户和 principal 隔离：用户、owner、company、tenant 看不到的数据，模型也不能在 prompt、retrieval、tool result、memory activation 中看到。
 7. 模型平等：所有能力对 OpenAI、Anthropic、Gemini、compatible provider 保持中立；不做 vendor 特权路径。
-8. 零基座权重自改：Hive 默认不改 base model 权重。自进化主战场是平台层 memory、skill、policy、prompt 和 evaluation loop；per-tenant LoRA 只能作为隔离、人审、低优先级 R&D。
-9. 进化可追溯可回滚：candidate、eval、promotion、rollback、owner feedback、trace 都是一等审计对象。
-10. 生产 fail-closed：代码执行、MCP authz、外部凭据、connector ACL、migration 和 eval gate 缺前置条件时失败，不能静默降级到裸跑或绿色跳过。
+8. CCPlus 边界：CC / FreeCode 是语义基底；Codex 只能增强工程控制、观测、审批、sandbox、typed thread/turn 和 workbench，不改变 CC 能力边界。本地 CLI 语义在对齐范围内；S-Work / CCR / Ant-only / Claude Code on the web / UltraPlan 等供应商远程独占能力不作为 CC parity 要求。当前契约见 `docs/ccplus-north-star-contract-2026-06-24.md`。
+9. 零基座权重自改：Hive 默认不改 base model 权重。自进化主战场是平台层 memory、skill、policy、prompt 和 evaluation loop；per-tenant LoRA 只能作为隔离、人审、低优先级 R&D。
+10. 进化可追溯可回滚：candidate、eval、promotion、rollback、owner feedback、trace 都是一等审计对象。
+11. 生产 fail-closed：代码执行、MCP authz、外部凭据、connector ACL、migration 和 eval gate 缺前置条件时失败，不能静默降级到裸跑或绿色跳过。
 
 ## 3. Agent 原子能力版图
 

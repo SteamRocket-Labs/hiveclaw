@@ -32,7 +32,7 @@ router = APIRouter(tags=["local-bridge"])
 
 class PairingInitRequest(BaseModel):
     device_name: str = Field(min_length=1, max_length=255)
-    client_kind: str = Field(default="generic_mcp_stdio", min_length=1, max_length=64)
+    client_kind: str = Field(default=bridge_service.HIVE_CONNECT_CLIENT_KIND, min_length=1, max_length=64)
     device_fingerprint: str = Field(default="unknown", min_length=1, max_length=255)
     scopes: list[str] = Field(default_factory=list)
 
@@ -44,6 +44,21 @@ class PairingExchangeRequest(BaseModel):
 class WorkRequestIn(BaseModel):
     content: str = Field(min_length=1)
     metadata: dict = Field(default_factory=dict)
+
+
+class LocalBridgeInstallGuideOut(BaseModel):
+    product_name: str
+    skill_repo_url: str
+    skill_name: str
+    npm_package: str
+    binary_name: str
+    install_skill_command: str
+    install_cli_command: str
+    login_command: str
+    status_command: str
+    run_command: str
+    user_prompt: str
+    instructions: list[str]
 
 
 class LocalBridgeWorkRequestOut(BaseModel):
@@ -113,6 +128,11 @@ async def init_pairing(
     db: AsyncSession = Depends(get_db),
 ):
     return await bridge_service.create_pairing_session(db, body, base_url=_web_base_url(request))
+
+
+@router.get("/local-bridge/install-guide", response_model=LocalBridgeInstallGuideOut)
+async def get_local_bridge_install_guide(request: Request):
+    return bridge_service.hive_connect_install_guide(base_url=_web_base_url(request))
 
 
 @router.post("/local-bridge/pairing/exchange")
@@ -245,12 +265,18 @@ async def approve_current_user_bridge_pairing(
     tenant_id = getattr(current_user, "tenant_id", None)
     if tenant_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current user has no tenant")
+    local_agent = await bridge_service.ensure_default_local_agent_for_pairing(
+        db,
+        user_code=user_code,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+    )
     return await bridge_service.approve_pairing_session(
         db,
         user_code=user_code,
         user_id=current_user.id,
         tenant_id=tenant_id,
-        agent_id=None,
+        agent_id=local_agent.id,
         metadata={"approval_surface": "local_agents_page"},
     )
 

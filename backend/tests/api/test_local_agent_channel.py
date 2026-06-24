@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -182,6 +183,404 @@ def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -
     assert captured["message"]["sender_user_id"] == user_id
     assert captured["message"]["sender_agent_id"] is None
     assert captured["message"]["content"] == "hello local codex"
+
+
+def test_web_user_restores_default_local_agent_channel_session_and_timeline(monkeypatch) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    event_id = uuid4()
+    message_id = uuid4()
+    db = _FakeDB()
+    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
+    context = _context(tenant_id=tenant_id, agent_id=None, user_id=user_id)
+    captured = {}
+
+    async def fake_get_or_create_default_channel_session(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        source_agent_id=None,
+        title=None,
+    ):
+        captured["default_session"] = {
+            "db": db_arg,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "source_agent_id": source_agent_id,
+            "title": title,
+        }
+        return {
+            "id": session_id,
+            "chat_session_id": None,
+            "status": "active",
+            "source": "web",
+            "created_at": None,
+        }
+
+    async def fake_list_channel_events(db_arg, *, session_id, owner_user_id=None, after_event_id=None, limit=100):
+        captured["timeline"] = {
+            "db": db_arg,
+            "session_id": session_id,
+            "owner_user_id": owner_user_id,
+            "after_event_id": after_event_id,
+            "limit": limit,
+        }
+        return [
+            {
+                "id": str(event_id),
+                "session_id": str(session_id),
+                "message_id": str(message_id),
+                "direction": "hive_to_local",
+                "type": "message",
+                "payload": {"content": "persist this chat"},
+                "created_at": None,
+            }
+        ]
+
+    async def fake_get_channel_session(db_arg, *, session_id, owner_user_id):
+        captured["timeline_session"] = {
+            "db": db_arg,
+            "session_id": session_id,
+            "owner_user_id": owner_user_id,
+        }
+        return {
+            "id": session_id,
+            "chat_session_id": None,
+            "status": "active",
+            "source": "web",
+            "created_at": None,
+        }
+
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "get_or_create_default_channel_session",
+        fake_get_or_create_default_channel_session,
+    )
+    monkeypatch.setattr(local_agent_channel_api.channel_service, "get_channel_session", fake_get_channel_session)
+    monkeypatch.setattr(local_agent_channel_api.channel_service, "list_channel_events", fake_list_channel_events)
+    client = _client(monkeypatch, db=db, current_user=current_user, context=context)
+
+    session_response = client.post("/local-agents/sessions/default")
+    timeline_response = client.get(f"/local-agents/sessions/{session_id}/timeline")
+
+    assert session_response.status_code == 200
+    assert session_response.json()["id"] == str(session_id)
+    assert timeline_response.status_code == 200
+    assert timeline_response.json()["session"]["id"] == str(session_id)
+    assert timeline_response.json()["events"][0]["payload"]["content"] == "persist this chat"
+    assert captured["default_session"]["tenant_id"] == tenant_id
+    assert captured["default_session"]["owner_user_id"] == user_id
+    assert captured["default_session"]["source_agent_id"] is None
+    assert captured["timeline"]["owner_user_id"] == user_id
+
+
+def test_web_user_restores_agent_scoped_default_local_agent_channel_session(monkeypatch) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    chat_session_id = uuid4()
+    db = _FakeDB()
+    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
+    context = _context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        agent_type="local_agent",
+        name="Codex on Mac",
+        owner_user_id=user_id,
+        creator_id=user_id,
+    )
+    captured = {}
+
+    async def fake_get_or_create_default_channel_session(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        source_agent_id=None,
+        title=None,
+    ):
+        captured["default_session"] = {
+            "db": db_arg,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "source_agent_id": source_agent_id,
+            "title": title,
+        }
+        return {
+            "id": session_id,
+            "chat_session_id": chat_session_id,
+            "status": "active",
+            "source": "web",
+            "created_at": None,
+        }
+
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "get_or_create_default_channel_session",
+        fake_get_or_create_default_channel_session,
+    )
+    client = _client(monkeypatch, db=db, current_user=current_user, context=context, agent=agent)
+
+    response = client.post(f"/agents/{agent_id}/local-agent/sessions/default")
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(session_id)
+    assert response.json()["chat_session_id"] == str(chat_session_id)
+    assert captured["default_session"] == {
+        "db": db,
+        "tenant_id": tenant_id,
+        "owner_user_id": user_id,
+        "source_agent_id": agent_id,
+        "title": "Codex on Mac",
+    }
+
+
+def test_agent_scoped_local_agent_channel_lists_and_resolves_sessions(monkeypatch) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent_id = uuid4()
+    channel_session_id = uuid4()
+    chat_session_id = uuid4()
+    db = _FakeDB()
+    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
+    context = _context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        agent_type="local_agent",
+        name="Codex on Mac",
+        owner_user_id=user_id,
+        creator_id=user_id,
+    )
+    captured = {}
+
+    async def fake_list_agent_channel_sessions(db_arg, *, tenant_id, owner_user_id, source_agent_id, limit):
+        captured["list"] = {
+            "db": db_arg,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "source_agent_id": source_agent_id,
+            "limit": limit,
+        }
+        return [
+            {
+                "id": channel_session_id,
+                "chat_session_id": chat_session_id,
+                "agent_id": agent_id,
+                "title": "Codex on Mac",
+                "source": "web",
+                "source_channel": "local_agent",
+                "session_kind": "local_agent_channel",
+                "status": "active",
+                "created_at": None,
+                "updated_at": None,
+                "last_message_at": None,
+            }
+        ]
+
+    async def fake_resolve_agent_channel_session(db_arg, *, tenant_id, owner_user_id, source_agent_id, session_id):
+        captured["resolve"] = {
+            "db": db_arg,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "source_agent_id": source_agent_id,
+            "session_id": session_id,
+        }
+        return {
+            "id": channel_session_id,
+            "chat_session_id": chat_session_id,
+            "agent_id": agent_id,
+            "title": "Codex on Mac",
+            "source": "web",
+            "source_channel": "local_agent",
+            "session_kind": "local_agent_channel",
+            "status": "active",
+            "created_at": None,
+            "updated_at": None,
+            "last_message_at": None,
+        }
+
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "list_agent_channel_sessions",
+        fake_list_agent_channel_sessions,
+    )
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "resolve_agent_channel_session",
+        fake_resolve_agent_channel_session,
+    )
+    client = _client(monkeypatch, db=db, current_user=current_user, context=context, agent=agent)
+
+    list_response = client.get(f"/agents/{agent_id}/local-agent/sessions")
+    resolve_response = client.get(f"/agents/{agent_id}/local-agent/sessions/{chat_session_id}")
+
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["id"] == str(channel_session_id)
+    assert list_response.json()[0]["chat_session_id"] == str(chat_session_id)
+    assert resolve_response.status_code == 200
+    assert resolve_response.json()["id"] == str(channel_session_id)
+    assert captured["list"]["source_agent_id"] == agent_id
+    assert captured["resolve"]["session_id"] == chat_session_id
+
+
+def test_agent_scoped_local_agent_channel_delete_archives_session(monkeypatch) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent_id = uuid4()
+    channel_session_id = uuid4()
+    db = _FakeDB()
+    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
+    context = _context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        agent_type="local_agent",
+        name="Codex on Mac",
+        owner_user_id=user_id,
+        creator_id=user_id,
+    )
+    captured = {}
+
+    async def fake_archive_agent_channel_session(db_arg, *, tenant_id, owner_user_id, source_agent_id, session_id):
+        captured.update(
+            {
+                "db": db_arg,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "source_agent_id": source_agent_id,
+                "session_id": session_id,
+            }
+        )
+        return {"status": "archived"}
+
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "archive_agent_channel_session",
+        fake_archive_agent_channel_session,
+    )
+    client = _client(monkeypatch, db=db, current_user=current_user, context=context, agent=agent)
+
+    response = client.delete(f"/agents/{agent_id}/local-agent/sessions/{channel_session_id}")
+
+    assert response.status_code == 204
+    assert captured == {
+        "db": db,
+        "tenant_id": tenant_id,
+        "owner_user_id": user_id,
+        "source_agent_id": agent_id,
+        "session_id": channel_session_id,
+    }
+
+
+def test_agent_scoped_local_agent_channel_requires_owner_even_with_manage_access(monkeypatch) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent_id = uuid4()
+    db = _FakeDB()
+    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
+    context = _context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        tenant_id=tenant_id,
+        agent_type="local_agent",
+        name="Teammate Mac",
+        owner_user_id=uuid4(),
+        creator_id=uuid4(),
+    )
+
+    async def should_not_create_session(*_args, **_kwargs):
+        raise AssertionError("non-owner must not open local agent channel sessions")
+
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "get_or_create_default_channel_session",
+        should_not_create_session,
+    )
+    client = _client(monkeypatch, db=db, current_user=current_user, context=context, agent=agent)
+
+    response = client.post(f"/agents/{agent_id}/local-agent/sessions/default")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Only the owner can use this local agent channel"
+
+
+def test_web_user_creates_browser_session_ws_ticket(monkeypatch) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    db = _FakeDB()
+    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
+    context = _context(tenant_id=tenant_id, agent_id=None, user_id=user_id)
+    captured = {}
+
+    async def fake_create_browser_session_ws_ticket(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        session_id,
+        ttl_seconds,
+    ):
+        captured.update(
+            {
+                "db": db_arg,
+                "tenant_id": tenant_id,
+                "owner_user_id": owner_user_id,
+                "session_id": session_id,
+                "ttl_seconds": ttl_seconds,
+            }
+        )
+        return {"ticket": "hbwt_browser", "expires_in": ttl_seconds, "single_use": False}
+
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "create_browser_session_ws_ticket",
+        fake_create_browser_session_ws_ticket,
+    )
+    client = _client(monkeypatch, db=db, current_user=current_user, context=context)
+
+    response = client.post(f"/local-agents/sessions/{session_id}/ws-ticket")
+
+    assert response.status_code == 201
+    assert response.json() == {"ticket": "hbwt_browser", "expires_in": 60, "single_use": False}
+    assert captured == {
+        "db": db,
+        "tenant_id": tenant_id,
+        "owner_user_id": user_id,
+        "session_id": session_id,
+        "ttl_seconds": 60,
+    }
+
+
+@pytest.mark.asyncio
+async def test_browser_channel_manager_fans_out_only_to_matching_user_session() -> None:
+    owner_user_id = uuid4()
+    session_id = uuid4()
+    other_session_id = uuid4()
+    matching = SimpleNamespace(sent=[])
+    other = SimpleNamespace(sent=[])
+
+    async def send_json(payload):
+        matching.sent.append(payload)
+
+    async def send_other_json(payload):
+        other.sent.append(payload)
+
+    matching.send_json = send_json
+    other.send_json = send_other_json
+    manager = local_agent_channel_api.LocalAgentBrowserChannelManager()
+
+    await manager.connect(owner_user_id=owner_user_id, session_id=session_id, websocket=matching)
+    await manager.connect(owner_user_id=owner_user_id, session_id=other_session_id, websocket=other)
+    await manager.send_to_session(owner_user_id, session_id, {"type": "event", "event": {"id": "event-1"}})
+
+    assert matching.sent == [{"type": "event", "event": {"id": "event-1"}}]
+    assert other.sent == []
 
 
 def test_user_scoped_local_agent_workspace_lists_reads_and_downloads(monkeypatch, tmp_path) -> None:

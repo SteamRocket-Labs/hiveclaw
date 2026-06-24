@@ -61,6 +61,10 @@ def build_a2a_agent_card(agent: object, *, base_url: str | None = None) -> dict[
             "streaming": False,
             "push_notifications": False,
             "json_rpc_tasks": {"status": "not_exposed"},
+            "collaboration_groups": {
+                "status": "internal",
+                "policy": "same_owner_or_active_a2a_collaboration_group",
+            },
         },
         "endpoints": {
             "card": card_url,
@@ -68,6 +72,9 @@ def build_a2a_agent_card(agent: object, *, base_url: str | None = None) -> dict[
             "gateway_report": f"{base}/api/v1/gateway/report" if base else "",
             "gateway_send_message": f"{base}/api/v1/gateway/send-message" if base else "",
             "messages_inbox": f"{base}/api/v1/messages/inbox" if base else "",
+            "a2a_collaborators": f"{base}/api/v1/agents/{agent_id}/relationships/a2a-collaborators"
+            if base and agent_id
+            else "",
         },
         "skills": [
             {
@@ -125,13 +132,19 @@ def build_interoperability_profile(*, base_url: str | None = None) -> dict[str, 
                 },
                 "oauth_resource_server": {
                     "status": "not_exposed",
-                    "missing": ["RFC9728 metadata discovery", "RFC8707 resource indicators", "resource audience enforcement"],
+                    "missing": [
+                        "RFC9728 metadata discovery",
+                        "RFC8707 resource indicators",
+                        "resource audience enforcement",
+                    ],
                 },
             },
             "a2a": {
                 "status": "partial",
                 "agent_card_endpoint": "/api/v1/agents/{agent_id}/a2a-card",
-                "agent_to_agent_messages": "tenant_scoped_chat_sessions",
+                "agent_to_agent_messages": "session_backed_internal_runtime",
+                "collaboration_policy": "same_owner_or_active_a2a_collaboration_group",
+                "collaborator_projection_endpoint": "/api/v1/agents/{agent_id}/relationships/a2a-collaborators",
                 "json_rpc_tasks": {
                     "status": "not_exposed",
                     "reason": "Hive currently exposes durable internal agent messaging and OpenClaw gateway endpoints, not the public A2A task JSON-RPC surface.",

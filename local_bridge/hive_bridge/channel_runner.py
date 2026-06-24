@@ -121,7 +121,16 @@ class HiveBridgeChannelRunner:
         session_id = str(message["session_id"])
         prepared_message = self._prepare_message_for_adapter(message_id=message_id, message=message)
         connection.send_json({"type": "ack", "message_id": message_id})
-        result = coerce_work_result(self.adapter.handle(prepared_message))
+        self._send_event(connection, session_id, message_id, "typing", {"status": "running"})
+
+        def emit_event(event_type: str, payload: dict[str, Any] | None = None) -> None:
+            self._send_event(connection, session_id, message_id, event_type, payload or {})
+
+        stream_handler = getattr(self.adapter, "handle_stream", None)
+        if callable(stream_handler):
+            result = coerce_work_result(stream_handler(prepared_message, emit_event))
+        else:
+            result = coerce_work_result(self.adapter.handle(prepared_message))
         connection.send_json(
             {
                 "type": "result",
@@ -134,8 +143,26 @@ class HiveBridgeChannelRunner:
             }
         )
 
-    def run_once(self) -> int:
-        """Connect, process the first channel message, and return processed count."""
+    @staticmethod
+    def _send_event(
+        connection: JsonConnection,
+        session_id: str,
+        message_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        connection.send_json(
+            {
+                "type": "event",
+                "session_id": session_id,
+                "message_id": message_id,
+                "event_type": event_type,
+                "payload": payload,
+            }
+        )
+
+    def run_session(self, *, max_messages: int | None = None) -> int:
+        """Connect and process channel messages until the socket closes or the limit is reached."""
 
         with self.connection_factory(self._connect_url()) as connection:
             hello = connection.receive_json()
@@ -157,16 +184,23 @@ class HiveBridgeChannelRunner:
                 if incoming_type == "message":
                     self._handle_message(connection, dict(incoming["message"]))
                     processed += 1
-                    return processed
+                    if max_messages is not None and processed >= max_messages:
+                        return processed
+                    continue
                 if incoming_type == "error":
                     raise RuntimeError(str(incoming.get("error") or incoming))
+
+    def run_once(self) -> int:
+        """Connect, process the first channel message, and return processed count."""
+
+        return self.run_session(max_messages=1)
 
     def run_forever(self, *, max_runs: int | None = None, reconnect_delay_seconds: float = 1.0) -> int:
         runs = 0
         while max_runs is None or runs < max_runs:
             runs += 1
             try:
-                self.run_once()
+                self.run_session()
             except Exception:
                 if reconnect_delay_seconds > 0:
                     time.sleep(reconnect_delay_seconds)

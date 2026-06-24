@@ -179,6 +179,13 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "integer",
                     "description": "Optional override for the worker's max tool rounds",
                 },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": (
+                        "Optional worker runtime budget in seconds. Defaults to a long-running delegation budget; "
+                        "use a larger value for knowledge-base, research, or document-heavy tasks."
+                    ),
+                },
                 "parent_session_id": {
                     "type": "string",
                     "description": "Optional parent session/task identifier for tracing",
@@ -206,7 +213,7 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                     "enum": ["cloud_agent", "local_agent"],
                     "description": (
                         "Optional execution target. Use local_agent only when the target employee has a bound "
-                        "Hive Bridge local runner and the work should execute on that local machine."
+                        "Hive Connect local runner and the work should execute on that local machine."
                     ),
                 },
                 "expected_output": {
@@ -269,13 +276,28 @@ async def check_async_task(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="cancel_async_task",
-        description="Cancel a previously spawned async agent task that you own. Use this to stop runaway or no-longer-needed worker tasks.",
+        description=(
+            "Request cancellation for a previously spawned async agent task that you own. "
+            "Fresh running tasks are protected by a grace window; set force=true only for runaway "
+            "or no-longer-needed work."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "task_id": {
                     "type": "string",
                     "description": "The task_id returned by delegate_to_agent",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true only when the worker is confirmed runaway or the task is no longer needed. "
+                        "Defaults to false so an in-progress worker is not killed just because a wait/check window elapsed."
+                    ),
+                },
+                "min_runtime_seconds": {
+                    "type": "number",
+                    "description": "Optional grace window before non-force cancellation is allowed. Defaults to 180 seconds.",
                 },
             },
             "required": ["task_id"],

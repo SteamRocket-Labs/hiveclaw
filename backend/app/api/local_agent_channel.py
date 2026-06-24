@@ -46,9 +46,20 @@ class LocalAgentChannelSessionIn(BaseModel):
 class LocalAgentChannelSessionOut(BaseModel):
     id: uuid.UUID
     chat_session_id: uuid.UUID | None = None
+    agent_id: uuid.UUID | None = None
+    title: str | None = None
     source: str
+    source_channel: str = "local_agent"
+    session_kind: str = "local_agent_channel"
     status: str
     created_at: Any | None = None
+    updated_at: Any | None = None
+    last_message_at: Any | None = None
+
+
+class LocalAgentChannelTimelineOut(BaseModel):
+    session: LocalAgentChannelSessionOut
+    events: list[dict[str, Any]]
 
 
 class LocalAgentChannelMessageIn(BaseModel):
@@ -137,11 +148,15 @@ def _serialize_session(payload: dict[str, Any]) -> dict[str, Any]:
         **payload,
         "id": str(payload["id"]),
         "chat_session_id": str(payload["chat_session_id"]) if payload.get("chat_session_id") else None,
+        "agent_id": str(payload["agent_id"]) if payload.get("agent_id") else None,
         "created_at": payload.get("created_at").isoformat() if payload.get("created_at") else None,
+        "updated_at": payload.get("updated_at").isoformat() if payload.get("updated_at") else None,
+        "last_message_at": payload.get("last_message_at").isoformat() if payload.get("last_message_at") else None,
     }
 
 
 def _serialize_message(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = {key: value for key, value in payload.items() if key != "event"}
     return {
         **payload,
         "id": str(payload["id"]),
@@ -194,6 +209,25 @@ def _workspace_rel_path(base: Path, target: Path) -> str:
     return str(target.resolve().relative_to(base.resolve())).replace("\\", "/")
 
 
+def _require_local_agent_owner(agent: Any, current_user: User) -> None:
+    if getattr(agent, "agent_type", None) != "local_agent":
+        return
+    current_user_id = str(getattr(current_user, "id", ""))
+    owner_ids = {
+        str(value)
+        for value in (
+            getattr(agent, "owner_user_id", None),
+            getattr(agent, "creator_id", None),
+        )
+        if value
+    }
+    if current_user_id not in owner_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the owner can use this local agent channel",
+        )
+
+
 class LocalAgentChannelConnectionManager:
     """Best-effort in-process fanout for online local runners."""
 
@@ -236,6 +270,58 @@ class LocalAgentChannelConnectionManager:
 channel_ws_manager = LocalAgentChannelConnectionManager()
 
 
+class LocalAgentBrowserChannelManager:
+    """Best-effort in-process fanout for browser Local Agent Channel pages."""
+
+    def __init__(self) -> None:
+        self._by_session: dict[tuple[str, str], list[WebSocket]] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect(self, *, owner_user_id: uuid.UUID, session_id: uuid.UUID, websocket: WebSocket) -> None:
+        async with self._lock:
+            self._by_session.setdefault((str(owner_user_id), str(session_id)), []).append(websocket)
+
+    async def disconnect(self, *, owner_user_id: uuid.UUID, session_id: uuid.UUID, websocket: WebSocket) -> None:
+        key = (str(owner_user_id), str(session_id))
+        async with self._lock:
+            sockets = self._by_session.get(key, [])
+            self._by_session[key] = [item for item in sockets if item is not websocket]
+
+    async def send_to_session(self, owner_user_id: uuid.UUID, session_id: uuid.UUID, payload: dict[str, Any]) -> None:
+        key = (str(owner_user_id), str(session_id))
+        async with self._lock:
+            sockets = list(self._by_session.get(key, []))
+        dead: list[WebSocket] = []
+        for socket in sockets:
+            try:
+                await socket.send_json(jsonable_encoder(payload))
+            except Exception:
+                dead.append(socket)
+        if dead:
+            async with self._lock:
+                current = self._by_session.get(key, [])
+                self._by_session[key] = [item for item in current if item not in dead]
+
+
+browser_channel_ws_manager = LocalAgentBrowserChannelManager()
+
+
+def _runner_message_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key != "event"}
+
+
+async def _broadcast_browser_channel_event(
+    *, owner_user_id: uuid.UUID, session_id: uuid.UUID, event: dict[str, Any] | None
+) -> None:
+    if not event:
+        return
+    await browser_channel_ws_manager.send_to_session(
+        owner_user_id,
+        session_id,
+        {"type": "event", "event": event},
+    )
+
+
 @router.post("/local-bridge/channel/ws-ticket", response_model=WsTicketOut, status_code=201)
 async def create_local_agent_channel_ws_ticket(
     context: BridgeAuthContext = Depends(get_bridge_auth_context),
@@ -244,6 +330,25 @@ async def create_local_agent_channel_ws_ticket(
     return await channel_service.create_ws_ticket(
         db, context=context, ttl_seconds=channel_service.DEFAULT_WS_TICKET_SECONDS
     )
+
+
+@router.post(
+    "/local-agents/sessions/default",
+    response_model=LocalAgentChannelSessionOut,
+)
+async def get_or_create_current_user_default_local_agent_channel_session(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current user has no tenant")
+    payload = await channel_service.get_or_create_default_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=current_user.id,
+    )
+    return _serialize_session(payload)
 
 
 @router.post(
@@ -291,8 +396,47 @@ async def create_current_user_local_agent_channel_message(
         attachments=body.attachments,
         metadata={**body.metadata, "source": "local_agents_page"},
     )
-    await channel_ws_manager.send_to_user(current_user.id, {"type": "message", "message": payload})
+    await channel_ws_manager.send_to_user(current_user.id, {"type": "message", "message": _runner_message_payload(payload)})
+    await _broadcast_browser_channel_event(
+        owner_user_id=current_user.id,
+        session_id=session_id,
+        event=payload.get("event"),
+    )
     return _serialize_message(payload)
+
+
+@router.get("/local-agents/sessions/{session_id}/timeline", response_model=LocalAgentChannelTimelineOut)
+async def get_current_user_local_agent_channel_timeline(
+    session_id: uuid.UUID,
+    after_event_id: uuid.UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await channel_service.get_channel_session(db, session_id=session_id, owner_user_id=current_user.id)
+    events = await channel_service.list_channel_events(
+        db,
+        session_id=session_id,
+        owner_user_id=current_user.id,
+        after_event_id=after_event_id,
+        limit=limit,
+    )
+    return {"session": _serialize_session(session), "events": events}
+
+
+@router.post("/local-agents/sessions/{session_id}/ws-ticket", response_model=WsTicketOut, status_code=201)
+async def create_current_user_local_agent_channel_browser_ws_ticket(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await channel_service.create_browser_session_ws_ticket(
+        db,
+        tenant_id=getattr(current_user, "tenant_id", None),
+        owner_user_id=current_user.id,
+        session_id=session_id,
+        ttl_seconds=channel_service.DEFAULT_BROWSER_WS_TICKET_SECONDS,
+    )
 
 
 @router.get("/local-agents/sessions/{session_id}/events")
@@ -379,6 +523,53 @@ async def download_current_user_local_agent_workspace_file(
 
 
 @router.post(
+    "/agents/{agent_id}/local-agent/sessions/default",
+    response_model=LocalAgentChannelSessionOut,
+)
+async def get_or_create_agent_default_local_agent_channel_session(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    _require_local_agent_owner(agent, current_user)
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent has no tenant")
+    payload = await channel_service.get_or_create_default_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=current_user.id,
+        source_agent_id=agent.id,
+        title=getattr(agent, "name", None) or "Local Agent",
+    )
+    return _serialize_session(payload)
+
+
+@router.get(
+    "/agents/{agent_id}/local-agent/sessions",
+    response_model=list[LocalAgentChannelSessionOut],
+)
+async def list_agent_local_agent_channel_sessions(
+    agent_id: uuid.UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    _require_local_agent_owner(agent, current_user)
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    rows = await channel_service.list_agent_channel_sessions(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=current_user.id,
+        source_agent_id=agent.id,
+        limit=limit,
+    )
+    return [_serialize_session(row) for row in rows]
+
+
+@router.post(
     "/agents/{agent_id}/local-agent/sessions",
     response_model=LocalAgentChannelSessionOut,
     status_code=201,
@@ -390,6 +581,7 @@ async def create_local_agent_channel_session(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    _require_local_agent_owner(agent, current_user)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     payload = await channel_service.create_channel_session(
         db,
@@ -400,6 +592,52 @@ async def create_local_agent_channel_session(
         title=body.title,
     )
     return _serialize_session(payload)
+
+
+@router.get(
+    "/agents/{agent_id}/local-agent/sessions/{session_id}",
+    response_model=LocalAgentChannelSessionOut,
+)
+async def resolve_local_agent_channel_session(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    _require_local_agent_owner(agent, current_user)
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    payload = await channel_service.resolve_agent_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=current_user.id,
+        source_agent_id=agent.id,
+        session_id=session_id,
+    )
+    return _serialize_session(payload)
+
+
+@router.delete(
+    "/agents/{agent_id}/local-agent/sessions/{session_id}",
+    status_code=204,
+)
+async def delete_local_agent_channel_session(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    _require_local_agent_owner(agent, current_user)
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    await channel_service.archive_agent_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=current_user.id,
+        source_agent_id=agent.id,
+        session_id=session_id,
+    )
+    return None
 
 
 @router.post(
@@ -415,6 +653,7 @@ async def create_local_agent_channel_message(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    _require_local_agent_owner(agent, current_user)
     payload = await channel_service.enqueue_channel_message(
         db,
         session_id=session_id,
@@ -425,7 +664,12 @@ async def create_local_agent_channel_message(
         attachments=body.attachments,
         metadata={**body.metadata, "source_agent_id": str(agent.id)},
     )
-    await channel_ws_manager.send_to_user(current_user.id, {"type": "message", "message": payload})
+    await channel_ws_manager.send_to_user(current_user.id, {"type": "message", "message": _runner_message_payload(payload)})
+    await _broadcast_browser_channel_event(
+        owner_user_id=current_user.id,
+        session_id=session_id,
+        event=payload.get("event"),
+    )
     return _serialize_message(payload)
 
 
@@ -438,7 +682,8 @@ async def list_local_agent_channel_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    _require_local_agent_owner(agent, current_user)
     return {
         "events": await channel_service.list_channel_events(
             db,
@@ -475,7 +720,7 @@ async def record_local_agent_channel_event(
     context: BridgeAuthContext = Depends(get_bridge_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    return await channel_service.record_channel_event(
+    event = await channel_service.record_channel_event(
         db,
         context=context,
         session_id=body.session_id,
@@ -483,6 +728,8 @@ async def record_local_agent_channel_event(
         event_type=body.type,
         payload=body.payload,
     )
+    await _broadcast_browser_channel_event(owner_user_id=context.user_id, session_id=body.session_id, event=event)
+    return event
 
 
 @router.post("/local-bridge/channel/report")
@@ -491,7 +738,7 @@ async def report_local_agent_channel_result(
     context: BridgeAuthContext = Depends(get_bridge_auth_context),
     db: AsyncSession = Depends(get_db),
 ):
-    return await channel_service.record_channel_result(
+    result = await channel_service.record_channel_result(
         db,
         context=context,
         session_id=body.session_id,
@@ -501,6 +748,57 @@ async def report_local_agent_channel_result(
         artifacts=body.artifacts,
         metadata=body.metadata,
     )
+    await _broadcast_browser_channel_event(
+        owner_user_id=context.user_id,
+        session_id=body.session_id,
+        event=result.get("event") if isinstance(result, dict) else None,
+    )
+    return result
+
+
+@router.websocket("/local-agents/sessions/{session_id}/ws")
+async def local_agent_browser_channel_ws(
+    websocket: WebSocket,
+    session_id: uuid.UUID,
+    ticket: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        context = await channel_service.resolve_browser_session_ws_ticket(db, ticket=ticket, session_id=session_id)
+    except HTTPException as exc:
+        await websocket.close(code=4401 if exc.status_code == status.HTTP_401_UNAUTHORIZED else 4403)
+        return
+
+    owner_user_id = _coerce_uuid(context["owner_user_id"])
+    await websocket.accept()
+    await browser_channel_ws_manager.connect(owner_user_id=owner_user_id, session_id=session_id, websocket=websocket)
+    await websocket.send_json(
+        jsonable_encoder(
+            {
+                "type": "hello",
+                "session_id": str(session_id),
+                "owner_user_id": str(owner_user_id),
+            }
+        )
+    )
+    try:
+        while True:
+            data = await websocket.receive_json()
+            message_type = data.get("type")
+            if message_type == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+            await websocket.send_json(
+                jsonable_encoder({"type": "error", "error": f"Unsupported browser message type: {message_type}"})
+            )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await browser_channel_ws_manager.disconnect(
+            owner_user_id=owner_user_id,
+            session_id=session_id,
+            websocket=websocket,
+        )
 
 
 @router.websocket("/local-bridge/channel/ws")
@@ -565,6 +863,11 @@ async def local_agent_channel_ws(
                     event_type=str(data.get("event_type") or data.get("event") or "text"),
                     payload=dict(data.get("payload") or {}),
                 )
+                await _broadcast_browser_channel_event(
+                    owner_user_id=context.user_id,
+                    session_id=_coerce_uuid(data.get("session_id")),
+                    event=event,
+                )
                 await websocket.send_json(jsonable_encoder({"type": "event_ack", "event_id": event["id"]}))
                 continue
             if message_type == "result":
@@ -578,6 +881,11 @@ async def local_agent_channel_ws(
                     output=str(data.get("output") or ""),
                     artifacts=list(data.get("artifacts") or []),
                     metadata=dict(data.get("metadata") or {}),
+                )
+                await _broadcast_browser_channel_event(
+                    owner_user_id=context.user_id,
+                    session_id=_coerce_uuid(data.get("session_id")),
+                    event=result.get("event") if isinstance(result, dict) else None,
                 )
                 await websocket.send_json(
                     jsonable_encoder({"type": "result_ack", "message_id": str(message_id), "status": result["status"]})

@@ -28,7 +28,14 @@ import OpenClawSettings from '../OpenClawSettings';
 import PlanCard, { confirmAndHandoffPlan } from './PlanCard';
 import RelationshipEditor from './RelationshipEditor';
 import ToolsManager from './ToolsManager';
-import { AGENT_DETAIL_TABS } from '../AgentDetail';
+import {
+  AGENT_DETAIL_TABS,
+  buildAgentDetailTabNavigation,
+  getAgentDetailHashTab,
+  getVisibleAgentDetailTabs,
+  isLocalAgentRuntimeType,
+  isSessionWorkbenchRoute,
+} from '../AgentDetail';
 import type { PlanRequest } from '../../api/domains/plans';
 
 const queryKeyCalls = vi.hoisted(() => [] as unknown[][]);
@@ -119,6 +126,37 @@ vi.mock('@tanstack/react-query', () => ({
           { id: 'agent-1', name: 'Primary Bot', role_description: 'Main agent' },
           { id: 'agent-2', name: 'Reviewer Bot', role_description: 'Quality reviewer' },
         ],
+      };
+    }
+    if (key === 'a2a-collaborators') {
+      return {
+        data: {
+          same_owner_agents: [
+            {
+              id: 'agent-3',
+              name: 'Same Owner Bot',
+              role_description: 'Can collaborate directly',
+              status: 'running',
+              policy_reason: 'same_owner',
+            },
+          ],
+          collaboration_groups: [
+            {
+              id: 'group-1',
+              name: 'Launch room',
+              status: 'active',
+              members: [
+                {
+                  agent_id: 'agent-4',
+                  name: 'Partner Bot',
+                  role_description: 'Approved cross-owner member',
+                  role: 'member',
+                  status: 'active',
+                },
+              ],
+            },
+          ],
+        },
       };
     }
     if (key === 'triggers') {
@@ -420,19 +458,130 @@ vi.mock('react-router-dom', () => ({
 }));
 
 describe('AgentDetail extracted sections', () => {
+  it('uses session-only workbench mode for chat routes but not detail management routes', () => {
+    expect(isSessionWorkbenchRoute('chat', '?session_id=session-1')).toBe(true);
+    expect(isSessionWorkbenchRoute('chat', '')).toBe(false);
+    expect(isSessionWorkbenchRoute('chat', '?manage=true')).toBe(false);
+    expect(isSessionWorkbenchRoute('chat', '?manage=true&session_id=session-1')).toBe(false);
+    expect(isSessionWorkbenchRoute('status', '?session_id=session-1')).toBe(false);
+  });
+
+  it('builds detail tab navigation through React Router instead of stale history state', () => {
+    expect(buildAgentDetailTabNavigation('/agents/agent-1', '', 'chat', { detailChat: true })).toEqual({
+      pathname: '/agents/agent-1',
+      search: '?manage=true',
+      hash: '#chat',
+    });
+    expect(buildAgentDetailTabNavigation('/agents/agent-1', '?manage=true&session_id=session-1', 'chat', { detailChat: true })).toEqual({
+      pathname: '/agents/agent-1',
+      search: '?manage=true&session_id=session-1',
+      hash: '#chat',
+    });
+    expect(getAgentDetailHashTab('#mind', AGENT_DETAIL_TABS)).toBe('knowledge');
+    expect(getAgentDetailHashTab('#unknown', AGENT_DETAIL_TABS)).toBeNull();
+  });
+
+  it('renders the detail chat conversation browser only outside session-only mode', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin
+        chatScope="all"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[
+          {
+            id: 'session-1',
+            user_id: 'user-1',
+            title: 'My launch sync',
+            created_at: '2026-03-27T09:00:00Z',
+          },
+        ]}
+        activeSession={{
+          id: 'session-2',
+          user_id: 'user-2',
+          title: 'Customer IM thread',
+          source_channel: 'feishu',
+          username: 'Customer',
+          created_at: '2026-03-27T10:00:00Z',
+        }}
+        wsConnected={false}
+        allSessions={[
+          {
+            id: 'session-2',
+            user_id: 'user-2',
+            title: 'Customer IM thread',
+            source_channel: 'feishu',
+            username: 'Customer',
+            created_at: '2026-03-27T10:00:00Z',
+          },
+        ]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId="session-2"
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId={null}
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="detail-session-browser"');
+    expect(markup).toContain('My Conversations');
+    expect(markup).toContain('All Users');
+    expect(markup).toContain('Customer IM thread');
+    expect(markup).toContain('class="detail-session-row active"');
+    expect(markup).not.toContain('session-only');
+  });
+
   it('renders ToolsManager as a standalone module with loading placeholder', () => {
     const markup = renderToStaticMarkup(<ToolsManager agentId="agent-1" canManage />);
 
     expect(markup).toContain('loading');
   });
 
-  it('renders RelationshipEditor as a standalone module with human and agent sections', () => {
+  it('renders RelationshipEditor from governed A2A collaborators instead of all tenant agents', () => {
     const markup = renderToStaticMarkup(<RelationshipEditor agentId="agent-1" />);
 
     expect(markup).toContain('owner');
     expect(markup).toContain('bindEmployee');
-    expect(markup).toContain('peers');
-    expect(markup).toContain('Reviewer Bot');
+    expect(markup).toContain('sameOwnerAgents');
+    expect(markup).toContain('Same Owner Bot');
+    expect(markup).toContain('Launch room');
+    expect(markup).toContain('Partner Bot');
+    expect(markup).not.toContain('Reviewer Bot');
   });
 
   it('renders CopyMessageButton as a standalone message action', () => {
@@ -1135,9 +1284,12 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('deleteAgent');
   });
 
-  it('keeps Local Agent out of agent detail tabs because it is user-scoped', () => {
-    const tabs = Array.from(AGENT_DETAIL_TABS);
-    expect(tabs).not.toContain('localAgent');
+  it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
+    expect(isLocalAgentRuntimeType({ agent_type: 'local_agent' })).toBe(true);
+    expect(isLocalAgentRuntimeType({ agent_type: 'openclaw' })).toBe(true);
+    expect(isLocalAgentRuntimeType({ agent_type: 'native' })).toBe(false);
+    expect(getVisibleAgentDetailTabs({ agent_type: 'local_agent' })).toEqual(['chat', 'workspace']);
+    expect(Array.from(AGENT_DETAIL_TABS)).toEqual(expect.arrayContaining(['chat', 'workspace']));
   });
 
   it('builds a bound Plan Mode opt-out recommendation for patrol saves', () => {
@@ -1327,6 +1479,7 @@ describe('AgentDetail extracted sections', () => {
         onSetChatInput={vi.fn()}
         onHandlePaste={vi.fn()}
         onSendChatMsg={vi.fn()}
+        sessionOnly
         isStreaming={false}
         onAbortGeneration={vi.fn()}
       />,
@@ -1334,11 +1487,16 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Launch sync');
     expect(markup).toContain('data-testid="session-workbench"');
+    expect(markup).toContain('session-only');
+    expect(markup).toContain('calc(100vh - 94px)');
     expect(markup).toContain('data-testid="session-workbench-header"');
-    expect(markup).toContain('data-testid="session-workbench-inspector"');
-    expect(markup).toContain('data-testid="session-native-controls"');
-    expect(markup).toContain('Start goal');
-    expect(markup).toContain('Create team');
+    expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
+    expect(markup).not.toContain('data-testid="session-workbench-inspector"');
+    expect(markup).not.toContain('data-testid="session-native-controls"');
+    expect(markup).not.toContain('Start goal');
+    expect(markup).not.toContain('Create team');
+    expect(markup).not.toContain('My Conversations');
+    expect(markup).not.toContain('All Users');
     expect(markup).toContain('Ship it');
     expect(markup).toContain('notes.md');
     expect(markup).toContain('chat-input');
@@ -1475,8 +1633,8 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(queryKeyCalls).toContainEqual(['chat-session-work-ledger', 'route-agent', 'session-1']);
-    expect(queryKeyCalls).not.toContainEqual(['chat-session-work-ledger', 'stale-agent', 'session-1']);
+    expect(queryKeyCalls).toContainEqual(['chat-session-index', 'route-agent', 'session-1']);
+    expect(queryKeyCalls).not.toContainEqual(['chat-session-index', 'stale-agent', 'session-1']);
   });
 
   it('renders assistant artifacts directly inside the chat transcript', () => {
@@ -1997,7 +2155,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('数字员工已创建完成。');
   });
 
-  it('renders the running task todo dock inside the session inspector', () => {
+  it('keeps running task todo controls out of the default chat chrome', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Research Bot' }}
@@ -2076,12 +2234,13 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
-    expect(markup).toContain('Collect and grade sources');
-    expect(markup).toContain('Write final report');
-    expect(markup).not.toContain('Deep Research');
-    expect(markup.indexOf('data-testid="session-workbench-inspector"')).toBeLessThan(markup.indexOf('data-testid="chat-work-ledger-dock"'));
-    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeGreaterThan(markup.indexOf('chat-input'));
+    expect(markup).toContain('data-testid="session-workbench"');
+    expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
+    expect(markup).toContain('data-testid="session-workbench-inspector"');
+    expect(markup).toContain('data-testid="session-native-controls"');
+    expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
+    expect(markup).toContain('Start goal');
+    expect(markup).toContain('Create team');
   });
 
   it('does not keep polling a stale historical Deep Research start result', () => {
@@ -2174,7 +2333,7 @@ describe('AgentDetail extracted sections', () => {
     }
   });
 
-  it('renders the persistent session work ledger dock without Deep Research tool metadata', () => {
+  it('does not mount the persistent work ledger dock as a permanent chat-side column', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Builder Bot' }}
@@ -2239,10 +2398,11 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('data-testid="chat-work-ledger-dock"');
-    expect(markup).toContain('Collect and grade sources');
-    expect(markup.indexOf('data-testid="session-workbench-inspector"')).toBeLessThan(markup.indexOf('data-testid="chat-work-ledger-dock"'));
-    expect(markup.indexOf('data-testid="chat-work-ledger-dock"')).toBeGreaterThan(markup.indexOf('chat-input'));
+    expect(markup).toContain('data-testid="session-workbench"');
+    expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
+    expect(markup).toContain('data-testid="session-workbench-inspector"');
+    expect(markup).toContain('data-testid="session-native-controls"');
+    expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
   });
 
   it('shows the durable run continuation state while a session run is active', () => {
@@ -2446,7 +2606,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="chat-artifact-preview"');
   });
 
-  it('does not render stale chat messages from a different active session', () => {
+  it('shows a hydrating state instead of stale or empty chat content during session switches', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
@@ -2507,8 +2667,9 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('New RWA run');
+    expect(markup).toContain('data-testid="session-loading-state"');
     expect(markup).not.toContain('old-task-id');
+    expect(markup).not.toContain('startConversation');
   });
 
   it('renders structured HR preview details for tool results', () => {

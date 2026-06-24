@@ -193,6 +193,64 @@ async def test_chat_sessions_api_exposes_session_index(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=current_user.id, title="Launch sync")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    db = _FakeDB()
+    captured = []
+
+    async def fake_get_run_session_and_agent(**kwargs):
+        captured.append(("access", kwargs))
+        return session, agent, "manage"
+
+    async def fake_build_session_workbench(db_arg, *, agent, session):
+        captured.append(("workbench", {"db": db_arg, "agent": agent, "session": session}))
+        return {
+            "schema": "hive.ccplus.session_workbench.v1",
+            "session": {"id": str(session.id), "title": session.title},
+            "turn": {"truth_source": "t0_events_jsonl", "event_count": 2},
+            "controls": {"can_export_json": True},
+        }
+
+    async def fake_build_session_json_export(db_arg, *, agent, session):
+        captured.append(("export", {"db": db_arg, "agent": agent, "session": session}))
+        return {
+            "schema": "hive.ccplus.session_export.v1",
+            "session": {"id": str(session.id), "title": session.title},
+            "transcript": {"truth_source": "t0_events_jsonl", "events": [{"sequence": 1}]},
+        }
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "build_session_workbench", fake_build_session_workbench)
+    monkeypatch.setattr(chat_sessions_api, "build_session_json_export", fake_build_session_json_export)
+
+    workbench = await chat_sessions_api.get_session_workbench(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+    exported = await chat_sessions_api.export_session_json(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert workbench["schema"] == "hive.ccplus.session_workbench.v1"
+    assert workbench["turn"]["truth_source"] == "t0_events_jsonl"
+    assert exported["schema"] == "hive.ccplus.session_export.v1"
+    assert exported["transcript"]["events"][0]["sequence"] == 1
+    assert [item[0] for item in captured] == ["access", "workbench", "access", "export"]
+
+
+@pytest.mark.asyncio
 async def test_commands_api_executes_builtin_command_tool(monkeypatch, tmp_path):
     import app.api.commands as commands_api
 
@@ -553,6 +611,56 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
 
 
 @pytest.mark.asyncio
+async def test_commands_api_keeps_task_surface_unified_while_routing_internal_flavors(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    db = _FakeDB()
+    captured_tools = []
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "use"
+
+    async def fake_execute_tool(tool_name, arguments, *, agent_id, user_id, session_id=None, **_kwargs):
+        captured_tools.append((tool_name, arguments, session_id))
+        return {"ok": True, "tool_name": tool_name, "arguments": arguments}
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_tool", fake_execute_tool)
+
+    cases = [
+        ("task_create", {"subject": "Inspect hooks"}, "task_create", {"subject": "Inspect hooks"}),
+        (
+            "task_create",
+            {"kind": "delegation", "agent_name": "Researcher", "message": "Collect evidence"},
+            "delegate_to_agent",
+            {"agent_name": "Researcher", "message": "Collect evidence"},
+        ),
+        ("task_list", {"kind": "delegation"}, "list_async_tasks", {}),
+        ("task_get", {"kind": "delegation", "task_id": "async-1"}, "check_async_task", {"task_id": "async-1"}),
+        ("task_stop", {"kind": "delegation", "task_id": "async-1"}, "cancel_async_task", {"task_id": "async-1"}),
+        ("task_output", {"runtime_task_id": "rt-1"}, "task_output", {"runtime_task_id": "rt-1"}),
+        ("task_stop", {"runtime_task_id": "rt-1"}, "task_stop", {"runtime_task_id": "rt-1"}),
+    ]
+
+    for command_name, arguments, expected_tool, expected_arguments in cases:
+        result = await commands_api.execute_agent_command(
+            agent_id=agent_id,
+            command_name=command_name,
+            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1"),
+            current_user=current_user,
+            db=db,
+        )
+        assert result["ok"] is True
+        assert result["command"] == command_name
+        assert result["result"]["tool_name"] == expected_tool
+        assert (expected_tool, expected_arguments, "session-1") in captured_tools
+
+
+@pytest.mark.asyncio
 async def test_commands_api_enforces_bridge_and_remote_safety(monkeypatch):
     import app.api.commands as commands_api
     from fastapi import HTTPException
@@ -783,3 +891,77 @@ async def test_agent_teams_api_lists_enters_and_closes_team(monkeypatch):
     assert member.status == "closed"
     assert closed["consolidation_plan"]["merge_mode"] == "summary_with_t0_refs"
     assert closed["consolidation_plan"]["member_summaries"][0]["t0_refs"] == ["t0://critic/1"]
+
+
+@pytest.mark.asyncio
+async def test_agent_team_api_exposes_workbench(monkeypatch):
+    import app.api.agent_teams as teams_api
+    from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
+
+    agent_id = uuid4()
+    parent_session_id = uuid4()
+    tenant_id = uuid4()
+    team_id = uuid4()
+    member_id = uuid4()
+    member_session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+    team = AgentTeam(
+        id=team_id,
+        tenant_id=tenant_id,
+        lead_agent_id=agent_id,
+        parent_session_id=parent_session_id,
+        name="research",
+    )
+    member = AgentTeamMember(
+        id=member_id,
+        team_id=team_id,
+        member_name="critic",
+        member_role="Review",
+        chat_session_id=member_session_id,
+        metadata_json={"summary": "Found a hook gap.", "t0_refs": ["t0://critic/1"]},
+    )
+    event = AgentTeamEvent(
+        id=uuid4(),
+        team_id=team_id,
+        sender_member_id=member_id,
+        event_type="member_report",
+        payload_json={"status": "ready"},
+    )
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
+
+    async def fake_load_team(_db, *, agent_id, team_id):
+        assert agent_id == team.lead_agent_id
+        assert team_id == team.id
+        return team
+
+    async def fake_load_members(_db, *, team_id):
+        assert team_id == team.id
+        return [member]
+
+    async def fake_load_events(_db, *, team_id, limit=200):
+        assert team_id == team.id
+        assert limit == 200
+        return [event]
+
+    monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(teams_api, "_load_team_or_404", fake_load_team)
+    monkeypatch.setattr(teams_api, "_load_team_members", fake_load_members)
+    monkeypatch.setattr(teams_api, "_load_team_events", fake_load_events)
+
+    workbench = await teams_api.get_agent_team_workbench(
+        agent_id=agent_id,
+        team_id=team_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert workbench["schema"] == "hive.ccplus.agent_team_workbench.v1"
+    assert workbench["team"]["id"] == str(team_id)
+    assert workbench["summary"]["member_count"] == 1
+    assert workbench["summary"]["event_count"] == 1
+    assert workbench["members"][0]["summary"] == "Found a hook gap."
+    assert workbench["events"][0]["event_type"] == "member_report"

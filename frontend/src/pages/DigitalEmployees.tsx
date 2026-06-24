@@ -22,6 +22,10 @@ function formatAgentStatus(status: Agent['status'] | string | undefined) {
   return status;
 }
 
+function isLocalAgentRuntime(agent: Agent): boolean {
+  return agent.agent_type === 'local_agent' || agent.agent_type === 'openclaw';
+}
+
 export default function DigitalEmployees() {
   const { t } = useTranslation();
   const user = useAuthStore((state) => state.user);
@@ -47,7 +51,7 @@ export default function DigitalEmployees() {
         (filter === 'running' && agent.status === 'running') ||
         (filter === 'needs_attention' && ['creating', 'error', 'stopped'].includes(agent.status)) ||
         (filter === 'coordinator' && agent.execution_mode === 'coordinator') ||
-        (filter === 'local' && agent.agent_type === 'openclaw');
+        (filter === 'local' && isLocalAgentRuntime(agent));
       return matchesQuery && matchesFilter;
     });
   }, [agents, filter, query, user?.id]);
@@ -57,7 +61,7 @@ export default function DigitalEmployees() {
   const mineCount = agents.filter((agent: Agent) => agent.creator_id === user?.id).length;
   const sharedCount = agents.filter((agent: Agent) => agent.creator_id !== user?.id).length;
   const coordinatorCount = agents.filter((agent: Agent) => agent.execution_mode === 'coordinator').length;
-  const localCount = agents.filter((agent: Agent) => agent.agent_type === 'openclaw').length;
+  const localCount = agents.filter((agent: Agent) => isLocalAgentRuntime(agent)).length;
 
   return (
     <div className="workbench-page">
@@ -69,9 +73,9 @@ export default function DigitalEmployees() {
             {t('employees.subtitle', 'Manage employee identity, sessions, memory, capabilities, workflow, delegation, and workspace from one directory.')}
           </p>
         </div>
-        <Link to="/agents/new" className="btn btn-primary">
+        <Link to="/agents/new" className="btn btn-primary employee-directory-create">
           <IconPlus size={16} stroke={1.7} />
-          {t('employees.create', 'Create employee')}
+          {t('employees.createViaHr', 'Create via HR')}
         </Link>
       </div>
 
@@ -134,24 +138,28 @@ export default function DigitalEmployees() {
         {!isLoading && visibleAgents.length === 0 && (
           <div className="workbench-empty">{t('employees.empty', 'No employees match this view.')}</div>
         )}
-        <div className="employee-grid">
+        <div className="employee-grid employee-grid-flat">
           {visibleAgents.map((agent: Agent) => (
             <article key={agent.id} className="employee-card">
-              <div className="employee-card-header">
-                <span className="employee-avatar">
-                  {(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}
-                </span>
-                <div>
-                  <h2>{agent.name}</h2>
-                  <p>{agent.role_description || t('employees.noRole', 'No role description yet')}</p>
-                  <div className="employee-chip-row">
-                    <span>{agent.creator_id === user?.id ? t('employees.chips.mine', 'Owned by me') : t('employees.chips.shared', 'Company shared')}</span>
-                    {agent.status === 'running' && agent.last_active_at && <span>{t('employees.chips.recommended', 'Recommended')}</span>}
-                    {agent.execution_mode === 'coordinator' && <span>{t('employees.chips.coordinator', 'Coordinator')}</span>}
-                    {agent.agent_type === 'openclaw' && <span>{t('employees.chips.local', 'Local runtime')}</span>}
+              <div className="employee-card-body">
+                <div className="employee-card-header">
+                  <span className="employee-avatar">
+                    {(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}
+                  </span>
+                  <div className="employee-card-copy">
+                    <div className="employee-card-title-row">
+                      <h2>{agent.name}</h2>
+                      <span className={`employee-status ${formatAgentStatus(agent.status)}`}>{formatAgentStatus(agent.status)}</span>
+                    </div>
+                    <p>{agent.role_description || t('employees.noRole', 'No role description yet')}</p>
+                    <div className="employee-chip-row">
+                      <span>{agent.creator_id === user?.id ? t('employees.chips.mine', 'Owned by me') : t('employees.chips.shared', 'Company shared')}</span>
+                      {agent.status === 'running' && agent.last_active_at && <span>{t('employees.chips.recommended', 'Recommended')}</span>}
+                      {agent.execution_mode === 'coordinator' && <span>{t('employees.chips.coordinator', 'Coordinator')}</span>}
+                      {isLocalAgentRuntime(agent) && <span>{t('employees.chips.local', 'Local runtime')}</span>}
+                    </div>
                   </div>
                 </div>
-                <span className={`employee-status ${formatAgentStatus(agent.status)}`}>{formatAgentStatus(agent.status)}</span>
               </div>
               <div className="employee-card-actions">
                 <Link to={`/agents/${agent.id}#chat`}>
@@ -170,8 +178,8 @@ export default function DigitalEmployees() {
                   <IconRoute size={15} stroke={1.7} />
                   {t('employees.actions.team', 'Team')}
                 </Link>
-                {agent.agent_type === 'openclaw' && (
-                  <Link to="/local-agents">
+                {isLocalAgentRuntime(agent) && (
+                  <Link to={`/agents/${agent.id}#workspace`}>
                     <IconDeviceDesktop size={15} stroke={1.7} />
                     {t('employees.actions.local', 'Local')}
                   </Link>

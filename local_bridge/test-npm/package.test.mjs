@@ -10,7 +10,7 @@ describe('npm package contract', () => {
     const cli = await readFile(new URL('../bin/hive-bridge.mjs', import.meta.url), 'utf8');
 
     assert.equal(pkg.name, '@hiveclaw243/hive-bridge');
-    assert.equal(pkg.version, '0.1.4');
+    assert.equal(pkg.version, '0.1.5');
     assert.equal(pkg.bin['hive-bridge'], 'bin/hive-bridge.mjs');
     assert.ok(pkg.files.includes('skills/hive-bridge/SKILL.md'));
     assert.ok(pkg.scripts.test.includes('node --test'));

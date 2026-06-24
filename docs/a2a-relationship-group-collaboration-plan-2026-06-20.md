@@ -465,3 +465,37 @@ rows_requiring_owner_confirmation
 5. 补 i18n、审批中心入口、管理中台风险视图。
 6. 跑 backend targeted tests、frontend targeted tests、必要时全量测试。
 7. 生成迁移 dry-run report，再决定是否执行生产数据迁移。
+
+## 13. 2026-06-24 代码闭环记录
+
+本轮按“CC 为基底，吸收 Codex session-first 优势”的 CCPlus 目标完成 A2A 单 Agent 内机制补齐：
+
+1. 新增 `agent_collaboration_groups` / `agent_collaboration_group_members` 持久层。
+2. 新增统一 hard gate：`resolve_a2a_collaboration_policy(source_agent, target_agent, action)`。
+3. Runtime A2A 规则统一为：
+   - 同 owner：直接允许。
+   - 跨 owner：必须存在 active A2A Collaboration Group，且 source/target membership 都为 active。
+   - no group / pending / rejected / revoked：fail-closed。
+4. `send_message_to_agent`、`delegate_to_agent_async`、OpenClaw queue path、legacy `CollaborationService` 都收敛到 session-backed A2A，不再通过同租户列表、Redis event bus 或 file inbox 暗放行。
+5. async delegation 返回 `session_id` / `child_session_id`，父 Agent 后续应使用 `send_agent_session_message` 继续对话；`check_async_delegation` / `cancel_async_delegation` / `list_async_delegations` 同步暴露 session id。
+6. `relationships.md` 只投影 same-owner agents 和 active collaboration group members；旧 `AgentAgentRelationship` 不再写成可调用权限。
+7. Agent Team close 会把成员输出、T0 refs 和 consolidation plan 写回 parent session，保证 Team 结束后主 timeline 可继续。
+8. 前端 `RelationshipEditor` 改读 `/agents/{agent_id}/relationships/a2a-collaborators`，不再把 all tenant agents 作为 peers 展示。
+9. `/interoperability/profile` 和 Agent Card 标注 A2A 为 internal/session-backed + collaboration-group governed；公开 JSON-RPC A2A task endpoint 仍为 `not_exposed`。
+
+当前真实 API 路径：
+
+```text
+GET  /api/v1/agents/{agent_id}/relationships/a2a-collaborators
+POST /api/v1/agents/{agent_id}/relationships/a2a-groups
+POST /api/v1/agents/{agent_id}/relationships/a2a-groups/{group_id}/members
+POST /api/v1/agents/{agent_id}/relationships/a2a-groups/{group_id}/members/{member_id}/approve
+POST /api/v1/agents/{agent_id}/relationships/a2a-groups/{group_id}/members/{member_id}/reject
+POST /api/v1/agents/{agent_id}/relationships/a2a-groups/{group_id}/members/{member_id}/revoke
+```
+
+上线边界：
+
+- 代码路径已经按 fail-closed 实现。
+- 历史 `AgentAgentRelationship` 不会自动迁为 active group membership。
+- 生产旧数据迁移仍应走 dry-run + owner/admin confirmation；无 approval evidence 的跨 owner 关系必须保持 pending 或不迁移。

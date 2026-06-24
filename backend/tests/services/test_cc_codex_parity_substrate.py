@@ -16,6 +16,7 @@ def test_command_registry_exposes_index_without_full_schema():
         "compact",
         "team_create",
         "task_create",
+        "task_output",
         "goal_start",
         "advanced_plan",
         "load_skill",
@@ -151,6 +152,44 @@ def test_task_command_adapter_keeps_work_ledger_cognitive_only():
     blocked = adapt_task_command("TaskStop", {}, current_session_id="session-1")
     assert blocked.kind == TaskCommandKind.INVALID
     assert "runtime_task_id" in blocked.error
+
+
+def test_task_command_adapter_keeps_cc_task_surface_unified_with_internal_flavors():
+    from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
+
+    delegated = adapt_task_command(
+        "TaskCreate",
+        {"kind": "delegation", "agent_name": "Researcher", "message": "Collect source evidence."},
+        current_session_id="session-1",
+    )
+    assert delegated.kind == TaskCommandKind.DELEGATION_TASK
+    assert delegated.starts_execution is True
+    assert delegated.delegate_action == "create"
+    assert delegated.delegate_payload == {
+        "agent_name": "Researcher",
+        "message": "Collect source evidence.",
+    }
+
+    shorthand = adapt_task_command(
+        "TaskCreate",
+        {"agent_name": "Critic", "prompt": "Review the plan."},
+        current_session_id="session-1",
+    )
+    assert shorthand.kind == TaskCommandKind.DELEGATION_TASK
+    assert shorthand.delegate_payload == {
+        "agent_name": "Critic",
+        "message": "Review the plan.",
+    }
+
+    delegated_get = adapt_task_command(
+        "TaskGet",
+        {"kind": "delegation", "task_id": "async-1"},
+        current_session_id="session-1",
+    )
+    assert delegated_get.kind == TaskCommandKind.DELEGATION_TASK
+    assert delegated_get.starts_execution is False
+    assert delegated_get.delegate_action == "get"
+    assert delegated_get.delegate_payload == {"task_id": "async-1"}
 
 
 def test_remaining_freecode_hook_events_exist():

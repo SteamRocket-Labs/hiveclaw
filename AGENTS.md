@@ -11,7 +11,7 @@ Hive exists to be **two things, and every line of code must serve one of them**:
 
 **Quality bar:** the per-agent intelligence and self-evolution must be **at least as good as `hermes-agent`** (internal benchmark at `/Users/rocky243/vc-saas/hermes-agent`) — not merely architecturally grander. A system that *feels* weaker than a lean benchmark agent is a failure of Goal 1, not a success.
 
-**Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. Current SOTA target entry: `docs/hive-sota-master-goal.md`; foundation roadmap: `docs/self-evolution-sota-plan.md`.
+**Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. Current SOTA target entry: `docs/hive-sota-master-goal.md`; CCPlus boundary contract: `docs/ccplus-north-star-contract-2026-06-24.md`; foundation roadmap: `docs/self-evolution-sota-plan.md`.
 
 ## Reference Baselines — 对照物顺序
 
@@ -24,6 +24,21 @@ Hive is a **Cloud Code Python evolution**, so implementation comparisons must us
 5. **Codex Rust**: `/Users/rocky243/Context Engineering/codex/codex-rs` — Codex delta only; it must not override the CC baseline.
 
 If sources conflict, judge CC parity from FreeCode first, use `claude-code-org` only as cross-check, use `claw-code/rust` for low-level runtime/session lessons, and use Codex Rust only for additive deltas that do not conflict with CC semantics.
+
+## CCPlus Boundary Contract — 本地 CLI 与远程独占能力边界
+
+CC / FreeCode is the semantic baseline. Codex may improve engineering control, observability, approval routing, sandboxing, typed thread/turn surfaces, and workbench ergonomics, but it must not redefine CC capability boundaries.
+
+Do **not** exclude a feature merely because it appears in a local CLI. If a CC local CLI feature is implemented through local process, filesystem, workspace, session, transcript, tool, sandbox, hook, or terminal-state semantics, it is in CCPlus scope and should be mapped into Hive's Web UI, API, RuntimeTask, ChatSession, T0, Session Workbench, or Hive Bridge shape.
+
+The exclusion boundary is provider-hosted or proprietary remote infrastructure: S-Work / CCR / Ant-only remote capabilities, Claude Code on the web execution, UltraPlan's remote planning session, or any inaccessible first-party hosted service. Those are not CC parity requirements. If Hive later builds an equivalent, it is a Hive-native replacement, not hidden CC parity debt.
+
+Use this decision order:
+
+1. CC / FreeCode semantic boundary wins.
+2. Codex engineering/control improvement may be adopted only if it preserves that boundary.
+3. Hive Memory / Iter / Hermes-style self-evolution and company control plane are deliberate Hive-native deltas.
+4. Remote proprietary capabilities are excluded from CC parity and must be documented as such.
 
 ## Full Lifecycle Parity — 全生命周期对标
 
@@ -79,6 +94,7 @@ Hive is an open-source **multi-agent collaboration platform** — enterprise "di
 Treat these documents as the current truth surface before making architecture claims:
 
 - `docs/hive-sota-master-goal.md` — canonical SOTA total goal, target matrix, and future loop-comparison ledger.
+- `docs/ccplus-north-star-contract-2026-06-24.md` — canonical CCPlus boundary contract: CC semantic baseline, Codex engineering delta, Hive-native evolution, local CLI parity, and remote proprietary exclusion.
 - `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
 - `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark, detailed comparison sources, and milestone evidence.
 - `docs/memory-clean-loop-refactor-plan-2026-06-17.md` — current memory clean-loop redesign and Agent Markdown Wiki / Learning Vault target.

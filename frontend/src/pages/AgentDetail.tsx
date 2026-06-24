@@ -65,6 +65,7 @@ import { ccParityApi, type ExecuteCommandResult } from '../api/domains/ccParity'
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 import { parseSlashCommandInput } from './agent-detail/slashCommand';
+import LocalAgents from './LocalAgents';
 
 // P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge replaces the
 // raw-file "mind" tab as the primary memory view (raw Markdown lives in the
@@ -74,6 +75,34 @@ import { parseSlashCommandInput } from './agent-detail/slashCommand';
 // fourth capability module — the employee's craft-clone work methods.
 export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
+
+export function isSessionWorkbenchRoute(activeTab: string, search: string): boolean {
+    const params = new URLSearchParams(search);
+    return activeTab === 'chat' && params.has('session_id') && !params.has('manage');
+}
+
+export function getAgentDetailHashTab(hash: string | undefined, validTabs: readonly string[]): string | null {
+    const rawHashTab = hash?.replace('#', '');
+    const hashTab = rawHashTab === 'mind' ? 'knowledge' : rawHashTab;
+    return hashTab && validTabs.includes(hashTab) ? hashTab : null;
+}
+
+export function buildAgentDetailTabNavigation(
+    pathname: string,
+    search: string,
+    tab: string,
+    options?: { detailChat?: boolean },
+): { pathname: string; search: string; hash: string } {
+    const params = new URLSearchParams(search);
+    if (tab === 'chat' && options?.detailChat) {
+        params.set('manage', 'true');
+    }
+    return {
+        pathname,
+        search: params.toString() ? `?${params.toString()}` : '',
+        hash: `#${tab}`,
+    };
+}
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
@@ -161,10 +190,25 @@ export const AGENT_WORKBENCH_AREAS: Array<{
 
 function isAgentDetailTabVisible(agent: any, tab: AgentDetailTab): boolean {
     if (agent?.access_level === 'use' && (tab === 'settings' || tab === 'approvals')) return false;
+    if (agent?.agent_type === 'local_agent') {
+        return ['chat', 'workspace'].includes(tab);
+    }
     if (agent?.agent_type === 'openclaw') {
         return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
     }
     return true;
+}
+
+export function isLocalAgentRuntimeType(agent: any): boolean {
+    const agentType = typeof agent === 'string' ? agent : agent?.agent_type;
+    return agentType === 'local_agent' || agentType === 'openclaw';
+}
+
+export function getVisibleAgentDetailTabs(agent: any): AgentDetailTab[] {
+    if (agent?.agent_type === 'local_agent') {
+        return ['chat', 'workspace'];
+    }
+    return AGENT_DETAIL_TABS.filter((tab) => isAgentDetailTabVisible(agent, tab));
 }
 
 function formatSlashCommandResult(response: ExecuteCommandResult): string {
@@ -189,17 +233,19 @@ function AgentDetailInner() {
     const queryClient = useQueryClient();
     const location = useLocation();
     const validTabs = AGENT_DETAIL_TABS as readonly string[];
-    // Legacy deep links: #mind was the raw-file memory tab before the
-    // Knowledge plane replaced it (P8).
-    const rawHashTab = location.hash?.replace('#', '');
-    const hashTab = rawHashTab === 'mind' ? 'knowledge' : rawHashTab;
-    const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
+    const [activeTab, setActiveTabRaw] = useState<string>(() => getAgentDetailHashTab(location.hash, validTabs) ?? 'status');
+    const requestedSessionId = new URLSearchParams(location.search).get('session_id');
 
     // Sync URL hash when tab changes
-    const setActiveTab = (tab: string) => {
+    const setActiveTab = (tab: string, options?: { detailChat?: boolean }) => {
         setActiveTabRaw(tab);
-        window.history.replaceState(null, '', `#${tab}`);
+        navigate(buildAgentDetailTabNavigation(location.pathname, location.search, tab, options), { replace: true });
     };
+    const selectDetailTab = (tab: string) => setActiveTab(tab, { detailChat: tab === 'chat' });
+    useEffect(() => {
+        const nextHashTab = getAgentDetailHashTab(location.hash, validTabs);
+        if (nextHashTab) setActiveTabRaw((current) => (current === nextHashTab ? current : nextHashTab));
+    }, [location.hash]);
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
     const isAdmin = currentUser?.role === 'platform_admin' || currentUser?.role === 'org_admin';
@@ -520,10 +566,13 @@ function AgentDetailInner() {
         const writableSession = isWritableSession(sess);
         activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
-        setChatMessages([]);
-        setChatMessagesSessionId(writableSession ? sessionId : null);
-        setHistoryMsgs([]);
-        setHistoryMessagesSessionId(writableSession ? null : sessionId);
+        if (writableSession) {
+            setHistoryMessagesSessionId(null);
+            setChatMessagesSessionId((current) => (current === sessionId ? current : null));
+        } else {
+            setChatMessagesSessionId(null);
+            setHistoryMessagesSessionId((current) => (current === sessionId ? current : null));
+        }
         setTransportNotice(null);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting || !!activeRunState);
@@ -780,7 +829,7 @@ function AgentDetailInner() {
             // Invalidate all queries for the old agent to force fresh data
             queryClient.invalidateQueries({ queryKey: ['agent', id] });
             // Re-apply hash so refresh preserves the current tab
-            window.history.replaceState(null, '', `#${activeTab}`);
+            navigate(buildAgentDetailTabNavigation(location.pathname, location.search, activeTab), { replace: true });
         }
     }, [id]);
 
@@ -868,9 +917,43 @@ function AgentDetailInner() {
         fetchMySessions(false, id).then((data: any) => {
             if (currentAgentIdRef.current !== id) return;
             setSessionsLoading(false);
+            if (requestedSessionId) {
+                const requested = data?.find((session: any) => String(session.id) === String(requestedSessionId));
+                if (requested) {
+                    selectSession(requested);
+                    return;
+                }
+                selectSession({
+                    id: requestedSessionId,
+                    agent_id: id,
+                    user_id: currentUser?.id ? String(currentUser.id) : undefined,
+                    title: t('agent.chat.session', 'Session'),
+                    source_channel: 'web',
+                    listed_surface: 'chat',
+                });
+                return;
+            }
             if (data && data.length > 0) selectSession(data[0]);
         });
-    }, [canLoadAgentScopedData, id, token, activeTab]);
+    }, [canLoadAgentScopedData, id, token, activeTab, requestedSessionId]);
+
+    useEffect(() => {
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !requestedSessionId || !id) return;
+        if (activeSession?.id && String(activeSession.id) === String(requestedSessionId)) return;
+        const known = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(requestedSessionId));
+        if (known) {
+            selectSession(known);
+            return;
+        }
+        selectSession({
+            id: requestedSessionId,
+            agent_id: id,
+            user_id: currentUser?.id ? String(currentUser.id) : undefined,
+            title: t('agent.chat.session', 'Session'),
+            source_channel: 'web',
+            listed_surface: 'chat',
+        });
+    }, [canLoadAgentScopedData, activeTab, requestedSessionId, id, sessions, allSessions]);
 
     const ensureSessionSocket = (sess: any, agentId: string, authToken: string) => {
         const sessionId = String(sess.id);
@@ -1674,10 +1757,16 @@ function AgentDetailInner() {
     const isSystemHrRaw = (agent as any).agent_class === 'internal_system';
     const isManageMode = new URLSearchParams(location.search).has('manage');
     const isSystemHr = isSystemHrRaw && !isManageMode;
+    const sessionWorkbenchMode = isSessionWorkbenchRoute(activeTab, location.search);
 
     // HR system agent: force chat-only mode
     if (isSystemHr && activeTab !== 'chat') {
         setActiveTab('chat');
+    }
+
+    const visibleAgentTabs = getVisibleAgentDetailTabs(agent);
+    if (!isSystemHr && visibleAgentTabs.length > 0 && !visibleAgentTabs.includes(activeTab as AgentDetailTab)) {
+        setActiveTab(visibleAgentTabs[0]);
     }
 
     const visibleWorkbenchAreas = AGENT_WORKBENCH_AREAS
@@ -1692,9 +1781,9 @@ function AgentDetailInner() {
 
     return (
         <>
-            <div>
+            <div className={sessionWorkbenchMode ? 'agent-detail-session-only' : undefined}>
                 {/* Header */}
-                {isSystemHr ? (
+                {!sessionWorkbenchMode && (isSystemHr ? (
                     <div className="page-header">
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                             <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>&#x1F464;</div>
@@ -1787,6 +1876,13 @@ function AgentDetailInner() {
                                 {(agent as any).is_expired && (
                                     <span style={{ background: 'var(--error)', color: '#fff', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>Expired</span>
                                 )}
+                                {(agent as any).agent_type === 'local_agent' && (
+                                    <span style={{
+                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                                        background: 'var(--success-subtle, rgba(34, 197, 94, 0.12))',
+                                        color: 'var(--success)', fontWeight: 600,
+                                    }}>{t('nav.localBadge', 'Local')}</span>
+                                )}
                                 {(agent as any).agent_type === 'openclaw' && (
                                     <span style={{
                                         fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
@@ -1812,8 +1908,8 @@ function AgentDetailInner() {
                         </div>
                     </div>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn btn-primary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
-                        {(agent as any)?.agent_type !== 'openclaw' && (
+                        <button className="btn btn-primary" onClick={() => selectDetailTab('chat')}>{t('agent.actions.chat')}</button>
+                        {!isLocalAgentRuntimeType(agent) && (
                             <>
                                 {agent.status === 'stopped' ? (
                                     <button className="btn btn-secondary" onClick={async () => { await agentApi.start(id!); queryClient.invalidateQueries({ queryKey: ['agent', id] }); }}>{t('agent.actions.start')}</button>
@@ -1822,12 +1918,12 @@ function AgentDetailInner() {
                                 ) : null}
                             </>
                         )}
-                    </div>
-                </div>
-                )}
+	                    </div>
+	                </div>
+	                ))}
 
                 {/* Workbench navigation — hidden for HR system agent */}
-                {!isSystemHr && (
+                {!isSystemHr && !sessionWorkbenchMode && (
                     <div className="agent-workbench-nav" data-testid="agent-workbench-nav">
                         <div className="agent-workbench-areas" role="tablist" aria-label={t('agent.workbench.title', 'Agent workbench')}>
                             {visibleWorkbenchAreas.map((area) => (
@@ -1835,7 +1931,7 @@ function AgentDetailInner() {
                                     key={area.id}
                                     type="button"
                                     className={`agent-workbench-area ${activeWorkbenchArea?.id === area.id ? 'active' : ''}`}
-                                    onClick={() => setActiveTab(area.primaryTab)}
+                                    onClick={() => selectDetailTab(area.primaryTab)}
                                 >
                                     {t(area.labelKey, area.fallback)}
                                 </button>
@@ -1848,7 +1944,7 @@ function AgentDetailInner() {
                                         key={tab}
                                         type="button"
                                         className={`agent-workbench-subtab ${activeTab === tab ? 'active' : ''}`}
-                                        onClick={() => setActiveTab(tab)}
+                                        onClick={() => selectDetailTab(tab)}
                                     >
                                         {t(`agent.tabs.${tab}`, AGENT_TAB_LABELS[tab])}
                                     </button>
@@ -1868,7 +1964,7 @@ function AgentDetailInner() {
                         capabilityInstalls={capabilityInstalls}
                         channelCapabilities={channelCapabilities}
                         statusKey={statusKey}
-                        onSelectTab={setActiveTab}
+                        onSelectTab={selectDetailTab}
                     />
                 )}
 
@@ -1898,7 +1994,7 @@ function AgentDetailInner() {
                     <AgentKnowledgeSection
                         agentId={id!}
                         canEdit={(agent as any)?.access_level !== 'use'}
-                        onNavigateTab={setActiveTab}
+                        onNavigateTab={selectDetailTab}
                     />
                 )}
 
@@ -1940,7 +2036,13 @@ function AgentDetailInner() {
 
                 {/* ── Workspace Tab ── */}
                 {
-                    activeTab === 'workspace' && <AgentWorkspaceSection agentId={id!} />
+                    activeTab === 'workspace' && (
+                        (agent as any)?.agent_type === 'local_agent' ? (
+                            <LocalAgents key="workspace" agentId={id!} agentName={agent.name} embedded initialTab="workspace" />
+                        ) : (
+                            <AgentWorkspaceSection agentId={id!} />
+                        )
+                    )
                 }
 
                 {
@@ -1949,6 +2051,9 @@ function AgentDetailInner() {
 
                 {
                     activeTab === 'chat' && (
+                        (agent as any)?.agent_type === 'local_agent' ? (
+                            <LocalAgents key="chat" agentId={id!} agentName={agent.name} embedded initialTab="chat" />
+                        ) : (
                         <AgentChatSection
                             agentId={id}
                             agent={agent}
@@ -2008,6 +2113,7 @@ function AgentDetailInner() {
 	                            onSendMessage={sendChatMessageText}
                             onEnterPlanMode={(reason: string) => sendChatMessageText(reason, { planMode: true })}
                             isStreaming={isStreaming}
+                            sessionOnly={sessionWorkbenchMode}
                             onAbortGeneration={() => {
                                 if (!id || !activeSession?.id) return;
                                 const activeRuntimeKey = buildSessionRuntimeKey(id, String(activeSession.id));
@@ -2028,6 +2134,7 @@ function AgentDetailInner() {
                                 }
                             }}
                         />
+                        )
                     )
                 }
 

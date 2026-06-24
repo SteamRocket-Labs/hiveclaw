@@ -79,6 +79,8 @@ def test_render_team_context_block_surfaces_runtime_tasks_and_mailbox() -> None:
     assert "subagent_completed" in block
     assert "researcher completed market scan" in block
     assert "poll" not in block.lower()
+    assert "Session/T0" in block
+    assert "truth source" not in block
 
 
 @pytest.mark.asyncio

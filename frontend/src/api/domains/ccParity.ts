@@ -1,4 +1,4 @@
-import { get, post } from '../core';
+import { get, patch, post } from '../core';
 
 export interface CommandIndexEntry {
   name: string;
@@ -119,6 +119,84 @@ export interface AgentTeamCloseResult extends AgentTeam {
   consolidation_plan: Record<string, unknown>;
 }
 
+export interface SessionWorkbench {
+  schema: string;
+  agent_id: string;
+  session: Record<string, unknown>;
+  turn: {
+    truth_source: string;
+    event_count: number;
+    checkpoint_count?: number;
+    latest_event?: Record<string, unknown> | null;
+    checkpoints?: Record<string, unknown>[];
+  };
+  controls: Record<string, unknown>;
+  active_run?: Record<string, unknown> | null;
+  runtime_tasks: Record<string, unknown>[];
+  goals: Record<string, unknown>[];
+  teams: AgentTeam[];
+  session_index?: Record<string, unknown> | null;
+  links?: Record<string, string>;
+}
+
+export interface SessionJsonExport {
+  schema: string;
+  exported_at?: string;
+  agent_id: string;
+  session: Record<string, unknown>;
+  workbench: SessionWorkbench;
+  transcript: {
+    truth_source: string;
+    event_count: number;
+    events: Record<string, unknown>[];
+  };
+}
+
+export interface HookControlPlane {
+  schema: string;
+  agent_id: string;
+  events: Array<{
+    event: string;
+    category: string;
+    handler_count: number;
+    blocking_supported: boolean;
+    cc_parity: boolean;
+  }>;
+  registered_events: string[];
+  registrations: Array<Record<string, unknown>>;
+}
+
+export interface UpdateHookRuntimeConfigInput {
+  enabled?: boolean;
+  timeout_seconds?: number | null;
+  failure_policy?: 'continue' | 'block' | null;
+}
+
+export interface UpdateHookRuntimeConfigResult {
+  ok: boolean;
+  config: Record<string, unknown>;
+}
+
+export interface AgentTeamWorkbench {
+  schema: string;
+  team: AgentTeam;
+  members: Array<AgentTeamMember & {
+    summary?: string;
+    artifacts?: unknown[];
+    work_ledger_deltas?: unknown[];
+    t0_refs?: string[];
+    enter_href?: string;
+  }>;
+  events: Array<Record<string, unknown>>;
+  summary: {
+    member_count: number;
+    active_member_count: number;
+    event_count: number;
+    transcript_truth: string;
+  };
+  links?: Record<string, string>;
+}
+
 export const ccParityApi = {
   listCommands(agentId: string, options: ListCommandsOptions = {}): Promise<CommandIndexEntry[]> {
     const params = new URLSearchParams();
@@ -160,6 +238,22 @@ export const ccParityApi = {
     });
   },
 
+  getSessionWorkbench(agentId: string, sessionId: string): Promise<SessionWorkbench> {
+    return get<SessionWorkbench>(`/agents/${agentId}/sessions/${sessionId}/workbench`);
+  },
+
+  exportSessionJson(agentId: string, sessionId: string): Promise<SessionJsonExport> {
+    return get<SessionJsonExport>(`/agents/${agentId}/sessions/${sessionId}/export`);
+  },
+
+  listHooks(agentId: string): Promise<HookControlPlane> {
+    return get<HookControlPlane>(`/agents/${agentId}/hooks`);
+  },
+
+  updateHookRuntimeConfig(agentId: string, hookKey: string, input: UpdateHookRuntimeConfigInput): Promise<UpdateHookRuntimeConfigResult> {
+    return patch<UpdateHookRuntimeConfigResult>(`/agents/${agentId}/hooks/${encodeURIComponent(hookKey)}`, input);
+  },
+
   createTeam(agentId: string, input: CreateAgentTeamInput): Promise<AgentTeam> {
     return post<AgentTeam>(`/agents/${agentId}/agent-teams`, input);
   },
@@ -171,6 +265,10 @@ export const ccParityApi = {
 
   getTeam(agentId: string, teamId: string): Promise<AgentTeam> {
     return get<AgentTeam>(`/agents/${agentId}/agent-teams/${teamId}`);
+  },
+
+  getTeamWorkbench(agentId: string, teamId: string): Promise<AgentTeamWorkbench> {
+    return get<AgentTeamWorkbench>(`/agents/${agentId}/agent-teams/${teamId}/workbench`);
   },
 
   enterTeamMember(agentId: string, teamId: string, memberId: string): Promise<AgentTeamEnterResult> {

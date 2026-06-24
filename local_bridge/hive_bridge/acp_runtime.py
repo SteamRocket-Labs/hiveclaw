@@ -154,7 +154,7 @@ class ACPAdapter:
                         "fs": {"readTextFile": False, "writeTextFile": False},
                         "terminal": False,
                     },
-                    "clientInfo": {"name": "hive-bridge", "version": "0.1.4"},
+                    "clientInfo": {"name": "hive-bridge", "version": "0.1.5"},
                 },
             )
             session = proc.call("session/new", {"cwd": cwd, "mcpServers": []})

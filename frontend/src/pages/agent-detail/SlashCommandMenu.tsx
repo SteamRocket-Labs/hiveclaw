@@ -41,7 +41,7 @@ export default function SlashCommandMenu({
 
   if (!active) return null;
 
-  const filteredCommands = filterCommandIndex(commandsQuery.data, query ?? '').slice(0, 8);
+  const filteredCommands = filterCommandIndex(commandsQuery.data, query ?? '');
   if (!commandsQuery.isLoading && filteredCommands.length === 0) return null;
 
   return (
@@ -74,10 +74,10 @@ export default function SlashCommandMenu({
         <IconTerminal2 size={16} stroke={1.8} />
         <strong style={{ color: 'var(--text-primary)' }}>{t('agent.chat.slashCommands.title', 'Commands')}</strong>
         <span style={{ color: 'var(--text-tertiary)' }}>
-          {t('agent.chat.slashCommands.hint', 'Pick one or press Enter to run typed JSON args')}
+          {t('agent.chat.slashCommands.hint', 'Pick one or type JSON / natural args')}
         </span>
       </div>
-      <div style={{ maxHeight: '280px', overflowY: 'auto', padding: '6px' }}>
+      <div style={{ maxHeight: '360px', overflowY: 'auto', padding: '6px' }}>
         {commandsQuery.isLoading ? (
           <div style={{ padding: '10px 12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
             {t('common.loading', 'Loading')}

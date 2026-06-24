@@ -29,6 +29,15 @@ export function defaultCommandArguments(command: CommandDefinition | CommandInde
   if (command.name === 'goal_start') return '{\n  "objective": ""\n}';
   if (command.name === 'advanced_plan') return '{\n  "objective": ""\n}';
   if (command.name === 'team_create') return '{\n  "name": "",\n  "members": []\n}';
+  if (command.name === 'task_create') {
+    return '{\n  "kind": "todo",\n  "subject": ""\n}';
+  }
+  if (command.name === 'task_get' || command.name === 'task_update') {
+    return '{\n  "kind": "todo",\n  "task_id": ""\n}';
+  }
+  if (command.name === 'task_output' || command.name === 'task_stop') {
+    return '{\n  "runtime_task_id": ""\n}';
+  }
   if (command.name === 'verify_plan') return '{\n  "plan_json": {},\n  "evidence_refs": []\n}';
   return '{}';
 }

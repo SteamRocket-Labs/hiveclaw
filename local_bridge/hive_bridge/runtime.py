@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
@@ -61,6 +62,62 @@ class CommandAdapter:
         )
         output = (proc.stdout or "").strip()
         error = (proc.stderr or "").strip()
+        metadata: dict[str, Any] = {
+            "runtime": "command",
+            "command": self.command,
+            "exit_code": proc.returncode,
+        }
+        if proc.returncode == 0:
+            return WorkResult(result=output or "(command completed with no output)", metadata=metadata)
+        return WorkResult(
+            result=(
+                f"Command adapter failed with exit code {proc.returncode}.\n\n"
+                f"STDOUT:\n{output}\n\n"
+                f"STDERR:\n{error}"
+            ),
+            metadata=metadata,
+        )
+
+    def handle_stream(self, message: dict[str, Any], emit_event: Callable[[str, dict[str, Any]], None]) -> WorkResult:
+        proc = subprocess.Popen(
+            self.command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def read_stream(stream, stream_name: str, sink: list[str]) -> None:
+            if stream is None:
+                return
+            for chunk in iter(stream.readline, ""):
+                if not chunk:
+                    break
+                sink.append(chunk)
+                emit_event("delta", {"stream": stream_name, "text": chunk})
+
+        stdout_thread = threading.Thread(target=read_stream, args=(proc.stdout, "stdout", stdout_chunks), daemon=True)
+        stderr_thread = threading.Thread(target=read_stream, args=(proc.stderr, "stderr", stderr_chunks), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write(str(message.get("content", "")))
+                proc.stdin.close()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=self.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
+
+        output = "".join(stdout_chunks).strip()
+        error = "".join(stderr_chunks).strip()
         metadata: dict[str, Any] = {
             "runtime": "command",
             "command": self.command,

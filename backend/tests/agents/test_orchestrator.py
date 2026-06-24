@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -1082,11 +1083,73 @@ async def test_cancel_async_delegation_marks_task_killed(monkeypatch):
         parent_agent_id=owner_id,
     )
 
-    status = await cancel_async_delegation(handle.task_id, parent_agent_id=owner_id)
+    status = await cancel_async_delegation(handle.task_id, parent_agent_id=owner_id, force=True)
 
     assert status["status"] == "killed"
     assert status["task_id"] == handle.task_id
     assert any(kind == "update" and payload["status"] == "killed" for kind, payload in persisted)
+
+
+@pytest.mark.asyncio
+async def test_cancel_async_delegation_defers_fresh_running_task_without_force(monkeypatch):
+    from app.agents.orchestrator import cancel_async_delegation, check_async_delegation, delegate_async
+
+    never_finish = asyncio.Event()
+    parent_agent_id = uuid4()
+
+    async def fake_invoke(_invocation):
+        await never_finish.wait()
+        return SimpleNamespace(content="done")
+
+    async def fake_create_task(**kwargs):
+        return kwargs["task_id"]
+
+    async def fake_update_task(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke)
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_task)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_task)
+
+    target = SimpleNamespace(id=uuid4(), name="FreshWorker", role_description="")
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    handle = await delegate_async(
+        target=target,
+        target_model=model,
+        conversation_messages=[{"role": "user", "content": "scan a large knowledge base"}],
+        owner_id=uuid4(),
+        session_id="sess-fresh-cancel",
+        parent_agent_id=parent_agent_id,
+    )
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=75)
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == handle.task_id
+        return {
+            "task_id": task_id,
+            "status": "running",
+            "parent_agent_id": str(parent_agent_id),
+            "created_at": started_at.isoformat(),
+            "started_at": started_at.isoformat(),
+        }
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+
+    status = await cancel_async_delegation(
+        handle.task_id,
+        parent_agent_id=parent_agent_id,
+        min_runtime_seconds=180.0,
+    )
+
+    assert status["status"] == "running"
+    assert status["cancellation_deferred"] is True
+    assert "still running" in status["result"]
+
+    running = await check_async_delegation(handle.task_id, parent_agent_id=parent_agent_id)
+    assert running["status"] == "running"
+
+    never_finish.set()
+    await check_async_delegation(handle.task_id, parent_agent_id=parent_agent_id)
 
 
 @pytest.mark.asyncio

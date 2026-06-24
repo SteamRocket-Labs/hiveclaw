@@ -1,6 +1,6 @@
 [project]
 name = "hive-bridge"
-version = "0.1.4"
+version = "0.1.5"
 description = "Hive Local Agent Bridge CLI and WebSocket channel runner"
 requires-python = ">=3.11"
 dependencies = [

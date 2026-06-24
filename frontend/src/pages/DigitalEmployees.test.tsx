@@ -30,7 +30,7 @@ vi.mock('@tanstack/react-query', () => ({
         created_at: '2026-06-20T00:00:00Z',
         last_active_at: '2026-06-23T07:00:00Z',
         execution_mode: 'standard',
-        agent_type: 'openclaw',
+        agent_type: 'local_agent',
       },
     ],
     isLoading: false,
@@ -59,9 +59,13 @@ describe('DigitalEmployees page', () => {
     const markup = renderToStaticMarkup(<DigitalEmployees />);
 
     expect(markup).toContain('Digital Employees');
-    expect(markup).toContain('Create employee');
+    expect(markup).toContain('Create via HR');
+    expect(markup).toContain('employee-directory-create');
+    expect(markup).toContain('class="employee-grid employee-grid-flat"');
     expect(markup).toContain('Research Lead');
     expect(markup).toContain('Local Runner');
+    expect(markup).toContain('class="employee-card-body"');
+    expect(markup).toContain('class="employee-card-copy"');
     expect(markup).toContain('Market research and synthesis');
     expect(markup).toContain('Owned by me');
     expect(markup).toContain('Company shared');
@@ -72,6 +76,7 @@ describe('DigitalEmployees page', () => {
     expect(markup).toContain('href="/agents/agent-1#knowledge"');
     expect(markup).toContain('href="/agents/agent-1#workflows"');
     expect(markup).toContain('href="/agents/agent-1#relationships"');
-    expect(markup).toContain('href="/local-agents"');
+    expect(markup).toContain('href="/agents/agent-2#workspace"');
+    expect(markup).not.toContain('href="/local-agents"');
   });
 });

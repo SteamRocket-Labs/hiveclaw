@@ -45,12 +45,17 @@ async def test_delegate_task_routes_through_runtime_delegation(monkeypatch):
     async def fake_delegate(from_agent_id_arg, args):
         captured["from_agent_id"] = from_agent_id_arg
         captured["args"] = args
-        return json.dumps({
-            "task_id": "runtime-task-1",
-            "status": "running",
-            "target_agent": "目标代理",
-            "trace_id": "trace-1",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "task_id": "runtime-task-1",
+                "session_id": "child-session-1",
+                "child_session_id": "child-session-1",
+                "status": "running",
+                "target_agent": "目标代理",
+                "trace_id": "trace-1",
+            },
+            ensure_ascii=False,
+        )
 
     monkeypatch.setattr("app.services.agent_tool_domains.messaging._delegate_to_agent_async", fake_delegate)
 
@@ -66,7 +71,8 @@ async def test_delegate_task_routes_through_runtime_delegation(monkeypatch):
     assert captured["args"]["agent_name"] == "目标代理"
     assert captured["args"]["message"] == "整理需求\n\n输出要点和风险"
     assert result["task_id"] == "runtime-task-1"
+    assert result["session_id"] == "child-session-1"
+    assert result["child_session_id"] == "child-session-1"
     assert result["status"] == "running"
     assert result["from_agent"] == "源代理"
     assert result["to_agent"] == "目标代理"
-

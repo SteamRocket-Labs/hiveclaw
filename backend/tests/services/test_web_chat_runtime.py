@@ -70,6 +70,32 @@ def test_cc_session_task_types_are_executable_chat_runs():
     assert not runtime.is_executable_chat_task_type("delegation")
 
 
+def test_terminal_task_update_persists_and_projects_terminal_reason():
+    import app.services.web_chat_runtime as runtime
+    from app.kernel.contracts import TerminalReason
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        status="running",
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        metadata_json={"turn_id": "turn-1"},
+    )
+
+    runtime._apply_terminal_task_update(
+        task,
+        status="failed",
+        result_summary="provider failed",
+        metadata_json={"terminal_reason": TerminalReason.PROVIDER_ERROR.value},
+    )
+    payload = runtime._runtime_task_to_run(task)
+
+    assert task.metadata_json["terminal_reason"] == "provider_error"
+    assert payload["terminal_reason"] == "provider_error"
+
+
 @pytest.mark.asyncio
 async def test_completed_user_turn_bridges_to_goal_continuation(monkeypatch):
     import app.services.goal_continuation_service as goal_service

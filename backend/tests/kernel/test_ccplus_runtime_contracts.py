@@ -29,6 +29,47 @@ def test_agent_invocation_result_can_propagate_terminal_reason():
     assert result.terminal_reason == TerminalReason.HOOK_STOPPED
 
 
+def test_seal_orphan_tool_uses_appends_synthetic_tool_results():
+    from app.kernel.contracts import TerminalReason
+    from app.kernel.engine import _seal_orphan_tool_uses
+    from app.services.llm_utils import LLMMessage
+
+    messages = [
+        LLMMessage(
+            role="assistant",
+            content="calling",
+            tool_calls=[{"id": "call_missing", "function": {"name": "read_file", "arguments": "{}"}}],
+        )
+    ]
+
+    added = _seal_orphan_tool_uses(messages, terminal_reason=TerminalReason.USER_CANCEL)
+
+    assert added == 1
+    assert messages[-1].role == "tool"
+    assert messages[-1].tool_call_id == "call_missing"
+    assert "user_cancel" in str(messages[-1].content)
+
+
+def test_seal_orphan_tool_uses_does_not_duplicate_existing_results():
+    from app.kernel.contracts import TerminalReason
+    from app.kernel.engine import _seal_orphan_tool_uses
+    from app.services.llm_utils import LLMMessage
+
+    messages = [
+        LLMMessage(
+            role="assistant",
+            content="calling",
+            tool_calls=[{"id": "call_done", "function": {"name": "read_file", "arguments": "{}"}}],
+        ),
+        LLMMessage(role="tool", tool_call_id="call_done", content="done"),
+    ]
+
+    added = _seal_orphan_tool_uses(messages, terminal_reason=TerminalReason.USER_CANCEL)
+
+    assert added == 0
+    assert len(messages) == 2
+
+
 def test_tool_content_envelope_carries_ccplus_side_effect_channels():
     from app.tools.result_envelope import ToolContentEnvelope
 

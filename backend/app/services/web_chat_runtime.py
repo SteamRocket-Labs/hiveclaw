@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.core.permissions import is_agent_expired
-from app.kernel.contracts import ExecutionIdentityRef
+from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
 from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
@@ -99,6 +99,8 @@ def _runtime_task_to_run(task: RuntimeTask) -> dict[str, Any]:
     }
     if metadata.get("turn_id"):
         payload["turn_id"] = str(metadata["turn_id"])
+    if metadata.get("terminal_reason"):
+        payload["terminal_reason"] = str(metadata["terminal_reason"])
     return payload
 
 
@@ -129,6 +131,31 @@ def _apply_terminal_task_update(
         task.metadata_json = metadata
     if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
         task.completed_at = datetime.now(timezone.utc)
+
+
+def _terminal_reason_value_for_web_run(
+    *,
+    status: str,
+    result_reason: Any = None,
+    cancelled_by_user: bool = False,
+    plan_mode_terminal_error: bool = False,
+    llm_error: bool = False,
+) -> str:
+    if cancelled_by_user or status == "killed":
+        return TerminalReason.USER_CANCEL.value
+    if plan_mode_terminal_error:
+        return TerminalReason.CLARIFICATION_REQUIRED.value
+    if llm_error or status == "failed":
+        if isinstance(result_reason, TerminalReason) and result_reason != TerminalReason.TURN_STOP:
+            return result_reason.value
+        if isinstance(result_reason, str) and result_reason and result_reason != TerminalReason.TURN_STOP.value:
+            return result_reason
+        return TerminalReason.PROVIDER_ERROR.value
+    if isinstance(result_reason, TerminalReason):
+        return result_reason.value
+    if isinstance(result_reason, str) and result_reason:
+        return result_reason
+    return TerminalReason.TURN_STOP.value
 
 
 async def _maybe_continue_goal_after_terminal_turn(
@@ -2298,6 +2325,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             metadata_update = {
                 "cancelled_by_user": bool(cancel_event.is_set()),
                 "interactive_pause": summary,
+                "terminal_reason": _terminal_reason_value_for_web_run(
+                    status="killed" if cancel_event.is_set() else "completed",
+                    cancelled_by_user=bool(cancel_event.is_set()),
+                ),
             }
             finalized = await _finalize_web_chat_run_without_assistant(
                 run_uuid=run_uuid,
@@ -2440,6 +2471,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             metadata_update = {
                 "cancelled_by_user": bool(cancel_event.is_set()),
                 "interactive_pause": interactive_pause_summary,
+                "terminal_reason": _terminal_reason_value_for_web_run(
+                    status="killed" if cancel_event.is_set() else "completed",
+                    cancelled_by_user=bool(cancel_event.is_set()),
+                ),
             }
             finalized = await _finalize_web_chat_run_without_assistant(
                 run_uuid=run_uuid,
@@ -2481,7 +2516,14 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 else "completed"
             )
         )
-        metadata_update = {"cancelled_by_user": bool(cancel_event.is_set())}
+        terminal_reason = _terminal_reason_value_for_web_run(
+            status=status,
+            result_reason=getattr(result, "terminal_reason", None),
+            cancelled_by_user=bool(cancel_event.is_set()),
+            plan_mode_terminal_error=bool(plan_mode_terminal_error),
+            llm_error=is_llm_error_message(assistant_response),
+        )
+        metadata_update = {"cancelled_by_user": bool(cancel_event.is_set()), "terminal_reason": terminal_reason}
         if plan_mode_terminal_error:
             metadata_update["interactive_pause"] = "plan_mode_missing_terminal_tool"
         if interactive_pause_summary and not str(assistant_response or "").strip():
@@ -2561,11 +2603,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     runtime_metadata=terminal_runtime_metadata,
                     status="killed",
                     reason="user_cancelled",
-                    extra_metadata={"cancelled_by_user": True},
+                    extra_metadata={"cancelled_by_user": True, "terminal_reason": TerminalReason.USER_CANCEL.value},
                 )
             return
         result_summary = f"Web chat run failed: {type(exc).__name__}"
-        metadata_update = {"error": str(exc)[:500]}
+        metadata_update = {"error": str(exc)[:500], "terminal_reason": TerminalReason.PROVIDER_ERROR.value}
         try:
             runtime_task, agent, user, *_rest = await _load_runtime_context(run_uuid)
             session_id = str(runtime_task.parent_session_id)

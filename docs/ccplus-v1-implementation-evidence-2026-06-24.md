@@ -80,3 +80,70 @@ All checks passed!
 
 - Package A/B 还需要继续补所有入口的 accepted-prompt-first proof、terminal reason 持久化/backfill、orphan tool_use reconciliation 和 completed subagent resume。
 - Package A1 latency-hiding 只建立了执行入口，尚未完成 StreamingToolExecutor / prefetch / tool-summary 的实现或显式排除裁决。
+
+## 2. Package B：Terminal Reason Projection + Orphan Tool Use Sealing
+
+状态：完成 terminal reason 的 web runtime 投影与 provider-neutral orphan tool_use sealing；completed subagent resume 仍未收口。
+
+变更范围：
+
+- `backend/app/services/web_chat_runtime.py`：
+  - `_runtime_task_to_run()` 对外投影 `terminal_reason`。
+  - `_terminal_reason_value_for_web_run()` 归一化 completed/failed/killed 与 kernel result reason。
+  - web run terminal metadata 写入 `terminal_reason`，TURN hook metadata 同步携带。
+- `backend/app/kernel/engine.py`：
+  - 新增 `_seal_orphan_tool_uses()`，在异常/终止持久化前为 dangling assistant tool_call 追加 synthetic tool result。
+  - `_persist_before_exit()` 统一调用 sealing helper，保证 replay/resume 不留下未配对 tool_use。
+- `backend/tests/kernel/test_ccplus_runtime_contracts.py`：
+  - 增加 orphan tool_use synthetic result 测试。
+- `backend/tests/services/test_web_chat_runtime.py`：
+  - 增加 terminal task update 持久化与 projection 测试。
+
+Red phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_web_chat_runtime.py -q -k terminal_task_update
+pytest tests/kernel/test_ccplus_runtime_contracts.py -q -k seal_orphan
+```
+
+失败证据：
+
+```text
+KeyError: 'terminal_reason'
+ImportError: cannot import name '_seal_orphan_tool_uses'
+```
+
+Green phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py -q -k "ccplus or seal_orphan or terminal_task_update"
+```
+
+结果：
+
+```text
+8 passed, 55 deselected, 4 warnings
+```
+
+Lint：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+ruff check app/kernel/engine.py app/services/web_chat_runtime.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
+剩余边界：
+
+- completed subagent session resume 仍未实现；后续应在 SessionGraph / agent_session_continuation 包中处理。
+- accepted-prompt-first 当前已有 web/channel flush tests，本轮未扩展到全部 9 个入口；最终完成证明仍需跑 reconciliation 第 7 节矩阵。

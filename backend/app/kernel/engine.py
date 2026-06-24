@@ -1562,6 +1562,48 @@ def _sanitize_tool_calls_for_history(tool_calls: list[dict]) -> list[dict]:
     return sanitized
 
 
+def _seal_orphan_tool_uses(
+    messages: list[LLMMessage],
+    *,
+    terminal_reason: TerminalReason,
+) -> int:
+    """Append synthetic tool results for assistant tool calls that never completed.
+
+    Providers require every assistant ``tool_call`` to have a paired tool result
+    before a conversation is resumed. Terminal paths can stop between the
+    assistant tool_use and the tool result append; this helper makes the sealed
+    transcript replayable without pretending the tool actually ran.
+    """
+
+    completed_tool_call_ids = {
+        str(message.tool_call_id)
+        for message in messages
+        if message.role == "tool" and getattr(message, "tool_call_id", None)
+    }
+    missing: list[str] = []
+    for message in messages:
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        for tool_call in message.tool_calls:
+            tool_call_id = str(tool_call.get("id") or "")
+            if tool_call_id and tool_call_id not in completed_tool_call_ids:
+                missing.append(tool_call_id)
+                completed_tool_call_ids.add(tool_call_id)
+
+    for tool_call_id in missing:
+        messages.append(
+            LLMMessage(
+                role="tool",
+                tool_call_id=tool_call_id,
+                content=(
+                    "[Synthetic tool result] The turn ended before this tool call produced a result; "
+                    f"terminal_reason={terminal_reason.value}."
+                ),
+            )
+        )
+    return len(missing)
+
+
 def _llm_messages_to_dicts(messages: list[LLMMessage]) -> list[dict]:
     """Convert LLMMessage list to plain dicts for compression."""
     result: list[dict] = []
@@ -2151,11 +2193,16 @@ class AgentKernel:
         runtime_config: RuntimeConfig,
         final_content: str,
         api_messages: list[LLMMessage] | None = None,
+        terminal_reason: TerminalReason = TerminalReason.TURN_ABORT,
     ) -> None:
         """Best-effort memory persistence on abnormal exit paths."""
         if not request.agent_id or not runtime_config.tenant_id:
             return
         try:
+            if api_messages is not None:
+                sealed_count = _seal_orphan_tool_uses(api_messages, terminal_reason=terminal_reason)
+                if sealed_count:
+                    logger.info("[Kernel] Sealed %d orphan tool_use block(s) before terminal persist", sealed_count)
             await _maybe_await(
                 self._deps.persist_memory(
                     agent_id=request.agent_id,

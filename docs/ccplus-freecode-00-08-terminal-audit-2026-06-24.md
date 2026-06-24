@@ -4,6 +4,8 @@
 状态：当前 CCPlus 00-08 总排查入口
 范围：FreeCode `docs/00` 到 `docs/08`、FreeCode 源码语义、Codex 可吸收的工程优势、Hive 当前实现和已有文档。
 上位契约：`docs/ccplus-north-star-contract-2026-06-24.md`
+二次复核合并裁决：`docs/ccplus-v1-deep-verification-reconciliation-2026-06-24.md`
+二次复核证据账本：`docs/ccplus-freecode-00-08-deep-verification-2026-06-24.md`
 
 ## 0. 总结论
 
@@ -23,6 +25,28 @@ Hive 在“CC 作为底层，吸收 Codex 优势，成为 CCPlus”这个目标�
 可作为：CCPlus 最终断点清单、实施顺序、验收矩阵。
 不可作为：已完成上线证明、营销口径、跳过测试/生产验证的依据。
 ```
+
+## 0.0 文档层级与二次复核合并状态
+
+本文件仍是 CCPlus V1 / 00-08 的主入口。`ccplus-freecode-00-08-deep-verification-2026-06-24.md` 已被采纳为二次复核、证据账本和技术债总账；`ccplus-v1-deep-verification-reconciliation-2026-06-24.md` 是两者之间的口径统一文档。
+
+合并后的执行规则：
+
+1. 本文负责 00-08 的主线结构、Scope Matrix、Package A-G 和完成定义。
+2. deep-verification 负责 267 条原子 verdict、`file:line` 证据、D-01 到 D-32 债务账本。
+3. reconciliation 负责统一 P0/P1 口径，并指定哪些债务必须回填到 V1 执行包。
+4. 若三者出现读法冲突，按 North Star -> reconciliation -> terminal-audit -> deep-verification 证据账本的顺序裁决；证据行号必须按当前 checkout 重验。
+
+关键口径：
+
+```text
+deep-verification 的“真实 P0 = 0”
+  = 未发现行为级根本反向断裂
+  != V1 已完成
+  != 本文 P0 工程阻断可降级
+```
+
+本文的 P0 仍指上线前必须冻结的统一契约和跨入口闭环；deep-verification 的 P1 行为债和 P1/P2 覆盖债必须进入第 6 节执行包，不允许静默遗留。
 
 最终实现方向应该是：
 
@@ -180,6 +204,7 @@ Provider-hosted / proprietary remote 能力不做 exact parity。它们只能映
 | A09 Subagent / Team | AgentTool/subagent/team local semantics in scope | AgentTool 支持 fork/background/team/isolation/cwd，child transcript | `spawn_subagent`、`RuntimeTask(task_type=subagent)`、child session、digest、governed tools 存在 | thread spawn/list/send/wait/status 控制面 | partial-high；缺 session-first delegation / team product loop proof |
 | A10 Workflow Boundary | Workflow 是 deterministic orchestration，不是 Plan Mode/Subagent | FreeCode 的 task/team/agent 语义不是固定工作流控制器 | `preview_workflow` / `start_workflow` 明确 data-only、preview-first、RuntimeTask workflow | structured checklist/progress 可吸收 | code-level aligned；需避免被 Plan Mode 或 Subagent 偷换 |
 | A11 Skill / Progressive Disclosure | Skill 是 capability capsule；loading 不等于执行 | skill/deferred tool 在 compact 后恢复；schema 未加载时有 hint | `load_skill` 只加 context；`tool_search` 解锁 deferred capability；loader 限定 references/scripts/templates/assets/evals | dynamic tools defer_loading、tool_search | partial-high；缺 `ExtensionRegistryV1` 总账 |
+| A11b Command Layer / Slash Command | local command layer 是 CC local runtime scope 内能力 | FreeCode command 七源汇流、prompt/local/local-jsx 三类型、bridge-safety、mid-session availability re-eval | Hive 有 `command_registry.py`、`api/commands.py`、`session_command_runtime.py`，但本文前版没有矩阵行 | typed command availability、tool/search/workbench exposure 可吸收 | P1：纳入 Package G，验证 `command_registry`、Local Agent Channel safety、mid-session gating |
 | A12 Hooks | CC blocking/rewrite hooks MUST map | PreToolUse/Stop/UserPromptSubmit 可 block，hook 可改 input / additionalContext / MCP output | `HookEvent`/`HookRegistry` 有 CC parity catalog、runtime consumers、blocking-supported events | typed app-server hook event surface | P0：证明 block/rewrite/stop-hook resume 在所有入口闭环 |
 | A13 Extension / MCP / Plugin | local extension semantics MUST；remote proprietary excluded | MCP、hooks、skills、plugins 属扩展层 | MCP authz、tool registry、skills/workflow/subagent 分层存在；durable install/governance 总账未完全统一 | dynamic tools、request plugin install approval meta | P1：建立 `ExtensionRegistryV1` 和 audit trail |
 | A14 Provider-hosted Remote | NOT parity requirement | FreeCode 中 CCR/S-Work/Ant-only remote 不是 local CLI semantics | North Star 明确 remote proprietary 只能 Hive-native replacement | Codex remote/service 能力不得改 CC boundary | scope-excluded for parity；可另立 Hive-native remote workstation |
@@ -196,6 +221,12 @@ Provider-hosted / proprietary remote 能力不做 exact parity。它们只能映
 | P0 | `PermissionProfileV1` | 03 的 CC permission mode 与 Hive enterprise gate / cloud sandbox 没合并为 per-turn profile | plan/default/acceptEdits/bypass/local/cloud profile matrix 全测过 |
 | P0 | `SessionWorkbenchV1` single source | 05 的 UI、API、T0、DB read model、RuntimeTask 如果继续分散，产品表面会和真实 runtime 脱节 | 同一 session 可 replay/export/fork/steer/cancel，并能从 T0 还原 |
 | P0 | Hook blocking/rewrite 全入口闭环 | 08 的 hooks 如果只在 catalog 存在、不在所有入口可阻断/改写/恢复，就是假 parity | USER_PROMPT_SUBMIT / PRE_TOOL_USE / STOP / SUBAGENT_START blocking tests 通过 |
+| P1 | Latency-hiding overlap 显式裁决 | deep-verification 发现 StreamingToolExecutor mid-stream tool execution 缺失；memory/skill prefetch 与 tool-use summary overlap 也未入包 | 新增 Package A1；实现或写明 explicit non-parity / accepted-engineering-gap，不能静默缺席 |
+| P1 | Command layer parity | command registry/API/runtime 存在，但前版 00-08 matrix 没有对应行，FreeCode command layer 属 local runtime scope | Package G 加 Command 子节；`pytest -k command_registry` 覆盖七源汇流、availability gating、bridge safety |
+| P1 | run_command subcommand + TOCTOU safety | 危险命令整串正则无法覆盖 `&&`/`||`/pipe/`;` 子命令，也缺 run_command 路径 shell-expansion 拒绝 | Package C 增加 command safety tests：per-subcommand verdict + UNC/`~user`/`$VAR`/`$(cmd)`/glob 拒绝 |
+| P1 | prompt-cache byte stability / resume idempotence | resume 当前会 flat 50K 重截断并合成 `call_{id}`；无 frozen ContentReplacementRecord | Package D 建 content replacement record；resume byte-identical re-apply |
+| P1 | coordinator force-async | coordinator 仍可能阻塞式 delegate，违背 CC coordinator/worker 并行语义 | Package C + SessionGraphV1 强制 coordinator delegation background/async |
+| P1 | skill access-control flag | Skill catalog 目前无 disable-model-invocation/user-invocable/hidden 过滤 | Package G 增加 skill access flags 与 catalog filter tests |
 | P1 | ContextPolicyV1 | 04 已接近，但要证明 tool-result eviction、microcompact、compaction、reactive recovery、resume/fork 不互相打架 | context pressure tests + compact replay evidence |
 | P1 | SessionGraphV1 | 07 subagent/team/workflow/branch/fork 如果不统一成 session graph，协作状态会继续碎 | parent/child/team/workflow graph、background run、handoff tests |
 | P1 | Local/cloud coding profile | local runner 与 cloud external sandbox 必须能力等价、权限不同，不能以 cloud 限制当功能删除 | local_os_sandbox、vercel_sandbox、remote workstation profile proof |
@@ -589,33 +620,60 @@ ExtensionRegistryV1
 - hook blocking/rewrite semantics 按 event class 测试。
 - skill loading 只增加 context；执行仍必须经过 governed tools/workflows/subagents。
 - plugin/connector install 需要用户 exact explicit intent。
+- skill catalog 必须按 model-invocation/user-invocable/hidden access flags 过滤。
+- hook 必须区分 enum catalog parity、live emitter 覆盖和 output rewrite consumer。当前二次复核裁决为：42 enum 成员含 CC-27，但 7 个 `_DISABLED_NOOP` 无 live emitter；`updatedMCPToolOutput` 只有 schema，缺消费者。
+- Command layer 必须作为 08 的 cross-cutting extension surface 跟踪：FreeCode command 七源汇流、bridge-safety、mid-session availability re-eval 必须映射到 Hive `command_registry`、Local Agent Channel safety 和 availability gating。
 
 状态：partial。
 置信度：95%。
 
 ## 6. 最终实施方案
 
-这不是分阶段 MVP。下面是完整范围，只是按执行顺序排列。每个 package 都必须带 tests、需要时带 migration/backfill、API 文档、UI wiring 和生产验证。
+这不是分阶段 MVP。下面是完整范围，只是按执行顺序排列。每个 package 都必须带 tests、Migration / Backfill / Rollback 裁定、API 文档、UI wiring 和生产验证。不能再使用“需要时带 migration/backfill”作为延期措辞。
 
 ### Package A：冻结 Runtime Contract
 
 交付：
 
 - `AgentSessionV1`
-- `TurnStateV1`
+- `TurnStateV1`，含 terminal reason 枚举、terminal reconciliation、dangling tool_use synthetic result sealing
 - `SessionGraphV1`
-- `PermissionProfileV1`
-- `ContextPolicyV1`
+- `PermissionProfileV1`，含 plan/default/accept_edits/break_glass/local/cloud profile matrix
+- `ContextPolicyV1`，含 autocompact breaker 字段
 - `ToolSpecV1`
-- `ToolResultV1`
+- `ToolResultV1`，含 new_messages、context_modifier、permission_request、terminal_signal、t0_refs
 - `ExtensionRegistryV1`
+
+Migration / Backfill / Rollback：
+
+- backfill 历史 `RuntimeTask` / `ChatSession` 可推断 terminal reason；无法推断的只标 `unknown_legacy`，不能写成 success。
+- backfill 散落 permission mode / sandbox / approval 字段到 `PermissionProfileV1` projection。
+- rollback 只停用新 projection，不能删除 T0 raw evidence。
 
 验证命令：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
-pytest tests -q -k "session_contract or turn_state or permission_profile or tool_contract"
+pytest tests -q -k "session_contract or turn_state or permission_profile or tool_contract or terminal_reconciliation"
+```
+
+### Package A1：Latency-hiding Overlap 显式裁决
+
+二次复核新增此包，防止 `StreamingToolExecutor`、memory/skill prefetch、tool-use summary overlap 静默缺席。
+
+交付：
+
+- 评估并实现或显式排除 StreamingToolExecutor mid-stream tool execution。
+- 评估 memory prefetch、skill prefetch、tool-use summary overlap。
+- 若不实现，必须写入 explicit non-parity / accepted-engineering-gap 裁决，并说明为什么不会削弱 CCPlus V1。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests -q -k "streaming_tool_executor or latency_hiding or skill_prefetch or memory_prefetch"
 ```
 
 ### Package B：Accepted Prompt 和 Terminal State 闭环
@@ -642,25 +700,132 @@ accepted user input
 - Agent team member continuation
 - Subagent wake/resume
 
+新增闭环：
+
+- abort / fallback / cancel / hook-stop / loop-guard 均 stamp terminal reason。
+- interrupt / abort / fallback 时，每个 dangling tool_use 必须补合成 tool_result 再 seal turn。
+- completed subagent session 必须支持 follow-up resume，或显式定义为 Hive-native new-spawn-only non-parity。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests -q -k "accepted_prompt_first or terminal_reason or orphan_tool_use or subagent_resume"
+```
+
 ### Package C：Tool 和 Permission 闭环
 
 统一 tool metadata、tool result side effects、preflight/gate/checkpoint/approval、request-permission flow、local/cloud sandbox policy、patch/exec process-session behavior。cloud path 绝不能通过 raw host subprocess 执行 coding commands。
+
+新增闭环：
+
+- `run_command` 做 `&&` / `||` / `|` / `;` per-subcommand dangerous detection。
+- `run_command` 参数路径拒绝 UNC、`~user`、`$VAR`、`${}`、`$(cmd)`、glob 等高风险语法。
+- mapped capability 无 policy 行必须 escalate 或 deny，不得 silent allow。
+- subagent 与 delegation deny list 使用单一真源。
+- coordinator delegation 强制 async/background，不得阻塞 leader loop。
+- destructive/Bash 并行批错误时取消同批 in-flight sibling，不取消父 turn。
+
+Migration / Backfill / Rollback：
+
+- 迁移现有 tool capability map 到 `ToolSpecV1` / `PermissionProfileV1`。
+- 对 capability policy 做 dry-run audit，列出会从 allow 变成 escalate/deny 的项。
+- rollback 不删除 audit records，只回退 policy projection。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests -q -k "tool_result or command_safety or permission_profile or capability_gate or coordinator_force_async or subagent_deny"
+```
 
 ### Package D：Context 和 Compaction 闭环
 
 统一 thresholds、result budgets、typed trace、recovery manifest、reactive retry、UI-visible compaction events、post-compact restoration。LLM 必须获得完整相关输入和充足输出预算，机械截断只能是 observable fallback。
 
+新增闭环：
+
+- 建 `ContentReplacementRecord`，冻结每个 tool_call_id 的 eviction 决策与模型所见字节。
+- resume byte-identical re-apply，不再 flat 50K 重截断和合成 `call_{id}`。
+- tool result eviction 使用 exclusive-create-or-skip，避免 replay 静默重写。
+- `/context` 诊断只能展示真实 live 阶段；snip/collapse/blocking 这类未实现阶段必须删除或标 `not_implemented`。
+- `ContextPolicyV1` 纳入 autocompact failure breaker limit 和 half-open seconds。
+
+Migration / Backfill / Rollback：
+
+- 新 ContentReplacementRecord 对后续 turn 强制 byte-stability。
+- 历史缺失原始 tool_call_id 的记录只能标 `legacy_synthetic_id`，不能冒充原始 streamed id。
+- rollback 不删除已落盘 tool result 文件，只停用新 projection。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests -q -k "context_policy or content_replacement or resume_byte_identical or diagnostic_context or tool_result_eviction"
+```
+
 ### Package E：UI Workbench 闭环
 
 Frontend 必须从同一个 session contract 渲染 active turn、transcript timeline、tool calls、approvals/checkpoints、hooks、compactions、branches/forks、subagent/team graph、permission profile、context policy。
+
+state-diff 副作用通道可作为优化项；若不实现，必须明确它不阻断 `SessionWorkbenchV1`。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests -q -k "session_workbench or timeline_projection or active_turn"
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run build
+```
 
 ### Package F：Memory 边界闭环
 
 保留 Hive-native memory，但补上 T0/T2/T3/soul bridge、activation/relevance semantics、stale/source-ref disclosure、stop-hook/turn-stop extraction timing、skill candidate growth from evidence only。
 
+新增闭环：
+
+- memory age 渲染一致，不让 stale/fresh/index 表面互相漂移。
+- 增加 TRUSTING_RECALL 段：当 memory 提到代码文件、函数、flag、schema 时，agent 必须 grep/file-check 后再推荐。
+- Memory 仍是 Hive-native，不迁移 T3 truth source 到外部 provider。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests -q -k "memory_activation or source_refs or trusting_recall or memory_age or memory_write_gate"
+```
+
 ### Package G：Extension 闭环
 
 统一 skill、MCP、hooks、workflow packs、tool packs、plugin-like installs。所有 extension surface 都需要 trust、provenance、enablement、permission requirements、runtime effects、audit refs。
+
+新增闭环：
+
+- Command 层加入 extension/runtime matrix：七源汇流、Local Agent Channel bridge safety、mid-session availability gating。
+- skill frontmatter 增加 disable-model-invocation / user-invocable / hidden 等 access-control flags；catalog 按 flag 过滤。
+- hook enum 覆盖、live emitter 覆盖、output rewrite consumer 分开验收。
+- `updatedMCPToolOutput` 必须接消费者，或从 schema 删除。
+- MCP discovery union 补 prompts/list -> commands、skill resources -> skills，或逐项写明排除裁决。
+
+Migration / Backfill / Rollback：
+
+- backfill 现有 MCP、skill、hook、workflow、plugin installs 到 `ExtensionRegistryV1` projection。
+- install trust / provenance / audit refs 必须可回放。
+- rollback 不删除 tenant installed extension，只停用新 registry projection。
+
+验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests -q -k "extension_registry or command_registry or skill_access or hook_emitter or mcp_discovery"
+```
 
 ## 7. 明确不能做的事
 
@@ -676,27 +841,37 @@ Frontend 必须从同一个 session contract 渲染 active turn、transcript tim
 
 ## 8. 完成定义
 
-“CC as base + Codex advantages = CCPlus” 只有在下面全部成立时才能算完成：
+“CC as base + Codex advantages = CCPlus V1” 只有在下面全部可执行通过时才能算完成。任何条目没有测试、回放证据或生产/本地双侧验证，都只能算 implementation-pending。
 
-1. `docs/README.md` 指向 00-08 总排查入口，并且每章都有 implementation owner contract。
-2. 每个 runtime entry point 都有 accepted-prompt-first tests。
-3. 每个 turn 都有 `TurnStateV1` 和 terminal reason。
-4. tool execution 使用 `ToolSpecV1` / `ToolResultV1` 语义。
-5. permission behavior 用 `PermissionProfileV1` 表达，而不是散落 mode strings。
-6. context behavior 用 `ContextPolicyV1` 表达，并带 trace/recovery。
-7. UI 读取同一个 `SessionWorkbenchV1`。
-8. Memory exact-copy 被排除，但 CC memory laws 被明确映射。
-9. Subagent/team/session graph 可 replay、可 resume。
-10. Extensions 由 `ExtensionRegistryV1` 治理。
-11. cloud 和 local coding 都通过合适 sandbox/runtime provider 存在。
-12. production verification 确认没有 runtime path 绕过契约。
+| 完成项 | 必须证明 | 最低验收命令或证据 |
+|---|---|---|
+| 00 Architecture | 所有入口 accepted prompt 早于 kernel invocation | `pytest -q -k "accepted_prompt_first"`，覆盖 web chat、WS compat、local bridge、channels、Plan Mode、Goal、Workflow leaf、team member、subagent |
+| 01 Query Engine | `TurnStateV1` 与 terminal reason 覆盖所有 terminal path | `pytest -q -k "turn_state or terminal_reason"` |
+| 02 Tool System | `ToolSpecV1` / `ToolResultV1` 支持 side effects、permission request、terminal signal、T0 refs | `pytest -q -k "tool_contract or tool_result"` |
+| 03 Permissions | `PermissionProfileV1` 覆盖 plan/default/acceptEdits/bypass-local/cloud，mapped no-policy 不 silent allow | `pytest -q -k "permission_profile or capability_gate"` |
+| 04 Context | context policy、content replacement、resume byte stability、diagnostic truth surface 全部可测 | `pytest -q -k "context_policy or content_replacement or resume_byte_identical or diagnostic_context"` |
+| 05 State/UI | `SessionWorkbenchV1` 可从 T0 + DB projection replay active turn/timeline/tool/approval/graph | backend projection tests + `cd frontend && npm run build` |
+| 06 Memory | Memory exact-copy excluded，但 CC memory laws、source_refs、TRUSTING_RECALL、stale disclosure 通过 | `pytest -q -k "memory_activation or source_refs or trusting_recall"` |
+| 07 Subagents/Teams | child session refs、coordinator force-async、completed child resume 或显式 non-parity 裁决 | `pytest -q -k "session_graph or coordinator_force_async or subagent_resume"` |
+| 08 Extensions | `ExtensionRegistryV1`、skill access flags、hook emitter/rewrite、MCP discovery、command registry 通过 | `pytest -q -k "extension_registry or skill_access or hook_emitter or mcp_discovery or command_registry"` |
+| Local/cloud coding | local runner、cloud external sandbox、permission profile、transcript/audit refs 全部存在 | provider matrix tests + sandbox smoke tests |
+| No bypass | 没有入口绕过 accepted prompt、kernel、ToolRuntimeService、ActionPreflight、Memory Gate/Platform Gate | static audit + targeted tests，命令需随实现 PR 固化 |
 
 当前诚实状态是：
 
 ```text
 CCPlus 方向：正确
-CC base：部分实现，未完全闭环
-Codex 优势：部分吸收
+行为级根本反向断裂：二次复核未发现
+CC base：强 substrate，但统一契约和跨入口证明未完全闭环
+Codex 优势：部分吸收，仍只能作为工程控制增强
 Hive Memory：正确保持 native，但必须位于 base 之上
 终态 CCPlus 声明：目前还不成立
 ```
+
+最终上线完成证明必须附：
+
+1. 上表命令的实际输出。
+2. 本地 runner / cloud external sandbox 双侧 smoke evidence。
+3. T0 replay/export evidence。
+4. production 或 production-equivalent 环境的 no-bypass audit。
+5. 文档同步：`docs/README.md`、本文、reconciliation、deep-verification 债务状态必须一致。

@@ -1,7 +1,7 @@
-# CCPlus Phase 2：公司控制面、权限、Relationship 与 A2A 证据设计
+# CCPlus Round 2 / V2：公司控制面、权限、Relationship 与 A2A 证据设计
 
 日期：2026-06-24
-状态：Phase 2 设计入口；建立在 `ccplus-freecode-00-08-terminal-audit-2026-06-24.md` 之上
+状态：CCPlus Round 2 / V2 设计入口；建立在 V1 `ccplus-freecode-00-08-terminal-audit-2026-06-24.md` 之上
 范围：Company Permission Control Plane、RelationshipGraph、Project/Agent Link、A2A Session Evidence、Hive Connect / Local Agent Channel 映射
 
 ## 0. 定位
@@ -19,11 +19,14 @@ CC / FreeCode local runtime semantics
 
 因此本文档只处理“在 CCPlus 基底之上，Hive 如何变成公司级 Agent 控制中台”。它不重新定义 CC 能力边界，也不把 Codex thread/turn API 当作语义基线。
 
-一句话结论：
+版本关系：
 
 ```text
-00-08 文档定义 agent runtime 底座。
-本文档定义公司级控制面如何叠加到这个底座上。
+CCPlus V1 / Round 1:
+  00-08 文档定义 agent runtime 底座。
+
+CCPlus V2 / Round 2:
+  本文档定义公司级控制面如何叠加到这个底座上。
 ```
 
 ## 1. 北极星约束
@@ -34,7 +37,7 @@ Hive 的创新能力必须满足三个条件：
 2. 不让 Codex 工程控制替代 CC 语义基线。
 3. 所有公司级权限、Relationship、A2A、Hive Connect、Memory/Iter 都必须有 evidence、approval、audit 和 replay 面。
 
-本文档把这些 Hive-native 能力收敛为五个 Phase 2 契约：
+本文档把这些 Hive-native 能力收敛为五个 Round 2 / V2 契约：
 
 ```text
 CompanyPermissionControlPlaneV1
@@ -79,7 +82,7 @@ L4. Hive Native Innovation
 
 | 能力 | 当前实现 | 当前判断 |
 |---|---|---|
-| CCPlus 00-08 基底审计 | `docs/ccplus-freecode-00-08-terminal-audit-2026-06-24.md` | 已作为 Phase 2 的基础文档 |
+| CCPlus V1 / 00-08 基底审计 | `docs/ccplus-freecode-00-08-terminal-audit-2026-06-24.md` | 已作为 Round 2 / V2 的基础文档 |
 | A2A Session 设计 | `docs/a2a-session-substrate-design-2026-06-24.md` | 已经明确 A2A 本质上应该是 Session |
 | A2A collaboration policy | `backend/app/services/a2a_collaboration_policy.py` | 已有 same-owner implicit / cross-owner collaboration group fail-closed 规则 |
 | A2A messaging hard gate | `backend/app/services/agent_tool_domains/messaging.py` | `delegate` 和 `message` 路径已调用 `resolve_a2a_collaboration_policy` |
@@ -96,12 +99,12 @@ L4. Hive Native Innovation
 
 ```text
 当前不是空白。
-但这些能力还没有统一成一个 Phase 2 control-plane contract。
+但这些能力还没有统一成一个 Round 2 / V2 control-plane contract。
 ```
 
 ## 4. 核心映射关系
 
-| CC / FreeCode / Codex 基底 | Hive Phase 2 映射 | 解释 |
+| CC / FreeCode / Codex 基底 | Hive Round 2 / V2 映射 | 解释 |
 |---|---|---|
 | CC `cwd` / project | Hive Agent / Project / Workspace | CC 的一个本地项目，在 Hive 云端应表达为一个 Agent 或 Agent-owned Project workspace。 |
 | CC session transcript | Hive `ChatSession` + T0 `events.jsonl` | 所有协作、A2A、Hive Connect 消息都必须最终收敛到 Session/T0。 |
@@ -344,7 +347,7 @@ post_approval_revalidation_required
 
 ## 9. Hive Connect / Local Agent Channel 映射
 
-Hive Connect 是 Phase 2 创新，但它不是另一个事实源。
+Hive Connect 是 Round 2 / V2 创新，但它不是另一个事实源。
 
 正确边界：
 
@@ -414,7 +417,7 @@ T0/transcript 是 truth。
 a2a-session-substrate-design
   -> 定义 A2A session 语义
 
-ccplus-company-control-plane-a2a-permission-design
+ccplus-round2-v2-company-control-plane-a2a-permission-design
   -> 定义 A2A session 如何被公司权限、Relationship、Hive Connect 管住
 ```
 
@@ -436,7 +439,7 @@ ccplus-company-control-plane-a2a-permission-design
 
 ### Step 0 - 保持 00-08 文档稳定
 
-00-08 文档继续作为基础，不把 Phase 2 详细设计塞进去。后续只加短引用。
+00-08 V1 文档继续作为基础，不把 Round 2 / V2 详细设计塞进去。后续只加短引用。
 
 ### Step 1 - 固化 CompanyPermissionControlPlaneV1
 
@@ -493,23 +496,23 @@ Control Plane 需要可见：
 
 ## 13. 与 018 第一阶段的关系
 
-本文档适合作为 018 第一阶段完成后的 Phase 2 总纲。
+本文档适合作为 018 第一阶段完成后的 CCPlus Round 2 / V2 总纲。
 
 判断规则：
 
 ```text
-018 Phase 1:
+018 第一阶段 / CCPlus V1:
   先把 00-08 的 CCPlus 基底做稳。
 
-018 Phase 2:
+018 第二阶段 / CCPlus V2:
   在基底上叠加公司级权限、Relationship、A2A evidence、Hive Connect。
 ```
 
-Phase 2 不能抢在基底前面改变 runtime 语义。它只能把已经稳定的 Session、Tool、Permission、T0、Workbench 契约提升成公司级控制面。
+Round 2 / V2 不能抢在基底前面改变 runtime 语义。它只能把已经稳定的 Session、Tool、Permission、T0、Workbench 契约提升成公司级控制面。
 
 ## 14. 验收标准
 
-Phase 2 完成不能只看功能能跑，必须看证据和治理是否闭环：
+Round 2 / V2 完成不能只看功能能跑，必须看证据和治理是否闭环：
 
 1. 同 owner Agent 协作可执行，但每次都有 A2A Session evidence。
 2. cross-owner Agent 协作在无 active group 时 fail-closed。
@@ -520,7 +523,7 @@ Phase 2 完成不能只看功能能跑，必须看证据和治理是否闭环：
 7. A2A delegation 返回和 UI 心智以 `session_id` 为主，而不是 task id。
 8. Session Workbench 能 replay A2A message、delegation、tool evidence、approval、final handoff。
 9. T0 是事实源，DB/UI/summary 只是 read model。
-10. 所有 Phase 2 创新都标为 Hive-native，不冒充 CC parity。
+10. 所有 Round 2 / V2 创新都标为 Hive-native，不冒充 CC parity。
 
 建议验证命令：
 
@@ -558,13 +561,13 @@ pytest tests/services/test_hive_connect_runtime_profile.py -q
 本文档的最终裁决：
 
 ```text
-00-08 是 CCPlus 基底。
-Permission / Relationship / A2A / Hive Connect 是 Phase 2 Hive-native control-plane overlay。
+CCPlus V1 / Round 1 是 00-08 基底。
+Permission / Relationship / A2A / Hive Connect 是 CCPlus V2 / Round 2 Hive-native control-plane overlay。
 ```
 
 Hive 的正确路线不是把这些创新塞进 CC baseline，而是在 baseline 上形成更强的公司级控制面。
 
-Phase 2 的目标是：
+Round 2 / V2 的目标是：
 
 ```text
 每个 Agent/Project 连接都有授权边。

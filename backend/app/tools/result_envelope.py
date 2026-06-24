@@ -34,6 +34,14 @@ class ToolContentEnvelope:
     text: str
     blocks: tuple[ToolResultBlock, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    new_messages: tuple[dict[str, Any], ...] = ()
+    context_modifier: dict[str, Any] | None = None
+    artifacts: tuple[dict[str, Any], ...] = ()
+    t0_refs: tuple[str, ...] = ()
+    invocation_span_id: str | None = None
+    mcp_meta: dict[str, Any] | None = None
+    permission_request: dict[str, Any] | None = None
+    terminal_signal: str | None = None
 
     def __str__(self) -> str:
         return self.text

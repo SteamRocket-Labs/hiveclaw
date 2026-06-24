@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -17,6 +18,19 @@ EventCallback = Callable[[dict], Awaitable[None] | None]
 ToolExecutor = Callable[..., Awaitable[str] | str]
 MidRunMessageDrain = Callable[[], Awaitable[list[dict]] | list[dict]]
 MessagePart = dict[str, Any]
+
+
+class TerminalReason(str, Enum):
+    TURN_STOP = "turn_stop"
+    TURN_ABORT = "turn_abort"
+    TOOL_BUDGET = "tool_budget"
+    LOOP_GUARD = "loop_guard"
+    USER_CANCEL = "user_cancel"
+    PROVIDER_ERROR = "provider_error"
+    HOOK_STOPPED = "hook_stopped"
+    CLARIFICATION_REQUIRED = "clarification_required"
+    QUOTA_DENIED = "quota_denied"
+    TENANT_RESOLUTION_ERROR = "tenant_resolution_error"
 
 
 @dataclass(slots=True)
@@ -79,6 +93,7 @@ class InvocationResult:
     final_tools: list[dict] | None = None
     parts: list[MessagePart] = field(default_factory=list)
     reasoning_signature: str | None = None
+    terminal_reason: TerminalReason = TerminalReason.TURN_STOP
 
 
 @dataclass(slots=True)

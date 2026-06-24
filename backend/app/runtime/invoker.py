@@ -28,7 +28,7 @@ from app.kernel import (
     RuntimeConfig,
     ToolExpansionResult,
 )
-from app.kernel.contracts import MidRunMessageDrain
+from app.kernel.contracts import MidRunMessageDrain, TerminalReason
 from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
 from app.models.user import User
@@ -198,6 +198,7 @@ class AgentInvocationResult:
     final_tools: list[dict] | None = None
     parts: list[dict] | None = None
     reasoning_signature: str | None = None
+    terminal_reason: TerminalReason = TerminalReason.TURN_STOP
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -1047,12 +1048,13 @@ async def _enforce_invocation_quota(request: AgentInvocationRequest) -> AgentInv
         if request.on_event:
             await _maybe_await(request.on_event(event))
         logger.warning("[Invoker] Token quota denied: %s", exc.message)
-        return AgentInvocationResult(content=exc.message, tokens_used=0)
+        return AgentInvocationResult(content=exc.message, tokens_used=0, terminal_reason=TerminalReason.QUOTA_DENIED)
     except Exception as exc:  # noqa: BLE001 — quota check is a hard admission gate
         logger.exception("[Invoker] Token quota check failed — blocking invocation")
         return AgentInvocationResult(
             content=f"Unable to verify token quota; request blocked ({type(exc).__name__}).",
             tokens_used=0,
+            terminal_reason=TerminalReason.PROVIDER_ERROR,
         )
 
 
@@ -1259,6 +1261,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
                 tokens_used=0,
                 final_tools=[],
                 parts=[],
+                terminal_reason=TerminalReason.HOOK_STOPPED,
             )
         if prompt_result and prompt_result.additional_contexts:
             hook_context = _format_hook_additional_contexts(prompt_result.additional_contexts)
@@ -1355,4 +1358,5 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         final_tools=result.final_tools,
         parts=result.parts,
         reasoning_signature=getattr(result, "reasoning_signature", None),
+        terminal_reason=getattr(result, "terminal_reason", TerminalReason.TURN_STOP),
     )

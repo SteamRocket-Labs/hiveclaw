@@ -18,7 +18,14 @@ from app.core.execution_context import (
     get_execution_identity,
     set_execution_identity,
 )
-from app.kernel.contracts import ChunkCallback, InvocationRequest, InvocationResult, RuntimeConfig, ThinkingCallback
+from app.kernel.contracts import (
+    ChunkCallback,
+    InvocationRequest,
+    InvocationResult,
+    RuntimeConfig,
+    TerminalReason,
+    ThinkingCallback,
+)
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.kernel.reminder_scheduler import (
     _WORK_LEDGER_ENABLED_METADATA_KEY,
@@ -548,13 +555,18 @@ def _humanize_llm_error(exc: Exception) -> str:
 
 
 def _build_error_result(
-    message: str, *, tokens_used: int = 0, final_tools: list[dict] | None = None
+    message: str,
+    *,
+    tokens_used: int = 0,
+    final_tools: list[dict] | None = None,
+    terminal_reason: TerminalReason = TerminalReason.PROVIDER_ERROR,
 ) -> InvocationResult:
     return InvocationResult(
         content=message,
         tokens_used=tokens_used,
         final_tools=final_tools,
         parts=[{"type": "text", "text": message}],
+        terminal_reason=terminal_reason,
     )
 
 
@@ -2023,6 +2035,7 @@ def _build_cancelled_result(
         tokens_used=tokens_used,
         final_tools=final_tools,
         parts=(collected_parts or []) + done_parts,
+        terminal_reason=TerminalReason.USER_CANCEL,
     )
 
 
@@ -2207,11 +2220,12 @@ class AgentKernel:
                 )
                 return _build_error_result(
                     f"[Error] Cannot invoke agent — tenant resolution failed: "
-                    f"{runtime_config.tenant_resolution_error}. Please retry or contact admin."
+                    f"{runtime_config.tenant_resolution_error}. Please retry or contact admin.",
+                    terminal_reason=TerminalReason.TENANT_RESOLUTION_ERROR,
                 )
             if runtime_config.quota_message:
                 # Note: final_tools not included — not yet resolved at this point
-                return _build_error_result(runtime_config.quota_message)
+                return _build_error_result(runtime_config.quota_message, terminal_reason=TerminalReason.QUOTA_DENIED)
             runtime_execution_mode = getattr(runtime_config, "execution_mode", None)
             if not request.invocation_scope and runtime_execution_mode:
                 request.invocation_scope = runtime_execution_mode
@@ -2553,6 +2567,11 @@ class AgentKernel:
                     tokens_used=accumulated_tokens,
                     final_tools=tools_for_llm,
                     parts=collected_parts + [{"type": "text", "text": message}],
+                    terminal_reason=(
+                        TerminalReason.TOOL_BUDGET
+                        if decision.reason == "total_tool_calls"
+                        else TerminalReason.LOOP_GUARD
+                    ),
                 )
 
             async def _pause_for_user_clarification() -> InvocationResult:
@@ -2564,6 +2583,7 @@ class AgentKernel:
                     tokens_used=accumulated_tokens,
                     final_tools=tools_for_llm,
                     parts=collected_parts,
+                    terminal_reason=TerminalReason.CLARIFICATION_REQUIRED,
                 )
 
             async def _inject_loop_guard_warning(decision: LoopGuardDecision) -> None:
@@ -4181,6 +4201,7 @@ class AgentKernel:
                     round_limit_msg,
                     tokens_used=accumulated_tokens,
                     final_tools=tools_for_llm,
+                    terminal_reason=TerminalReason.TOOL_BUDGET,
                 )
             finally:
                 await client.close()

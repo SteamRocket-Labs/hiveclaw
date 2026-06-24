@@ -1,0 +1,160 @@
+"""CCPlus V1 runtime contract dataclasses.
+
+These dataclasses are the stable shape that implementation packages refine.
+They intentionally avoid DB or framework imports so tests, projections, and
+runtime adapters can share them without coupling.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+
+from app.kernel.contracts import TerminalReason
+
+
+class TurnStatus(str, Enum):
+    ACCEPTED = "accepted"
+    RUNNING = "running"
+    WAITING_FOR_TOOL = "waiting_for_tool"
+    WAITING_FOR_USER = "waiting_for_user"
+    COMPACTING = "compacting"
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+    FAILED = "failed"
+
+
+class PermissionMode(str, Enum):
+    DEFAULT = "default"
+    PLAN = "plan"
+    ACCEPT_EDITS = "accept_edits"
+    DONT_ASK_LOW_RISK = "dont_ask_low_risk"
+    AUTO_REVIEW = "auto_review"
+    BREAK_GLASS = "break_glass"
+
+
+class SandboxProfile(str, Enum):
+    READ_ONLY = "read_only"
+    WORKSPACE_WRITE = "workspace_write"
+    FULL_ACCESS_LOCAL_ONLY = "full_access_local_only"
+    EXTERNAL_SANDBOX = "external_sandbox"
+
+
+@dataclass(frozen=True, slots=True)
+class PermissionProfileV1:
+    mode: PermissionMode = PermissionMode.DEFAULT
+    approval_policy: str = "granular"
+    writable_roots: tuple[str, ...] = ()
+    readable_roots: tuple[str, ...] = ()
+    denied_reads: tuple[str, ...] = ()
+    network_access: str = "governed"
+    sandbox: SandboxProfile = SandboxProfile.WORKSPACE_WRITE
+    request_permission_enabled: bool = True
+    allowed_tools: tuple[str, ...] = ()
+    denied_actions: tuple[str, ...] = ()
+    capability_policy_snapshot: dict[str, Any] = field(default_factory=dict)
+    default_decision: str = "escalate"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPolicyV1:
+    model_window: int
+    history_limit: int | None = None
+    output_reserve: int = 20_000
+    tool_result_inline_limit: int = 50_000
+    round_tool_result_budget: int = 200_000
+    microcompact_threshold: float = 0.60
+    autocompact_threshold: float = 0.75
+    prompt_too_long_retries: int = 3
+    compaction_prompt_version: str = "ccplus_v1"
+    recovery_manifest_required: bool = True
+    compaction_trace_required: bool = True
+    autocompact_failure_breaker_limit: int = 3
+    breaker_half_open_seconds: int = 600
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSpecV1:
+    name: str
+    capability: str
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] = field(default_factory=dict)
+    aliases: tuple[str, ...] = ()
+    read_only: bool = False
+    destructive: bool = False
+    concurrency_safe: bool = False
+    defer_loading: bool = False
+    always_load: bool = False
+    permission_axes: tuple[str, ...] = ()
+    sandbox_requirements: tuple[str, ...] = ()
+    mcp_info: dict[str, Any] = field(default_factory=dict)
+    result_budget: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultV1:
+    text: str
+    structured_content: dict[str, Any] | None = None
+    new_messages: tuple[dict[str, Any], ...] = ()
+    context_modifier: dict[str, Any] | None = None
+    artifacts: tuple[dict[str, Any], ...] = ()
+    t0_refs: tuple[str, ...] = ()
+    invocation_span_id: str | None = None
+    mcp_meta: dict[str, Any] | None = None
+    permission_request: dict[str, Any] | None = None
+    terminal_signal: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnStateV1:
+    session_id: str
+    runtime_task_id: str | None = None
+    turn_id: str | None = None
+    status: TurnStatus = TurnStatus.ACCEPTED
+    terminal_reason: TerminalReason | None = None
+    accepted_prompt_event_id: str | None = None
+    t0_event_refs: tuple[str, ...] = ()
+    active_tool_call_ids: tuple[str, ...] = ()
+    pending_steer_messages: tuple[dict[str, Any], ...] = ()
+    permission_profile_snapshot: PermissionProfileV1 | None = None
+    context_policy_snapshot: ContextPolicyV1 | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSessionV1:
+    session_id: str
+    root_session_id: str | None = None
+    parent_session_id: str | None = None
+    session_kind: str = "web_chat"
+    actor_type: str = "user"
+    source: str = "web"
+    workspace_roots: tuple[str, ...] = ()
+    permission_profile: PermissionProfileV1 = field(default_factory=PermissionProfileV1)
+    context_policy: ContextPolicyV1 | None = None
+    active_turn: TurnStateV1 | None = None
+    t0_segment_refs: tuple[str, ...] = ()
+    runtime_task_refs: tuple[str, ...] = ()
+    hook_event_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionDescriptorV1:
+    id: str
+    type: str
+    source: str
+    trust_level: str = "tenant"
+    owner_scope: str = "tenant"
+    enabled_scope: str = "agent"
+    exposed_tools: tuple[str, ...] = ()
+    deferred_tools: tuple[str, ...] = ()
+    hook_events: tuple[str, ...] = ()
+    permission_requirements: tuple[str, ...] = ()
+    install_review: dict[str, Any] = field(default_factory=dict)
+    runtime_effects: tuple[str, ...] = ()
+    audit_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionRegistryV1:
+    extensions: tuple[ExtensionDescriptorV1, ...] = ()

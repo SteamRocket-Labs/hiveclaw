@@ -69,6 +69,15 @@ def test_eviction_threshold_resolution():
     assert _resolve_eviction_threshold("send_feishu_message") == _TOOL_RESULT_EVICTION_THRESHOLD
 
 
+def test_declared_tool_result_threshold_is_clamped(monkeypatch):
+    from app.kernel import engine
+    from app.kernel.engine import _TOOL_RESULT_EVICTION_THRESHOLD, _resolve_eviction_threshold
+
+    monkeypatch.setattr(engine, "result_char_limit_for_tool", lambda _name: _TOOL_RESULT_EVICTION_THRESHOLD * 20)
+
+    assert _resolve_eviction_threshold("oversized_tool") == _TOOL_RESULT_EVICTION_THRESHOLD
+
+
 def test_eviction_replaces_legacy_exempt_set():
     """Every tool formerly in the hardcoded _EVICTION_EXEMPT_TOOLS set now
     resolves to unlimited via its decorator (single source)."""

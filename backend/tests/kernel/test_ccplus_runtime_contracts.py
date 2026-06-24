@@ -70,6 +70,25 @@ def test_seal_orphan_tool_uses_does_not_duplicate_existing_results():
     assert len(messages) == 2
 
 
+def test_tool_result_eviction_is_exclusive_and_hashes_conflicts(tmp_path):
+    from app.kernel.engine import _maybe_evict_tool_result
+
+    first = "x" * 60_000
+    second = "y" * 60_000
+
+    first_inline = _maybe_evict_tool_result("send_email", "call_same", first, tmp_path)
+    first_file = tmp_path / "call_same.txt"
+    assert first_file.read_text(encoding="utf-8") == first
+    assert "workspace/tool_results/call_same.txt" in first_inline
+
+    second_inline = _maybe_evict_tool_result("send_email", "call_same", second, tmp_path)
+
+    assert first_file.read_text(encoding="utf-8") == first
+    assert "workspace/tool_results/call_same-" in second_inline
+    hashed_name = second_inline.split("workspace/tool_results/", 1)[1].split(" ", 1)[0]
+    assert (tmp_path / hashed_name).read_text(encoding="utf-8") == second
+
+
 def test_tool_content_envelope_carries_ccplus_side_effect_channels():
     from app.tools.result_envelope import ToolContentEnvelope
 

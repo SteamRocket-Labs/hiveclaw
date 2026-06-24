@@ -218,13 +218,11 @@ async def execute_diagnostic_command(
             "transcript_truth": "chat_session_t0",
             "trace_truth": "invocation_spans",
             "context_ladder": [
-                "tool_result_budget",
-                "snip_or_evict",
+                "tool_result_eviction",
+                "round_tool_result_budget",
                 "microcompact",
-                "read_time_projection_collapse",
                 "autocompact",
-                "blocking_limit",
-                "reactive_compact",
+                "reactive_prompt_too_long_retry",
             ],
         }
     if name == "doctor":

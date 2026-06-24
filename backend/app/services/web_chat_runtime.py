@@ -438,7 +438,7 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 tc_name = tc_data.get("name", "unknown")
                 tc_args = tc_data.get("args", {})
                 tc_result = tc_data.get("result", "")
-                tc_id = f"call_{msg.id}"
+                tc_id = str(tc_data.get("tool_call_id") or f"call_{msg.id}")
                 assistant_msg = {
                     "role": "assistant",
                     "content": None,
@@ -456,8 +456,10 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                     assistant_msg["reasoning_signature"] = tc_data["reasoning_signature"]
                 conversation.append(assistant_msg)
 
-                tool_result = str(tc_result)
-                if len(tool_result) > 50000:
+                replacement = tc_data.get("content_replacement") if isinstance(tc_data, dict) else None
+                frozen_inline = replacement.get("inline_content") if isinstance(replacement, dict) else None
+                tool_result = str(frozen_inline if frozen_inline is not None else tc_result)
+                if frozen_inline is None and len(tool_result) > 50000:
                     logger.info("[WebChatRun] Tool result truncated on reload: {}→50000 chars", len(tool_result))
                     tool_result = (
                         tool_result[:50000] + "\n\n[... truncated, full output may be in workspace/tool_results/]"
@@ -1489,6 +1491,8 @@ async def _persist_tool_call(
     status = str(data.get("status") or "done")
     raw_result = data.get("result") or ""
     raw_str = str(raw_result)
+    model_seen_result = data.get("model_seen_result")
+    content_replacement = data.get("content_replacement")
     if len(raw_str) > 50000:
         raw_str = raw_str[:50000] + "\n\n[... truncated]"
     from app.services.decision_trace import extract_decision_id_from_text
@@ -1512,6 +1516,20 @@ async def _persist_tool_call(
     }
     if status in {"done", "completed", "failed"} or "result" in data:
         payload["result"] = raw_str
+    if isinstance(content_replacement, dict):
+        payload["content_replacement"] = content_replacement
+    elif model_seen_result is not None:
+        model_seen_str = str(model_seen_result)
+        payload["content_replacement"] = {
+            "schema": "content_replacement_record.v1",
+            "tool_name": data.get("name", ""),
+            "tool_call_id": data.get("tool_call_id"),
+            "reason": "runtime_model_seen_result",
+            "replacement_applied": model_seen_str != str(raw_result),
+            "original_chars": len(str(raw_result)),
+            "inline_chars": len(model_seen_str),
+            "inline_content": model_seen_str,
+        }
     payload = {key: value for key, value in payload.items() if value is not None}
     event_type = "tool_result" if status in {"done", "completed", "failed"} else "tool_call"
     async with tenant_scoped_session(tenant_id) as db:

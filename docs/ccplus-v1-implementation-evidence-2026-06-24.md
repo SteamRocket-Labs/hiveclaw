@@ -253,3 +253,85 @@ All checks passed!
 - Package C 已闭环 D-02 / D-06 / D-07 / D-13 / D-14 / D-15 的本地代码路径。
 - 公司级后台人工确认、管理员策略 UI、危险操作二次审批属于 V2 overlay；本轮只保证 V1 governance contract 不再 silent allow 或让危险/歧义命令绕过。
 - `run_command` 的 path syntax 检测当前是安全优先的语法拒绝器，不是完整 shell AST；复杂 shell 语义仍应由后续 Local Agent Channel / sandbox command policy 继续精炼。
+
+## 4. Package D：Context / Compaction / Resume Byte Stability
+
+状态：完成本轮确认的 Package D 必修断点闭环。
+
+变更范围：
+
+- `backend/app/services/diagnostic_command_runtime.py`：
+  - `/context` 诊断 ladder 改为只展示 live 阶段：`tool_result_eviction`、`round_tool_result_budget`、`microcompact`、`autocompact`、`reactive_prompt_too_long_retry`。
+  - 删除未实现/非 live 的 `snip_or_evict`、`read_time_projection_collapse`、`blocking_limit`、`reactive_compact`，避免假 parity。
+- `backend/app/kernel/engine.py`：
+  - per-tool positive `max_result_chars` clamp 到全局 inline limit，防止单工具声明撑爆上下文。
+  - tool-result eviction 文件改为 exclusive write；同一 `tool_call_id` 不再静默覆盖，内容冲突时写入 hash-suffixed 文件。
+  - 新增 `content_replacement_record.v1`，在 tool done payload 写入 `model_seen_result` 与 frozen replacement record。
+  - parallel 与 sequential 两条 tool 执行路径都在广播/persist 前先计算模型实际看到的 inline content。
+- `backend/app/services/web_chat_runtime.py`：
+  - `conversation_from_history_messages()` 优先使用历史 payload 的原始 `tool_call_id`。
+  - reload/resume 优先使用 `content_replacement.inline_content`，不再 flat 50K 重截断 frozen tool result。
+  - `_persist_tool_call()` 持久化 `content_replacement`；若只收到 `model_seen_result`，生成兼容 replacement record。
+- 更新测试：
+  - `backend/tests/services/test_diagnostic_command_runtime.py`
+  - `backend/tests/tools/test_tool_contract.py`
+  - `backend/tests/kernel/test_ccplus_runtime_contracts.py`
+  - `backend/tests/services/test_web_chat_runtime.py`
+
+Red phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py -q -k "context_diagnostic_reports_only_live_context_ladder or declared_tool_result_threshold_is_clamped or tool_result_eviction_is_exclusive or conversation_reload_reuses_frozen"
+```
+
+失败证据：
+
+```text
+FAILED test_context_diagnostic_reports_only_live_context_ladder
+AssertionError: ['tool_result_budget', 'snip_or_evict', ...] != ['tool_result_eviction', ...]
+
+FAILED test_declared_tool_result_threshold_is_clamped
+AssertionError: assert 1000000 == 50000
+
+FAILED test_tool_result_eviction_is_exclusive_and_hashes_conflicts
+AssertionError: first eviction file was overwritten
+
+FAILED test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id
+AssertionError: assert 'call_db-message-id' == 'call_original'
+```
+
+Green phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py -q
+```
+
+结果：
+
+```text
+77 passed, 3 warnings
+```
+
+Lint：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+ruff check app/kernel/engine.py app/services/web_chat_runtime.py app/services/diagnostic_command_runtime.py tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
+剩余边界：
+
+- D-03 / D-04 / D-17 / D-18 / D-20 的本地代码路径已闭环。
+- `ContextPolicyV1` 的 breaker 字段已在 Package A contract seed 中存在，本轮未重复改 schema。
+- 本轮保证 web-chat history reload 使用 frozen model-seen bytes；其它入口若绕过 `web_chat_runtime._persist_tool_call()`，仍需要在 SessionWorkbenchV1 中统一读取同一 transcript/replacement contract。

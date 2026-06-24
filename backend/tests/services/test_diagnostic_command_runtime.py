@@ -85,3 +85,29 @@ async def test_doctor_diagnostic_reports_registry_and_runtime_issues():
     assert result["health"] == "needs_attention"
     assert "runtime_task_failures_present" in result["issues"]
     assert "invocation_span_errors_present" in result["issues"]
+
+
+@pytest.mark.asyncio
+async def test_context_diagnostic_reports_only_live_context_ladder():
+    from app.services.diagnostic_command_runtime import execute_diagnostic_command
+
+    result = await execute_diagnostic_command(
+        db=_FakeDB([], []),
+        agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
+        user=SimpleNamespace(id=uuid4()),
+        command_name="context",
+        session_id="session-ctx",
+        arguments={},
+    )
+
+    assert result["context_ladder"] == [
+        "tool_result_eviction",
+        "round_tool_result_budget",
+        "microcompact",
+        "autocompact",
+        "reactive_prompt_too_long_retry",
+    ]
+    assert "snip_or_evict" not in result["context_ladder"]
+    assert "read_time_projection_collapse" not in result["context_ladder"]
+    assert "blocking_limit" not in result["context_ladder"]
+    assert "reactive_compact" not in result["context_ladder"]

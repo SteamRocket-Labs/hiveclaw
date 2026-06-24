@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
@@ -94,6 +95,38 @@ def test_terminal_task_update_persists_and_projects_terminal_reason():
 
     assert task.metadata_json["terminal_reason"] == "provider_error"
     assert payload["terminal_reason"] == "provider_error"
+
+
+def test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id():
+    from app.services.web_chat_runtime import conversation_from_history_messages
+
+    payload = {
+        "name": "read_file",
+        "args": {"path": "large.txt"},
+        "status": "done",
+        "tool_call_id": "call_original",
+        "result": "R" * 60_000,
+        "content_replacement": {
+            "schema": "content_replacement_record.v1",
+            "tool_call_id": "call_original",
+            "inline_content": "MODEL-SEEN-BYTES",
+            "original_chars": 60_000,
+            "inline_chars": 16,
+        },
+    }
+    history = [
+        SimpleNamespace(
+            role="tool_call",
+            id="db-message-id",
+            content=json.dumps(payload),
+        )
+    ]
+
+    conversation = conversation_from_history_messages(history)
+
+    assert conversation[0]["tool_calls"][0]["id"] == "call_original"
+    assert conversation[1]["tool_call_id"] == "call_original"
+    assert conversation[1]["content"] == "MODEL-SEEN-BYTES"
 
 
 @pytest.mark.asyncio
@@ -2731,7 +2764,7 @@ async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_except
             "thinking_signature": None,
             "status": "failed",
             "result_summary": "Web chat run failed: RuntimeError",
-            "metadata_json": {"error": "provider stream closed"},
+            "metadata_json": {"error": "provider stream closed", "terminal_reason": "provider_error"},
         }
     ]
     assert updates == []

@@ -192,7 +192,7 @@ def _resolve_eviction_threshold(tool_name: str) -> int | None:
         return _TOOL_RESULT_EVICTION_THRESHOLD
     if limit <= 0:
         return None
-    return limit
+    return min(limit, _TOOL_RESULT_EVICTION_THRESHOLD)
 
 
 logger = logging.getLogger(__name__)
@@ -2029,14 +2029,16 @@ def _maybe_evict_tool_result(
         reason,
     )
 
-    # Write full result to workspace file if eviction_dir provided
+    # Write full result to workspace file if eviction_dir provided. Writes are
+    # exclusive by content: replaying the same tool_call_id must not silently
+    # overwrite the original full output that a prior model turn referenced.
     eviction_path = ""
     if eviction_dir is not None:
         try:
             _Path(eviction_dir).mkdir(parents=True, exist_ok=True)
-            file_name = f"{tool_call_id}.txt"
-            full_path = _Path(eviction_dir) / file_name
-            full_path.write_text(result, encoding="utf-8")
+            file_name, full_path = _exclusive_eviction_path(_Path(eviction_dir), tool_call_id, result)
+            if not full_path.exists():
+                full_path.write_text(result, encoding="utf-8")
             eviction_path = f"workspace/tool_results/{file_name}"
         except Exception as exc:
             logger.warning("[Kernel] Failed to write eviction file: %s", exc)
@@ -2053,6 +2055,48 @@ def _maybe_evict_tool_result(
         f"[... truncated — full output {len(result)} chars, tool_call_id={tool_call_id}, reason: {reason}. "
         f"Use read_file or grep_search to retrieve specific parts if needed.]"
     )
+
+
+def _exclusive_eviction_path(eviction_dir: "Any", tool_call_id: str, result: str) -> tuple[str, "Any"]:
+    import hashlib as _hashlib
+
+    safe_call_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(tool_call_id or "tool_call"))
+    base_name = f"{safe_call_id}.txt"
+    base_path = eviction_dir / base_name
+    if not base_path.exists():
+        return base_name, base_path
+    try:
+        if base_path.read_text(encoding="utf-8") == result:
+            return base_name, base_path
+    except Exception:
+        pass
+    digest = _hashlib.sha256(result.encode("utf-8")).hexdigest()[:12]
+    conflict_name = f"{safe_call_id}-{digest}.txt"
+    return conflict_name, eviction_dir / conflict_name
+
+
+def _content_replacement_record(
+    *,
+    tool_name: str,
+    tool_call_id: str,
+    raw_result: str,
+    inline_content: str,
+    reason: str,
+) -> dict[str, Any]:
+    import hashlib as _hashlib
+
+    return {
+        "schema": "content_replacement_record.v1",
+        "tool_name": tool_name,
+        "tool_call_id": tool_call_id,
+        "reason": reason,
+        "replacement_applied": inline_content != raw_result,
+        "original_chars": len(raw_result),
+        "inline_chars": len(inline_content),
+        "original_sha256": _hashlib.sha256(raw_result.encode("utf-8")).hexdigest(),
+        "inline_sha256": _hashlib.sha256(inline_content.encode("utf-8")).hexdigest(),
+        "inline_content": inline_content,
+    }
 
 
 def _build_cancelled_result(
@@ -3778,28 +3822,11 @@ class AgentKernel:
                                     await _inject_loop_guard_warning(result_loop_decision)
                                 else:
                                     return await _abort_for_loop_guard(result_loop_decision)
-                            done_payload = {
-                                "name": tool_name,
-                                "args": effective_args,
-                                "status": "done",
-                                "result": result,
-                                "reasoning_content": full_reasoning_content,
-                                "reasoning_signature": getattr(response, "reasoning_signature", None),
-                            }
-                            if request.on_tool_call:
-                                try:
-                                    await _maybe_await(request.on_tool_call(done_payload))
-                                except Exception as _cb_exc:
-                                    logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
-                                    _callback_failure_count += 1
-                                    if _callback_failure_count == 3:
-                                        logger.error(
-                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
-                                            _callback_failure_count,
-                                        )
-                            collected_parts.append(build_tool_call_event(done_payload)["part"])
-                            _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
+                            _raw_result = str(result)
+                            _replacement_reason = "result size threshold"
+                            _content = _maybe_evict_tool_result(tool_name, tc["id"], _raw_result, request.eviction_dir)
                             if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
+                                _replacement_reason = "round aggregate budget"
                                 logger.info(
                                     "[Kernel] Round aggregate budget exceeded (%d > %d), force-evicting %s",
                                     _round_tool_chars + len(_content),
@@ -3827,6 +3854,34 @@ class AgentKernel:
                                 tools_for_llm=tools_for_llm,
                                 api_messages=api_messages,
                             )
+                            done_payload = {
+                                "name": tool_name,
+                                "args": effective_args,
+                                "status": "done",
+                                "result": result,
+                                "model_seen_result": _content,
+                                "content_replacement": _content_replacement_record(
+                                    tool_name=tool_name,
+                                    tool_call_id=tc["id"],
+                                    raw_result=_raw_result,
+                                    inline_content=_content,
+                                    reason=_replacement_reason,
+                                ),
+                                "reasoning_content": full_reasoning_content,
+                                "reasoning_signature": getattr(response, "reasoning_signature", None),
+                            }
+                            if request.on_tool_call:
+                                try:
+                                    await _maybe_await(request.on_tool_call(done_payload))
+                                except Exception as _cb_exc:
+                                    logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
+                                    _callback_failure_count += 1
+                                    if _callback_failure_count == 3:
+                                        logger.error(
+                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                            _callback_failure_count,
+                                        )
+                            collected_parts.append(build_tool_call_event(done_payload)["part"])
                             api_messages.append(
                                 LLMMessage(
                                     role="tool",
@@ -4014,29 +4069,11 @@ class AgentKernel:
                                             else full_toolset
                                         )
 
-                            done_payload = {
-                                "name": tool_name,
-                                "args": args,
-                                "status": "done",
-                                "result": result,
-                                "reasoning_content": full_reasoning_content,
-                                "reasoning_signature": getattr(response, "reasoning_signature", None),
-                            }
-                            if request.on_tool_call:
-                                try:
-                                    await _maybe_await(request.on_tool_call(done_payload))
-                                except Exception as _cb_exc:
-                                    logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
-                                    _callback_failure_count += 1
-                                    if _callback_failure_count == 3:
-                                        logger.error(
-                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
-                                            _callback_failure_count,
-                                        )
-                            collected_parts.append(build_tool_call_event(done_payload)["part"])
-
-                            _content = _maybe_evict_tool_result(tool_name, tc["id"], str(result), request.eviction_dir)
+                            _raw_result = str(result)
+                            _replacement_reason = "result size threshold"
+                            _content = _maybe_evict_tool_result(tool_name, tc["id"], _raw_result, request.eviction_dir)
                             if _round_tool_chars + len(_content) > _TOOL_RESULTS_AGGREGATE_BUDGET:
+                                _replacement_reason = "round aggregate budget"
                                 logger.info(
                                     "[Kernel] Round aggregate budget exceeded (%d > %d), force-evicting %s",
                                     _round_tool_chars + len(_content),
@@ -4064,6 +4101,34 @@ class AgentKernel:
                                 tools_for_llm=tools_for_llm,
                                 api_messages=api_messages,
                             )
+                            done_payload = {
+                                "name": tool_name,
+                                "args": args,
+                                "status": "done",
+                                "result": result,
+                                "model_seen_result": _content,
+                                "content_replacement": _content_replacement_record(
+                                    tool_name=tool_name,
+                                    tool_call_id=tc["id"],
+                                    raw_result=_raw_result,
+                                    inline_content=_content,
+                                    reason=_replacement_reason,
+                                ),
+                                "reasoning_content": full_reasoning_content,
+                                "reasoning_signature": getattr(response, "reasoning_signature", None),
+                            }
+                            if request.on_tool_call:
+                                try:
+                                    await _maybe_await(request.on_tool_call(done_payload))
+                                except Exception as _cb_exc:
+                                    logger.warning("[Kernel] on_tool_call(done) callback failed: %s", _cb_exc)
+                                    _callback_failure_count += 1
+                                    if _callback_failure_count == 3:
+                                        logger.error(
+                                            "[Kernel] Multiple callback failures (%d) — client may be disconnected",
+                                            _callback_failure_count,
+                                        )
+                            collected_parts.append(build_tool_call_event(done_payload)["part"])
                             api_messages.append(
                                 LLMMessage(
                                     role="tool",

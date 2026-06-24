@@ -335,3 +335,88 @@ All checks passed!
 - D-03 / D-04 / D-17 / D-18 / D-20 的本地代码路径已闭环。
 - `ContextPolicyV1` 的 breaker 字段已在 Package A contract seed 中存在，本轮未重复改 schema。
 - 本轮保证 web-chat history reload 使用 frozen model-seen bytes；其它入口若绕过 `web_chat_runtime._persist_tool_call()`，仍需要在 SessionWorkbenchV1 中统一读取同一 transcript/replacement contract。
+
+## 5. Package E：SessionWorkbenchV1 / State UI Contract
+
+状态：完成本轮确认的 Package E 必修断点闭环。
+
+变更范围：
+
+- `backend/app/services/session_control_plane.py`：
+  - 在现有 `hive.ccplus.session_workbench.v1` 上补齐单源 projection，不新建第二套会话状态。
+  - 新增顶层 `active_turn`，从 active run metadata 派生 `turn_id`、`expected_turn_id`、status、pending steer 数量。
+  - 新增顶层 `timeline`，从 T0/DB read model event payload 构建可 replay 的 timeline window，并保留 truth source、event count、window limit、truncated 标记。
+  - 新增 `tool_calls`、`approvals`、`hooks`、`compactions`、`branches` 顶层槽位，确保 UI/API/Workbench 不再只能从分散接口猜状态。
+  - 新增 `permission_profile` 与 `context_policy` projection，优先读取 active run/session metadata，缺省时使用 CCPlus V1 安全默认值。
+  - `controls` 增加 `expected_turn_id`，same-turn steering / stop / interrupt 可绑定当前 active turn。
+- `frontend/src/api/domains/ccParity.ts`：
+  - 同步 `SessionWorkbench` 类型，显式暴露 Package E 新增字段。
+- `backend/tests/services/test_session_control_plane.py`：
+  - Red/Green 覆盖 SessionWorkbenchV1 单源字段、active turn expected id、permission/context policy、timeline 和空数组槽位。
+
+Red phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/services/test_session_control_plane.py -q
+```
+
+失败证据：
+
+```text
+FAILED test_session_workbench_aggregates_turn_runtime_goal_and_team_state
+KeyError: 'active_turn'
+```
+
+Green phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/services/test_session_control_plane.py tests/api/test_cc_codex_parity_api.py tests/runtime/test_codex_substrate.py -q
+```
+
+结果：
+
+```text
+23 passed, 4 warnings
+```
+
+Frontend verification：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- --run src/pages/session-workbench/timelineModel.test.ts src/api/domains/ccParity.test.ts
+npm run build
+```
+
+结果：
+
+```text
+Test Files  2 passed (2)
+Tests       16 passed (16)
+vite build ✓ built
+```
+
+Lint：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/ruff check app/services/session_control_plane.py tests/services/test_session_control_plane.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
+Migration / Backfill / Rollback：
+
+- Migration：无 schema migration；本包只增强现有 read projection。
+- Backfill：无反向写入；旧 session 自动由 T0/DB read model/runtime task metadata 现场构建新 projection。
+- Rollback：可回滚本提交；旧 `/workbench` 字段保持兼容，前端仍可读取原有 `turn/runtime_tasks/goals/teams/session_index`。
+
+剩余边界：
+
+- D-24 `state-diff` 副作用通道仍裁定为 nice-to-have，不阻断 SessionWorkbenchV1 上线；当前 Package E 已满足 runtime state 可见、可 export、可 replay 的闭环。
+- 前端聊天主 timeline 仍可由 message list 渲染，但 session-native control plane 已读取同一 `/workbench` projection；后续可把 timeline renderer 进一步改成直接消费 `workbench.timeline`，属于产品层收敛，不是 V1 阻断。

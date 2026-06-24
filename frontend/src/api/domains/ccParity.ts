@@ -123,6 +123,29 @@ export interface SessionWorkbench {
   schema: string;
   agent_id: string;
   session: Record<string, unknown>;
+  active_turn?: {
+    session_id: string;
+    runtime_task_id?: string | null;
+    turn_id?: string | null;
+    status: string;
+    expected_turn_id?: string | null;
+    pending_steer_count: number;
+  } | null;
+  timeline?: {
+    schema: string;
+    truth_source: string;
+    event_count: number;
+    window_limit?: number;
+    truncated?: boolean;
+    events: Record<string, unknown>[];
+  };
+  tool_calls?: Record<string, unknown>[];
+  approvals?: Record<string, unknown>[];
+  hooks?: Record<string, unknown>[];
+  compactions?: Record<string, unknown>[];
+  branches?: Record<string, unknown>[];
+  permission_profile?: Record<string, unknown>;
+  context_policy?: Record<string, unknown>;
   turn: {
     truth_source: string;
     event_count: number;

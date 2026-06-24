@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -11,8 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import Agent
 from app.models.agent_session_goal import AgentSessionGoal
 from app.models.agent_team import AgentTeam, AgentTeamMember
+from app.models.audit import ApprovalRequest
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
+from app.runtime.ccplus_contracts import ContextPolicyV1, PermissionProfileV1
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
 from app.services.session_index import read_session_index
 from app.services.web_chat_runtime import get_active_web_chat_run
@@ -22,6 +26,68 @@ def _iso(value: Any) -> str | None:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value) if value else None
+
+
+def _jsonable(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return _jsonable(asdict(value))
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _session_metadata(session: ChatSession) -> dict[str, Any]:
+    return _mapping(getattr(session, "transcript_metadata_json", None))
+
+
+def _active_run_value(active_run: Any, key: str) -> Any:
+    if isinstance(active_run, dict):
+        return active_run.get(key)
+    return getattr(active_run, key, None)
+
+
+def _active_run_metadata(active_run: Any) -> dict[str, Any]:
+    if active_run is None:
+        return {}
+    metadata = _active_run_value(active_run, "metadata")
+    if metadata is None:
+        metadata = _active_run_value(active_run, "metadata_json")
+    return _mapping(metadata)
+
+
+def _merged_runtime_policy(
+    *,
+    active_run: Any,
+    session: ChatSession,
+    key: str,
+) -> dict[str, Any]:
+    active_metadata = _active_run_metadata(active_run)
+    session_metadata = _session_metadata(session)
+    return _mapping(active_metadata.get(key)) or _mapping(session_metadata.get(key))
+
+
+def _permission_profile_payload(*, active_run: Any, session: ChatSession) -> dict[str, Any]:
+    profile = _jsonable(PermissionProfileV1())
+    profile.update(_merged_runtime_policy(active_run=active_run, session=session, key="permission_profile"))
+    profile["schema"] = "hive.ccplus.permission_profile.v1"
+    return profile
+
+
+def _context_policy_payload(*, active_run: Any, session: ChatSession) -> dict[str, Any]:
+    raw = _merged_runtime_policy(active_run=active_run, session=session, key="context_policy")
+    model_window = int(raw.get("model_window") or raw.get("context_window_tokens") or 0)
+    policy = _jsonable(ContextPolicyV1(model_window=model_window))
+    policy.update(raw)
+    policy["schema"] = "hive.ccplus.context_policy.v1"
+    return policy
 
 
 def _session_payload(session: ChatSession) -> dict[str, Any]:
@@ -46,6 +112,7 @@ def _session_payload(session: ChatSession) -> dict[str, Any]:
 
 
 def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
+    metadata = task.metadata_json or {}
     return {
         "id": str(task.id),
         "task_type": task.task_type,
@@ -60,7 +127,8 @@ def _runtime_task_payload(task: RuntimeTask) -> dict[str, Any]:
         "completed_at": _iso(task.completed_at),
         "result_summary": task.result_summary,
         "token_usage": task.token_usage or {},
-        "metadata": task.metadata_json or {},
+        "metadata": metadata,
+        "terminal_reason": metadata.get("terminal_reason"),
     }
 
 
@@ -115,6 +183,136 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
     }
 
 
+def _active_turn_payload(*, session: ChatSession, active_run: Any) -> dict[str, Any] | None:
+    if active_run is None:
+        return None
+    metadata = _active_run_metadata(active_run)
+    runtime_task_id = str(_active_run_value(active_run, "id") or metadata.get("runtime_task_id") or "")
+    turn_id = str(metadata.get("turn_id") or metadata.get("expected_turn_id") or runtime_task_id or "")
+    pending_steer_messages = list(metadata.get("pending_user_messages") or [])
+    return {
+        "session_id": str(session.id),
+        "runtime_task_id": runtime_task_id or None,
+        "turn_id": turn_id or None,
+        "status": str(_active_run_value(active_run, "status") or metadata.get("status") or "running"),
+        "expected_turn_id": turn_id or None,
+        "pending_steer_count": len(pending_steer_messages),
+    }
+
+
+def _timeline_payload(
+    *,
+    events: list[Any],
+    truth_source: str,
+    limit: int,
+) -> dict[str, Any]:
+    event_payloads = [_event_payload(event) for event in events]
+    return {
+        "schema": "hive.ccplus.session_timeline.v1",
+        "truth_source": truth_source,
+        "event_count": len(event_payloads),
+        "window_limit": limit,
+        "truncated": len(event_payloads) >= limit,
+        "events": event_payloads,
+    }
+
+
+def _event_metadata_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return _mapping(payload.get("metadata"))
+
+
+def _tool_call_payloads(events: list[Any]) -> list[dict[str, Any]]:
+    tool_calls: list[dict[str, Any]] = []
+    for event in events:
+        payload = _event_payload(event)
+        metadata = _event_metadata_from_payload(payload)
+        event_type = str(payload.get("event_type") or "")
+        role = str(payload.get("role") or "")
+        tool_name = metadata.get("tool_name") or metadata.get("name")
+        if event_type in {"tool_call", "tool_result"} or role == "tool_call" or tool_name:
+            tool_calls.append(
+                {
+                    "event_id": payload.get("id"),
+                    "sequence": payload.get("sequence"),
+                    "event_type": event_type,
+                    "tool_name": tool_name,
+                    "status": metadata.get("status") or metadata.get("tool_status"),
+                    "invocation_span_id": metadata.get("invocation_span_id"),
+                    "created_at": payload.get("created_at"),
+                }
+            )
+    return tool_calls
+
+
+def _hook_payloads(events: list[Any]) -> list[dict[str, Any]]:
+    hooks: list[dict[str, Any]] = []
+    for event in events:
+        payload = _event_payload(event)
+        metadata = _event_metadata_from_payload(payload)
+        event_type = str(payload.get("event_type") or "")
+        hook_event = metadata.get("hook_event") or metadata.get("hook")
+        if event_type.startswith("hook") or hook_event:
+            hooks.append(
+                {
+                    "event_id": payload.get("id"),
+                    "sequence": payload.get("sequence"),
+                    "event": hook_event or event_type,
+                    "status": metadata.get("status"),
+                    "reason": metadata.get("reason"),
+                    "created_at": payload.get("created_at"),
+                }
+            )
+    return hooks
+
+
+def _compaction_payloads(events: list[Any]) -> list[dict[str, Any]]:
+    compactions: list[dict[str, Any]] = []
+    for event in events:
+        payload = _event_payload(event)
+        metadata = _event_metadata_from_payload(payload)
+        event_type = str(payload.get("event_type") or "")
+        if "compact" in event_type or metadata.get("kind") == "compaction":
+            compactions.append(
+                {
+                    "event_id": payload.get("id"),
+                    "sequence": payload.get("sequence"),
+                    "event_type": event_type,
+                    "reason": metadata.get("reason"),
+                    "summary_ref": metadata.get("summary_ref") or metadata.get("summary_path"),
+                    "created_at": payload.get("created_at"),
+                }
+            )
+    return compactions
+
+
+def _approval_payload(approval: ApprovalRequest) -> dict[str, Any]:
+    return {
+        "id": str(approval.id),
+        "agent_id": str(approval.agent_id),
+        "tenant_id": str(approval.tenant_id) if approval.tenant_id else None,
+        "action_type": approval.action_type,
+        "status": approval.status,
+        "details": approval.details or {},
+        "created_at": _iso(approval.created_at),
+        "resolved_at": _iso(approval.resolved_at),
+        "resolved_by": str(approval.resolved_by) if approval.resolved_by else None,
+    }
+
+
+def _branch_payload(session: ChatSession) -> dict[str, Any]:
+    metadata = _session_metadata(session)
+    return {
+        "id": str(session.id),
+        "title": session.title,
+        "parent_session_id": str(session.parent_session_id) if session.parent_session_id else None,
+        "root_session_id": str(session.root_session_id) if session.root_session_id else None,
+        "branch_mode": metadata.get("branch_mode"),
+        "anchor_event_id": metadata.get("anchor_event_id"),
+        "created_at": _iso(session.created_at),
+        "last_message_at": _iso(session.last_message_at),
+    }
+
+
 async def _list_runtime_tasks(db: AsyncSession, *, agent_id: Any, session_id: Any, limit: int = 50) -> list[RuntimeTask]:
     session_key = str(session_id)
     result = await db.execute(
@@ -158,8 +356,49 @@ async def _list_teams(db: AsyncSession, *, agent_id: Any, session_id: Any) -> li
     return payloads
 
 
+async def _list_pending_approvals(
+    db: AsyncSession,
+    *,
+    agent_id: Any,
+    session_id: Any,
+    tenant_id: Any | None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    result = await db.execute(
+        select(ApprovalRequest)
+        .where(
+            ApprovalRequest.agent_id == agent_id,
+            ApprovalRequest.status == "pending",
+        )
+        .order_by(ApprovalRequest.created_at.desc())
+        .limit(limit)
+    )
+    approvals = []
+    for approval in result.scalars().all():
+        payload = _approval_payload(approval)
+        details = _mapping(payload.get("details"))
+        approval_session = details.get("session_id") or details.get("parent_session_id")
+        if approval_session and str(approval_session) != str(session_id):
+            continue
+        if tenant_id and payload.get("tenant_id") and str(payload["tenant_id"]) != str(tenant_id):
+            continue
+        approvals.append(payload)
+    return approvals
+
+
+async def _list_branches(db: AsyncSession, *, agent_id: Any, session_id: Any, limit: int = 50) -> list[dict[str, Any]]:
+    result = await db.execute(
+        select(ChatSession)
+        .where(ChatSession.agent_id == agent_id, ChatSession.parent_session_id == session_id)
+        .order_by(ChatSession.created_at.desc())
+        .limit(limit)
+    )
+    return [_branch_payload(branch) for branch in result.scalars().all()]
+
+
 async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: ChatSession) -> dict[str, Any]:
-    events, truth_source = await _load_events(db, agent=agent, session=session, limit=1000)
+    timeline_limit = 1000
+    events, truth_source = await _load_events(db, agent=agent, session=session, limit=timeline_limit)
     checkpoints = _checkpoint_payloads(events)
     latest_event = _event_payload(events[-1]) if events else None
     active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
@@ -167,10 +406,29 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
     goals = await _list_goals(db, agent_id=agent.id, session_id=session.id)
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
+    active_turn = _active_turn_payload(session=session, active_run=active_run)
+    approvals = await _list_pending_approvals(
+        db,
+        agent_id=agent.id,
+        session_id=session.id,
+        tenant_id=getattr(session, "tenant_id", None),
+    )
+    branches = await _list_branches(db, agent_id=agent.id, session_id=session.id)
+    permission_profile = _permission_profile_payload(active_run=active_run, session=session)
+    context_policy = _context_policy_payload(active_run=active_run, session=session)
     return {
         "schema": "hive.ccplus.session_workbench.v1",
         "agent_id": str(agent.id),
         "session": _session_payload(session),
+        "active_turn": active_turn,
+        "timeline": _timeline_payload(events=events, truth_source=truth_source, limit=timeline_limit),
+        "tool_calls": _tool_call_payloads(events),
+        "approvals": approvals,
+        "hooks": _hook_payloads(events),
+        "compactions": _compaction_payloads(events),
+        "branches": branches,
+        "permission_profile": permission_profile,
+        "context_policy": context_policy,
         "turn": {
             "truth_source": truth_source,
             "event_count": len(events),
@@ -185,6 +443,7 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
             "can_branch": bool(checkpoints),
             "can_start_goal": active_run is None,
             "can_create_agent_team": True,
+            "expected_turn_id": active_turn.get("expected_turn_id") if active_turn else None,
         },
         "active_run": active_run,
         "runtime_tasks": [_runtime_task_payload(task) for task in runtime_tasks],

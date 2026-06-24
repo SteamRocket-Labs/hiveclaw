@@ -42,6 +42,8 @@ class TestCoordinatorMode:
         prompt = get_coordinator_prompt()
         assert "coordinator mode" in prompt.lower()
         assert "delegate_to_agent" in prompt
+        assert "send_agent_session_message" in prompt
+        assert "send_message_to_agent" not in prompt
         assert "delegate understanding" in prompt.lower()
         # Coordination-artifact-only use of local file tools is encoded in
         # <allowed_tools>.
@@ -74,7 +76,8 @@ class TestCoordinatorMode:
         # Coordinator should have delegation + file access + time + triggers
         assert "delegate_to_agent" in COORDINATOR_ALLOWED_TOOLS
         assert "cancel_async_task" in COORDINATOR_ALLOWED_TOOLS
-        assert "send_message_to_agent" in COORDINATOR_ALLOWED_TOOLS
+        assert "send_agent_session_message" in COORDINATOR_ALLOWED_TOOLS
+        assert "send_message_to_agent" not in COORDINATOR_ALLOWED_TOOLS
         assert "check_async_task" in COORDINATOR_ALLOWED_TOOLS
         assert "set_trigger" in COORDINATOR_ALLOWED_TOOLS
         assert "update_trigger" in COORDINATOR_ALLOWED_TOOLS
@@ -90,3 +93,9 @@ class TestCoordinatorMode:
         names = {tool["function"]["name"] for tool in get_combined_openai_tools()}
         missing = COORDINATOR_ALLOWED_TOOLS - names
         assert missing == set()
+
+    def test_coordinator_continuation_tool_is_core_visible(self) -> None:
+        from app.services.agent_tools import CORE_TOOL_NAMES
+
+        assert "delegate_to_agent" in CORE_TOOL_NAMES
+        assert "send_agent_session_message" in CORE_TOOL_NAMES

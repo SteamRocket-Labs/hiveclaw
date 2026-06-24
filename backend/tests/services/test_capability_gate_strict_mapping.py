@@ -85,6 +85,34 @@ async def test_mapped_tool_does_not_touch_counter(monkeypatch) -> None:
     assert capability_gate.get_unmapped_tool_counts() == {}
 
 
+@pytest.mark.asyncio
+async def test_mapped_tool_without_policy_escalates_instead_of_silent_allow() -> None:
+    """Mapped capabilities must never be silently granted when no admin policy exists."""
+
+    async def fake_execute(_stmt):
+        class _Result:
+            def scalar_one_or_none(self):
+                return None
+
+        return _Result()
+
+    fake_db = type("FakeDB", (), {"execute": staticmethod(fake_execute)})()
+
+    result = await capability_gate.check_capability(
+        db=fake_db,
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tool_name="write_file",
+    )
+
+    assert result.allowed is False
+    assert result.denied is False
+    assert result.escalate_to_l3 is True
+    assert result.capability == "workspace.file.write"
+    assert result.policy_found is False
+    assert "no capability policy" in result.reason
+
+
 # ── Strict mode ────────────────────────────────────────────────
 
 

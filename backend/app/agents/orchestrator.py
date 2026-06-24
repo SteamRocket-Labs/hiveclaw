@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 from app.agents.coordination_gateway import CoordinationGateway
 from app.agents.coordination_wiring import gateway_scope
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
+from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -38,26 +39,7 @@ ASYNC_DELEGATION_CANCEL_GRACE_SECONDS = 180.0
 MAX_DELEGATION_TIMEOUT_SECONDS = 3600.0
 
 ToolExecutor = Callable[..., Awaitable[str] | str]
-_DELEGATION_BASE_EXCLUDED_TOOLS = (
-    "delegate_to_agent",
-    "send_message_to_agent",
-    # Source capabilities are CORE_TOOL_NAMES members (T1.1): core_tools_only
-    # profiles would otherwise leak them into delegation children through the
-    # core fallback (recursion guard — mirrors _SUBAGENT_BASE_EXCLUDED_TOOLS).
-    # Whether delegation children should one day spawn their own subagents
-    # (digital-employee colleague semantics) is a separate decision; T1 pins
-    # behavioural invariance first.
-    "spawn_subagent",
-    "preview_workflow",
-    "start_workflow",
-    "set_trigger",
-    "update_trigger",
-    "cancel_trigger",
-    "send_channel_file",
-    "check_async_task",
-    "cancel_async_task",
-    "list_async_tasks",
-)
+_DELEGATION_BASE_EXCLUDED_TOOLS = DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 _DELEGATION_MEMORY_WRITE_TOOLS = (
     "save_memory",
     "update_memory",

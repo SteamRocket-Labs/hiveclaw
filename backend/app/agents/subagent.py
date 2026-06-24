@@ -39,6 +39,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 
@@ -105,34 +106,9 @@ _CRITIC_ALLOWED_TOOLS: tuple[str, ...] = (
     "web_fetch",
 )
 
-# Tools every subagent is denied: no further spawning/delegation (recursion
-# guard) and no async-task / trigger / channel side-effects. Mirrors
-# ``_DELEGATION_BASE_EXCLUDED_TOOLS`` in orchestrator.py.
-_SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
-    "delegate_to_agent",
-    "send_message_to_agent",
-    "spawn_subagent",
-    "check_subagent",
-    "fanout_subagents",
-    # Workflow source capabilities are CORE_TOOL_NAMES members (T1.1): without
-    # this explicit deny they would leak into child tool surfaces through the
-    # core fallback (the pack gate that passively blocked them is gone).
-    "preview_workflow",
-    "start_workflow",
-    "set_trigger",
-    "update_trigger",
-    "cancel_trigger",
-    "send_channel_file",
-    "check_async_task",
-    "cancel_async_task",
-    "list_async_tasks",
-    # CC-align Phase B: a worker has no user-interaction channel — it must return
-    # to its parent, not block on a clarification it can never receive an answer to.
-    "ask_user_question",
-    # CC EnterPlanMode parity: a worker has no user to approve a Plan Mode entry —
-    # it must return to its parent, not request a plan mode it can never enter.
-    "request_plan_mode",
-)
+# Tools every child worker is denied: no further spawning/delegation, no
+# async-task/trigger/channel side effects, and no user-interaction tools.
+_SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
 DEFAULT_SUBAGENT_TOOL_ROUNDS = 8  # mirrors the deep-research worker default

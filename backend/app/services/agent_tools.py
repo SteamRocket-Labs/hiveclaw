@@ -232,6 +232,7 @@ CORE_TOOL_NAMES = {
     "cancel_trigger",
     "list_triggers",
     "send_message_to_agent",
+    "send_agent_session_message",
     "delegate_to_agent",
     "check_async_task",
     "cancel_async_task",

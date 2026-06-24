@@ -628,6 +628,121 @@ async def test_governance_escalates_dangerous_run_command_even_when_capability_a
     ]
 
 
+@pytest.mark.asyncio
+async def test_governance_escalates_dangerous_run_command_subcommand():
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    checked_tools: list[str] = []
+    approval_calls: list[dict] = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, tool_name):
+        checked_tools.append(tool_name)
+        return SimpleNamespace(
+            denied=False,
+            escalate_to_l3=False,
+            capability="workspace.command.execute",
+            reason="",
+            policy_found=True,
+        )
+
+    async def write_audit(**_kwargs):
+        return None
+
+    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
+        approval_calls.append(
+            {
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "capability": capability,
+                "reason": reason,
+            }
+        )
+        return {"allowed": False, "approval_id": "approval-subcommand"}
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="run_command",
+            arguments={"command": "npm install && git clean -fdx"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+    )
+
+    assert "requires approval" in message
+    assert checked_tools == ["run_command", "workspace.command.dangerous"]
+    assert approval_calls[0]["capability"] == "workspace.command.dangerous"
+    assert "git clean" in approval_calls[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_governance_blocks_run_command_shell_expansion_path_syntax():
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    approval_calls: list[dict] = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, tool_name):
+        return SimpleNamespace(
+            denied=False,
+            escalate_to_l3=False,
+            capability=tool_name if tool_name.startswith("workspace.") else "workspace.command.execute",
+            reason="",
+            policy_found=tool_name.startswith("workspace."),
+        )
+
+    async def write_audit(**_kwargs):
+        return None
+
+    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
+        approval_calls.append(
+            {
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "capability": capability,
+                "reason": reason,
+            }
+        )
+        return {"allowed": False, "approval_id": "approval-path-syntax"}
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="run_command",
+            arguments={"command": "cat $(pwd)/.env"},
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+    )
+
+    assert message is not None
+    assert "not executed" in message
+    assert "workspace.command.path_syntax" in message
+    assert "shell expansion" in message
+    assert approval_calls == []
+
+
 # ── P0-1a: tenant_id=None fail-closed for non-safe tools ──────────────
 # Closes the bypass where invoker._resolve_runtime_config fallbacks (agent_id
 # missing / agent not found / DB exception) returned tenant_id=None and

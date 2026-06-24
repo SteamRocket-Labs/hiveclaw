@@ -92,6 +92,8 @@ SENSITIVE_TOOLS: Set[str] = _LazyToolNameSet(_STATIC_SENSITIVE_TOOLS, "sensitive
 _DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\brm\s+-[^\s]*r"), "workspace.command.dangerous", "recursive delete"),
     (re.compile(r"\brm\s+--recursive\b"), "workspace.command.dangerous", "recursive delete"),
+    (re.compile(r"\bgit\s+clean\s+-[a-z]*f[a-z]*x[a-z]*\b"), "workspace.command.dangerous", "git clean -fx"),
+    (re.compile(r"\bfind\b.+\s-delete\b"), "workspace.command.dangerous", "find -delete"),
     (re.compile(r"\bDROP\s+(TABLE|DATABASE)\b", re.IGNORECASE), "workspace.command.dangerous", "SQL DROP"),
     (re.compile(r"\bTRUNCATE\s+(TABLE)?\s*\w", re.IGNORECASE), "workspace.command.dangerous", "SQL TRUNCATE"),
     (
@@ -106,6 +108,15 @@ _DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "workspace.command.secret_exfiltration",
         "secret exfiltration",
     ),
+)
+_RUN_COMMAND_PATH_SYNTAX_CAPABILITY = "workspace.command.path_syntax"
+_RUN_COMMAND_PATH_SYNTAX_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^//"), "UNC/network path syntax"),
+    (re.compile(r"^~[A-Za-z0-9_-]+(?:/|$)"), "~user path expansion"),
+    (re.compile(r"\$\([^)]+\)|`[^`]+`"), "shell expansion"),
+    (re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*[^}]*\}"), "environment variable expansion"),
+    (re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*"), "environment variable expansion"),
+    (re.compile(r"[*?\[]"), "glob path syntax"),
 )
 
 
@@ -156,10 +167,83 @@ def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> tupl
     command = str(arguments.get("command", "")).strip()
     if not command:
         return None
-    lowered = command.lower()
-    for pattern, capability, description in _DANGEROUS_COMMAND_PATTERNS:
-        if pattern.search(lowered):
-            return capability, description
+    for subcommand in _split_shell_subcommands(command):
+        path_syntax = _detect_high_risk_path_syntax(subcommand)
+        if path_syntax:
+            return _RUN_COMMAND_PATH_SYNTAX_CAPABILITY, path_syntax
+    for candidate in (command, *_split_shell_subcommands(command)):
+        lowered = candidate.lower()
+        for pattern, capability, description in _DANGEROUS_COMMAND_PATTERNS:
+            if pattern.search(lowered):
+                return capability, description
+    return None
+
+
+def _split_shell_subcommands(command: str) -> tuple[str, ...]:
+    """Split on shell control operators outside quotes for per-command policy checks."""
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if escaped:
+            current.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            current.append(ch)
+            escaped = True
+            i += 1
+            continue
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if command.startswith("&&", i) or command.startswith("||", i):
+            _append_subcommand(parts, current)
+            current = []
+            i += 2
+            continue
+        if ch in {";", "|"}:
+            _append_subcommand(parts, current)
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    _append_subcommand(parts, current)
+    return tuple(part for part in parts if part)
+
+
+def _append_subcommand(parts: list[str], current: list[str]) -> None:
+    part = "".join(current).strip()
+    if part:
+        parts.append(part)
+
+
+def _detect_high_risk_path_syntax(command: str) -> str | None:
+    import shlex
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+    for token in tokens:
+        if token.startswith("-"):
+            continue
+        for pattern, description in _RUN_COMMAND_PATH_SYNTAX_PATTERNS:
+            if pattern.search(token):
+                return f"{description} in run_command path argument"
     return None
 
 
@@ -558,6 +642,45 @@ async def _run_governance_inner(
     dangerous_reason = None
     if dangerous_command:
         dangerous_capability, dangerous_reason = dangerous_command
+        if dangerous_capability == _RUN_COMMAND_PATH_SYNTAX_CAPABILITY:
+            message = _teaching_block_message(
+                context.tool_name,
+                reason=f"this command uses high-risk path syntax ({dangerous_reason})",
+                capability=dangerous_capability,
+                next_steps=[
+                    "rewrite the command with literal workspace-relative paths",
+                    "avoid shell expansion, environment-variable paths, UNC paths, ~user, and glob syntax",
+                    "ask the user to provide the exact path when needed",
+                ],
+            )
+            await _maybe_await(
+                deps.write_audit_event(
+                    event_type="capability.denied",
+                    severity="warn",
+                    actor_type="agent",
+                    actor_id=context.agent_id,
+                    tenant_id=tenant_uuid,
+                    action="command_path_syntax_blocked",
+                    resource_type="tool",
+                    resource_id=None,
+                    details={
+                        "tool": context.tool_name,
+                        "capability": dangerous_capability,
+                        "reason": dangerous_reason,
+                    },
+                )
+            )
+            await _emit_event(
+                event_callback,
+                {
+                    "type": "permission",
+                    "tool_name": context.tool_name,
+                    "status": "blocked",
+                    "message": message,
+                    "capability": dangerous_capability,
+                },
+            )
+            return message
         if dangerous_capability == "workspace.command.secret_exfiltration":
             from app.services.managed_capability_guard import (
                 detect_managed_credential_command,

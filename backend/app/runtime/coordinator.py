@@ -25,7 +25,7 @@ COORDINATOR_ALLOWED_TOOLS = frozenset(
     {
         "delegate_to_agent",
         "cancel_async_task",
-        "send_message_to_agent",
+        "send_agent_session_message",
         "check_async_task",
         "list_async_tasks",
         "set_trigger",
@@ -79,7 +79,7 @@ For every user request, walk this matrix in order:
 | 1. Decompose   | Can this split into independent sub-tasks?        | YES → list them. NO → delegate as a single scoped task.     |
 | 2. Fan-out     | Are sub-tasks read-only AND on disjoint inputs?   | YES → `delegate_to_agent` in parallel. NO → serialize.      |
 | 3. Write path  | Do sub-tasks write to overlapping files/state?    | YES → serialize strictly per-file-set. NO → parallel OK.    |
-| 4. Worker pick | Does a hot worker already have relevant context?  | YES → `check_async_task` + `send_message_to_agent`. NO → spawn. |
+| 4. Worker pick | Does a hot worker already have relevant context?  | YES → `check_async_task` + `send_agent_session_message`. NO → spawn. |
 | 5. Synthesize  | Have workers returned?                            | Read every worker digest fully BEFORE the next delegation. |
 | 6. Verify      | Does the output affect user-visible state or code?| YES → spawn a FRESH worker for verification. NO → self-synthesize. |
 | 7. Report      | Are workers still running?                        | YES → status report only. NO → final consolidated report.   |
@@ -146,7 +146,7 @@ DO NOT do any of these:
 Direct-use tools (in coordinator mode):
 - `delegate_to_agent` — primary verb
 - `check_async_task`, `list_async_tasks`, `cancel_async_task` — task lifecycle
-- `send_message_to_agent` — steer an already-running worker
+- `send_agent_session_message` — append follow-up instructions to an async worker child session
 - `set_trigger`, `update_trigger`, `cancel_trigger`, `list_triggers` — manage follow-up wake policies; a trigger is wake policy, not the goal
 - `read_file`, `write_file`, `list_files` — ONLY for coordination artifacts
   (plans, synthesis notes, tracking files). NOT for domain work.

@@ -171,6 +171,7 @@ CAPABILITY_MAP: dict[str, str] = {
 
 SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
     "workspace.command.dangerous": ["run_command"],
+    "workspace.command.path_syntax": ["run_command"],
     "workspace.command.secret_exfiltration": ["run_command"],
 }
 
@@ -375,7 +376,7 @@ async def check_capability(
     Lookup order:
     1. Agent-specific policy (tenant_id + agent_id + capability)
     2. Tenant default policy (tenant_id + agent_id=NULL + capability)
-    3. No policy → allowed (backward compatible default)
+    3. No policy → escalate to approval (fail-closed; no silent grant)
 
     P1-W2-8: tools missing from CAPABILITY_MAP are always counted; under
     `STRICT_CAPABILITY_MAPPING=True` they are denied (fail-closed).
@@ -432,8 +433,21 @@ async def check_capability(
         policy = result.scalar_one_or_none()
 
     if not policy:
-        # No policy defined → backward compatible: allow everything
-        return CapabilityCheckResult(allowed=True, capability=capability, policy_found=False)
+        logger.warning(
+            "Capability policy missing: tool=%s capability=%s agent=%s tenant=%s — escalating",
+            tool_name,
+            capability,
+            agent_id,
+            tenant_id,
+        )
+        return CapabilityCheckResult(
+            allowed=False,
+            denied=False,
+            escalate_to_l3=True,
+            capability=capability,
+            reason=f"Capability '{capability}' has no capability policy configured; admin approval is required",
+            policy_found=False,
+        )
 
     if not policy.allowed:
         # Explicitly denied

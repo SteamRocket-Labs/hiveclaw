@@ -85,6 +85,28 @@ def test_delegation_base_exclusions_deny_source_capabilities():
     assert SOURCE_CAPABILITY_TOOLS <= set(_DELEGATION_BASE_EXCLUDED_TOOLS)
 
 
+def test_delegation_and_subagent_share_one_base_exclusion_policy():
+    """Child-agent recursion/control exclusions must have one source of truth."""
+    from app.agents.orchestrator import _DELEGATION_BASE_EXCLUDED_TOOLS
+    from app.agents.subagent import _SUBAGENT_BASE_EXCLUDED_TOOLS
+    from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
+
+    assert _SUBAGENT_BASE_EXCLUDED_TOOLS == DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
+    assert _DELEGATION_BASE_EXCLUDED_TOOLS == DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
+    for tool_name in (
+        "delegate_to_agent",
+        "send_message_to_agent",
+        "spawn_subagent",
+        "check_subagent",
+        "fanout_subagents",
+        "preview_workflow",
+        "start_workflow",
+        "ask_user_question",
+        "request_plan_mode",
+    ):
+        assert tool_name in DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
+
+
 def test_delegation_profiles_never_grant_source_capabilities():
     """Behavioural pin: no delegation profile's effective tool-name set may
     contain a source capability — covers both ``core_tools_only`` subtraction

@@ -3691,6 +3691,8 @@ class AgentKernel:
                         # 2. Execute tools with order barriers.
                         sem = asyncio.Semaphore(_PARALLEL_SEMAPHORE_LIMIT)
                         done_events = [asyncio.Event() for _ in parsed_tool_calls]
+                        abort_later_siblings = asyncio.Event()
+                        abort_reason = ""
                         unsafe_indices = [
                             idx
                             for idx, (_tc, t_name, _t_args) in enumerate(parsed_tool_calls)
@@ -3698,6 +3700,7 @@ class AgentKernel:
                         ]
 
                         async def _run_tool(index: int, t_name: str, t_args: dict) -> tuple[str, dict[str, Any], bool]:
+                            nonlocal abort_reason
                             try:
                                 if _is_concurrency_safe_tool(t_name):
                                     for prev_unsafe in unsafe_indices:
@@ -3707,8 +3710,15 @@ class AgentKernel:
                                 else:
                                     for prev_index in range(index):
                                         await done_events[prev_index].wait()
+                                if abort_later_siblings.is_set():
+                                    reason = abort_reason or "earlier unsafe tool failed"
+                                    return (
+                                        f"[Tool skipped] skipped because {reason}; this model batch was aborted.",
+                                        t_args,
+                                        False,
+                                    )
                                 async with sem:
-                                    return await _execute_tool_with_hooks(
+                                    result_tuple = await _execute_tool_with_hooks(
                                         execute_tool=self._deps.execute_tool,
                                         request=request,
                                         runtime_config=runtime_config,
@@ -3719,6 +3729,10 @@ class AgentKernel:
                                         api_messages=api_messages,
                                         record_span=_record_span,
                                     )
+                                if not _is_concurrency_safe_tool(t_name) and result_tuple[2] is False:
+                                    abort_reason = f"earlier unsafe tool failed ({t_name})"
+                                    abort_later_siblings.set()
+                                return result_tuple
                             finally:
                                 done_events[index].set()
 

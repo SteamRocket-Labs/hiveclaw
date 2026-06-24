@@ -302,6 +302,68 @@ async def test_mixed_batch_parallelizes_read_only_segment_before_write():
 
 
 @pytest.mark.asyncio
+async def test_mixed_batch_aborts_later_siblings_after_unsafe_tool_error():
+    """A failing unsafe tool must prevent later siblings in the same model batch from running."""
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import AgentKernel
+
+    executed: list[str] = []
+
+    async def execute_tool(tool_name, args, request, emit_event):
+        del args, request, emit_event
+        executed.append(tool_name)
+        if tool_name == "write_file":
+            raise RuntimeError("write failed")
+        return f"ok:{tool_name}"
+
+    fake_client = _FakeClient([
+        SimpleNamespace(
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "function": {"name": "write_file", "arguments": '{"path":"a.txt","content":"x"}'},
+                },
+                {
+                    "id": "call_2",
+                    "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'},
+                },
+            ],
+            reasoning_content=None,
+            usage={"total_tokens": 10},
+        ),
+        SimpleNamespace(
+            content="done",
+            tool_calls=[],
+            reasoning_content=None,
+            usage={"total_tokens": 5},
+        ),
+    ])
+
+    kernel = AgentKernel(_make_deps(
+        execute_tool=execute_tool,
+        create_client=lambda _m: fake_client,
+    ))
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=_make_model(),
+            messages=[{"role": "user", "content": "write then read"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "done"
+    assert executed == ["write_file"]
+    tool_parts = [p for p in result.parts if p.get("type") == "tool_call"]
+    assert "[Tool execution error]" in tool_parts[0]["result"]
+    assert "skipped because earlier unsafe tool failed" in tool_parts[1]["result"]
+
+
+@pytest.mark.asyncio
 async def test_single_tool_call_stays_sequential():
     """Single tool call doesn't trigger parallel path."""
     from app.kernel.contracts import InvocationRequest

@@ -120,6 +120,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "send_channel_message",
         "send_email",
         "send_feishu_message",
+        "send_agent_session_message",
         "send_message_to_agent",
         "send_web_message",
         "set_trigger",

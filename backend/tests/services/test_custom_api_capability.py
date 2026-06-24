@@ -40,6 +40,7 @@ async def test_custom_api_tool_maps_to_external_api_capability_without_static_en
         "custom_api__alphagbm__analyze_stock",
     )
 
-    assert result.allowed is True
+    assert result.allowed is False
+    assert result.escalate_to_l3 is True
     assert result.capability == "external.api.call"
     assert result.policy_found is False

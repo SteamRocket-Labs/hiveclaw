@@ -29,7 +29,7 @@ def _content_hash(content: str) -> str:
 
 
 def _freshness_suffix(item: MemoryItem) -> str:
-    """Return a freshness warning suffix for stale memories, empty for fresh ones."""
+    """Return a human-readable age suffix, with a warning for stale memories."""
     ts_raw = item.metadata.get("timestamp")
     if not ts_raw:
         return ""
@@ -38,10 +38,10 @@ def _freshness_suffix(item: MemoryItem) -> str:
         return ""
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
-    age_days = (datetime.now(UTC) - ts).days
+    age_days = max(0, (datetime.now(UTC) - ts).days)
     if age_days > _FRESHNESS_WARNING_DAYS:
         return f" [{age_days}d ago — verify before acting]"
-    return ""
+    return f" [{age_days}d ago]"
 
 
 def _activation_suffix(item: MemoryItem) -> str:

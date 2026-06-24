@@ -176,10 +176,12 @@ class TestFreshnessSuffix:
         item = _make_item(MemoryKind.SEMANTIC, "fact", timestamp=None)
         assert _freshness_suffix(item) == ""
 
-    def test_recent_memory_no_warning(self) -> None:
+    def test_recent_memory_renders_age_without_warning(self) -> None:
         now_iso = datetime.now(UTC).isoformat()
         item = _make_item(MemoryKind.SEMANTIC, "fact", timestamp=now_iso)
-        assert _freshness_suffix(item) == ""
+        suffix = _freshness_suffix(item)
+        assert "0d ago" in suffix
+        assert "verify before acting" not in suffix
 
     def test_old_memory_gets_warning(self) -> None:
         old = (datetime.now(UTC) - timedelta(days=10)).isoformat()
@@ -188,10 +190,12 @@ class TestFreshnessSuffix:
         assert "10d ago" in suffix
         assert "verify before acting" in suffix
 
-    def test_exactly_seven_days_no_warning(self) -> None:
+    def test_exactly_seven_days_renders_age_without_warning(self) -> None:
         seven_days = (datetime.now(UTC) - timedelta(days=7)).isoformat()
         item = _make_item(MemoryKind.SEMANTIC, "fact", timestamp=seven_days)
-        assert _freshness_suffix(item) == ""
+        suffix = _freshness_suffix(item)
+        assert "7d ago" in suffix
+        assert "verify before acting" not in suffix
 
     def test_eight_days_has_warning(self) -> None:
         eight_days = (datetime.now(UTC) - timedelta(days=8)).isoformat()
@@ -230,6 +234,7 @@ class TestAssembleFreshnessIntegration:
         items = [_make_item(MemoryKind.SEMANTIC, "new fact", timestamp=now)]
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
+        assert "0d ago" in result
         assert "verify before acting" not in result
 
     def test_category_prefix_rendered(self) -> None:

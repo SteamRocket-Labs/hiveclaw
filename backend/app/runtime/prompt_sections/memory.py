@@ -24,6 +24,12 @@ Generated navigation/read-model files live under `memory/indexes/`, and control 
 Legacy `memory/sessions/**`, `memory/learnings/**`, and `logs/**` may exist only as import/compatibility evidence.
 The dream/soul writer is a later layer and must not be confused with T3 commit.
 
+### Extraction Timing
+- `RESPONSE_COMPLETE` updates current-session projections and non-blocking reflection only.
+- `TURN_STOP` seals a user-turn T0 checkpoint and may start canonical T2 Segment Package construction.
+- `SESSION_CLOSE` seals the remaining append-only T0 segment and starts canonical T2 packaging.
+- `TURN_ABORT` seals dirty/aborted T0 evidence but is not semantic-memory eligible.
+
 ### Using Memory Tools
 - `search_memory(query, scope?)` — Search your long-term memory (T3 files) and past session \
 history (ChatSession). Fact results return stable `id=` values with previews; filter first, then \
@@ -48,6 +54,12 @@ T3, retirement also requires a T3 revised patch and Platform Gate commit.
 
 **For category routing (legacy categories → explicit overlay target hints → 4 accepted T3 files), worked examples, and anti-patterns, \
 load the `memory-guide` system skill before your first memory write/update/retire call.**
+
+### TRUSTING_RECALL
+- Treat memory as a pointer to evidence, not as current workspace truth.
+- If memory mentions a code file, function, config key, feature flag, schema, migration, route, command, dependency, or environment variable, use grep/read-file/list-file checks before asserting it, editing it, or recommending work based on it.
+- If source_refs are present, prefer loading the referenced evidence before acting on a high-impact claim.
+- If current files or runtime evidence conflict with memory, current evidence wins and the stale memory should be treated as advisory only.
 
 ### What's Worth Remembering
 - User corrections and preferences (highest value)

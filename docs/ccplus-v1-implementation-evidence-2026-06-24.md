@@ -420,3 +420,96 @@ Migration / Backfill / Rollback：
 
 - D-24 `state-diff` 副作用通道仍裁定为 nice-to-have，不阻断 SessionWorkbenchV1 上线；当前 Package E 已满足 runtime state 可见、可 export、可 replay 的闭环。
 - 前端聊天主 timeline 仍可由 message list 渲染，但 session-native control plane 已读取同一 `/workbench` projection；后续可把 timeline renderer 进一步改成直接消费 `workbench.timeline`，属于产品层收敛，不是 V1 阻断。
+
+## 6. Package F：Memory Boundary / Hive-native Memory Law
+
+状态：完成本轮确认的 Package F 必修断点闭环。
+
+变更范围：
+
+- `backend/app/memory/assembler.py`：
+  - `_freshness_suffix()` 改为所有带 timestamp 的 memory 都显示人类可读 age。
+  - fresh memory 显示 `Nd ago`；超过 `_FRESHNESS_WARNING_DAYS` 的 stale memory 继续显示 `Nd ago — verify before acting`。
+- `backend/app/runtime/prompt_sections/memory_navigation.py`：
+  - Memory Navigation 的 `last_recalled` 从 ISO 日期截断改为 `Nd ago` / `never`，避免 stale/fresh/index 三个表面漂移。
+- `backend/app/runtime/prompt_sections/memory.py`：
+  - 增加 `Extraction Timing` 段，明确 `RESPONSE_COMPLETE`、`TURN_STOP`、`SESSION_CLOSE`、`TURN_ABORT` 与 T0/T2 的关系。
+  - 增加 `TRUSTING_RECALL` 段：memory 命名代码文件、函数、config key、feature flag、schema、migration、route、command、dependency、env var 时，必须先 grep/read-file/list-file 复核当前工作区。
+  - 明确 memory 是 evidence pointer，不是当前 workspace truth；当前文件或 runtime evidence 与 memory 冲突时，以当前证据为准。
+- 更新测试：
+  - `backend/tests/memory/test_assembler.py`
+  - `backend/tests/runtime/test_memory_section.py`
+  - `backend/tests/memory/test_navigation_telemetry.py`
+
+Red phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py -q
+```
+
+失败证据：
+
+```text
+FAILED test_recent_memory_renders_age_without_warning
+AssertionError: assert '0d ago' in ''
+
+FAILED test_documents_automatic_pipeline
+AssertionError: assert 'TURN_STOP' in ...
+
+FAILED test_trusting_recall_requires_file_claim_revalidation
+AssertionError: assert 'TRUSTING_RECALL' in ...
+
+FAILED test_memory_navigation_section_renders_heat_ordered_rows
+AssertionError: assert '1d ago' in ...
+```
+
+Green phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py -q
+```
+
+结果：
+
+```text
+47 passed, 4 warnings
+```
+
+Package acceptance：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests -q -k "memory_activation or source_refs or trusting_recall or memory_age or memory_write_gate"
+```
+
+结果：
+
+```text
+7 passed, 5131 deselected, 4 warnings
+```
+
+Lint：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/ruff check app/memory/assembler.py app/runtime/prompt_sections/memory.py app/runtime/prompt_sections/memory_navigation.py tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
+Migration / Backfill / Rollback：
+
+- Migration：无 schema migration；只修改 prompt/projection 渲染。
+- Backfill：无 durable memory 改写；旧 T0/T2/T3/source_refs 保持原样。
+- Rollback：可回滚本提交；回滚后 memory age 和 TRUSTING_RECALL prompt 将退回旧行为，但不会破坏 memory truth source。
+
+剩余边界：
+
+- Hive Memory 仍是 Hive-native：T0/T2/T3/soul、Memory Gate、Platform Gate、source_refs、rollback/audit 不被 CC/Codex exact-copy 覆盖。
+- Codex/CC 只被吸收为 recall UX、stale disclosure、verify-before-assert discipline；不能把外部 memory provider 或 Codex thread memory 设为 Hive T3 truth。

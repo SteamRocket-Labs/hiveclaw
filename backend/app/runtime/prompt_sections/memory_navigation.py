@@ -10,12 +10,29 @@ disclosure: the agent sees id + summary + heat, then calls
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
+from app.memory.types import parse_utc_timestamp
 from app.services.principal_context import PrincipalStack
 
 _MAX_ROWS = 20
 _PREVIEW_CHARS = 90
+
+
+def _age_label(value: object) -> str:
+    if not value:
+        return "never"
+    text = str(value).strip()
+    if not text or text == "never":
+        return "never"
+    parsed = parse_utc_timestamp(text)
+    if not isinstance(parsed, datetime):
+        return text[:10]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    age_days = max(0, (datetime.now(UTC) - parsed).days)
+    return f"{age_days}d ago"
 
 
 def build_memory_navigation_section(
@@ -42,9 +59,7 @@ def build_memory_navigation_section(
             continue
         heat = compute_entry_heat(entry.metadata)
         recall_count = entry.metadata.get("access_count", "0")
-        last_recalled = entry.metadata.get("last_accessed", "never")
-        if last_recalled not in ("", "never"):
-            last_recalled = last_recalled[:10]
+        last_recalled = _age_label(entry.metadata.get("last_accessed", "never"))
         preview = entry.preview[:_PREVIEW_CHARS]
         rows.append(
             (

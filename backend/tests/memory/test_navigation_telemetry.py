@@ -65,6 +65,9 @@ def test_memory_navigation_section_renders_heat_ordered_rows(tmp_path: Path) -> 
     assert section.index("mem_hot1") < section.index("mem_cold1")
     # Navigation exposes spec-named telemetry.
     assert "recall" in section.lower()
+    assert "1d ago" in section
+    assert "90d ago" in section
+    assert "T" not in section
 
 
 def test_memory_navigation_suppresses_pl3_without_authorized_principal(tmp_path: Path) -> None:

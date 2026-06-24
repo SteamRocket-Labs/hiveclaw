@@ -49,6 +49,17 @@ class TestMemorySectionProperties:
         assert "Segment Package" in out
         assert "sealed T0 session segment" in out
         assert "heartbeat" in out.lower()
+        assert "TURN_STOP" in out
+        assert "SESSION_CLOSE" in out
+
+    def test_trusting_recall_requires_file_claim_revalidation(self) -> None:
+        out = build_memory_section()
+        assert "TRUSTING_RECALL" in out
+        assert "grep" in out
+        assert "file" in out.lower()
+        assert "function" in out.lower()
+        assert "flag" in out.lower()
+        assert "schema" in out.lower()
 
     def test_renders_embedded_snapshot(self) -> None:
         out = build_memory_section("- [feedback] user prefers concise answers")

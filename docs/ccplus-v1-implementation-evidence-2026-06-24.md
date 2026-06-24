@@ -619,3 +619,73 @@ Migration / Backfill / Rollback：
 - D-29 裁决：7 个 `_DISABLED_NOOP` hook 仍不宣称 live emitter parity；catalog 继续以 `lifecycle_state=disabled_noop` / `runtime_consumer=disabled_noop_audit` 暴露，不伪装为已接 emitter。
 - D-31 裁决：skill frontmatter 的 `context/agent/hooks/when_to_use` 已被 parser 与 registry projection 消费；inline-fork skill execution 不作为 V1 必须复刻项，Hive 的可执行组件仍必须通过 governed workflow/subagent/sandbox tool。
 - D-32 裁决：MCP prompts/resources 已进入 ExtensionRegistry projection，用于 prompts->commands、skill://resources->skills 的可回放映射；自动 runtime install 仍必须走 MCP authz / skill install governance，不做隐式安装。
+
+## 8. Final V1 Closeout
+
+状态：完成本轮 CCPlus V1 全面修复与优化路径的最终验收记录。
+
+本轮提交序列：
+
+- `dcbce4ff docs: reconcile ccplus v1 verification plan`
+- `c7f8c4f3 feat: add ccplus runtime contract anchors`
+- `3ac7b728 feat: seal ccplus terminal turn state`
+- `4e9bb5f8 feat: harden ccplus tool governance`
+- `a84ce8e9 feat: stabilize ccplus context resume`
+- `31df6cc9 feat: unify ccplus session workbench projection`
+- `b53c2a66 feat: align ccplus memory recall boundary`
+- `2f303d30 feat: close ccplus extension registry gaps`
+
+最终验收命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/services/test_session_control_plane.py tests/api/test_cc_codex_parity_api.py tests/runtime/test_codex_substrate.py tests/memory/test_assembler.py tests/runtime/test_memory_section.py tests/memory/test_navigation_telemetry.py tests/services/test_diagnostic_command_runtime.py tests/tools/test_tool_contract.py tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_web_chat_runtime.py tests/tools/test_governance.py tests/services/test_capability_gate_strict_mapping.py tests/services/test_custom_api_capability.py tests/services/test_agent_tools_core_surface.py tests/kernel/test_parallel_tool_batch.py tests/runtime/test_coordinator.py tests/services/test_tool_registry.py tests/tools/test_bridge_equivalence.py tests/tools/test_request_plan_mode.py tests/tools/test_ask_user_question.py tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/skills/test_parser_v2.py tests/skills/test_registry.py tests/services/test_extension_registry.py -q
+```
+
+结果：
+
+```text
+303 passed, 4 warnings
+```
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run test -- --run src/pages/session-workbench/timelineModel.test.ts src/api/domains/ccParity.test.ts
+```
+
+结果：
+
+```text
+Test Files  2 passed (2)
+Tests  16 passed (16)
+```
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
+npm run build
+```
+
+结果：
+
+```text
+tsc && vite build
+6968 modules transformed
+built in 2.58s
+```
+
+最终裁决：
+
+- V1 北极星执行路径已落成：CC / FreeCode 作为 local CLI runtime semantics 基底；Codex 只吸收工程控制增强；Hive Memory/Iter/Hermes、公司级权限、A2A/Relationship 继续作为 Hive-native 上层演进。
+- 已完成的代码闭环覆盖：terminal reason、side-effect contract、orphan sealing、危险权限治理、delegate/subagent denylist、mixed tool batch fail-close、context live ladder、tool-result eviction/resume 字节稳定、SessionWorkbenchV1 projection、Memory stale/verify-before-assert discipline、ExtensionRegistryV1 projection、skill access-control frontmatter、POST_TOOL_USE output rewrite consumer。
+- 本轮没有 schema migration；所有包均提供 rollback 路径，回滚单个 commit 不会删除 tenant data、memory truth source、MCP/skill/workflow installs。
+- 本轮没有 push；最终提交仍停留在当前分支。
+
+未纳入本轮提交的既有工作区改动：
+
+- `.ultra/debug/subagent-log.jsonl`
+- `.ultra/sessions/orphan-trail.md`
+- `docs/a2a-relationship-group-collaboration-plan-2026-06-20.md`
+- `docs/a2a-workflow-orchestration-design-2026-06-24.md`
+- `docs/dynamic-workflow-harness-semantics-2026-06-24.md`
+
+上述文件未暂存、未提交，避免混入 CCPlus V1 closeout。

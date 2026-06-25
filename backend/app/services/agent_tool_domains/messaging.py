@@ -1407,7 +1407,10 @@ async def _delegate_to_local_agent_channel(
             "channel_session_id": str(session["id"]),
             "chat_session_id": str(session["chat_session_id"]),
             "message_id": str(message["id"]),
-            "next_action": "The bound hive-connect service will receive this over Local Agent Channel WebSocket or fallback poll.",
+            "next_action": (
+                "The bound Hive Connect background service receives this when it is online; "
+                "if the computer is offline, the message remains queued until the service reconnects."
+            ),
         }
 
 

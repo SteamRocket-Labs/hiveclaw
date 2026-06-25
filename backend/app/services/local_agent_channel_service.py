@@ -470,6 +470,18 @@ async def mark_channel_ready(
     }
 
 
+async def mark_channel_seen(db: AsyncSession, *, context: BridgeAuthContext) -> None:
+    """Refresh runner presence while the channel WebSocket remains alive."""
+
+    _require_scope(context, "local_agent:connect", "gateway:poll")
+    channel = await _get_active_channel(db, context=context)
+    if channel is None:
+        return
+    channel.status = "online"
+    channel.last_seen_at = utcnow()
+    await db.commit()
+
+
 async def mark_channel_offline(db: AsyncSession, *, context: BridgeAuthContext) -> None:
     channel = await _get_active_channel(db, context=context)
     if channel is None:

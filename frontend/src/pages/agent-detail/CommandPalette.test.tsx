@@ -9,7 +9,8 @@ const queryHarness = vi.hoisted(() => ({
   calls: [] as Array<{ queryKey: unknown[]; enabled?: boolean }>,
   commands: [
     {
-      name: 'goal_start',
+      name: 'goal',
+      canonical_name: 'goal_start',
       aliases: [],
       description: 'Start a goal',
       category: 'goal',
@@ -31,7 +32,8 @@ const queryHarness = vi.hoisted(() => ({
       remote_safe: false,
     },
     {
-      name: 'task_create',
+      name: 'task',
+      canonical_name: 'task_create',
       aliases: [],
       description: 'Create or delegate a CC-style task',
       category: 'task',
@@ -49,6 +51,30 @@ const queryHarness = vi.hoisted(() => ({
       source: 'builtin',
       execution_mode: 'runtime',
       permission_mode: 'default',
+      bridge_safe: true,
+      remote_safe: true,
+    },
+    {
+      name: 'schedule',
+      canonical_name: 'schedule_create',
+      aliases: ['schedule'],
+      description: 'Create a scheduled task',
+      category: 'schedule',
+      source: 'builtin',
+      execution_mode: 'runtime',
+      permission_mode: 'write',
+      bridge_safe: true,
+      remote_safe: true,
+    },
+    {
+      name: 'once',
+      canonical_name: 'schedule_once',
+      aliases: ['once'],
+      description: 'Create a one-time task',
+      category: 'schedule',
+      source: 'builtin',
+      execution_mode: 'runtime',
+      permission_mode: 'write',
       bridge_safe: true,
       remote_safe: true,
     },
@@ -82,7 +108,8 @@ describe('CommandPalette', () => {
   it('renders user-visible commands including the optional coding pack when opened', () => {
     const markup = renderToStaticMarkup(<CommandPalette agentId="agent-1" sessionId="session-1" initialOpen />);
 
-    expect(markup).toContain('goal_start');
+    expect(markup).toContain('goal');
+    expect(markup).not.toContain('goal_start');
     expect(markup).toContain('diff');
     const listCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'command-palette');
     expect(listCall?.enabled).toBe(true);
@@ -107,5 +134,9 @@ describe('CommandPalette', () => {
     expect(defaultCommandArguments(queryHarness.commands[2])).toContain('"subject"');
     expect(defaultCommandArguments(queryHarness.commands[2])).toContain('"kind"');
     expect(defaultCommandArguments(queryHarness.commands[3])).toContain('"runtime_task_id"');
+    expect(defaultCommandArguments(queryHarness.commands[4])).toContain('"cron_expr"');
+    expect(defaultCommandArguments(queryHarness.commands[4])).toContain('"is_enabled": false');
+    expect(defaultCommandArguments(queryHarness.commands[5])).toContain('"at"');
+    expect(defaultCommandArguments(queryHarness.commands[5])).toContain('"is_enabled": false');
   });
 });

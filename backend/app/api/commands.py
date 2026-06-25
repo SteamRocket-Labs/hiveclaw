@@ -7,23 +7,35 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from croniter import croniter
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import check_agent_access
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
+from app.core.permissions import check_agent_access, is_agent_creator
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent_session_goal import AgentSessionGoal
 from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
 from app.models.chat_session import ChatSession
+from app.models.trigger import AgentTrigger
 from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_tools import execute_tool
 from app.services.command_registry import build_default_command_registry
 from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, execute_diagnostic_command
 from app.services.pack_policy_service import get_agent_pack_policies
+from app.services.plan_mode_core import (
+    plan_mode_user_declined,
+    stamp_confirmed_plan_provenance,
+    stamp_user_declined_plan_exemption,
+)
+from app.services.plan_mode_recommendation_service import (
+    PlanRecommendationError,
+    require_declined_plan_recommendation,
+)
 from app.services.session_command_runtime import SESSION_COMMAND_NAMES, execute_session_command
 from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
@@ -55,6 +67,7 @@ _TOOL_BACKED_COMMANDS = frozenset(
 
 _GOAL_COMMANDS = frozenset({"goal_start", "goal_update", "goal_stop"})
 _TEAM_COMMANDS = frozenset({"team_create", "team_delete"})
+_SCHEDULE_COMMANDS = frozenset({"schedule_create", "schedule_once"})
 _METADATA_COMMANDS = frozenset({"permissions", "config"})
 _EXTERNAL_PACK_COMMANDS = frozenset(
     {
@@ -228,6 +241,169 @@ async def _execute_goal_command(
         return {"ok": True, "command": command_name, **_goal_payload(goal)}
 
     raise HTTPException(status_code=501, detail=f"Unsupported goal command {command_name!r}")
+
+
+def _compute_next_schedule_run(cron_expr: str) -> datetime | None:
+    try:
+        return croniter(cron_expr, datetime.now(timezone.utc)).get_next(datetime).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _parse_once_schedule_at(value: object) -> datetime:
+    raw = str(value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="at is required")
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid one-time timestamp: {raw}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _schedule_command_payload(trigger: AgentTrigger) -> dict[str, Any]:
+    config = dict(trigger.config or {})
+    cron_expr = str(config.get("expr") or "")
+    once_at = str(config.get("at") or "")
+    next_run_at = None
+    if trigger.is_enabled and trigger.type == "cron" and cron_expr:
+        next_run = _compute_next_schedule_run(cron_expr)
+        next_run_at = next_run.isoformat() if next_run else None
+    elif trigger.is_enabled and trigger.type == "once":
+        next_run_at = once_at or None
+    return {
+        "id": str(trigger.id),
+        "agent_id": str(trigger.agent_id),
+        "name": trigger.name,
+        "instruction": trigger.reason or "",
+        "schedule_type": trigger.type,
+        "cron_expr": cron_expr,
+        "at": once_at or None,
+        "is_enabled": bool(trigger.is_enabled),
+        "next_run_at": next_run_at,
+        "run_count": int(trigger.fire_count or 0),
+        "created_by": config.get("created_by"),
+        "delivery_target_json": trigger.reply_context or config.get("delivery_target_json"),
+        "created_at": trigger.created_at.isoformat() if trigger.created_at else None,
+        "requires_api_persist": False,
+    }
+
+
+def _stamp_declined_schedule_exemption(config: dict[str, Any], recommendation_id: object) -> dict[str, Any]:
+    stamped = stamp_user_declined_plan_exemption(config)
+    metadata = dict(stamped.get("metadata") or {})
+    metadata["plan_recommendation_id"] = str(recommendation_id)
+    stamped["metadata"] = metadata
+    return stamped
+
+
+def _plan_recommendation_http_error(exc: PlanRecommendationError) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "ok": False,
+            "status": "plan_recommendation_required",
+            "error": exc.error_code,
+            "summary": exc.message,
+        },
+    )
+
+
+async def _execute_schedule_command(
+    *,
+    db: AsyncSession,
+    agent: Any,
+    user: User,
+    command_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    if command_name not in _SCHEDULE_COMMANDS:
+        raise HTTPException(status_code=501, detail=f"Unsupported schedule command {command_name!r}")
+    if not is_agent_creator(user, agent):
+        raise HTTPException(status_code=403, detail="Only creator can manage schedules")
+
+    name = str(arguments.get("name") or "").strip()
+    instruction = str(arguments.get("instruction") or arguments.get("reason") or "").strip()
+    is_enabled = bool(arguments.get("is_enabled", False))
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction is required")
+    trigger_type = "cron"
+    config: dict[str, Any] = {
+        "trigger_class": "scheduled_job",
+        "legacy_surface": "command_surface",
+        "command": command_name,
+        "created_by": str(user.id),
+    }
+    if command_name == "schedule_create":
+        cron_expr = str(arguments.get("cron_expr") or arguments.get("cron") or "").strip()
+        if not cron_expr:
+            raise HTTPException(status_code=400, detail="cron_expr is required")
+        if not _compute_next_schedule_run(cron_expr):
+            raise HTTPException(status_code=400, detail=f"Invalid cron expression: {cron_expr}")
+        config["expr"] = cron_expr
+    else:
+        trigger_type = "once"
+        config["at"] = _parse_once_schedule_at(arguments.get("at") or arguments.get("once_at")).isoformat()
+
+    user_declined_plan_mode = plan_mode_user_declined(arguments.get("plan_mode_decision"))
+    recommendation = None
+    if is_enabled and user_declined_plan_mode:
+        try:
+            recommendation = await require_declined_plan_recommendation(
+                db,
+                recommendation_id=arguments.get("plan_recommendation_id"),
+                agent_id=agent.id,
+                user_id=getattr(user, "id", None),
+                action_kind="create_enabled_trigger",
+            )
+        except PlanRecommendationError as exc:
+            raise _plan_recommendation_http_error(exc) from exc
+    elif is_enabled:
+        await enforce_plan_gate(
+            db,
+            agent_id=agent.id,
+            action_kind="create_enabled_trigger",
+            gate=get_plan_mode_gate(),
+            confirmed_plan_id=arguments.get("confirmed_plan_id"),
+            confirmed_plan_version=arguments.get("confirmed_plan_version"),
+            confirmed_plan_hash=arguments.get("confirmed_plan_hash"),
+        )
+
+    delivery_target_json = arguments.get("delivery_target_json")
+    if delivery_target_json is not None and not isinstance(delivery_target_json, dict):
+        raise HTTPException(status_code=400, detail="delivery_target_json must be an object")
+
+    if delivery_target_json is not None:
+        config["delivery_target_json"] = delivery_target_json
+    if is_enabled:
+        if user_declined_plan_mode:
+            config = _stamp_declined_schedule_exemption(config, recommendation.id)
+        else:
+            config = stamp_confirmed_plan_provenance(
+                config,
+                plan_id=arguments.get("confirmed_plan_id"),
+                plan_version=arguments.get("confirmed_plan_version"),
+                plan_hash=arguments.get("confirmed_plan_hash"),
+            )
+
+    trigger = AgentTrigger(
+        agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        name=name,
+        type=trigger_type,
+        config=config,
+        reason=instruction,
+        reply_context=delivery_target_json,
+        is_enabled=is_enabled,
+        cooldown_seconds=60,
+    )
+    db.add(trigger)
+    await db.flush()
+    return {"ok": True, "command": command_name, **_schedule_command_payload(trigger)}
 
 
 def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
@@ -598,6 +774,16 @@ async def execute_agent_command(
             user=current_user,
             command_name=command.name,
             session_id=body.session_id,
+            arguments=body.arguments,
+        )
+        await db.commit()
+        return {"ok": True, "command": command.name, "result": result}
+    if command.name in _SCHEDULE_COMMANDS:
+        result = await _execute_schedule_command(
+            db=db,
+            agent=agent,
+            user=current_user,
+            command_name=command.name,
             arguments=body.arguments,
         )
         await db.commit()

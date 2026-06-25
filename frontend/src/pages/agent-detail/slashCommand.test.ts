@@ -8,30 +8,30 @@ describe('slashCommand', () => {
     expect(parseSlashCommandInput('/')).toBeNull();
   });
 
-  it('parses a slash command with empty args', () => {
-    expect(parseSlashCommandInput('/goal_start')).toEqual({
-      name: 'goal_start',
+  it('parses a user-facing alias command with empty args', () => {
+    expect(parseSlashCommandInput('/goal')).toEqual({
+      name: 'goal',
       args: {},
     });
   });
 
-  it('parses a slash command with JSON args', () => {
-    expect(parseSlashCommandInput('/goal_start {"objective":"finish"}')).toEqual({
-      name: 'goal_start',
+  it('parses a user-facing alias command with JSON args', () => {
+    expect(parseSlashCommandInput('/goal {"objective":"finish"}')).toEqual({
+      name: 'goal',
       args: { objective: 'finish' },
     });
   });
 
   it('parses task natural args as a current-session todo task', () => {
-    expect(parseSlashCommandInput('/task_create Inspect hooks and session resume')).toEqual({
-      name: 'task_create',
+    expect(parseSlashCommandInput('/task Inspect hooks and session resume')).toEqual({
+      name: 'task',
       args: { subject: 'Inspect hooks and session resume' },
     });
   });
 
   it('parses delegated task natural args inside the unified task surface', () => {
-    expect(parseSlashCommandInput('/task_create delegate Researcher: Collect source evidence')).toEqual({
-      name: 'task_create',
+    expect(parseSlashCommandInput('/task delegate Researcher: Collect source evidence')).toEqual({
+      name: 'task',
       args: { kind: 'delegation', agent_name: 'Researcher', message: 'Collect source evidence' },
     });
   });
@@ -52,7 +52,7 @@ describe('slashCommand', () => {
   });
 
   it('rejects malformed JSON args', () => {
-    expect(() => parseSlashCommandInput('/goal_start {bad json}')).toThrow('Invalid slash command JSON');
+    expect(() => parseSlashCommandInput('/goal {bad json}')).toThrow('Invalid slash command JSON');
   });
 
   it('returns the search query after the slash prefix', () => {

@@ -200,7 +200,8 @@ vi.mock('@tanstack/react-query', () => ({
       return {
         data: [
           {
-            name: 'goal_start',
+            name: 'goal',
+            canonical_name: 'goal_start',
             aliases: ['goal'],
             description: 'Start a session goal',
             category: 'goal',
@@ -211,7 +212,8 @@ vi.mock('@tanstack/react-query', () => ({
             remote_safe: true,
           },
           {
-            name: 'team_create',
+            name: 'team',
+            canonical_name: 'team_create',
             aliases: ['team'],
             description: 'Create an enterable agent team',
             category: 'team',
@@ -994,6 +996,98 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('runtime_artifacts/triggers');
   });
 
+  it('renders manual automation creation with Agent vocabulary and without Codex-only controls', () => {
+    const markup = renderToStaticMarkup(
+      <AgentAwareSection
+        agentId="agent-1"
+        awareTriggers={[]}
+        reflectionSessions={[]}
+        reflectionMessages={{}}
+        autonomyOverview={{
+          agent_id: 'agent-1',
+          lookback_hours: 24,
+          totals: { triggers: 0, recent_attempts: 0, findings: 0 },
+          triggers: [],
+          recent_attempts: [],
+          findings: [],
+        }}
+        expandedReflection={null}
+        showAllTriggers={false}
+        reflectionPage={0}
+        onSetExpandedReflection={() => {}}
+        onSetReflectionMessages={() => {}}
+        onSetShowAllTriggers={() => {}}
+        onSetReflectionPage={() => {}}
+        onRefetchTriggers={async () => {}}
+        onRefetchAutonomy={async () => {}}
+        initialShowCreateWake
+      />,
+    );
+
+    expect(markup).toContain('Manual create');
+    expect(markup).toContain('Automation title');
+    expect(markup).toContain('Select agent');
+    expect(markup).toContain('Primary Bot');
+    expect(markup).toContain('No workflow');
+    expect(markup).toContain('Every hour');
+    expect(markup).toContain('Every day');
+    expect(markup).toContain('Every week');
+    expect(markup).toContain('Custom');
+    expect(markup).not.toContain('Work Number');
+    expect(markup).not.toContain('Reasoning strength');
+    expect(markup).not.toContain('Mode');
+  });
+
+  it('builds automation schedule presets into cron wake policies', () => {
+    const dailyPayload = buildWakePolicyPayload({
+      mode: 'scheduled_job',
+      name: 'daily report trigger',
+      reason: 'Run daily report',
+      scheduleType: 'cron',
+      schedulePreset: 'daily',
+      dailyTime: '09:30',
+      weeklyDay: '1',
+      weeklyTime: '09:00',
+      cronExpr: '0 9 * * *',
+      intervalMinutes: 60,
+      onceAt: '',
+      eventType: 'on_message',
+      maxFires: 1,
+      expiresAt: '',
+      workflowDefinitionKey: '',
+      workflowArgsText: '{}',
+    });
+
+    expect(dailyPayload).toMatchObject({
+      type: 'cron',
+      config: { trigger_class: 'scheduled_job', expr: '30 9 * * *' },
+    });
+
+    const weeklyPayload = buildWakePolicyPayload({
+      mode: 'scheduled_job',
+      name: 'weekly report trigger',
+      reason: 'Run weekly report',
+      scheduleType: 'cron',
+      schedulePreset: 'weekly',
+      dailyTime: '09:00',
+      weeklyDay: '5',
+      weeklyTime: '18:15',
+      cronExpr: '0 9 * * *',
+      intervalMinutes: 60,
+      onceAt: '',
+      eventType: 'on_message',
+      maxFires: 1,
+      expiresAt: '',
+      workflowDefinitionKey: '',
+      workflowArgsText: '{}',
+    });
+
+    expect(weeklyPayload).toMatchObject({
+      type: 'cron',
+      config: { trigger_class: 'scheduled_job', expr: '15 18 * * 5' },
+    });
+  });
+
   it('builds trigger workflow_ref pins from the selected registered workflow', () => {
     const workflow = {
       id: 'wf-1',
@@ -1488,7 +1582,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Launch sync');
     expect(markup).toContain('data-testid="session-workbench"');
     expect(markup).toContain('session-only');
-    expect(markup).toContain('calc(100vh - 94px)');
+    expect(markup).toContain('height:100%');
+    expect(markup).not.toContain('calc(100vh - 64px)');
     expect(markup).toContain('data-testid="session-workbench-header"');
     expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
@@ -1567,7 +1662,8 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="slash-command-menu"');
-    expect(markup).toContain('team_create');
+    expect(markup).toContain('/team');
+    expect(markup).not.toContain('team_create');
   });
 
   it('uses the route agent id for chat runtime queries when cached agent data is stale', () => {
@@ -2604,6 +2700,180 @@ describe('AgentDetail extracted sections', () => {
     expect(attachmentsIndex).toBeGreaterThan(composerIndex);
     expect(markup).toContain('brief.pdf');
     expect(markup).not.toContain('data-testid="chat-artifact-preview"');
+  });
+
+  it('renders the session composer as a Codex-style control surface with scoped actions and passive badges', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Composer contract',
+          created_at: '2026-06-23T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={{
+          model: {
+            label: 'GPT-5.4',
+            provider: 'openai',
+            name: 'gpt-5.4',
+            context_window_tokens: 128000,
+          },
+          runtime: {
+            connected: true,
+            estimated_input_tokens: 32000,
+            remaining_tokens_estimate: 96000,
+          },
+          activated_tool_groups: [],
+          used_tools: [],
+          blocked_capabilities: [],
+          compaction_count: 0,
+        }}
+        agentPermissions={{
+          scope_type: 'company',
+          scope_ids: [],
+          access_level: 'manage',
+          is_owner: true,
+        }}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    const composerIndex = markup.indexOf('data-testid="session-composer"');
+    const shellIndex = markup.indexOf('data-testid="session-composer-shell"');
+    const menuIndex = markup.indexOf('data-testid="session-composer-plus-menu"');
+    expect(composerIndex).toBeGreaterThanOrEqual(0);
+    expect(shellIndex).toBeGreaterThan(composerIndex);
+    expect(menuIndex).toBeGreaterThan(shellIndex);
+    expect(markup).toContain('Plan Mode');
+    expect(markup).toContain('Goal mode');
+    expect(markup).toContain('Scheduled task');
+    expect(markup).toContain('Upload file');
+    expect(markup).toContain('data-testid="session-composer-action-plan-switch"');
+    expect(markup).not.toContain('data-testid="session-composer-action-goal-switch"');
+    expect(markup).not.toContain('data-testid="session-composer-action-schedule-switch"');
+    expect(markup).toContain('role="switch"');
+    expect(markup).toContain('aria-checked="false"');
+    expect(markup).toContain('Manage access');
+    expect(markup).toContain('GPT-5.4');
+    expect(markup).toContain('25% used');
+    expect(markup).not.toMatch(/microphone|voice|语音/i);
+  });
+
+  it('shows Plan Mode as an active switch when the next turn is already in Plan Mode', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Composer contract',
+          created_at: '2026-06-23T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        agentPermissions={{
+          scope_type: 'company',
+          scope_ids: [],
+          access_level: 'manage',
+        }}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        planModeRequested
+        onTogglePlanMode={vi.fn()}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-composer-action-plan-switch"');
+    expect(markup).toContain('aria-checked="true"');
   });
 
   it('shows a hydrating state instead of stale or empty chat content during session switches', () => {

@@ -2,9 +2,22 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { IconFileText, IconLoader2, IconPaperclip, IconSend2, IconX } from '@tabler/icons-react';
+import {
+  IconCalendarTime,
+  IconChecklist,
+  IconCircleDashedCheck,
+  IconFileText,
+  IconLoader2,
+  IconPaperclip,
+  IconPlus,
+  IconSend2,
+  IconShieldCheck,
+  IconTargetArrow,
+  IconX,
+} from '@tabler/icons-react';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import type { AgentPermissions } from '../../api/domains/agents';
 import {
   localBridgeApi,
   type LocalAgentChannelEvent,
@@ -15,6 +28,7 @@ import { browserChannelWsUrl, mergeChannelEvents } from '../LocalAgents';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
 import type { SessionWorkbenchHeaderModel } from '../session-workbench/timelineModel';
+import { composerShortcutText } from './sessionComposerShortcuts';
 
 type AttachedLocalFile = LocalAgentWorkspaceUpload & {
   attachmentPath: string;
@@ -23,7 +37,10 @@ type AttachedLocalFile = LocalAgentWorkspaceUpload & {
 type LocalAgentChatSectionProps = {
   agentId: string;
   agent: any;
+  agentPermissions?: AgentPermissions | null;
 };
+
+type LocalComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
 
 function routeSessionIdFromSearch(search: string): string | null {
   const params = new URLSearchParams(search);
@@ -301,11 +318,36 @@ function attachmentPayload(upload: AttachedLocalFile): Record<string, unknown> {
   };
 }
 
-export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChatSectionProps) {
+function getLocalPermissionBadgeLabel(
+  agentPermissions: AgentPermissions | null | undefined,
+  t: (key: string, fallback: string) => string,
+): string {
+  const accessLevel = agentPermissions?.access_level;
+  if (accessLevel === 'manage') return t('agent.chat.composer.manageAccess', 'Manage access');
+  if (accessLevel === 'use') return t('agent.chat.composer.useAccess', 'Use access');
+  if (accessLevel === 'read') return t('agent.chat.composer.readAccess', 'Read access');
+  return t('agent.chat.composer.permissionUnknown', 'Access unknown');
+}
+
+function getLocalRuntimeBadgeLabel(agent: any, fallback: string): string {
+  const candidates = [
+    agent?.runtime_kind,
+    agent?.runtime_type,
+    agent?.local_runtime,
+    agent?.client_kind,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return fallback;
+}
+
+export default function LocalAgentChatSection({ agentId, agent, agentPermissions }: LocalAgentChatSectionProps) {
   const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const [liveEvents, setLiveEvents] = useState<LocalAgentChannelEvent[]>([]);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<AttachedLocalFile[]>([]);
@@ -313,6 +355,8 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
   const [sending, setSending] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [composerMenuOpen, setComposerMenuOpen] = useState(false);
+  const [localPlanModeRequested, setLocalPlanModeRequested] = useState(false);
   const routeSessionId = routeSessionIdFromSearch(location.search);
 
   const routeSessionQuery = useQuery({
@@ -434,8 +478,11 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
   };
 
   const sendMessage = async () => {
-    const content = input.trim();
-    if (!channelSessionId || sending || (!content && attachments.length === 0)) return;
+    const rawContent = input.trim();
+    if (!channelSessionId || sending || (!rawContent && attachments.length === 0)) return;
+    const content = localPlanModeRequested && rawContent
+      ? `${t('localAgents.planPrefix', 'Plan first: ')}${rawContent}`
+      : rawContent;
     setSending(true);
     setError(null);
     try {
@@ -449,6 +496,7 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
       });
       setInput('');
       setAttachments([]);
+      setLocalPlanModeRequested(false);
       await timelineQuery.refetch();
     } catch (exc: any) {
       setError(exc?.message || t('localAgents.messageError', 'Failed to send local channel message.'));
@@ -459,6 +507,30 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
 
   const loading = routeSessionQuery.isLoading || defaultSessionQuery.isLoading || timelineQuery.isLoading;
   const disabled = !channelSessionId || sending || uploading;
+  const permissionBadgeLabel = getLocalPermissionBadgeLabel(agentPermissions, t);
+  const composerIntentLabel = localPlanModeRequested ? t('agent.chat.composer.planModeActive', 'Plan Mode') : null;
+  const runtimeBadgeLabel = getLocalRuntimeBadgeLabel(agent, 'Hive Connect');
+  const composerPlaceholder =
+    channelSessionId
+      ? localPlanModeRequested
+        ? t('agent.chat.composer.planPlaceholder', 'Describe what the agent should plan first...')
+        : t('chat.placeholder', 'Type a message...')
+      : t('common.loading', 'Loading');
+
+  const setComposerAction = (action: LocalComposerActionKey) => {
+    setComposerMenuOpen(false);
+    if (action === 'upload') {
+      fileInputRef.current?.click();
+      return;
+    }
+    if (action === 'plan') {
+      setLocalPlanModeRequested((current) => !current);
+      setTimeout(() => textAreaRef.current?.focus(), 0);
+      return;
+    }
+    setInput(composerShortcutText(action));
+    setTimeout(() => textAreaRef.current?.focus(), 0);
+  };
 
   return (
     <div
@@ -469,7 +541,7 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
         flexDirection: 'column',
         flex: 1,
         minHeight: 0,
-        height: 'calc(100vh - 206px)',
+        height: '100%',
         background: 'var(--bg-primary)',
         borderTop: '1px solid var(--border-subtle)',
       }}
@@ -486,7 +558,7 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
               {t('localAgents.noMessagesYet', 'No local conversation yet.')}
             </div>
             <div style={{ fontSize: '12px' }}>
-              {t('localAgents.startChatHint', 'Send a message after hive-connect run is online.')}
+              {t('localAgents.startChatHint', 'Send a message after the Hive Connect background service is online.')}
             </div>
           </div>
         ) : (
@@ -517,13 +589,15 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
       <div
         data-testid="local-agent-session-composer"
         style={{
-          borderTop: '1px solid var(--border-subtle)',
           background: 'var(--bg-primary)',
-          padding: '8px 12px',
+          padding: '14px 16px 16px',
         }}
       >
         {attachments.length > 0 && (
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', paddingBottom: '7px' }}>
+          <div
+            data-testid="session-composer-attachments"
+            style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', paddingBottom: '7px' }}
+          >
             {attachments.map((file, index) => (
               <div
                 key={`${file.workspace_path}:${index}`}
@@ -554,20 +628,140 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
             ))}
           </div>
         )}
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
-          <input ref={fileInputRef} type="file" multiple onChange={handleFileChange} style={{ display: 'none' }} />
-          <button
-            type="button"
-            className="btn btn-secondary"
-            aria-label={t('agent.chat.attachFile', 'Attach file')}
-            title={t('agent.chat.attachFile', 'Attach file')}
-            disabled={disabled}
-            onClick={() => fileInputRef.current?.click()}
-            style={{ width: '36px', height: '36px', padding: 0, minWidth: 'auto', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+        <div
+          data-testid="session-composer-shell"
+          style={{
+            position: 'relative',
+            border: '1px solid var(--border-default)',
+            borderRadius: '18px',
+            background: 'var(--bg-primary)',
+            boxShadow: '0 16px 36px rgba(15, 23, 42, 0.08)',
+            overflow: 'visible',
+          }}
+        >
+          <div
+            data-testid="session-composer-plus-menu"
+            hidden={!composerMenuOpen}
+            style={{
+              position: 'absolute',
+              left: '12px',
+              bottom: '44px',
+              width: '248px',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: '12px',
+              background: 'var(--bg-primary)',
+              boxShadow: '0 18px 48px rgba(15, 23, 42, 0.18)',
+              padding: '6px',
+              zIndex: 16,
+              display: composerMenuOpen ? 'grid' : 'none',
+              gap: '2px',
+            }}
           >
-            {uploading ? <IconLoader2 size={17} /> : <IconPaperclip size={17} />}
-          </button>
+            {([
+              {
+                key: 'upload' as const,
+                label: t('agent.chat.composer.uploadFile', 'Upload file'),
+                description: t('agent.chat.composer.uploadFileDesc', 'Attach files or screenshots to this turn'),
+                icon: uploading ? <IconLoader2 size={16} /> : <IconPaperclip size={16} />,
+                disabled: disabled || attachments.length >= 10,
+              },
+              {
+                key: 'plan' as const,
+                label: t('agent.chat.composer.planMode', 'Plan Mode'),
+                description: localPlanModeRequested
+                  ? t('agent.chat.composer.planModeOnDesc', 'Next message will request a plan first')
+                  : t('agent.chat.composer.planModeDesc', 'Ask the agent to plan before execution'),
+                icon: <IconChecklist size={16} />,
+                checked: localPlanModeRequested,
+                disabled: !channelSessionId || sending,
+              },
+              {
+                key: 'goal' as const,
+                label: t('agent.chat.composer.goalMode', 'Goal mode'),
+                description: t('agent.chat.composer.goalModeDesc', 'Start a session goal through the command surface'),
+                icon: <IconTargetArrow size={16} />,
+                disabled: !channelSessionId || sending,
+              },
+              {
+                key: 'schedule' as const,
+                label: t('agent.chat.composer.scheduledTask', 'Scheduled task'),
+                description: t('agent.chat.composer.scheduledTaskDesc', 'Draft a scheduled task request for this agent'),
+                icon: <IconCalendarTime size={16} />,
+                disabled: !channelSessionId || sending,
+              },
+            ] satisfies Array<{
+              key: LocalComposerActionKey;
+              label: string;
+              description: string;
+              icon: React.ReactNode;
+              checked?: boolean;
+              disabled: boolean;
+            }>).map((action) => (
+              <button
+                key={action.key}
+                type="button"
+                onClick={() => setComposerAction(action.key)}
+                disabled={action.disabled}
+                style={{
+                  width: '100%',
+                  display: 'grid',
+                  gridTemplateColumns: action.checked === undefined ? '22px minmax(0, 1fr)' : '22px minmax(0, 1fr) 34px',
+                  gap: '9px',
+                  alignItems: 'center',
+                  padding: '9px 10px',
+                  border: 0,
+                  borderRadius: '8px',
+                  background: 'transparent',
+                  color: action.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                  cursor: action.disabled ? 'not-allowed' : 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
+                  {action.icon}
+                </span>
+                <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
+                  <strong style={{ fontSize: '12px', fontWeight: 650 }}>{action.label}</strong>
+                  <span style={{ fontSize: '11px', lineHeight: 1.35, color: 'var(--text-tertiary)' }}>{action.description}</span>
+                </span>
+                {action.checked !== undefined && (
+                  <span
+                    data-testid={`session-composer-action-${action.key}-switch`}
+                    role="switch"
+                    aria-checked={action.checked}
+                    aria-label={action.label}
+                    style={{
+                      position: 'relative',
+                      width: '30px',
+                      height: '18px',
+                      borderRadius: '999px',
+                      background: action.checked ? 'var(--text-primary)' : 'var(--bg-tertiary)',
+                      border: '1px solid var(--border-subtle)',
+                      transition: 'background 0.15s ease',
+                      justifySelf: 'end',
+                    }}
+                  >
+                    <span
+                      style={{
+                        position: 'absolute',
+                        top: '2px',
+                        left: action.checked ? '14px' : '2px',
+                        width: '12px',
+                        height: '12px',
+                        borderRadius: '50%',
+                        background: 'var(--bg-primary)',
+                        boxShadow: '0 1px 2px rgba(15, 23, 42, 0.25)',
+                        transition: 'left 0.15s ease',
+                      }}
+                    />
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <input ref={fileInputRef} type="file" multiple onChange={handleFileChange} style={{ display: 'none' }} />
           <textarea
+            ref={textAreaRef}
             className="chat-input"
             value={input}
             onChange={(event) => setInput(event.target.value)}
@@ -577,30 +771,141 @@ export default function LocalAgentChatSection({ agentId, agent }: LocalAgentChat
                 void sendMessage();
               }
             }}
-            placeholder={channelSessionId ? t('chat.placeholder', 'Type a message...') : t('common.loading', 'Loading')}
+            placeholder={composerPlaceholder}
             disabled={disabled}
             rows={1}
             style={{
-              flex: 1,
-              minHeight: '44px',
-              maxHeight: '160px',
+              width: '100%',
+              minHeight: '58px',
+              maxHeight: '180px',
               resize: 'none',
-              padding: '10px 14px',
+              padding: '16px 18px 8px',
               lineHeight: 1.5,
+              border: 0,
+              borderRadius: '18px 18px 0 0',
+              background: 'transparent',
+              boxShadow: 'none',
+              boxSizing: 'border-box',
             }}
           />
-          <button
-            className="btn btn-primary"
-            type="button"
-            data-testid="local-agent-send-button"
-            disabled={disabled || (!input.trim() && attachments.length === 0)}
-            onClick={() => void sendMessage()}
-            aria-label={t('chat.send', 'Send')}
-            title={t('chat.send', 'Send')}
-            style={{ width: '42px', height: '42px', padding: 0, minWidth: 'auto', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 10px 10px 12px',
+              minHeight: '46px',
+            }}
           >
-            {sending ? <IconLoader2 size={18} /> : <IconSend2 size={18} />}
-          </button>
+            <button
+              type="button"
+              onClick={() => setComposerMenuOpen((open) => !open)}
+              aria-label={t('agent.chat.composer.openMenu', 'Open composer actions')}
+              aria-expanded={composerMenuOpen}
+              title={t('agent.chat.composer.openMenu', 'Open composer actions')}
+              disabled={!channelSessionId || sending}
+              style={{
+                width: '32px',
+                height: '32px',
+                padding: 0,
+                border: '1px solid transparent',
+                borderRadius: '8px',
+                background: composerMenuOpen ? 'var(--bg-secondary)' : 'transparent',
+                color: channelSessionId && !sending ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: channelSessionId && !sending ? 'pointer' : 'not-allowed',
+                flexShrink: 0,
+              }}
+            >
+              <IconPlus size={20} stroke={1.7} />
+            </button>
+            <span
+              data-testid="session-composer-permission-badge"
+              title={t('agent.chat.composer.permissionTitle', 'Backend access permission')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                height: '30px',
+                padding: '0 9px',
+                borderRadius: '8px',
+                color: 'rgb(194, 86, 0)',
+                fontSize: '12px',
+                fontWeight: 650,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <IconShieldCheck size={15} stroke={1.8} />
+              {permissionBadgeLabel}
+            </span>
+            {composerIntentLabel && (
+              <span
+                data-testid="session-composer-intent-badge"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  height: '28px',
+                  padding: '0 8px',
+                  borderRadius: '8px',
+                  background: 'var(--bg-secondary)',
+                  color: 'var(--text-secondary)',
+                  fontSize: '11px',
+                  fontWeight: 650,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {composerIntentLabel}
+              </span>
+            )}
+            {uploading && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--text-tertiary)', fontSize: '11px', whiteSpace: 'nowrap' }}>
+                <IconLoader2 size={14} />
+                {t('localAgents.attaching', 'Attaching...')}
+              </span>
+            )}
+            <span style={{ flex: 1, minWidth: '12px' }} />
+            <span
+              data-testid="session-composer-model-badge"
+              title={t('agent.chat.composer.modelTitle', 'Model information')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '7px',
+                minWidth: 0,
+                maxWidth: '260px',
+                color: 'var(--text-secondary)',
+                fontSize: '12px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <IconCircleDashedCheck size={17} stroke={1.9} color="var(--text-tertiary)" />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{runtimeBadgeLabel}</span>
+            </span>
+            <button
+              className="btn btn-primary"
+              type="button"
+              data-testid="local-agent-send-button"
+              disabled={disabled || (!input.trim() && attachments.length === 0)}
+              onClick={() => void sendMessage()}
+              aria-label={t('chat.send', 'Send')}
+              title={t('chat.send', 'Send')}
+              style={{
+                width: '38px',
+                height: '38px',
+                padding: 0,
+                borderRadius: '10px',
+                minWidth: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              {sending ? <IconLoader2 size={18} /> : <IconSend2 size={18} />}
+            </button>
+          </div>
         </div>
       </div>
     </div>

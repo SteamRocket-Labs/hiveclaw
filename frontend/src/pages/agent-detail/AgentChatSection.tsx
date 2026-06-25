@@ -1,7 +1,9 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  IconCalendarTime,
   IconChecklist,
+  IconCircleDashedCheck,
   IconDownload,
   IconExternalLink,
   IconFileText,
@@ -9,12 +11,15 @@ import {
   IconPaperclip,
   IconPlus,
   IconSend2,
+  IconShieldCheck,
+  IconTargetArrow,
   IconTrash,
   IconX,
 } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import type { AgentPermissions } from '../../api/domains/agents';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
 import CopyMessageButton from './CopyMessageButton';
@@ -28,6 +33,7 @@ import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbe
 import { chatApi } from '../../api/domains/chat';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
+import { composerShortcutText } from './sessionComposerShortcuts';
 import type { ToolCallMeta } from './toolResultEnvelope';
 import {
   computeComposerHeight,
@@ -43,6 +49,61 @@ type AttachedFile = {
   path?: string;
   imageUrl?: string;
 };
+
+type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
+
+function formatCompactTokenCount(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '-';
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}m`;
+  if (value >= 1_000) return `${Math.round(value / 100) / 10}k`;
+  return String(Math.round(value));
+}
+
+function getRuntimeUsageLabel(runtimeSummary: ChatRuntimeSummary | null): string {
+  const used = runtimeSummary?.runtime?.estimated_input_tokens;
+  const remaining = runtimeSummary?.runtime?.remaining_tokens_estimate;
+  const contextWindow = runtimeSummary?.model?.context_window_tokens;
+  const total =
+    typeof contextWindow === 'number' && contextWindow > 0
+      ? contextWindow
+      : typeof used === 'number' && typeof remaining === 'number'
+        ? used + remaining
+        : null;
+  if (typeof used !== 'number' || !total || total <= 0) return '';
+  return `${Math.max(0, Math.min(100, Math.round((used / total) * 100)))}% used`;
+}
+
+function getRuntimeUsageTitle(runtimeSummary: ChatRuntimeSummary | null, usageLabel: string): string {
+  const used = runtimeSummary?.runtime?.estimated_input_tokens;
+  const contextWindow = runtimeSummary?.model?.context_window_tokens;
+  const remaining = runtimeSummary?.runtime?.remaining_tokens_estimate;
+  const parts = [
+    usageLabel,
+    typeof used === 'number' ? `used ${formatCompactTokenCount(used)} tokens` : null,
+    typeof contextWindow === 'number' ? `window ${formatCompactTokenCount(contextWindow)} tokens` : null,
+    typeof remaining === 'number' ? `remaining ${formatCompactTokenCount(remaining)} tokens` : null,
+  ].filter(Boolean);
+  return parts.join(' · ');
+}
+
+function getPermissionBadgeLabel(
+  agentPermissions: AgentPermissions | null | undefined,
+  t: (key: string, fallback: string) => string,
+): string {
+  const accessLevel = agentPermissions?.access_level;
+  if (accessLevel === 'manage') return t('agent.chat.composer.manageAccess', 'Manage access');
+  if (accessLevel === 'use') return t('agent.chat.composer.useAccess', 'Use access');
+  if (accessLevel === 'read') return t('agent.chat.composer.readAccess', 'Read access');
+  return t('agent.chat.composer.permissionUnknown', 'Access unknown');
+}
+
+function getComposerIntentLabel(
+  planModeRequested: boolean,
+  t: (key: string, fallback: string) => string,
+): string | null {
+  if (planModeRequested) return t('agent.chat.composer.planModeActive', 'Plan Mode');
+  return null;
+}
 
 type ConversationBranchMode =
   | 'fork'
@@ -106,6 +167,7 @@ interface AgentChatSectionProps {
   chatMessages: AgentChatMessage[];
   chatMessagesSessionId: string | null;
   runtimeSummary: ChatRuntimeSummary | null;
+  agentPermissions?: AgentPermissions | null;
   transportNotice: string | null;
   isWaiting: boolean;
   activeRunStatus?: string | null;
@@ -986,6 +1048,7 @@ export default function AgentChatSection({
   chatMessages,
   chatMessagesSessionId,
   runtimeSummary,
+  agentPermissions,
   transportNotice,
   isWaiting,
   activeRunStatus,
@@ -1017,9 +1080,6 @@ export default function AgentChatSection({
 }: AgentChatSectionProps) {
   const { t } = useTranslation();
   const effectiveAgentId = agentId ? String(agentId) : (agent?.id ? String(agent.id) : null);
-  const planModeToggleLabel = planModeRequested
-    ? t('agent.plan.composerToggleOn', 'Plan Mode enabled')
-    : t('agent.plan.composerToggleOff', 'Start next message in Plan Mode');
 
   const isReadOnlySession =
     !!activeSession &&
@@ -1030,6 +1090,59 @@ export default function AgentChatSection({
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
   const [branchDraft, setBranchDraft] = React.useState<BranchComposeDraft | null>(null);
   const [branchBusy, setBranchBusy] = React.useState(false);
+  const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
+
+  const runtimeUsageLabel = getRuntimeUsageLabel(runtimeSummary);
+  const runtimeUsageTitle = getRuntimeUsageTitle(runtimeSummary, runtimeUsageLabel);
+  const permissionBadgeLabel = getPermissionBadgeLabel(agentPermissions, t);
+  const composerIntentLabel = getComposerIntentLabel(planModeRequested, t);
+  const modelBadgeLabel =
+    runtimeSummary?.model?.label ||
+    runtimeSummary?.model?.name ||
+    agent?.primary_model_id ||
+    t('agent.chat.composer.modelUnknown', 'Unknown model');
+  const modelBadgeTitle = [
+    runtimeSummary?.model?.provider,
+    runtimeSummary?.model?.name,
+    runtimeUsageTitle,
+  ].filter(Boolean).join(' · ');
+
+  const focusChatInput = React.useCallback(() => {
+    setTimeout(() => chatInputRef.current?.focus(), 0);
+  }, [chatInputRef]);
+
+  const setComposerAction = React.useCallback(
+    (action: ComposerActionKey) => {
+      setComposerMenuOpen(false);
+      if (action === 'upload') {
+        fileInputRef.current?.click();
+        return;
+      }
+      if (action === 'plan') {
+        onTogglePlanMode?.();
+        focusChatInput();
+        return;
+      }
+      if (action === 'goal' || action === 'schedule') {
+        onSetChatInput(composerShortcutText(action));
+        focusChatInput();
+        return;
+      }
+    },
+    [fileInputRef, focusChatInput, onSetChatInput, onTogglePlanMode],
+  );
+
+  const sendFromComposer = React.useCallback(() => {
+    setComposerMenuOpen(false);
+    onSendChatMsg();
+  }, [onSendChatMsg]);
+
+  const composerPlaceholder =
+    !wsConnected
+      ? 'Connecting...'
+      : attachedFiles.length > 0
+        ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` })
+        : t('chat.placeholder');
 
   const startBranchAction = React.useCallback(
     async (message: AgentChatMessage, mode: ConversationBranchMode) => {
@@ -1628,7 +1741,7 @@ export default function AgentChatSection({
         flexDirection: sessionOnly ? 'column' : 'row',
         flex: 1,
         minHeight: 0,
-        height: sessionOnly ? 'calc(100vh - 94px)' : 'calc(100vh - 206px)',
+        height: sessionOnly ? '100%' : 'calc(100vh - 206px)',
         background: 'var(--bg-primary)',
       }}
     >
@@ -1893,9 +2006,8 @@ export default function AgentChatSection({
               data-testid="session-composer"
               style={{
                 position: 'relative',
-                borderTop: '1px solid var(--border-subtle)',
                 background: 'var(--bg-primary)',
-                padding: '8px 12px',
+                padding: '14px 16px 16px',
               }}
             >
               {artifactPreview && (
@@ -1979,142 +2091,330 @@ export default function AgentChatSection({
                   ))}
                 </div>
               )}
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
-              <input type="file" multiple ref={fileInputRef} onChange={onHandleChatFile} style={{ display: 'none' }} />
-              <button
-                className="btn btn-secondary"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!wsConnected || uploading || attachedFiles.length >= 10}
-                aria-label={t('agent.chat.attachFile', 'Attach file')}
-                title={t('agent.chat.attachFile', 'Attach file')}
+              <div
+                data-testid="session-composer-shell"
                 style={{
-                  width: '36px',
-                  height: '36px',
-                  padding: 0,
-                  minWidth: 'auto',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  ...((!wsConnected || uploading || attachedFiles.length >= 10) ? { cursor: 'not-allowed', opacity: 0.4 } : {}),
+                  position: 'relative',
+                  border: '1px solid var(--border-default)',
+                  borderRadius: '18px',
+                  background: 'var(--bg-primary)',
+                  boxShadow: '0 16px 36px rgba(15, 23, 42, 0.08)',
+                  overflow: 'visible',
                 }}
               >
-                {uploading ? <IconLoader2 size={17} /> : <IconPaperclip size={17} />}
-              </button>
-              {uploading && uploadProgress >= 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 140px' }}>
-                  {uploadProgress <= 100 ? (
-                    <>
-                      <div style={{ flex: 1, height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
-                        <div
+                <div
+                  data-testid="session-composer-plus-menu"
+                  hidden={!composerMenuOpen}
+                  style={{
+                    position: 'absolute',
+                    left: '12px',
+                    bottom: '44px',
+                    width: '248px',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: '12px',
+                    background: 'var(--bg-primary)',
+                    boxShadow: '0 18px 48px rgba(15, 23, 42, 0.18)',
+                    padding: '6px',
+                    zIndex: 16,
+                    display: composerMenuOpen ? 'grid' : 'none',
+                    gap: '2px',
+                  }}
+                >
+                  {([
+                    {
+                      key: 'upload' as const,
+                      label: t('agent.chat.composer.uploadFile', 'Upload file'),
+                      description: t('agent.chat.composer.uploadFileDesc', 'Attach files or screenshots to this turn'),
+                      icon: uploading ? <IconLoader2 size={16} /> : <IconPaperclip size={16} />,
+                      disabled: !wsConnected || uploading || attachedFiles.length >= 10,
+                    },
+                    {
+                      key: 'plan' as const,
+                      label: t('agent.chat.composer.planMode', 'Plan Mode'),
+                      description: planModeRequested
+                        ? t('agent.chat.composer.planModeOnDesc', 'Next message will request a plan first')
+                        : t('agent.chat.composer.planModeDesc', 'Ask the agent to plan before execution'),
+                      icon: <IconChecklist size={16} />,
+                      checked: planModeRequested,
+                      disabled: !wsConnected || isWaiting || isStreaming,
+                    },
+                    {
+                      key: 'goal' as const,
+                      label: t('agent.chat.composer.goalMode', 'Goal mode'),
+                      description: t('agent.chat.composer.goalModeDesc', 'Start a session goal through the command surface'),
+                      icon: <IconTargetArrow size={16} />,
+                      disabled: !wsConnected || isWaiting || isStreaming,
+                    },
+                    {
+                      key: 'schedule' as const,
+                      label: t('agent.chat.composer.scheduledTask', 'Scheduled task'),
+                      description: t('agent.chat.composer.scheduledTaskDesc', 'Draft a scheduled task request for this agent'),
+                      icon: <IconCalendarTime size={16} />,
+                      disabled: !wsConnected || isWaiting || isStreaming,
+                    },
+                  ] satisfies Array<{
+                    key: ComposerActionKey;
+                    label: string;
+                    description: string;
+                    icon: React.ReactNode;
+                    checked?: boolean;
+                    disabled: boolean;
+                  }>).map((action) => (
+                    <button
+                      key={action.key}
+                      type="button"
+                      onClick={() => setComposerAction(action.key)}
+                      disabled={action.disabled}
+                      style={{
+                        width: '100%',
+                        display: 'grid',
+                        gridTemplateColumns: action.checked === undefined ? '22px minmax(0, 1fr)' : '22px minmax(0, 1fr) 34px',
+                        gap: '9px',
+                        alignItems: 'center',
+                        padding: '9px 10px',
+                        border: 0,
+                        borderRadius: '8px',
+                        background: 'transparent',
+                        color: action.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                        cursor: action.disabled ? 'not-allowed' : 'pointer',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
+                        {action.icon}
+                      </span>
+                      <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
+                        <strong style={{ fontSize: '12px', fontWeight: 650 }}>{action.label}</strong>
+                        <span style={{ fontSize: '11px', lineHeight: 1.35, color: 'var(--text-tertiary)' }}>{action.description}</span>
+                      </span>
+                      {action.checked !== undefined && (
+                        <span
+                          data-testid={`session-composer-action-${action.key}-switch`}
+                          role="switch"
+                          aria-checked={action.checked}
+                          aria-label={action.label}
                           style={{
-                            height: '100%',
-                            width: '100%',
-                            borderRadius: '2px',
-                            background: 'var(--accent-primary)',
-                            transform: `scaleX(${Math.max(0, Math.min(100, uploadProgress)) / 100})`,
-                            transformOrigin: 'left center',
-                            transition: 'transform 0.15s ease',
+                            position: 'relative',
+                            width: '30px',
+                            height: '18px',
+                            borderRadius: '999px',
+                            background: action.checked ? 'var(--text-primary)' : 'var(--bg-tertiary)',
+                            border: '1px solid var(--border-subtle)',
+                            transition: 'background 0.15s ease',
+                            justifySelf: 'end',
                           }}
-                        />
-                      </div>
-                      <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{uploadProgress}%</span>
-                    </>
-                  ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <span
-                        style={{
-                          display: 'inline-block',
-                          width: '5px',
-                          height: '5px',
-                          borderRadius: '50%',
-                          background: 'var(--accent-primary)',
-                          animation: 'pulse 1.2s ease-in-out infinite',
+                        >
+                          <span
+                            style={{
+                              position: 'absolute',
+                              top: '2px',
+                              left: action.checked ? '14px' : '2px',
+                              width: '12px',
+                              height: '12px',
+                              borderRadius: '50%',
+                              background: 'var(--bg-primary)',
+                              boxShadow: '0 1px 2px rgba(15, 23, 42, 0.25)',
+                              transition: 'left 0.15s ease',
+                            }}
+                          />
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <input type="file" multiple ref={fileInputRef} onChange={onHandleChatFile} style={{ display: 'none' }} />
+                <textarea
+                  ref={chatInputRef}
+                  className="chat-input"
+                  value={chatInput}
+                  onChange={(e) => onSetChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      sendFromComposer();
+                    }
+                  }}
+                  onPaste={onHandlePaste}
+                  placeholder={composerPlaceholder}
+                  disabled={!wsConnected}
+                  rows={1}
+                  style={{
+                    width: '100%',
+                    minHeight: '58px',
+                    maxHeight: '180px',
+                    resize: 'none',
+                    padding: '16px 18px 8px',
+                    lineHeight: 1.5,
+                    border: 0,
+                    borderRadius: '18px 18px 0 0',
+                    background: 'transparent',
+                    boxShadow: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                  autoFocus
+                />
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '8px 10px 10px 12px',
+                    minHeight: '46px',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setComposerMenuOpen((open) => !open)}
+                    aria-label={t('agent.chat.composer.openMenu', 'Open composer actions')}
+                    aria-expanded={composerMenuOpen}
+                    title={t('agent.chat.composer.openMenu', 'Open composer actions')}
+                    disabled={!wsConnected}
+                    style={{
+                      width: '32px',
+                      height: '32px',
+                      padding: 0,
+                      border: '1px solid transparent',
+                      borderRadius: '8px',
+                      background: composerMenuOpen ? 'var(--bg-secondary)' : 'transparent',
+                      color: wsConnected ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: wsConnected ? 'pointer' : 'not-allowed',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <IconPlus size={20} stroke={1.7} />
+                  </button>
+                  <span
+                    data-testid="session-composer-permission-badge"
+                    title={t('agent.chat.composer.permissionTitle', 'Backend access permission')}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      height: '30px',
+                      padding: '0 9px',
+                      borderRadius: '8px',
+                      color: 'rgb(194, 86, 0)',
+                      fontSize: '12px',
+                      fontWeight: 650,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <IconShieldCheck size={15} stroke={1.8} />
+                    {permissionBadgeLabel}
+                  </span>
+                  {composerIntentLabel && (
+                    <span
+                      data-testid="session-composer-intent-badge"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        height: '28px',
+                        padding: '0 8px',
+                        borderRadius: '8px',
+                        background: 'var(--bg-secondary)',
+                        color: 'var(--text-secondary)',
+                        fontSize: '11px',
+                        fontWeight: 650,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {composerIntentLabel}
+                    </span>
+                  )}
+                  {uploading && uploadProgress >= 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '0 0 140px' }}>
+                      {uploadProgress <= 100 ? (
+                        <>
+                          <div style={{ flex: 1, height: '4px', borderRadius: '2px', background: 'var(--bg-tertiary)', overflow: 'hidden' }}>
+                            <div
+                              style={{
+                                height: '100%',
+                                width: '100%',
+                                borderRadius: '2px',
+                                background: 'var(--accent-primary)',
+                                transform: `scaleX(${Math.max(0, Math.min(100, uploadProgress)) / 100})`,
+                                transformOrigin: 'left center',
+                                transition: 'transform 0.15s ease',
+                              }}
+                            />
+                          </div>
+                          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{uploadProgress}%</span>
+                        </>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              width: '5px',
+                              height: '5px',
+                              borderRadius: '50%',
+                              background: 'var(--accent-primary)',
+                              animation: 'pulse 1.2s ease-in-out infinite',
+                            }}
+                          />
+                          <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>Processing...</span>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          uploadAbortRef.current?.();
                         }}
-                      />
-                      <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>Processing...</span>
+                        aria-label={t('common.cancel', 'Cancel')}
+                        style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', padding: '0 2px', lineHeight: 1, display: 'inline-flex' }}
+                        title="Cancel upload"
+                      >
+                        <IconX size={13} />
+                      </button>
                     </div>
                   )}
-                  <button
-                    onClick={() => {
-                      uploadAbortRef.current?.();
+                  <span style={{ flex: 1, minWidth: '12px' }} />
+                  <span
+                    data-testid="session-composer-model-badge"
+                    title={modelBadgeTitle || t('agent.chat.composer.modelTitle', 'Model information')}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '7px',
+                      minWidth: 0,
+                      maxWidth: '260px',
+                      color: 'var(--text-secondary)',
+                      fontSize: '12px',
+                      whiteSpace: 'nowrap',
                     }}
-                    aria-label={t('common.cancel', 'Cancel')}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', padding: '0 2px', lineHeight: 1, display: 'inline-flex' }}
-                    title="Cancel upload"
                   >
-                    <IconX size={13} />
+                    <IconCircleDashedCheck size={17} stroke={1.9} color="var(--text-tertiary)" />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{modelBadgeLabel}</span>
+                    {runtimeUsageLabel && <span style={{ color: 'var(--text-tertiary)' }}>{runtimeUsageLabel}</span>}
+                  </span>
+                  {(isStreaming || isWaiting) && (
+                    <button className="btn btn-stop-generation" onClick={onAbortGeneration} style={{ padding: '6px 12px' }} title={t('chat.stop', 'Stop')}>
+                      <span className="stop-icon" />
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-primary"
+                    onClick={sendFromComposer}
+                    disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
+                    aria-label={t('chat.send')}
+                    title={t('chat.send')}
+                    style={{
+                      width: '38px',
+                      height: '38px',
+                      padding: 0,
+                      borderRadius: '10px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <IconSend2 size={18} />
                   </button>
                 </div>
-              )}
-              <button
-                type="button"
-                onClick={onTogglePlanMode}
-                aria-label={planModeToggleLabel}
-                aria-pressed={planModeRequested}
-                title={planModeToggleLabel}
-                disabled={!wsConnected || isWaiting || isStreaming}
-                style={{
-                  width: '36px',
-                  height: '36px',
-                  borderRadius: '6px',
-                  border: planModeRequested ? '1px solid var(--accent-primary)' : '1px solid var(--border-subtle)',
-                  background: planModeRequested ? 'rgba(16,185,129,0.12)' : 'var(--bg-secondary)',
-                  color: planModeRequested ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: !wsConnected || isWaiting || isStreaming ? 'not-allowed' : 'pointer',
-                  flexShrink: 0,
-                }}
-              >
-                <IconChecklist size={18} stroke={1.8} />
-              </button>
-              <textarea
-                ref={chatInputRef}
-                className="chat-input"
-                value={chatInput}
-                onChange={(e) => onSetChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    onSendChatMsg();
-                  }
-	                }}
-                onPaste={onHandlePaste}
-                placeholder={
-                  !wsConnected
-                    ? 'Connecting...'
-                    : attachedFiles.length > 0
-                      ? t('agent.chat.askAboutFile', { name: attachedFiles.length === 1 ? attachedFiles[0].name : `${attachedFiles.length} files` })
-                      : t('chat.placeholder')
-                }
-                disabled={!wsConnected}
-                rows={1}
-                style={{
-                  flex: 1,
-                  minHeight: '44px',
-                  maxHeight: '160px',
-                  resize: 'none',
-                  padding: '10px 14px',
-                  lineHeight: 1.5,
-                }}
-                autoFocus
-              />
-              {(isStreaming || isWaiting) && (
-                <button className="btn btn-stop-generation" onClick={onAbortGeneration} style={{ padding: '6px 12px' }} title={t('chat.stop', 'Stop')}>
-                  <span className="stop-icon" />
-                </button>
-              )}
-              <button
-                className="btn btn-primary"
-                onClick={onSendChatMsg}
-                disabled={!wsConnected || (!chatInput.trim() && attachedFiles.length === 0)}
-                aria-label={t('chat.send')}
-                title={t('chat.send')}
-                style={{ width: '40px', height: '36px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
-              >
-                <IconSend2 size={18} />
-              </button>
               </div>
             </div>
           </>

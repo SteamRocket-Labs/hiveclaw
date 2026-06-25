@@ -853,6 +853,7 @@ async def local_agent_browser_channel_ws(
             data = await websocket.receive_json()
             message_type = data.get("type")
             if message_type == "ping":
+                await channel_service.mark_channel_seen(db, context=context)
                 await websocket.send_json({"type": "pong"})
                 continue
             await websocket.send_json(
@@ -903,6 +904,7 @@ async def local_agent_channel_ws(
             data = await websocket.receive_json()
             message_type = data.get("type")
             if message_type == "ping":
+                await channel_service.mark_channel_seen(db, context=context)
                 await websocket.send_json({"type": "pong"})
                 continue
             if message_type == "ready":

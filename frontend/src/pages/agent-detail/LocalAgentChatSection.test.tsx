@@ -1,10 +1,20 @@
+import React from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { LocalAgentChannelEvent } from '../../api/domains/localBridge';
-import {
+import LocalAgentChatSection, {
   localAgentArtifactDownloadUrl,
   localAgentChannelEventsToChatMessages,
 } from './LocalAgentChatSection';
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (_key: string, fallback: string) => fallback,
+  }),
+}));
 
 describe('LocalAgentChatSection local-channel projection', () => {
   it('projects durable local channel events into ordinary chat messages with artifacts', () => {
@@ -147,5 +157,46 @@ describe('LocalAgentChatSection local-channel projection', () => {
       role: 'assistant',
       content: '我是agent。',
     });
+  });
+
+  it('renders the local agent composer with the same Codex-style control surface as ordinary chat sessions', () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    const markup = renderToStaticMarkup(
+      <MemoryRouter initialEntries={['/agents/agent-local-1?session_id=chat-session-1#chat']}>
+        <QueryClientProvider client={queryClient}>
+          <LocalAgentChatSection
+            agentId="agent-local-1"
+            agent={{ id: 'agent-local-1', name: 'Codex on Mac' }}
+            agentPermissions={{
+              scope_type: 'agent',
+              access_level: 'manage',
+            }}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    expect(markup).toContain('data-testid="local-agent-session-composer"');
+    expect(markup).toContain('height:100%');
+    expect(markup).not.toContain('height:calc(100vh - 206px)');
+    expect(markup).toContain('data-testid="session-composer-shell"');
+    expect(markup).toContain('data-testid="session-composer-plus-menu"');
+    expect(markup).toContain('Upload file');
+    expect(markup).toContain('Plan Mode');
+    expect(markup).toContain('Goal mode');
+    expect(markup).toContain('Scheduled task');
+    expect(markup).toContain('data-testid="session-composer-action-plan-switch"');
+    expect(markup).not.toContain('data-testid="session-composer-action-goal-switch"');
+    expect(markup).not.toContain('data-testid="session-composer-action-schedule-switch"');
+    expect(markup).toContain('role="switch"');
+    expect(markup).toContain('aria-checked="false"');
+    expect(markup).toContain('Manage access');
+    expect(markup).toContain('Hive Connect');
+    expect(markup).not.toContain('aria-label="Attach file"');
+    expect(markup).not.toContain('microphone');
+    expect(markup).not.toContain('Voice');
   });
 });

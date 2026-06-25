@@ -32,10 +32,12 @@ class CommandDefinition(BaseModel):
     visible_to_model: bool = True
     visible_to_user: bool = True
 
-    def index_entry(self) -> dict[str, Any]:
+    def index_entry(self, *, surface: Literal["agent_prompt", "user"] = "agent_prompt") -> dict[str, Any]:
         """Return the prompt/UI index entry without the heavy input schema."""
+        user_name = self.aliases[0] if surface == "user" and self.aliases else self.name
         return {
-            "name": self.name,
+            "name": user_name,
+            "canonical_name": self.name,
             "aliases": list(self.aliases),
             "description": self.description,
             "category": self.category,
@@ -77,7 +79,7 @@ class CommandRegistry:
             commands = [command for command in self.values() if command.visible_to_model]
         else:
             commands = [command for command in self.values() if command.visible_to_user]
-        return [command.index_entry() for command in commands]
+        return [command.index_entry(surface=surface) for command in commands]
 
 
 def _command(
@@ -371,6 +373,7 @@ def build_default_command_registry(
             category="team",
             execution_mode="runtime",
             permission_mode="write",
+            aliases=("team",),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -380,12 +383,19 @@ def build_default_command_registry(
                 "required": ["name", "members"],
             },
         ),
-        _command("team_delete", "Close or delete a team workspace.", category="team", execution_mode="runtime"),
+        _command(
+            "team_delete",
+            "Close or delete a team workspace.",
+            category="team",
+            execution_mode="runtime",
+            visible_to_user=False,
+        ),
         _command(
             "task_create",
             "Create a FreeCode-style task: current-session Work Ledger step by default, or delegated agent work when kind=delegation.",
             category="task",
             execution_mode="runtime",
+            aliases=("task",),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -404,6 +414,7 @@ def build_default_command_registry(
             "List current Work Ledger tasks, or delegated async tasks when kind=delegation.",
             category="task",
             execution_mode="runtime",
+            visible_to_user=False,
             input_schema={
                 "type": "object",
                 "properties": {"kind": {"type": "string", "enum": ["todo", "delegation"], "default": "todo"}},
@@ -414,6 +425,7 @@ def build_default_command_registry(
             "Get one Work Ledger task, or a delegated async task when kind=delegation.",
             category="task",
             execution_mode="runtime",
+            visible_to_user=False,
             input_schema={
                 "type": "object",
                 "properties": {
@@ -427,6 +439,7 @@ def build_default_command_registry(
             "Update a current-session Work Ledger task.",
             category="task",
             execution_mode="runtime",
+            visible_to_user=False,
             input_schema={
                 "type": "object",
                 "properties": {
@@ -443,6 +456,7 @@ def build_default_command_registry(
             "Read output from an executable RuntimeTask.",
             category="task",
             execution_mode="runtime",
+            visible_to_user=False,
             input_schema={
                 "type": "object",
                 "properties": {"runtime_task_id": {"type": "string"}},
@@ -454,6 +468,7 @@ def build_default_command_registry(
             "Stop an executable RuntimeTask, or a delegated async task when kind=delegation.",
             category="task",
             execution_mode="runtime",
+            visible_to_user=False,
             input_schema={
                 "type": "object",
                 "properties": {
@@ -469,6 +484,7 @@ def build_default_command_registry(
             "Start a session-scoped goal with bounded continuation.",
             category="goal",
             execution_mode="runtime",
+            aliases=("goal",),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -479,12 +495,70 @@ def build_default_command_registry(
                 "required": ["objective"],
             },
         ),
-        _command("goal_update", "Update the active session goal.", category="goal", execution_mode="runtime"),
+        _command(
+            "goal_update",
+            "Update the active session goal.",
+            category="goal",
+            execution_mode="runtime",
+            visible_to_user=False,
+        ),
         _command(
             "goal_stop",
             "Pause, complete, or cancel the active session goal.",
             category="goal",
             execution_mode="runtime",
+            visible_to_user=False,
+        ),
+        _command(
+            "schedule_create",
+            "Create a session-requested scheduled task draft or enabled cron wake policy.",
+            category="schedule",
+            execution_mode="runtime",
+            permission_mode="write",
+            aliases=("schedule",),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "instruction": {"type": "string"},
+                    "cron_expr": {"type": "string"},
+                    "is_enabled": {"type": "boolean", "default": False},
+                    "delivery_target_json": {"type": "object"},
+                    "confirmed_plan_id": {"type": "string"},
+                    "confirmed_plan_version": {"type": "integer"},
+                    "confirmed_plan_hash": {"type": "string"},
+                    "plan_mode_decision": {"type": "string"},
+                    "plan_recommendation_id": {"type": "string"},
+                },
+                "required": ["name", "instruction", "cron_expr"],
+            },
+        ),
+        _command(
+            "schedule_once",
+            "Create a session-requested one-time task draft or enabled one-shot wake policy.",
+            category="schedule",
+            execution_mode="runtime",
+            permission_mode="write",
+            aliases=("once",),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "instruction": {"type": "string"},
+                    "at": {
+                        "type": "string",
+                        "description": "ISO-8601 timestamp for the one-time wake, e.g. 2026-06-26T09:00:00Z.",
+                    },
+                    "is_enabled": {"type": "boolean", "default": False},
+                    "delivery_target_json": {"type": "object"},
+                    "confirmed_plan_id": {"type": "string"},
+                    "confirmed_plan_version": {"type": "integer"},
+                    "confirmed_plan_hash": {"type": "string"},
+                    "plan_mode_decision": {"type": "string"},
+                    "plan_recommendation_id": {"type": "string"},
+                },
+                "required": ["name", "instruction", "at"],
+            },
         ),
         _command(
             "advanced_plan",

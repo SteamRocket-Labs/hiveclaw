@@ -321,7 +321,7 @@ export default function Layout() {
     }, [showAccountMenu]);
 
     return (
-        <div className="app-layout">
+        <div className={`app-layout${isSidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
             <AppSidebar
                 user={user}
                 theme={theme}

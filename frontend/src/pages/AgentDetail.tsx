@@ -1664,7 +1664,7 @@ function AgentDetailInner() {
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
         queryFn: () => agentApi.getPermissions(id!),
-        enabled: canLoadAgentScopedData && activeTab === 'settings',
+        enabled: canLoadAgentScopedData && (activeTab === 'settings' || activeTab === 'chat'),
     });
 
     const canManageCapabilityPolicies = isAdmin;
@@ -2053,7 +2053,7 @@ function AgentDetailInner() {
                 {
                     activeTab === 'chat' && (
                         (agent as any)?.agent_type === 'local_agent' ? (
-                            <LocalAgentChatSection key="chat" agentId={id!} agent={agent} />
+                            <LocalAgentChatSection key="chat" agentId={id!} agent={agent} agentPermissions={permData ?? null} />
                         ) : (
                         <AgentChatSection
                             agentId={id}
@@ -2088,6 +2088,7 @@ function AgentDetailInner() {
                             chatMessages={chatMessages}
                             chatMessagesSessionId={chatMessagesSessionId}
                             runtimeSummary={runtimeSummary}
+                            agentPermissions={permData ?? null}
                             transportNotice={transportNotice}
                             isWaiting={isWaiting}
                             activeRunStatus={currentActiveRunState?.status || null}

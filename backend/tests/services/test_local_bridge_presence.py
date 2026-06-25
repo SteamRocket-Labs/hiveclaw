@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -32,14 +32,26 @@ def test_bound_connection_without_runner_presence_is_unknown_not_logged_out() ->
     assert payload["runtime_kind"] is None
 
 
-def test_online_presence_does_not_depend_on_last_seen_window() -> None:
-    stale_seen_at = datetime(2026, 6, 22, tzinfo=timezone.utc)
-    channel = SimpleNamespace(status="online", runtime_kind="codex", last_seen_at=stale_seen_at)
+def test_recent_online_presence_is_online() -> None:
+    recent_seen_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    channel = SimpleNamespace(status="online", runtime_kind="codex", last_seen_at=recent_seen_at)
 
     payload = serialize_connection_for_list(_connection(status="active"), channel=channel)
 
     assert payload["status"] == "active"
     assert payload["presence_status"] == "online"
+    assert payload["presence_last_seen_at"] == recent_seen_at.isoformat()
+    assert payload["runtime_kind"] == "codex"
+
+
+def test_stale_online_presence_is_offline_while_login_stays_active() -> None:
+    stale_seen_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    channel = SimpleNamespace(status="online", runtime_kind="codex", last_seen_at=stale_seen_at)
+
+    payload = serialize_connection_for_list(_connection(status="active"), channel=channel)
+
+    assert payload["status"] == "active"
+    assert payload["presence_status"] == "offline"
     assert payload["presence_last_seen_at"] == stale_seen_at.isoformat()
     assert payload["runtime_kind"] == "codex"
 

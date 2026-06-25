@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import LocalAgents, {
   activationCodeFromSearch,
+  buildSetupInstruction,
   browserChannelWsUrl,
   channelSessionIdFromSearch,
   connectionPresenceStatus,
@@ -42,7 +43,7 @@ vi.mock('../api/domains/localBridge', () => ({
       install_cli_command: 'npm install -g @hiveclaw243/hive-connect',
       login_command: 'hive-connect login',
       status_command: 'hive-connect status',
-      run_command: 'hive-connect run',
+      run_command: 'hive-connect daemon install --config ~/.hive-connect/config.toml --force',
       user_prompt: '帮我安装 Hive Connect skill，并连接到 Hive。',
       instructions: [
         '帮我安装 Hive Connect skill，并连接到 Hive。',
@@ -52,8 +53,9 @@ vi.mock('../api/domains/localBridge', () => ({
         '2. 按 skill 执行 npm install -g @hiveclaw243/hive-connect 安装本地 CLI。',
         '3. 执行 hive-connect login。',
         '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
-        '5. 执行 hive-connect status 验证连接。',
-        '6. 执行 hive-connect run，保持本地 Agent 在线。',
+        '5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。',
+        '6. 执行 hive-connect daemon status，确认后台服务正在运行。',
+        '7. 可选：执行 hive-connect status 验证 Hive 连接状态。',
       ],
     }),
     approvePairing: vi.fn(),
@@ -187,6 +189,12 @@ describe('LocalAgents page', () => {
     expect(markup).toContain('npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect');
     expect(markup).toContain('npm install -g @hiveclaw243/hive-connect');
     expect(markup).toContain('hive-connect login');
+    expect(markup).toContain('hive-connect daemon install --config ~/.hive-connect/config.toml --force');
+    expect(markup).toContain('hive-connect daemon status');
+    expect(markup).toContain('When the background service is online, messages are delivered over WebSocket.');
+    expect(markup).not.toContain('执行 hive-connect run，保持本地 Agent 在线');
+    expect(markup).not.toContain('runner');
+    expect(markup).not.toContain('poll fallback');
     expect(markup).not.toContain('--hive-url');
     expect(markup).not.toContain('hive-bridge');
     expect(markup).not.toContain('cc-connect');
@@ -214,5 +222,28 @@ describe('LocalAgents page', () => {
     expect(markup).toContain('Chat');
     expect(markup).toContain('Workspace');
     expect(markup).not.toContain('Local Agent Channel</h2>');
+  });
+
+  it('builds setup instructions around the background daemon instead of a foreground runner', () => {
+    const guide = buildSetupInstruction({
+      product_name: 'Hive Connect',
+      skill_repo_url: 'https://github.com/rocky2431/hive-connect-skill',
+      skill_name: 'hive-connect',
+      npm_package: '@hiveclaw243/hive-connect',
+      binary_name: 'hive-connect',
+      install_skill_command: 'npx skills add https://github.com/rocky2431/hive-connect-skill --skill hive-connect',
+      install_cli_command: 'npm install -g @hiveclaw243/hive-connect',
+      login_command: 'hive-connect login',
+      status_command: 'hive-connect status',
+      run_command: 'hive-connect daemon install --config ~/.hive-connect/config.toml --force',
+      user_prompt: '帮我安装 Hive Connect skill，并连接到 Hive。',
+      instructions: [],
+    } as any);
+
+    expect(guide).toContain('hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。');
+    expect(guide).toContain('可选：执行 hive-connect status 验证 Hive 连接状态。');
+    expect(guide.indexOf('hive-connect daemon install')).toBeLessThan(guide.indexOf('hive-connect status'));
+    expect(guide).not.toContain('runner');
+    expect(guide).not.toContain('poll fallback');
   });
 });

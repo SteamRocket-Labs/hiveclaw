@@ -39,6 +39,7 @@ HIVE_CONNECT_SKILL_NAME = "hive-connect"
 HIVE_CONNECT_NPM_PACKAGE = "@hiveclaw243/hive-connect"
 HIVE_CONNECT_BINARY_NAME = "hive-connect"
 HIVE_CONNECT_CLIENT_KIND = "hive-connect"
+LOCAL_AGENT_PRESENCE_ONLINE_TTL_SECONDS = 90
 
 
 def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]:
@@ -48,7 +49,8 @@ def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]
     install_cli = f"npm install -g {HIVE_CONNECT_NPM_PACKAGE}"
     login = f"{HIVE_CONNECT_BINARY_NAME} login"
     status = f"{HIVE_CONNECT_BINARY_NAME} status"
-    run = f"{HIVE_CONNECT_BINARY_NAME} run"
+    run = f"{HIVE_CONNECT_BINARY_NAME} daemon install --config ~/.hive-connect/config.toml --force"
+    daemon_status = f"{HIVE_CONNECT_BINARY_NAME} daemon status"
     user_prompt = "帮我安装 Hive Connect skill，并连接到 Hive。"
     return {
         "product_name": HIVE_CONNECT_PRODUCT_NAME,
@@ -69,8 +71,9 @@ def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]
             f"2. 按 skill 执行 {install_cli} 安装本地 CLI。",
             f"3. 执行 {login}。",
             "4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。",
-            f"5. 执行 {status} 验证连接。",
-            f"6. 执行 {run}，保持本地 Agent 在线。",
+            f"5. 执行 {run}，安装并启动后台常驻服务。",
+            f"6. 执行 {daemon_status}，确认后台服务正在运行。",
+            f"7. 可选：执行 {status} 验证 Hive 连接状态。",
         ],
     }
 
@@ -425,6 +428,10 @@ def _presence_status_for(connection: LocalAgentBridgeConnection, channel: LocalA
     if channel is None:
         return "unknown"
     if channel.status == "online":
+        if channel.last_seen_at is None:
+            return "unknown"
+        if utcnow() - channel.last_seen_at > timedelta(seconds=LOCAL_AGENT_PRESENCE_ONLINE_TTL_SECONDS):
+            return "offline"
         return "online"
     if channel.status in {"offline", "stale"}:
         return "offline"

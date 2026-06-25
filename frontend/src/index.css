@@ -353,6 +353,10 @@ select:focus {
   min-height: 100vh;
 }
 
+.app-layout.sidebar-collapsed {
+  --sidebar-width: var(--sidebar-width-collapsed);
+}
+
 .sidebar {
   width: var(--sidebar-width);
   background: var(--bg-secondary);
@@ -1364,11 +1368,24 @@ select:focus {
   transition: all var(--transition-default);
 }
 
-/* ─── Collapsed Sidebar Overrides ───────────────────── */
-.sidebar.collapsed {
-  --sidebar-width: var(--sidebar-width-collapsed);
+.main-content:has(.agent-detail-session-only) {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
 }
 
+.has-notification-bar .main-content:has(.agent-detail-session-only) {
+  height: calc(100vh - 32px);
+}
+
+.agent-detail-session-only {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ─── Collapsed Sidebar Overrides ───────────────────── */
 .sidebar.collapsed .sidebar-logo {
   justify-content: center;
   padding: var(--space-3) 0;

@@ -112,7 +112,7 @@ export const DEFAULT_HIVE_CONNECT_INSTALL_GUIDE: LocalBridgeInstallGuide = {
   install_cli_command: 'npm install -g @hiveclaw243/hive-connect',
   login_command: 'hive-connect login',
   status_command: 'hive-connect status',
-  run_command: 'hive-connect run',
+  run_command: 'hive-connect daemon install --config ~/.hive-connect/config.toml --force',
   user_prompt: '帮我安装 Hive Connect skill，并连接到 Hive。',
   instructions: [
     '帮我安装 Hive Connect skill，并连接到 Hive。',
@@ -122,8 +122,9 @@ export const DEFAULT_HIVE_CONNECT_INSTALL_GUIDE: LocalBridgeInstallGuide = {
     '2. 按 skill 执行 npm install -g @hiveclaw243/hive-connect 安装本地 CLI。',
     '3. 执行 hive-connect login。',
     '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
-    '5. 执行 hive-connect status 验证连接。',
-    '6. 执行 hive-connect run，保持本地 Agent 在线。',
+    '5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。',
+    '6. 执行 hive-connect daemon status，确认后台服务正在运行。',
+    '7. 可选：执行 hive-connect status 验证 Hive 连接状态。',
   ],
 };
 
@@ -138,8 +139,9 @@ export const buildSetupInstruction = (guide: LocalBridgeInstallGuide = DEFAULT_H
         `2. 按 skill 执行 ${guide.install_cli_command} 安装本地 CLI。`,
         `3. 执行 ${guide.login_command}。`,
         '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
-        `5. 执行 ${guide.status_command} 验证连接。`,
-        `6. 执行 ${guide.run_command}，保持本地 Agent 在线。`,
+        `5. 执行 ${guide.run_command}，安装并启动后台常驻服务。`,
+        `6. 执行 ${guide.binary_name} daemon status，确认后台服务正在运行。`,
+        `7. 可选：执行 ${guide.status_command} 验证 Hive 连接状态。`,
       ];
   return instructions.join('\n');
 };
@@ -165,7 +167,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   const [messageContent, setMessageContent] = useState(() =>
     t(
       'localAgents.defaultMessage',
-      'Please confirm that the local Hive Connect runner received this message and report the local runtime name.',
+      'Please prove you are the local agent on this computer: reply with the current working directory and confirm you are receiving messages through the Hive Connect background service.',
     ),
   );
   const [messageBusy, setMessageBusy] = useState(false);
@@ -565,7 +567,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                       primaryConnection.runtime_kind || primaryConnection.client_kind
                     } · ${
                       formatSeenAt(primaryConnection.presence_last_seen_at || primaryConnection.last_seen_at) ||
-                      t('localAgents.neverSeen', 'No runner seen yet')
+                      t('localAgents.neverSeen', 'No background service seen yet')
                     }`
                   : t('localAgents.noConnections', 'No linked local agent yet')}
               </div>
@@ -714,7 +716,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
               <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
                 {t(
                   'localAgents.sendHint',
-                  'Online runners receive it over WebSocket; fallback poll remains available.',
+                  'When the background service is online, messages are delivered over WebSocket. If the computer sleeps, shuts down, or loses network, Hive shows the local agent as offline.',
                 )}
               </span>
             </div>

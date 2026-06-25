@@ -106,6 +106,36 @@ def test_create_ws_ticket_uses_bridge_context_and_short_lived_ticket(monkeypatch
     assert captured == {"db": db, "context": context, "ttl_seconds": 60}
 
 
+def test_local_agent_channel_ping_refreshes_presence(monkeypatch) -> None:
+    context = _context()
+    db = _FakeDB()
+    captured = {}
+
+    async def fake_resolve_ws_ticket(db_arg, *, ticket, last_seen_ip=None, user_agent=None):
+        captured["resolve"] = {
+            "db": db_arg,
+            "ticket": ticket,
+            "last_seen_ip": last_seen_ip,
+            "user_agent": user_agent,
+        }
+        return context
+
+    async def fake_mark_channel_seen(db_arg, *, context):
+        captured["seen"] = {"db": db_arg, "context": context}
+
+    monkeypatch.setattr(local_agent_channel_api.channel_service, "resolve_ws_ticket", fake_resolve_ws_ticket)
+    monkeypatch.setattr(local_agent_channel_api.channel_service, "mark_channel_seen", fake_mark_channel_seen)
+    client = _client(monkeypatch, db=db, context=context)
+
+    with client.websocket_connect("/local-bridge/channel/ws?ticket=hbt_test") as websocket:
+        assert websocket.receive_json()["type"] == "hello"
+        websocket.send_json({"type": "ping"})
+        assert websocket.receive_json() == {"type": "pong"}
+
+    assert captured["resolve"]["ticket"] == "hbt_test"
+    assert captured["seen"] == {"db": db, "context": context}
+
+
 def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -> None:
     tenant_id = uuid4()
     user_id = uuid4()

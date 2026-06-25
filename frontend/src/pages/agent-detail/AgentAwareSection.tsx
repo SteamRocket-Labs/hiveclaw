@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { chatApi } from '../../api/domains/chat';
 import { triggerApi } from '../../api/domains/triggers';
 import { autonomyApi } from '../../api/domains/autonomy';
+import { agentApi } from '../../api/domains/agents';
 import { listWorkflowDefinitions, type WorkflowDefinitionRecord } from '../../api/domains/workflows';
 import { requestAppConfirm } from '../../components/AppDialogs';
 import { StructuredToolResultBody } from './AgentChatSection';
@@ -28,16 +29,22 @@ type AgentAwareSectionProps = {
   onLoadReflectionMessages?: (sessionId: string) => Promise<any[] | void>;
   autonomyOverview?: any | null;
   onRefetchAutonomy?: () => void | Promise<unknown>;
+  initialShowCreateWake?: boolean;
 };
 
 const REFLECTIONS_PAGE_SIZE = 10;
 const SECTION_PAGE_SIZE = 5;
+type WakeSchedulePreset = 'hourly' | 'daily' | 'weekly' | 'custom';
 
 export type WakeFormState = {
   mode: string;
   name: string;
   reason: string;
   scheduleType: string;
+  schedulePreset?: WakeSchedulePreset;
+  dailyTime?: string;
+  weeklyDay?: string;
+  weeklyTime?: string;
   cronExpr: string;
   intervalMinutes: number;
   onceAt: string;
@@ -58,6 +65,13 @@ export class StaleWorkflowRefError extends Error {
   }
 }
 
+export class WakeScheduleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WakeScheduleError';
+  }
+}
+
 export function workflowDefinitionOptionKey(record: WorkflowDefinitionRecord): string {
   return `${record.name}::${record.definition_version}::${record.definition_hash}`;
 }
@@ -67,6 +81,35 @@ export function workflowDefinitionFromKey(
   records: WorkflowDefinitionRecord[],
 ): WorkflowDefinitionRecord | undefined {
   return records.find((record) => workflowDefinitionOptionKey(record) === key);
+}
+
+function cronTimeParts(value: string | undefined, fallback: string): { hour: number; minute: number } {
+  const raw = (value || fallback).trim();
+  const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
+  if (!match) throw new WakeScheduleError(`Invalid time: ${raw}`);
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    throw new WakeScheduleError(`Invalid time: ${raw}`);
+  }
+  return { hour, minute };
+}
+
+export function buildWakeCronExpression(wakeForm: WakeFormState): string {
+  const preset = wakeForm.schedulePreset || 'custom';
+  if (preset === 'hourly') return '0 * * * *';
+  if (preset === 'daily') {
+    const { hour, minute } = cronTimeParts(wakeForm.dailyTime, '09:00');
+    return `${minute} ${hour} * * *`;
+  }
+  if (preset === 'weekly') {
+    const { hour, minute } = cronTimeParts(wakeForm.weeklyTime, '09:00');
+    const day = String(wakeForm.weeklyDay || '1');
+    if (!/^[0-7]$/.test(day)) throw new WakeScheduleError(`Invalid weekday: ${day}`);
+    return `${minute} ${hour} * * ${day}`;
+  }
+  if (!wakeForm.cronExpr.trim()) throw new WakeScheduleError('Custom schedule is required.');
+  return wakeForm.cronExpr;
 }
 
 export function buildWakePolicyPayload(
@@ -83,7 +126,7 @@ export function buildWakePolicyPayload(
     if (wakeForm.maxFires) config.max_fires = wakeForm.maxFires;
   } else {
     config.trigger_class = wakeForm.mode;
-    if (wakeForm.scheduleType === 'cron') config.expr = wakeForm.cronExpr;
+    if (wakeForm.scheduleType === 'cron') config.expr = buildWakeCronExpression(wakeForm);
     if (wakeForm.scheduleType === 'interval') config.minutes = wakeForm.intervalMinutes;
     if (wakeForm.scheduleType === 'once') config.at = wakeForm.onceAt;
   }
@@ -125,16 +168,22 @@ export default function AgentAwareSection({
   onLoadReflectionMessages,
   autonomyOverview,
   onRefetchAutonomy,
+  initialShowCreateWake = false,
 }: AgentAwareSectionProps) {
   const { t, i18n } = useTranslation();
   const [artifactView, setArtifactView] = React.useState<any | null>(null);
   const [artifactLoading, setArtifactLoading] = React.useState(false);
-  const [showCreateWake, setShowCreateWake] = React.useState(false);
+  const [showCreateWake, setShowCreateWake] = React.useState(initialShowCreateWake);
+  const [selectedWakeAgentId, setSelectedWakeAgentId] = React.useState(agentId);
   const [wakeForm, setWakeForm] = React.useState<WakeFormState>({
     mode: 'scheduled_job',
     name: '',
     reason: '',
     scheduleType: 'cron',
+    schedulePreset: 'daily',
+    dailyTime: '09:00',
+    weeklyDay: '1',
+    weeklyTime: '09:00',
     cronExpr: '0 9 * * *',
     intervalMinutes: 60,
     onceAt: '',
@@ -151,6 +200,15 @@ export default function AgentAwareSection({
     queryFn: () => listWorkflowDefinitions(agentId),
     enabled: !!agentId,
   });
+  const { data: agentOptions = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => agentApi.list(),
+    enabled: showCreateWake,
+  });
+
+  React.useEffect(() => {
+    setSelectedWakeAgentId(agentId);
+  }, [agentId]);
 
   const triggerToHuman = (trigger: any): string => {
     if (trigger.type === 'cron' && trigger.config?.expr) {
@@ -267,51 +325,88 @@ export default function AgentAwareSection({
       setWakeError(
         error instanceof StaleWorkflowRefError
           ? t('agent.aware.workflowRefStale', 'The selected workflow template is no longer available — pick another.')
+          : error instanceof WakeScheduleError
+            ? t('agent.aware.scheduleInvalid', 'Select a valid schedule.')
           : t('agent.aware.workflowArgsInvalid', 'Workflow args must be valid JSON.'),
       );
       return;
     }
-    await triggerApi.create(agentId, payload);
+    const targetAgentId = selectedWakeAgentId || agentId;
+    await triggerApi.create(targetAgentId, payload);
     setShowCreateWake(false);
-    await refreshAutonomy();
+    if (targetAgentId === agentId) {
+      await refreshAutonomy();
+    }
   };
 
   const renderCreateWakeForm = () => {
     if (!showCreateWake) return null;
     const activeWorkflowDefinitions = workflowDefinitions.filter((record) => record.status === 'active');
+    const agents = Array.isArray(agentOptions) && agentOptions.length > 0
+      ? agentOptions
+      : [{ id: agentId, name: t('agent.aware.currentAgent', 'Current agent') }];
+    const timeOptions = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
+    const weekdayOptions = [
+      ['1', t('agent.aware.weekdayMonday', 'Monday')],
+      ['2', t('agent.aware.weekdayTuesday', 'Tuesday')],
+      ['3', t('agent.aware.weekdayWednesday', 'Wednesday')],
+      ['4', t('agent.aware.weekdayThursday', 'Thursday')],
+      ['5', t('agent.aware.weekdayFriday', 'Friday')],
+      ['6', t('agent.aware.weekdaySaturday', 'Saturday')],
+      ['0', t('agent.aware.weekdaySunday', 'Sunday')],
+    ];
+    const schedulePreset = wakeForm.schedulePreset || 'daily';
     return (
-      <div style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px', marginTop: '10px', background: 'var(--bg-primary)' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
-          <select className="form-input" value={wakeForm.mode} onChange={(event) => setWakeForm({ ...wakeForm, mode: event.target.value })}>
-            <option value="scheduled_job">{t('agent.aware.kindScheduled', 'Scheduled job')}</option>
-            <option value="event_wait">{t('agent.aware.kindEventWait', 'Waiting event')}</option>
-          </select>
-          {wakeForm.mode !== 'event_wait' && (
-            <select className="form-input" value={wakeForm.scheduleType} onChange={(event) => setWakeForm({ ...wakeForm, scheduleType: event.target.value })}>
-              <option value="cron">cron</option>
-              <option value="interval">interval</option>
-              <option value="once">once</option>
-            </select>
-          )}
-          {wakeForm.mode === 'event_wait' && (
-            <select className="form-input" value={wakeForm.eventType} onChange={(event) => setWakeForm({ ...wakeForm, eventType: event.target.value })}>
-              <option value="on_message">message</option>
-              <option value="webhook">webhook</option>
-            </select>
-          )}
-          <select
+      <div
+        role="presentation"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 60,
+          background: 'rgba(15, 23, 42, 0.24)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '24px',
+        }}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('agent.aware.manualCreate', 'Manual create')}
+          style={{
+            width: 'min(720px, calc(100vw - 48px))',
+            minHeight: '330px',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '14px',
+            background: 'var(--bg-primary)',
+            boxShadow: '0 22px 70px rgba(15, 23, 42, 0.18)',
+            padding: '22px 24px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '14px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <input
+              className="form-input"
+              value={wakeForm.name}
+              onChange={(event) => setWakeForm({ ...wakeForm, name: event.target.value })}
+              placeholder={t('agent.aware.automationTitle', 'Automation title')}
+              style={{ border: 'none', boxShadow: 'none', fontSize: '15px', fontWeight: 600, paddingLeft: 0 }}
+            />
+            <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)} aria-label={t('common.close', 'Close')}>
+              x
+            </button>
+          </div>
+          <textarea
             className="form-input"
-            data-testid="wake-workflow-ref-select"
-            value={wakeForm.workflowDefinitionKey}
-            onChange={(event) => setWakeForm({ ...wakeForm, workflowDefinitionKey: event.target.value })}
-          >
-            <option value="">{t('agent.aware.noWorkflowRef', 'No workflow')}</option>
-            {activeWorkflowDefinitions.map((record) => (
-              <option key={record.id} value={workflowDefinitionOptionKey(record)}>
-                {record.name} v{record.definition_version}
-              </option>
-            ))}
-          </select>
+            value={wakeForm.reason}
+            onChange={(event) => setWakeForm({ ...wakeForm, reason: event.target.value })}
+            placeholder={t('agent.aware.promptPlaceholder', 'Add prompt, for example: check production logs and summarize anomalies')}
+            rows={8}
+            style={{ resize: 'vertical', minHeight: '150px', border: 'none', boxShadow: 'none', paddingLeft: 0 }}
+          />
           {wakeForm.workflowDefinitionKey && (
             <textarea
               className="form-input"
@@ -319,27 +414,117 @@ export default function AgentAwareSection({
               value={wakeForm.workflowArgsText}
               onChange={(event) => setWakeForm({ ...wakeForm, workflowArgsText: event.target.value })}
               rows={2}
+              placeholder={t('agent.aware.workflowArgs', 'Workflow args JSON')}
             />
           )}
-          <input className="form-input" value={wakeForm.name} onChange={(event) => setWakeForm({ ...wakeForm, name: event.target.value })} placeholder={t('agent.aware.wakeName', 'Wake name')} />
-          <input className="form-input" value={wakeForm.reason} onChange={(event) => setWakeForm({ ...wakeForm, reason: event.target.value })} placeholder={t('agent.aware.wakeReason', 'Wake reason')} />
-          {wakeForm.scheduleType === 'cron' && wakeForm.mode !== 'event_wait' && (
-            <input className="form-input" value={wakeForm.cronExpr} onChange={(event) => setWakeForm({ ...wakeForm, cronExpr: event.target.value })} />
-          )}
-          {wakeForm.scheduleType === 'interval' && wakeForm.mode !== 'event_wait' && (
-            <input className="form-input" type="number" value={wakeForm.intervalMinutes} onChange={(event) => setWakeForm({ ...wakeForm, intervalMinutes: Number(event.target.value) || 60 })} />
-          )}
-          {wakeForm.scheduleType === 'once' && wakeForm.mode !== 'event_wait' && (
-            <input className="form-input" value={wakeForm.onceAt} onChange={(event) => setWakeForm({ ...wakeForm, onceAt: event.target.value })} placeholder="2026-04-27T09:00:00+08:00" />
-          )}
-          {wakeForm.mode === 'event_wait' && (
-            <input className="form-input" type="number" min={1} value={wakeForm.maxFires} onChange={(event) => setWakeForm({ ...wakeForm, maxFires: Number(event.target.value) || 1 })} />
-          )}
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '10px' }}>
-          {wakeError && <span style={{ color: 'var(--error)', fontSize: '12px', marginRight: 'auto' }}>{wakeError}</span>}
-          <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)}>{t('common.cancel', 'Cancel')}</button>
-          <button className="btn btn-primary" onClick={createWakePolicy}>{t('common.create', 'Create')}</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: 'auto' }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+              <span>{t('agent.aware.selectAgent', 'Select agent')}</span>
+              <select
+                className="form-input"
+                value={selectedWakeAgentId}
+                onChange={(event) => setSelectedWakeAgentId(event.target.value)}
+                style={{ width: '170px' }}
+              >
+                {agents.map((agent: any) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name || agent.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <select
+              className="form-input"
+              data-testid="wake-workflow-ref-select"
+              value={wakeForm.workflowDefinitionKey}
+              onChange={(event) => setWakeForm({ ...wakeForm, workflowDefinitionKey: event.target.value })}
+              style={{ width: '160px' }}
+            >
+              <option value="">{t('agent.aware.noWorkflowRef', 'No workflow')}</option>
+              {activeWorkflowDefinitions.map((record) => (
+                <option key={record.id} value={workflowDefinitionOptionKey(record)}>
+                  {record.name} v{record.definition_version}
+                </option>
+              ))}
+            </select>
+            <select
+              className="form-input"
+              value={schedulePreset}
+              onChange={(event) =>
+                setWakeForm({
+                  ...wakeForm,
+                  scheduleType: 'cron',
+                  schedulePreset: event.target.value as WakeSchedulePreset,
+                })
+              }
+              style={{ width: '135px' }}
+            >
+              <option value="hourly">{t('agent.aware.everyHour', 'Every hour')}</option>
+              <option value="daily">{t('agent.aware.everyDay', 'Every day')}</option>
+              <option value="weekly">{t('agent.aware.everyWeek', 'Every week')}</option>
+              <option value="custom">{t('agent.aware.customSchedule', 'Custom')}</option>
+            </select>
+            {schedulePreset === 'daily' && (
+              <select
+                className="form-input"
+                value={wakeForm.dailyTime || '09:00'}
+                onChange={(event) => setWakeForm({ ...wakeForm, dailyTime: event.target.value })}
+                style={{ width: '100px' }}
+              >
+                {timeOptions.map((time) => (
+                  <option key={time} value={time}>
+                    {time}
+                  </option>
+                ))}
+              </select>
+            )}
+            {schedulePreset === 'weekly' && (
+              <>
+                <select
+                  className="form-input"
+                  value={wakeForm.weeklyDay || '1'}
+                  onChange={(event) => setWakeForm({ ...wakeForm, weeklyDay: event.target.value })}
+                  style={{ width: '120px' }}
+                >
+                  {weekdayOptions.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="form-input"
+                  value={wakeForm.weeklyTime || '09:00'}
+                  onChange={(event) => setWakeForm({ ...wakeForm, weeklyTime: event.target.value })}
+                  style={{ width: '100px' }}
+                >
+                  {timeOptions.map((time) => (
+                    <option key={time} value={time}>
+                      {time}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            {schedulePreset === 'custom' && (
+              <input
+                className="form-input"
+                value={wakeForm.cronExpr}
+                onChange={(event) => setWakeForm({ ...wakeForm, cronExpr: event.target.value })}
+                placeholder="0 9 * * *"
+                style={{ width: '140px' }}
+              />
+            )}
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+              {wakeError && <span style={{ color: 'var(--error)', fontSize: '12px', alignSelf: 'center' }}>{wakeError}</span>}
+              <button className="btn btn-ghost" onClick={() => setShowCreateWake(false)}>
+                {t('common.cancel', 'Cancel')}
+              </button>
+              <button className="btn btn-primary" onClick={createWakePolicy}>
+                {t('common.create', 'Create')}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -358,7 +543,7 @@ export default function AgentAwareSection({
               <h4 style={{ margin: 0, fontSize: '14px', fontWeight: 600 }}>{t('agent.aware.autonomyTitle', 'Autonomy Control')}</h4>
               <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{t('agent.aware.autonomyDesc', 'Wake policies, attempts, and results.')}</span>
             </div>
-            <button className="btn btn-primary" onClick={() => setShowCreateWake(true)}>{t('agent.aware.newWake', 'New wake')}</button>
+            <button className="btn btn-primary" onClick={() => setShowCreateWake(true)}>{t('agent.aware.manualCreate', 'Manual create')}</button>
           </div>
           {findings.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>

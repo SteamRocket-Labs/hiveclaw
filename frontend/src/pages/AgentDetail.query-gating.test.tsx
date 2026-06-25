@@ -110,6 +110,18 @@ describe('AgentDetail aware reflection session gating', () => {
     expect(reflectionQuery?.enabled).toBe(true);
   });
 
+  it('loads agent permissions on the chat tab for the composer permission badge', () => {
+    mockState.hash = '#chat';
+
+    renderToStaticMarkup(<AgentDetail />);
+
+    const permissionQuery = mockState.queryCalls.find(
+      (entry) => JSON.stringify(entry.key) === JSON.stringify(['agent-permissions', 'agent-aware']),
+    );
+
+    expect(permissionQuery?.enabled).toBe(true);
+  });
+
   it('renders product workbench areas while preserving legacy hash routing', () => {
     mockState.accessLevel = 'manage';
     mockState.hash = '#tools';

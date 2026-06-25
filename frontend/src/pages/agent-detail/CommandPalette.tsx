@@ -12,6 +12,7 @@ export function filterCommandIndex(commands: CommandIndexEntry[] | undefined, qu
   return list.filter((command) => {
     const haystack = [
       command.name,
+      command.canonical_name,
       command.category,
       command.source,
       command.execution_mode,
@@ -26,19 +27,26 @@ export function filterCommandIndex(commands: CommandIndexEntry[] | undefined, qu
 
 export function defaultCommandArguments(command: CommandDefinition | CommandIndexEntry | null): string {
   if (!command) return '{}';
-  if (command.name === 'goal_start') return '{\n  "objective": ""\n}';
-  if (command.name === 'advanced_plan') return '{\n  "objective": ""\n}';
-  if (command.name === 'team_create') return '{\n  "name": "",\n  "members": []\n}';
-  if (command.name === 'task_create') {
+  const commandName = command.canonical_name ?? command.name;
+  if (commandName === 'goal_start') return '{\n  "objective": ""\n}';
+  if (commandName === 'advanced_plan') return '{\n  "objective": ""\n}';
+  if (commandName === 'schedule_create') {
+    return '{\n  "name": "",\n  "instruction": "",\n  "cron_expr": "0 9 * * *",\n  "is_enabled": false\n}';
+  }
+  if (commandName === 'schedule_once') {
+    return '{\n  "name": "",\n  "instruction": "",\n  "at": "2026-06-26T09:00:00Z",\n  "is_enabled": false\n}';
+  }
+  if (commandName === 'team_create') return '{\n  "name": "",\n  "members": []\n}';
+  if (commandName === 'task_create') {
     return '{\n  "kind": "todo",\n  "subject": ""\n}';
   }
-  if (command.name === 'task_get' || command.name === 'task_update') {
+  if (commandName === 'task_get' || commandName === 'task_update') {
     return '{\n  "kind": "todo",\n  "task_id": ""\n}';
   }
-  if (command.name === 'task_output' || command.name === 'task_stop') {
+  if (commandName === 'task_output' || commandName === 'task_stop') {
     return '{\n  "runtime_task_id": ""\n}';
   }
-  if (command.name === 'verify_plan') return '{\n  "plan_json": {},\n  "evidence_refs": []\n}';
+  if (commandName === 'verify_plan') return '{\n  "plan_json": {},\n  "evidence_refs": []\n}';
   return '{}';
 }
 

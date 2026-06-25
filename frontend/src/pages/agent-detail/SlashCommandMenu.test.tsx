@@ -9,7 +9,8 @@ const queryHarness = vi.hoisted(() => ({
   calls: [] as Array<{ queryKey: unknown[]; enabled?: boolean }>,
   commands: [
     {
-      name: 'goal_start',
+      name: 'goal',
+      canonical_name: 'goal_start',
       aliases: ['goal'],
       description: 'Start a session goal',
       category: 'goal',
@@ -20,7 +21,8 @@ const queryHarness = vi.hoisted(() => ({
       remote_safe: true,
     },
     {
-      name: 'team_create',
+      name: 'team',
+      canonical_name: 'team_create',
       aliases: ['team'],
       description: 'Create an enterable agent team',
       category: 'team',
@@ -92,7 +94,8 @@ describe('SlashCommandMenu', () => {
     );
 
     expect(markup).toContain('data-testid="slash-command-menu"');
-    expect(markup).toContain('team_create');
+    expect(markup).toContain('/team');
+    expect(markup).not.toContain('team_create');
     expect(markup).not.toContain('goal_start');
     const listCall = queryHarness.calls.find((call) => String(call.queryKey[0]) === 'slash-command-menu');
     expect(listCall?.enabled).toBe(true);

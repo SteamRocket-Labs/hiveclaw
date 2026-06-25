@@ -32,6 +32,21 @@ vi.mock('react-router-dom', () => ({
 }));
 
 describe('Layout extracted sections', () => {
+  it('binds main content width to the collapsed sidebar state at the app layout scope', async () => {
+    const fsModuleId = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const css = readFileSync(new URL('../../index.css', import.meta.url), 'utf8');
+
+    expect(css).toContain('.app-layout.sidebar-collapsed');
+    expect(css).toContain('--sidebar-width: var(--sidebar-width-collapsed);');
+    expect(css).toContain('.main-content:has(.agent-detail-session-only)');
+    expect(css).toContain('.agent-detail-session-only');
+    expect(css).toContain('margin-left: var(--sidebar-width);');
+    expect(css).toContain('width: calc(100vw - var(--sidebar-width));');
+  });
+
   it('renders AppSidebar as a standalone shell module', () => {
     const markup = renderToStaticMarkup(
       <AppSidebar

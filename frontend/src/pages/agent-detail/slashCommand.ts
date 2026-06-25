@@ -6,13 +6,13 @@ export interface ParsedSlashCommand {
 const COMMAND_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 function parseNaturalArgs(name: string, argsText: string): Record<string, unknown> {
-  if (name === 'goal_start' || name === 'advanced_plan') {
+  if (name === 'goal' || name === 'goal_start' || name === 'advanced_plan') {
     return { objective: argsText };
   }
   if (name === 'load_skill') {
     return { name: argsText };
   }
-  if (name === 'task_create') {
+  if (name === 'task' || name === 'task_create') {
     const delegatedWithColon = argsText.match(/^delegate\s+([^:]+):\s*([\s\S]+)$/i);
     if (delegatedWithColon) {
       return {

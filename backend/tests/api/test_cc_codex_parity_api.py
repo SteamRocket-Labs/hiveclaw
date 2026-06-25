@@ -115,12 +115,54 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
         db=db,
     )
     assert any(item["name"] == "diff" and item["category"] == "coding_pack" for item in user_index)
+    user_command_names = {item["name"] for item in user_index}
+    assert {"team", "task", "goal", "schedule", "once"}.issubset(user_command_names)
+    assert {
+        "team_create",
+        "team_delete",
+        "task_create",
+        "task_get",
+        "task_list",
+        "task_output",
+        "task_stop",
+        "task_update",
+        "goal_start",
+        "goal_update",
+        "goal_stop",
+        "schedule_create",
+        "schedule_once",
+    }.isdisjoint(user_command_names)
+    assert next(item for item in user_index if item["name"] == "team")["canonical_name"] == "team_create"
+    assert next(item for item in user_index if item["name"] == "task")["canonical_name"] == "task_create"
+    assert next(item for item in user_index if item["name"] == "goal")["canonical_name"] == "goal_start"
+    assert next(item for item in user_index if item["name"] == "schedule")["canonical_name"] == "schedule_create"
+    assert next(item for item in user_index if item["name"] == "once")["canonical_name"] == "schedule_once"
 
     schema = await commands_api.get_agent_command(
         agent_id=agent_id, command_name="goal_start", current_user=current_user, db=db
     )
     assert schema["name"] == "goal_start"
     assert schema["input_schema"]["properties"]["objective"]["type"] == "string"
+
+    schedule_schema = await commands_api.get_agent_command(
+        agent_id=agent_id, command_name="schedule_create", current_user=current_user, db=db
+    )
+    assert schedule_schema["name"] == "schedule_create"
+    assert schedule_schema["category"] == "schedule"
+    assert schedule_schema["input_schema"]["properties"]["cron_expr"]["type"] == "string"
+
+    once_schema = await commands_api.get_agent_command(
+        agent_id=agent_id, command_name="schedule_once", current_user=current_user, db=db
+    )
+    assert once_schema["name"] == "schedule_once"
+    assert once_schema["category"] == "schedule"
+    assert once_schema["input_schema"]["properties"]["at"]["type"] == "string"
+
+    alias_schema = await commands_api.get_agent_command(
+        agent_id=agent_id, command_name="team", current_user=current_user, db=db
+    )
+    assert alias_schema["name"] == "team_create"
+    assert alias_schema["aliases"] == ["team"]
 
 
 @pytest.mark.asyncio
@@ -469,6 +511,127 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
     assert stopped["result"]["status"] == "complete"
     assert goal.status == "complete"
     assert goal.completion_summary == "Done"
+
+
+@pytest.mark.asyncio
+async def test_commands_api_schedule_create_persists_disabled_draft_without_tool_runtime(monkeypatch):
+    import app.api.commands as commands_api
+    from app.models.trigger import AgentTrigger
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "manage"
+
+    def fake_is_creator(user, requested_agent):
+        assert user is current_user
+        assert requested_agent is agent
+        return True
+
+    async def fail_execute_tool(*_args, **_kwargs):
+        raise AssertionError("schedule_create must persist through the command runtime")
+
+    async def fail_enforce_plan_gate(*_args, **_kwargs):
+        raise AssertionError("disabled schedule drafts must not require Plan Mode")
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "is_agent_creator", fake_is_creator)
+    monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
+    monkeypatch.setattr(commands_api, "enforce_plan_gate", fail_enforce_plan_gate)
+
+    result = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="schedule_create",
+        body=commands_api.ExecuteCommandIn(
+            arguments={
+                "name": "daily_briefing",
+                "instruction": "Prepare the daily briefing.",
+                "cron_expr": "0 9 * * *",
+                "is_enabled": False,
+            },
+            session_id="session-1",
+        ),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result["ok"] is True
+    assert result["command"] == "schedule_create"
+    assert result["result"]["name"] == "daily_briefing"
+    assert result["result"]["is_enabled"] is False
+    stored_trigger = next(item for item in db.added if isinstance(item, AgentTrigger))
+    assert stored_trigger.type == "cron"
+    assert stored_trigger.config["expr"] == "0 9 * * *"
+    assert stored_trigger.config["trigger_class"] == "scheduled_job"
+    assert stored_trigger.config["command"] == "schedule_create"
+    assert stored_trigger.config["created_by"] == str(current_user.id)
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_runtime(monkeypatch):
+    import app.api.commands as commands_api
+    from app.models.trigger import AgentTrigger
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "manage"
+
+    def fake_is_creator(user, requested_agent):
+        assert user is current_user
+        assert requested_agent is agent
+        return True
+
+    async def fail_execute_tool(*_args, **_kwargs):
+        raise AssertionError("schedule_once must persist through the command runtime")
+
+    async def fail_enforce_plan_gate(*_args, **_kwargs):
+        raise AssertionError("disabled one-shot schedule drafts must not require Plan Mode")
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "is_agent_creator", fake_is_creator)
+    monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
+    monkeypatch.setattr(commands_api, "enforce_plan_gate", fail_enforce_plan_gate)
+
+    result = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="schedule_once",
+        body=commands_api.ExecuteCommandIn(
+            arguments={
+                "name": "one_time_audit",
+                "instruction": "Run the one-time audit.",
+                "at": "2026-06-26T09:00:00Z",
+                "is_enabled": False,
+            },
+            session_id="session-1",
+        ),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result["ok"] is True
+    assert result["command"] == "schedule_once"
+    assert result["result"]["name"] == "one_time_audit"
+    assert result["result"]["is_enabled"] is False
+    assert result["result"]["at"] == "2026-06-26T09:00:00+00:00"
+    stored_trigger = next(item for item in db.added if isinstance(item, AgentTrigger))
+    assert stored_trigger.type == "once"
+    assert stored_trigger.config["at"] == "2026-06-26T09:00:00+00:00"
+    assert stored_trigger.config["trigger_class"] == "scheduled_job"
+    assert stored_trigger.config["command"] == "schedule_once"
+    assert stored_trigger.config["created_by"] == str(current_user.id)
+    assert db.commits == 1
 
 
 @pytest.mark.asyncio

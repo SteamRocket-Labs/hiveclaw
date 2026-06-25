@@ -2,6 +2,7 @@ import { get, patch, post } from '../core';
 
 export interface CommandIndexEntry {
   name: string;
+  canonical_name?: string;
   aliases: string[];
   description: string;
   category: string;

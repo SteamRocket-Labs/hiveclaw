@@ -4,6 +4,7 @@ import { IconPlayerPlay, IconTerminal2, IconX } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 
 import { ccParityApi, type CommandDefinition, type CommandIndexEntry, type ExecuteCommandResult } from '../../api/domains/ccParity';
+import { parseSlashCommandArgs } from './slashCommand';
 
 export function filterCommandIndex(commands: CommandIndexEntry[] | undefined, query: string): CommandIndexEntry[] {
   const normalized = query.trim().toLowerCase();
@@ -26,28 +27,19 @@ export function filterCommandIndex(commands: CommandIndexEntry[] | undefined, qu
 }
 
 export function defaultCommandArguments(command: CommandDefinition | CommandIndexEntry | null): string {
-  if (!command) return '{}';
-  const commandName = command.canonical_name ?? command.name;
-  if (commandName === 'goal_start') return '{\n  "objective": ""\n}';
-  if (commandName === 'advanced_plan') return '{\n  "objective": ""\n}';
-  if (commandName === 'schedule_create') {
-    return '{\n  "name": "",\n  "instruction": "",\n  "cron_expr": "0 9 * * *",\n  "is_enabled": false\n}';
+  void command;
+  return '';
+}
+
+function parseCommandArgumentText(commandName: string, argsText: string): Record<string, unknown> {
+  const trimmed = argsText.trim();
+  if (!trimmed) return {};
+  if (!trimmed.startsWith('{')) return parseSlashCommandArgs(commandName, trimmed);
+  const parsed = JSON.parse(trimmed);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Command arguments must be a JSON object.');
   }
-  if (commandName === 'schedule_once') {
-    return '{\n  "name": "",\n  "instruction": "",\n  "at": "2026-06-26T09:00:00Z",\n  "is_enabled": false\n}';
-  }
-  if (commandName === 'team_create') return '{\n  "name": "",\n  "members": []\n}';
-  if (commandName === 'task_create') {
-    return '{\n  "kind": "todo",\n  "subject": ""\n}';
-  }
-  if (commandName === 'task_get' || commandName === 'task_update') {
-    return '{\n  "kind": "todo",\n  "task_id": ""\n}';
-  }
-  if (commandName === 'task_output' || commandName === 'task_stop') {
-    return '{\n  "runtime_task_id": ""\n}';
-  }
-  if (commandName === 'verify_plan') return '{\n  "plan_json": {},\n  "evidence_refs": []\n}';
-  return '{}';
+  return parsed as Record<string, unknown>;
 }
 
 interface CommandPaletteProps {
@@ -69,7 +61,7 @@ export default function CommandPalette({
   const [open, setOpen] = React.useState(initialOpen);
   const [query, setQuery] = React.useState('');
   const [selectedName, setSelectedName] = React.useState<string | null>(null);
-  const [argsText, setArgsText] = React.useState('{}');
+  const [argsText, setArgsText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [resultText, setResultText] = React.useState<string | null>(null);
@@ -107,7 +99,7 @@ export default function CommandPalette({
     setError(null);
     setResultText(null);
     try {
-      const parsed = argsText.trim() ? JSON.parse(argsText) : {};
+      const parsed = parseCommandArgumentText(selectedName, argsText);
       const response = await ccParityApi.executeCommand(agentId, selectedName, {
         arguments: parsed,
         session_id: sessionId,
@@ -223,6 +215,7 @@ export default function CommandPalette({
             spellCheck={false}
             rows={4}
             aria-label={t('agent.chat.commands.arguments', 'Command arguments')}
+            placeholder={t('agent.chat.commands.argumentsPlaceholder', 'Type natural arguments, or paste JSON only when needed')}
             style={{
               width: '100%',
               resize: 'vertical',

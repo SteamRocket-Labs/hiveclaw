@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { ccParityApi, type CommandIndexEntry } from '../../api/domains/ccParity';
-import { defaultCommandArguments, filterCommandIndex } from './CommandPalette';
+import { filterCommandIndex } from './CommandPalette';
 import { slashCommandQuery } from './slashCommand';
 
 interface SlashCommandMenuProps {
@@ -15,10 +15,8 @@ interface SlashCommandMenuProps {
   onPickCommand: (command: CommandIndexEntry, template: string) => void;
 }
 
-function templateForCommand(command: CommandIndexEntry): string {
-  const args = defaultCommandArguments(command).trim();
-  if (!args || args === '{}') return `/${command.name}`;
-  return `/${command.name} ${args}`;
+export function templateForSlashCommand(command: CommandIndexEntry): string {
+  return `/${command.name} `;
 }
 
 export default function SlashCommandMenu({
@@ -74,7 +72,7 @@ export default function SlashCommandMenu({
         <IconTerminal2 size={16} stroke={1.8} />
         <strong style={{ color: 'var(--text-primary)' }}>{t('agent.chat.slashCommands.title', 'Commands')}</strong>
         <span style={{ color: 'var(--text-tertiary)' }}>
-          {t('agent.chat.slashCommands.hint', 'Pick one or type JSON / natural args')}
+          {t('agent.chat.slashCommands.hint', 'Pick one, then type natural args')}
         </span>
       </div>
       <div style={{ maxHeight: '360px', overflowY: 'auto', padding: '6px' }}>
@@ -87,7 +85,7 @@ export default function SlashCommandMenu({
             <button
               key={command.name}
               type="button"
-              onClick={() => onPickCommand(command, templateForCommand(command))}
+              onClick={() => onPickCommand(command, templateForSlashCommand(command))}
               style={{
                 width: '100%',
                 display: 'grid',

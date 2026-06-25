@@ -269,6 +269,13 @@
     "workflowRunsDesc": "Runtime evidence from employee workflow histories; promotion remains inside each employee workbench.",
     "noWorkflowRuns": "No workflow runs surfaced yet.",
     "noDescription": "No description",
+    "manualCreateTask": "Manual create task",
+    "automationCurrent": "Current",
+    "automationPaused": "Paused",
+    "automationNoCurrent": "No current automation tasks.",
+    "automationNoPaused": "No paused automation tasks.",
+    "automationNoAgentSelected": "Select an agent before creating a task.",
+    "automationCreateFailed": "Could not create this automation task.",
     "plans": {
       "title": "Plan Review",
       "eyebrow": "Confirmation boundary",
@@ -276,8 +283,8 @@
     },
     "automations": {
       "title": "Automations",
-      "eyebrow": "Workflow and trigger assets",
-      "subtitle": "Registered workflows, trigger-backed runs, and skill-grown automation assets remain governed through the existing workflow engine."
+      "eyebrow": "User automation tasks",
+      "subtitle": "Current and paused user-level automation tasks across accessible employees."
     },
     "memory": {
       "title": "Memory & Knowledge",
@@ -1140,6 +1147,7 @@
         "empty": "No commands available",
         "search": "Search commands",
         "arguments": "Command arguments",
+        "argumentsPlaceholder": "Type natural arguments, or paste JSON only when needed",
         "execute": "Execute",
         "running": "Running",
         "loading": "Loading commands...",
@@ -1148,7 +1156,7 @@
       },
       "slashCommands": {
         "title": "Commands",
-        "hint": "Pick one or type JSON / natural args"
+        "hint": "Pick one, then type natural args"
       },
       "runtime": {
         "model": "Model",

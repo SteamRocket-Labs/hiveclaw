@@ -3,14 +3,45 @@ export interface ParsedSlashCommand {
   args: Record<string, unknown>;
 }
 
-const COMMAND_NAME_RE = /^[A-Za-z0-9_-]+$/;
+const COMMAND_NAME_RE = /^[A-Za-z0-9_:-]+$/;
 
-function parseNaturalArgs(name: string, argsText: string): Record<string, unknown> {
+export function parseSlashCommandArgs(name: string, argsText: string): Record<string, unknown> {
   if (name === 'goal' || name === 'goal_start' || name === 'advanced_plan') {
     return { objective: argsText };
   }
+  if (name === 'plan') {
+    return { input: argsText, objective: argsText };
+  }
   if (name === 'load_skill') {
     return { name: argsText };
+  }
+  if (name === 'skill') {
+    return { input: argsText };
+  }
+  if (name === 'schedule' || name === 'schedule_create' || name === 'once' || name === 'schedule_once') {
+    return { input: argsText, instruction: argsText };
+  }
+  if (name === 'workflow') {
+    return { input: argsText, description: argsText };
+  }
+  if (name === 'agent') {
+    const delegatedWithColon = argsText.match(/^([^:]+):\s*([\s\S]+)$/);
+    if (delegatedWithColon) {
+      return {
+        agent_name: delegatedWithColon[1].trim(),
+        message: delegatedWithColon[2].trim(),
+        input: argsText,
+      };
+    }
+    const delegatedPlain = argsText.match(/^(\S+)\s+([\s\S]+)$/);
+    if (delegatedPlain) {
+      return {
+        agent_name: delegatedPlain[1].trim(),
+        message: delegatedPlain[2].trim(),
+        input: argsText,
+      };
+    }
+    return { input: argsText };
   }
   if (name === 'task' || name === 'task_create') {
     const delegatedWithColon = argsText.match(/^delegate\s+([^:]+):\s*([\s\S]+)$/i);
@@ -71,7 +102,7 @@ export function parseSlashCommandInput(input: string): ParsedSlashCommand | null
   const query = slashCommandQuery(input);
   if (query == null || !query.trim()) return null;
 
-  const commandMatch = query.match(/^([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/);
+  const commandMatch = query.match(/^([A-Za-z0-9_:-]+)(?:\s+([\s\S]*))?$/);
   if (!commandMatch) return null;
 
   const name = commandMatch[1];
@@ -81,7 +112,7 @@ export function parseSlashCommandInput(input: string): ParsedSlashCommand | null
   if (!argsText) return { name, args: {} };
 
   if (!argsText.startsWith('{')) {
-    return { name, args: parseNaturalArgs(name, argsText) };
+    return { name, args: parseSlashCommandArgs(name, argsText) };
   }
 
   try {

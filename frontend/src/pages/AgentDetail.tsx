@@ -227,6 +227,12 @@ function formatSlashCommandResult(response: ExecuteCommandResult): string {
     return `Command ${response.command} completed.\n\n\`\`\`json\n${serialized}\n\`\`\``;
 }
 
+function commandResultRecord(response: ExecuteCommandResult): Record<string, unknown> | null {
+    const { result } = response;
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+    return result as Record<string, unknown>;
+}
+
 function AgentDetailInner() {
     const { t, i18n } = useTranslation();
     const { id } = useParams<{ id: string }>();
@@ -1311,11 +1317,37 @@ function AgentDetailInner() {
                 })]);
                 setChatInput('');
 
+                let commandStartedRun = false;
                 try {
                     const response = await ccParityApi.executeCommand(id, parsedSlashCommand.name, {
                         arguments: parsedSlashCommand.args,
                         session_id: String(activeSession.id),
                     });
+                    const actionResult = commandResultRecord(response);
+                    if (actionResult?.action === 'chat_prompt') {
+                        const content = typeof actionResult.content === 'string' ? actionResult.content : userMsg;
+                        const displayContent = typeof actionResult.display_content === 'string' ? actionResult.display_content : userMsg;
+                        const run = await chatApi.startSessionRun(id, String(activeSession.id), {
+                            content,
+                            display_content: displayContent,
+                            plan_mode_requested: actionResult.plan_mode_requested === true,
+                        });
+                        commandStartedRun = true;
+                        setPlanModeRequested(false);
+                        setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
+                        invalidateSessionRuntimeQueries(id, String(activeSession.id));
+                        return;
+                    }
+                    if (actionResult?.action === 'open_tab') {
+                        const tab = typeof actionResult.tab === 'string' ? actionResult.tab : '';
+                        if (tab) selectDetailTab(tab);
+                        setChatMessages(prev => [...prev, parseChatMsg({
+                            role: 'assistant',
+                            content: typeof actionResult.message === 'string' ? actionResult.message : formatSlashCommandResult(response),
+                        })]);
+                        invalidateSessionRuntimeQueries(id, String(activeSession.id));
+                        return;
+                    }
                     setChatMessages(prev => [...prev, parseChatMsg({
                         role: 'assistant',
                         content: formatSlashCommandResult(response),
@@ -1325,9 +1357,11 @@ function AgentDetailInner() {
                     const msg = err?.message || t('agent.chat.commands.failed', 'Failed to run command');
                     setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
                 } finally {
-                    setIsWaiting(false);
-                    setIsStreaming(false);
-                    setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                    if (!commandStartedRun) {
+                        setIsWaiting(false);
+                        setIsStreaming(false);
+                        setSessionUiState(activeRuntimeKey, { isWaiting: false, isStreaming: false });
+                    }
                 }
                 return;
             }

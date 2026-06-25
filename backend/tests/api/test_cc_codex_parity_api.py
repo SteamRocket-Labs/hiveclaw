@@ -114,9 +114,27 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
         current_user=current_user,
         db=db,
     )
-    assert any(item["name"] == "diff" and item["category"] == "coding_pack" for item in user_index)
     user_command_names = {item["name"] for item in user_index}
-    assert {"team", "task", "goal", "schedule", "once"}.issubset(user_command_names)
+    assert {
+        "plan",
+        "goal",
+        "task",
+        "schedule",
+        "once",
+        "team",
+        "agent",
+        "skill",
+        "workflow",
+        "mcp",
+        "permissions",
+        "clear",
+        "compact",
+        "context",
+        "usage",
+        "resume",
+        "branch",
+        "rewind",
+    }.issubset(user_command_names)
     assert {
         "team_create",
         "team_delete",
@@ -131,6 +149,18 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
         "goal_stop",
         "schedule_create",
         "schedule_once",
+        "advanced_plan",
+        "verify_plan",
+        "load_skill",
+        "preview_workflow",
+        "start_workflow",
+        "diff",
+        "commit",
+        "status",
+        "cost",
+        "stats",
+        "doctor",
+        "version",
     }.isdisjoint(user_command_names)
     assert next(item for item in user_index if item["name"] == "team")["canonical_name"] == "team_create"
     assert next(item for item in user_index if item["name"] == "task")["canonical_name"] == "task_create"
@@ -192,6 +222,46 @@ async def test_commands_api_hides_optional_coding_pack_without_policy(monkeypatc
     )
 
     assert all(item["name"] != "diff" for item in index)
+
+
+@pytest.mark.asyncio
+async def test_commands_api_adds_installed_skills_as_user_invocable_commands(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
+
+    async def fake_extensions(_db, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return {
+            "skills": [
+                {"id": "market-research", "name": "market-research", "source": "workspace", "status": "available"},
+                {"id": "bad name", "name": "bad name", "source": "workspace", "status": "available"},
+            ],
+            "mcp_servers": [],
+            "plugins": [],
+        }
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "get_agent_extensions", fake_extensions)
+
+    index = await commands_api.list_agent_commands(
+        agent_id=agent_id,
+        surface="user",
+        current_user=current_user,
+        db=db,
+    )
+
+    skill = next(item for item in index if item["name"] == "market-research")
+    assert skill["category"] == "skill"
+    assert skill["source"] == "skill"
+    assert skill["canonical_name"] == "market-research"
+    assert all(item["name"] != "bad name" for item in index)
 
 
 @pytest.mark.asyncio
@@ -293,7 +363,34 @@ async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monke
 
 
 @pytest.mark.asyncio
-async def test_commands_api_executes_builtin_command_tool(monkeypatch, tmp_path):
+async def test_commands_api_rejects_internal_tool_commands_from_web(monkeypatch):
+    import app.api.commands as commands_api
+    from fastapi import HTTPException
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+
+    for command_name in ("advanced_plan", "load_skill", "start_workflow", "preview_workflow", "goal_start"):
+        with pytest.raises(HTTPException) as exc:
+            await commands_api.execute_agent_command(
+                agent_id=agent_id,
+                command_name=command_name,
+                body=commands_api.ExecuteCommandIn(arguments={"objective": "Plan the rollout"}),
+                current_user=current_user,
+                db=db,
+            )
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_commands_api_allows_internal_tool_commands_from_agent_origin(monkeypatch):
     import app.api.commands as commands_api
 
     agent_id = uuid4()
@@ -325,7 +422,7 @@ async def test_commands_api_executes_builtin_command_tool(monkeypatch, tmp_path)
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="advanced_plan",
-        body=commands_api.ExecuteCommandIn(arguments={"objective": "Plan the rollout"}),
+        body=commands_api.ExecuteCommandIn(arguments={"objective": "Plan the rollout"}, origin="agent"),
         current_user=current_user,
         db=db,
     )
@@ -371,7 +468,11 @@ async def test_commands_api_executes_session_command_without_tool_runtime(monkey
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="rename",
-        body=commands_api.ExecuteCommandIn(arguments={"title": "Renamed"}, session_id=str(session_id)),
+        body=commands_api.ExecuteCommandIn(
+            arguments={"title": "Renamed"},
+            session_id=str(session_id),
+            origin="agent",
+        ),
         current_user=current_user,
         db=db,
     )
@@ -414,7 +515,7 @@ async def test_commands_api_executes_diagnostic_command_without_tool_runtime(mon
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="version",
-        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1"),
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1", origin="agent"),
         current_user=current_user,
         db=db,
     )
@@ -461,6 +562,7 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
         body=commands_api.ExecuteCommandIn(
             arguments={"objective": "Finish parity", "token_budget": 1000},
             session_id=str(session_id),
+            origin="agent",
         ),
         current_user=current_user,
         db=start_db,
@@ -488,6 +590,7 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
         body=commands_api.ExecuteCommandIn(
             arguments={"objective": "Finish all parity", "token_budget": 1500, "max_continuation_turns": 3},
             session_id=str(session_id),
+            origin="agent",
         ),
         current_user=current_user,
         db=update_db,
@@ -504,6 +607,7 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
         body=commands_api.ExecuteCommandIn(
             arguments={"status": "complete", "completion_summary": "Done"},
             session_id=str(session_id),
+            origin="agent",
         ),
         current_user=current_user,
         db=stop_db,
@@ -546,7 +650,7 @@ async def test_commands_api_schedule_create_persists_disabled_draft_without_tool
 
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
-        command_name="schedule_create",
+        command_name="schedule",
         body=commands_api.ExecuteCommandIn(
             arguments={
                 "name": "daily_briefing",
@@ -606,7 +710,7 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
 
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
-        command_name="schedule_once",
+        command_name="once",
         body=commands_api.ExecuteCommandIn(
             arguments={
                 "name": "one_time_audit",
@@ -666,7 +770,7 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
     create_db = _FilteringExecuteDB({"ChatSession": SimpleNamespace(id=session_id, agent_id=agent_id)})
     created = await commands_api.execute_agent_command(
         agent_id=agent_id,
-        command_name="team_create",
+        command_name="team",
         body=commands_api.ExecuteCommandIn(
             arguments={"name": "research", "members": [{"name": "critic", "role": "Review"}]},
             session_id=str(session_id),
@@ -703,7 +807,7 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
     deleted = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="team_delete",
-        body=commands_api.ExecuteCommandIn(arguments={"team_id": str(team_id)}, session_id=str(session_id)),
+        body=commands_api.ExecuteCommandIn(arguments={"team_id": str(team_id)}, session_id=str(session_id), origin="agent"),
         current_user=current_user,
         db=delete_db,
     )
@@ -743,7 +847,7 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
         result = await commands_api.execute_agent_command(
             agent_id=agent_id,
             command_name=command_name,
-            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1"),
+            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1", origin="agent"),
             current_user=current_user,
             db=db,
         )
@@ -753,7 +857,7 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
     config = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="config",
-        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1"),
+        body=commands_api.ExecuteCommandIn(arguments={}, session_id="session-1", origin="agent"),
         current_user=current_user,
         db=db,
     )
@@ -771,6 +875,77 @@ async def test_commands_api_bridges_skill_workflow_mcp_config_and_permissions(mo
     assert permissions["result"]["access_level"] == "use"
     assert ("load_skill", {"name": "research"}, "session-1") in captured_tools
     assert ("list_mcp_tools", {}, "session-1") in captured_tools
+
+
+@pytest.mark.asyncio
+async def test_commands_api_web_product_commands_return_prompt_or_navigation_actions(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    db = _FakeDB()
+    captured_tools = []
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return agent, "use"
+
+    async def fake_execute_tool(tool_name, arguments, *, agent_id, user_id, session_id=None, **_kwargs):
+        captured_tools.append((tool_name, arguments, session_id))
+        return "Loaded research skill body."
+
+    async def fake_extensions(_db, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return {
+            "skills": [{"id": "research", "name": "research", "source": "workspace", "status": "available"}],
+            "mcp_servers": [],
+            "plugins": [],
+        }
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_tool", fake_execute_tool)
+    monkeypatch.setattr(commands_api, "get_agent_extensions", fake_extensions)
+
+    skill = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="research",
+        body=commands_api.ExecuteCommandIn(arguments={"input": "summarize this"}, session_id="session-1"),
+        current_user=current_user,
+        db=db,
+    )
+    assert skill["result"]["action"] == "chat_prompt"
+    assert "Loaded research skill body." in skill["result"]["content"]
+    assert ("load_skill", {"name": "research"}, "session-1") in captured_tools
+
+    workflow = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="workflow",
+        body=commands_api.ExecuteCommandIn(arguments={"input": "triage incoming leads"}, session_id="session-1"),
+        current_user=current_user,
+        db=db,
+    )
+    assert workflow["result"] == {
+        "ok": True,
+        "action": "open_tab",
+        "tab": "workflows",
+        "panel": "dynamic_workflow",
+        "draft": "triage incoming leads",
+        "message": "Opened Dynamic Workflow.",
+    }
+
+    agent_result = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="agent",
+        body=commands_api.ExecuteCommandIn(
+            arguments={"agent_name": "Researcher", "message": "Collect evidence"},
+            session_id="session-1",
+        ),
+        current_user=current_user,
+        db=db,
+    )
+    assert agent_result["ok"] is True
+    assert ("delegate_to_agent", {"agent_name": "Researcher", "message": "Collect evidence"}, "session-1") in captured_tools
 
 
 @pytest.mark.asyncio
@@ -813,7 +988,7 @@ async def test_commands_api_keeps_task_surface_unified_while_routing_internal_fl
         result = await commands_api.execute_agent_command(
             agent_id=agent_id,
             command_name=command_name,
-            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1"),
+            body=commands_api.ExecuteCommandIn(arguments=arguments, session_id="session-1", origin="agent"),
             current_user=current_user,
             db=db,
         )

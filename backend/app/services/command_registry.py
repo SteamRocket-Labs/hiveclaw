@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CommandSource = Literal["builtin", "tool", "skill", "plugin", "workflow", "mcp", "team", "diagnostic"]
+CommandSource = Literal["builtin", "tool", "skill", "plugin", "workflow", "mcp", "team", "agent", "diagnostic"]
 CommandExecutionMode = Literal["metadata", "runtime", "tool", "workflow", "external"]
 
 
@@ -130,7 +130,9 @@ def register_dynamic_commands(
         registry.register(_coerce_command_definition(raw))
 
 
-def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[CommandDefinition]:
+def _optional_coding_pack_commands(
+    *, visible_to_model: bool = False, visible_to_user: bool = False
+) -> list[CommandDefinition]:
     return [
         _command(
             "worktree_enter",
@@ -143,6 +145,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "worktree_exit",
@@ -155,6 +158,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "diff",
@@ -167,6 +171,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "commit",
@@ -179,6 +184,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "commit_push_pr",
@@ -191,6 +197,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "pr_comments",
@@ -203,6 +210,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "github_review",
@@ -215,6 +223,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "review",
@@ -227,6 +236,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "security_review",
@@ -239,6 +249,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "lsp",
@@ -251,6 +262,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "notebook",
@@ -263,6 +275,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
         _command(
             "shell_pack",
@@ -275,6 +288,7 @@ def _optional_coding_pack_commands(*, visible_to_model: bool = False) -> list[Co
             bridge_safe=False,
             remote_safe=False,
             visible_to_model=visible_to_model,
+            visible_to_user=visible_to_user,
         ),
     ]
 
@@ -287,11 +301,19 @@ def build_default_command_registry(
 ) -> CommandRegistry:
     registry = CommandRegistry()
     commands = [
+        _command(
+            "plan",
+            "Enter Plan Mode for the next agent turn.",
+            category="plan",
+            execution_mode="runtime",
+            permission_mode="plan",
+        ),
         _command("resume", "Resume a previous session from durable transcript evidence.", category="session"),
         _command(
             "checkpoints",
             "List user-turn session checkpoints available for rewind or rollback.",
             category="session",
+            visible_to_user=False,
         ),
         _command(
             "rewind",
@@ -310,6 +332,7 @@ def build_default_command_registry(
                     "title": {"type": "string"},
                 },
             },
+            visible_to_user=False,
         ),
         _command("branch", "Fork a conversation from a transcript event.", category="session"),
         _command(
@@ -325,6 +348,7 @@ def build_default_command_registry(
                 },
                 "required": ["question"],
             },
+            visible_to_user=False,
         ),
         _command(
             "turn_steer",
@@ -338,6 +362,7 @@ def build_default_command_registry(
                 },
                 "required": ["content"],
             },
+            visible_to_user=False,
         ),
         _command(
             "interrupt",
@@ -349,10 +374,16 @@ def build_default_command_registry(
                     "run_id": {"type": "string"},
                 },
             },
+            visible_to_user=False,
         ),
-        _command("rename", "Rename the current session.", category="session"),
-        _command("tag", "Tag the current session for later lookup.", category="session"),
-        _command("export", "Export session transcript, artifacts, plan, and ledger evidence.", category="session"),
+        _command("rename", "Rename the current session.", category="session", visible_to_user=False),
+        _command("tag", "Tag the current session for later lookup.", category="session", visible_to_user=False),
+        _command(
+            "export",
+            "Export session transcript, artifacts, plan, and ledger evidence.",
+            category="session",
+            visible_to_user=False,
+        ),
         _command(
             "copy",
             "Return assistant response content for client clipboard or file copy.",
@@ -364,6 +395,7 @@ def build_default_command_registry(
                     "index": {"type": "integer", "minimum": 1},
                 },
             },
+            visible_to_user=False,
         ),
         _command("clear", "Start a clean context boundary while retaining durable evidence.", category="session"),
         _command("compact", "Run manual compaction with pre/post compaction hooks.", category="session"),
@@ -566,6 +598,7 @@ def build_default_command_registry(
             category="plan",
             execution_mode="runtime",
             permission_mode="plan",
+            visible_to_user=False,
             input_schema={
                 "type": "object",
                 "properties": {"objective": {"type": "string"}, "context": {"type": "object"}},
@@ -578,6 +611,7 @@ def build_default_command_registry(
             category="plan",
             execution_mode="runtime",
             permission_mode="read",
+            visible_to_user=False,
             input_schema={
                 "type": "object",
                 "properties": {
@@ -596,6 +630,7 @@ def build_default_command_registry(
             source="skill",
             execution_mode="tool",
             handler_ref="tool:load_skill",
+            visible_to_user=False,
         ),
         _command(
             "start_workflow",
@@ -604,6 +639,7 @@ def build_default_command_registry(
             source="workflow",
             execution_mode="workflow",
             handler_ref="tool:start_workflow",
+            visible_to_user=False,
         ),
         _command(
             "preview_workflow",
@@ -612,6 +648,7 @@ def build_default_command_registry(
             source="workflow",
             execution_mode="workflow",
             handler_ref="tool:preview_workflow",
+            visible_to_user=False,
         ),
         _command(
             "mcp",
@@ -622,7 +659,31 @@ def build_default_command_registry(
             handler_ref="mcp:command",
         ),
         _command("permissions", "Inspect or request permission changes through governed hooks.", category="governance"),
-        _command("config", "Inspect or update safe runtime configuration.", category="config"),
+        _command("config", "Inspect or update safe runtime configuration.", category="config", visible_to_user=False),
+        _command(
+            "skill",
+            "List or invoke installed Skills. Individual Skills also appear as slash commands.",
+            category="skill",
+            source="skill",
+            execution_mode="runtime",
+            handler_ref="product:skill",
+        ),
+        _command(
+            "agent",
+            "Delegate a task to a Sub-Agent or open the Sub-Agent catalog.",
+            category="agent",
+            source="agent",
+            execution_mode="runtime",
+            handler_ref="product:agent",
+        ),
+        _command(
+            "workflow",
+            "Open the Dynamic Workflow surface or draft a Dynamic Workflow request.",
+            category="workflow",
+            source="workflow",
+            execution_mode="workflow",
+            handler_ref="product:dynamic_workflow",
+        ),
     ]
     for command in commands:
         registry.register(command)
@@ -635,10 +696,14 @@ def build_default_command_registry(
                 source="diagnostic",
                 execution_mode="metadata",
                 handler_ref=f"diagnostic:{name}",
+                visible_to_user=name in {"usage", "context"},
             )
         )
     if include_optional_coding_pack:
-        for command in _optional_coding_pack_commands(visible_to_model=optional_coding_pack_model_visible):
+        for command in _optional_coding_pack_commands(
+            visible_to_model=optional_coding_pack_model_visible,
+            visible_to_user=False,
+        ):
             registry.register(command)
     register_dynamic_commands(registry, dynamic_commands)
     return registry

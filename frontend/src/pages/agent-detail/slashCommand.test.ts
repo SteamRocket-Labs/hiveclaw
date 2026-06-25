@@ -36,6 +36,39 @@ describe('slashCommand', () => {
     });
   });
 
+  it('parses direct agent delegation as a user wrapper command', () => {
+    expect(parseSlashCommandInput('/agent Researcher: Collect source evidence')).toEqual({
+      name: 'agent',
+      args: { agent_name: 'Researcher', message: 'Collect source evidence', input: 'Researcher: Collect source evidence' },
+    });
+  });
+
+  it('parses schedule, once, workflow, and skill wrapper commands as natural prompt commands', () => {
+    expect(parseSlashCommandInput('/schedule 每天早上九点检查日志')).toEqual({
+      name: 'schedule',
+      args: { input: '每天早上九点检查日志', instruction: '每天早上九点检查日志' },
+    });
+    expect(parseSlashCommandInput('/once 明天上午生成报告')).toEqual({
+      name: 'once',
+      args: { input: '明天上午生成报告', instruction: '明天上午生成报告' },
+    });
+    expect(parseSlashCommandInput('/workflow triage inbound leads')).toEqual({
+      name: 'workflow',
+      args: { input: 'triage inbound leads', description: 'triage inbound leads' },
+    });
+    expect(parseSlashCommandInput('/skill market-research summarize competitors')).toEqual({
+      name: 'skill',
+      args: { input: 'market-research summarize competitors' },
+    });
+  });
+
+  it('supports CC-style colon command names for namespaced skills', () => {
+    expect(parseSlashCommandInput('/product-design:review audit this flow')).toEqual({
+      name: 'product-design:review',
+      args: { input: 'audit this flow' },
+    });
+  });
+
   it('parses session side-question and active-turn natural args', () => {
     expect(parseSlashCommandInput('/btw what does this acronym mean?')).toEqual({
       name: 'btw',

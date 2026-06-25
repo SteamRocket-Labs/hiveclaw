@@ -244,6 +244,13 @@
     "workflowRunsDesc": "来自员工工作流历史的运行证据；提升仍在每个员工工作台内完成。",
     "noWorkflowRuns": "还没有可展示的工作流运行。",
     "noDescription": "没有描述",
+    "manualCreateTask": "手动创建任务",
+    "automationCurrent": "当前",
+    "automationPaused": "已暂停",
+    "automationNoCurrent": "当前没有自动化任务。",
+    "automationNoPaused": "没有已暂停的自动化任务。",
+    "automationNoAgentSelected": "请先选择一个 Agent。",
+    "automationCreateFailed": "无法创建这个自动化任务。",
     "plans": {
       "title": "计划确认",
       "eyebrow": "确认边界",
@@ -251,8 +258,8 @@
     },
     "automations": {
       "title": "自动化",
-      "eyebrow": "工作流与触发资产",
-      "subtitle": "已注册工作流、触发运行和 Skill 进化出的自动化资产，都通过现有工作流引擎治理。"
+      "eyebrow": "用户级自动化任务",
+      "subtitle": "汇总当前用户可访问员工下的当前任务和已暂停任务。"
     },
     "memory": {
       "title": "记忆与知识",
@@ -1140,6 +1147,7 @@
         "empty": "暂无可用命令",
         "search": "搜索命令",
         "arguments": "命令参数",
+        "argumentsPlaceholder": "输入自然语言参数；只有需要时才粘贴 JSON",
         "execute": "执行",
         "running": "执行中",
         "loading": "正在加载命令...",
@@ -1148,7 +1156,7 @@
       },
       "slashCommands": {
         "title": "命令",
-        "hint": "选择一个命令，或输入 JSON / 自然语言参数"
+        "hint": "选择命令后继续输入自然语言参数"
       },
       "runtime": {
         "model": "模型",

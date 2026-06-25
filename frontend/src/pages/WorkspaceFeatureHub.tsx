@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
+import { type ReactNode, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   IconBrain,
@@ -10,7 +10,6 @@ import {
   IconRefresh,
   IconRoute,
   IconShieldCheck,
-  IconSparkles,
   IconUsers,
 } from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
@@ -18,8 +17,19 @@ import { enterpriseApi } from '../api/domains/enterprise';
 import { fileApi } from '../api/domains/files';
 import { knowledgeApi } from '../api/domains/knowledge';
 import { planApi, type PlanRequest } from '../api/domains/plans';
-import { listWorkflowDefinitions, listWorkflowRuns, type WorkflowRunSummary } from '../api/domains/workflows';
+import { triggerApi } from '../api/domains/triggers';
+import { autonomyApi } from '../api/domains/autonomy';
+import { listWorkflowDefinitions, type WorkflowDefinitionRecord } from '../api/domains/workflows';
 import type { Agent } from '../types';
+import { useAuthStore } from '../stores';
+import {
+  buildWakePolicyPayload,
+  StaleWorkflowRefError,
+  WakeScheduleError,
+  type WakeFormState,
+  workflowDefinitionFromKey,
+  workflowDefinitionOptionKey,
+} from './agent-detail/wakePolicyForm';
 
 type HubKind = 'plans' | 'automations' | 'memory' | 'documents' | 'approvals' | 'team';
 
@@ -68,15 +78,20 @@ interface DocumentHubRow {
   href: string;
 }
 
-interface WorkflowRunHubRow {
+type AutomationSection = 'current' | 'paused';
+
+interface AutomationHubRow {
+  id: string;
   agentId: string;
   agentName: string;
-  runId: string;
+  triggerId: string;
   name: string;
+  scheduleText: string;
   status: string;
-  stepsDone: number;
-  stepsTotal: number;
+  statusText: string;
+  section: AutomationSection;
   href: string;
+  updatedAt: string | null;
 }
 
 const hubCopy: Record<HubKind, HubCopy> = {
@@ -120,6 +135,7 @@ const hubCopy: Record<HubKind, HubCopy> = {
 
 interface WorkspaceFeatureHubProps {
   kind: HubKind;
+  initialAutomationCreateOpen?: boolean;
 }
 
 function firstAgent(agents: Agent[]) {
@@ -136,6 +152,143 @@ function sortByDateDesc<T extends { updatedAt?: string | null; createdAt?: strin
     const right = Date.parse(b.updatedAt || b.createdAt || '') || 0;
     return right - left;
   });
+}
+
+function createDefaultWakeForm(): WakeFormState {
+  return {
+    mode: 'scheduled_job',
+    name: '',
+    reason: '',
+    scheduleType: 'cron',
+    schedulePreset: 'daily',
+    dailyTime: '09:00',
+    weeklyDay: '1',
+    weeklyTime: '09:00',
+    cronExpr: '0 9 * * *',
+    intervalMinutes: 60,
+    onceAt: '',
+    eventType: 'on_message',
+    maxFires: 1,
+    expiresAt: '',
+    workflowDefinitionKey: '',
+    workflowArgsText: '{}',
+  };
+}
+
+function triggerScheduleText(trigger: any): string {
+  if (typeof trigger?.display_schedule === 'string' && trigger.display_schedule.trim()) {
+    return trigger.display_schedule;
+  }
+  if (trigger?.type === 'cron' && trigger?.config?.expr) {
+    const parts = String(trigger.config.expr).trim().split(/\s+/);
+    if (parts.length >= 5) {
+      const [minute, hour, , , dayOfWeek] = parts;
+      const timeText = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+      const weekdays: Record<string, string> = {
+        '0': 'Sunday',
+        '1': 'Monday',
+        '2': 'Tuesday',
+        '3': 'Wednesday',
+        '4': 'Thursday',
+        '5': 'Friday',
+        '6': 'Saturday',
+        '7': 'Sunday',
+      };
+      if (hour === '*' && minute === '0') return 'Every hour';
+      if (dayOfWeek === '*' && hour !== '*' && minute !== '*') return `Every day at ${timeText}`;
+      if (weekdays[dayOfWeek] && hour !== '*' && minute !== '*') return `${weekdays[dayOfWeek]} at ${timeText}`;
+    }
+    return `Cron: ${trigger.config.expr}`;
+  }
+  if (trigger?.type === 'interval' && trigger?.config?.minutes) {
+    const minutes = Number(trigger.config.minutes);
+    if (Number.isFinite(minutes) && minutes > 0) return minutes >= 60 ? `Every ${minutes / 60}h` : `Every ${minutes} min`;
+  }
+  if (trigger?.type === 'once' && trigger?.config?.at) {
+    return `Once at ${trigger.config.at}`;
+  }
+  return String(trigger?.type || 'automation');
+}
+
+function runtimeTaskTriggerIds(task: any): Set<string> {
+  const diagnostics = task?.diagnostics && typeof task.diagnostics === 'object' ? task.diagnostics : {};
+  const metadata = task?.metadata && typeof task.metadata === 'object' ? task.metadata : {};
+  return new Set(
+    [
+      task?.trigger_id,
+      task?.triggerId,
+      diagnostics.trigger_id,
+      diagnostics.trigger_ids,
+      metadata.trigger_id,
+      metadata.trigger_ids,
+    ]
+      .flat()
+      .filter((value) => value !== undefined && value !== null)
+      .map((value) => String(value)),
+  );
+}
+
+function latestAttemptForTrigger(trigger: any, attempts: any[]): any | null {
+  const triggerId = String(trigger?.id || '');
+  if (!triggerId) return null;
+  const matching = attempts.filter((attempt) => runtimeTaskTriggerIds(attempt).has(triggerId));
+  if (matching.length === 0) return trigger?.last_attempt || null;
+  return [...matching].sort((a, b) => {
+    const left = Date.parse(a?.created_at || a?.started_at || '') || 0;
+    const right = Date.parse(b?.created_at || b?.started_at || '') || 0;
+    return right - left;
+  })[0];
+}
+
+function automationStatus(trigger: any, attempts: any[]): Pick<AutomationHubRow, 'status' | 'statusText' | 'section'> {
+  const attentionState = String(trigger?.attention_state || '').toLowerCase();
+  if (trigger?.is_enabled === false || attentionState === 'paused') {
+    return { status: 'paused', statusText: 'paused', section: 'paused' };
+  }
+
+  const latestAttempt = latestAttemptForTrigger(trigger, attempts);
+  const attemptStatus = String(latestAttempt?.status || '').toLowerCase();
+  if (['pending', 'queued', 'running', 'in_progress', 'started'].includes(attemptStatus)) {
+    return { status: 'running', statusText: 'running', section: 'current' };
+  }
+  if (['failed', 'error', 'needs_reconciliation', 'skipped'].includes(attemptStatus) || ['failed_recently', 'missing_model'].includes(attentionState)) {
+    return { status: 'failed', statusText: attentionState === 'missing_model' ? 'missing model' : 'failed', section: 'current' };
+  }
+  if (['completed', 'success', 'succeeded'].includes(attemptStatus)) {
+    return { status: 'completed', statusText: 'completed', section: 'current' };
+  }
+  return { status: attentionState || 'active', statusText: attentionState || 'active', section: 'current' };
+}
+
+async function collectAutomationRows(agents: Agent[]): Promise<AutomationHubRow[]> {
+  const rows = await Promise.all(
+    agents.slice(0, 30).map(async (agent) => {
+      try {
+        const [triggers, attempts] = await Promise.all([
+          triggerApi.list(agent.id),
+          autonomyApi.listRuntimeTasks(agent.id, { taskType: 'trigger', limit: 100, diagnostics: true }).catch(() => []),
+        ]);
+        return triggers.map((trigger: any) => {
+          const status = automationStatus(trigger, attempts);
+          const name = String(trigger.display_title || trigger.name || trigger.reason || 'Automation task');
+          return {
+            id: `${agent.id}:${trigger.id}`,
+            agentId: agent.id,
+            agentName: agent.name,
+            triggerId: String(trigger.id),
+            name,
+            scheduleText: triggerScheduleText(trigger),
+            updatedAt: trigger.last_fired_at || trigger.created_at || null,
+            href: `/agents/${agent.id}#aware`,
+            ...status,
+          };
+        });
+      } catch {
+        return [] as AutomationHubRow[];
+      }
+    }),
+  );
+  return sortByDateDesc(rows.flat()).slice(0, 80);
 }
 
 async function collectPlanRows(agents: Agent[]): Promise<PlanHubRow[]> {
@@ -210,29 +363,6 @@ async function collectDocumentRows(agents: Agent[]): Promise<DocumentHubRow[]> {
   return rows.flat().slice(0, 16);
 }
 
-async function collectWorkflowRunRows(agents: Agent[]): Promise<WorkflowRunHubRow[]> {
-  const rows = await Promise.all(
-    agents.slice(0, 12).map(async (agent) => {
-      try {
-        const runs = await listWorkflowRuns(agent.id, 8);
-        return runs.map((run: WorkflowRunSummary) => ({
-          agentId: agent.id,
-          agentName: agent.name,
-          runId: run.run_id,
-          name: run.name,
-          status: run.status,
-          stepsDone: run.steps_done,
-          stepsTotal: run.steps_total,
-          href: `/agents/${agent.id}#workflows`,
-        }));
-      } catch {
-        return [] as WorkflowRunHubRow[];
-      }
-    }),
-  );
-  return rows.flat().slice(0, 12);
-}
-
 async function collectApprovalRows(): Promise<ApprovalHubRow[]> {
   const approvals = await enterpriseApi.listApprovals();
   return (approvals as Array<Record<string, unknown>>).slice(0, 16).map((approval) => ({
@@ -258,27 +388,54 @@ function formatFileSize(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function apiErrorMessage(error: unknown, fallback: string): string {
+  const response = (error as { response?: { data?: unknown } } | null)?.response?.data;
+  if (response && typeof response === 'object' && 'detail' in response) {
+    const detail = (response as { detail?: unknown }).detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object' && 'summary' in detail) {
+      const summary = (detail as { summary?: unknown }).summary;
+      if (typeof summary === 'string') return summary;
+    }
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 function EmptyState({ children }: { children: ReactNode }) {
   return <div className="workbench-empty compact">{children}</div>;
 }
 
-export default function WorkspaceFeatureHub({ kind }: WorkspaceFeatureHubProps) {
+export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen = false }: WorkspaceFeatureHubProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const currentUser = useAuthStore((state) => state.user);
   const copy = hubCopy[kind];
+  const [showAutomationCreate, setShowAutomationCreate] = useState(initialAutomationCreateOpen);
+  const [wakeForm, setWakeForm] = useState<WakeFormState>(() => createDefaultWakeForm());
+  const [selectedAutomationAgentId, setSelectedAutomationAgentId] = useState('');
+  const [automationCreateError, setAutomationCreateError] = useState('');
   const { data: agents = [], isLoading: agentsLoading } = useQuery({
     queryKey: ['agents'],
     queryFn: () => agentApi.list(),
   });
   const idsKey = agentIdsKey(agents);
+  const ownedAutomationAgents = currentUser?.id
+    ? agents.filter((agent: Agent) => String(agent.creator_id || '') === String(currentUser.id))
+    : [];
+  const automationIdsKey = agentIdsKey(ownedAutomationAgents);
+  const selectedAutomationAgent = selectedAutomationAgentId && ownedAutomationAgents.some((agent) => agent.id === selectedAutomationAgentId)
+    ? selectedAutomationAgentId
+    : ownedAutomationAgents[0]?.id || '';
   const { data: workflowDefinitions = [], isLoading: workflowsLoading } = useQuery({
-    queryKey: ['workflow-definitions'],
-    queryFn: () => listWorkflowDefinitions(),
-    enabled: kind === 'automations',
+    queryKey: ['workflow-definitions', selectedAutomationAgent],
+    queryFn: () => listWorkflowDefinitions(selectedAutomationAgent || undefined),
+    enabled: kind === 'automations' && showAutomationCreate && !!selectedAutomationAgent,
   });
-  const { data: workflowRunRows = [], isLoading: workflowRunsLoading } = useQuery({
-    queryKey: ['feature-hub-workflow-runs', idsKey],
-    queryFn: () => collectWorkflowRunRows(agents),
-    enabled: kind === 'automations' && agents.length > 0,
+  const { data: automationRows = [], isLoading: automationRowsLoading } = useQuery({
+    queryKey: ['feature-hub-automation-rows', automationIdsKey],
+    queryFn: () => collectAutomationRows(ownedAutomationAgents),
+    enabled: kind === 'automations' && !!currentUser?.id && ownedAutomationAgents.length > 0,
   });
   const { data: planRows = [], isLoading: plansLoading } = useQuery({
     queryKey: ['feature-hub-plans', idsKey],
@@ -301,6 +458,250 @@ export default function WorkspaceFeatureHub({ kind }: WorkspaceFeatureHubProps) 
     enabled: kind === 'approvals',
   });
   const primaryAgent = firstAgent(agents);
+  const currentAutomationRows = automationRows.filter((row) => row.section === 'current');
+  const pausedAutomationRows = automationRows.filter((row) => row.section === 'paused');
+
+  const createAutomationTask = async () => {
+    const targetAgentId = selectedAutomationAgent || ownedAutomationAgents[0]?.id;
+    if (!targetAgentId) {
+      setAutomationCreateError(t('featureHub.automationNoAgentSelected', 'Select an agent before creating a task.'));
+      return;
+    }
+    const selectedWorkflow = workflowDefinitionFromKey(wakeForm.workflowDefinitionKey, workflowDefinitions);
+    let payload: Record<string, unknown>;
+    try {
+      payload = buildWakePolicyPayload(wakeForm, selectedWorkflow);
+    } catch (error) {
+      setAutomationCreateError(
+        error instanceof StaleWorkflowRefError
+          ? t('agent.aware.workflowRefStale', 'The selected workflow template is no longer available — pick another.')
+          : error instanceof WakeScheduleError
+            ? t('agent.aware.scheduleInvalid', 'Select a valid schedule.')
+            : t('agent.aware.workflowArgsInvalid', 'Workflow args must be valid JSON.'),
+      );
+      return;
+    }
+
+    try {
+      await triggerApi.create(targetAgentId, payload);
+      setAutomationCreateError('');
+      setWakeForm(createDefaultWakeForm());
+      setShowAutomationCreate(false);
+      await queryClient.invalidateQueries({ queryKey: ['feature-hub-automation-rows'] });
+    } catch (error) {
+      setAutomationCreateError(apiErrorMessage(error, t('featureHub.automationCreateFailed', 'Could not create this automation task.')));
+    }
+  };
+
+  const renderAutomationRows = (rows: AutomationHubRow[], emptyText: string) => (
+    <div className="automation-task-list">
+      {rows.length === 0 && <EmptyState>{emptyText}</EmptyState>}
+      {rows.map((row) => (
+        <Link key={row.id} to={row.href} className="automation-task-row">
+          <span className={`automation-task-dot ${row.status}`} aria-hidden="true" />
+          <span className="automation-task-main">
+            <strong>{row.name}</strong>
+            <small>{row.agentName}</small>
+          </span>
+          <span className="automation-task-schedule">{row.scheduleText}</span>
+          <span className={`employee-status ${row.status}`}>{row.statusText}</span>
+        </Link>
+      ))}
+    </div>
+  );
+
+  const renderAutomationCreateDialog = () => {
+    if (!showAutomationCreate) return null;
+    const activeWorkflowDefinitions = (workflowDefinitions as WorkflowDefinitionRecord[]).filter((record) => record.status === 'active');
+    const schedulePreset = wakeForm.schedulePreset || 'daily';
+    const timeOptions = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
+    const weekdayOptions = [
+      ['1', t('agent.aware.weekdayMonday', 'Monday')],
+      ['2', t('agent.aware.weekdayTuesday', 'Tuesday')],
+      ['3', t('agent.aware.weekdayWednesday', 'Wednesday')],
+      ['4', t('agent.aware.weekdayThursday', 'Thursday')],
+      ['5', t('agent.aware.weekdayFriday', 'Friday')],
+      ['6', t('agent.aware.weekdaySaturday', 'Saturday')],
+      ['0', t('agent.aware.weekdaySunday', 'Sunday')],
+    ];
+
+    return (
+      <div className="automation-create-backdrop" role="presentation">
+        <div
+          className="automation-create-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('featureHub.manualCreateTask', 'Manual create task')}
+        >
+          <div className="automation-create-header">
+            <input
+              className="automation-title-input"
+              value={wakeForm.name}
+              onChange={(event) => setWakeForm({ ...wakeForm, name: event.target.value })}
+              placeholder={t('agent.aware.automationTitle', 'Automation title')}
+            />
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setShowAutomationCreate(false)}
+              aria-label={t('common.close', 'Close')}
+            >
+              x
+            </button>
+          </div>
+          <textarea
+            className="automation-prompt-input"
+            value={wakeForm.reason}
+            onChange={(event) => setWakeForm({ ...wakeForm, reason: event.target.value })}
+            placeholder={t('agent.aware.promptPlaceholder', 'Add prompt, for example: check production logs and summarize anomalies')}
+            rows={8}
+          />
+          {wakeForm.workflowDefinitionKey && (
+            <textarea
+              className="form-input"
+              data-testid="wake-workflow-ref-args"
+              value={wakeForm.workflowArgsText}
+              onChange={(event) => setWakeForm({ ...wakeForm, workflowArgsText: event.target.value })}
+              rows={2}
+              placeholder={t('agent.aware.workflowArgs', 'Workflow args JSON')}
+            />
+          )}
+          <div className="automation-create-controls">
+            <label className="automation-create-field">
+              <span>{t('agent.aware.selectAgent', 'Select agent')}</span>
+              <select
+                className="form-input"
+                value={selectedAutomationAgent}
+                onChange={(event) => setSelectedAutomationAgentId(event.target.value)}
+              >
+                {ownedAutomationAgents.map((agent: Agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name || agent.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <select
+              className="form-input"
+              data-testid="wake-workflow-ref-select"
+              value={wakeForm.workflowDefinitionKey}
+              onChange={(event) => setWakeForm({ ...wakeForm, workflowDefinitionKey: event.target.value })}
+              disabled={workflowsLoading}
+            >
+              <option value="">{t('agent.aware.noWorkflowRef', 'No workflow')}</option>
+              {activeWorkflowDefinitions.map((record) => (
+                <option key={record.id} value={workflowDefinitionOptionKey(record)}>
+                  {record.name} v{record.definition_version}
+                </option>
+              ))}
+            </select>
+            <select
+              className="form-input"
+              value={schedulePreset}
+              onChange={(event) =>
+                setWakeForm({
+                  ...wakeForm,
+                  scheduleType: 'cron',
+                  schedulePreset: event.target.value as WakeFormState['schedulePreset'],
+                })
+              }
+            >
+              <option value="hourly">{t('agent.aware.everyHour', 'Every hour')}</option>
+              <option value="daily">{t('agent.aware.everyDay', 'Every day')}</option>
+              <option value="weekly">{t('agent.aware.everyWeek', 'Every week')}</option>
+              <option value="custom">{t('agent.aware.customSchedule', 'Custom')}</option>
+            </select>
+            {schedulePreset === 'daily' && (
+              <select
+                className="form-input compact"
+                value={wakeForm.dailyTime || '09:00'}
+                onChange={(event) => setWakeForm({ ...wakeForm, dailyTime: event.target.value })}
+              >
+                {timeOptions.map((time) => (
+                  <option key={time} value={time}>
+                    {time}
+                  </option>
+                ))}
+              </select>
+            )}
+            {schedulePreset === 'weekly' && (
+              <>
+                <select
+                  className="form-input compact"
+                  value={wakeForm.weeklyDay || '1'}
+                  onChange={(event) => setWakeForm({ ...wakeForm, weeklyDay: event.target.value })}
+                >
+                  {weekdayOptions.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="form-input compact"
+                  value={wakeForm.weeklyTime || '09:00'}
+                  onChange={(event) => setWakeForm({ ...wakeForm, weeklyTime: event.target.value })}
+                >
+                  {timeOptions.map((time) => (
+                    <option key={time} value={time}>
+                      {time}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+            {schedulePreset === 'custom' && (
+              <input
+                className="form-input"
+                value={wakeForm.cronExpr}
+                onChange={(event) => setWakeForm({ ...wakeForm, cronExpr: event.target.value })}
+                placeholder="0 9 * * *"
+              />
+            )}
+            <div className="automation-create-actions">
+              {automationCreateError && <span className="form-error">{automationCreateError}</span>}
+              <button type="button" className="btn btn-ghost" onClick={() => setShowAutomationCreate(false)}>
+                {t('common.cancel', 'Cancel')}
+              </button>
+              <button type="button" className="btn btn-primary" onClick={createAutomationTask}>
+                {t('common.create', 'Create')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  if (kind === 'automations') {
+    return (
+      <div className="workbench-page automation-hub-page">
+        <div className="automation-hub-header">
+          <div>
+            <span className="workbench-eyebrow">{t('featureHub.automations.eyebrow', 'User automation tasks')}</span>
+            <h1 className="page-title">{t('featureHub.automations.title', 'Automations')}</h1>
+          </div>
+          <button type="button" className="btn btn-primary" onClick={() => setShowAutomationCreate(true)}>
+            {t('featureHub.manualCreateTask', 'Manual create task')}
+          </button>
+        </div>
+        {renderAutomationCreateDialog()}
+        {automationRowsLoading && <div className="workbench-empty">{t('common.loading', 'Loading...')}</div>}
+        {!automationRowsLoading && (
+          <div className="automation-hub-sections">
+            <section className="automation-section">
+              <h2>{t('featureHub.automationCurrent', 'Current')}</h2>
+              {renderAutomationRows(currentAutomationRows, t('featureHub.automationNoCurrent', 'No current automation tasks.'))}
+            </section>
+            <section className="automation-section">
+              <h2>{t('featureHub.automationPaused', 'Paused')}</h2>
+              {renderAutomationRows(pausedAutomationRows, t('featureHub.automationNoPaused', 'No paused automation tasks.'))}
+            </section>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="workbench-page">
@@ -329,8 +730,7 @@ export default function WorkspaceFeatureHub({ kind }: WorkspaceFeatureHubProps) 
                 kind === 'memory' ? `/agents/${agent.id}#knowledge`
                   : kind === 'documents' ? `/agents/${agent.id}#workspace`
                     : kind === 'approvals' ? `/agents/${agent.id}#approvals`
-                      : kind === 'automations' ? `/agents/${agent.id}#workflows`
-                        : `/agents/${agent.id}#chat`;
+                      : `/agents/${agent.id}#chat`;
               return (
                 <Link key={agent.id} to={target} className="feature-link-row">
                   <span className="employee-avatar small">{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</span>
@@ -352,24 +752,6 @@ export default function WorkspaceFeatureHub({ kind }: WorkspaceFeatureHubProps) 
             </div>
           </div>
           <div className="feature-link-list">
-            {kind === 'automations' && (
-              <>
-                <Link to="/enterprise/skills" className="feature-link-row">
-                  <IconSparkles size={18} stroke={1.7} />
-                  <span>
-                    <strong>{t('featureHub.skillRegistry', 'Skill registry')}</strong>
-                    <small>{t('featureHub.skillRegistryDesc', 'Skill capsules and evolution candidates')}</small>
-                  </span>
-                </Link>
-                <Link to={primaryAgent ? `/agents/${primaryAgent.id}#workflows` : '/agents'} className="feature-link-row">
-                  <IconRefresh size={18} stroke={1.7} />
-                  <span>
-                    <strong>{t('featureHub.workflowWorkbench', 'Workflow workbench')}</strong>
-                    <small>{t('featureHub.workflowWorkbenchDesc', 'Preview, start, inspect, and promote workflow runs')}</small>
-                  </span>
-                </Link>
-              </>
-            )}
             {kind === 'memory' && (
               <Link to="/enterprise/memory" className="feature-link-row">
                 <IconShieldCheck size={18} stroke={1.7} />
@@ -524,55 +906,6 @@ export default function WorkspaceFeatureHub({ kind }: WorkspaceFeatureHubProps) 
             ))}
           </div>
         </section>
-      )}
-
-      {kind === 'automations' && (
-        <>
-          <section className="workbench-panel">
-            <div className="workbench-panel-header">
-              <div>
-                <h2>{t('featureHub.registeredWorkflows', 'Registered workflows')}</h2>
-                <p>{t('featureHub.registeredWorkflowsDesc', 'Read from the workflow definition API; activation and promotion stay in the workflow runtime.')}</p>
-              </div>
-            </div>
-            {workflowsLoading && <div className="workbench-empty">{t('common.loading', 'Loading...')}</div>}
-            {!workflowsLoading && workflowDefinitions.length === 0 && (
-              <EmptyState>{t('featureHub.noWorkflows', 'No registered workflows yet.')}</EmptyState>
-            )}
-            <div className="workflow-definition-grid">
-              {workflowDefinitions.map((definition: any) => (
-                <article key={definition.id} className="workflow-definition-card">
-                  <span className={`employee-status ${definition.status}`}>{definition.status}</span>
-                  <h3>{definition.name}</h3>
-                  <p>{definition.description || t('featureHub.noDescription', 'No description')}</p>
-                  <small>v{definition.definition_version}</small>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="workbench-panel">
-            <div className="workbench-panel-header">
-              <div>
-                <h2>{t('featureHub.workflowRunsTitle', 'Recent workflow runs')}</h2>
-                <p>{t('featureHub.workflowRunsDesc', 'Runtime evidence from employee workflow histories; promotion remains inside each employee workbench.')}</p>
-              </div>
-            </div>
-            {workflowRunsLoading && <div className="workbench-empty">{t('common.loading', 'Loading...')}</div>}
-            {!workflowRunsLoading && workflowRunRows.length === 0 && <EmptyState>{t('featureHub.noWorkflowRuns', 'No workflow runs surfaced yet.')}</EmptyState>}
-            <div className="workbench-aggregate-list">
-              {workflowRunRows.map((run) => (
-                <Link key={`${run.agentId}:${run.runId}`} to={run.href} className="workbench-aggregate-row">
-                  <span className={`employee-status ${run.status}`}>{run.status}</span>
-                  <span>
-                    <strong>{run.name}</strong>
-                    <small>{run.agentName} · {run.stepsDone}/{run.stepsTotal} steps</small>
-                  </span>
-                </Link>
-              ))}
-            </div>
-          </section>
-        </>
       )}
 
       {kind === 'team' && (

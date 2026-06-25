@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -25,7 +26,9 @@ from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_tools import execute_tool
 from app.services.command_registry import build_default_command_registry
+from app.services.command_registry import CommandDefinition
 from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, execute_diagnostic_command
+from app.services.mcp_server_service import get_agent_extensions
 from app.services.pack_policy_service import get_agent_pack_policies
 from app.services.plan_mode_core import (
     plan_mode_user_declined,
@@ -93,15 +96,78 @@ _MCP_ACTION_TO_TOOL = {
     "list_resources": "mcp_list_resources",
     "read_resource": "mcp_read_resource",
 }
+_SLASH_COMMAND_NAME_RE = re.compile(r"^[A-Za-z0-9_:-]+$")
 
 
 async def _coding_pack_enabled(db: AsyncSession, agent: Any) -> bool:
-    policies = await get_agent_pack_policies(
-        db,
-        getattr(agent, "tenant_id", None),
-        getattr(agent, "id", None),
-    )
+    try:
+        policies = await get_agent_pack_policies(
+            db,
+            getattr(agent, "tenant_id", None),
+            getattr(agent, "id", None),
+        )
+    except Exception:
+        return False
     return bool(policies.get("coding_pack"))
+
+
+def _skill_command_name(raw: object) -> str | None:
+    value = str(raw or "").strip().lstrip("/")
+    if not value or not _SLASH_COMMAND_NAME_RE.fullmatch(value):
+        return None
+    return value
+
+
+async def _dynamic_skill_commands(db: AsyncSession, *, agent_id: uuid.UUID) -> list[CommandDefinition]:
+    try:
+        extensions = await get_agent_extensions(db, agent_id)
+    except Exception:
+        return []
+
+    commands: list[CommandDefinition] = []
+    seen: set[str] = set()
+    for skill in extensions.get("skills") or []:
+        if not isinstance(skill, dict):
+            continue
+        name = _skill_command_name(skill.get("id") or skill.get("name"))
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        display_name = str(skill.get("name") or name).strip() or name
+        commands.append(
+            CommandDefinition(
+                name=name,
+                description=f"Use the {display_name} Skill with this request.",
+                category="skill",
+                source="skill",
+                execution_mode="runtime",
+                handler_ref=f"skill:{name}",
+                input_schema={"type": "object", "properties": {"input": {"type": "string"}}},
+                visible_to_model=False,
+                visible_to_user=True,
+            )
+        )
+    return commands
+
+
+async def _build_agent_command_registry(
+    db: AsyncSession,
+    *,
+    agent: Any,
+    include_optional_packs: bool = False,
+    include_dynamic_user_commands: bool = False,
+):
+    coding_pack_enabled = await _coding_pack_enabled(db, agent)
+    dynamic_commands = (
+        await _dynamic_skill_commands(db, agent_id=agent.id)
+        if include_dynamic_user_commands
+        else []
+    )
+    return build_default_command_registry(
+        dynamic_commands=dynamic_commands,
+        include_optional_coding_pack=bool(include_optional_packs and coding_pack_enabled) or coding_pack_enabled,
+        optional_coding_pack_model_visible=coding_pack_enabled,
+    )
 
 
 def _parse_uuid(value: uuid.UUID | str | None, *, field: str) -> uuid.UUID:
@@ -667,11 +733,201 @@ def _metadata_command_payload(
     raise HTTPException(status_code=501, detail=f"Unsupported metadata command {command_name!r}")
 
 
+def _natural_command_text(arguments: dict[str, Any]) -> str:
+    for key in ("input", "prompt", "instruction", "description", "message", "objective", "request"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _chat_prompt_payload(
+    *,
+    command_name: str,
+    content: str,
+    display_content: str | None = None,
+    message: str | None = None,
+    plan_mode_requested: bool = False,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "action": "chat_prompt",
+        "command": command_name,
+        "content": content,
+        "display_content": display_content or content,
+        "plan_mode_requested": plan_mode_requested,
+        "message": message or "Starting an agent turn from the slash command.",
+    }
+
+
+async def _execute_dynamic_skill_command(
+    *,
+    command: Any,
+    command_name: str,
+    agent: Any,
+    user: User,
+    session_id: str | None,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    skill_name = str(command.handler_ref).split(":", 1)[1]
+    user_request = _natural_command_text(arguments)
+    loaded = await execute_tool(
+        "load_skill",
+        {"name": skill_name},
+        agent_id=agent.id,
+        user_id=user.id,
+        session_id=session_id,
+    )
+    if not isinstance(loaded, str):
+        loaded = json.dumps(loaded, ensure_ascii=False, default=str)
+    request_block = user_request or "Apply this skill to the current task."
+    content = (
+        f"<invoked-skill name=\"{skill_name}\">\n{loaded.strip()}\n</invoked-skill>\n\n"
+        f"User request:\n{request_block}"
+    )
+    display = f"/{command_name} {user_request}".strip()
+    return _chat_prompt_payload(
+        command_name=command_name,
+        content=content,
+        display_content=display,
+        message=f"Using /{command_name} with the current agent.",
+    )
+
+
+async def _execute_product_command(
+    *,
+    db: AsyncSession,
+    command_name: str,
+    command: Any,
+    agent: Any,
+    user: User,
+    session_id: str | None,
+    arguments: dict[str, Any],
+) -> dict[str, Any] | None:
+    natural_text = _natural_command_text(arguments)
+
+    if command.name == "plan":
+        return _chat_prompt_payload(
+            command_name=command_name,
+            content=natural_text or "Enter Plan Mode for the next turn.",
+            display_content=(f"/{command_name} {natural_text}".strip() if natural_text else f"/{command_name}"),
+            message="Plan Mode enabled for the next agent turn.",
+            plan_mode_requested=True,
+        )
+
+    if command.name == "skill":
+        if not natural_text:
+            return {
+                "ok": True,
+                "action": "open_tab",
+                "tab": "skills",
+                "message": "Opened Skills.",
+            }
+        return _chat_prompt_payload(
+            command_name=command_name,
+            content=(
+                "Use the relevant installed Skill for this request. If the user named a specific Skill, "
+                f"call load_skill for that Skill before answering.\n\nUser request:\n{natural_text}"
+            ),
+            display_content=f"/{command_name} {natural_text}".strip(),
+            message="Starting a Skill-guided agent turn.",
+        )
+
+    if command.name == "workflow":
+        return {
+            "ok": True,
+            "action": "open_tab",
+            "tab": "workflows",
+            "panel": "dynamic_workflow",
+            "draft": natural_text,
+            "message": "Opened Dynamic Workflow.",
+        }
+
+    if command.name == "agent":
+        agent_name = str(arguments.get("agent_name") or "").strip()
+        message = str(arguments.get("message") or "").strip()
+        if agent_name and message:
+            tool_result = await execute_tool(
+                "delegate_to_agent",
+                {"agent_name": agent_name, "message": message},
+                agent_id=agent.id,
+                user_id=user.id,
+                session_id=session_id,
+            )
+            parsed: Any
+            if isinstance(tool_result, str):
+                try:
+                    parsed = json.loads(tool_result)
+                except json.JSONDecodeError:
+                    parsed = tool_result
+            else:
+                parsed = tool_result
+            return parsed if isinstance(parsed, dict) else {"ok": True, "result": parsed}
+        if natural_text:
+            return _chat_prompt_payload(
+                command_name=command_name,
+                content=(
+                    "Delegate this request to the most appropriate Sub-Agent. If a specific Sub-Agent is named, "
+                    f"use that Sub-Agent.\n\nUser request:\n{natural_text}"
+                ),
+                display_content=f"/{command_name} {natural_text}".strip(),
+                message="Starting a Sub-Agent delegation turn.",
+            )
+        return {
+            "ok": True,
+            "action": "open_tab",
+            "tab": "subagents",
+            "message": "Opened Sub-Agents.",
+        }
+
+    return None
+
+
+def _schedule_has_structured_required_args(command_name: str, arguments: dict[str, Any]) -> bool:
+    if command_name == "schedule_create":
+        return bool(
+            str(arguments.get("name") or "").strip()
+            and str(arguments.get("instruction") or arguments.get("reason") or "").strip()
+            and str(arguments.get("cron_expr") or arguments.get("cron") or "").strip()
+        )
+    if command_name == "schedule_once":
+        return bool(
+            str(arguments.get("name") or "").strip()
+            and str(arguments.get("instruction") or arguments.get("reason") or "").strip()
+            and str(arguments.get("at") or arguments.get("once_at") or "").strip()
+        )
+    return False
+
+
+def _schedule_chat_prompt(command_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    natural_text = _natural_command_text(arguments)
+    label = "scheduled task" if command_name == "schedule_create" else "one-time task"
+    return _chat_prompt_payload(
+        command_name="schedule" if command_name == "schedule_create" else "once",
+        content=(
+            f"Create a {label} from this request. Use the task/schedule creation tools when enough details "
+            "are available; ask a concise clarification if the time or instruction is ambiguous. "
+            "Do not force Plan Mode unless policy or risk requires it.\n\n"
+            f"User request:\n{natural_text or 'Create the requested task.'}"
+        ),
+        display_content=f"/{'schedule' if command_name == 'schedule_create' else 'once'} {natural_text}".strip(),
+        message=f"Starting an agent turn to create a {label}.",
+    )
+
+
 def _enforce_command_origin_safety(command: Any, origin: str) -> None:
     if origin == "bridge" and not command.bridge_safe:
         raise HTTPException(status_code=403, detail=f"Command {command.name!r} is not bridge-safe")
     if origin == "remote" and not command.remote_safe:
         raise HTTPException(status_code=403, detail=f"Command {command.name!r} is not remote-safe")
+
+
+def _enforce_web_user_command_surface(command: Any, command_name: str, origin: str) -> None:
+    if origin != "web":
+        return
+    user_entry = command.index_entry(surface="user")
+    if not command.visible_to_user or user_entry["name"] != command_name:
+        raise HTTPException(status_code=404, detail="Command not found")
 
 
 @router.get("")
@@ -683,11 +939,13 @@ async def list_agent_commands(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     agent, _access = await check_agent_access(db, current_user, agent_id)
-    coding_pack_enabled = await _coding_pack_enabled(db, agent)
-    return build_default_command_registry(
-        include_optional_coding_pack=bool(include_optional_packs and coding_pack_enabled) or coding_pack_enabled,
-        optional_coding_pack_model_visible=coding_pack_enabled,
-    ).visible_index(surface="user" if surface == "user" else "agent_prompt")
+    registry = await _build_agent_command_registry(
+        db,
+        agent=agent,
+        include_optional_packs=include_optional_packs,
+        include_dynamic_user_commands=surface == "user",
+    )
+    return registry.visible_index(surface="user" if surface == "user" else "agent_prompt")
 
 
 @router.get("/{command_name}")
@@ -699,10 +957,11 @@ async def get_agent_command(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     agent, _access = await check_agent_access(db, current_user, agent_id)
-    coding_pack_enabled = await _coding_pack_enabled(db, agent)
-    registry = build_default_command_registry(
-        include_optional_coding_pack=bool(include_optional_packs and coding_pack_enabled) or coding_pack_enabled,
-        optional_coding_pack_model_visible=coding_pack_enabled,
+    registry = await _build_agent_command_registry(
+        db,
+        agent=agent,
+        include_optional_packs=include_optional_packs,
+        include_dynamic_user_commands=True,
     )
     try:
         return registry.get(command_name).model_dump(mode="json")
@@ -719,20 +978,49 @@ async def execute_agent_command(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    registry = build_default_command_registry()
+    registry = await _build_agent_command_registry(
+        db,
+        agent=agent,
+        include_dynamic_user_commands=body.origin == "web",
+    )
     try:
         command = registry.get(command_name)
     except KeyError as exc:
-        coding_pack_enabled = await _coding_pack_enabled(db, agent)
-        registry = build_default_command_registry(
-            include_optional_coding_pack=coding_pack_enabled,
-            optional_coding_pack_model_visible=coding_pack_enabled,
+        registry = await _build_agent_command_registry(
+            db,
+            agent=agent,
+            include_optional_packs=True,
+            include_dynamic_user_commands=body.origin == "web",
         )
         try:
             command = registry.get(command_name)
         except KeyError:
             raise HTTPException(status_code=404, detail="Command not found") from exc
     _enforce_command_origin_safety(command, body.origin)
+    _enforce_web_user_command_surface(command, command_name, body.origin)
+
+    if command.handler_ref.startswith("skill:"):
+        result = await _execute_dynamic_skill_command(
+            command=command,
+            command_name=command_name,
+            agent=agent,
+            user=current_user,
+            session_id=body.session_id,
+            arguments=body.arguments,
+        )
+        return {"ok": True, "command": command.name, "result": result}
+
+    product_result = await _execute_product_command(
+        db=db,
+        command_name=command_name,
+        command=command,
+        agent=agent,
+        user=current_user,
+        session_id=body.session_id,
+        arguments=body.arguments,
+    )
+    if product_result is not None:
+        return {"ok": True, "command": command.name, "result": product_result}
 
     if command.name in SESSION_COMMAND_NAMES:
         result = await execute_session_command(
@@ -779,6 +1067,8 @@ async def execute_agent_command(
         await db.commit()
         return {"ok": True, "command": command.name, "result": result}
     if command.name in _SCHEDULE_COMMANDS:
+        if body.origin == "web" and not _schedule_has_structured_required_args(command.name, body.arguments):
+            return {"ok": True, "command": command.name, "result": _schedule_chat_prompt(command.name, body.arguments)}
         result = await _execute_schedule_command(
             db=db,
             agent=agent,

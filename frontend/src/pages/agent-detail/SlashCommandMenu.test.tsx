@@ -2,7 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import SlashCommandMenu from './SlashCommandMenu';
+import SlashCommandMenu, { templateForSlashCommand } from './SlashCommandMenu';
 import type { CommandIndexEntry } from '../../api/domains/ccParity';
 
 const queryHarness = vi.hoisted(() => ({
@@ -27,6 +27,18 @@ const queryHarness = vi.hoisted(() => ({
       description: 'Create an enterable agent team',
       category: 'team',
       source: 'builtin',
+      execution_mode: 'runtime',
+      permission_mode: 'default',
+      bridge_safe: true,
+      remote_safe: true,
+    },
+    {
+      name: 'market-research',
+      canonical_name: 'market-research',
+      aliases: [],
+      description: 'Use the market research skill',
+      category: 'skill',
+      source: 'skill',
       execution_mode: 'runtime',
       permission_mode: 'default',
       bridge_safe: true,
@@ -101,6 +113,22 @@ describe('SlashCommandMenu', () => {
     expect(listCall?.enabled).toBe(true);
   });
 
+  it('renders installed skills as direct slash commands', () => {
+    const markup = renderToStaticMarkup(
+      <SlashCommandMenu
+        agentId="agent-1"
+        sessionId="session-1"
+        inputValue="/market"
+        disabled={false}
+        onPickCommand={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('/market-research');
+    expect(markup).toContain('skill');
+    expect(markup).not.toContain('load_skill');
+  });
+
   it('does not truncate the slash command list before all matching task commands are visible', () => {
     const markup = renderToStaticMarkup(
       <SlashCommandMenu
@@ -114,5 +142,11 @@ describe('SlashCommandMenu', () => {
 
     expect(markup).toContain('task_helper_0');
     expect(markup).toContain('task_helper_8');
+  });
+
+  it('inserts only the command prefix so the user can type natural args', () => {
+    expect(templateForSlashCommand(queryHarness.commands[0])).toBe('/goal ');
+    expect(templateForSlashCommand(queryHarness.commands[1])).toBe('/team ');
+    expect(templateForSlashCommand(queryHarness.commands[2])).toBe('/market-research ');
   });
 });

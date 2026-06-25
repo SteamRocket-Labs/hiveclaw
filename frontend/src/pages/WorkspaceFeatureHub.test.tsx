@@ -1,5 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+let automationAgentIdsKey = '';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -8,6 +10,9 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(),
+  }),
   useQuery: (options: { queryKey: unknown[] }) => {
     const key = String(options.queryKey[0]);
     if (key === 'agents') {
@@ -20,6 +25,14 @@ vi.mock('@tanstack/react-query', () => ({
             status: 'running',
             creator_id: 'user-1',
             created_at: '2026-06-20T00:00:00Z',
+          },
+          {
+            id: 'agent-shared',
+            name: 'Shared Analyst',
+            role_description: 'Company shared research',
+            status: 'running',
+            creator_id: 'user-2',
+            created_at: '2026-06-21T00:00:00Z',
           },
         ],
         isLoading: false,
@@ -34,6 +47,36 @@ vi.mock('@tanstack/react-query', () => ({
             description: 'Collect and synthesize market signals.',
             status: 'active',
             definition_version: 1,
+          },
+        ],
+        isLoading: false,
+      };
+    }
+    if (key === 'feature-hub-automation-rows') {
+      automationAgentIdsKey = String(options.queryKey[1] || '');
+      return {
+        data: [
+          {
+            id: 'agent-1:trigger-current',
+            agentId: 'agent-1',
+            agentName: 'Research Lead',
+            name: 'Daily railway log check',
+            scheduleText: 'Tuesday at 10:00',
+            status: 'running',
+            statusText: 'running',
+            section: 'current',
+            href: '/agents/agent-1#aware',
+          },
+          {
+            id: 'agent-1:trigger-paused',
+            agentId: 'agent-1',
+            agentName: 'Research Lead',
+            name: 'Hive H7 Evidence Loop',
+            scheduleText: 'Every day at 09:00',
+            status: 'paused',
+            statusText: 'paused',
+            section: 'paused',
+            href: '/agents/agent-1#aware',
           },
         ],
         isLoading: false,
@@ -89,6 +132,23 @@ vi.mock('@tanstack/react-query', () => ({
   },
 }));
 
+vi.mock('../stores', () => ({
+  useAuthStore: (selector?: any) => {
+    const state = {
+      user: {
+        id: 'user-1',
+        username: 'rocky',
+        email: 'rocky@example.com',
+        display_name: 'rocky',
+        role: 'member',
+        is_active: true,
+        created_at: '2026-06-01T00:00:00Z',
+      },
+    };
+    return selector ? selector(state) : state;
+  },
+}));
+
 vi.mock('react-router-dom', () => ({
   Link: ({ to, children, className }: any) => (
     <a href={to} className={className}>
@@ -100,14 +160,48 @@ vi.mock('react-router-dom', () => ({
 import WorkspaceFeatureHub from './WorkspaceFeatureHub';
 
 describe('WorkspaceFeatureHub', () => {
+  beforeEach(() => {
+    automationAgentIdsKey = '';
+  });
+
   it('renders automation assets from the real workflow definition adapter', () => {
     const markup = renderToStaticMarkup(<WorkspaceFeatureHub kind="automations" />);
 
     expect(markup).toContain('Automations');
-    expect(markup).toContain('Weekly market sweep');
-    expect(markup).toContain('Collect and synthesize market signals.');
-    expect(markup).toContain('href="/agents/agent-1#workflows"');
-    expect(markup).toContain('href="/enterprise/skills"');
+    expect(markup).toContain('Current');
+    expect(markup).toContain('Paused');
+    expect(markup).toContain('Daily railway log check');
+    expect(markup).toContain('Hive H7 Evidence Loop');
+    expect(markup).toContain('Research Lead');
+    expect(markup).toContain('Tuesday at 10:00');
+    expect(markup).toContain('paused');
+    expect(markup).toContain('Manual create task');
+    expect(markup).toContain('href="/agents/agent-1#aware"');
+    expect(markup).not.toContain('Weekly market sweep');
+    expect(markup).not.toContain('Skill registry');
+  });
+
+  it('scopes automation aggregation to agents owned by the current user', () => {
+    renderToStaticMarkup(<WorkspaceFeatureHub kind="automations" />);
+
+    expect(automationAgentIdsKey).toBe('agent-1');
+    expect(automationAgentIdsKey).not.toContain('agent-shared');
+  });
+
+  it('opens the manual automation create dialog on the automation hub', () => {
+    const markup = renderToStaticMarkup(<WorkspaceFeatureHub kind="automations" initialAutomationCreateOpen />);
+
+    expect(markup).toContain('role="dialog"');
+    expect(markup).toContain('Manual create task');
+    expect(markup).toContain('Automation title');
+    expect(markup).toContain('Select agent');
+    expect(markup).toContain('Every hour');
+    expect(markup).toContain('Every day');
+    expect(markup).toContain('Every week');
+    expect(markup).toContain('Custom');
+    expect(markup).not.toContain('Work Number');
+    expect(markup).not.toContain('Reasoning strength');
+    expect(markup).not.toContain('Mode');
   });
 
   it('renders memory governance links without inventing a separate memory product surface', () => {

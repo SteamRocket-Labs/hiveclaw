@@ -128,15 +128,9 @@ describe('CommandPalette', () => {
     expect(filtered.map((command) => command.name)).toEqual(['diff']);
   });
 
-  it('builds command-specific argument templates', () => {
-    expect(defaultCommandArguments(queryHarness.commands[0])).toContain('"objective"');
-    expect(defaultCommandArguments(queryHarness.commands[1])).toBe('{}');
-    expect(defaultCommandArguments(queryHarness.commands[2])).toContain('"subject"');
-    expect(defaultCommandArguments(queryHarness.commands[2])).toContain('"kind"');
-    expect(defaultCommandArguments(queryHarness.commands[3])).toContain('"runtime_task_id"');
-    expect(defaultCommandArguments(queryHarness.commands[4])).toContain('"cron_expr"');
-    expect(defaultCommandArguments(queryHarness.commands[4])).toContain('"is_enabled": false');
-    expect(defaultCommandArguments(queryHarness.commands[5])).toContain('"at"');
-    expect(defaultCommandArguments(queryHarness.commands[5])).toContain('"is_enabled": false');
+  it('does not inject JSON argument templates into user commands', () => {
+    for (const command of queryHarness.commands) {
+      expect(defaultCommandArguments(command)).toBe('');
+    }
   });
 });

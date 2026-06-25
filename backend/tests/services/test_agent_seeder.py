@@ -44,3 +44,12 @@ def test_seeder_skips_when_marker_exists():
     marker_section = fn_body.split('"default_agents_seeded"')[1].split("return")[0]
     # The marker check should lead to a return, not agent creation
     assert "Agent(" not in marker_section, "Must not create agents in the marker-check branch"
+
+
+def test_seeded_relationships_use_governed_a2a_projection_language():
+    """Default seeded workspaces must not teach the retired Digital Employee Colleagues model."""
+    source = _read_seeder_source()
+
+    assert "Digital Employee Colleagues" not in source
+    assert "我的数字员工团队" in source
+    assert "同 owner，可直接通过 A2A 会话协作" in source

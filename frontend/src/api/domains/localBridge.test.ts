@@ -73,7 +73,7 @@ describe('localBridge API adapter', () => {
     expect(get).toHaveBeenNthCalledWith(4, '/local-agents/workspace/files?path=workspace%2Fuploads');
     expect(get).toHaveBeenNthCalledWith(5, '/local-agents/workspace/content?path=workspace%2Fuploads%2Freport.md');
     expect(getBlob).toHaveBeenCalledWith('/local-agents/workspace/download?path=workspace%2Fuploads%2Freport.md');
-    expect(upload).toHaveBeenCalledWith('/chat/upload', expect.any(File));
+    expect(upload).toHaveBeenCalledWith('/local-agents/workspace/upload', expect.any(File));
     expect(get).toHaveBeenNthCalledWith(6, '/agents/agent-local-1/local-agent/sessions');
     expect(post).toHaveBeenNthCalledWith(6, '/agents/agent-local-1/local-agent/sessions/default');
     expect(post).toHaveBeenNthCalledWith(7, '/agents/agent-local-1/local-agent/sessions', {

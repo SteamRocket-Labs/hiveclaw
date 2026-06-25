@@ -66,6 +66,7 @@ import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 import { parseSlashCommandInput } from './agent-detail/slashCommand';
 import LocalAgents from './LocalAgents';
+import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
 
 // P8 IA (docs/agent-memory-md-first-spec.md §10): Knowledge replaces the
 // raw-file "mind" tab as the primary memory view (raw Markdown lives in the
@@ -2052,7 +2053,7 @@ function AgentDetailInner() {
                 {
                     activeTab === 'chat' && (
                         (agent as any)?.agent_type === 'local_agent' ? (
-                            <LocalAgents key="chat" agentId={id!} agentName={agent.name} embedded initialTab="chat" />
+                            <LocalAgentChatSection key="chat" agentId={id!} agent={agent} />
                         ) : (
                         <AgentChatSection
                             agentId={id}

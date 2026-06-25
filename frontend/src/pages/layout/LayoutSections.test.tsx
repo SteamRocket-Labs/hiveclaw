@@ -86,7 +86,8 @@ describe('Layout extracted sections', () => {
     expect(markup).not.toContain('A2A / Team');
     expect(markup).not.toContain('Workspace search');
     expect(markup).not.toContain('Control Plane');
-    expect(markup).not.toContain('href="/local-agents"');
+    expect(markup).toContain('Bridge');
+    expect(markup).toContain('href="/local-agents"');
     expect(markup).not.toContain('href="/team"');
     expect(markup).toContain('href="/agents"');
     expect(markup).toContain('href="/automations"');
@@ -147,7 +148,7 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('aria-label="Toggle Create Agent sessions"');
     expect(markup).not.toContain('sidebar-create-agent-item');
     expect(markup).not.toContain('href="/agents/new" class="sidebar-item sidebar-agent-link');
-    expect(markup).not.toContain('href="/local-agents"');
+    expect(markup).toContain('href="/local-agents"');
   });
 
   it('uses the real HR Agent sessions for the fixed Create Agent node', () => {
@@ -322,7 +323,7 @@ describe('Layout extracted sections', () => {
   });
 
   it('renders local agents as normal agent rows with local session dropdowns', () => {
-    routeState.location = { pathname: '/agents/local-agent-1', search: '?session_id=channel-session-1', hash: '#chat' };
+    routeState.location = { pathname: '/agents/local-agent-1', search: '?session_id=chat-session-1', hash: '#chat' };
     const markup = renderToStaticMarkup(
       <AppSidebar
         user={{ id: 'user-1', role: 'member', display_name: 'Rocky' }}
@@ -372,9 +373,9 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('tabler-icon-device-desktop');
     expect(markup).toContain('data-testid="sidebar-agent-sessions-local-agent-1"');
     expect(markup).toContain('Codex local debug');
-    expect(markup).toContain('href="/agents/local-agent-1?session_id=channel-session-1#chat"');
+    expect(markup).toContain('href="/agents/local-agent-1?session_id=chat-session-1#chat"');
     expect(markup).toContain('class="sidebar-session-item active"');
-    expect(markup).not.toContain('href="/local-agents"');
+    expect(markup).toContain('href="/local-agents"');
   });
 
   it('renders NotificationCenter as a standalone notification module', () => {

@@ -135,14 +135,14 @@ describe('LocalAgents page', () => {
         'hbwt browser/token',
         { protocol: 'https:', host: 'hive.example' } as Location,
       ),
-    ).toBe('wss://hive.example/api/local-agents/sessions/session-1/ws?ticket=hbwt+browser%2Ftoken');
+    ).toBe('wss://hive.example/ws/local-agents/sessions/session-1?ticket=hbwt+browser%2Ftoken');
     expect(
       browserChannelWsUrl(
         'session-1',
         'ticket',
         { protocol: 'http:', host: 'localhost:3008' } as Location,
       ),
-    ).toBe('ws://localhost:3008/api/local-agents/sessions/session-1/ws?ticket=ticket');
+    ).toBe('ws://localhost:3008/ws/local-agents/sessions/session-1?ticket=ticket');
   });
 
   it('merges replayed timeline events and websocket events without duplicates', () => {

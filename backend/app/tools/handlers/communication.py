@@ -115,7 +115,9 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
             "- Send a precise request so the colleague can answer in one pass.\n"
             "- Expect a reply in the current round; use the response immediately.\n"
             "- Do NOT use this for long-running delegated work — use `delegate_to_agent` when the other agent should continue in the background.\n"
-            "- Your relationships.md lists available digital employees under 'Digital Employee Colleagues'."
+            "- Your relationships.md lists governed A2A collaborators: same-owner agents under '我的数字员工团队' "
+            "and approved A2A Collaboration Group members under 'A2A 协作组'. If the target is governed and "
+            "available, call this tool directly instead of asking the user to manually add an agent relationship."
         ),
         parameters={
             "type": "object",

@@ -201,7 +201,7 @@ export const localBridgeApi = {
   downloadWorkspaceFile: (path: string) =>
     getBlob(`/local-agents/workspace/download?path=${encodeURIComponent(path)}`),
   uploadWorkspaceFile: (file: File) =>
-    upload<LocalAgentWorkspaceUpload>('/chat/upload', file),
+    upload<LocalAgentWorkspaceUpload>('/local-agents/workspace/upload', file),
 
   // Legacy agent-scoped bridge workbench APIs remain for existing screens while
   // the Local Agent Channel moves to a user-scoped IM surface.

@@ -13,6 +13,14 @@ from app.database import get_db
 from app.services.local_bridge_service import BridgeAuthContext
 
 
+def test_main_app_exposes_unprefixed_local_agent_browser_websocket_alias() -> None:
+    from app.main import app
+
+    websocket_paths = {getattr(route, "path", "") for route in app.routes}
+
+    assert "/ws/local-agents/sessions/{session_id}" in websocket_paths
+
+
 class _FakeDB:
     def __init__(self) -> None:
         self.added = []
@@ -621,6 +629,25 @@ def test_user_scoped_local_agent_workspace_lists_reads_and_downloads(monkeypatch
     }
     assert download_response.status_code == 200
     assert download_response.content == b"# Local Codex\n\nhello from local workspace\n"
+
+
+def test_user_scoped_local_agent_workspace_upload_saves_to_uploads(monkeypatch, tmp_path) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
+    monkeypatch.setattr(local_agent_channel_api, "settings", SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    client = _client(monkeypatch, current_user=current_user)
+
+    response = client.post(
+        "/local-agents/workspace/upload",
+        files={"file": ("agent-proof.md", "# Proof\n\n我是agent\n".encode("utf-8"), "text/markdown")},
+    )
+
+    saved_file = tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id) / "workspace" / "uploads" / "agent-proof.md"
+    assert response.status_code == 200
+    assert response.json()["workspace_path"] == "workspace/uploads/agent-proof.md"
+    assert response.json()["filename"] == "agent-proof.md"
+    assert saved_file.read_text(encoding="utf-8") == "# Proof\n\n我是agent\n"
 
 
 def test_user_scoped_local_agent_workspace_rejects_path_traversal(monkeypatch, tmp_path) -> None:

@@ -46,6 +46,7 @@ type SidebarNavItem = {
 const workspaceNavItems: SidebarNavItem[] = [
   { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
   { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Tasks / Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
+  { to: '/local-agents', labelKey: 'nav.bridge', fallback: 'Bridge', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
 ];
 
 const isLocalAgentRuntimeType = (agent: any): boolean => agent?.agent_type === 'local_agent' || agent?.agent_type === 'openclaw';
@@ -153,8 +154,9 @@ export function sidebarSessionFromLocalAgentChannelSession(
 ): ChatSession & Record<string, unknown> {
   const createdAt = session.created_at || session.last_message_at || session.updated_at || '';
   const updatedAt = session.updated_at || session.last_message_at || session.created_at || createdAt;
+  const routeSessionId = session.chat_session_id || session.id;
   return {
-    id: session.id,
+    id: routeSessionId,
     agent_id: agentId,
     title: session.title || 'Local Agent Chat',
     created_at: createdAt,
@@ -162,6 +164,7 @@ export function sidebarSessionFromLocalAgentChannelSession(
     last_message_at: session.last_message_at || null,
     chat_session_id: session.chat_session_id,
     channel_session_id: session.id,
+    local_channel_session_id: session.id,
     source_channel: session.source_channel || 'local_agent',
     session_kind: session.session_kind || 'local_agent_channel',
     thread_source: 'local_agent',

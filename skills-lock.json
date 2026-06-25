@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "hive-connect": {
+      "source": "rocky2431/hive-connect-skill",
+      "sourceType": "github",
+      "skillPath": "skills/hive-connect/SKILL.md",
+      "computedHash": "c5449137b31e7b89ca2e623779323e11dab6c9043bdf7a1ca4695ffc032f1b00"
+    }
+  }
+}

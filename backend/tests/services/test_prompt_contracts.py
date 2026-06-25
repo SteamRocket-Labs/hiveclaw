@@ -129,6 +129,9 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "jina_search" not in tools
     assert "jina_read" not in tools
     assert "Do NOT use this for long-running delegated work" in tools["send_message_to_agent"]
+    assert "Digital Employee Colleagues" not in tools["send_message_to_agent"]
+    assert "same-owner agents" in tools["send_message_to_agent"]
+    assert "A2A Collaboration Group" in tools["send_message_to_agent"]
     assert "check back later with `check_async_task`" in tools["delegate_to_agent"]
     assert "follow up with `web_fetch`" in tools["web_search"]
     assert "AnySearch API first when configured" in tools["web_search"]
@@ -178,6 +181,20 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "become callable" in tools["tool_search"]
     assert "For installing or importing a NEW MCP server, use the explicit MCP resource tools" in tools["tool_search"]
     assert "Return skill slugs" in tools["search_clawhub"]
+
+
+def test_a2a_prompt_surfaces_do_not_reference_legacy_digital_employee_colleagues() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    prompt_surface_paths = [
+        "backend/app/templates/system_skills/delegation-guide/SKILL.md",
+        "backend/app/services/agent_seeder.py",
+        "backend/app/tools/handlers/communication.py",
+    ]
+    combined = "\n".join((project_root / path).read_text(encoding="utf-8") for path in prompt_surface_paths)
+
+    assert "Digital Employee Colleagues" not in combined
+    assert "same-owner" in combined
+    assert "A2A Collaboration Group" in combined
 
 
 def test_load_skill_pack_name_does_not_claim_schema_activation(tmp_path: Path) -> None:

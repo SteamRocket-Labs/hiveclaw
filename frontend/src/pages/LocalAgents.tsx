@@ -62,7 +62,7 @@ export const browserChannelWsUrl = (
 ) => {
   const protocol = locationLike.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams({ ticket });
-  return `${protocol}//${locationLike.host}/api/local-agents/sessions/${encodeURIComponent(sessionId)}/ws?${params.toString()}`;
+  return `${protocol}//${locationLike.host}/ws/local-agents/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`;
 };
 
 const formatBytes = (size: number) => {

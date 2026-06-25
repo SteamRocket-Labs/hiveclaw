@@ -37,6 +37,7 @@ from app.api.guard_policies import router as guard_policies_router
 from app.api.hooks import router as hooks_router
 from app.api.deep_research import router as deep_research_router
 from app.api.interoperability import router as interoperability_router
+from app.api.local_agent_channel import local_agent_browser_channel_ws
 from app.api.local_agent_channel import router as local_agent_channel_router
 from app.api.local_bridge import router as local_bridge_router
 from app.api.workflows import router as workflows_router
@@ -654,6 +655,7 @@ for _r in _api_routers:
 # Routers without /api prefix (WebSocket, webhooks, etc.)
 app.include_router(webhooks_router)  # Public endpoint, no API prefix
 app.include_router(ws_router)
+app.add_api_websocket_route("/ws/local-agents/sessions/{session_id}", local_agent_browser_channel_ws)
 app.include_router(metrics_router)
 
 

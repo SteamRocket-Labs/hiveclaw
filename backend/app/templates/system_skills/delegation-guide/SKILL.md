@@ -112,11 +112,13 @@ If you delegated to several agents:
 - `list_async_tasks` → see all your spawned tasks and their statuses
 - Check each completed one, cancel any that are no longer needed
 
-### Available Colleagues
+### Available A2A Collaborators
 
-Your `relationships.md` file lists all digital employees you can delegate
-to, under "Digital Employee Colleagues". Read it before delegating to
-confirm the agent exists and what they specialize in.
+Your `relationships.md` file lists governed A2A collaborators. Same-owner
+agents appear under `我的数字员工团队` and can be delegated to directly. Approved
+cross-owner agents appear under `A2A 协作组` because their A2A Collaboration
+Group membership is active. Read it before delegating to confirm the agent
+exists, what they specialize in, and whether the relationship is governed.
 
 </workflows>
 

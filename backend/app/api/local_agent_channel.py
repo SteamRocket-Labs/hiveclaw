@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from loguru import logger
@@ -105,6 +105,18 @@ class LocalAgentWorkspaceFileOut(BaseModel):
 class LocalAgentWorkspaceContentOut(BaseModel):
     path: str
     content: str
+
+
+class LocalAgentWorkspaceUploadOut(BaseModel):
+    filename: str
+    saved_filename: str
+    size: int
+    workspace_path: str
+    extracted_text: str = ""
+    preview_text: str = ""
+    conversion: dict[str, Any] | None = None
+    is_image: bool = False
+    image_data_url: str = ""
 
 
 _LOCAL_WORKSPACE_BINARY_EXTS = {
@@ -207,6 +219,27 @@ def _safe_local_agent_workspace_path(current_user: User, rel_path: str | None) -
 
 def _workspace_rel_path(base: Path, target: Path) -> str:
     return str(target.resolve().relative_to(base.resolve())).replace("\\", "/")
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    normalized = str(filename or "").replace("\\", "/").strip()
+    safe_name = Path(normalized).name
+    if safe_name in {"", ".", ".."}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid filename")
+    return safe_name
+
+
+def _non_overwriting_path(directory: Path, filename: str) -> Path:
+    target = directory / filename
+    if not target.exists():
+        return target
+    stem = target.stem
+    suffix = target.suffix
+    counter = 1
+    while target.exists():
+        target = directory / f"{stem}_{counter}{suffix}"
+        counter += 1
+    return target
 
 
 def _require_local_agent_owner(agent: Any, current_user: User) -> None:
@@ -520,6 +553,40 @@ async def download_current_user_local_agent_workspace_file(
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(path=str(target), filename=target.name)
+
+
+@router.post("/local-agents/workspace/upload", response_model=LocalAgentWorkspaceUploadOut)
+async def upload_current_user_local_agent_workspace_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    filename = _safe_upload_filename(file.filename)
+    base, uploads_dir = _safe_local_agent_workspace_path(current_user, "workspace/uploads")
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    save_path = _non_overwriting_path(uploads_dir, filename)
+    content = await file.read()
+    save_path.write_bytes(content)
+
+    preview_text = ""
+    if save_path.suffix.lower() not in _LOCAL_WORKSPACE_BINARY_EXTS:
+        try:
+            preview_text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            preview_text = ""
+    if len(preview_text) > 6000:
+        preview_text = f"{preview_text[:6000]}\n\n...[内容已截断，共 {len(preview_text)} 字]"
+
+    return LocalAgentWorkspaceUploadOut(
+        filename=filename,
+        saved_filename=save_path.name,
+        size=len(content),
+        workspace_path=_workspace_rel_path(base, save_path),
+        extracted_text=preview_text,
+        preview_text=preview_text,
+        conversion=None,
+        is_image=save_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"},
+        image_data_url="",
+    )
 
 
 @router.post(

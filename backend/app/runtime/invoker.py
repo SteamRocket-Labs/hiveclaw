@@ -39,6 +39,7 @@ from app.runtime.context_budget import (
     resolve_turn_model_route,
 )
 from app.runtime.context_engine import DefaultContextEngine
+from app.runtime.ccplus_contracts import PermissionProfileV1, build_permission_profile
 from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.runtime.session_key import build_session_key, ensure_session_key
@@ -278,6 +279,21 @@ def _plan_mode_unattended_available(session_context: SessionContext | None) -> b
     from app.runtime.session import is_unattended_plan_eligible
 
     return is_unattended_plan_eligible(session_context)
+
+
+def _permission_profile_from_session_context(session_context: SessionContext | None) -> PermissionProfileV1 | None:
+    """Resolve the optional per-turn PermissionProfileV1 from runtime metadata."""
+    metadata = getattr(session_context, "metadata", None) if session_context is not None else None
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("permission_profile")
+    if raw is None:
+        return None
+    if isinstance(raw, PermissionProfileV1):
+        return raw
+    if isinstance(raw, dict):
+        return build_permission_profile(raw)
+    return None
 
 
 async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
@@ -848,6 +864,8 @@ async def _execute_tool_with_request(
             )
         if accepts_kwargs or "plan_mode_unattended_available" in executor_params:
             executor_kwargs["plan_mode_unattended_available"] = _plan_mode_unattended_available(request.session_context)
+        if accepts_kwargs or "permission_profile" in executor_params:
+            executor_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
         return await _maybe_await(request.tool_executor(tool_name, args, **executor_kwargs))
 
     execute_kwargs: dict[str, Any] = {
@@ -866,6 +884,8 @@ async def _execute_tool_with_request(
         execute_kwargs["plan_mode_interactive_available"] = _plan_mode_interactive_available(request.session_context)
     if "plan_mode_unattended_available" in inspect.signature(execute_tool).parameters:
         execute_kwargs["plan_mode_unattended_available"] = _plan_mode_unattended_available(request.session_context)
+    if "permission_profile" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
     return await execute_tool(
         tool_name,
         args,

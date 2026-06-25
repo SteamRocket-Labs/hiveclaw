@@ -6,10 +6,13 @@ import inspect
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from app.core.execution_context import ExecutionIdentity
 from app.tools.result_envelope import ToolContentEnvelope
+
+if TYPE_CHECKING:
+    from app.runtime.ccplus_contracts import PermissionProfileV1
 
 ToolExecutor = Callable[["ToolExecutionRequest"], Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope]
 
@@ -22,6 +25,7 @@ class ToolExecutionContext:
     workspace: Path
     execution_identity: ExecutionIdentity | None = None
     session_id: str | None = None
+    permission_profile: "PermissionProfileV1 | None" = None
 
 
 @dataclass(slots=True)

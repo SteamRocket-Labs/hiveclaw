@@ -18,13 +18,13 @@ from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.runtime.ccplus_contracts import (
     AgentSessionV1,
-    PermissionProfileV1,
     SessionEdgeV1,
     SessionGraphV1,
     SessionNodeV1,
     TurnStateV1,
     TurnStatus,
     build_context_policy,
+    build_permission_profile,
 )
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
 from app.services.session_index import read_session_index
@@ -84,8 +84,8 @@ def _merged_runtime_policy(
 
 
 def _permission_profile_payload(*, active_run: Any, session: ChatSession) -> dict[str, Any]:
-    profile = _jsonable(PermissionProfileV1())
-    profile.update(_merged_runtime_policy(active_run=active_run, session=session, key="permission_profile"))
+    raw = _merged_runtime_policy(active_run=active_run, session=session, key="permission_profile")
+    profile = _jsonable(build_permission_profile(raw))
     profile["schema"] = "hive.ccplus.permission_profile.v1"
     return profile
 

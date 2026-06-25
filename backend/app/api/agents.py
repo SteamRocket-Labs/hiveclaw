@@ -4,6 +4,7 @@ import logging
 import shutil
 import uuid
 from datetime import datetime, timezone
+import inspect
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -24,7 +25,10 @@ from app.services.agent_identity_lifecycle import (
     ensure_agent_identity,
     soft_delete_agent,
 )
+from app.runtime.hooks import hook_registry
 from app.services.heartbeat_policy import apply_managed_heartbeat_fields, normalize_agent_heartbeat_output
+from app.services.command_registry import build_default_command_registry
+from app.services.mcp_server_service import get_agent_mcp_servers
 
 logger = logging.getLogger(__name__)
 
@@ -696,7 +700,16 @@ async def get_agent_extension_registry(
         for group in RUNTIME_TOOL_GROUPS
     ]
 
-    projection = build_extension_registry_projection(skills=skills, tool_packs=tool_packs)
+    command_registry = build_default_command_registry(include_optional_coding_pack=True)
+    mcp_servers_value = get_agent_mcp_servers(db, agent_id)
+    mcp_servers = await mcp_servers_value if inspect.isawaitable(mcp_servers_value) else mcp_servers_value
+    projection = build_extension_registry_projection(
+        skills=skills,
+        hook_catalog=hook_registry.describe_event_catalog(),
+        commands=command_registry.values(),
+        mcp_servers=mcp_servers,
+        tool_packs=tool_packs,
+    )
     return asdict(projection)
 
 

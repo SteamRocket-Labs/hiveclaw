@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from app.runtime.ccplus_contracts import ToolSpecV1
 from app.tools.collector import collect_tools
-from app.tools.decorator import get_all_registered_tools
+from app.tools.decorator import ToolMeta, get_all_registered_tools, tool
 from app.tools.registry import tool_spec_v1, tool_specs_v1
 from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
@@ -80,3 +80,32 @@ def test_tool_specs_v1_covers_every_deferred_pack_member() -> None:
         assert spec.defer_loading is True
         assert spec.always_load is False
         assert spec.capability  # capability bundle is always populated
+
+
+def test_tool_spec_v1_repairs_partial_registry_import_order() -> None:
+    """A partially populated registry must still import missing handlers.
+
+    The route can call tool_spec_v1 after a test/plugin registered one local
+    tool but before platform handlers were collected. That partial state should
+    not make built-in tools look absent.
+    """
+    from app.tools.decorator import clear_registry
+
+    clear_registry()
+
+    @tool(
+        ToolMeta(
+            name="local_only_test_tool",
+            description="Temporary local test tool.",
+            parameters={"type": "object", "properties": {}},
+            category="test",
+            display_name="Local Test Tool",
+        )
+    )
+    def _local_only_test_tool(_request):
+        return "ok"
+
+    registered_before = get_all_registered_tools()
+    assert set(registered_before) == {"local_only_test_tool"}
+
+    assert tool_spec_v1("read_file") is not None

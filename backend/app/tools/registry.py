@@ -186,7 +186,7 @@ def _runtime_tool_group_names_for(tool_name: str) -> tuple[str, ...]:
     return tuple(group.name for group in RUNTIME_TOOL_GROUPS if tool_name in group.tools)
 
 
-def _ensure_tools_registered() -> dict[str, Any]:
+def _ensure_tools_registered(required_name: str | None = None) -> dict[str, Any]:
     """Return the live @tool registry, importing handler modules if it is empty.
 
     ``tool_spec_v1`` derives from the decorator registry, which is only populated
@@ -200,6 +200,11 @@ def _ensure_tools_registered() -> dict[str, Any]:
         from .collector import _import_handler_modules
 
         _import_handler_modules()
+        registered = get_all_registered_tools()
+    if required_name is not None and required_name not in registered:
+        from .collector import _import_handler_modules
+
+        _import_handler_modules(force_reload=True)
         registered = get_all_registered_tools()
     return registered
 
@@ -219,7 +224,7 @@ def tool_spec_v1(name: str) -> ToolSpecV1 | None:
       ``always_load`` is true for default CORE tools that belong to no group.
     - ``result_budget`` carries ``ToolMeta.max_result_chars``.
     """
-    registered = _ensure_tools_registered()
+    registered = _ensure_tools_registered(name)
     entry = registered.get(name)
     if entry is None:
         return None

@@ -926,6 +926,7 @@ async def execute_tool(
     event_callback: ToolEventCallback | None = None,
     delegation_token: Any | None = None,
     session_id: str | None = None,
+    permission_profile: Any | None = None,
     plan_mode_interactive_available: bool = False,
 ) -> str | ToolContentEnvelope:
     """Execute a tool call and return the result (str, or a typed content envelope)."""
@@ -937,6 +938,7 @@ async def execute_tool(
         event_callback=event_callback,
         delegation_token=delegation_token,
         session_id=session_id,
+        permission_profile=permission_profile,
         plan_mode_interactive_available=plan_mode_interactive_available,
     )
 

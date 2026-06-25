@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from app.core.execution_context import get_execution_identity
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -22,6 +23,7 @@ class ToolRuntimeResolver:
         agent_id: uuid.UUID,
         user_id: uuid.UUID,
         session_id: str | None = None,
+        permission_profile: Any | None = None,
     ) -> ToolExecutionContext:
         # Tool-execution tenant chokepoint (RLS 阶段1). We hold only ``agent_id``
         # but need its tenant to scope every downstream governed query — and a
@@ -50,4 +52,5 @@ class ToolRuntimeResolver:
             workspace=workspace,
             execution_identity=get_execution_identity(),
             session_id=session_id,
+            permission_profile=permission_profile,
         )

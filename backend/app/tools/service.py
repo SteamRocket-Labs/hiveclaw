@@ -159,6 +159,7 @@ async def _resolve_runtime_context(
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
     session_id: str | None = None,
+    permission_profile: Any | None = None,
 ) -> ToolExecutionContext:
     kwargs: dict[str, Any] = {"agent_id": agent_id, "user_id": user_id}
     try:
@@ -169,6 +170,8 @@ async def _resolve_runtime_context(
         accepts_kwargs = False
     if session_id is not None and (accepts_kwargs or "session_id" in params):
         kwargs["session_id"] = session_id
+    if permission_profile is not None and (accepts_kwargs or "permission_profile" in params):
+        kwargs["permission_profile"] = permission_profile
     return await _maybe_await(runtime_resolver.resolve(**kwargs))
 
 
@@ -242,6 +245,7 @@ class ToolRuntimeService:
         event_callback: EventCallback | None = None,
         delegation_token: Any | None = None,
         session_id: str | None = None,
+        permission_profile: Any | None = None,
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
     ) -> str | ToolContentEnvelope:
@@ -264,6 +268,7 @@ class ToolRuntimeService:
             agent_id=agent_id,
             user_id=user_id,
             session_id=session_id,
+            permission_profile=permission_profile,
         )
         governance_context = await self.governance_resolver.build_context(
             runtime_context=runtime_context,

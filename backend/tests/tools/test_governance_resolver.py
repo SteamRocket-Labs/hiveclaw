@@ -9,11 +9,13 @@ import pytest
 @pytest.mark.asyncio
 async def test_tool_governance_resolver_builds_context_from_runtime_context():
     from app.core.execution_context import ExecutionIdentity
+    from app.runtime.ccplus_contracts import PermissionProfileV1
     from app.tools.governance_resolver import ToolGovernanceResolver
     from app.tools.runtime import ToolExecutionContext
 
     agent_id = uuid4()
     user_id = uuid4()
+    permission_profile = PermissionProfileV1(default_decision="deny")
     runtime_context = ToolExecutionContext(
         agent_id=agent_id,
         user_id=user_id,
@@ -24,6 +26,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
             identity_id=user_id,
             label="Rocky via web",
         ),
+        permission_profile=permission_profile,
     )
 
     resolver = ToolGovernanceResolver()
@@ -40,6 +43,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
     assert context.tool_name == "write_file"
     assert context.arguments == {"path": "workspace/notes.md", "content": "x"}
     assert context.delegation_token == "token-1"
+    assert context.permission_profile is permission_profile
 
 
 @pytest.mark.asyncio

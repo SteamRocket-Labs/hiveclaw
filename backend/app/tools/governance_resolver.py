@@ -38,6 +38,7 @@ class ToolGovernanceResolver:
             arguments=arguments,
             session_id=runtime_context.session_id,
             delegation_token=delegation_token,
+            permission_profile=runtime_context.permission_profile,
         )
 
     def build_dependencies(self) -> GovernanceDependencies:

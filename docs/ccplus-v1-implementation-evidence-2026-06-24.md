@@ -725,3 +725,105 @@ CCPlus 范围外、保留的既存 infra/env 债（非本轮回归、`main` 上�
 - `test_workflow_migration.py` 的 6 个 `forced_rls` upgrade-path 测试：需真实 PostgreSQL + RLS 环境，本机无 PG → setup ERROR，非代码回归。
 
 本轮仍无 schema migration、无 push；所有改动留在当前分支等单个统一 commit。
+
+## 10. Review Fix Round（Codex review 后的 P1/P2 修复）
+
+状态：完成对 `2c354c2b` 的二次 code review 修复。
+
+修复范围：
+
+- `backend/app/kernel/engine.py`：
+  - 修复 `ToolContentEnvelope.new_messages` 注入顺序。
+  - 多 tool-call 同一 assistant round 中，所有 `role="tool"` 结果必须先连续 append；`new_messages` 只能在本轮 tool result block 完整结束后注入下一轮。
+  - 避免 provider 看到 `assistant tool_calls -> tool result 1 -> injected user/system -> tool result 2` 这种非法/高风险历史。
+- `backend/app/runtime/ccplus_contracts.py` / `backend/app/runtime/invoker.py` / `backend/app/tools/*` / `backend/app/services/agent_tools.py`：
+  - 新增 `build_permission_profile()` contract builder。
+  - `InvocationRequest.session_context.metadata["permission_profile"]` 通过 invoker -> `execute_tool()` -> `ToolRuntimeService.execute()` -> `ToolRuntimeResolver` -> `ToolGovernanceResolver` 进入 `ToolGovernanceContext.permission_profile`。
+  - `PermissionProfileV1.default_decision` 不再只是手工单测参数；真实工具治理链路可以消费显式 runtime/session profile。
+  - 未提供 profile 时保持 `None`，继续 fail-closed 到 `escalate`，不默认扩大权限。
+- `backend/app/api/agents.py`：
+  - `GET /agents/{agent_id}/extension-registry` 不再只返回 skill/tool_pack partial projection。
+  - route 现在把 `hook_registry.describe_event_catalog()`、`build_default_command_registry(...).values()`、`get_agent_mcp_servers()` 一起传入 `build_extension_registry_projection()`。
+  - 仍为 read-only projection，不安装、不启用、不删除任何 MCP/skill/workflow/plugin。
+- `backend/app/tools/registry.py`：
+  - `tool_spec_v1()` 修复 partial registry import-order 问题。
+  - 当 registry 非空但目标工具缺失时，强制 reload handler modules 补齐平台工具，避免插件/测试先注册局部 tool 后让内置工具被误判为不存在。
+
+Red phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py -q
+```
+
+失败证据：
+
+```text
+FAILED test_tool_new_messages_wait_until_all_same_round_tool_results_are_appended
+AssertionError: assert 5 < 4
+
+FAILED test_tool_governance_resolver_builds_context_from_runtime_context
+TypeError: ToolExecutionContext.__init__() got an unexpected keyword argument 'permission_profile'
+
+FAILED test_get_agent_extensions_returns_extension_registry_projection
+AssertionError: assert 'command:review' in {'tool_pack:web_pack': ...}
+
+FAILED test_tool_spec_v1_repairs_partial_registry_import_order
+AssertionError: assert None is not None
+```
+
+Green phase：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py -q
+```
+
+结果：
+
+```text
+18 passed, 4 warnings
+```
+
+Regression：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/kernel/test_ccplus_side_effects.py tests/kernel/test_parallel_tool_batch.py tests/tools/test_governance_resolver.py tests/services/test_permission_profile_v1.py tests/tools/test_service.py tests/api/test_extension_registry_api.py tests/services/test_extension_registry.py tests/tools/test_tool_spec_v1.py tests/services/test_session_control_plane.py -q
+```
+
+结果：
+
+```text
+60 passed, 4 warnings
+```
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/pytest tests/services/test_session_graph_projection.py tests/kernel/test_turn_state_acceptance.py tests/runtime/test_accepted_prompt_first.py tests/services/test_no_bypass_audit.py -q
+```
+
+结果：
+
+```text
+25 passed, 4 warnings
+```
+
+Lint：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/ruff check app/api/agents.py app/kernel/engine.py app/runtime/ccplus_contracts.py app/runtime/invoker.py app/services/agent_tools.py app/services/session_control_plane.py app/tools/governance_resolver.py app/tools/registry.py app/tools/resolver.py app/tools/runtime.py app/tools/service.py tests/kernel/test_ccplus_side_effects.py tests/tools/test_governance_resolver.py tests/api/test_extension_registry_api.py tests/tools/test_tool_spec_v1.py
+```
+
+结果：
+
+```text
+All checks passed!
+```
+
+最终裁决：
+
+- `2c354c2b` 的“live-wired”结论经本轮修正后更准确：side-effect consumer 不再破坏 provider tool-result order；PermissionProfile 已贯通真实工具治理上下文；extension registry route 进入 unified projection；ToolSpecV1 不再受 partial import-order 影响。
+- 本轮无 schema migration，无前端改动。
+- 回滚：可回滚本轮提交；不会删除 tenant data、memory truth source、MCP/skill/workflow installs。

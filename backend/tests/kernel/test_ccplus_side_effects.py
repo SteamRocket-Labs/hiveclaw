@@ -190,6 +190,64 @@ async def test_tool_new_messages_injected_on_parallel_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_new_messages_wait_until_all_same_round_tool_results_are_appended() -> None:
+    """D-08: injected messages must not split the provider's tool-result block.
+
+    When one assistant message contains multiple tool calls, every corresponding
+    role="tool" result must appear contiguously before any new user/system
+    message is injected. Otherwise the next provider call sees an invalid
+    assistant/tool history order.
+    """
+    injected_marker = "ORDERED-AFTER-ALL-TOOLS-3d9a"
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {"id": "call_first", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}},
+                    {"id": "call_second", "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'}},
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+            _final_response("ordered"),
+        ]
+    )
+
+    def execute_tool(tool_name, args, request, emit_event):
+        if args.get("path") == "a.txt":
+            return ToolContentEnvelope(
+                text="a contents",
+                new_messages=({"role": "user", "content": injected_marker},),
+            )
+        return "b contents"
+
+    kernel = AgentKernel(_base_deps(fake_client=fake_client, execute_tool=execute_tool))
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Read both files"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "ordered"
+    second_round_messages = fake_client.calls[1]["messages"]
+    roles_and_content = [
+        (message.role, getattr(message, "tool_call_id", None), message.content) for message in second_round_messages
+    ]
+    first_tool_idx = next(idx for idx, item in enumerate(roles_and_content) if item[1] == "call_first")
+    second_tool_idx = next(idx for idx, item in enumerate(roles_and_content) if item[1] == "call_second")
+    injected_idx = next(idx for idx, item in enumerate(roles_and_content) if item[2] == injected_marker)
+
+    assert first_tool_idx < second_tool_idx < injected_idx
+
+
+@pytest.mark.asyncio
 async def test_tool_terminal_signal_ends_the_turn() -> None:
     """D-08: a non-empty ``terminal_signal`` ends the turn after the current round.
 

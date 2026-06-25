@@ -3769,6 +3769,7 @@ class AgentKernel:
                             else:
                                 return await _abort_for_loop_guard(call_loop_decision)
 
+                    _round_side_effect_messages: list[dict[str, Any]] = []
                     if len(parsed_tool_calls) > 1 and any(
                         _is_concurrency_safe_tool(tool_name) for _tc, tool_name, _args in parsed_tool_calls
                     ):
@@ -3978,17 +3979,20 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
-                            # D-08: consume the tool's side-effect channel on the REAL
-                            # conversation — inject any new_messages so the next round
-                            # sees them; capture terminal_signal to end the turn.
+                            # D-08: capture the tool's side-effect channel on the REAL
+                            # conversation. Inject new_messages only after every same-round
+                            # tool result has been appended, so provider tool-result blocks
+                            # remain contiguous.
                             if _side_effects:
                                 _injected = _side_effects.get("new_messages") or []
                                 if _injected:
-                                    api_messages.extend(_dicts_to_llm_messages(_injected))
+                                    _round_side_effect_messages.extend(_injected)
                                 _ts = _side_effects.get("terminal_signal")
                                 if isinstance(_ts, str) and _ts.strip():
                                     _tool_terminal_signal = _ts
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
+                                if _round_side_effect_messages:
+                                    api_messages.extend(_dicts_to_llm_messages(_round_side_effect_messages))
                                 return await _pause_for_user_clarification()
                     else:
                         # --- Sequential execution (original logic) ---
@@ -4241,18 +4245,24 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
-                            # D-08: consume the tool's side-effect channel on the REAL
-                            # conversation — inject any new_messages so the next round
-                            # sees them; capture terminal_signal to end the turn.
+                            # D-08: capture the tool's side-effect channel on the REAL
+                            # conversation. Inject new_messages only after every same-round
+                            # tool result has been appended, so provider tool-result blocks
+                            # remain contiguous.
                             if _side_effects:
                                 _injected = _side_effects.get("new_messages") or []
                                 if _injected:
-                                    api_messages.extend(_dicts_to_llm_messages(_injected))
+                                    _round_side_effect_messages.extend(_injected)
                                 _ts = _side_effects.get("terminal_signal")
                                 if isinstance(_ts, str) and _ts.strip():
                                     _tool_terminal_signal = _ts
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
+                                if _round_side_effect_messages:
+                                    api_messages.extend(_dicts_to_llm_messages(_round_side_effect_messages))
                                 return await _pause_for_user_clarification()
+
+                    if _round_side_effect_messages:
+                        api_messages.extend(_dicts_to_llm_messages(_round_side_effect_messages))
 
                     # ── D-08: tool-requested turn termination ──
                     # A tool emitted ToolContentEnvelope.terminal_signal during this

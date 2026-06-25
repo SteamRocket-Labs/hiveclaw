@@ -67,6 +67,7 @@ async def test_get_agent_extensions_returns_extension_registry_projection(monkey
     import app.services.extension_registry as registry_mod
     import app.tools.runtime_tool_groups as rtg_mod
     from app.runtime.ccplus_contracts import ToolSpecV1
+    from app.services.command_registry import _command
 
     fake_group = SimpleNamespace(
         name="web_pack",
@@ -75,6 +76,48 @@ async def test_get_agent_extensions_returns_extension_registry_projection(monkey
         activation_mode="on_demand",
     )
     monkeypatch.setattr(rtg_mod, "RUNTIME_TOOL_GROUPS", [fake_group])
+    monkeypatch.setattr(
+        agents_mod,
+        "build_default_command_registry",
+        lambda *a, **k: SimpleNamespace(
+            values=lambda: [
+                _command(
+                    "review",
+                    "Review current work.",
+                    category="coding_pack",
+                    source="builtin",
+                    execution_mode="metadata",
+                    handler_ref="builtin:review",
+                )
+            ]
+        ),
+        raising=False,
+    )
+
+    class _FakeHookRegistry:
+        def describe_event_catalog(self):
+            return [
+                {
+                    "event": "post_tool_use",
+                    "runtime_consumer": "kernel_post_tool_rewrite_consumer",
+                    "lifecycle_state": "active_observe",
+                }
+            ]
+
+    monkeypatch.setattr(agents_mod, "hook_registry", _FakeHookRegistry(), raising=False)
+    monkeypatch.setattr(
+        agents_mod,
+        "get_agent_mcp_servers",
+        lambda *_args, **_kwargs: [
+            {
+                "id": "mcp-docs",
+                "name": "Docs MCP",
+                "tools": ["mcp__docs__search"],
+                "resources": ["skill://docs/research"],
+            }
+        ],
+        raising=False,
+    )
 
     def fake_tool_spec_v1(name: str):
         if name == "exa_search":
@@ -117,6 +160,16 @@ async def test_get_agent_extensions_returns_extension_registry_projection(monkey
     # exa_search permission axis (ToolMeta.governance="safe") flows into the
     # descriptor's permission_requirements via the spec.
     assert "safe" in web_pack["permission_requirements"]
+
+    assert "command:review" in by_id
+    assert by_id["command:review"]["type"] == "command"
+    assert "hook:post_tool_use" in by_id
+    assert by_id["hook:post_tool_use"]["runtime_effects"] == [
+        "active_observe",
+        "consumer:kernel_post_tool_rewrite_consumer",
+    ]
+    assert "mcp_server:mcp-docs" in by_id
+    assert "mcp_resource:skill://docs/research->skill" in by_id["mcp_server:mcp-docs"]["runtime_effects"]
 
 
 @pytest.mark.asyncio

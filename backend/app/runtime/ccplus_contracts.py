@@ -97,6 +97,22 @@ def build_context_policy(model_window: int, *, overrides: dict[str, Any] | None 
     return replace(base, **clean) if clean else base
 
 
+def build_permission_profile(overrides: dict[str, Any] | None = None) -> PermissionProfileV1:
+    """Canonical PermissionProfileV1 builder.
+
+    Runtime/session metadata may carry a permission profile override, but the
+    live governance path must only accept fields declared by the contract. This
+    keeps projection, runtime context, and governance on the same shape and
+    prevents arbitrary metadata keys from becoming authority.
+    """
+    base = PermissionProfileV1()
+    if not overrides:
+        return base
+    valid = {f.name for f in dataclass_fields(base)}
+    clean = {key: value for key, value in overrides.items() if key in valid}
+    return replace(base, **clean) if clean else base
+
+
 @dataclass(frozen=True, slots=True)
 class ToolSpecV1:
     name: str

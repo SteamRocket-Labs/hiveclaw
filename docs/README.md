@@ -11,7 +11,8 @@
 - `ccplus-v1-deep-verification-reconciliation-2026-06-24.md` — CCPlus V1 主审计与 deep-verification 的合并裁决：统一“行为级 P0=0”与“工程阻断仍存在”的口径，并把 D-01 到 D-32 债务落入 Package A-G / A1。
 - `ccplus-v1-implementation-evidence-2026-06-24.md` — CCPlus V1 当前实现证据账本：每个 Package 完成后追加 Red/Green 测试、lint、剩余边界与 commit 证据。
 - `ccplus-freecode-00-08-deep-verification-2026-06-24.md` — CC 自检版 deep-verification 证据账本：267 条原子 verdict、00-08 file:line 复核、D-01 到 D-32 技术债总账；不替代 V1 主入口。
-- `ccplus-round2-v2-company-control-plane-a2a-permission-design-2026-06-24.md` — CCPlus Round 2 / V2 叠加设计：在 V1 / 00-08 基底之上定义公司级权限中台、RelationshipGraph、A2A Session Evidence、Project/Agent Link 与 Hive Connect 映射。
+- `ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md` — CCPlus Round 2 / V2 总入口：在 V1 / 00-08 基底之上定义 Hive Connect 七条主线，覆盖 A2A、Memory、企业知识库 / Ontology、Skill 进化、Workflow、权限控制和 Session 对话控制。
+- `ccplus-round2-v2-company-control-plane-a2a-permission-design-2026-06-24.md` — CCPlus Round 2 / V2 专项设计：在 Master Plan 下展开公司级权限中台、RelationshipGraph、A2A Session Evidence、Project/Agent Link 与 Hive Connect local runtime governance。
 - `agent-lifecycle-full-cc-parity-review-2026-06-22.md` — Agent 全生命周期 CC 对标 review，覆盖 context composition、Skill、Sub-agent、Workflow、Hooks 和 session-middle 改造顺序。
 - `ccplus-session-middle-parity-audit-2026-06-24.md` — Plan Mode / Subagent / Hooks / Agent Team / Schedule / Goal 是否已形成 CCPlus 的最新代码级审计结论；当前判定为底座强，但还不是完整 CCPlus。
 - `harness-engineering-audit-2026-06-11.md` — 第一轮 harness 工程审计、整改记录和验收证据。
@@ -26,9 +27,9 @@
 `hive-sota-master-goal.md` 第 3 节是 canonical 原子能力地图。设计文档之间出现重叠时，优先用它裁决边界。
 
 - Plan Mode：`plan-mode-design.md` 是入口；`plan-mode-agent-authored-planning.md`、`plan-mode-runtime-paradigm.md`、`plan-mode-path-unification.md`、`plan-mode-agent-work-ledger.md` 是细节轨道。
-- Workflow：`workflow-source-capability.md` 是源能力入口；`workflow-ops-runbook.md` 是生产 runbook；`execution-mode-spectrum.md` 解释 workflow 和其他模式的使用边界。
+- Workflow：`workflow-source-capability.md` 是源能力入口；`workflow-ops-runbook.md` 是生产 runbook；`execution-mode-spectrum.md` 解释 workflow 和其他模式的使用边界；`dynamic-workflow-harness-semantics-2026-06-24.md` 和 `a2a-workflow-orchestration-design-2026-06-24.md` 是 V2 Hive Connect 的 Workflow 双轨专项，前者回答 Dynamic Harness，后者回答完整 Agent 间 A2A Process Graph。
 - Subagents / delegation：`a2a-session-substrate-design-2026-06-24.md` 是 Session-first A2A/delegation 设计入口；`subagent-source-capability.md` 是源能力入口；`subagent-evolution-loop.md` 覆盖 subagent memory/definition promotion。
-- Company Control / Relationship / A2A：`ccplus-round2-v2-company-control-plane-a2a-permission-design-2026-06-24.md` 是 CCPlus Round 2 / V2 总入口；它把 Permission Control Plane、RelationshipGraph、Project/Agent Link、A2A Session Evidence 与 Hive Connect 统一为 V1 / 00-08 基底上的 Hive-native control-plane overlay。
+- Company Control / Relationship / A2A / Hive Connect：`ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md` 是 CCPlus Round 2 / V2 总入口；它把 A2A、Memory、企业知识库 / Ontology、Skill 进化、Workflow、权限控制和 Session 对话控制统一为 V1 / 00-08 基底上的 Hive-native overlay。`ccplus-round2-v2-company-control-plane-a2a-permission-design-2026-06-24.md` 是其中的权限、Relationship、A2A Evidence 与 Hive Connect local runtime 专项。
 - Local Agent / Hive Bridge：`hive-bridge-cc-connect-fork-plan-2026-06-24.md` 是当前 Local Agent runner 决策：fork cc-connect 成为 Hive-owned local runner，Hive Cloud 保持 IM/control-plane 真相源，并使用 cc-connect core/session/agent adapters 作为 local runtime substrate。`local-agent-bridge-first-pass-2026-06-22.md` 只保留历史 first-pass context，不能覆盖这个 fork plan。
 - Agent TodoList / Work Ledger / Progress Ledger：`agent-task-cognitive-scaffold.md` 是 CC Task/Todo 对齐入口；`plan-mode-agent-work-ledger.md` 覆盖 Plan Mode 边界。
 - Memory / self-evolution: `agent-evolution-memory-redesign-2026-06-20.md`、`self-evolution-sota-plan.md`、`agent-memory-md-first-spec.md`、`agent-memory-purity-spec.md`、`agent-memory-research.md`、`owner-steward-agent-memory-design.md`。
@@ -39,7 +40,7 @@
 - Office / document / multimodal: `document-conversion-multimodal-design.md`。
 - Web / data source ingestion: `web-data-source-layer-plan-2026-06-20.md`；known URL / OCR / document conversion boundary resolves through `document-conversion-multimodal-design.md`。
 - Remote workstation / code execution: `remote-workstation-runtime.md`。
-- Knowledge / connector ACL / control plane: `knowledge-container-boundaries.md`、`org-agent-asset-rights-model.md`。
+- Knowledge / connector ACL / control plane: `company-knowledge-ontology-plane-plan-2026-06-20.md` 是 V2 企业知识库 / Ontology / SAG 专项入口；`knowledge-container-boundaries.md`、`org-agent-asset-rights-model.md` 是支撑边界文档。
 - RLS: `rls-stage0-findings.md`、`rls-enforcement-migration-plan.md`、`rls-stage3-cutover.md`。
 - Eval / observability: `external-behavior-eval-ci.md`、`agent-framework-cc-sota-atomic-audit-2026-06-15.md`。
 

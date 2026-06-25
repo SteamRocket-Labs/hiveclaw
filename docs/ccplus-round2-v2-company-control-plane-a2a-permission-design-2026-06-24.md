@@ -1,12 +1,27 @@
-# CCPlus Round 2 / V2：公司控制面、权限、Relationship 与 A2A 证据设计
+# CCPlus Round 2 / V2：公司控制面、权限、Relationship 与 A2A 证据专项
 
 日期：2026-06-24
-状态：CCPlus Round 2 / V2 设计入口；建立在 V1 `ccplus-freecode-00-08-terminal-audit-2026-06-24.md` 之上
+状态：CCPlus Round 2 / V2 专项设计；由 `ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md` 统领
 范围：Company Permission Control Plane、RelationshipGraph、Project/Agent Link、A2A Session Evidence、Hive Connect / Local Agent Channel 映射
 
 ## 0. 定位
 
-本文档不是替代 00-08 终极排查文档，而是在它之上的 Hive-native 叠加层。
+本文档不是 V2 唯一总纲，也不是替代 00-08 终极排查文档。V2 总入口是：
+
+```text
+docs/ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md
+```
+
+本文是 V2 总纲下的专项文档，专门处理：
+
+- 公司级权限中台。
+- RelationshipGraph / ProjectAgentLink。
+- A2A Session Evidence。
+- Hive Connect / Local Agent Channel 如何纳入公司控制面。
+
+Memory、Skill 进化、Dynamic Workflow、A2A Workflow、Session UI/UX 的 V2 总边界，以 Master Plan 为准，并分别进入对应专项文档。
+
+本文仍然建立在 V1 `ccplus-freecode-00-08-terminal-audit-2026-06-24.md` 之上，是 V1 之后的 Hive-native 叠加层。
 
 基础关系固定为：
 
@@ -26,7 +41,8 @@ CCPlus V1 / Round 1:
   00-08 文档定义 agent runtime 底座。
 
 CCPlus V2 / Round 2:
-  本文档定义公司级控制面如何叠加到这个底座上。
+  Master Plan 定义 Hive Connect 七条主线。
+  本文档定义其中的公司权限、Relationship、A2A Evidence 与 local runtime governance。
 ```
 
 ## 1. 北极星约束
@@ -37,7 +53,7 @@ Hive 的创新能力必须满足三个条件：
 2. 不让 Codex 工程控制替代 CC 语义基线。
 3. 所有公司级权限、Relationship、A2A、Hive Connect、Memory/Iter 都必须有 evidence、approval、audit 和 replay 面。
 
-本文档把这些 Hive-native 能力收敛为五个 Round 2 / V2 契约：
+本文档只展开五个和公司权限/A2A/Local Runtime 直接相关的 Round 2 / V2 契约：
 
 ```text
 CompanyPermissionControlPlaneV1
@@ -46,6 +62,19 @@ ProjectAgentLinkV1
 A2ASessionEvidenceV1
 HiveConnectRuntimeProfileV1
 ```
+
+完整 V2 契约集合还包括：
+
+```text
+MemoryEvidenceControlPlaneV1
+CompanyKnowledgeOntologyPlaneV1
+SkillEvolutionPipelineV1
+DynamicHarnessWorkflowV1
+A2AWorkflowProcessGraphV1
+SessionConversationControlV1
+```
+
+这些由 Master Plan 统一排序，并由各自专项文档承接。
 
 ## 2. 分层图
 

@@ -1,6 +1,26 @@
 # 公司知识库 / 本体平面建设计划
 
 日期：2026-06-20
+状态：CCPlus Round 2 / V2 企业知识库与 Ontology 专项设计；由 `ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md` 统领
+范围：Hive Knowledge Core、DocumentConversionService canonical Markdown ingestion、Graphiti/SAG provider、ACL/citation/prompt injection、company knowledge proposal/review/publish/retire
+
+## 0. 文档索引关系
+
+本文是 V2 / Hive Connect 的 `CompanyKnowledgeOntologyPlaneV1` 专项文档。
+
+上游总纲：
+
+```text
+docs/ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md
+```
+
+和其他 V2 主线的关系：
+
+- 对 Memory：Memory 是 Agent 学习资产；Company Knowledge 是组织权威资产。Memory、A2A、Workflow、Local runner evidence 可以生成 company knowledge candidate，但不能直接 commit 公司事实。
+- 对权限控制：Knowledge ACL、sensitivity、proposal/review/publish/retire 必须复用 V2 的 `CompanyPermissionControlPlaneV1`，不能由 Graphiti、SAG 或 vector index 自己决定。
+- 对 A2A / Workflow：A2A 会话、handoff、workflow output、artifact 可以成为知识候选来源；它们必须保留 Session/T0/source refs，并经过 Knowledge proposal/review lane。
+- 对 Session Workbench：用户和管理员需要能看到知识候选从哪个 session、document、workflow、Agent 产出，以及被谁批准、退役或回滚。
+- 对 SAG / Graphiti：它们是 provider / derived read model。Hive Knowledge Core 才是公司知识、Ontology、ACL、audit、rollback、export 的 authority。
 
 ## 1. 决策摘要
 

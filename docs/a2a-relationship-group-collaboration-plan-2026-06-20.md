@@ -4,6 +4,16 @@
 日期：2026-06-20
 范围：A2A relationship 控制面、`relationships.md` 投影、A2A runtime gate、AgentDetail A2A 前端形态
 
+## 文档索引关系
+
+本文是 A2A 的**协作授权与可见性基底**，回答“哪个 Agent 可以和哪个 Agent 协作、为什么可以、谁批准、哪些关系可以进入 prompt/runtime/UI”。
+
+- 上游总纲：[CCPlus Round 2 / V2 Hive Connect Master Plan](./ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md)。它定义 V2 七条主线，并把本文纳入 A2A / 权限控制 / Session evidence 的共同基底。
+- 下游编排文档：[A2A Workflow Orchestration Design](./a2a-workflow-orchestration-design-2026-06-24.md)。它回答“已经被授权协作的多个完整 Agent，如何用 workflow 交接、等待、复核、继续执行”。
+- 依赖方向：A2A Workflow 的每条 cross-agent edge 都必须先通过本文定义的 same-owner / active collaboration group policy；Workflow 不能绕过本文的 owner、group、approval、revocation 规则。
+- 边界分工：本文不定义 A -> B -> C 的执行顺序、artifact schema、handoff envelope 或 node completion；这些属于 A2A Workflow 文档。A2A Workflow 文档不重新定义谁可协作；它只能消费本文的授权结果。
+- 读文档顺序：判断“能不能协作”先读本文；判断“怎么编排协作”再读 A2A Workflow 文档。
+
 ## 0. 当前结论
 
 当前 A2A relationship 的心智模型需要改。
@@ -469,6 +479,8 @@ rows_requiring_owner_confirmation
 ## 13. 2026-06-24 代码闭环记录
 
 本轮按“CC 为基底，吸收 Codex session-first 优势”的 CCPlus 目标完成 A2A 单 Agent 内机制补齐：
+
+如果问题进入“多个完整 Agent 之间按图执行、传 artifact、等待 gate/resume、沉淀可复用模板”的层级，应转入 [A2A Workflow Orchestration Design](./a2a-workflow-orchestration-design-2026-06-24.md)；本文闭环的是 collaboration policy 与 relationship projection，不是 A2A Process Graph。
 
 1. 新增 `agent_collaboration_groups` / `agent_collaboration_group_members` 持久层。
 2. 新增统一 hard gate：`resolve_a2a_collaboration_policy(source_agent, target_agent, action)`。

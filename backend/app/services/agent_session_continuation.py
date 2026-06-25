@@ -135,7 +135,18 @@ async def continue_agent_session_from_mailbox(
             message=clean_message,
             parent_session_id=parent_session_id,
             role="system",
-            metadata={**metadata_base, "reason": "terminal_agent_session"},
+            metadata={
+                **metadata_base,
+                "reason": "terminal_agent_session",
+                # CCPlus V1 D-16 ruling (Hive-native non-parity, see
+                # docs/ccplus-v1-subagent-resume-ruling-2026-06-24.md): a completed/terminal
+                # subagent session is SEALED audit truth and is not reopened in place
+                # (unlike CC resumeAgentBackground). Continuation is a NEW durable child
+                # session linked by parent/root refs. Surface the redirect explicitly so the
+                # caller spawns a fresh session instead of dead-ending.
+                "resumable": False,
+                "redirect": "spawn_new_session",
+            },
             materialize_chat_message=False,
         )
         await db.commit()
@@ -145,6 +156,8 @@ async def continue_agent_session_from_mailbox(
             "reason": "terminal_agent_session",
             "child_session_id": str(session.id),
             "session_state": state,
+            "resumable": False,
+            "redirect": "spawn_new_session",
         }
 
     active_run = await _find_active_run(db=db, agent_id=agent.id, session_id=session.id)

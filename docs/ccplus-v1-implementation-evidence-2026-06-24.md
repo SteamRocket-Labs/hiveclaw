@@ -689,3 +689,39 @@ built in 2.58s
 - `docs/dynamic-workflow-harness-semantics-2026-06-24.md`
 
 上述文件未暂存、未提交，避免混入 CCPlus V1 closeout。
+
+## 9. Genuine Closure Round（2026-06-24，对抗复核后的真实接线）
+
+§8 的"V1 北极星执行路径已落成"口径**过宽**，已由本节纠正。对抗复核（`docs/ccplus-v1-fix-verification` 系列）实测发现：上轮 8 commit 把 7 个 V1 契约**只做成 dataclass 定义、未接进 live 运行时**（`AgentSessionV1`/`TurnStateV1`/`ToolSpecV1`/`ToolResultV1` 零 live importer；`PermissionProfileV1`/`ContextPolicyV1` 仅作 workbench 投影显示默认值、不治理任何活决策；`ExtensionRegistryV1` projection 零调用方），`ToolResult` side-effect 通道零消费，A1 latency-hiding **静默缺席**，`SessionGraphV1` 从未交付，accepted-prompt-first 9 入口与 §7 完成矩阵 6 个验收选择器**收集 0 测试**。即：单点行为修复多为真，但"统一契约地基"未浇。
+
+本轮把上述缺口**真实接线**（铁律：每个契约必须有真实 live 消费者 + revert-sensitive 测试，禁死 dataclass / 禁 pin 死路径），全部为新增非破坏：
+
+| 契约 / 债 | 真实 live 消费者（file:line） | 测试（revert-sensitive） |
+|---|---|---|
+| `ContextPolicyV1` | kernel 阈值常量**派生自契约**（`engine.py:64/68/73/143/146` ← `ContextPolicyV1()`），投影经 `build_context_policy`（`session_control_plane.py:99`）真消费 | `test_ccplus_runtime_contracts` + 投影测试 |
+| `ToolResultV1` side-effect（D-08） | kernel 真消费 `new_messages` 注入下一轮对话 + `terminal_signal` 结束回合（`engine.py` `_extract_tool_side_effects`/`_end_turn_for_tool_terminal_signal`） | `test_ccplus_side_effects.py`（revert 即失败，含 terminal-signal 结束回合断言） |
+| D-04 原始 tool_call_id | done_payload 顶层发原始 streamed id；resume 经 `_resolved_tool_call_id`（`web_chat_runtime.py:442`）复用、不再合成 `call_{msg.id}` | `test_ccplus_side_effects.py` + `test_resume_original_tool_call_id.py` + `test_resume_byte_identical_acceptance.py`（模拟 flat 截断证明可区分） |
+| `PermissionProfileV1`（D-12） | governance 真消费 `default_decision`（`governance.py:564` `resolve_no_policy_decision`）：deny/escalate/allow 改变 mapped-no-policy 活结果 | `test_permission_profile_v1.py`（deny 真拒、escalate 真升权） |
+| `TurnStateV1`/`AgentSessionV1`/`SessionGraphV1` | workbench 投影从**真实** run/session/team/runtime-task 行派生，经 API `GET .../workbench`（`chat_sessions.py:648`）served | `test_session_graph_projection.py` + `test_turn_state_acceptance.py` |
+| `ToolSpecV1` + `ExtensionRegistryV1`（D-11） | `tool_spec_v1` 派生自 ToolMeta，被 `extension_registry.py:132/163` 消费；projection 经新 route `GET /agents/{id}/extension-registry`（`agents.py:654`）served | `test_tool_spec_v1.py` + `test_extension_registry_api.py` |
+| D-16 completed subagent resume | **显式 Hive-native non-parity 裁决**：terminal 会话密封不可变，续问 = new-spawn 重定向（`agent_session_continuation.py` + `docs/ccplus-v1-subagent-resume-ruling-2026-06-24.md`） | `test_subagent_resume_ruling.py` |
+| D-05/D-23 A1 latency-hiding | **显式 North-Star-bound 排除裁决**（非静默缺席）：`docs/ccplus-v1-latency-hiding-exclusion-2026-06-24.md` | `test_latency_hiding_exclusion.py`（命名含 streaming_tool_executor/latency_hiding/skill_prefetch/memory_prefetch，选择器真命中） |
+| §7 完成矩阵可测化（D-25） | 此前收集 0 的 6 个验收选择器全部变为真测试 | `accepted_prompt_first→8`、`turn_state→9`、`permission_profile→4`、`session_graph→2`、`coordinator_force_async→4`、`subagent_resume→3`、`no_bypass→7`、`local_cloud→7` |
+| D-26 hook-count 漂移 | 仓库 `CLAUDE.md` 改 "15-event"→"42-event enum（7 个 `_DISABLED_NOOP` 无 emitter）" | `test_v1_all_events`（断言更新为 42） |
+
+accepted-prompt-first：3 个真实 append-before-kernel 咽喉（web chat / subagent spawn / agent-session continuation）做运行时顺序断言；入口 [4]-[9] 经证实全部汇流到 `start_web_chat_run` 或 mailbox continuation（同一咽喉），[8] team handoff 以 AST 守卫钉死其唯一 kernel-dispatch 路径为 `start_web_chat_run`（诚实标注为 covered-by-[1]，未造假 xfail）。
+
+最终验证：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests -q
+```
+
+结果：**`1 failed, 5204 passed, 2 skipped, 6 errors in 79.83s`**。开跑时为 `4 failed + 6 errors`，本轮修掉 3 个 failed，剩余 1 failed + 6 errors 全部是下方 CCPlus 范围外的既存 infra/env 债（`main` 上同样失败、非本轮回归）。本轮新增 70+ 测试全绿、ruff clean。修复了上轮提交遗留的 2 个陈旧测试（`test_orchestrator` D-14 统一 deny 列表断言、`test_v1_all_events` hook 计数 35→42）+ 我引入的 1 个 route 冲突（`/extensions` 与既有 `mcp_servers` 路由撞，改名 `/extension-registry`）+ 1 个测试隔离脆性（extension API 测试 monkeypatch RUNTIME_TOOL_GROUPS 变确定）。
+
+CCPlus 范围外、保留的既存 infra/env 债（非本轮回归、`main` 上同样存在）：
+
+- `test_workflow_migration.py::test_alembic_single_head_is_current_closure_head`：alembic 单头常量债（已记于项目 memory，需独立迁移轮处理）。
+- `test_workflow_migration.py` 的 6 个 `forced_rls` upgrade-path 测试：需真实 PostgreSQL + RLS 环境，本机无 PG → setup ERROR，非代码回归。
+
+本轮仍无 schema migration、无 push；所有改动留在当前分支等单个统一 commit。

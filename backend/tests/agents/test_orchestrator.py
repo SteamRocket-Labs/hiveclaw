@@ -104,31 +104,22 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert request.session_context.channel == "agent"
     assert request.session_context.session_id == "session-1"
     assert request.core_tools_only is True
-    assert request.excluded_tool_names == (
-        "delegate_to_agent",
-        "send_message_to_agent",
-        # T1.1 recursion guard: source capabilities are core members now, so
-        # the delegation base exclusions deny them explicitly.
-        "spawn_subagent",
-        "preview_workflow",
-        "start_workflow",
-        "set_trigger",
-        "update_trigger",
-        "cancel_trigger",
-        "send_channel_file",
-        "check_async_task",
-        "cancel_async_task",
-        "list_async_tasks",
-        "save_skill",
-        "search_memory",
-        "load_memory",
-        "save_memory",
-        "update_memory",
-        "retire_memory",
-        "submit_t3_consolidation_pitch",
-        "submit_t3_memory_gate_review",
-        "submit_t3_revised_patch",
+    # D-14: delegation applies the single-source base deny-list (shared with
+    # subagents) plus save_skill plus memory read+write denials. Assert the
+    # security-relevant invariants against the deny-list source of truth rather
+    # than a brittle hand-maintained ordered snapshot.
+    from app.agents.orchestrator import (
+        _DELEGATION_BASE_EXCLUDED_TOOLS,
+        _DELEGATION_MEMORY_WRITE_TOOLS,
     )
+
+    excluded = set(request.excluded_tool_names)
+    assert set(_DELEGATION_BASE_EXCLUDED_TOOLS).issubset(excluded)
+    assert set(_DELEGATION_MEMORY_WRITE_TOOLS).issubset(excluded)
+    assert "save_skill" in excluded
+    assert {"search_memory", "load_memory"}.issubset(excluded)
+    # recursion guard: source/control tools must be denied on the delegate surface
+    assert {"delegate_to_agent", "spawn_subagent", "check_subagent"}.issubset(excluded)
     assert request.max_tool_rounds == 7
     assert "A2A_SUFFIX" in request.system_prompt_suffix
     # F-1: slim worker prompt — isolation_contract + tool_policy remain; forced

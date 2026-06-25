@@ -7,11 +7,15 @@ to L3 approval.
 
 import logging
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.capability_policy import CapabilityPolicy
+
+if TYPE_CHECKING:
+    from app.runtime.ccplus_contracts import PermissionProfileV1
 
 logger = logging.getLogger(__name__)
 
@@ -478,6 +482,34 @@ async def check_capability(
 
     # Allowed without approval
     return CapabilityCheckResult(allowed=True, capability=capability, policy_found=True)
+
+
+# Allowed values for the per-turn no-policy default. "escalate" is the
+# fail-closed default that preserves the historical hardcoded behavior.
+_NO_POLICY_DECISIONS: frozenset[str] = frozenset({"escalate", "deny", "allow"})
+
+
+def resolve_no_policy_decision(profile: "PermissionProfileV1 | None") -> str:
+    """Route the *mapped-capability-no-policy* outcome through PermissionProfileV1.
+
+    ``check_capability`` returns ``escalate_to_l3=True`` (with ``policy_found=False``)
+    when a tool maps to a known capability but no admin ``CapabilityPolicy`` row
+    exists. Historically that was a hardcoded "escalate to L3 approval". This is
+    the D-12 wiring seam: the per-turn ``PermissionProfileV1.default_decision``
+    now governs that branch so a profile can:
+
+      * ``"escalate"`` (default) → request L3 approval — identical to the
+        previous hardcoded behavior, so the existing baseline is unchanged;
+      * ``"deny"``               → block the tool outright (no approval prompt);
+      * ``"allow"``              → permit the tool despite the missing policy.
+
+    ``None`` / unknown values fall back to the fail-closed ``"escalate"`` so a
+    malformed profile never silently widens authority.
+    """
+    if profile is None:
+        return "escalate"
+    decision = (getattr(profile, "default_decision", None) or "escalate").strip().lower()
+    return decision if decision in _NO_POLICY_DECISIONS else "escalate"
 
 
 def get_all_capabilities() -> list[dict]:

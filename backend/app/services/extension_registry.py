@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from app.runtime.ccplus_contracts import ExtensionDescriptorV1, ExtensionRegistryV1
 from app.services.command_registry import CommandDefinition
 from app.skills.types import ParsedSkill
+from app.tools.registry import tool_spec_v1
 
 
 def _strings(value: Any) -> tuple[str, ...]:
@@ -120,6 +121,68 @@ def _mcp_descriptor(server: dict[str, Any]) -> ExtensionDescriptorV1:
     )
 
 
+def _tool_spec_effects(tool_name: str) -> tuple[str, ...]:
+    """Live ToolSpecV1-derived runtime effects for one tool name.
+
+    Reads the contract projection (``tool_spec_v1``) so the served extension
+    descriptor carries real decorator-sourced tool metadata — capability bundle,
+    read-only / destructive / concurrency flags, deferred-vs-CORE loading, and
+    result budget — rather than re-deriving them here.
+    """
+    spec = tool_spec_v1(tool_name)
+    if spec is None:
+        return ()
+    effects: list[str] = [
+        f"tool:{spec.name}",
+        f"capability:{spec.capability}",
+        f"loading:{'deferred' if spec.defer_loading else 'core'}",
+    ]
+    if spec.always_load:
+        effects.append(f"always_load:{spec.name}")
+    if spec.read_only:
+        effects.append(f"read_only:{spec.name}")
+    if spec.destructive:
+        effects.append(f"destructive:{spec.name}")
+    if spec.concurrency_safe:
+        effects.append(f"concurrency_safe:{spec.name}")
+    if spec.result_budget is not None:
+        effects.append(f"result_budget:{spec.name}:{spec.result_budget}")
+    if spec.aliases:
+        effects.extend(f"alias:{alias}->{spec.name}" for alias in spec.aliases)
+    return tuple(effects)
+
+
+def _tool_pack_descriptor(record: dict[str, Any]) -> ExtensionDescriptorV1 | None:
+    extension_id = str(record.get("id") or record.get("name") or "").strip()
+    if not extension_id:
+        return None
+    tools = _strings(record.get("tools"))
+    permission_axes: list[str] = []
+    runtime_effects: list[str] = []
+    for tool_name in tools:
+        spec = tool_spec_v1(tool_name)
+        if spec is None:
+            continue
+        permission_axes.extend(spec.permission_axes)
+        runtime_effects.extend(_tool_spec_effects(tool_name))
+    base_effects = _strings(record.get("runtime_effects"))
+    return ExtensionDescriptorV1(
+        id=f"tool_pack:{extension_id}",
+        type="tool_pack",
+        source=str(record.get("source") or record.get("name") or extension_id),
+        trust_level=str(record.get("trust_level") or "tenant"),
+        owner_scope=str(record.get("owner_scope") or "tenant"),
+        enabled_scope=str(record.get("enabled_scope") or "agent"),
+        exposed_tools=tools,
+        deferred_tools=_strings(record.get("deferred_tools")),
+        hook_events=_strings(record.get("hook_events")),
+        permission_requirements=tuple(dict.fromkeys(permission_axes)),
+        install_review=dict(record.get("install_review") or {}),
+        runtime_effects=tuple(base_effects) + tuple(runtime_effects),
+        audit_refs=_strings(record.get("audit_refs")),
+    )
+
+
 def build_extension_registry_projection(
     *,
     skills: Iterable[ParsedSkill] = (),
@@ -136,9 +199,13 @@ def build_extension_registry_projection(
     extensions.extend(_command_descriptor(command) for command in commands)
     extensions.extend(_mcp_descriptor(server) for server in mcp_servers)
 
+    for record in tool_packs:
+        descriptor = _tool_pack_descriptor(record)
+        if descriptor is not None:
+            extensions.append(descriptor)
+
     for raw_type, records in (
         ("workflow_pack", workflow_packs),
-        ("tool_pack", tool_packs),
         ("plugin", plugins),
     ):
         for record in records:

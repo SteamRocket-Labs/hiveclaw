@@ -16,7 +16,16 @@ from app.models.agent_team import AgentTeam, AgentTeamMember
 from app.models.audit import ApprovalRequest
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
-from app.runtime.ccplus_contracts import ContextPolicyV1, PermissionProfileV1
+from app.runtime.ccplus_contracts import (
+    AgentSessionV1,
+    PermissionProfileV1,
+    SessionEdgeV1,
+    SessionGraphV1,
+    SessionNodeV1,
+    TurnStateV1,
+    TurnStatus,
+    build_context_policy,
+)
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
 from app.services.session_index import read_session_index
 from app.services.web_chat_runtime import get_active_web_chat_run
@@ -84,8 +93,10 @@ def _permission_profile_payload(*, active_run: Any, session: ChatSession) -> dic
 def _context_policy_payload(*, active_run: Any, session: ChatSession) -> dict[str, Any]:
     raw = _merged_runtime_policy(active_run=active_run, session=session, key="context_policy")
     model_window = int(raw.get("model_window") or raw.get("context_window_tokens") or 0)
-    policy = _jsonable(ContextPolicyV1(model_window=model_window))
-    policy.update(raw)
+    # Derive through the canonical contract builder so the projection is governed
+    # by ContextPolicyV1 (overrides are validated against the contract's fields),
+    # not a raw dict .update() that could smuggle arbitrary keys past the contract.
+    policy = _jsonable(build_context_policy(model_window, overrides=raw))
     policy["schema"] = "hive.ccplus.context_policy.v1"
     return policy
 
@@ -183,21 +194,210 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
     }
 
 
-def _active_turn_payload(*, session: ChatSession, active_run: Any) -> dict[str, Any] | None:
+def _coerce_turn_status(raw: Any) -> TurnStatus:
+    """Map the live run's raw status string onto the TurnStateV1 status enum.
+
+    Unknown/absent values fall back to RUNNING because the projection only
+    surfaces an active turn when there is a live web-chat run in flight.
+    """
+    value = str(raw or "").strip().lower()
+    try:
+        return TurnStatus(value)
+    except ValueError:
+        return TurnStatus.RUNNING
+
+
+def _build_active_turn_state(*, session: ChatSession, active_run: Any) -> TurnStateV1 | None:
+    """Derive a TurnStateV1 from the REAL active run, or None when idle.
+
+    Pulls live status, runtime_task_id, the active tool-call ids, and the
+    persisted ``terminal_reason`` straight off the run + its metadata so the
+    contract — not an ad-hoc dict — is the source of truth for the active turn.
+    """
     if active_run is None:
         return None
     metadata = _active_run_metadata(active_run)
     runtime_task_id = str(_active_run_value(active_run, "id") or metadata.get("runtime_task_id") or "")
     turn_id = str(metadata.get("turn_id") or metadata.get("expected_turn_id") or runtime_task_id or "")
-    pending_steer_messages = list(metadata.get("pending_user_messages") or [])
+    active_tool_call_ids = tuple(
+        str(call_id) for call_id in (metadata.get("active_tool_call_ids") or ()) if call_id is not None
+    )
+    return TurnStateV1(
+        session_id=str(session.id),
+        runtime_task_id=runtime_task_id or None,
+        turn_id=turn_id or None,
+        status=_coerce_turn_status(_active_run_value(active_run, "status") or metadata.get("status")),
+        terminal_reason=metadata.get("terminal_reason"),
+        active_tool_call_ids=active_tool_call_ids,
+        pending_steer_messages=tuple(metadata.get("pending_user_messages") or ()),
+    )
+
+
+def _active_turn_payload(*, turn_state: TurnStateV1 | None) -> dict[str, Any] | None:
+    """The compatibility-shaped active_turn view (stable 6-key surface)."""
+    if turn_state is None:
+        return None
     return {
-        "session_id": str(session.id),
-        "runtime_task_id": runtime_task_id or None,
-        "turn_id": turn_id or None,
-        "status": str(_active_run_value(active_run, "status") or metadata.get("status") or "running"),
-        "expected_turn_id": turn_id or None,
-        "pending_steer_count": len(pending_steer_messages),
+        "session_id": turn_state.session_id,
+        "runtime_task_id": turn_state.runtime_task_id,
+        "turn_id": turn_state.turn_id,
+        "status": _jsonable(turn_state.status),
+        "expected_turn_id": turn_state.turn_id,
+        "pending_steer_count": len(turn_state.pending_steer_messages),
     }
+
+
+def _active_turn_state_payload(turn_state: TurnStateV1 | None) -> dict[str, Any] | None:
+    """The full TurnStateV1 view incl. terminal_reason + active tool-call ids."""
+    if turn_state is None:
+        return None
+    return {
+        "schema": "hive.ccplus.turn_state.v1",
+        "session_id": turn_state.session_id,
+        "runtime_task_id": turn_state.runtime_task_id,
+        "turn_id": turn_state.turn_id,
+        "status": _jsonable(turn_state.status),
+        "terminal_reason": _jsonable(turn_state.terminal_reason),
+        "active_tool_call_ids": list(turn_state.active_tool_call_ids),
+        "pending_steer_count": len(turn_state.pending_steer_messages),
+    }
+
+
+def _agent_session_payload(
+    *,
+    session: ChatSession,
+    runtime_tasks: list[RuntimeTask],
+    turn_state: TurnStateV1 | None,
+) -> dict[str, Any]:
+    """Derive an AgentSessionV1 view from the REAL session row + loaded tasks."""
+    agent_session = AgentSessionV1(
+        session_id=str(session.id),
+        root_session_id=str(session.root_session_id) if getattr(session, "root_session_id", None) else None,
+        parent_session_id=str(session.parent_session_id) if getattr(session, "parent_session_id", None) else None,
+        session_kind=getattr(session, "session_kind", None) or "human_chat",
+        actor_type=getattr(session, "actor_type", None) or "user",
+        source=getattr(session, "source_channel", None) or getattr(session, "runtime_source", None) or "web",
+        active_turn=turn_state,
+        runtime_task_refs=tuple(str(task.id) for task in runtime_tasks),
+    )
+    return {
+        "schema": "hive.ccplus.agent_session.v1",
+        "session_id": agent_session.session_id,
+        "root_session_id": agent_session.root_session_id,
+        "parent_session_id": agent_session.parent_session_id,
+        "session_kind": agent_session.session_kind,
+        "actor_type": agent_session.actor_type,
+        "source": agent_session.source,
+        "active_turn": _active_turn_state_payload(agent_session.active_turn),
+        "runtime_task_refs": list(agent_session.runtime_task_refs),
+    }
+
+
+_TASK_TYPE_TO_RELATION = {
+    "team_member": "team_member",
+    "workflow": "workflow_leaf",
+    "delegation": "delegated_to",
+    "subagent": "delegated_to",
+}
+
+
+def _session_graph_payload(
+    *,
+    session: ChatSession,
+    runtime_tasks: list[RuntimeTask],
+    teams: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build a SessionGraphV1 from the REAL parent/child/team/workflow rows.
+
+    Nodes are the focus session plus every distinct child session reachable
+    through a loaded RuntimeTask child or team member. Edges classify each
+    real relationship by ``task_type`` (parent_child / delegated_to /
+    team_member / workflow_leaf) so the workbench can render the live topology
+    rather than an empty default.
+    """
+    root_session_id = str(session.root_session_id) if getattr(session, "root_session_id", None) else str(session.id)
+    focus_session_id = str(session.id)
+
+    nodes: dict[str, SessionNodeV1] = {
+        focus_session_id: SessionNodeV1(
+            session_id=focus_session_id,
+            actor_type=getattr(session, "actor_type", None) or "user",
+            session_kind=getattr(session, "session_kind", None) or "human_chat",
+            source=getattr(session, "source_channel", None) or "web",
+            parent_session_id=str(session.parent_session_id) if getattr(session, "parent_session_id", None) else None,
+            root_session_id=root_session_id,
+            agent_id=str(session.agent_id) if getattr(session, "agent_id", None) else None,
+        )
+    }
+    edges: list[SessionEdgeV1] = []
+
+    for task in runtime_tasks:
+        parent_sid = str(task.parent_session_id) if task.parent_session_id else None
+        child_sid = str(task.child_session_id) if task.child_session_id else None
+        relation = _TASK_TYPE_TO_RELATION.get(task.task_type, "parent_child")
+        from_id = parent_sid or focus_session_id
+        # Same-session continuation tasks (web_chat_turn/goal_continuation) carry
+        # no child session; they are still real parent_child edges on the focus node.
+        to_id = child_sid or parent_sid or focus_session_id
+        if child_sid and child_sid not in nodes:
+            nodes[child_sid] = SessionNodeV1(
+                session_id=child_sid,
+                actor_type="agent",
+                session_kind=task.task_type,
+                source="agent",
+                runtime_task_id=str(task.id),
+                parent_session_id=parent_sid or focus_session_id,
+                root_session_id=root_session_id,
+                agent_id=str(task.child_agent_id) if task.child_agent_id else None,
+                status=task.status,
+            )
+        edges.append(
+            SessionEdgeV1(
+                relation=relation,
+                from_id=from_id,
+                to_id=to_id,
+                runtime_task_id=str(task.id),
+                task_type=task.task_type,
+            )
+        )
+
+    for team in teams:
+        for member in team.get("members", []):
+            member_sid = str(member.get("chat_session_id") or "")
+            if not member_sid:
+                continue
+            if member_sid not in nodes:
+                nodes[member_sid] = SessionNodeV1(
+                    session_id=member_sid,
+                    actor_type="agent",
+                    session_kind="team_member",
+                    source="agent",
+                    runtime_task_id=member.get("runtime_task_id"),
+                    parent_session_id=focus_session_id,
+                    root_session_id=root_session_id,
+                    status=member.get("status"),
+                )
+            edges.append(
+                SessionEdgeV1(
+                    relation="team_member",
+                    from_id=focus_session_id,
+                    to_id=member_sid,
+                    runtime_task_id=member.get("runtime_task_id"),
+                    task_type=member.get("runtime_task_type") or "team_member",
+                )
+            )
+
+    graph = SessionGraphV1(
+        root_session_id=root_session_id,
+        nodes=tuple(nodes.values()),
+        edges=tuple(edges),
+        transcript_refs_by_node={
+            node.session_id: node.transcript_refs for node in nodes.values() if node.transcript_refs
+        },
+    )
+    payload = _jsonable(graph)
+    payload["schema"] = "hive.ccplus.session_graph.v1"
+    return payload
 
 
 def _timeline_payload(
@@ -406,7 +606,10 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
     goals = await _list_goals(db, agent_id=agent.id, session_id=session.id)
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
-    active_turn = _active_turn_payload(session=session, active_run=active_run)
+    turn_state = _build_active_turn_state(session=session, active_run=active_run)
+    active_turn = _active_turn_payload(turn_state=turn_state)
+    agent_session = _agent_session_payload(session=session, runtime_tasks=runtime_tasks, turn_state=turn_state)
+    session_graph = _session_graph_payload(session=session, runtime_tasks=runtime_tasks, teams=teams)
     approvals = await _list_pending_approvals(
         db,
         agent_id=agent.id,
@@ -421,6 +624,8 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
         "agent_id": str(agent.id),
         "session": _session_payload(session),
         "active_turn": active_turn,
+        "agent_session": agent_session,
+        "session_graph": session_graph,
         "timeline": _timeline_payload(events=events, truth_source=truth_source, limit=timeline_limit),
         "tool_calls": _tool_call_payloads(events),
         "approvals": approvals,

@@ -428,6 +428,27 @@ async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[
     return drained
 
 
+def _resolved_tool_call_id(tc_data: dict, msg_id: Any) -> str:
+    """Recover the ORIGINAL streamed tool_call_id for resume (D-04 read side).
+
+    On resume the rebuilt ``tool_calls[].id`` must match the streamed id so the
+    provider can pair it with its ``role="tool"`` result. The kernel's original
+    streamed id is persisted either at the top level (``tool_call_id``) or, for
+    runtime content-replacement rows, nested inside ``content_replacement``.
+    Prefer that original id; only synthesize ``call_{msg.id}`` for legacy rows
+    that carry no original id, and tag those so they are not mistaken for the
+    real streamed id.
+    """
+    original = tc_data.get("tool_call_id")
+    if not original:
+        replacement = tc_data.get("content_replacement")
+        if isinstance(replacement, dict):
+            original = replacement.get("tool_call_id")
+    if original:
+        return str(original)
+    return f"synthetic:call_{msg_id}"
+
+
 def conversation_from_history_messages(history_messages) -> list[dict]:
     """Convert persisted chat rows back into provider-compatible conversation entries."""
     conversation: list[dict] = []
@@ -438,7 +459,7 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 tc_name = tc_data.get("name", "unknown")
                 tc_args = tc_data.get("args", {})
                 tc_result = tc_data.get("result", "")
-                tc_id = str(tc_data.get("tool_call_id") or f"call_{msg.id}")
+                tc_id = _resolved_tool_call_id(tc_data, msg.id)
                 assistant_msg = {
                     "role": "assistant",
                     "content": None,

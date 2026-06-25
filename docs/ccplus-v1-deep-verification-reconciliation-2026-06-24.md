@@ -324,6 +324,8 @@ V2 的公司级权限、Relationship、A2A、Hive Connect 只能叠加在 V1 之
 
 “CC as base + Codex advantages = CCPlus V1” 只有在下表全部可执行通过时才能宣称完成。
 
+> **闭环状态（2026-06-24 真实接线轮）**：上轮 8-commit closeout 经对抗复核被证实为"契约 SEED 非 live 接线"（详见 `ccplus-v1-implementation-evidence-2026-06-24.md` §9）。本轮已把 7 个 V1 契约真实接进运行时、交付 `SessionGraphV1`、消除 A1 静默缺席（显式排除裁决）、给 D-16 显式 Hive-native non-parity 裁决，并把下表此前收集 0 测试的 6 个验收选择器（`accepted_prompt_first`/`turn_state`/`permission_profile`/`session_graph`/`coordinator_force_async`/`subagent_resume`）全部变为真测试（D-25 可测化）。全量回归 `1 failed, 5204 passed, 2 skipped, 6 errors`，唯一 failed + 6 errors 为 CCPlus 范围外既存 infra/env 债（alembic 单头 + forced_rls 需 PG）。每个契约的 live 消费者 file:line 与 revert-sensitive 测试见 §9 表。
+
 | 完成项 | 必须证明 | 最低验收命令或证据 |
 |---|---|---|
 | 00 architecture | 所有入口 accepted prompt 早于 kernel invocation | `pytest -q -k "accepted_prompt_first"`，覆盖 web chat、WS compat、local bridge、channels、Plan Mode、Goal、Workflow leaf、team member、subagent |

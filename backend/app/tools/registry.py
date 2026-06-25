@@ -6,6 +6,8 @@ from collections.abc import Iterator, Set
 from collections import OrderedDict
 from typing import Any, Iterable
 
+from app.runtime.ccplus_contracts import ToolSpecV1
+
 from .types import ToolDefinition
 
 
@@ -169,6 +171,98 @@ def result_char_limit_for_tool(name: str) -> int | None:
     _ensure_destructive_and_limits()
     assert _RESULT_CHAR_LIMITS is not None
     return _RESULT_CHAR_LIMITS.get(name)
+
+
+def _runtime_tool_group_names_for(tool_name: str) -> tuple[str, ...]:
+    """All deferred runtime tool group names whose static membership contains ``tool_name``.
+
+    Unlike ``static_runtime_tool_group_names_for_tool`` (which only considers
+    ``infer_from_tools=True`` groups), this scans every group because deferred
+    membership — what is hidden from CORE and discovered through ``tool_search`` —
+    is independent of inference.
+    """
+    from .runtime_tool_groups import RUNTIME_TOOL_GROUPS
+
+    return tuple(group.name for group in RUNTIME_TOOL_GROUPS if tool_name in group.tools)
+
+
+def _ensure_tools_registered() -> dict[str, Any]:
+    """Return the live @tool registry, importing handler modules if it is empty.
+
+    ``tool_spec_v1`` derives from the decorator registry, which is only populated
+    once handler modules import. Production imports them at startup via the
+    collector; this guard makes the derivation correct regardless of import
+    order (e.g. when called before any collection has run)."""
+    from .decorator import get_all_registered_tools
+
+    registered = get_all_registered_tools()
+    if not registered:
+        from .collector import _import_handler_modules
+
+        _import_handler_modules()
+        registered = get_all_registered_tools()
+    return registered
+
+
+def tool_spec_v1(name: str) -> ToolSpecV1 | None:
+    """Derive a CCPlus ``ToolSpecV1`` from the live ``ToolMeta`` of ``name``.
+
+    Returns ``None`` when no canonical tool is registered under ``name``. The
+    spec is a stable contract projection of the decorator-sourced metadata:
+
+    - ``capability`` is the deferred runtime tool group the tool belongs to (its
+      capability bundle), falling back to its inferred category for CORE tools.
+    - ``read_only`` / ``destructive`` / ``concurrency_safe`` mirror the
+      ``ToolMeta`` flags (``parallel_safe`` -> ``concurrency_safe``).
+    - ``defer_loading`` is true when the tool is part of a deferred runtime tool
+      group (not loaded into CORE; discovered via ``tool_search``);
+      ``always_load`` is true for default CORE tools that belong to no group.
+    - ``result_budget`` carries ``ToolMeta.max_result_chars``.
+    """
+    registered = _ensure_tools_registered()
+    entry = registered.get(name)
+    if entry is None:
+        return None
+    meta, _fn = entry
+    # Resolve against the canonical name (``name`` may be an alias).
+    canonical = meta.name
+    group_names = _runtime_tool_group_names_for(canonical)
+    deferred = bool(group_names)
+    capability = group_names[0] if group_names else infer_category(canonical)
+    return ToolSpecV1(
+        name=canonical,
+        capability=capability,
+        input_schema=dict(meta.parameters or {}),
+        aliases=tuple(meta.aliases),
+        read_only=bool(meta.read_only),
+        destructive=bool(meta.destructive),
+        concurrency_safe=bool(meta.parallel_safe),
+        defer_loading=deferred,
+        always_load=bool(meta.is_default) and not deferred,
+        permission_axes=(meta.governance,) if meta.governance else (),
+        result_budget=meta.max_result_chars,
+    )
+
+
+def tool_specs_v1(names: Iterable[str] | None = None) -> tuple[ToolSpecV1, ...]:
+    """Derive ``ToolSpecV1`` for ``names`` (or every canonical registered tool).
+
+    Alias entries and names with no registered tool are skipped. Used by the
+    extension registry projection so served extension descriptors carry real
+    contract-derived tool metadata.
+    """
+    registered = _ensure_tools_registered()
+    if names is None:
+        names = [name for name, (meta, _fn) in registered.items() if name == meta.name]
+    specs: list[ToolSpecV1] = []
+    seen: set[str] = set()
+    for name in names:
+        spec = tool_spec_v1(name)
+        if spec is None or spec.name in seen:
+            continue
+        seen.add(spec.name)
+        specs.append(spec)
+    return tuple(specs)
 
 
 def infer_category(tool_name: str) -> str:

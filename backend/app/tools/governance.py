@@ -9,7 +9,10 @@ import re
 import uuid
 from collections.abc import Iterator, Set
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from app.runtime.ccplus_contracts import PermissionProfileV1
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +135,11 @@ class ToolGovernanceContext:
     # token narrows the child's capability set and carries an expiry.
     # `None` means "not a delegated invocation" (web chat, trigger, etc.).
     delegation_token: Any | None = None
+    # D-12: the per-turn PermissionProfileV1 governs the *mapped-capability-
+    # no-policy* default. `None` falls back to the contract default
+    # (default_decision="escalate"), so the historical hardcoded behavior is
+    # preserved when no profile is threaded onto this turn.
+    permission_profile: PermissionProfileV1 | None = None
 
 
 @dataclass(slots=True)
@@ -544,7 +552,63 @@ async def _run_governance_inner(
                     },
                 )
                 return message
-            if getattr(cap_result, "escalate_to_l3", False):
+            cap_escalate = getattr(cap_result, "escalate_to_l3", False)
+            # D-12: when a mapped capability has NO admin policy, the gate
+            # returns escalate_to_l3=True with policy_found=False. That default
+            # is now governed by the per-turn PermissionProfileV1 rather than a
+            # hardcoded "escalate". An explicit policy that requires approval
+            # (policy_found=True) is an admin choice and is left untouched.
+            if cap_escalate and getattr(cap_result, "policy_found", True) is False:
+                from app.services.capability_gate import resolve_no_policy_decision
+
+                no_policy_decision = resolve_no_policy_decision(context.permission_profile)
+                if no_policy_decision == "deny":
+                    message = _teaching_block_message(
+                        context.tool_name,
+                        reason=(
+                            "no capability policy is configured and this turn's permission profile "
+                            "denies tools that fall back to the default"
+                        ),
+                        capability=getattr(cap_result, "capability", None),
+                        next_steps=[
+                            "continue with tools you already have",
+                            "ask the user to grant this capability via admin capability settings",
+                            "choose an approach that does not need this tool",
+                        ],
+                    )
+                    await _maybe_await(
+                        deps.write_audit_event(
+                            event_type="capability.denied",
+                            severity="warn",
+                            actor_type="agent",
+                            actor_id=context.agent_id,
+                            tenant_id=tenant_uuid,
+                            action="no_policy_default_denied",
+                            resource_type="tool",
+                            resource_id=None,
+                            details={
+                                "tool": context.tool_name,
+                                "capability": getattr(cap_result, "capability", None),
+                                "default_decision": "deny",
+                            },
+                        )
+                    )
+                    await _emit_event(
+                        event_callback,
+                        {
+                            "type": "permission",
+                            "tool_name": context.tool_name,
+                            "status": "capability_denied",
+                            "message": message,
+                            "capability": getattr(cap_result, "capability", None),
+                        },
+                    )
+                    return message
+                if no_policy_decision == "allow":
+                    # Profile explicitly widens the no-policy default to allow:
+                    # do not escalate, fall through to the rest of governance.
+                    cap_escalate = False
+            if cap_escalate:
                 await _maybe_await(
                     deps.write_audit_event(
                         event_type="capability.escalated",
@@ -558,9 +622,7 @@ async def _run_governance_inner(
                         details={"tool": context.tool_name, "capability": cap_result.capability},
                     )
                 )
-            _escalated_capability = (
-                getattr(cap_result, "capability", None) if getattr(cap_result, "escalate_to_l3", False) else None
-            )
+            _escalated_capability = getattr(cap_result, "capability", None) if cap_escalate else None
             _approval_reason = None
             if restricted_zone_approval_reason:
                 _escalated_capability = (

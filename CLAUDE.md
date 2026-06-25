@@ -326,7 +326,7 @@ The pyramid is the storage and distillation path. Runtime behavior is governed b
 
 ### Hook System (`app/runtime/hooks.py`)
 
-15-event lifecycle bus for memory pipeline and tool governance:
+Lifecycle bus for memory pipeline and tool governance. The live `HookEvent` enum is a **42-member catalog** (CC-27 superset); of these, 7 are `_DISABLED_NOOP` events with no live emitter yet (SETUP/PERMISSION_DENIED/ELICITATION_RESULT/WORKTREE_CREATE/WORKTREE_REMOVE/CWD_CHANGED/FILE_CHANGED — catalog parity complete, emitter coverage partial; see `hooks.py:195`). The core memory/governance events below are live-emitted:
 
 | Category | Events |
 |----------|--------|

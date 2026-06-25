@@ -52,8 +52,16 @@ from app.services.invocation_trace import (
     reset_invocation_id,
     set_invocation_id,
 )
+from app.runtime.ccplus_contracts import ContextPolicyV1
 from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
 from app.tools.result_envelope import ToolContentEnvelope
+
+# CCPlus ContextPolicyV1 is the canonical source of truth for the kernel's
+# context-management thresholds. The module constants below are DERIVED from a
+# default policy instance (not the reverse), so the contract genuinely governs
+# runtime behavior: changing ContextPolicyV1's defaults changes the kernel, and
+# the /workbench projection reads the same shape. See `build_context_policy`.
+_DEFAULT_CONTEXT_POLICY = ContextPolicyV1(model_window=0)
 
 # Mid-loop compaction: check every N rounds and compress when approaching context limit.
 # P1-W2-3: Tightened from 0.90 to 0.75 — the audit found that running to 90%
@@ -61,16 +69,16 @@ from app.tools.result_envelope import ToolContentEnvelope
 # fired, forcing reactive PTL retries. Compacting at 75% leaves headroom for
 # one more full round + safety margin.
 _MIDLOOP_COMPACT_CHECK_INTERVAL = 3
-_MIDLOOP_COMPACT_THRESHOLD = 0.75
+_MIDLOOP_COMPACT_THRESHOLD = _DEFAULT_CONTEXT_POLICY.autocompact_threshold
 # P1-W2-3: At ≥60% context utilization the time-based microcompact gets
 # aggressive — clear older tool results sooner so we don't slide into the
 # heavy-compaction zone. Below 60% the original 60-minute gap stays in force.
-_MICROCOMPACT_PRESSURE_THRESHOLD = 0.60
+_MICROCOMPACT_PRESSURE_THRESHOLD = _DEFAULT_CONTEXT_POLICY.microcompact_threshold
 _MICROCOMPACT_GAP_UNDER_PRESSURE_SECONDS = 600  # 10 min
 
 # Prompt-Too-Long reactive retry: compress and retry when provider rejects oversized prompt.
 # Strategy: attempt 1 = full compression; later attempts fall back to dropping oldest round-groups.
-_PTL_MAX_RETRIES = 3
+_PTL_MAX_RETRIES = _DEFAULT_CONTEXT_POLICY.prompt_too_long_retries
 # Provider-specific error patterns indicating prompt exceeds context window.
 _PTL_ERROR_PATTERNS = (
     "context_length_exceeded",
@@ -140,10 +148,10 @@ _STREAM_OUTPUT_CONTINUATION_PROMPT = (
 )
 
 # Large tool result eviction: save to workspace file and keep truncated preview.
-_TOOL_RESULT_EVICTION_THRESHOLD = 50000  # chars
+_TOOL_RESULT_EVICTION_THRESHOLD = _DEFAULT_CONTEXT_POLICY.tool_result_inline_limit  # chars
 _TOOL_RESULT_PREVIEW_LENGTH = 4000  # chars to keep inline — was 2K, 256K models can afford more context
 # Per-round aggregate budget: prevents N parallel tools from overloading context.
-_TOOL_RESULTS_AGGREGATE_BUDGET = 200000  # chars per round
+_TOOL_RESULTS_AGGREGATE_BUDGET = _DEFAULT_CONTEXT_POLICY.round_tool_result_budget  # chars per round
 # Time-based microcompact: clear old tool results to delay heavy compaction.
 _MICROCOMPACT_GAP_SECONDS = 3600  # 60 minutes — tool results older than this get cleared
 _MICROCOMPACT_KEEP_RECENT = 5  # always keep the N most recent tool results
@@ -695,6 +703,29 @@ def _normalize_tool_result_for_llm(result: Any) -> str:
     return result_str
 
 
+def _extract_tool_side_effects(raw_result: Any) -> dict[str, Any] | None:
+    """Pull the ToolContentEnvelope side-effect channel off a raw tool result.
+
+    D-08: a tool may inject conversation messages (``new_messages``) or request
+    the turn end after the current round (``terminal_signal``). Returns a dict
+    with only the present fields, or ``None`` when the result is a plain string /
+    an envelope carrying no side-effect channel (the common case — no tool emits
+    these today, so existing behavior is untouched). The kernel loop CONSUMES the
+    returned dict on the real ``api_messages`` list, not a copy.
+    """
+    if not isinstance(raw_result, ToolContentEnvelope):
+        return None
+    side_effects: dict[str, Any] = {}
+    new_messages = getattr(raw_result, "new_messages", ()) or ()
+    injected = [dict(m) for m in new_messages if isinstance(m, dict)]
+    if injected:
+        side_effects["new_messages"] = injected
+    terminal_signal = getattr(raw_result, "terminal_signal", None)
+    if isinstance(terminal_signal, str) and terminal_signal.strip():
+        side_effects["terminal_signal"] = terminal_signal
+    return side_effects or None
+
+
 def _tool_message_content(text_content: str, raw_result: Any) -> "str | list[dict[str, Any]]":
     """Build tool-result message content, preserving typed multimodal blocks.
 
@@ -956,8 +987,17 @@ async def _execute_tool_with_hooks(
     tools_for_llm: list[dict] | None = None,
     api_messages: list | None = None,
     record_span: Callable[..., Awaitable[dict[str, Any] | None]] | None = None,
+    side_effect_sink: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any], bool]:
-    """Execute a tool with consistent pre/post/failure hook semantics."""
+    """Execute a tool with consistent pre/post/failure hook semantics.
+
+    D-08: when ``side_effect_sink`` is provided and the raw tool result is a
+    ToolContentEnvelope carrying ``new_messages`` / ``terminal_signal``, those
+    fields are written into the sink (in place) so the kernel loop can CONSUME
+    them — every str-assuming downstream path normalizes the envelope away
+    before the done-payload site, so this is the surface that preserves them.
+    The return tuple is unchanged (3 elements) so existing callers are intact.
+    """
     from app.runtime.hooks import HookEvent, emit_hook
 
     effective_args = dict(tool_args)
@@ -1214,6 +1254,10 @@ async def _execute_tool_with_hooks(
         elif tool_name == "execute_code":
             _session.track_tool_outcome(tool_name, result_str[:200])
 
+    if side_effect_sink is not None:
+        _captured_side_effects = _extract_tool_side_effects(result)
+        if _captured_side_effects:
+            side_effect_sink.update(_captured_side_effects)
     return result_str, effective_args, True
 
 
@@ -2680,6 +2724,33 @@ class AgentKernel:
                     terminal_reason=TerminalReason.CLARIFICATION_REQUIRED,
                 )
 
+            async def _end_turn_for_tool_terminal_signal(reason: str, content: str) -> InvocationResult:
+                # D-08: a tool emitted ToolContentEnvelope.terminal_signal — end the
+                # turn cleanly after the current round's tool results have been
+                # appended, with a TURN_STOP terminal reason carrying the signal.
+                if request.agent_id and accumulated_tokens > 0:
+                    await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                await self._persist_before_exit(request, runtime_config, content, api_messages)
+                await _emit_event(
+                    {
+                        "type": "tool_terminal_signal",
+                        "part": {
+                            "type": "event",
+                            "event_type": "tool_terminal_signal",
+                            "title": "Tool ended the turn",
+                            "text": reason,
+                            "status": "info",
+                        },
+                    }
+                )
+                return InvocationResult(
+                    content=content,
+                    tokens_used=accumulated_tokens,
+                    final_tools=tools_for_llm,
+                    parts=collected_parts + build_done_event(content)["parts"],
+                    terminal_reason=TerminalReason.TURN_STOP,
+                )
+
             async def _inject_loop_guard_warning(decision: LoopGuardDecision) -> None:
                 # A4 warn-before-abort: give the model the diagnostic + one
                 # self-correction chance (CC §12.2 soft-constraints-first).
@@ -2867,6 +2938,11 @@ class AgentKernel:
             active_model = request.model
             fallback_model = request.fallback_model
             active_supports_vision = request.supports_vision
+            # D-08: a tool may signal that the turn should end after the current
+            # round via ToolContentEnvelope.terminal_signal. The reason string is
+            # captured when a tool result carries it and consumed right after the
+            # round's tool results are appended.
+            _tool_terminal_signal: str | None = None
             try:
                 client = self._deps.create_client(active_model)
             except Exception as exc:
@@ -3746,7 +3822,9 @@ class AgentKernel:
                             if not _is_concurrency_safe_tool(t_name)
                         ]
 
-                        async def _run_tool(index: int, t_name: str, t_args: dict) -> tuple[str, dict[str, Any], bool]:
+                        async def _run_tool(
+                            index: int, t_name: str, t_args: dict
+                        ) -> tuple[str, dict[str, Any], bool, dict[str, Any] | None]:
                             nonlocal abort_reason
                             try:
                                 if _is_concurrency_safe_tool(t_name):
@@ -3763,9 +3841,11 @@ class AgentKernel:
                                         f"[Tool skipped] skipped because {reason}; this model batch was aborted.",
                                         t_args,
                                         False,
+                                        None,
                                     )
+                                _call_side_effects: dict[str, Any] = {}
                                 async with sem:
-                                    result_tuple = await _execute_tool_with_hooks(
+                                    _r_str, _r_args, _r_exec = await _execute_tool_with_hooks(
                                         execute_tool=self._deps.execute_tool,
                                         request=request,
                                         runtime_config=runtime_config,
@@ -3775,11 +3855,12 @@ class AgentKernel:
                                         tools_for_llm=tools_for_llm,
                                         api_messages=api_messages,
                                         record_span=_record_span,
+                                        side_effect_sink=_call_side_effects,
                                     )
-                                if not _is_concurrency_safe_tool(t_name) and result_tuple[2] is False:
+                                if not _is_concurrency_safe_tool(t_name) and _r_exec is False:
                                     abort_reason = f"earlier unsafe tool failed ({t_name})"
                                     abort_later_siblings.set()
-                                return result_tuple
+                                return _r_str, _r_args, _r_exec, (_call_side_effects or None)
                             finally:
                                 done_events[index].set()
 
@@ -3812,11 +3893,12 @@ class AgentKernel:
                                     f"[Tool execution error] {type(_r).__name__}: {str(_r)[:200]}",
                                     parsed_tool_calls[_i][2],
                                     False,
+                                    None,
                                 )
 
                         # 3. Emit "done" events and append tool results in original order
                         for (tc, tool_name, _original_args), execution in zip(parsed_tool_calls, results):
-                            result, effective_args, _executed = execution
+                            result, effective_args, _executed, _side_effects = execution
                             result_loop_decision = loop_guard.observe_tool_result(
                                 tool_name, effective_args, str(result)
                             )
@@ -3862,6 +3944,10 @@ class AgentKernel:
                                 "args": effective_args,
                                 "status": "done",
                                 "result": result,
+                                # D-04: the original streamed tool_call_id the model
+                                # saw, so the web resume path can reuse it instead of
+                                # synthesizing call_{msg.id}.
+                                "tool_call_id": tc["id"],
                                 "model_seen_result": _content,
                                 "content_replacement": _content_replacement_record(
                                     tool_name=tool_name,
@@ -3892,6 +3978,16 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
+                            # D-08: consume the tool's side-effect channel on the REAL
+                            # conversation — inject any new_messages so the next round
+                            # sees them; capture terminal_signal to end the turn.
+                            if _side_effects:
+                                _injected = _side_effects.get("new_messages") or []
+                                if _injected:
+                                    api_messages.extend(_dicts_to_llm_messages(_injected))
+                                _ts = _side_effects.get("terminal_signal")
+                                if isinstance(_ts, str) and _ts.strip():
+                                    _tool_terminal_signal = _ts
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
                     else:
@@ -3931,6 +4027,7 @@ class AgentKernel:
                                             _callback_failure_count,
                                         )
 
+                            _side_effects: dict[str, Any] = {}
                             try:
                                 result, args, executed = await _execute_tool_with_hooks(
                                     execute_tool=self._deps.execute_tool,
@@ -3942,6 +4039,7 @@ class AgentKernel:
                                     tools_for_llm=tools_for_llm,
                                     api_messages=api_messages,
                                     record_span=_record_span,
+                                    side_effect_sink=_side_effects,
                                 )
                             except _KernelCancelledError:
                                 if request.agent_id and accumulated_tokens > 0:
@@ -4109,6 +4207,10 @@ class AgentKernel:
                                 "args": args,
                                 "status": "done",
                                 "result": result,
+                                # D-04: the original streamed tool_call_id the model
+                                # saw, so the web resume path can reuse it instead of
+                                # synthesizing call_{msg.id}.
+                                "tool_call_id": tc["id"],
                                 "model_seen_result": _content,
                                 "content_replacement": _content_replacement_record(
                                     tool_name=tool_name,
@@ -4139,8 +4241,28 @@ class AgentKernel:
                                     content=_tool_message_content(_content, result),
                                 )
                             )
+                            # D-08: consume the tool's side-effect channel on the REAL
+                            # conversation — inject any new_messages so the next round
+                            # sees them; capture terminal_signal to end the turn.
+                            if _side_effects:
+                                _injected = _side_effects.get("new_messages") or []
+                                if _injected:
+                                    api_messages.extend(_dicts_to_llm_messages(_injected))
+                                _ts = _side_effects.get("terminal_signal")
+                                if isinstance(_ts, str) and _ts.strip():
+                                    _tool_terminal_signal = _ts
                             if _tool_result_requests_user_clarification(tool_name, str(result)):
                                 return await _pause_for_user_clarification()
+
+                    # ── D-08: tool-requested turn termination ──
+                    # A tool emitted ToolContentEnvelope.terminal_signal during this
+                    # round. The round's tool results are already appended; end the
+                    # turn now rather than looping into another model call.
+                    if _tool_terminal_signal is not None:
+                        return await _end_turn_for_tool_terminal_signal(
+                            _tool_terminal_signal,
+                            response.content or "",
+                        )
 
                     # ── L1: Time-based microcompact — clear old tool results ──
                     # Clear tool results older than 60min, always keep the 5 most recent.

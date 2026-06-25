@@ -1,0 +1,266 @@
+"""CCPlus V1 — D-08 (ToolContentEnvelope side-effect channel) + D-04 (resume
+original tool_call_id) LIVE kernel wiring.
+
+These tests drive ``AgentKernel.handle`` end-to-end with a fake LLM client and a
+fake ``execute_tool`` that returns a ``ToolContentEnvelope`` carrying the
+side-effect channel. They assert the REAL loop consumes the channel:
+
+* ``new_messages`` are appended to the live conversation the next round sees.
+* ``terminal_signal`` ends the turn after the current round (no extra model call).
+* ``done_payload`` carries the original streamed ``tool_call_id`` at top level.
+
+Revert-sensitivity: each assertion fails if the corresponding wiring in
+``engine.py`` is reverted (see inline notes).
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+from app.tools.result_envelope import ToolContentEnvelope
+
+
+def _base_deps(*, fake_client, execute_tool) -> KernelDependencies:
+    return KernelDependencies(
+        resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+            tenant_id=uuid4(),
+            max_tool_rounds=4,
+            quota_message=None,
+        ),
+        resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+        build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+        resolve_memory_context=lambda *_args, **_kwargs: "",
+        get_tools=lambda *_args, **_kwargs: [
+            {
+                "type": "function",
+                "function": {"name": "read_file", "description": "", "parameters": {"type": "object"}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "list_files", "description": "", "parameters": {"type": "object"}},
+            },
+        ],
+        maybe_compress_messages=lambda messages, **_kwargs: messages,
+        create_client=lambda _model: fake_client,
+        execute_tool=execute_tool,
+        persist_memory=lambda **_kwargs: None,
+        record_token_usage=lambda *_args, **_kwargs: None,
+        get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+        extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+        estimate_tokens_from_chars=lambda chars: chars // 4,
+    )
+
+
+class _FakeClient:
+    def __init__(self, responses: list[SimpleNamespace]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self._responses:
+            raise AssertionError("No fake response prepared")
+        outcome = self._responses.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    async def close(self) -> None:
+        return None
+
+
+def _tool_call_response(tool_name: str, call_id: str, args: str = "{}") -> SimpleNamespace:
+    return SimpleNamespace(
+        content="",
+        tool_calls=[{"id": call_id, "function": {"name": tool_name, "arguments": args}}],
+        reasoning_content=None,
+        usage={"total_tokens": 5},
+    )
+
+
+def _final_response(content: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        content=content,
+        tool_calls=[],
+        reasoning_content=None,
+        usage={"total_tokens": 7},
+        finish_reason="stop",
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_new_messages_are_injected_into_next_round_conversation() -> None:
+    """D-08: a tool result whose envelope carries ``new_messages`` injects those
+    messages into the conversation the NEXT model round sees.
+
+    Revert-sensitive: if the consume block in engine.py is removed, the injected
+    message never reaches ``api_messages`` and ``calls[1]["messages"]`` will not
+    contain it — the assertion fails.
+    """
+    injected_marker = "INJECTED-BY-TOOL-9f3a"
+    fake_client = _FakeClient(
+        [
+            _tool_call_response("read_file", "call_inject_1"),
+            _final_response("acknowledged"),
+        ]
+    )
+
+    def execute_tool(tool_name, args, request, emit_event):
+        return ToolContentEnvelope(
+            text="file contents",
+            new_messages=({"role": "user", "content": injected_marker},),
+        )
+
+    kernel = AgentKernel(_base_deps(fake_client=fake_client, execute_tool=execute_tool))
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Read the file"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "acknowledged"
+    # The kernel reached a 2nd round (the tool did NOT terminate), and the
+    # injected message rode into that round's conversation.
+    assert len(fake_client.calls) == 2
+    second_round_messages = fake_client.calls[1]["messages"]
+    assert any(
+        message.role == "user" and message.content == injected_marker for message in second_round_messages
+    ), "tool-injected new_messages must reach the next round's live conversation"
+
+
+@pytest.mark.asyncio
+async def test_tool_new_messages_injected_on_parallel_path() -> None:
+    """D-08: the parallel/segmented execution path also consumes ``new_messages``.
+
+    Two parallel-safe ``read_file`` calls force the segmented-parallel branch.
+    """
+    injected_marker = "PARALLEL-INJECT-7c21"
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {"id": "call_p1", "function": {"name": "read_file", "arguments": '{"path":"a.txt"}'}},
+                    {"id": "call_p2", "function": {"name": "read_file", "arguments": '{"path":"b.txt"}'}},
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+            _final_response("parallel done"),
+        ]
+    )
+
+    def execute_tool(tool_name, args, request, emit_event):
+        if args.get("path") == "b.txt":
+            return ToolContentEnvelope(
+                text="b contents",
+                new_messages=({"role": "user", "content": injected_marker},),
+            )
+        return "a contents"
+
+    kernel = AgentKernel(_base_deps(fake_client=fake_client, execute_tool=execute_tool))
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Read both files"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content == "parallel done"
+    assert len(fake_client.calls) == 2
+    second_round_messages = fake_client.calls[1]["messages"]
+    assert any(
+        message.role == "user" and message.content == injected_marker for message in second_round_messages
+    ), "parallel-path tool-injected new_messages must reach the next round"
+
+
+@pytest.mark.asyncio
+async def test_tool_terminal_signal_ends_the_turn() -> None:
+    """D-08: a non-empty ``terminal_signal`` ends the turn after the current round.
+
+    Only ONE model response is prepared (the tool-calling round). If the kernel
+    looped into another round (i.e. the terminal_signal was NOT consumed), the
+    fake client would raise ``AssertionError('No fake response prepared')``.
+    Revert-sensitive by construction.
+    """
+    from app.kernel.contracts import TerminalReason
+
+    fake_client = _FakeClient([_tool_call_response("read_file", "call_term_1")])
+
+    def execute_tool(tool_name, args, request, emit_event):
+        return ToolContentEnvelope(text="done reading", terminal_signal="waiting_for_user")
+
+    kernel = AgentKernel(_base_deps(fake_client=fake_client, execute_tool=execute_tool))
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Read the file then pause"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    # The turn ended on the tool round — exactly one model call was made.
+    assert len(fake_client.calls) == 1
+    assert result.terminal_reason == TerminalReason.TURN_STOP
+
+
+@pytest.mark.asyncio
+async def test_done_payload_carries_original_streamed_tool_call_id() -> None:
+    """D-04: the done_payload emitted to ``on_tool_call`` carries the ORIGINAL
+    streamed ``tool_call_id`` at the top level so the web resume path can reuse
+    it instead of synthesizing ``call_{msg.id}``.
+
+    Revert-sensitive: if the ``"tool_call_id": tc["id"]`` key is removed from the
+    done_payload, the captured payload has no top-level ``tool_call_id``.
+    """
+    original_id = "call_resume_orig_4e1d"
+    captured_done: list[dict] = []
+    fake_client = _FakeClient(
+        [
+            _tool_call_response("read_file", original_id),
+            _final_response("resumed"),
+        ]
+    )
+
+    def execute_tool(tool_name, args, request, emit_event):
+        return "file body"
+
+    async def on_tool_call(payload: dict) -> None:
+        if payload.get("status") == "done":
+            captured_done.append(payload)
+
+    kernel = AgentKernel(_base_deps(fake_client=fake_client, execute_tool=execute_tool))
+
+    await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Read the file"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            on_tool_call=on_tool_call,
+        )
+    )
+
+    assert captured_done, "expected a done tool-call payload"
+    assert captured_done[0]["tool_call_id"] == original_id

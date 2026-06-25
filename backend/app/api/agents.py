@@ -651,6 +651,55 @@ async def get_agent_evolution(
     return build_agent_evolution_view(workspace)
 
 
+@router.get("/{agent_id}/extension-registry")
+async def get_agent_extension_registry(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the CCPlus ExtensionRegistryV1 projection for one agent.
+
+    Distinct from the existing skills+MCP ``/{agent_id}/extensions`` endpoint
+    (mcp_servers router): this is the unified CCPlus ExtensionRegistryV1 read
+    model (skills + deferred tool packs with ToolSpecV1-derived metadata).
+
+    Read-only read model over the agent's installed skills plus the platform
+    deferred runtime tool groups. Each tool_pack descriptor carries real
+    ToolSpecV1-derived tool metadata (capability bundle, read-only/destructive/
+    concurrency flags, deferred-vs-CORE loading, result budget). Pure read; it
+    never installs, enables, or mutates extension state.
+    """
+    from dataclasses import asdict
+
+    from app.services.extension_registry import build_extension_registry_projection
+    from app.skills.loader import WorkspaceSkillLoader
+    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
+
+    await check_agent_access(db, current_user, agent_id)
+
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    try:
+        skills = WorkspaceSkillLoader().load_from_workspace(workspace)
+    except Exception:
+        logger.warning("[Extensions] skill load failed for agent %s", agent_id, exc_info=True)
+        skills = []
+
+    tool_packs = [
+        {
+            "id": group.name,
+            "name": group.name,
+            "source": group.source,
+            "tools": list(group.tools),
+            "runtime_effects": [f"activation:{group.activation_mode}"],
+            "audit_refs": [f"runtime_tool_group://{group.name}"],
+        }
+        for group in RUNTIME_TOOL_GROUPS
+    ]
+
+    projection = build_extension_registry_projection(skills=skills, tool_packs=tool_packs)
+    return asdict(projection)
+
+
 @router.get("/{agent_id}/capability-installs")
 async def get_agent_capability_installs(
     agent_id: uuid.UUID,

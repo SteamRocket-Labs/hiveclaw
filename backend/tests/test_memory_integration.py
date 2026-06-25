@@ -25,7 +25,9 @@ class TestHooksIntegration:
     def test_v1_all_events(self) -> None:
         from app.runtime.hooks import HookEvent
 
-        assert len(HookEvent) == 35
+        # 42-member catalog (CC-27 superset); 7 are _DISABLED_NOOP events with no
+        # live emitter yet (see hooks.py:195 / D-26 / D-29).
+        assert len(HookEvent) == 42
         assert {event.value for event in HookEvent}.issuperset(
             {
                 "stop",

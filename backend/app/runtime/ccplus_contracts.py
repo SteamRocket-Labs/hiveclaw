@@ -8,10 +8,16 @@ runtime adapters can share them without coupling.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
+from dataclasses import replace
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.kernel.contracts import TerminalReason
+if TYPE_CHECKING:
+    # Annotation-only import (PEP 563 string annotations). Importing TerminalReason
+    # at runtime would create a cycle once app.kernel.engine imports this module
+    # (engine -> ccplus_contracts -> app.kernel.contracts -> app.kernel.__init__ -> engine).
+    from app.kernel.contracts import TerminalReason
 
 
 class TurnStatus(str, Enum):
@@ -72,6 +78,23 @@ class ContextPolicyV1:
     compaction_trace_required: bool = True
     autocompact_failure_breaker_limit: int = 3
     breaker_half_open_seconds: int = 600
+
+
+def build_context_policy(model_window: int, *, overrides: dict[str, Any] | None = None) -> ContextPolicyV1:
+    """Canonical ContextPolicyV1 builder.
+
+    The live kernel constructs its context policy here so the contract — not
+    scattered module constants — is the source of truth that governs context
+    behavior (thresholds, budgets, retries, breaker). ``overrides`` lets a
+    per-tenant/per-session metadata blob refine the policy without bypassing the
+    contract; unknown keys and ``model_window`` overrides are ignored.
+    """
+    base = ContextPolicyV1(model_window=int(model_window or 0))
+    if not overrides:
+        return base
+    valid = {f.name for f in dataclass_fields(base)} - {"model_window"}
+    clean = {key: value for key, value in overrides.items() if key in valid}
+    return replace(base, **clean) if clean else base
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +159,39 @@ class AgentSessionV1:
     t0_segment_refs: tuple[str, ...] = ()
     runtime_task_refs: tuple[str, ...] = ()
     hook_event_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SessionNodeV1:
+    session_id: str
+    actor_type: str = "user"
+    session_kind: str = "web_chat"
+    source: str = "web"
+    runtime_task_id: str | None = None
+    parent_session_id: str | None = None
+    root_session_id: str | None = None
+    agent_id: str | None = None
+    status: str | None = None
+    transcript_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEdgeV1:
+    relation: str  # parent_child | delegated_to | team_member | workflow_leaf
+    from_id: str
+    to_id: str
+    runtime_task_id: str | None = None
+    task_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionGraphV1:
+    root_session_id: str
+    nodes: tuple[SessionNodeV1, ...] = ()
+    edges: tuple[SessionEdgeV1, ...] = ()
+    mailbox_events: tuple[dict[str, Any], ...] = ()
+    task_notifications: tuple[dict[str, Any], ...] = ()
+    transcript_refs_by_node: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

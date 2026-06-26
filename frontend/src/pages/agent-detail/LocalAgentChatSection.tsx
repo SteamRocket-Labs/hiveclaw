@@ -178,10 +178,18 @@ export function localAgentChannelEventsToChatMessages(events: LocalAgentChannelE
   return messages;
 }
 
-export function localAgentArtifactDownloadUrl(path: string): string {
+type LocalArtifactDownloadContext = {
+  agentId?: string | null;
+  sessionId?: string | null;
+};
+
+export function localAgentArtifactDownloadUrl(path: string, context: LocalArtifactDownloadContext = {}): string {
   const params = new URLSearchParams({ path });
   const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : '';
   if (token) params.set('token', token);
+  if (context.agentId && context.sessionId) {
+    return `/api/agents/${encodeURIComponent(context.agentId)}/local-agent/sessions/${encodeURIComponent(context.sessionId)}/workspace/download?${params.toString()}`;
+  }
   return `/api/local-agents/workspace/download?${params.toString()}`;
 }
 
@@ -199,7 +207,13 @@ function formatTime(value?: string | null): string {
   }
 }
 
-function LocalArtifactCards({ artifacts }: { artifacts?: ChatArtifactPart[] }) {
+function LocalArtifactCards({
+  artifacts,
+  downloadContext,
+}: {
+  artifacts?: ChatArtifactPart[];
+  downloadContext?: LocalArtifactDownloadContext;
+}) {
   const { t } = useTranslation();
   if (!artifacts?.length) return null;
   return (
@@ -207,7 +221,7 @@ function LocalArtifactCards({ artifacts }: { artifacts?: ChatArtifactPart[] }) {
       {artifacts.map((artifact) => (
         <a
           key={`${artifact.id || ''}:${artifact.path}`}
-          href={localAgentArtifactDownloadUrl(artifact.path)}
+          href={localAgentArtifactDownloadUrl(artifact.path, downloadContext)}
           download={artifact.name}
           style={{
             display: 'flex',
@@ -258,7 +272,13 @@ function LocalArtifactCards({ artifacts }: { artifacts?: ChatArtifactPart[] }) {
   );
 }
 
-function LocalChatMessageBubble({ message }: { message: AgentChatMessage }) {
+function LocalChatMessageBubble({
+  message,
+  downloadContext,
+}: {
+  message: AgentChatMessage;
+  downloadContext?: LocalArtifactDownloadContext;
+}) {
   const isAssistant = message.role === 'assistant';
   return (
     <div
@@ -285,7 +305,7 @@ function LocalChatMessageBubble({ message }: { message: AgentChatMessage }) {
             <MarkdownRenderer content={message.content} />
           </div>
         )}
-        <LocalArtifactCards artifacts={message.artifacts} />
+        <LocalArtifactCards artifacts={message.artifacts} downloadContext={downloadContext} />
         {message.timestamp && (
           <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-tertiary)', textAlign: isAssistant ? 'left' : 'right' }}>
             {formatTime(message.timestamp)}
@@ -562,7 +582,13 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
             </div>
           </div>
         ) : (
-          messages.map((message) => <LocalChatMessageBubble key={message.id || `${message.role}:${message.timestamp}`} message={message} />)
+          messages.map((message) => (
+            <LocalChatMessageBubble
+              key={message.id || `${message.role}:${message.timestamp}`}
+              message={message}
+              downloadContext={{ agentId: agent.id, sessionId: channelSessionId }}
+            />
+          ))
         )}
       </div>
       {error && (

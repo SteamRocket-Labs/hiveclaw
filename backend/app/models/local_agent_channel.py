@@ -42,7 +42,7 @@ class LocalAgentChannel(Base):
 
 
 class LocalAgentChannelSession(Base):
-    """A durable user-scoped local-agent conversation surface."""
+    """A durable local-agent conversation surface backed by a host runner."""
 
     __tablename__ = "local_agent_channel_sessions"
     __table_args__ = (

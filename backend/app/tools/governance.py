@@ -356,6 +356,26 @@ def _session_no_policy_action(context: ToolGovernanceContext) -> str:
     return "ask"
 
 
+def _session_explicit_policy_action(context: ToolGovernanceContext) -> str:
+    """Resolve an explicit approval policy through the current session.
+
+    CCPlus currently has no enterprise approval loop for tool calls. Explicit
+    approval requirements therefore become in-session permission prompts, while
+    bypass/allowed session grants still allow execution and strict modes deny.
+    """
+    profile = context.permission_profile
+    allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
+    if context.tool_name in allowed_tools:
+        return "allow"
+
+    mode = _permission_mode_for_context(context)
+    if mode == PermissionMode.BYPASS_PERMISSIONS:
+        return "allow"
+    if mode in {PermissionMode.DONT_ASK, PermissionMode.PLAN}:
+        return "deny"
+    return "ask"
+
+
 async def _emit_session_no_policy_result(
     context: ToolGovernanceContext,
     *,
@@ -643,7 +663,6 @@ async def _run_governance_inner(
     event_callback: EventCallback | None = None,
 ) -> str | None:
     """Inner governance logic, wrapped by timeout in run_tool_governance."""
-    restricted_zone_approval_reason = None
     try:
         zone = await _maybe_await(deps.resolve_security_zone(context.agent_id))
         zone = zone or "restricted"
@@ -669,8 +688,9 @@ async def _run_governance_inner(
                 },
             )
             return message
-        if zone == "restricted" and context.tool_name in SENSITIVE_TOOLS:
-            restricted_zone_approval_reason = "restricted security zone"
+        # Restricted zones are no longer an enterprise approval trigger in
+        # CCPlus. Tool calls still go through session-local permission mode and
+        # explicit hard-deny policies below.
     except Exception as exc:
         # Fail-closed: block ALL tools when security zone check fails, not just sensitive ones
         logger.warning(
@@ -784,53 +804,14 @@ async def _run_governance_inner(
             )
             return message
         if mcp_mode == "approval":
-            try:
-                approval_kwargs = {
-                    "agent_id": context.agent_id,
-                    "user_id": context.user_id,
-                    "tool_name": context.tool_name,
-                    "arguments": context.arguments,
-                    "capability": "mcp_tool_call",
-                    "reason": "MCP server policy requires approval for this tool",
-                }
-                if context.session_id:
-                    approval_kwargs["session_id"] = context.session_id
-                result_check = await _maybe_await(deps.request_approval(**approval_kwargs))
-                message = (
-                    f"⏳ Tool '{context.tool_name}' requires approval"
-                    f" [MCP server policy]. An approval request has been sent"
-                    f" (Approval ID: {result_check.get('approval_id', 'N/A')}). "
-                    "Do not retry this tool until approval is granted. Meanwhile you can: "
-                    "continue other read-only parts of the task / tell the user what is pending and why / "
-                    "record current progress so the approved action can resume cleanly."
-                )
-                await _emit_event(
-                    event_callback,
-                    {
-                        "type": "permission",
-                        "tool_name": context.tool_name,
-                        "status": "approval_required",
-                        "message": message,
-                        "approval_id": result_check.get("approval_id"),
-                        "capability": "mcp_tool_call",
-                    },
-                )
-                return message
-            except Exception as exc:
-                logger.error("[Governance] MCP approval request failed — blocking (fail-closed): %s", exc)
-                message = (
-                    f"🔒 Tool '{context.tool_name}' blocked — MCP approval request failed ({exc}). "
-                    "This may be a transient error — please retry the tool call."
-                )
-                await _emit_event(
-                    event_callback,
-                    {
-                        "type": "permission",
-                        "tool_name": context.tool_name,
-                        "status": "blocked",
-                        "message": message,
-                    },
-                )
+            message = await _emit_session_no_policy_result(
+                context,
+                capability="mcp_tool_call",
+                reason="MCP server policy requires approval for this tool",
+                action=_session_explicit_policy_action(context),
+                event_callback=event_callback,
+            )
+            if message is not None:
                 return message
 
     tenant_uuid: uuid.UUID | None = None
@@ -892,26 +873,18 @@ async def _run_governance_inner(
                     return message
                 cap_escalate = False
             if cap_escalate:
-                await _maybe_await(
-                    deps.write_audit_event(
-                        event_type="capability.escalated",
-                        severity="warn",
-                        actor_type="agent",
-                        actor_id=context.agent_id,
-                        tenant_id=tenant_uuid,
-                        action="capability_escalated",
-                        resource_type="tool",
-                        resource_id=None,
-                        details={"tool": context.tool_name, "capability": cap_result.capability},
-                    )
+                message = await _emit_session_no_policy_result(
+                    context,
+                    capability=getattr(cap_result, "capability", None),
+                    reason=getattr(cap_result, "reason", None) or "explicit enterprise approval policy",
+                    action=_session_explicit_policy_action(context),
+                    event_callback=event_callback,
                 )
-            _escalated_capability = getattr(cap_result, "capability", None) if cap_escalate else None
+                if message is not None:
+                    return message
+                cap_escalate = False
+            _escalated_capability = None
             _approval_reason = None
-            if restricted_zone_approval_reason:
-                _escalated_capability = (
-                    _escalated_capability or getattr(cap_result, "capability", None) or context.tool_name
-                )
-                _approval_reason = _approval_reason or restricted_zone_approval_reason
 
             # P1-W3-3 — delegation token enforcement.
             # When this invocation came in through delegate_to_agent, the
@@ -1124,8 +1097,16 @@ async def _run_governance_inner(
                             return message
                         dangerous_allowed_by_specific_policy = True
                     else:
-                        _escalated_capability = getattr(dangerous_result, "capability", None) or dangerous_capability
-                        dangerous_reason = getattr(dangerous_result, "reason", None) or dangerous_reason
+                        message = await _emit_session_no_policy_result(
+                            context,
+                            capability=getattr(dangerous_result, "capability", None) or dangerous_capability,
+                            reason=getattr(dangerous_result, "reason", None) or dangerous_reason,
+                            action=_session_explicit_policy_action(context),
+                            event_callback=event_callback,
+                        )
+                        if message is not None:
+                            return message
+                        dangerous_allowed_by_specific_policy = True
                 else:
                     dangerous_allowed_by_specific_policy = getattr(
                         dangerous_result, "capability", None
@@ -1163,58 +1144,19 @@ async def _run_governance_inner(
             if message is not None:
                 return message
             dangerous_allowed_by_specific_policy = True
-        if not dangerous_allowed_by_specific_policy and (
-            _escalated_capability is None or _approval_reason == restricted_zone_approval_reason
-        ):
+        if not dangerous_allowed_by_specific_policy and _escalated_capability is None:
             _escalated_capability = dangerous_capability
             _approval_reason = dangerous_reason
 
     if _escalated_capability:
-        try:
-            approval_kwargs = {
-                "agent_id": context.agent_id,
-                "user_id": context.user_id,
-                "tool_name": context.tool_name,
-                "arguments": context.arguments,
-                "capability": _escalated_capability,
-                "reason": dangerous_reason or _approval_reason,
-            }
-            if context.session_id:
-                approval_kwargs["session_id"] = context.session_id
-            result_check = await _maybe_await(deps.request_approval(**approval_kwargs))
-            message = (
-                f"⏳ Tool '{context.tool_name}' requires approval"
-                f" [capability: {_escalated_capability}]. An approval request has been sent"
-                f" (Approval ID: {result_check.get('approval_id', 'N/A')}). "
-                "Do not retry this tool until approval is granted. Meanwhile you can: "
-                "continue other read-only parts of the task / tell the user what is pending and why / "
-                "record current progress so the approved action can resume cleanly."
-            )
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "approval_required",
-                    "message": message,
-                    "approval_id": result_check.get("approval_id"),
-                    "capability": _escalated_capability,
-                },
-            )
-            return message
-        except Exception as exc:
-            logger.error("[Approval] Request failed — blocking as safety measure: %s", exc)
-            message = f"⚠️ Approval request failed ({exc}). This may be a transient error — please retry the tool call."
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "blocked",
-                    "message": message,
-                    "capability": _escalated_capability,
-                },
-            )
+        message = await _emit_session_no_policy_result(
+            context,
+            capability=_escalated_capability,
+            reason=dangerous_reason or _approval_reason,
+            action=_session_explicit_policy_action(context),
+            event_callback=event_callback,
+        )
+        if message is not None:
             return message
 
     return None

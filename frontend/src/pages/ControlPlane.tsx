@@ -143,7 +143,7 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
   {
     to: '/local-agents',
     title: 'Local Agent Channel',
-    description: 'User-scoped local runtime presence, local workspace, direct channel chat, and Hive Connect pairing.',
+    description: 'Local-runtime agents with ordinary Agent permissions, workspace transfer, direct channel chat, and Hive Connect pairing.',
     icon: <IconDeviceDesktop size={18} stroke={1.6} />,
     group: 'channels',
   },

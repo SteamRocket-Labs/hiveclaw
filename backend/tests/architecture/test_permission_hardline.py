@@ -11,17 +11,17 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = BACKEND_ROOT / "app"
 
 
-def test_governance_uses_canonical_approval_dependency_without_compat_wrapper() -> None:
+def test_governance_has_no_enterprise_approval_call_path_for_tool_permissions() -> None:
     source = (APP_ROOT / "tools/governance.py").read_text(encoding="utf-8")
 
     assert "async def _request_approval_compat" not in source
     assert "_request_approval_compat(" not in source
-    assert "deps.request_approval(" in source
-    assert '"reason": dangerous_reason or _approval_reason' in source
+    assert "deps.request_approval(" not in source
+    assert '"status": "session_permission_required"' in source
 
 
 @pytest.mark.asyncio
-async def test_secret_exfiltration_command_requires_approval() -> None:
+async def test_secret_exfiltration_command_requires_session_permission() -> None:
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 
     approval_calls = []
@@ -68,16 +68,7 @@ async def test_secret_exfiltration_command_requires_approval() -> None:
         event_callback=events.append,
     )
 
-    assert "approval-secret" in str(message)
-    assert approval_calls == [
-        {
-            "agent_id": agent_id,
-            "user_id": user_id,
-            "tool_name": "run_command",
-            "arguments": {"command": "cat .env && printenv SECRET_KEY"},
-            "capability": "workspace.command.secret_exfiltration",
-            "reason": "secret exfiltration",
-        }
-    ]
-    assert events[-1]["status"] == "approval_required"
+    assert "requires session permission" in str(message)
+    assert approval_calls == []
+    assert events[-1]["status"] == "session_permission_required"
     assert events[-1]["capability"] == "workspace.command.secret_exfiltration"

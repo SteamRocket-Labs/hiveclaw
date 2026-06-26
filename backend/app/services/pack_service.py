@@ -476,6 +476,7 @@ async def get_capability_summary(db: AsyncSession, agent_id: uuid.UUID) -> dict:
     """
     from app.models.audit import ApprovalRequest
     from app.models.capability_policy import CapabilityPolicy
+    from app.services.enterprise_approval_visibility import enterprise_visible_approval_filter
 
     # Get agent info
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
@@ -517,6 +518,7 @@ async def get_capability_summary(db: AsyncSession, agent_id: uuid.UUID) -> dict:
         .where(
             ApprovalRequest.agent_id == agent_id,
             ApprovalRequest.status == "pending",
+            enterprise_visible_approval_filter(ApprovalRequest),
         )
     )
     pending_count = pending_result.scalar() or 0

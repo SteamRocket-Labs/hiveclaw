@@ -36,6 +36,16 @@ export const isOnlineConnection = (connection: LocalBridgeConnection) => {
   return connectionPresenceStatus(connection) === 'online';
 };
 
+export const canSendLocalAgentMessage = ({
+  localAgentOnline,
+  messageBusy,
+  content,
+}: {
+  localAgentOnline: boolean;
+  messageBusy: boolean;
+  content: string;
+}) => localAgentOnline && !messageBusy && Boolean(content.trim());
+
 const channelEventText = (event: LocalAgentChannelEvent) => {
   const payload = event.payload || {};
   return String(payload.text || payload.content || payload.output || payload.error || event.type);
@@ -245,6 +255,11 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   const primaryPresence = primaryConnection ? connectionPresenceStatus(primaryConnection) : 'unknown';
   const channelEvents = channelTimelineData?.events ?? [];
   const displayTitle = agentName || t('localAgents.title', 'Local Agent Channel');
+  const canSendMessage = canSendLocalAgentMessage({
+    localAgentOnline,
+    messageBusy,
+    content: messageContent,
+  });
 
   const setupInstruction = useMemo(() => buildSetupInstruction(installGuide), [installGuide]);
 
@@ -347,6 +362,16 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
   const sendMessage = async () => {
     const content = messageContent.trim();
     if (!content) return;
+    if (!localAgentOnline) {
+      setMessageStatus({
+        kind: 'error',
+        message: t(
+          'localAgents.offlineSendBlocked',
+          'The local agent is offline. Hive Connect will reconnect automatically when the background service is running.',
+        ),
+      });
+      return;
+    }
     setMessageBusy(true);
     setMessageStatus(null);
     try {
@@ -525,7 +550,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
         <p style={{ margin: 0, color: 'var(--text-tertiary)', fontSize: '13px', lineHeight: 1.5 }}>
           {t(
             'localAgents.description',
-            'Connect your local agents to Hive as a user-level IM channel. Your cloud agents can call this channel only through your owner identity.',
+            'Local agents behave like regular Hive agents with a local runtime. Keep them private or share them with your workspace through normal Agent permissions.',
           )}
         </p>
       </div>
@@ -710,14 +735,19 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
               <button className="btn btn-secondary" disabled={attachmentBusy || messageBusy} onClick={attachChannelFiles}>
                 {attachmentBusy ? t('localAgents.attaching', 'Attaching...') : t('localAgents.attachFile', 'Attach file')}
               </button>
-              <button className="btn btn-primary" disabled={messageBusy || !messageContent.trim()} onClick={sendMessage}>
+              <button className="btn btn-primary" disabled={!canSendMessage} onClick={sendMessage}>
                 {messageBusy ? t('localAgents.sending', 'Sending...') : t('localAgents.send', 'Send to local agent')}
               </button>
               <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                {t(
-                  'localAgents.sendHint',
-                  'When the background service is online, messages are delivered over WebSocket. If the computer sleeps, shuts down, or loses network, Hive shows the local agent as offline.',
-                )}
+                {localAgentOnline
+                  ? t(
+                      'localAgents.sendHint',
+                      'When the background service is online, messages are delivered over WebSocket. If the computer sleeps, shuts down, or loses network, Hive shows the local agent as offline.',
+                    )
+                  : t(
+                      'localAgents.offlineSendHint',
+                      'The local agent is offline. Keep Hive Connect installed; it will reconnect automatically when the computer and background service are available.',
+                    )}
               </span>
             </div>
             {messageStatus && (
@@ -771,7 +801,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
                 {viewingWorkspaceFile || workspacePath}
               </div>
               <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                {t('localAgents.workspaceDescription', 'Shared user-level workspace for every local agent linked to this Hive account.')}
+                {t('localAgents.workspaceDescription', 'Workspace files for this local runtime. Shared callers can send files into the host runner through governed Agent permissions.')}
               </div>
             </div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>

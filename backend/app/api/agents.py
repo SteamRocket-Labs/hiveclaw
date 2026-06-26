@@ -28,6 +28,7 @@ from app.services.agent_identity_lifecycle import (
 from app.runtime.hooks import hook_registry
 from app.services.heartbeat_policy import apply_managed_heartbeat_fields, normalize_agent_heartbeat_output
 from app.services.command_registry import build_default_command_registry
+from app.services.enterprise_approval_visibility import enterprise_visible_approval_filter
 from app.services.mcp_server_service import get_agent_mcp_servers
 
 logger = logging.getLogger(__name__)
@@ -1074,6 +1075,7 @@ async def list_agent_approvals(
     from app.models.audit import ApprovalRequest
 
     query = select(ApprovalRequest).where(ApprovalRequest.agent_id == agent_id)
+    query = query.where(enterprise_visible_approval_filter(ApprovalRequest))
     if status_filter:
         query = query.where(ApprovalRequest.status == status_filter)
     query = query.order_by(ApprovalRequest.created_at.desc())

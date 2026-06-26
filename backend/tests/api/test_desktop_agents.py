@@ -272,6 +272,51 @@ def test_admin_can_delete_own_sub_agent():
     soft_delete.assert_awaited_once_with(fake_db, sub, actor_id=_USER_ID, reason="desktop_delete_sub_agent")
 
 
+def test_admin_can_delete_same_tenant_sub_agent_owned_by_another_user():
+    """Admins govern tenant assets, not only their own desktop-owned sub-agents."""
+    sub = SimpleNamespace(
+        id=_SUB_AGENT_ID,
+        name="同租户其他员工的 Sub-Agent",
+        agent_kind="sub",
+        owner_user_id=_OTHER_USER_ID,
+        parent_agent_id=_MAIN_AGENT_ID,
+        tenant_id=_TENANT_ID,
+        deleted_at=None,
+        deactivated_at=None,
+    )
+    client, fake_db = _build_client(agents_by_id={_SUB_AGENT_ID: sub}, user=_FAKE_ADMIN_USER)
+    with (
+        patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=4),
+        patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete,
+    ):
+        resp = client.delete(f"/desktop/agents/{_SUB_AGENT_ID}")
+
+    assert resp.status_code == 204
+    assert fake_db.deleted == []
+    soft_delete.assert_awaited_once_with(fake_db, sub, actor_id=_USER_ID, reason="desktop_delete_sub_agent")
+
+
+def test_org_admin_cannot_delete_cross_tenant_sub_agent_even_when_owner_matches():
+    """Org admins must not use the desktop delete path across tenant boundaries."""
+    sub = SimpleNamespace(
+        id=_SUB_AGENT_ID,
+        name="其他租户 Sub-Agent",
+        agent_kind="sub",
+        owner_user_id=_USER_ID,
+        parent_agent_id=_MAIN_AGENT_ID,
+        tenant_id=uuid4(),
+        deleted_at=None,
+        deactivated_at=None,
+    )
+    client, fake_db = _build_client(agents_by_id={_SUB_AGENT_ID: sub}, user=_FAKE_ADMIN_USER)
+    with patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete:
+        resp = client.delete(f"/desktop/agents/{_SUB_AGENT_ID}")
+
+    assert resp.status_code == 404
+    assert fake_db.deleted == []
+    soft_delete.assert_not_awaited()
+
+
 def test_deleted_sub_agent_is_not_editable():
     """Soft-deleted agents are hidden from Desktop mutation paths."""
     sub = SimpleNamespace(

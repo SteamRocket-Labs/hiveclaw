@@ -1652,6 +1652,8 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     assert task.metadata_json["source"] == "feishu"
     assert task.metadata_json["channel"] == "feishu"
     assert task.metadata_json["delivery_target_json"] == session.delivery_target_json
+    assert task.metadata_json["permission_mode"] == "auto"
+    assert task.metadata_json["permission_profile"] == {"mode": "auto", "allowed_tools": []}
     assert scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert [(event.event_type, event.role, event.content) for event in events] == [

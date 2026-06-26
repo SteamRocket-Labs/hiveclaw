@@ -239,6 +239,7 @@ def test_web_user_restores_default_local_agent_channel_session_and_timeline(monk
         *,
         tenant_id,
         owner_user_id,
+        actor_user_id=None,
         source_agent_id=None,
         title=None,
     ):
@@ -246,6 +247,7 @@ def test_web_user_restores_default_local_agent_channel_session_and_timeline(monk
             "db": db_arg,
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
+            "actor_user_id": actor_user_id,
             "source_agent_id": source_agent_id,
             "title": title,
         }
@@ -277,26 +279,33 @@ def test_web_user_restores_default_local_agent_channel_session_and_timeline(monk
             }
         ]
 
-    async def fake_get_channel_session(db_arg, *, session_id, owner_user_id):
+    async def fake_get_channel_session_for_actor(db_arg, *, session_id, actor_user_id):
         captured["timeline_session"] = {
             "db": db_arg,
             "session_id": session_id,
-            "owner_user_id": owner_user_id,
+            "actor_user_id": actor_user_id,
         }
-        return {
-            "id": session_id,
-            "chat_session_id": None,
-            "status": "active",
-            "source": "web",
-            "created_at": None,
-        }
+        return (
+            {
+                "id": session_id,
+                "chat_session_id": None,
+                "status": "active",
+                "source": "web",
+                "created_at": None,
+            },
+            actor_user_id,
+        )
 
     monkeypatch.setattr(
         local_agent_channel_api.channel_service,
         "get_or_create_default_channel_session",
         fake_get_or_create_default_channel_session,
     )
-    monkeypatch.setattr(local_agent_channel_api.channel_service, "get_channel_session", fake_get_channel_session)
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "get_channel_session_for_actor",
+        fake_get_channel_session_for_actor,
+    )
     monkeypatch.setattr(local_agent_channel_api.channel_service, "list_channel_events", fake_list_channel_events)
     client = _client(monkeypatch, db=db, current_user=current_user, context=context)
 
@@ -310,6 +319,7 @@ def test_web_user_restores_default_local_agent_channel_session_and_timeline(monk
     assert timeline_response.json()["events"][0]["payload"]["content"] == "persist this chat"
     assert captured["default_session"]["tenant_id"] == tenant_id
     assert captured["default_session"]["owner_user_id"] == user_id
+    assert captured["default_session"]["actor_user_id"] is None
     assert captured["default_session"]["source_agent_id"] is None
     assert captured["timeline"]["owner_user_id"] == user_id
 
@@ -338,6 +348,7 @@ def test_web_user_restores_agent_scoped_default_local_agent_channel_session(monk
         *,
         tenant_id,
         owner_user_id,
+        actor_user_id=None,
         source_agent_id=None,
         title=None,
     ):
@@ -345,6 +356,7 @@ def test_web_user_restores_agent_scoped_default_local_agent_channel_session(monk
             "db": db_arg,
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
+            "actor_user_id": actor_user_id,
             "source_agent_id": source_agent_id,
             "title": title,
         }
@@ -372,6 +384,7 @@ def test_web_user_restores_agent_scoped_default_local_agent_channel_session(monk
         "db": db,
         "tenant_id": tenant_id,
         "owner_user_id": user_id,
+        "actor_user_id": user_id,
         "source_agent_id": agent_id,
         "title": "Codex on Mac",
     }
@@ -396,11 +409,20 @@ def test_agent_scoped_local_agent_channel_lists_and_resolves_sessions(monkeypatc
     )
     captured = {}
 
-    async def fake_list_agent_channel_sessions(db_arg, *, tenant_id, owner_user_id, source_agent_id, limit):
+    async def fake_list_agent_channel_sessions(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        actor_user_id=None,
+        source_agent_id,
+        limit,
+    ):
         captured["list"] = {
             "db": db_arg,
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
+            "actor_user_id": actor_user_id,
             "source_agent_id": source_agent_id,
             "limit": limit,
         }
@@ -420,11 +442,20 @@ def test_agent_scoped_local_agent_channel_lists_and_resolves_sessions(monkeypatc
             }
         ]
 
-    async def fake_resolve_agent_channel_session(db_arg, *, tenant_id, owner_user_id, source_agent_id, session_id):
+    async def fake_resolve_agent_channel_session(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        actor_user_id=None,
+        source_agent_id,
+        session_id,
+    ):
         captured["resolve"] = {
             "db": db_arg,
             "tenant_id": tenant_id,
             "owner_user_id": owner_user_id,
+            "actor_user_id": actor_user_id,
             "source_agent_id": source_agent_id,
             "session_id": session_id,
         }
@@ -463,7 +494,9 @@ def test_agent_scoped_local_agent_channel_lists_and_resolves_sessions(monkeypatc
     assert resolve_response.status_code == 200
     assert resolve_response.json()["id"] == str(channel_session_id)
     assert captured["list"]["source_agent_id"] == agent_id
+    assert captured["list"]["actor_user_id"] == user_id
     assert captured["resolve"]["session_id"] == chat_session_id
+    assert captured["resolve"]["actor_user_id"] == user_id
 
 
 def test_agent_scoped_local_agent_channel_delete_archives_session(monkeypatch) -> None:
@@ -484,12 +517,21 @@ def test_agent_scoped_local_agent_channel_delete_archives_session(monkeypatch) -
     )
     captured = {}
 
-    async def fake_archive_agent_channel_session(db_arg, *, tenant_id, owner_user_id, source_agent_id, session_id):
+    async def fake_archive_agent_channel_session(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        actor_user_id=None,
+        source_agent_id,
+        session_id,
+    ):
         captured.update(
             {
                 "db": db_arg,
                 "tenant_id": tenant_id,
                 "owner_user_id": owner_user_id,
+                "actor_user_id": actor_user_id,
                 "source_agent_id": source_agent_id,
                 "session_id": session_id,
             }
@@ -510,41 +552,206 @@ def test_agent_scoped_local_agent_channel_delete_archives_session(monkeypatch) -
         "db": db,
         "tenant_id": tenant_id,
         "owner_user_id": user_id,
+        "actor_user_id": user_id,
         "source_agent_id": agent_id,
         "session_id": channel_session_id,
     }
 
 
-def test_agent_scoped_local_agent_channel_requires_owner_even_with_manage_access(monkeypatch) -> None:
+def test_shared_local_agent_channel_uses_host_owner_for_delivery_and_caller_for_session(monkeypatch, tmp_path) -> None:
     tenant_id = uuid4()
-    user_id = uuid4()
+    caller_user_id = uuid4()
+    host_owner_id = uuid4()
     agent_id = uuid4()
+    session_id = uuid4()
+    message_id = uuid4()
     db = _FakeDB()
-    current_user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="member")
-    context = _context(tenant_id=tenant_id, agent_id=agent_id, user_id=user_id)
+    current_user = SimpleNamespace(id=caller_user_id, tenant_id=tenant_id, role="member")
+    context = _context(tenant_id=tenant_id, agent_id=agent_id, user_id=host_owner_id)
     agent = SimpleNamespace(
         id=agent_id,
         tenant_id=tenant_id,
         agent_type="local_agent",
         name="Teammate Mac",
-        owner_user_id=uuid4(),
-        creator_id=uuid4(),
+        owner_user_id=host_owner_id,
+        creator_id=host_owner_id,
     )
+    monkeypatch.setattr(local_agent_channel_api.settings, "AGENT_DATA_DIR", str(tmp_path))
+    actor_upload = (
+        tmp_path
+        / "local_agents"
+        / str(tenant_id)
+        / "users"
+        / str(caller_user_id)
+        / "workspace"
+        / "uploads"
+        / "proof.md"
+    )
+    actor_upload.parent.mkdir(parents=True)
+    actor_upload.write_text("shared local agent proof", encoding="utf-8")
+    captured = {}
 
-    async def should_not_create_session(*_args, **_kwargs):
-        raise AssertionError("non-owner must not open local agent channel sessions")
+    async def fake_get_or_create_default_channel_session(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        actor_user_id=None,
+        source_agent_id=None,
+        title=None,
+    ):
+        captured["default_session"] = {
+            "db": db_arg,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "actor_user_id": actor_user_id,
+            "source_agent_id": source_agent_id,
+            "title": title,
+        }
+        return {
+            "id": session_id,
+            "chat_session_id": uuid4(),
+            "agent_id": agent_id,
+            "status": "active",
+            "source": "web",
+            "created_at": None,
+        }
+
+    async def fake_enqueue_channel_message(
+        db_arg,
+        *,
+        session_id,
+        owner_user_id,
+        sender_user_id,
+        sender_agent_id=None,
+        content,
+        attachments,
+        metadata,
+    ):
+        captured["message"] = {
+            "db": db_arg,
+            "session_id": session_id,
+            "owner_user_id": owner_user_id,
+            "sender_user_id": sender_user_id,
+            "sender_agent_id": sender_agent_id,
+            "content": content,
+            "attachments": attachments,
+            "metadata": metadata,
+        }
+        return {
+            "id": message_id,
+            "session_id": session_id,
+            "status": "pending",
+            "content": content,
+            "attachments": attachments,
+            "metadata": metadata,
+            "created_at": None,
+        }
+
+    async def fake_resolve_agent_channel_session(
+        db_arg,
+        *,
+        tenant_id,
+        owner_user_id,
+        actor_user_id=None,
+        source_agent_id,
+        session_id,
+    ):
+        captured["resolve"] = {
+            "db": db_arg,
+            "tenant_id": tenant_id,
+            "owner_user_id": owner_user_id,
+            "actor_user_id": actor_user_id,
+            "source_agent_id": source_agent_id,
+            "session_id": session_id,
+        }
+        return {
+            "id": session_id,
+            "chat_session_id": uuid4(),
+            "agent_id": source_agent_id,
+            "title": "Teammate Mac",
+            "source": "web",
+            "source_channel": "local_agent",
+            "session_kind": "local_agent_channel",
+            "status": "active",
+            "created_at": None,
+            "updated_at": None,
+            "last_message_at": None,
+        }
 
     monkeypatch.setattr(
         local_agent_channel_api.channel_service,
         "get_or_create_default_channel_session",
-        should_not_create_session,
+        fake_get_or_create_default_channel_session,
+    )
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "resolve_agent_channel_session",
+        fake_resolve_agent_channel_session,
+    )
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service, "enqueue_channel_message", fake_enqueue_channel_message
     )
     client = _client(monkeypatch, db=db, current_user=current_user, context=context, agent=agent)
 
-    response = client.post(f"/agents/{agent_id}/local-agent/sessions/default")
+    session_response = client.post(f"/agents/{agent_id}/local-agent/sessions/default")
+    message_response = client.post(
+        f"/agents/{agent_id}/local-agent/sessions/{session_id}/messages",
+        json={
+            "content": "shared user task",
+            "attachments": [{"path": "workspace/uploads/proof.md", "filename": "proof.md"}],
+        },
+    )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Only the owner can use this local agent channel"
+    assert session_response.status_code == 200
+    assert message_response.status_code == 201
+    assert captured["default_session"]["owner_user_id"] == host_owner_id
+    assert captured["default_session"]["actor_user_id"] == caller_user_id
+    assert captured["default_session"]["source_agent_id"] == agent_id
+    assert captured["resolve"]["owner_user_id"] == host_owner_id
+    assert captured["resolve"]["actor_user_id"] == caller_user_id
+    assert captured["message"]["owner_user_id"] == host_owner_id
+    assert captured["message"]["sender_user_id"] == caller_user_id
+    assert captured["message"]["sender_agent_id"] == agent_id
+    materialized_attachment = captured["message"]["attachments"][0]
+    assert materialized_attachment["path"] == f"workspace/shared_uploads/{caller_user_id}/proof.md"
+    assert materialized_attachment["workspace_path"] == f"workspace/shared_uploads/{caller_user_id}/proof.md"
+    assert materialized_attachment["source_workspace_path"] == "workspace/uploads/proof.md"
+    assert materialized_attachment["source_user_id"] == str(caller_user_id)
+    assert materialized_attachment["materialized_for_user_id"] == str(host_owner_id)
+    host_copy = (
+        tmp_path
+        / "local_agents"
+        / str(tenant_id)
+        / "users"
+        / str(host_owner_id)
+        / "workspace"
+        / "shared_uploads"
+        / str(caller_user_id)
+        / "proof.md"
+    )
+    assert host_copy.read_text(encoding="utf-8") == "shared local agent proof"
+
+    host_result = (
+        tmp_path
+        / "local_agents"
+        / str(tenant_id)
+        / "users"
+        / str(host_owner_id)
+        / "workspace"
+        / "local-bridge"
+        / "result.md"
+    )
+    host_result.parent.mkdir(parents=True)
+    host_result.write_text("shared caller can download host result", encoding="utf-8")
+
+    download_response = client.get(
+        f"/agents/{agent_id}/local-agent/sessions/{session_id}/workspace/download",
+        params={"path": "workspace/local-bridge/result.md"},
+    )
+
+    assert download_response.status_code == 200
+    assert download_response.text == "shared caller can download host result"
 
 
 def test_web_user_creates_browser_session_ws_ticket(monkeypatch) -> None:
@@ -560,7 +767,7 @@ def test_web_user_creates_browser_session_ws_ticket(monkeypatch) -> None:
         db_arg,
         *,
         tenant_id,
-        owner_user_id,
+        actor_user_id,
         session_id,
         ttl_seconds,
     ):
@@ -568,7 +775,7 @@ def test_web_user_creates_browser_session_ws_ticket(monkeypatch) -> None:
             {
                 "db": db_arg,
                 "tenant_id": tenant_id,
-                "owner_user_id": owner_user_id,
+                "actor_user_id": actor_user_id,
                 "session_id": session_id,
                 "ttl_seconds": ttl_seconds,
             }
@@ -589,7 +796,7 @@ def test_web_user_creates_browser_session_ws_ticket(monkeypatch) -> None:
     assert captured == {
         "db": db,
         "tenant_id": tenant_id,
-        "owner_user_id": user_id,
+        "actor_user_id": user_id,
         "session_id": session_id,
         "ttl_seconds": 60,
     }

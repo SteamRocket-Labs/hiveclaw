@@ -7,6 +7,7 @@ It intentionally lives beside, not inside, the legacy gateway poll API.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -242,23 +243,66 @@ def _non_overwriting_path(directory: Path, filename: str) -> Path:
     return target
 
 
-def _require_local_agent_owner(agent: Any, current_user: User) -> None:
+def _materialize_local_agent_attachments_for_host(
+    *,
+    tenant_id: Any,
+    actor_user_id: uuid.UUID,
+    host_owner_user_id: uuid.UUID,
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Make browser-uploaded files readable by the host user's local runner."""
+
+    if actor_user_id == host_owner_user_id:
+        return list(attachments)
+
+    materialized: list[dict[str, Any]] = []
+    for raw_attachment in attachments:
+        if not isinstance(raw_attachment, dict):
+            materialized.append(raw_attachment)
+            continue
+        attachment = dict(raw_attachment)
+        workspace_path = str(attachment.get("path") or attachment.get("workspace_path") or "").strip()
+        if not workspace_path:
+            materialized.append(attachment)
+            continue
+
+        _actor_base, actor_file = _safe_local_agent_workspace_path_for(tenant_id, actor_user_id, workspace_path)
+        if not actor_file.exists() or not actor_file.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment file not found")
+
+        filename = _safe_upload_filename(
+            str(attachment.get("filename") or attachment.get("saved_filename") or actor_file.name)
+        )
+        host_base, host_dir = _safe_local_agent_workspace_path_for(
+            tenant_id,
+            host_owner_user_id,
+            f"workspace/shared_uploads/{actor_user_id}",
+        )
+        host_dir.mkdir(parents=True, exist_ok=True)
+        host_file = _non_overwriting_path(host_dir, filename)
+        shutil.copy2(actor_file, host_file)
+        host_workspace_path = _workspace_rel_path(host_base, host_file)
+
+        attachment.update(
+            {
+                "path": host_workspace_path,
+                "workspace_path": host_workspace_path,
+                "source_workspace_path": workspace_path,
+                "source_user_id": str(actor_user_id),
+                "materialized_for_user_id": str(host_owner_user_id),
+            }
+        )
+        materialized.append(attachment)
+    return materialized
+
+
+def _local_agent_host_user_id(agent: Any) -> uuid.UUID:
     if getattr(agent, "agent_type", None) != "local_agent":
-        return
-    current_user_id = str(getattr(current_user, "id", ""))
-    owner_ids = {
-        str(value)
-        for value in (
-            getattr(agent, "owner_user_id", None),
-            getattr(agent, "creator_id", None),
-        )
-        if value
-    }
-    if current_user_id not in owner_ids:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the owner can use this local agent channel",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent is not a local agent")
+    host_user_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
+    if host_user_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Local agent has no host owner")
+    return _coerce_uuid(host_user_id)
 
 
 class LocalAgentChannelConnectionManager:
@@ -446,11 +490,13 @@ async def get_current_user_local_agent_channel_timeline(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session = await channel_service.get_channel_session(db, session_id=session_id, owner_user_id=current_user.id)
+    session, owner_user_id = await channel_service.get_channel_session_for_actor(
+        db, session_id=session_id, actor_user_id=current_user.id
+    )
     events = await channel_service.list_channel_events(
         db,
         session_id=session_id,
-        owner_user_id=current_user.id,
+        owner_user_id=owner_user_id,
         after_event_id=after_event_id,
         limit=limit,
     )
@@ -466,7 +512,7 @@ async def create_current_user_local_agent_channel_browser_ws_ticket(
     return await channel_service.create_browser_session_ws_ticket(
         db,
         tenant_id=getattr(current_user, "tenant_id", None),
-        owner_user_id=current_user.id,
+        actor_user_id=current_user.id,
         session_id=session_id,
         ttl_seconds=channel_service.DEFAULT_BROWSER_WS_TICKET_SECONDS,
     )
@@ -480,11 +526,14 @@ async def list_current_user_local_agent_channel_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    _session, owner_user_id = await channel_service.get_channel_session_for_actor(
+        db, session_id=session_id, actor_user_id=current_user.id
+    )
     return {
         "events": await channel_service.list_channel_events(
             db,
             session_id=session_id,
-            owner_user_id=current_user.id,
+            owner_user_id=owner_user_id,
             after_event_id=after_event_id,
             limit=limit,
         )
@@ -599,14 +648,15 @@ async def get_or_create_agent_default_local_agent_channel_session(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    _require_local_agent_owner(agent, current_user)
+    host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     if tenant_id is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent has no tenant")
     payload = await channel_service.get_or_create_default_channel_session(
         db,
         tenant_id=tenant_id,
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
         source_agent_id=agent.id,
         title=getattr(agent, "name", None) or "Local Agent",
     )
@@ -624,12 +674,13 @@ async def list_agent_local_agent_channel_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    _require_local_agent_owner(agent, current_user)
+    host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     rows = await channel_service.list_agent_channel_sessions(
         db,
         tenant_id=tenant_id,
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
         source_agent_id=agent.id,
         limit=limit,
     )
@@ -648,12 +699,13 @@ async def create_local_agent_channel_session(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    _require_local_agent_owner(agent, current_user)
+    host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     payload = await channel_service.create_channel_session(
         db,
         tenant_id=tenant_id,
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
         source_agent_id=agent.id,
         source=body.source,
         title=body.title,
@@ -672,12 +724,13 @@ async def resolve_local_agent_channel_session(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    _require_local_agent_owner(agent, current_user)
+    host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     payload = await channel_service.resolve_agent_channel_session(
         db,
         tenant_id=tenant_id,
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
         source_agent_id=agent.id,
         session_id=session_id,
     )
@@ -695,12 +748,13 @@ async def delete_local_agent_channel_session(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    _require_local_agent_owner(agent, current_user)
+    host_owner_user_id = _local_agent_host_user_id(agent)
     tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
     await channel_service.archive_agent_channel_session(
         db,
         tenant_id=tenant_id,
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
         source_agent_id=agent.id,
         session_id=session_id,
     )
@@ -720,20 +774,37 @@ async def create_local_agent_channel_message(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    _require_local_agent_owner(agent, current_user)
+    host_owner_user_id = _local_agent_host_user_id(agent)
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    await channel_service.resolve_agent_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
+        source_agent_id=agent.id,
+        session_id=session_id,
+    )
+    attachments = _materialize_local_agent_attachments_for_host(
+        tenant_id=tenant_id,
+        actor_user_id=current_user.id,
+        host_owner_user_id=host_owner_user_id,
+        attachments=body.attachments,
+    )
     payload = await channel_service.enqueue_channel_message(
         db,
         session_id=session_id,
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
         sender_user_id=current_user.id,
         sender_agent_id=agent.id,
         content=body.content,
-        attachments=body.attachments,
+        attachments=attachments,
         metadata={**body.metadata, "source_agent_id": str(agent.id)},
     )
-    await channel_ws_manager.send_to_user(current_user.id, {"type": "message", "message": _runner_message_payload(payload)})
+    await channel_ws_manager.send_to_user(
+        host_owner_user_id, {"type": "message", "message": _runner_message_payload(payload)}
+    )
     await _broadcast_browser_channel_event(
-        owner_user_id=current_user.id,
+        owner_user_id=host_owner_user_id,
         session_id=session_id,
         event=payload.get("event"),
     )
@@ -750,16 +821,50 @@ async def list_local_agent_channel_events(
     db: AsyncSession = Depends(get_db),
 ):
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    _require_local_agent_owner(agent, current_user)
+    host_owner_user_id = _local_agent_host_user_id(agent)
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    await channel_service.resolve_agent_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
+        source_agent_id=agent.id,
+        session_id=session_id,
+    )
     return {
         "events": await channel_service.list_channel_events(
             db,
             session_id=session_id,
-            owner_user_id=current_user.id,
+            owner_user_id=host_owner_user_id,
             after_event_id=after_event_id,
             limit=limit,
         )
     }
+
+
+@router.get("/agents/{agent_id}/local-agent/sessions/{session_id}/workspace/download")
+async def download_agent_local_agent_channel_workspace_file(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    path: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    host_owner_user_id = _local_agent_host_user_id(agent)
+    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
+    await channel_service.resolve_agent_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=host_owner_user_id,
+        actor_user_id=current_user.id,
+        source_agent_id=agent.id,
+        session_id=session_id,
+    )
+    _base, target = _safe_local_agent_workspace_path_for(tenant_id, host_owner_user_id, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    return FileResponse(path=str(target), filename=target.name)
 
 
 @router.get("/local-bridge/channel/workspace/download")

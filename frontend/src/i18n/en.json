@@ -237,7 +237,7 @@
     "companySubagents": "Company subagent library",
     "companySubagentsDesc": "Tenant-level worker definitions shared by employee runtimes",
     "localAgentChannel": "Local Agent Channel",
-    "localAgentChannelDesc": "User-scoped local runtime presence, channel chat, and workspace transfer",
+    "localAgentChannelDesc": "Local-runtime agents with ordinary Agent permissions, presence, channel chat, and workspace transfer",
     "teamTopologyTitle": "A2A and team topology",
     "teamTopologyDesc": "Session-local teams are entered from the conversation; durable org delegation and reusable workers stay attached to each employee and the control plane.",
     "sessionLocalTeam": "Session-local team",
@@ -304,7 +304,7 @@
     "team": {
       "title": "A2A / Team",
       "eyebrow": "Delegation and collaboration",
-      "subtitle": "Session-local team work, subagent definitions, peer relationships, and user-scoped local runtime channels stay visible without mixing their ownership boundaries."
+      "subtitle": "Session-local team work, subagent definitions, peer relationships, and local-runtime agents stay visible without mixing their ownership boundaries."
     }
   },
   "controlPlane": {
@@ -324,7 +324,7 @@
   },
   "localAgents": {
     "title": "Local Agent Channel",
-    "description": "Connect your local agents to Hive as a user-level IM channel. Your cloud agents can call this channel only through your owner identity.",
+    "description": "Local agents behave like regular Hive agents with a local runtime. Keep them private or share them with your workspace through normal Agent permissions.",
     "chatTab": "Chat",
     "workspaceTab": "Workspace",
     "defaultMessage": "Please prove you are the local agent on this computer: reply with the current working directory and confirm you are receiving messages through the Hive Connect background service.",
@@ -364,6 +364,8 @@
     "sending": "Sending...",
     "send": "Send to local agent",
     "sendHint": "When the background service is online, messages are delivered over WebSocket. If the computer sleeps, shuts down, or loses network, Hive shows the local agent as offline.",
+    "offlineSendHint": "The local agent is offline. Keep Hive Connect installed; it will reconnect automatically when the computer and background service are available.",
+    "offlineSendBlocked": "The local agent is offline. Hive Connect will reconnect automatically when the background service is running.",
     "messageQueued": "Message queued: {{messageId}}",
     "messageError": "Failed to send local channel message.",
     "localAgentChat": "Local Agent Chat",
@@ -377,7 +379,7 @@
     "transcript": "Local channel transcript",
     "eventsLoading": "Loading channel events...",
     "eventsEmpty": "No channel events yet.",
-    "workspaceDescription": "Shared user-level workspace for every local agent linked to this Hive account.",
+    "workspaceDescription": "Workspace files for this local runtime. Shared callers can send files into the host runner through governed Agent permissions.",
     "workspaceReadError": "Failed to read workspace file.",
     "workspaceDownloadError": "Failed to download workspace file.",
     "workspaceUploadSuccess": "Uploaded to Local Agent Workspace uploads.",

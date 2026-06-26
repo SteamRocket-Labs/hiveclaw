@@ -4,7 +4,7 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-06-26T09:19Z [sid:ba922815]; branch:main; 81 files (compact-snapshot.md, orphan-trail.md, orchestrator.py, +78); last commit: ecfa036d Refactor memory workflow and session runtime handli
+- 2026-06-26T15:57Z [sid:ba922815]; branch:main; 34 files (orphan-trail.md, desktop_agents.py, local_agent_channel.py, +31); last commit: a005a6fe Refactor memory and workflow runtime boundaries
 - 2026-06-16T13:00Z [sid:f211fca9]; branch:main; 1 files (hive-sota-master-goal.md); last commit: 82c60ac7 Clarify load_skill as capability-capsule guidance
 - 2026-06-15T13:28Z [sid:04d5cd7f]; branch:main; 7 files (.sota-audit-workflow.js, test_eval_ci_service.py, test_connector_acl.py, +4); last commit: ff5160fa Record workflow subagent activity in session trail
 - 2026-06-15T06:18Z [sid:80dfa89a]; branch:main; 11 files (harness-ci.yml, orphan-trail.md, feishu.py, +8); last commit: d1c256c0 Refine chat runtime and work ledger behavior

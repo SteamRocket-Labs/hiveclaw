@@ -118,6 +118,18 @@ def _session_payload(session: LocalAgentChannelSession, chat_session: ChatSessio
     }
 
 
+def _local_agent_external_conversation_id(
+    *,
+    owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    source_agent_id: uuid.UUID,
+    source: str,
+) -> str:
+    if actor_user_id == owner_user_id:
+        return f"local_agent:{owner_user_id}:{source_agent_id}:{source}"
+    return f"local_agent:{owner_user_id}:{source_agent_id}:{actor_user_id}:{source}"
+
+
 async def create_ws_ticket(
     db: AsyncSession,
     *,
@@ -202,6 +214,38 @@ async def get_channel_session(
     return _session_payload(session)
 
 
+async def get_channel_session_for_actor(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+) -> tuple[dict[str, Any], uuid.UUID]:
+    """Resolve a channel session visible to a browser actor.
+
+    The channel row remains owned by the host user whose runner consumes work.
+    A shared caller sees the session through its mirrored ChatSession.user_id.
+    """
+
+    result = await db.execute(
+        select(LocalAgentChannelSession, ChatSession)
+        .outerjoin(ChatSession, ChatSession.id == LocalAgentChannelSession.chat_session_id)
+        .where(
+            LocalAgentChannelSession.id == session_id,
+            LocalAgentChannelSession.status == "active",
+            or_(
+                LocalAgentChannelSession.owner_user_id == actor_user_id,
+                ChatSession.user_id == actor_user_id,
+            ),
+        )
+        .limit(1)
+    )
+    rows = result.all()
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
+    session, chat_session = rows[0]
+    return _session_payload(session, chat_session), session.owner_user_id
+
+
 def _tenant_filter(column, tenant_id: uuid.UUID | None):
     if tenant_id is None:
         return column.is_(None)
@@ -213,6 +257,7 @@ async def list_agent_channel_sessions(
     *,
     tenant_id: uuid.UUID | None,
     owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
@@ -234,6 +279,8 @@ async def list_agent_channel_sessions(
         )
         .limit(limit)
     )
+    if actor_user_id is not None:
+        stmt = stmt.where(ChatSession.user_id == actor_user_id)
     result = await db.execute(stmt)
     return [_session_payload(session, chat_session) for session, chat_session in result.all()]
 
@@ -243,6 +290,7 @@ async def resolve_agent_channel_session(
     *,
     tenant_id: uuid.UUID | None,
     owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID,
     session_id: uuid.UUID,
 ) -> dict[str, Any]:
@@ -252,6 +300,7 @@ async def resolve_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=owner_user_id,
+        actor_user_id=actor_user_id,
         source_agent_id=source_agent_id,
         session_id=session_id,
     )
@@ -263,6 +312,7 @@ async def _resolve_agent_channel_session_row(
     *,
     tenant_id: uuid.UUID | None,
     owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID,
     session_id: uuid.UUID,
 ) -> tuple[LocalAgentChannelSession, ChatSession | None]:
@@ -281,6 +331,8 @@ async def _resolve_agent_channel_session_row(
         )
         .limit(1)
     )
+    if actor_user_id is not None:
+        stmt = stmt.where(ChatSession.user_id == actor_user_id)
     result = await db.execute(stmt)
     rows = result.all()
     if not rows:
@@ -293,6 +345,7 @@ async def archive_agent_channel_session(
     *,
     tenant_id: uuid.UUID | None,
     owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID,
     session_id: uuid.UUID,
 ) -> dict[str, Any]:
@@ -302,6 +355,7 @@ async def archive_agent_channel_session(
         db,
         tenant_id=tenant_id,
         owner_user_id=owner_user_id,
+        actor_user_id=actor_user_id,
         source_agent_id=source_agent_id,
         session_id=session_id,
     )
@@ -319,41 +373,67 @@ async def get_or_create_default_channel_session(
     *,
     tenant_id: uuid.UUID | None,
     owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID | None = None,
     title: str | None = None,
 ) -> dict[str, Any]:
     """Return the durable default Local Agent Channel session."""
 
-    stmt = (
-        select(LocalAgentChannelSession)
-        .where(
-            LocalAgentChannelSession.tenant_id == tenant_id,
-            LocalAgentChannelSession.owner_user_id == owner_user_id,
-            LocalAgentChannelSession.source == "web",
-            LocalAgentChannelSession.status == "active",
+    if source_agent_id is not None and actor_user_id is not None:
+        stmt = (
+            select(LocalAgentChannelSession, ChatSession)
+            .outerjoin(ChatSession, ChatSession.id == LocalAgentChannelSession.chat_session_id)
+            .where(
+                LocalAgentChannelSession.tenant_id == tenant_id,
+                LocalAgentChannelSession.owner_user_id == owner_user_id,
+                LocalAgentChannelSession.source == "web",
+                LocalAgentChannelSession.status == "active",
+                LocalAgentChannelSession.source_agent_id == source_agent_id,
+                ChatSession.user_id == actor_user_id,
+            )
+            .order_by(LocalAgentChannelSession.created_at.desc(), LocalAgentChannelSession.id.desc())
+            .limit(1)
         )
-        .order_by(LocalAgentChannelSession.created_at.desc(), LocalAgentChannelSession.id.desc())
-        .limit(1)
-    )
-    if source_agent_id is None:
-        stmt = stmt.where(LocalAgentChannelSession.source_agent_id.is_(None))
+        result = await db.execute(stmt)
+        rows = result.all()
+        if rows:
+            existing, chat_session = rows[0]
+            return _session_payload(existing, chat_session)
     else:
-        stmt = stmt.where(LocalAgentChannelSession.source_agent_id == source_agent_id)
-    result = await db.execute(
-        stmt
-    )
-    existing = result.scalar_one_or_none()
-    if existing is not None:
-        return _session_payload(existing)
+        stmt = (
+            select(LocalAgentChannelSession)
+            .where(
+                LocalAgentChannelSession.tenant_id == tenant_id,
+                LocalAgentChannelSession.owner_user_id == owner_user_id,
+                LocalAgentChannelSession.source == "web",
+                LocalAgentChannelSession.status == "active",
+            )
+            .order_by(LocalAgentChannelSession.created_at.desc(), LocalAgentChannelSession.id.desc())
+            .limit(1)
+        )
+        if source_agent_id is None:
+            stmt = stmt.where(LocalAgentChannelSession.source_agent_id.is_(None))
+        else:
+            stmt = stmt.where(LocalAgentChannelSession.source_agent_id == source_agent_id)
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            return _session_payload(existing)
 
     chat_session: ChatSession | None = None
     if source_agent_id is not None:
-        external_conversation_id = f"local_agent:{owner_user_id}:{source_agent_id}:web"
+        actor_id = actor_user_id or owner_user_id
+        external_conversation_id = _local_agent_external_conversation_id(
+            owner_user_id=owner_user_id,
+            actor_user_id=actor_id,
+            source_agent_id=source_agent_id,
+            source="web",
+        )
         chat_session = await create_or_bind_chat_session(
             db=db,
             tenant_id=tenant_id,
             agent_id=source_agent_id,
-            user_id=owner_user_id,
+            user_id=actor_id,
             runtime_source="local_agent_channel",
             actor_type="local_agent",
             external_conversation_id=external_conversation_id,
@@ -382,17 +462,20 @@ async def create_browser_session_ws_ticket(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID | None,
-    owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
     session_id: uuid.UUID,
     ttl_seconds: int = DEFAULT_BROWSER_WS_TICKET_SECONDS,
 ) -> dict[str, Any]:
     """Create a short-lived browser ticket for subscribing to one local-agent session."""
 
-    await get_channel_session(db, session_id=session_id, owner_user_id=owner_user_id)
+    _session, owner_user_id = await get_channel_session_for_actor(
+        db, session_id=session_id, actor_user_id=actor_user_id
+    )
     expires_at = utcnow() + timedelta(seconds=ttl_seconds)
     token = jwt.encode(
         {
             "sub": str(owner_user_id),
+            "actor": str(actor_user_id),
             "tid": str(tenant_id) if tenant_id else None,
             "sid": str(session_id),
             "scope": "local_agent:browser_ws",
@@ -496,6 +579,7 @@ async def create_channel_session(
     *,
     tenant_id: uuid.UUID | None,
     owner_user_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
     source_agent_id: uuid.UUID | None = None,
     source: str = "web",
     title: str | None = None,
@@ -509,12 +593,18 @@ async def create_channel_session(
 
     chat_session: ChatSession | None = None
     if source_agent_id is not None:
-        external_conversation_id = f"local_agent:{owner_user_id}:{source_agent_id}:{source}"
+        actor_id = actor_user_id or owner_user_id
+        external_conversation_id = _local_agent_external_conversation_id(
+            owner_user_id=owner_user_id,
+            actor_user_id=actor_id,
+            source_agent_id=source_agent_id,
+            source=source,
+        )
         chat_session = await create_or_bind_chat_session(
             db=db,
             tenant_id=tenant_id,
             agent_id=source_agent_id,
-            user_id=owner_user_id,
+            user_id=actor_id,
             runtime_source="local_agent_channel",
             actor_type="local_agent",
             external_conversation_id=external_conversation_id,
@@ -702,6 +792,12 @@ async def record_channel_event(
     session = session_result.scalar_one_or_none()
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
+    chat_session: ChatSession | None = None
+    chat_user_id = context.user_id
+    if session.chat_session_id and hasattr(db, "get"):
+        chat_session = await db.get(ChatSession, session.chat_session_id)
+        if chat_session is not None and getattr(chat_session, "user_id", None):
+            chat_user_id = chat_session.user_id
     event = LocalAgentChannelEvent(
         tenant_id=context.tenant_id,
         owner_user_id=context.user_id,
@@ -720,7 +816,7 @@ async def record_channel_event(
                 ChatMessage(
                     agent_id=session.source_agent_id,
                     tenant_id=context.tenant_id,
-                    user_id=context.user_id,
+                    user_id=chat_user_id,
                     role="assistant",
                     content=content,
                     conversation_id=str(session.chat_session_id),
@@ -753,6 +849,12 @@ async def record_channel_result(
     session = session_result.scalar_one_or_none()
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
+    chat_session: ChatSession | None = None
+    chat_user_id = context.user_id
+    if session.chat_session_id and hasattr(db, "get"):
+        chat_session = await db.get(ChatSession, session.chat_session_id)
+        if chat_session is not None and getattr(chat_session, "user_id", None):
+            chat_user_id = chat_session.user_id
 
     message_result = await db.execute(
         select(LocalAgentChannelMessage).where(
@@ -796,13 +898,12 @@ async def record_channel_result(
             ChatMessage(
                 agent_id=session.source_agent_id,
                 tenant_id=context.tenant_id,
-                user_id=context.user_id,
+                user_id=chat_user_id,
                 role="assistant",
                 content=output,
                 conversation_id=str(session.chat_session_id),
             )
         )
-        chat_session = await db.get(ChatSession, session.chat_session_id) if hasattr(db, "get") else None
         if chat_session is not None:
             chat_session.last_message_at = utcnow()
     await db.flush()

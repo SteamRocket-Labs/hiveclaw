@@ -193,6 +193,7 @@ async def get_agent_metrics(
     from sqlalchemy import func
     from app.models.task import Task
     from app.models.audit import AuditLog, ApprovalRequest
+    from app.services.enterprise_approval_visibility import enterprise_visible_approval_filter
 
     agent, _access = await check_agent_access(db, current_user, agent_id)
 
@@ -207,11 +208,16 @@ async def get_agent_metrics(
 
     # Approval stats
     total_approvals = await db.execute(
-        select(func.count(ApprovalRequest.id)).where(ApprovalRequest.agent_id == agent_id)
+        select(func.count(ApprovalRequest.id)).where(
+            ApprovalRequest.agent_id == agent_id,
+            enterprise_visible_approval_filter(ApprovalRequest),
+        )
     )
     pending_approvals = await db.execute(
         select(func.count(ApprovalRequest.id)).where(
-            ApprovalRequest.agent_id == agent_id, ApprovalRequest.status == "pending"
+            ApprovalRequest.agent_id == agent_id,
+            ApprovalRequest.status == "pending",
+            enterprise_visible_approval_filter(ApprovalRequest),
         )
     )
 

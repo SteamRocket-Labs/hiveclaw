@@ -27,6 +27,7 @@ from app.runtime.ccplus_contracts import (
     build_permission_profile,
 )
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
+from app.services.enterprise_approval_visibility import is_visible_enterprise_approval
 from app.services.session_index import read_session_index
 from app.services.web_chat_runtime import get_active_web_chat_run
 
@@ -635,6 +636,8 @@ async def _list_pending_approvals(
     )
     approvals = []
     for approval in result.scalars().all():
+        if not is_visible_enterprise_approval(approval):
+            continue
         payload = _approval_payload(approval)
         details = _mapping(payload.get("details"))
         approval_session = details.get("session_id") or details.get("parent_session_id")

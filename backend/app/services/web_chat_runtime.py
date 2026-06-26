@@ -902,6 +902,10 @@ async def start_channel_chat_run_from_saved_turn(
     run_uuid = uuid.uuid4()
     now = datetime.now(timezone.utc)
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
+    session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
+    allowed_tools = [
+        str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
+    ]
     metadata = {
         "user_id": str(user.id),
         "session_id": str(session.id),
@@ -917,6 +921,8 @@ async def start_channel_chat_run_from_saved_turn(
         "plan_mode_requested": bool(plan_mode_requested),
         "existing_user_message_saved": True,
         "latest_user_prompt_overrides_history": True,
+        "permission_mode": "auto",
+        "permission_profile": {"mode": "auto", "allowed_tools": allowed_tools},
         **(extra_metadata or {}),
     }
     runtime_task = RuntimeTask(

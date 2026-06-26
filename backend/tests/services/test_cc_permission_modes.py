@@ -241,7 +241,7 @@ async def test_bypass_permissions_allows_cc_local_sensitive_tool_without_backend
 
 
 @pytest.mark.asyncio
-async def test_explicit_enterprise_approval_policy_still_creates_backend_approval() -> None:
+async def test_explicit_approval_policy_asks_session_without_backend_approval() -> None:
     message, approval_calls, _audit_calls, events = await _govern(
         tool_name="web_search",
         arguments={"query": "github trending"},
@@ -255,7 +255,8 @@ async def test_explicit_enterprise_approval_policy_still_creates_backend_approva
     )
 
     assert message is not None
-    assert "requires approval" in message
-    assert approval_calls and approval_calls[-1]["capability"] == "external.web.search"
-    assert events[-1]["status"] == "approval_required"
-    assert events[-1]["approval_id"] == "approval-should-not-exist"
+    assert "requires session permission" in message
+    assert approval_calls == []
+    assert events[-1]["status"] == "session_permission_required"
+    assert events[-1]["capability"] == "external.web.search"
+    assert "approval_id" not in events[-1]

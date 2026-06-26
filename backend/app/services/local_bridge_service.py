@@ -462,6 +462,29 @@ def serialize_connection_for_list(
     }
 
 
+async def get_connection_presence(db: AsyncSession, *, connection_id: uuid.UUID) -> dict[str, Any]:
+    result = await db.execute(
+        select(LocalAgentBridgeConnection).where(LocalAgentBridgeConnection.id == connection_id)
+    )
+    connection = result.scalar_one_or_none()
+    if connection is None:
+        return {
+            "presence_status": "unknown",
+            "presence_last_seen_at": None,
+            "runtime_kind": None,
+        }
+
+    channel_result = await db.execute(
+        select(LocalAgentChannel).where(LocalAgentChannel.connection_id == connection_id)
+    )
+    channel = channel_result.scalar_one_or_none()
+    return {
+        "presence_status": _presence_status_for(connection, channel),
+        "presence_last_seen_at": channel.last_seen_at.isoformat() if channel and channel.last_seen_at else None,
+        "runtime_kind": channel.runtime_kind if channel and channel.runtime_kind else None,
+    }
+
+
 async def list_connections(
     db: AsyncSession,
     *,

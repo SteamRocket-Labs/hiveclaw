@@ -135,6 +135,42 @@ async def test_get_or_create_default_channel_session_creates_agent_scoped_chat_s
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_default_channel_session_separates_shared_actor_from_host_owner(monkeypatch) -> None:
+    tenant_id = uuid4()
+    host_owner_id = uuid4()
+    actor_user_id = uuid4()
+    source_agent_id = uuid4()
+    chat_session_id = uuid4()
+    db = _FakeDB([_RowsResult([])])
+    captured = {}
+
+    async def fake_create_or_bind_chat_session(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(id=chat_session_id)
+
+    monkeypatch.setattr(service, "create_or_bind_chat_session", fake_create_or_bind_chat_session)
+
+    payload = await service.get_or_create_default_channel_session(
+        db,
+        tenant_id=tenant_id,
+        owner_user_id=host_owner_id,
+        actor_user_id=actor_user_id,
+        source_agent_id=source_agent_id,
+        title="Shared Codex",
+    )
+
+    assert payload["chat_session_id"] == chat_session_id
+    assert len(db.added) == 1
+    channel_session = db.added[0]
+    assert channel_session.owner_user_id == host_owner_id
+    assert channel_session.source_agent_id == source_agent_id
+    assert captured["user_id"] == actor_user_id
+    assert captured["external_conversation_id"] == (
+        f"local_agent:{host_owner_id}:{source_agent_id}:{actor_user_id}:web"
+    )
+
+
+@pytest.mark.asyncio
 async def test_list_agent_channel_sessions_returns_sidebar_ready_sessions() -> None:
     tenant_id = uuid4()
     owner_user_id = uuid4()
@@ -167,6 +203,7 @@ async def test_list_agent_channel_sessions_returns_sidebar_ready_sessions() -> N
         db,
         tenant_id=tenant_id,
         owner_user_id=owner_user_id,
+        actor_user_id=owner_user_id,
         source_agent_id=source_agent_id,
     )
 
@@ -227,3 +264,67 @@ async def test_resolve_agent_channel_session_accepts_chat_session_id() -> None:
     assert payload["id"] == channel_session_id
     assert payload["chat_session_id"] == chat_session_id
     assert payload["title"] == "Local debug session"
+
+
+@pytest.mark.asyncio
+async def test_record_channel_result_writes_assistant_message_for_actor_chat_session() -> None:
+    tenant_id = uuid4()
+    host_owner_id = uuid4()
+    actor_user_id = uuid4()
+    source_agent_id = uuid4()
+    channel_session_id = uuid4()
+    chat_session_id = uuid4()
+    message_id = uuid4()
+    channel_session = SimpleNamespace(
+        id=channel_session_id,
+        tenant_id=tenant_id,
+        owner_user_id=host_owner_id,
+        source_agent_id=source_agent_id,
+        chat_session_id=chat_session_id,
+    )
+    channel_message = SimpleNamespace(
+        id=message_id,
+        session_id=channel_session_id,
+        owner_user_id=host_owner_id,
+        source_agent_id=source_agent_id,
+        tenant_id=tenant_id,
+        direction="hive_to_local",
+        content="shared caller request",
+        status="delivered",
+        result=None,
+        attachments_json=[],
+        metadata_json={},
+        created_at=None,
+        delivered_at=None,
+        completed_at=None,
+    )
+    mirrored_chat_session = SimpleNamespace(id=chat_session_id, user_id=actor_user_id, last_message_at=None)
+
+    class _DbWithGet(_FakeDB):
+        async def get(self, _model, obj_id):
+            assert obj_id == chat_session_id
+            return mirrored_chat_session
+
+    db = _DbWithGet([channel_session, channel_message])
+    context = SimpleNamespace(
+        tenant_id=tenant_id,
+        user_id=host_owner_id,
+        scopes=("local_agent:report", "gateway:report"),
+    )
+
+    result = await service.record_channel_result(
+        db,
+        context=context,
+        session_id=channel_session_id,
+        message_id=message_id,
+        result_status="completed",
+        output="shared caller result",
+        artifacts=[],
+        metadata={},
+    )
+
+    chat_messages = [obj for obj in db.added if obj.__class__.__name__ == "ChatMessage"]
+    assert result["status"] == "completed"
+    assert len(chat_messages) == 1
+    assert chat_messages[0].user_id == actor_user_id
+    assert chat_messages[0].conversation_id == str(chat_session_id)

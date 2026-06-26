@@ -58,7 +58,7 @@ import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
 import OpenClawSettings from './OpenClawSettings';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { activityApi } from '../api/domains/activity';
-import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../api/domains/enterprise';
+import { enterpriseApi } from '../api/domains/enterprise';
 import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
@@ -1731,37 +1731,8 @@ function AgentDetailInner() {
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
         queryFn: () => agentApi.getPermissions(id!),
-        enabled: canLoadAgentScopedData && (activeTab === 'settings' || activeTab === 'chat'),
+        enabled: canLoadAgentScopedData && activeTab === 'chat',
     });
-
-    const canManageCapabilityPolicies = isAdmin;
-
-    const {
-        data: capabilityDefinitions = [],
-        isLoading: capabilityDefinitionsLoading,
-        error: capabilityDefinitionsError,
-    } = useQuery<CapabilityDefinition[]>({
-        queryKey: ['capability-definitions'],
-        queryFn: () => enterpriseApi.listCapabilityDefinitions(),
-        enabled: canLoadAgentScopedData && activeTab === 'settings' && canManageCapabilityPolicies,
-        retry: false,
-    });
-
-    const {
-        data: capabilityPolicies = [],
-        isLoading: capabilityPoliciesLoading,
-        error: capabilityPoliciesError,
-    } = useQuery<CapabilityPolicy[]>({
-        queryKey: ['capability-policies', id],
-        queryFn: () => enterpriseApi.listCapabilityPolicies(id!),
-        enabled: canLoadAgentScopedData && activeTab === 'settings' && canManageCapabilityPolicies,
-        retry: false,
-    });
-
-    const capabilityPolicyError =
-        (capabilityPoliciesError as Error | null)?.message ||
-        (capabilityDefinitionsError as Error | null)?.message ||
-        '';
 
     // ─── File viewer ─────────────────────────────────────
     const [viewingFile, setViewingFile] = useState<string | null>(null);
@@ -1784,9 +1755,6 @@ function AgentDetailInner() {
         queryFn: () => fileApi.read(id!, viewingFile!),
         enabled: canLoadAgentScopedData && !!viewingFile,
     });
-
-    // ─── Task creation & detail ───────────────────────────────────
-    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     // Redirect to /agents/new when tenant switches while viewing HR system agent
     useEffect(() => {
@@ -2262,13 +2230,7 @@ function AgentDetailInner() {
                             agentId={id!}
                             agent={agent}
                             llmModels={llmModels}
-                            permData={permData}
                             canManage={canManage}
-                            canManageCapabilityPolicies={canManageCapabilityPolicies}
-                            capabilityDefinitions={capabilityDefinitions}
-                            capabilityPolicies={capabilityPolicies}
-                            capabilityPolicyLoading={capabilityDefinitionsLoading || capabilityPoliciesLoading}
-                            capabilityPolicyError={capabilityPolicyError}
                             settingsForm={settingsForm}
                             onSettingsFormChange={setSettingsForm}
                             settingsSaving={settingsSaving}
@@ -2284,8 +2246,6 @@ function AgentDetailInner() {
                             wmSaved={wmSaved}
                             onSetWmDraft={setWmDraft}
                             onSetWmSaved={setWmSaved}
-                            showDeleteConfirm={showDeleteConfirm}
-                            onSetShowDeleteConfirm={setShowDeleteConfirm}
                         />
                     )
                 }

@@ -225,7 +225,7 @@ def test_pairing_exchange_returns_token_only_after_approval(monkeypatch) -> None
     assert resp.json()["token_type"] == "Bearer"
 
 
-def test_bridge_status_uses_bearer_context_from_dependency() -> None:
+def test_bridge_status_uses_bearer_context_from_dependency(monkeypatch) -> None:
     connection_id = uuid4()
     tenant_id = uuid4()
     user_id = uuid4()
@@ -241,6 +241,17 @@ def test_bridge_status_uses_bearer_context_from_dependency() -> None:
     app = FastAPI()
     app.include_router(local_bridge_api.router)
     app.dependency_overrides[local_bridge_api.get_bridge_auth_context] = lambda: context
+
+    async def override_db():
+        yield object()
+
+    app.dependency_overrides[local_bridge_api.get_db] = override_db
+
+    async def fake_get_connection_presence(db, *, connection_id):
+        assert connection_id == context.connection_id
+        return {"presence_status": "offline", "presence_last_seen_at": "2026-06-25T07:00:08+00:00"}
+
+    monkeypatch.setattr(local_bridge_api.bridge_service, "get_connection_presence", fake_get_connection_presence)
     client = TestClient(app)
 
     resp = client.get("/local-bridge/status", headers={"Authorization": "Bearer hb_secret"})
@@ -255,4 +266,6 @@ def test_bridge_status_uses_bearer_context_from_dependency() -> None:
         "client_kind": "generic_mcp_stdio",
         "device_name": "Workstation",
         "scopes": ["gateway:poll", "files:upload"],
+        "presence_status": "offline",
+        "presence_last_seen_at": "2026-06-25T07:00:08+00:00",
     }

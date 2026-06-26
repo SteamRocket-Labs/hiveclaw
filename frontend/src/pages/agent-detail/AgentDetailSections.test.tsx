@@ -1272,43 +1272,7 @@ describe('AgentDetail extracted sections', () => {
         llmModels={[
           { id: 'model-1', label: 'GPT-5.4', provider: 'openai', model: 'gpt-5.4', enabled: true },
         ]}
-        permData={{
-          is_owner: true,
-          scope_type: 'company',
-          scope_ids: [],
-          access_level: 'manage',
-          scope_names: [],
-        }}
         canManage
-        canManageCapabilityPolicies
-        capabilityPolicies={[
-          {
-            id: 'policy-1',
-            capability: 'workspace.file.delete',
-            agent_id: 'agent-1',
-            allowed: false,
-            requires_approval: false,
-            conditions: {},
-          },
-          {
-            id: 'policy-2',
-            capability: 'workspace.command.secret_exfiltration',
-            agent_id: 'agent-1',
-            allowed: true,
-            requires_approval: true,
-            conditions: {},
-          },
-        ]}
-        capabilityDefinitions={[
-          { capability: 'workspace.file.read', tools: ['list_files', 'read_file'] },
-          { capability: 'workspace.file.write', tools: ['write_file', 'edit_file'] },
-          { capability: 'workspace.file.delete', tools: ['delete_file'] },
-          { capability: 'workspace.command.execute', tools: ['run_command'] },
-          { capability: 'workspace.command.secret_exfiltration', tools: ['run_command'] },
-          { capability: 'unknown.future.capability', tools: ['future_tool'] },
-        ]}
-        capabilityPolicyLoading={false}
-        capabilityPolicyError=""
         settingsForm={{
           primary_model_id: 'model-1',
           fallback_model_id: '',
@@ -1332,8 +1296,6 @@ describe('AgentDetail extracted sections', () => {
         wmSaved={false}
         onSetWmDraft={vi.fn()}
         onSetWmSaved={vi.fn()}
-        showDeleteConfirm={false}
-        onSetShowDeleteConfirm={vi.fn()}
       />,
     );
 
@@ -1375,6 +1337,22 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Access Permissions');
     expect(markup).toContain('Channel Config Mock');
     expect(markup).not.toContain('deleteAgent');
+  });
+
+  it('keeps agent settings free of legacy permission-policy wiring', async () => {
+    const fsModuleId = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const settingsSource = readFileSync(new URL('./AgentSettingsSection.tsx', import.meta.url), 'utf8');
+    const detailSource = readFileSync(new URL('../AgentDetail.tsx', import.meta.url), 'utf8');
+
+    expect(settingsSource).not.toContain('renderCapabilityPolicyRow');
+    expect(settingsSource).not.toContain('handleScopeChange');
+    expect(settingsSource).not.toContain('handleAccessLevelChange');
+    expect(settingsSource).not.toContain('showDeleteConfirm');
+    expect(detailSource).not.toContain('capability-policies');
+    expect(detailSource).not.toContain('listCapabilityPolicies');
   });
 
   it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
@@ -1420,19 +1398,7 @@ describe('AgentDetail extracted sections', () => {
         llmModels={[
           { id: 'model-1', label: 'GPT-5.4', provider: 'openai', model: 'gpt-5.4', enabled: true },
         ]}
-        permData={{
-          is_owner: false,
-          scope_type: 'company',
-          scope_ids: [],
-          access_level: 'use',
-          scope_names: [],
-        }}
         canManage
-        canManageCapabilityPolicies
-        capabilityPolicies={[]}
-        capabilityDefinitions={[{ capability: 'workspace.file.read', tools: ['read_file'] }]}
-        capabilityPolicyLoading={false}
-        capabilityPolicyError=""
         settingsForm={{
           primary_model_id: 'model-1',
           fallback_model_id: '',
@@ -1454,8 +1420,6 @@ describe('AgentDetail extracted sections', () => {
         wmSaved={false}
         onSetWmDraft={vi.fn()}
         onSetWmSaved={vi.fn()}
-        showDeleteConfirm={false}
-        onSetShowDeleteConfirm={vi.fn()}
       />,
     );
 

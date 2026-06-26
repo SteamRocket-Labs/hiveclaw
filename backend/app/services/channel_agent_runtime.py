@@ -136,6 +136,111 @@ async def try_confirm_channel_plan_from_text(
     return f"已确认计划（plan_id={confirmed.id}），handoff 状态：{handoff_status}。"
 
 
+def _parse_channel_permission_action(text: str) -> str | None:
+    import re
+
+    clean = text or ""
+    if re.search(r"(本会话|当前会话|this session|for this session|session).*?(允许|批准|同意|通过|allow|approve|yes)", clean, re.IGNORECASE):
+        return "allow_session"
+    if re.search(r"(拒绝|驳回|不通过|deny|denied|reject|rejected)", clean, re.IGNORECASE):
+        return "deny"
+    if re.search(r"(允许|批准|同意|通过|可以|approve|approved|allow|allowed|yes|ok)", clean, re.IGNORECASE):
+        return "allow_once"
+    return None
+
+
+async def try_resolve_channel_session_permission_from_text(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    user: Any,
+    user_text: str,
+    session_id: str | None,
+    session_source: str,
+) -> str | None:
+    """Resolve a pending CCPlus session permission request from an IM reply."""
+    action = _parse_channel_permission_action(user_text)
+    if action is None or not session_id:
+        return None
+    if user is None:
+        return "权限确认需要可审计的用户身份。请先绑定账号，或到 Web 端会话内确认。"
+
+    import re
+    from app.api import chat_sessions as chat_sessions_api
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    permission_id_pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    explicit_permission_id = None
+    match = re.search(permission_id_pattern, user_text or "")
+    if match:
+        try:
+            explicit_permission_id = uuid.UUID(match.group(0))
+        except ValueError:
+            explicit_permission_id = None
+
+    try:
+        session_uuid = uuid.UUID(str(session_id))
+    except ValueError:
+        return None
+
+    result = await db.execute(
+        select(ChatTranscriptEvent)
+        .where(ChatTranscriptEvent.agent_id == agent_id, ChatTranscriptEvent.session_id == session_uuid)
+        .order_by(ChatTranscriptEvent.created_at.desc())
+        .limit(300)
+    )
+    resolved_ids: set[str] = set()
+    pending_id: uuid.UUID | None = None
+    pending_tool_name = ""
+    for event in result.scalars().all():
+        metadata = dict(getattr(event, "metadata_json", None) or {})
+        decision_request_id = metadata.get("permission_request_id")
+        if decision_request_id and getattr(event, "event_type", "") in {
+            "session_permission_decision",
+            "permission_resolved",
+        }:
+            resolved_ids.add(str(decision_request_id))
+            continue
+
+        parsed = chat_sessions_api._permission_request_payload_from_event(event)
+        if parsed is None:
+            continue
+        request_payload, _tool_payload = parsed
+        request_id = str(request_payload.get("permission_request_id") or "")
+        if not request_id or request_id in resolved_ids:
+            continue
+        if explicit_permission_id and request_id != str(explicit_permission_id):
+            continue
+        try:
+            pending_id = uuid.UUID(request_id)
+        except ValueError:
+            continue
+        pending_tool_name = str(request_payload.get("tool_display_name") or request_payload.get("tool_name") or "")
+        break
+
+    if pending_id is None:
+        return None
+
+    body = chat_sessions_api.ResolveSessionPermissionIn(action=action, feedback=f"resolved via {session_source}")
+    result_payload = await chat_sessions_api.resolve_session_permission(
+        agent_id=agent_id,
+        session_id=session_uuid,
+        permission_request_id=pending_id,
+        body=body,
+        current_user=user,
+        db=db,
+    )
+    status = str(result_payload.get("status") or "")
+    tool_label = f"：{pending_tool_name}" if pending_tool_name else ""
+    if status == "denied":
+        return f"已拒绝本次权限请求{tool_label}。"
+    if status == "failed":
+        return f"权限请求处理失败{tool_label}：{result_payload.get('error') or 'unknown error'}"
+    if action == "allow_session":
+        return f"已在本会话允许权限请求{tool_label}，我会继续执行。"
+    return f"已允许本次权限请求{tool_label}，我会继续执行。"
+
+
 async def call_agent_llm(
     db: AsyncSession,
     agent_id: uuid.UUID,
@@ -167,6 +272,17 @@ async def call_agent_llm(
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
     effective_user_id = user_id or agent_id
+    session_permission_reply = await try_resolve_channel_session_permission_from_text(
+        db=db,
+        agent_id=agent_id,
+        user=durable_user,
+        user_text=user_text,
+        session_id=session_id,
+        session_source=session_source,
+    )
+    if session_permission_reply is not None:
+        return session_permission_reply
+
     plan_confirmation_reply = await try_confirm_channel_plan_from_text(
         agent_id=agent_id,
         user_id=user_id,

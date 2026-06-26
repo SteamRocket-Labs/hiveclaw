@@ -68,6 +68,37 @@ class _ResolveApprovalDb:
 
 
 @pytest.mark.asyncio
+async def test_session_tool_approval_cannot_be_resolved_through_enterprise_service() -> None:
+    from app.services.approval_service import ApprovalService
+
+    tenant_id = uuid4()
+    approval = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        action_type="external.web.search",
+        status="pending",
+        created_at=None,
+        resolved_at=None,
+        resolved_by=None,
+        details={
+            "tool": "web_search",
+            "args": {"query": "github trending"},
+            "origin": {"type": "agent_session", "session_id": "session-1"},
+        },
+    )
+    agent = SimpleNamespace(id=approval.agent_id, tenant_id=tenant_id, creator_id=uuid4(), name="Ops Agent")
+    user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, role="org_admin")
+    db = _ResolveApprovalDb(approval, agent, [])
+
+    with pytest.raises(ValueError, match="inside the session"):
+        await ApprovalService().resolve_approval(db, approval.id, user, "approve")  # type: ignore[arg-type]
+
+    assert approval.status == "pending"
+    assert approval.resolved_at is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_approval_commits_before_approved_external_action(monkeypatch) -> None:
     from app.services.approval_service import ApprovalService
 

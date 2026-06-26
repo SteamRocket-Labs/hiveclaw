@@ -99,11 +99,19 @@ describe('LocalAgentChatSection local-channel projection', () => {
     ]);
   });
 
-  it('downloads local artifacts from the user-scoped local workspace, not the agent workspace', () => {
+  it('downloads local artifacts through the visible local agent session when one is present', () => {
     vi.stubGlobal('localStorage', {
       getItem: vi.fn(() => 'token-1'),
     });
 
+    expect(
+      localAgentArtifactDownloadUrl('workspace/local-bridge/result.md', {
+        agentId: 'agent-local-1',
+        sessionId: 'channel-session-1',
+      }),
+    ).toBe(
+      '/api/agents/agent-local-1/local-agent/sessions/channel-session-1/workspace/download?path=workspace%2Flocal-bridge%2Fresult.md&token=token-1',
+    );
     expect(localAgentArtifactDownloadUrl('workspace/uploads/proof.md')).toBe(
       '/api/local-agents/workspace/download?path=workspace%2Fuploads%2Fproof.md&token=token-1',
     );

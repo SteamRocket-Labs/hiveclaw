@@ -63,6 +63,177 @@ async def test_call_agent_llm_durable_starts_channel_runtime(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_channel_reply_resolves_latest_session_permission(monkeypatch) -> None:
+    from app.api import chat_sessions as chat_sessions_api
+    from app.services.channel_agent_runtime import try_resolve_channel_session_permission_from_text
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    user = SimpleNamespace(id=user_id, username="feishu_u")
+    pending_event = SimpleNamespace(
+        event_type="tool_result",
+        metadata_json={
+            "permission_request": {
+                "permission_request_id": str(permission_request_id),
+                "tool_name": "web_search",
+                "arguments": {"query": "github trending"},
+                "capability": "external.web.search",
+                "permission_mode": "auto",
+            }
+        },
+        content=None,
+        created_at=None,
+    )
+
+    class _ScalarResult:
+        def all(self):
+            return [pending_event]
+
+    class _Result:
+        def scalars(self):
+            return _ScalarResult()
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result()
+
+    captured = {}
+
+    async def fake_resolve_session_permission(**kwargs):
+        captured.update(kwargs)
+        return {"status": "allowed", "permission_request_id": str(permission_request_id)}
+
+    monkeypatch.setattr(chat_sessions_api, "resolve_session_permission", fake_resolve_session_permission)
+
+    reply = await try_resolve_channel_session_permission_from_text(
+        db=_DB(),
+        agent_id=agent_id,
+        user=user,
+        user_text="允许",
+        session_id=str(session_id),
+        session_source="feishu",
+    )
+
+    assert reply == "已允许本次权限请求：web_search，我会继续执行。"
+    assert captured["agent_id"] == agent_id
+    assert captured["session_id"] == session_id
+    assert captured["permission_request_id"] == permission_request_id
+    assert captured["current_user"] is user
+    assert captured["body"].action == "allow_once"
+    assert captured["body"].feedback == "resolved via feishu"
+
+
+@pytest.mark.asyncio
+async def test_channel_reply_can_allow_session_permission(monkeypatch) -> None:
+    from app.api import chat_sessions as chat_sessions_api
+    from app.services.channel_agent_runtime import try_resolve_channel_session_permission_from_text
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), username="wecom_u")
+    pending_event = SimpleNamespace(
+        event_type="permission",
+        metadata_json={
+            "permission_request_id": str(permission_request_id),
+            "tool_name": "write_file",
+            "arguments": {"path": "workspace/report.md", "content": "x"},
+        },
+        content=None,
+        created_at=None,
+    )
+
+    class _ScalarResult:
+        def all(self):
+            return [pending_event]
+
+    class _Result:
+        def scalars(self):
+            return _ScalarResult()
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result()
+
+    captured = {}
+
+    async def fake_resolve_session_permission(**kwargs):
+        captured.update(kwargs)
+        return {"status": "allowed", "permission_request_id": str(permission_request_id)}
+
+    monkeypatch.setattr(chat_sessions_api, "resolve_session_permission", fake_resolve_session_permission)
+
+    reply = await try_resolve_channel_session_permission_from_text(
+        db=_DB(),
+        agent_id=agent_id,
+        user=user,
+        user_text="本会话允许",
+        session_id=str(session_id),
+        session_source="wecom",
+    )
+
+    assert reply == "已在本会话允许权限请求：write_file，我会继续执行。"
+    assert captured["body"].action == "allow_session"
+
+
+@pytest.mark.asyncio
+async def test_channel_reply_skips_already_resolved_permission(monkeypatch) -> None:
+    from app.api import chat_sessions as chat_sessions_api
+    from app.services.channel_agent_runtime import try_resolve_channel_session_permission_from_text
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), username="telegram_u")
+    resolved_event = SimpleNamespace(
+        event_type="session_permission_decision",
+        metadata_json={"permission_request_id": str(permission_request_id), "decision": "allow_once"},
+        content=None,
+        created_at=None,
+    )
+    pending_event = SimpleNamespace(
+        event_type="permission",
+        metadata_json={
+            "permission_request_id": str(permission_request_id),
+            "tool_name": "web_search",
+            "arguments": {"query": "x"},
+        },
+        content=None,
+        created_at=None,
+    )
+
+    class _ScalarResult:
+        def all(self):
+            return [resolved_event, pending_event]
+
+    class _Result:
+        def scalars(self):
+            return _ScalarResult()
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result()
+
+    async def fail_resolve_session_permission(**_kwargs):
+        raise AssertionError("already resolved channel permission must not resolve again")
+
+    monkeypatch.setattr(chat_sessions_api, "resolve_session_permission", fail_resolve_session_permission)
+
+    reply = await try_resolve_channel_session_permission_from_text(
+        db=_DB(),
+        agent_id=agent_id,
+        user=user,
+        user_text="允许",
+        session_id=str(session_id),
+        session_source="telegram",
+    )
+
+    assert reply is None
+
+
+@pytest.mark.asyncio
 async def test_call_agent_llm_durable_preloads_sponsor_before_lifecycle_check(monkeypatch) -> None:
     from app.services.channel_agent_runtime import call_agent_llm
 

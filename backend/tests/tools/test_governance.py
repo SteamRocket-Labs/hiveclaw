@@ -219,7 +219,7 @@ async def test_governance_emits_capability_denied_and_audit():
 
 
 @pytest.mark.asyncio
-async def test_governance_requests_approval_when_capability_requires_it():
+async def test_governance_asks_session_when_capability_requires_approval():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 
     events = []
@@ -239,11 +239,7 @@ async def test_governance_requests_approval_when_capability_requires_it():
         return None
 
     async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
-        assert tool_name == "send_feishu_message"
-        assert arguments["message"] == "hi"
-        assert capability == "channel.feishu.message"
-        assert reason is None
-        return {"allowed": False, "approval_id": "approval-1"}
+        raise AssertionError("tool permission approval must stay inside the session")
 
     message = await run_tool_governance(
         ToolGovernanceContext(
@@ -262,27 +258,18 @@ async def test_governance_requests_approval_when_capability_requires_it():
         event_callback=events.append,
     )
 
-    # B1 teaching approval message: tool + capability + approval id + what to do while waiting
     assert message is not None
     assert "send_feishu_message" in message
     assert "channel.feishu.message" in message
-    assert "Approval ID: approval-1" in message
-    assert "Do not retry" in message
-    assert "Meanwhile you can" in message
-    assert events == [
-        {
-            "type": "permission",
-            "tool_name": "send_feishu_message",
-            "status": "approval_required",
-            "message": message,
-            "approval_id": "approval-1",
-            "capability": "channel.feishu.message",
-        }
-    ]
+    assert "requires session permission" in message
+    assert events and events[-1]["status"] == "session_permission_required"
+    assert events[-1]["tool_name"] == "send_feishu_message"
+    assert events[-1]["capability"] == "channel.feishu.message"
+    assert "approval_id" not in events[-1]
 
 
 @pytest.mark.asyncio
-async def test_restricted_zone_sensitive_tool_creates_real_approval_request():
+async def test_restricted_zone_sensitive_tool_uses_session_policy_not_enterprise_approval():
     from app.services.capability_gate import CapabilityCheckResult
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 
@@ -306,17 +293,7 @@ async def test_restricted_zone_sensitive_tool_creates_real_approval_request():
         return None
 
     async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
-        approval_calls.append(
-            {
-                "agent_id": agent_id,
-                "user_id": user_id,
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "capability": capability,
-                "reason": reason,
-            }
-        )
-        return {"allowed": False, "approval_id": "approval-restricted"}
+        raise AssertionError("restricted zone must not create an enterprise approval")
 
     message = await run_tool_governance(
         ToolGovernanceContext(
@@ -335,20 +312,9 @@ async def test_restricted_zone_sensitive_tool_creates_real_approval_request():
         event_callback=events.append,
     )
 
-    assert "Approval ID: approval-restricted" in message
-    assert approval_calls[0]["tool_name"] == "write_file"
-    assert approval_calls[0]["capability"] == "workspace.file.write"
-    assert approval_calls[0]["reason"] == "restricted security zone"
-    assert events == [
-        {
-            "type": "permission",
-            "tool_name": "write_file",
-            "status": "approval_required",
-            "message": message,
-            "approval_id": "approval-restricted",
-            "capability": "workspace.file.write",
-        }
-    ]
+    assert message is None
+    assert approval_calls == []
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -562,7 +528,7 @@ async def test_governance_blocks_managed_channel_env_probe_without_approval_requ
 
 
 @pytest.mark.asyncio
-async def test_governance_escalates_dangerous_run_command_even_when_capability_allows():
+async def test_governance_asks_session_for_dangerous_run_command_even_when_base_capability_allows():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 
     events = []
@@ -583,17 +549,7 @@ async def test_governance_escalates_dangerous_run_command_even_when_capability_a
         return None
 
     async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
-        approval_calls.append(
-            {
-                "agent_id": agent_id,
-                "user_id": user_id,
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "capability": capability,
-                "reason": reason,
-            }
-        )
-        return {"allowed": False, "approval_id": "approval-danger"}
+        raise AssertionError("dangerous command approval must stay inside the session")
 
     message = await run_tool_governance(
         ToolGovernanceContext(
@@ -612,24 +568,15 @@ async def test_governance_escalates_dangerous_run_command_even_when_capability_a
         event_callback=events.append,
     )
 
-    assert "requires approval" in message
-    assert approval_calls[0]["tool_name"] == "run_command"
-    assert approval_calls[0]["capability"] == "workspace.command.dangerous"
-    assert "recursive delete" in approval_calls[0]["reason"]
-    assert events == [
-        {
-            "type": "permission",
-            "tool_name": "run_command",
-            "status": "approval_required",
-            "message": message,
-            "approval_id": "approval-danger",
-            "capability": "workspace.command.dangerous",
-        }
-    ]
+    assert "requires session permission" in message
+    assert approval_calls == []
+    assert events and events[-1]["status"] == "session_permission_required"
+    assert events[-1]["capability"] == "workspace.command.dangerous"
+    assert "approval_id" not in events[-1]
 
 
 @pytest.mark.asyncio
-async def test_governance_escalates_dangerous_run_command_subcommand():
+async def test_governance_asks_session_for_dangerous_run_command_subcommand():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
 
     checked_tools: list[str] = []
@@ -652,17 +599,7 @@ async def test_governance_escalates_dangerous_run_command_subcommand():
         return None
 
     async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
-        approval_calls.append(
-            {
-                "agent_id": agent_id,
-                "user_id": user_id,
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "capability": capability,
-                "reason": reason,
-            }
-        )
-        return {"allowed": False, "approval_id": "approval-subcommand"}
+        raise AssertionError("dangerous subcommand approval must stay inside the session")
 
     message = await run_tool_governance(
         ToolGovernanceContext(
@@ -680,10 +617,9 @@ async def test_governance_escalates_dangerous_run_command_subcommand():
         ),
     )
 
-    assert "requires approval" in message
+    assert "requires session permission" in message
     assert checked_tools == ["run_command", "workspace.command.dangerous"]
-    assert approval_calls[0]["capability"] == "workspace.command.dangerous"
-    assert "git clean" in approval_calls[0]["reason"]
+    assert approval_calls == []
 
 
 @pytest.mark.asyncio
@@ -1185,7 +1121,7 @@ def _mcp_gate_deps(resolve_mcp_tool_mode, request_approval=None):
 
 
 @pytest.mark.asyncio
-async def test_governance_mcp_approval_mode_requests_approval():
+async def test_governance_mcp_approval_mode_asks_session_permission():
     from app.tools.governance import ToolGovernanceContext, run_tool_governance
 
     events = []
@@ -1197,8 +1133,7 @@ async def test_governance_mcp_approval_mode_requests_approval():
         return "approval"
 
     async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
-        approvals.append({"tool_name": tool_name, "arguments": arguments, "capability": capability})
-        return {"allowed": False, "approval_id": "approval-mcp-1"}
+        raise AssertionError("MCP approval mode must stay inside the session")
 
     message = await run_tool_governance(
         ToolGovernanceContext(
@@ -1213,18 +1148,11 @@ async def test_governance_mcp_approval_mode_requests_approval():
     )
 
     assert message is not None
-    assert "requires approval" in message
-    assert "Approval ID: approval-mcp-1" in message
-    assert "Do not retry" in message
-    # Replay needs the OUTER tool + original args in the approval details.
-    assert approvals == [
-        {
-            "tool_name": "call_mcp_tool",
-            "arguments": {"tool_name": "notion_search", "arguments": {"q": "x"}},
-            "capability": "mcp_tool_call",
-        }
-    ]
-    assert events and events[0]["status"] == "approval_required"
+    assert "requires session permission" in message
+    assert approvals == []
+    assert events and events[0]["status"] == "session_permission_required"
+    assert events[0]["tool_name"] == "call_mcp_tool"
+    assert events[0]["capability"] == "mcp_tool_call"
 
 
 @pytest.mark.asyncio

@@ -144,7 +144,11 @@ async def exchange_pairing(
 
 
 @router.get("/local-bridge/status")
-async def bridge_status(context: BridgeAuthContext = Depends(get_bridge_auth_context)):
+async def bridge_status(
+    context: BridgeAuthContext = Depends(get_bridge_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    presence = await bridge_service.get_connection_presence(db, connection_id=context.connection_id)
     return {
         "status": "connected",
         "connection_id": str(context.connection_id),
@@ -154,6 +158,7 @@ async def bridge_status(context: BridgeAuthContext = Depends(get_bridge_auth_con
         "client_kind": context.client_kind,
         "device_name": context.device_name,
         "scopes": list(context.scopes),
+        **presence,
     }
 
 

@@ -128,7 +128,7 @@ const hubCopy: Record<HubKind, HubCopy> = {
   team: {
     title: 'A2A / Team',
     eyebrow: 'Delegation and collaboration',
-    subtitle: 'Session-local team work, subagent definitions, peer relationships, and user-scoped local runtime channels stay visible without mixing their ownership boundaries.',
+    subtitle: 'Session-local team work, subagent definitions, peer relationships, and local-runtime agents stay visible without mixing their ownership boundaries.',
     icon: <IconRoute size={20} stroke={1.7} />,
   },
 };
@@ -801,7 +801,7 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
                   <IconDeviceDesktop size={18} stroke={1.7} />
                   <span>
                     <strong>{t('featureHub.localAgentChannel', 'Local Agent Channel')}</strong>
-                    <small>{t('featureHub.localAgentChannelDesc', 'User-scoped local runtime presence, channel chat, and workspace transfer')}</small>
+                    <small>{t('featureHub.localAgentChannelDesc', 'Local-runtime agents with ordinary Agent permissions, presence, channel chat, and workspace transfer')}</small>
                   </span>
                 </Link>
               </>

@@ -39,10 +39,10 @@ Method: 6 个并行只读勘察 agent 全量测绘(services 207 / memory 30+自�
 
 | # | 模式 | 代表证据 | 性质 |
 |---|---|---|---|
-| **P1** | **Legacy 双轨从不退役** | 记忆死 curator 子系统(`scene_curator`+`wiki_curator`+`memory_curation` 死 stub 永返 `disabled`+`distillation_audit`,~1500 行只能经死 stub 到达);extract-first 老管线(`extract_agent` 62KB+`t0_logger` 51KB+`t2_store`);no-op 空壳(`enhancement.py`/`backend.py`) | 主体,~111 legacy 文件来源 |
-| **P2** | **迁移没收口、两世代并存** | `pack→plugin→extension`(一面三词)、`schedules→triggers`(`AgentSchedule` 影子表+`schedules.py` facade)、channel `per-agent vs per-tenant` 两代模型、`mcp_server vs installed_plugin` 两套安装原语、`agent_manager.py`(管 OpenClaw Docker 的名实不符孤儿) | 收口未完 |
+| **P1** | **Legacy 双轨从不退役** | 记忆死 curator(`scene_curator`+`wiki_curator` 真孤儿;`memory_curation` 是 evolution_daemon 接线但永返 `disabled` 的死 stub。注:`distillation_audit` **不在此列,它 LIVE**);extract-first 老管线(`extract_agent` 62KB+`t0_logger` 51KB+`t2_store`);no-op 空壳(`enhancement.py`/`backend.py`) | 主体,~111 legacy 文件来源 |
+| **P2** | **迁移没收口、两世代并存** | `pack→plugin→extension`(一面三词)、`schedules→triggers`(`AgentSchedule` 影子表+`schedules.py` facade)、channel `per-agent vs per-tenant` 两代模型、`mcp_server vs installed_plugin` 两套安装原语、`agent_manager.py`(docstring 仍写 OpenClaw Docker 但**名实不符+职责混杂,非孤儿**——hr/advanced/agents/seeder 在依赖,见 §5.2,改名拆责任不退役) | 收口未完 |
 | **P3** | **dispatch 碎片化** | plan_mode 6 handoff 文件=6 register 函数;8 个 per-IM-channel router 同形复制(`feishu.py` 单文件 2169 行);本地/桌面 agent 桥 3 套竞争机制 7 文件 50+ 端点 | 一概念拆 N 文件 |
-| **P4** | **一职责多权威源(最危险)** | schema 三套:`create_all`×2 + entrypoint 41 条 `ALTER IF NOT EXISTS` + alembic,同列三处定义、alembic 失败 `\|\| echo WARNING` 静默吞 | 单项最大架构债 |
+| **P4** | **一职责多权威源(最危险)** | schema 三套:`main.py:207` create_all + `entrypoint.sh:68` 第二次 create_all + 42 条 `ALTER TABLE` / 39 条 `ADD COLUMN IF NOT EXISTS` + `entrypoint.sh:164` alembic(失败 `\|\| echo WARNING` 静默吞),同列三处定义 | 单项最大架构债(主理人确认) |
 | **P5** | **过渡期双跑(个体合理、集体沉重)** | startup 一次性迁移(`t0_logger` backfill/`legacy_migration`/`auto_dream` 迁移/`mcp_backfill`)+ 运行时 fallback(filesystem facade/Gemini openai-fallback/plan_mode long_task 兜底) | 留着对,但需日落纪律 |
 | **P6** | **错放 + 地图过期** | `prompt_eval`+`task_eval`(1400 行 eval 工具)错放 `runtime/` 核心目录;前端 `Dashboard.tsx`(855 行)纯孤儿;CLAUDE.md 计数全过期(services 写 163 实际 207) | 杂项 |
 
@@ -93,17 +93,44 @@ T0/T2/T3/soul 四层分层、`ccplus_contracts` session/permission/context 族(�
 
 ## 5. 逐项工作清单
 
-### 5.1 RETIRE — 纯减法(T0,可立即做,零行为变更)
+### 5.1 RETIRE — 候选,逐项核实后退役(**不是"零风险一把清"**)
 
-| 项 | 文件 | 证据 |
-|---|---|---|
-| 死 curator 子系统 | `memory/scene_curator.py` `wiki_curator.py` `services/memory_curation.py`(死 stub)`memory/distillation_audit.py`(主调用方已死)+ 清 `evolution_daemon.py:175-183` 死调用 | 唯一 live 入口 `run_scene_wiki_curation_tick` 永返 `{status:disabled}`;~1500 行 |
-| 零调用孤儿模块 | `memory/understanding_store.py`(record/contradict 已 raise)`memory/promotion_router.py`(spec 设计从未接线)`services/extract_queue_replay.py` `services/heartbeat_reflection_backfill.py` | grep 跨 app/ 排除 test = 零命中 |
-| 死守卫/死字段 | `retriever.py` 的 `_retrieve_high_priority_t2`/`_retrieve_understandings`(体已 `return []`)+ `include_legacy/derived_sources` 参数;`tools/handlers/memory.py::save_memory` 的 `candidate_type`(零读取);`llm_utils.py::ANTHROPIC_API_PROVIDERS`(死常量) | 函数体空/字段零读 |
-| 死别名 | `resource_discovery.py::search_smithery`;`runtime_guidance_catalog.py` 两个 self-alias re-export;摘 `decision_trace.py` 三个 JSONL backfill 方法(保留 store 主体) | 零 import |
-| no-op 空壳 | `memory/enhancement.py`(函数体 no-op)`memory/backend.py`(单实现协议) | docstring 自白 |
-| 前端孤儿 | `frontend/.../pages/Dashboard.tsx` + `Dashboard.test.tsx`(855+ 行) | 0 路由、仅被自身测试钉住 |
-| API 死孤儿 | `app/api/packs.py` | `main.py` 从不 import,`capabilities.py` 是 live 副本(逐字相同) |
+> **⚠️ 修订(2026-06-26,主理人+Codex 抽查后):此前把本表当"T0 纯减法零风险一把清"是错的。** Codex 复核坐实 census grep 漏判了 5 项(动态 import / 独立 writer / public tool schema):`distillation_audit`(auto_dream+evolution_daemon 在写)、`search_smithery`(web_mcp 在调)、`agent_manager`(hr/agents/seeder 在依赖)、`retriever` 派生参数(还 gate wiki_pages)、`container_candidate`(public schema)。**结论:下表是候选,每项删除前必须过"穷举 caller 闸"(见下),census 单次 grep 不够。**
+
+**穷举 caller 闸(删任一项前逐项过)**:① 静态 import + **函数内动态 import**(`from x import y` 藏在函数体里);② tool 参数 schema 暴露面(影响旧 tool call);③ transcript / T0 replay 引用;④ admin/startup/daemon 接线;⑤ 测试外的任何读/写点。**五项全空才可删。**
+
+**穷举核实结果(2026-06-26,只读,逐项过闸)** — grep 覆盖 `app/**/*.py` 静态+函数内动态 import+字符串引用(本批候选均非 registry/computed-string 动态加载,grep 充分);带测试的删除连其测试一起删:
+
+| # | 候选 | 闸结论 | caller 证据 |
+|---|---|---|---|
+| 1 | `services/extract_queue_replay.py` | ✅ 过闸 | app 零引用;3 测试文件 |
+| 2 | `services/heartbeat_reflection_backfill.py` | ✅ 过闸 | app 零引用;1 测试 |
+| 3 | `memory/understanding_store.py` | ✅ 过闸 | app 零引用(含 `query()`);3 测试 |
+| 4 | `memory/promotion_router.py` | ✅ 过闸 | app 仅 2 处**注释**提及(`types.py:57`/`extract_agent.py:133`),无 import/call;2 测试 |
+| 5 | `memory/scene_curator.py` + `wiki_curator.py` | ✅ 过闸 | app 零引用;**census"经 memory_curation 可达"已证伪**——`memory_curation.py` docstring 自承 curators 仅 importable-for-tests,实际不 import 它们 |
+| 6 | `retriever.py::_retrieve_high_priority_t2` + `_retrieve_understandings` | ✅ 过闸(局部) | 零外部 caller,仅 `:251/:253` 内部;**只删 2 方法体+2 内部调用,留** `include_derived_sources`+`_retrieve_wiki_pages`(`:258` live) |
+| 7 | `llm_utils.py::ANTHROPIC_API_PROVIDERS` | ✅ 过闸 | app 零、测试零 |
+| 8 | `runtime_guidance_catalog.py` 两 alias(`RuntimeGuidanceCatalogEntry`/`ATTACHMENT_ALIGNMENT_CATALOG`) | ✅ 过闸 | app 零;**留底层真名** `CC_NATIVE_ATTACHMENT_CATALOG`(live) |
+| 9 | `decision_trace.py` 的 JSONL→SQL backfill/import 方法(`backfill_decision_trace_jsonl_to_sql`/`import_decision`/`import_feedback`) | ✅ 过闸(仅这几个方法) | 三者 app 零调用 + 专用测试。**严禁误删 live 的 JSONL store**:`DecisionTraceStore.persistent_default()`/`_load()`/`_append()`(`:60/:58/:73`)被 `session_feedback.py:143` 默认在用,必须保留 |
+| 10 | `api/packs.py` | ✅ 过闸 | `main.py` 零引用;live 副本在 `capabilities.py:156/167` |
+| 11 | 前端 `pages/Dashboard.tsx` + 测试 | ✅ 过闸 | `App.tsx:128/148` `/dashboard`→`Navigate`/`ControlPlane`,无组件 import;`guards.tsx` 的 `Navigate to="/dashboard"` 仅命中重定向 |
+| 12 | `runtime/hook_runner.py`(`GovernedHookRunner`,=§9) | ✅ 过闸 | app 零(Codex 折叠 `cc_hook_contract` 后剩的孤儿);2 测试 |
+| 13 | `services/memory_curation.py`(disabled stub) | ⚠️ 过闸但**连带改** | `evolution_daemon.py:174-182` 是调用它的 `try/except` 整块(动态 import + `run_scene_wiki_curation_tick` 返回 disabled + `report["scene_wiki_curation"]` + 异常日志)→ 删 stub **必须连删整个 try block**,否则留半截死 try |
+
+**确认未过闸、保留(LIVE,本次复核坐实)**:`distillation_audit.py`(`evolution_daemon:196`+`auto_dream:417/1170` 在写)、`search_smithery`(`web_mcp:2096` 在调)、`agent_manager.py`(hr/advanced/agents/seeder 在依赖)→ 全留;`container_candidate`(`memory.py:77` public schema)→ §5.4 SUNSET;`enhancement.py`/`backend.py`(`main.py:540`/`memory.py:371`/`evolution_daemon:221` 在调,no-op 但被接线)→ §5.3 改 3 处调用点的小重构,非删。
+
+**净结果:13 项过闸可删**(#13 需连删 `evolution_daemon` 整个 try/except 块、#6 是局部删)、**6 项确认保留**;删除合计净减约 2000+ 行,**每项带 caller 证据,可作为删除执行单**。
+
+**执行前核验命令(删任何东西前必跑)**:
+
+```bash
+# 1) 复核 decision_trace 边界:只删 backfill/import 方法,persistent_default/_load/_append 必须仍 live
+rg -n "backfill_decision_trace_jsonl_to_sql|import_decision|import_feedback|DecisionTraceStore\.persistent_default|persistent_default\(" backend/app backend/tests
+# 2) 后端全量回归(删后必须仍绿)
+cd backend && source .venv/bin/activate && pytest tests -q
+# 3) 前端构建(删 Dashboard.tsx 后必须仍过)
+cd ../frontend && npm run build
+```
 
 ### 5.2 收口 FINISH — 两世代统一(T3,需 backfill+影子验证)
 
@@ -113,7 +140,7 @@ T0/T2/T3/soul 四层分层、`ccplus_contracts` session/permission/context 族(�
 | 安装原语 | `mcp_server` → `installed_plugin` 统一 | 同上 | 存量 MCP server 行 |
 | 调度 | `AgentSchedule`+`schedules.py` facade → **`AgentTrigger`** | `migrate_schedules_to_triggers.py` 已就绪 | 存量 AgentSchedule 行(影子表) |
 | Channel 配置 | `channel_config`(per-agent) → `tenant_channel_config`(per-tenant)收一代 | Phase 6 已建新模型 | 存量 per-agent channel 配置 |
-| OpenClaw 孤儿 | 核实 `agent_manager.py`(Docker/Gateway)是否仍 wire,若否则退役 | — | 名实不符,需先确认无 live 依赖 |
+| ~~OpenClaw 孤儿~~ | ❌**误判,非孤儿**:`agent_manager.py` 被 hr.py/advanced.py/agents.py/skill_seeder.py 大量依赖(`agents.py:329/336` 调 `initialize_agent_files`/`start_container`)。问题是**职责混杂 + docstring 命名过期(仍写 OpenClaw/Docker)**,不是可退役孤儿 → **改名 + 拆责任 + 更新 docstring**(归 §5.3 CONSOLIDATE/重命名,**不删**) | — | 零(改名+更注释) |
 
 ### 5.3 CONSOLIDATE — 收敛碎片化(T1,行为不变,测试守门)
 
@@ -136,11 +163,11 @@ T0/T2/T3/soul 四层分层、`ccplus_contracts` session/permission/context 族(�
 
 ## 6. Schema 单一权威方案(你已确认要做 — T4,最高风险,freeze→verify→shrink)
 
-现状(每次启动三套都跑):`main.py:207` `create_all` + `apply_rls` + 内联 `ALTER TYPE`;`entrypoint.sh` **再次** `create_all` + **41 条** `ALTER TABLE IF NOT EXISTS` + `alembic upgrade head`(`|| echo WARNING` 非阻断)。
+现状(每次启动三套都跑):`main.py:207` `create_all` + `apply_rls` + 内联 `ALTER TYPE`;`entrypoint.sh:68` **再次** `create_all` + **42 条 `ALTER TABLE` / 39 条 `ADD COLUMN IF NOT EXISTS`** 手补丁 + `entrypoint.sh:164` `alembic upgrade head`(`|| echo WARNING` 非阻断)。
 
 **绝不骤删 ALTER 块**(它现在真在兜底漂移,`entrypoint.sh:144` 自白"早期 create_all 漏 updated_at → sso 500")。安全 5 步:
 
-1. **Freeze(纪律,零风险)**:立铁律"**新列只走 alembic migration**";entrypoint 41 条 ALTER 加注释"存量冻结、禁止新增"。从今天起债不再长大。
+1. **Freeze(纪律,零风险)**:立铁律"**新列只走 alembic migration**";entrypoint 那 42+39 条 ALTER/ADD 加注释"存量冻结、禁止新增"。从今天起债不再长大。
 2. **Verify(只读核对)**:逐条确认每个 ALTER 列都有对应 alembic migration(api 勘察已发现绝大部分有)+ 生产 schema = alembic head。
 3. **Shrink create_all**:移除重复的第二次 `create_all`(lifespan 与 entrypoint 二选一保留)。
 4. **Un-swallow(需先影子验证)**:把 `alembic upgrade head || echo WARNING` 的静默吞改为 fail-loud/告警——**但必须先在生产确认 alembic 能干净跑通**,否则从"静默带病启动"变"硬崩"。这一步本身要影子验证。
@@ -188,6 +215,7 @@ app/services/                         app/services/
 4. **没有 live 消费者不准种契约**;确需 deferred 必须显式 fence + 标期限(本轮 cc_hook/side-effect channel 已转此形)。
 5. **services 按 domain 包组织**,新文件进对应包,禁平铺。
 6. **地图跟代码同步**(CLAUDE.md 计数生成化)。
+7. **删除前过"穷举 caller 闸"**(静态 import + **函数内动态 import** + tool 参数 schema + transcript/T0 replay + admin/startup/daemon),**单次 grep 不算证据**——"活兜底误判成死"是本仓库反复踩的坑(2026-06-26 §5.1 又被抽查逮到 5 处误判:动态 import 的 `search_smithery`、独立 writer 的 `distillation_audit`、public schema 的 `container_candidate`、heavily-wired 的 `agent_manager`、还 gate live 路径的 retriever 参数)。
 
 ---
 
@@ -203,14 +231,14 @@ Codex 这轮把 **`cc_hook_contract.py` 删除、CC wire standard 折叠进 `hoo
 
 | 阶段 | 内容 | Tier | 何时 |
 |---|---|---|---|
-| **A. 纯减法** | §5.1 RETIRE 全部 + §9 删 hook_runner + §5.5 RE-FILE 的删 Dashboard/归位 eval | T0/T1 | 可立即,零风险一把清 |
+| **A. 逐项核实退役**(非"一把清") | §5.1 候选**逐项过"穷举 caller 闸"**后才删 + §9 删 hook_runner(也需先核实零 caller)+ §5.5 删 Dashboard/归位 eval | T0/T1 | 先做穷举审计,只删全过闸的项;Codex 已证 census grep 不够 |
 | **B. 收敛碎片** | §5.3 CONSOLIDATE(plan_mode handoff、小卫星合并先做;channel/本地桥放后) | T1 | A 后 |
 | **C. Schema freeze** | §6 第 1-3 步(立纪律 + 核对 + 去重 create_all) | T4 前段 | 与 A/B 并行,纪律即生效 |
 | **D. 收口迁移** | §5.2 FINISH(schedules→triggers 先,迁移脚本已就绪;pack→plugin/channel/mcp 逐个 backfill+影子验证) | T3 | 逐个,每个独立主线 |
 | **E. 重打包**(可选) | §7 services → domain 包 | T1 | 看你 §决策 |
 | **F. Schema un-swallow** | §6 第 4-5 步(需生产 alembic 实证) | T4 后段 | 最后,最谨慎 |
 
-**先动 A(纯减法)立竿见影减负且零线上风险;C 第 1 步(freeze 纪律)今天就能立,从此债不再长大。D/F 是碰生产的部分,逐个走 expand→verify→contract,不 big-bang。**
+**先动 A 中已过闸的 13 项(逐项已带 caller 证据,见 §5.1),低风险但删后仍需全量回归兜底,非"零风险一把清";C 第 1 步(freeze 纪律)今天就能立,从此债不再长大。D/F 是碰生产的部分,逐个走 expand→verify→contract,不 big-bang。**
 
 ---
 

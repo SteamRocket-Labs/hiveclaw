@@ -16,6 +16,7 @@ from app.models.channel_config import ChannelConfig
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.services.channel_user_service import channel_user_service
+from app.services.enterprise_approval_visibility import is_session_tool_approval
 from app.services.feishu_service import feishu_service
 
 
@@ -86,6 +87,8 @@ class ApprovalService:
 
         if approval.status != "pending":
             raise ValueError("Approval already resolved")
+        if is_session_tool_approval(approval):
+            raise ValueError("Session tool permissions must be resolved inside the session")
 
         agent_result = await db.execute(select(Agent).where(Agent.id == approval.agent_id))
         agent = agent_result.scalar_one_or_none()

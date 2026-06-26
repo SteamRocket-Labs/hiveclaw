@@ -86,6 +86,21 @@ async def _get_owned_sub_agent(db: AsyncSession, user: User, agent_id: uuid.UUID
     return agent
 
 
+async def _get_admin_deletable_sub_agent(db: AsyncSession, user: User, agent_id: uuid.UUID) -> Agent:
+    """Get a tenant sub-agent asset for admin deletion."""
+    agent = await db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if get_agent_lifecycle_block_reason(agent):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if agent.parent_agent_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Desktop can only delete sub-agents")
+    agent_tenant_id = getattr(agent, "tenant_id", None)
+    if user.role != "platform_admin" and agent_tenant_id is not None and agent_tenant_id != user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    return agent
+
+
 # ─── Endpoints ──────────────────────────────────────────
 
 
@@ -160,7 +175,7 @@ async def delete_sub_agent(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Sub-agent is an enterprise asset; only an admin can delete it.",
         )
-    agent = await _get_owned_sub_agent(db, current_user, agent_id)
+    agent = await _get_admin_deletable_sub_agent(db, current_user, agent_id)
 
     await soft_delete_agent(db, agent, actor_id=current_user.id, reason="desktop_delete_sub_agent")
     await db.flush()

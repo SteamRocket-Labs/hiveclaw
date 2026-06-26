@@ -1,12 +1,9 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 
 import ChannelConfig from '../../components/ChannelConfig';
-import { showAppToast } from '../../components/AppDialogs';
 import { agentApi } from '../../api/domains/agents';
-import { enterpriseApi, type CapabilityDefinition, type CapabilityPolicy } from '../../api/domains/enterprise';
 import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
 
@@ -20,344 +17,6 @@ type AgentSettingsForm = {
   security_zone: string;
 };
 
-type CapabilityPolicyMode = 'auto' | 'approval' | 'deny';
-
-const policyToMode = (policy?: CapabilityPolicy): CapabilityPolicyMode => {
-  if (!policy) return 'auto';
-  if (!policy.allowed) return 'deny';
-  return policy.requires_approval ? 'approval' : 'auto';
-};
-
-const modeToPolicy = (mode: CapabilityPolicyMode) => {
-  if (mode === 'deny') return { allowed: false, requires_approval: false };
-  if (mode === 'approval') return { allowed: true, requires_approval: true };
-  return { allowed: true, requires_approval: false };
-};
-
-type CapabilityActionMeta = {
-  key: string;
-  capability: string;
-  labelKey: string;
-  descKey: string;
-  fallbackLabel: string;
-  fallbackDesc: string;
-};
-
-type CapabilityAction = {
-  key: string;
-  capability: string;
-  label: string;
-  desc: string;
-};
-
-const KNOWN_CAPABILITY_ACTIONS: CapabilityActionMeta[] = [
-  {
-    key: 'read_files',
-    capability: 'workspace.file.read',
-    labelKey: 'readFiles',
-    descKey: 'readFilesDesc',
-    fallbackLabel: 'Read Files',
-    fallbackDesc: 'View files in the workspace and knowledge base',
-  },
-  {
-    key: 'write_workspace_files',
-    capability: 'workspace.file.write',
-    labelKey: 'writeFiles',
-    descKey: 'writeFilesDesc',
-    fallbackLabel: 'Write Files',
-    fallbackDesc: 'Create or edit files in the workspace',
-  },
-  {
-    key: 'delete_files',
-    capability: 'workspace.file.delete',
-    labelKey: 'deleteFiles',
-    descKey: 'deleteFilesDesc',
-    fallbackLabel: 'Delete Files',
-    fallbackDesc: 'Remove files from the workspace',
-  },
-  {
-    key: 'execute_code',
-    capability: 'workspace.code.execute',
-    labelKey: 'executeCode',
-    descKey: 'executeCodeDesc',
-    fallbackLabel: 'Run Code',
-    fallbackDesc: 'Execute scripts in a secure sandbox',
-  },
-  {
-    key: 'run_command',
-    capability: 'workspace.command.execute',
-    labelKey: 'runCommand',
-    descKey: 'runCommandDesc',
-    fallbackLabel: 'Run Shell Commands',
-    fallbackDesc: 'Run shell commands in the agent workspace',
-  },
-  {
-    key: 'dangerous_commands',
-    capability: 'workspace.command.dangerous',
-    labelKey: 'dangerousCommands',
-    descKey: 'dangerousCommandsDesc',
-    fallbackLabel: 'Dangerous Commands',
-    fallbackDesc: 'Recursive deletes, SQL destructive commands, sudo, or permission changes',
-  },
-  {
-    key: 'secret_reads',
-    capability: 'workspace.command.secret_exfiltration',
-    labelKey: 'secretReads',
-    descKey: 'secretReadsDesc',
-    fallbackLabel: 'Secret/Environment Reads',
-    fallbackDesc: 'Commands that inspect environment variables, secrets, or tokens',
-  },
-  {
-    key: 'read_tasks',
-    capability: 'agent.task.read',
-    labelKey: 'readTasks',
-    descKey: 'readTasksDesc',
-    fallbackLabel: 'Read Task Records',
-    fallbackDesc: 'View control-plane task records',
-  },
-  {
-    key: 'manage_tasks',
-    capability: 'agent.task.modify',
-    labelKey: 'manageTasks',
-    descKey: 'manageTasksDesc',
-    fallbackLabel: 'Manage Task Records',
-    fallbackDesc: 'Create or update control-plane task records',
-  },
-  {
-    key: 'read_memory',
-    capability: 'agent.memory.read',
-    labelKey: 'readMemory',
-    descKey: 'readMemoryDesc',
-    fallbackLabel: 'Read Memory',
-    fallbackDesc: 'Search long-term memory and past sessions',
-  },
-  {
-    key: 'write_memory',
-    capability: 'agent.memory.write',
-    labelKey: 'writeMemory',
-    descKey: 'writeMemoryDesc',
-    fallbackLabel: 'Write Memory',
-    fallbackDesc: 'Save facts into long-term memory',
-  },
-  {
-    key: 'read_skills',
-    capability: 'agent.skill.read',
-    labelKey: 'readSkills',
-    descKey: 'readSkillsDesc',
-    fallbackLabel: 'Read Skills',
-    fallbackDesc: 'Load reusable skill instructions',
-  },
-  {
-    key: 'write_skills',
-    capability: 'agent.skill.write',
-    labelKey: 'writeSkills',
-    descKey: 'writeSkillsDesc',
-    fallbackLabel: 'Write Skills',
-    fallbackDesc: 'Create or update reusable skills',
-  },
-  {
-    key: 'discover_tools',
-    capability: 'agent.tool.discover',
-    labelKey: 'discoverTools',
-    descKey: 'discoverToolsDesc',
-    fallbackLabel: 'Discover Tools',
-    fallbackDesc: 'Search available tools, skills, and MCP servers',
-  },
-  {
-    key: 'install_mcp_server',
-    capability: 'agent.tool.install',
-    labelKey: 'installMcp',
-    descKey: 'installMcpDesc',
-    fallbackLabel: 'Install Extensions',
-    fallbackDesc: 'Add third-party tool extensions',
-  },
-  {
-    key: 'read_mcp_resources',
-    capability: 'agent.mcp.read',
-    labelKey: 'readMcp',
-    descKey: 'readMcpDesc',
-    fallbackLabel: 'Read MCP Resources',
-    fallbackDesc: 'List or read resources from connected MCP servers',
-  },
-  {
-    key: 'read_triggers',
-    capability: 'agent.trigger.read',
-    labelKey: 'readTriggers',
-    descKey: 'readTriggersDesc',
-    fallbackLabel: 'Read Triggers',
-    fallbackDesc: 'View automation triggers',
-  },
-  {
-    key: 'manage_triggers',
-    capability: 'agent.trigger.modify',
-    labelKey: 'manageTriggers',
-    descKey: 'manageTriggersDesc',
-    fallbackLabel: 'Manage Triggers',
-    fallbackDesc: 'Create, update, or cancel automation triggers',
-  },
-  {
-    key: 'send_agent_message',
-    capability: 'agent.message.send',
-    labelKey: 'sendAgentMessage',
-    descKey: 'sendAgentMessageDesc',
-    fallbackLabel: 'Agent Messaging',
-    fallbackDesc: 'Message or delegate work to other digital employees',
-  },
-  {
-    key: 'read_async_tasks',
-    capability: 'agent.async_task.read',
-    labelKey: 'readAsyncTasks',
-    descKey: 'readAsyncTasksDesc',
-    fallbackLabel: 'Read Async Tasks',
-    fallbackDesc: 'Check delegated task status',
-  },
-  {
-    key: 'manage_async_tasks',
-    capability: 'agent.async_task.modify',
-    labelKey: 'manageAsyncTasks',
-    descKey: 'manageAsyncTasksDesc',
-    fallbackLabel: 'Manage Async Tasks',
-    fallbackDesc: 'Cancel delegated background tasks',
-  },
-  {
-    key: 'create_employee',
-    capability: 'agent.employee.create',
-    labelKey: 'createEmployee',
-    descKey: 'createEmployeeDesc',
-    fallbackLabel: 'Create Employees',
-    fallbackDesc: 'Preview or create digital employee colleagues',
-  },
-  {
-    key: 'send_email',
-    capability: 'channel.email.send',
-    labelKey: 'sendEmail',
-    descKey: 'sendEmailDesc',
-    fallbackLabel: 'Send Email',
-    fallbackDesc: 'Send or reply to emails',
-  },
-  {
-    key: 'read_email',
-    capability: 'channel.email.read',
-    labelKey: 'readEmail',
-    descKey: 'readEmailDesc',
-    fallbackLabel: 'Read Email',
-    fallbackDesc: 'Read mailbox messages',
-  },
-  {
-    key: 'send_channel_message',
-    capability: 'channel.message.send',
-    labelKey: 'sendChannelMessage',
-    descKey: 'sendChannelMessageDesc',
-    fallbackLabel: 'Send Channel Messages',
-    fallbackDesc: 'Reply through the active web, Feishu, Telegram, WeCom, Slack, Discord, or WeChat channel',
-  },
-  {
-    key: 'send_channel_file',
-    capability: 'channel.file.send',
-    labelKey: 'sendChannelFile',
-    descKey: 'sendChannelFileDesc',
-    fallbackLabel: 'Send Channel Files',
-    fallbackDesc: 'Send files or uploaded images through a communication channel',
-  },
-  {
-    key: 'send_feishu_message',
-    capability: 'channel.feishu.message',
-    labelKey: 'sendFeishu',
-    descKey: 'sendFeishuDesc',
-    fallbackLabel: 'Send Feishu Messages',
-    fallbackDesc: 'Send Feishu messages directly to people',
-  },
-  {
-    key: 'feishu_documents',
-    capability: 'channel.feishu.document',
-    labelKey: 'feishuDocs',
-    descKey: 'feishuDocsDesc',
-    fallbackLabel: 'Feishu Documents',
-    fallbackDesc: 'Create, update, share, read, or delete Feishu documents',
-  },
-  {
-    key: 'feishu_base',
-    capability: 'channel.feishu.base',
-    labelKey: 'feishuBase',
-    descKey: 'feishuBaseDesc',
-    fallbackLabel: 'Feishu Base',
-    fallbackDesc: 'Create, read, update, or delete Base records and fields',
-  },
-  {
-    key: 'feishu_spreadsheet',
-    capability: 'channel.feishu.spreadsheet',
-    labelKey: 'feishuSpreadsheet',
-    descKey: 'feishuSpreadsheetDesc',
-    fallbackLabel: 'Feishu Spreadsheets',
-    fallbackDesc: 'Read Feishu spreadsheet information and values',
-  },
-  {
-    key: 'feishu_tasks',
-    capability: 'channel.feishu.task',
-    labelKey: 'feishuTasks',
-    descKey: 'feishuTasksDesc',
-    fallbackLabel: 'Feishu Tasks',
-    fallbackDesc: 'Create, complete, list, or comment on Feishu tasks',
-  },
-  {
-    key: 'feishu_calendar',
-    capability: 'channel.feishu.calendar',
-    labelKey: 'feishuCalendar',
-    descKey: 'feishuCalendarDesc',
-    fallbackLabel: 'Feishu Calendar',
-    fallbackDesc: 'List, create, update, or delete Feishu calendar events',
-  },
-  {
-    key: 'feishu_approval',
-    capability: 'channel.feishu.approval',
-    labelKey: 'feishuApproval',
-    descKey: 'feishuApprovalDesc',
-    fallbackLabel: 'Feishu Approval',
-    fallbackDesc: 'Create or inspect Feishu approval instances',
-  },
-  {
-    key: 'feishu_directory',
-    capability: 'channel.feishu.directory',
-    labelKey: 'feishuDirectory',
-    descKey: 'feishuDirectoryDesc',
-    fallbackLabel: 'Feishu Directory',
-    fallbackDesc: 'Search Feishu users and directory information',
-  },
-  {
-    key: 'web_search',
-    capability: 'external.web.search',
-    labelKey: 'webSearch',
-    descKey: 'webSearchDesc',
-    fallbackLabel: 'Search the Web',
-    fallbackDesc: 'Look up information on the internet',
-  },
-  {
-    key: 'web_read',
-    capability: 'external.web.read',
-    labelKey: 'webRead',
-    descKey: 'webReadDesc',
-    fallbackLabel: 'Read Web Pages',
-    fallbackDesc: 'Fetch or scrape web page content',
-  },
-  {
-    key: 'plaza_read',
-    capability: 'plaza.post.read',
-    labelKey: 'plazaRead',
-    descKey: 'plazaReadDesc',
-    fallbackLabel: 'Read Agent Circle Posts',
-    fallbackDesc: 'Read posts from Agent Circle',
-  },
-  {
-    key: 'plaza_write',
-    capability: 'plaza.post.write',
-    labelKey: 'plazaWrite',
-    descKey: 'plazaWriteDesc',
-    fallbackLabel: 'Write Agent Circle Posts',
-    fallbackDesc: 'Create posts or comments in Agent Circle',
-  },
-];
-
-const PATROL_CAPABILITY_KEYS = new Set(['read_triggers', 'manage_triggers', 'plaza_read', 'plaza_write']);
 const SETTINGS_PATROL_TRIGGER_SOURCE = 'settings_patrol';
 const DEFAULT_PATROL_INTERVAL_MINUTES = 120;
 const DEFAULT_PATROL_ACTIVE_HOURS = '09:00-18:00';
@@ -428,13 +87,7 @@ interface AgentSettingsSectionProps {
   agentId: string;
   agent: any;
   llmModels: any[];
-  permData: any;
   canManage: boolean;
-  canManageCapabilityPolicies: boolean;
-  capabilityDefinitions?: CapabilityDefinition[];
-  capabilityPolicies: CapabilityPolicy[];
-  capabilityPolicyLoading: boolean;
-  capabilityPolicyError: string;
   settingsForm: AgentSettingsForm;
   onSettingsFormChange: React.Dispatch<React.SetStateAction<AgentSettingsForm>>;
   settingsSaving: boolean;
@@ -448,8 +101,6 @@ interface AgentSettingsSectionProps {
   wmSaved: boolean;
   onSetWmDraft: (value: string) => void;
   onSetWmSaved: (value: boolean) => void;
-  showDeleteConfirm: boolean;
-  onSetShowDeleteConfirm: (value: boolean) => void;
 }
 
 const formatTokens = (n: number) => {
@@ -463,13 +114,7 @@ export default function AgentSettingsSection({
   agentId,
   agent,
   llmModels,
-  permData,
   canManage,
-  canManageCapabilityPolicies,
-  capabilityDefinitions = [],
-  capabilityPolicies,
-  capabilityPolicyLoading,
-  capabilityPolicyError,
   settingsForm,
   onSettingsFormChange,
   settingsSaving,
@@ -483,12 +128,9 @@ export default function AgentSettingsSection({
   wmSaved,
   onSetWmDraft,
   onSetWmSaved,
-  showDeleteConfirm,
-  onSetShowDeleteConfirm,
 }: AgentSettingsSectionProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const { data: triggerData = [], isLoading: patrolLoading } = useQuery({
     queryKey: ['triggers', agentId],
     queryFn: () => triggerApi.list(agentId),
@@ -519,106 +161,6 @@ export default function AgentSettingsSection({
     patrolForm.intervalMinutes !== persistedPatrolForm.intervalMinutes ||
     patrolForm.activeStart !== persistedPatrolForm.activeStart ||
     patrolForm.activeEnd !== persistedPatrolForm.activeEnd;
-
-  const capabilityDefinitionSet = React.useMemo(
-    () => new Set(capabilityDefinitions.map((item) => item.capability)),
-    [capabilityDefinitions],
-  );
-  const capabilityPolicyByCapability = React.useMemo(
-    () => new Map(capabilityPolicies.map((policy) => [policy.capability, policy])),
-    [capabilityPolicies],
-  );
-  const capabilityActions = React.useMemo<CapabilityAction[]>(() => {
-    const knownCapabilities = new Set(KNOWN_CAPABILITY_ACTIONS.map((item) => item.capability));
-    const knownActions = KNOWN_CAPABILITY_ACTIONS
-      .filter((item) => capabilityDefinitionSet.has(item.capability) || capabilityPolicyByCapability.has(item.capability))
-      .map((item) => ({
-        key: item.key,
-        capability: item.capability,
-        label: t(`agent.settings.autonomy.${item.labelKey}`, item.fallbackLabel),
-        desc: t(`agent.settings.autonomy.${item.descKey}`, item.fallbackDesc),
-      }));
-    const dynamicActions = capabilityDefinitions
-      .filter((item) => !knownCapabilities.has(item.capability))
-      .map((item) => ({
-        key: item.capability,
-        capability: item.capability,
-        label: item.capability,
-        desc:
-          item.tools.length > 0
-            ? t('agent.settings.autonomy.dynamicTools', 'Backend tools: {{tools}}', { tools: item.tools.join(', ') })
-            : t('agent.settings.autonomy.dynamicNoTools', 'No mapped tools reported by backend'),
-    }));
-    return [...knownActions, ...dynamicActions];
-  }, [capabilityDefinitionSet, capabilityDefinitions, capabilityPolicyByCapability, t]);
-  const patrolCapabilityActions = React.useMemo(
-    () => capabilityActions.filter((action) => PATROL_CAPABILITY_KEYS.has(action.key)),
-    [capabilityActions],
-  );
-  const generalCapabilityActions = React.useMemo(
-    () => capabilityActions.filter((action) => !PATROL_CAPABILITY_KEYS.has(action.key)),
-    [capabilityActions],
-  );
-
-  const handleCapabilityPolicyChange = async (capability: string, mode: CapabilityPolicyMode) => {
-    if (!canManageCapabilityPolicies) return;
-    const nextPolicy = modeToPolicy(mode);
-    try {
-      await enterpriseApi.upsertCapabilityPolicy({
-        capability,
-        agent_id: agentId,
-        ...nextPolicy,
-        conditions: capabilityPolicyByCapability.get(capability)?.conditions || {},
-      });
-      queryClient.invalidateQueries({ queryKey: ['capability-policies', agentId] });
-    } catch (e: any) {
-      onSetSettingsError(e?.message || 'Failed to save capability policy');
-    }
-  };
-
-  const renderCapabilityPolicyRow = (action: CapabilityAction) => {
-    const currentMode = policyToMode(capabilityPolicyByCapability.get(action.capability));
-    const unsupported = capabilityDefinitionSet.size > 0 && !capabilityDefinitionSet.has(action.capability);
-    const disabled = !canManageCapabilityPolicies || capabilityPolicyLoading || !!capabilityPolicyError || unsupported;
-    return (
-      <div
-        key={action.key}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '10px 14px',
-          background: 'var(--bg-elevated)',
-          borderRadius: '8px',
-          border: '1px solid var(--border-subtle)',
-        }}
-      >
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 500, fontSize: '13px' }}>{action.label}</div>
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{action.desc}</div>
-        </div>
-        <select
-          className="input"
-          value={currentMode}
-          disabled={disabled}
-          onChange={async (e) => {
-            await handleCapabilityPolicyChange(action.capability, e.target.value as CapabilityPolicyMode);
-          }}
-          style={{
-            width: '140px',
-            fontSize: '12px',
-            color: currentMode === 'auto' ? 'var(--success)' : currentMode === 'approval' ? 'var(--warning)' : 'var(--error)',
-            fontWeight: 600,
-            opacity: disabled ? 0.6 : 1,
-          }}
-        >
-          <option value="auto">{t('agent.settings.autonomy.l1Auto')}</option>
-          <option value="approval">{t('agent.settings.autonomy.l3Approve')}</option>
-          <option value="deny">{t('agent.settings.autonomy.deny')}</option>
-        </select>
-      </div>
-    );
-  };
 
   const handleSaveSettings = async () => {
     onSetSettingsSaving(true);
@@ -748,46 +290,6 @@ export default function AgentSettingsSection({
     } catch {}
   };
 
-  const isOwner = permData?.is_owner ?? false;
-  const canManageAccessPermissions = isOwner || canManageCapabilityPolicies;
-
-  const handleScopeChange = async (newScope: string) => {
-    if (!canManageAccessPermissions) return;
-    try {
-      await agentApi.updatePermissions(agentId, {
-        scope_type: newScope,
-        scope_ids: [],
-        access_level: permData?.access_level || 'use',
-      });
-      queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
-      queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-    } catch (e) {
-      console.error('Failed to update permissions', e);
-    }
-  };
-
-  const handleAccessLevelChange = async (newLevel: string) => {
-    if (!canManageAccessPermissions) return;
-    try {
-      await agentApi.updatePermissions(agentId, {
-        scope_type: permData?.scope_type || 'company',
-        scope_ids: permData?.scope_ids || [],
-        access_level: newLevel,
-      });
-      queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
-      queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-    } catch (e) {
-      console.error('Failed to update access level', e);
-    }
-  };
-
-  const currentScope = permData?.scope_type || 'company';
-  const currentAccessLevel = permData?.access_level || 'use';
-  const scopeNames = permData?.scope_names || [];
-  const scopeLabels: Record<string, string> = {
-    company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
-    user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
-  };
   return (
     <div>
       <div

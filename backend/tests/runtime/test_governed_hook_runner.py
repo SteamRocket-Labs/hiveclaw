@@ -211,6 +211,33 @@ async def test_prompt_hook_can_rewrite_pre_tool_input(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_prompt_hook_parses_hook_specific_output_for_its_declared_event(tmp_path: Path) -> None:
+    from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec
+
+    async def fake_prompt_executor(_prompt: str, **_kwargs) -> dict:
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "Stop",
+                "additionalContext": "Carry this context into the next turn.",
+            }
+        }
+
+    runner = GovernedHookRunner(
+        policy=HookRunnerPolicy(enabled=True, work_dir=tmp_path, allowed_hook_types={"prompt"}),
+        prompt_executor=fake_prompt_executor,
+    )
+
+    result = await runner.run(
+        HookSpec(key="stop-context", event=HookEvent.STOP, type="prompt", prompt="Check $ARGUMENTS"),
+        HookContext(event=HookEvent.STOP, session_id="s1", last_assistant_message="final draft"),
+    )
+
+    assert result.status == "success"
+    assert result.hook_result is not None
+    assert result.hook_result.additional_contexts == ["Carry this context into the next turn."]
+
+
+@pytest.mark.asyncio
 async def test_command_hook_parses_json_output_for_context_and_rewrite(tmp_path: Path) -> None:
     from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec
 

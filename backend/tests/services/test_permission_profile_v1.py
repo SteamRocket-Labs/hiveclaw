@@ -7,7 +7,7 @@ CC session permission modes:
 
   * default / legacy ``default_decision="escalate"`` → local session ask;
   * ``mode="dontAsk"`` or ``mode="plan"``             → local deny;
-  * explicit enterprise approval policy               → backend approval.
+  * explicit approval policy                          → local session ask.
 
 Revert-sensitivity: if the governance wiring is reverted to the hardcoded
 escalate, the no-policy cases below would create backend approvals instead of
@@ -145,9 +145,10 @@ async def test_core_read_and_discovery_tools_allow_missing_policy_without_approv
 
 
 @pytest.mark.asyncio
-async def test_core_read_tool_explicit_approval_policy_still_requires_approval() -> None:
+async def test_core_read_tool_explicit_approval_policy_asks_session_locally() -> None:
     """The missing-policy default is open for core read/discovery tools, but an
-    explicit tenant/admin approval policy must still be honored."""
+    explicit tenant/admin approval policy must be honored inside the session,
+    not by creating a Hive enterprise ApprovalRequest."""
     approval_calls: list[dict] = []
     audit_calls: list[dict] = []
     events: list[dict] = []
@@ -170,9 +171,11 @@ async def test_core_read_tool_explicit_approval_policy_still_requires_approval()
     )
 
     assert message is not None
-    assert "requires approval" in message
-    assert approval_calls == [{"tool_name": "web_search", "capability": "external.web.search"}]
-    assert events and events[-1]["status"] == "approval_required"
+    assert "requires session permission" in message
+    assert approval_calls == []
+    assert events and events[-1]["status"] == "session_permission_required"
+    assert events[-1]["tool_name"] == "web_search"
+    assert events[-1]["capability"] == "external.web.search"
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ import LocalAgents, {
   activationCodeFromSearch,
   buildSetupInstruction,
   browserChannelWsUrl,
+  canSendLocalAgentMessage,
   channelSessionIdFromSearch,
   connectionPresenceStatus,
   isOnlineConnection,
@@ -105,6 +106,13 @@ describe('LocalAgents page', () => {
     ).toBe(true);
   });
 
+  it('only allows direct local chat while a background websocket presence is online', () => {
+    expect(canSendLocalAgentMessage({ localAgentOnline: false, messageBusy: false, content: 'hello' })).toBe(false);
+    expect(canSendLocalAgentMessage({ localAgentOnline: true, messageBusy: true, content: 'hello' })).toBe(false);
+    expect(canSendLocalAgentMessage({ localAgentOnline: true, messageBusy: false, content: '   ' })).toBe(false);
+    expect(canSendLocalAgentMessage({ localAgentOnline: true, messageBusy: false, content: 'hello' })).toBe(true);
+  });
+
   it('normalizes activation codes from Hive Connect login links', () => {
     expect(activationCodeFromSearch('?user_code=hive-abcd-1234')).toBe('HIVE-ABCD-1234');
     expect(activationCodeFromSearch('?foo=bar')).toBe('');
@@ -180,6 +188,8 @@ describe('LocalAgents page', () => {
     );
 
     expect(markup).toContain('Local Agent Channel');
+    expect(markup).toContain('Local agents behave like regular Hive agents with a local runtime.');
+    expect(markup).toContain('Keep them private or share them with your workspace through normal Agent permissions.');
     expect(markup).toContain('Chat');
     expect(markup).toContain('Workspace');
     expect(markup).toContain('Direct local chat');
@@ -191,7 +201,7 @@ describe('LocalAgents page', () => {
     expect(markup).toContain('hive-connect login');
     expect(markup).toContain('hive-connect daemon install --config ~/.hive-connect/config.toml --force');
     expect(markup).toContain('hive-connect daemon status');
-    expect(markup).toContain('When the background service is online, messages are delivered over WebSocket.');
+    expect(markup).toContain('The local agent is offline. Keep Hive Connect installed; it will reconnect automatically');
     expect(markup).not.toContain('执行 hive-connect run，保持本地 Agent 在线');
     expect(markup).not.toContain('runner');
     expect(markup).not.toContain('poll fallback');
@@ -202,6 +212,8 @@ describe('LocalAgents page', () => {
     expect(markup).not.toContain('Pairing code');
     expect(markup).not.toContain('paste the HIVE code');
     expect(markup).not.toContain('Hive agent id');
+    expect(markup).not.toContain('owner identity');
+    expect(markup).not.toContain('user-level IM channel');
     expect(markup).not.toContain('Overview');
     expect(markup).not.toContain('Knowledge');
     expect(markup).not.toContain('Settings');

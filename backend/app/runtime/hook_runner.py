@@ -181,8 +181,8 @@ def _response_updated_input(response: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _response_to_hook_result(response: dict[str, Any], fallback_text: str) -> HookResult | None:
-    parsed = parse_hook_json_output(HookEvent.PRE_TOOL_USE, response)
+def _response_to_hook_result(event: HookEvent, response: dict[str, Any], fallback_text: str) -> HookResult | None:
+    parsed = parse_hook_json_output(event, response)
     if parsed.hook_result is not None:
         return parsed.hook_result
 
@@ -409,7 +409,7 @@ class GovernedHookRunner:
         rendered = _render_prompt(spec.prompt or "", ctx)
         response = await self.prompt_executor(rendered, hook_key=spec.key, event=spec.event.value)
         text = str(response.get("text") or response.get("content") or "")
-        hook_result = _response_to_hook_result(response, text)
+        hook_result = _response_to_hook_result(spec.event, response, text)
         return HookRunRecord(
             key=spec.key,
             event=spec.event.value,
@@ -431,7 +431,7 @@ class GovernedHookRunner:
             event=spec.event.value,
         )
         text = str(response.get("text") or response.get("body") or "")
-        hook_result = _response_to_hook_result(response, text)
+        hook_result = _response_to_hook_result(spec.event, response, text)
         return HookRunRecord(
             key=spec.key,
             event=spec.event.value,
@@ -447,7 +447,7 @@ class GovernedHookRunner:
         rendered = _render_prompt(spec.prompt or "", ctx)
         response = await self.agent_executor(rendered, hook_key=spec.key, event=spec.event.value)
         text = str(response.get("text") or response.get("content") or "")
-        hook_result = _response_to_hook_result(response, text)
+        hook_result = _response_to_hook_result(spec.event, response, text)
         return HookRunRecord(
             key=spec.key,
             event=spec.event.value,

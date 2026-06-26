@@ -33,6 +33,7 @@ from app.schemas.schemas import (
     LLMModelUpdate,
 )
 from app.services.approval_service import approval_service
+from app.services.enterprise_approval_visibility import enterprise_visible_approval_filter
 from app.services.enterprise_sync import enterprise_sync_service
 from app.services.llm_utils import get_provider_manifest
 from app.services.secrets_provider import get_secrets_provider
@@ -646,6 +647,7 @@ async def list_approvals(
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == target_tenant_id)
     query = query.where(ApprovalRequest.agent_id.in_(tenant_agent_ids))
+    query = query.where(enterprise_visible_approval_filter(ApprovalRequest))
     # Non-admins further restricted to their own agents
     if current_user.role != "platform_admin":
         query = query.where(ApprovalRequest.agent_id.in_(select(Agent.id).where(Agent.creator_id == current_user.id)))
@@ -833,6 +835,7 @@ async def get_enterprise_stats(
         select(func.count(ApprovalRequest.id)).where(
             ApprovalRequest.status == "pending",
             ApprovalRequest.agent_id.in_(tenant_agent_ids),
+            enterprise_visible_approval_filter(ApprovalRequest),
         )
     )
 

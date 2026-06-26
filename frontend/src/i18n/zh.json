@@ -212,7 +212,7 @@
     "companySubagents": "公司 Subagent 库",
     "companySubagentsDesc": "供员工运行时共享的租户级 worker 定义",
     "localAgentChannel": "本地 Agent 通道",
-    "localAgentChannelDesc": "用户级本地运行时在线状态、通道聊天与工作区传输",
+    "localAgentChannelDesc": "带本地运行时的普通 Agent，支持现有 Agent 权限、在线状态、通道聊天和 workspace 传输",
     "teamTopologyTitle": "A2A 与 Team 拓扑",
     "teamTopologyDesc": "会话内 Team 从对话进入；持久组织委派和可复用 worker 附着在员工与控制中台上。",
     "sessionLocalTeam": "会话内 Team",
@@ -279,7 +279,7 @@
     "team": {
       "title": "A2A / Team",
       "eyebrow": "委派与协作",
-      "subtitle": "会话内 Team、Subagent 定义、Peer 关系和用户级本地运行时通道都可见，但不会混淆各自归属边界。"
+      "subtitle": "会话内 Team、Subagent 定义、Peer 关系和本地运行时 Agent 都可见，但不会混淆各自归属边界。"
     }
   },
   "controlPlane": {
@@ -299,7 +299,7 @@
   },
   "localAgents": {
     "title": "本地 Agent 通道",
-    "description": "把你的本地 Agent 作为用户级 IM 通道连接到 Hive。云端 Agent 只能通过你的 owner 身份调用这个通道。",
+    "description": "本地 Agent 会像普通 Hive Agent 一样存在，只是带有本地运行时。你可以保持私有，也可以通过现有 Agent 权限共享给当前空间使用。",
     "chatTab": "聊天",
     "workspaceTab": "Workspace",
     "defaultMessage": "请证明你是这台电脑上的本地 Agent：回复当前工作目录，并说明你正在通过 Hive Connect 后台服务接收消息。",
@@ -339,6 +339,8 @@
     "sending": "发送中...",
     "send": "发送给本地 Agent",
     "sendHint": "后台服务在线时会通过 WebSocket 接收消息；电脑休眠、关机或断网后，Hive 会显示本地 Agent 离线。",
+    "offlineSendHint": "本地 Agent 当前离线。保持 Hive Connect 已安装；电脑和后台服务可用后会自动重连。",
+    "offlineSendBlocked": "本地 Agent 当前离线。后台服务运行后 Hive Connect 会自动重连。",
     "messageQueued": "消息已入队：{{messageId}}",
     "messageError": "发送本地通道消息失败。",
     "localAgentChat": "本地 Agent 对话",
@@ -352,7 +354,7 @@
     "transcript": "本地通道记录",
     "eventsLoading": "正在加载通道事件...",
     "eventsEmpty": "还没有通道事件。",
-    "workspaceDescription": "这个 Hive 账号下所有已链接本地 Agent 共用的用户级 workspace。",
+    "workspaceDescription": "这个本地运行时的 workspace 文件。共享调用者可以通过受治理的 Agent 权限把文件发送给宿主 runner。",
     "workspaceReadError": "读取 workspace 文件失败。",
     "workspaceDownloadError": "下载 workspace 文件失败。",
     "workspaceUploadSuccess": "已上传到本地 Agent Workspace 的 uploads 目录。",

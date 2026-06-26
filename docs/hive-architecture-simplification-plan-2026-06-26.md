@@ -67,7 +67,6 @@ Contracts(纯 dataclass)
 
 ### 3.2 该保的(别误删)
 
-T0/T2/T3/soul 四层分层、`ccplus_contracts` session/permission/context 族(重度 live)、`tools/audit.py` 三源对账断言、`mcp_backfill` core/shell 拆分、`deep_research/` 16-stage 管线、feishu 子域拆分、core/ 12 文件——**都是有意且正确的,不在精简目标内**。本仓库有"活兜底误判成死代码"前科,以上均已复核为 live 或显式 fenced-deferred。
 
 **当前工作树新增的 Session UX / permission / artifact canonical 面也要保留(2026-06-26 复核)**:`docs/ccplus-session-ux-contract-2026-06-26.md` 是 session 用户体验契约;`services/chat_artifact_delivery.py` 是当前单一路径的 session artifact 交付 helper;`ChatArtifact` + `artifact_delivery` transcript event + 前端 artifact card / inspector 是活的交付物路径;`ChatSession.transcript_metadata_json` / `RuntimeTask.metadata_json` / `runtime_session_context.metadata` 的 permission profile 三层同步是当前运行面,不能在清理时当成重复字段随手删。它们需要另走 §5.4 SUNSET/收口纪律,不是 §5.1 死代码删除。
 
@@ -204,7 +203,6 @@ cd ../frontend && npm run build
 
 **现状**:`app/services/` 是 **207 个文件平铺在一个文件夹里**,没有子目录。要找"workflow 相关"得在 207 个文件名里靠前缀认(`workflow_runtime_service.py`/`workflow_daemon.py`/`workflow_launch.py`…)。
 
-**重打包 = 把这 207 个平铺文件,按职责装进子文件夹**(就像 `memory/` `deep_research/` 已经做的那样):
 
 ```
 现在(平铺):                          重打包后(按 domain 分包):

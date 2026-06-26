@@ -1113,36 +1113,7 @@
         "deferredCapabilities": "延后能力",
         "warnings": "注意事项",
         "manualSteps": "人工后续步骤",
-        "rawOutput": "原始输出",
-        "deepResearchTitle": "深度研究",
-        "taskId": "任务",
-        "status": "状态",
-        "sources": "来源",
-        "claims": "结论",
-        "report": "报告",
-        "runState": "运行状态",
-        "qualityGates": "质量门槛",
-        "gaps": "缺口"
-      },
-      "deepResearchStream": {
-        "status": {
-          "idle": "待启动",
-          "streaming": "进行中",
-          "completed": "已完成",
-          "failed": "失败",
-          "aborted": "已中止"
-        },
-        "taskLabel": "任务",
-        "abort": "停止流",
-        "sources": "来源",
-        "claims": "结论",
-        "lanes": "Lane",
-        "steps": "步骤",
-        "heartbeats": "心跳",
-        "latestReflection": "最近反思",
-        "latestControllerStep": "Controller 动作",
-        "reportPreview": "报告预览",
-        "errorLabel": "流错误"
+        "rawOutput": "原始输出"
       },
       "workLedger": {
         "title": "Agent 工作账本",
@@ -1194,7 +1165,8 @@
         "compactedNotice": "上下文已自动压缩，当前工作状态已保留。",
         "compactionDetails": "显示压缩详情",
         "compactionMeta": "保留 {{kept}} / {{original}} 条消息",
-        "toolGroupsActivated": "已激活 {{count}} 个运行时工具组"
+        "toolGroupsActivated": "已激活 {{count}} 个运行时工具组",
+        "permissionNeeded": "Agent 需要权限来使用 {{tool}}。"
       }
     },
     "office": {
@@ -1603,7 +1575,6 @@
       "mcp": "MCP",
       "plaza": "Agent圈",
       "office_pack": "办公",
-      "deep_research_pack": "深度研究",
       "social": "社交",
       "code": "代码与执行",
       "discovery": "发现",

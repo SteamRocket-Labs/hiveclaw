@@ -102,7 +102,7 @@ async def test_continuation_carries_hidden_execution_contract_in_run_metadata(mo
 
     contract = {
         "type": "workflow",
-        "workflow_ref": "deep_research.v1",
+        "workflow_ref": "custom_research.v1",
         "args": {"question": "Web3 full landscape"},
     }
     plan = _confirmed_plan(execution_contract=contract)

@@ -248,9 +248,9 @@ async def test_get_agent_tools_for_llm_requested_skill_tool_can_expand_non_defau
 
     agent_id = uuid4()
     tenant_id = uuid4()
-    deep_research_tool = _make_tool(
-        name="deep_research_run",
-        category="deep_research_pack",
+    office_tool = _make_tool(
+        name="office_document_create",
+        category="office_pack",
         is_default=False,
     )
     default_core_tool = _make_tool(
@@ -264,7 +264,7 @@ async def test_get_agent_tools_for_llm_requested_skill_tool_can_expand_non_defau
             [
                 _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
                 _ScalarResult(None),  # no tenant pack policy row
-                _ListResult([default_core_tool, deep_research_tool]),
+                _ListResult([default_core_tool, office_tool]),
                 _ListResult([]),  # no AgentTool assignment exists yet
             ]
         )
@@ -281,11 +281,11 @@ async def test_get_agent_tools_for_llm_requested_skill_tool_can_expand_non_defau
 
     tools = await agent_tools_module.get_agent_tools_for_llm(
         agent_id,
-        requested_names=["deep_research_run"],
+        requested_names=["office_document_create"],
     )
     names = {tool["function"]["name"] for tool in tools}
 
-    assert "deep_research_run" in names
+    assert "office_document_create" in names
 
 
 @pytest.mark.asyncio

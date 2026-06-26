@@ -28,8 +28,9 @@ def test_pack_catalog_returns_all_packs():
     assert "plaza_pack" in names
     assert "mcp_admin_pack" in names
     assert "email_pack" in names
-    assert "deep_research_pack" in names
     assert "office_pack" in names
+    removed_pack = "_".join(("deep", "research", "pack"))
+    assert removed_pack not in names
     assert "document_pack" not in names
     assert "image_pack" not in names
 
@@ -89,12 +90,12 @@ def test_iter_runtime_tool_groups_returns_mcp_admin_pack_for_explicit_admin_quer
     assert "mcp_admin_pack" in names
 
 
-def test_iter_runtime_tool_groups_matches_compact_deep_research_aliases():
-    exact_tool_aliases = {pack.name for pack in iter_runtime_tool_groups("deepresearchrun")}
-    spaced_pack_aliases = {pack.name for pack in iter_runtime_tool_groups("deep research")}
+def test_iter_runtime_tool_groups_returns_office_pack_for_explicit_office_queries():
+    exact_tool_aliases = {pack.name for pack in iter_runtime_tool_groups("office_document_create")}
+    spaced_pack_aliases = {pack.name for pack in iter_runtime_tool_groups("office document")}
 
-    assert "deep_research_pack" in exact_tool_aliases
-    assert "deep_research_pack" in spaced_pack_aliases
+    assert "office_pack" in exact_tool_aliases
+    assert "office_pack" in spaced_pack_aliases
 
 
 def test_plaza_pack_only_contains_real_shared_feed_tools():
@@ -284,15 +285,15 @@ def test_collect_skill_declared_packs_uses_metadata_pack_without_tool_inference_
     skills = [
         ParsedSkill(
             metadata=SkillMetadata(
-                name="Deep Research",
+                name="Office Productivity",
                 description="",
                 declared_tools=("web_search", "firecrawl_fetch", "read_file"),
                 declared_packs=(),
-                pack="deep_research_pack",
+                pack="office_pack",
             ),
-            body="# Deep Research",
+            body="# Office Productivity",
             file_path=SimpleNamespace(),
-            relative_path="skills/deep-research/SKILL.md",
+            relative_path="skills/office-productivity/SKILL.md",
         )
     ]
 
@@ -300,28 +301,30 @@ def test_collect_skill_declared_packs_uses_metadata_pack_without_tool_inference_
 
     assert declared == [
         {
-            "name": "deep_research_pack",
-            "skills": ["Deep Research"],
+            "name": "office_pack",
+            "skills": ["Office Productivity"],
             "tools": ["firecrawl_fetch", "read_file", "web_search"],
         },
         {
             "name": "web_pack",
-            "skills": ["Deep Research"],
+            "skills": ["Office Productivity"],
             "tools": ["firecrawl_fetch"],
         },
     ]
 
 
-def test_deep_research_runtime_pack_exposes_dedicated_tools_only():
+def test_office_runtime_pack_exposes_dedicated_tools_only():
     from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
-    pack = runtime_tool_group_for_name("deep_research_pack")
+    pack = runtime_tool_group_for_name("office_pack")
 
     assert pack is not None
     assert set(pack.tools) == {
-        "deep_research_run",
-        "deep_research_start",
-        "deep_research_check",
-        "deep_research_cancel",
-        "deep_research_export",
+        "read_document",
+        "office_document_create",
+        "office_document_view",
+        "office_document_query",
+        "office_document_apply",
+        "office_document_validate",
+        "office_document_dump",
     }

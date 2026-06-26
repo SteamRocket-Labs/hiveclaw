@@ -60,7 +60,6 @@ CC 把动态 reminder 当**低频、事件驱动、带状态、可忽略**的旁
 | Work Ledger | `work_ledger` | `work_ledger_enabled` flag + plan 互斥(M7:flag 只管参赛资格) | **idle 10 + 冷却 10**(对齐 CC 10+10):engine 逐轮 `observe(tool_names)`,用过 ledger 工具即重置 idle;触发时从 persisted ledger 渲染 `#id [status] title` 快照 | ✅ T-G2 快照+gentle guard |
 | Round-pressure | `round_pressure` | 阈值轮(80%/final-2) | content fn 内判,带真实数据(B2 不变),带 internal/never-mention guard | ✅ T-G2 文案 |
 | Loop guard warning | `enqueue()` 事件通道 | 语义循环命中(A4 先软后硬) | 事件驱动,下一轮 collect 排空一次;warning 带 internal/never-mention guard | ✅ T-G2 文案 |
-| DR routing reminder | `engine.py:774-808` | deep research 场景 | 条件 | 未迁(DR 整体冻结待重做,不动) |
 | 工具结果 next_action | 各 handler | 工具返回时 | 随结果 | Hive 特色保留(对位 CC hook_additional_context) |
 
 ### 2.2 注入机制(T-G1 后)

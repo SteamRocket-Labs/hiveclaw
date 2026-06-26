@@ -2,7 +2,6 @@
 
 > 状态：2026-06-08 生产问题复盘后的实现前设计文档。
 >
-> 范围：本文只定义 Plan Mode 的计划产物形态、workspace 读取边界、Deep Research plan/artifact 交互、Work Ledger 空态与 Deep Research SSE artifact 路径。治理账本、用户确认、PlanModeGate、plan_hash 语义不在本文重写。
 
 ---
 
@@ -10,16 +9,9 @@
 
 2026-06-08 production session `927783d8-c46e-472f-9d15-a47112ae0208` 暴露了五个连锁问题：
 
-1. 用户进入 Plan Mode 请求“跨链桥报告”后，agent 读取了历史 workspace 文件和历史 Deep Research artifact：
-   - `workspace/deep_research_reports/.../plan.json`
-   - `workspace/deep_research_reports/.../lane_summaries.jsonl`
    - `workspace/defi_new_playbooks_20260608.md`
-2. agent 尝试 `tool_search deep_research_run deep_research_start`，但没有找到 dedicated tools。
 3. agent 连续 5 次调用 `exit_plan_mode`，都在 kernel 层 JSON 参数解析失败；`agent_plan_requests` 没有创建任何 plan row。
-4. UI 底部显示“正在加载工作状态...”，但 production 日志显示是 session work-ledger endpoint 反复 404，不是 Deep Research 正在运行。
-5. Deep Research SSE 仍读旧 `runtime_artifacts/long_tasks/...` artifact 路径，而 workflow-native Deep Research 已写入 `runtime_artifacts/workflow_runs/...`。
 
-这些问题共同导致一个体感：Plan Mode 不是在“先写一个可确认的 Markdown 计划”，而是在 workspace 旧材料、Deep Research JSON、工具调用 schema 之间漂移。
 
 ---
 
@@ -58,7 +50,6 @@ Inspect current state only when it matters for the plan.
 - Plan Mode 是否应该优先写/读当前 session 的 plan file。
 - 读取 workspace 的预算、路径范围和 provenance 要怎么记录。
 
-因此模型会把“我要写报告”理解成“先找历史报告模板和旧 Deep Research JSON”。这不是一个硬编码“总是读旧文件”的设计，而是 permissive read-only surface + 模糊 reminder + 缺少 artifact provenance 的结果。
 
 正确策略不是删除 read tools，而是把 workspace read 从 “default browse” 改成 “need-scoped context read”。
 
@@ -89,7 +80,6 @@ Plan Mode 可以读取 workspace，但必须满足至少一个条件：
 
 反例：
 
-- 用户只是说“进入计划模式，做一个关于 X 的报告”，没有要求参考旧文件；agent 不应默认扫整个 `workspace/` 或历史 `deep_research_reports/`。
 - 用户已经给了范围/深度/交付格式；agent 应先提交 plan 或提出必要澄清，而不是继续扩大 workspace 搜索。
 
 ### INV-3: 历史 artifact 不能自动升级为当前任务上下文
@@ -101,12 +91,9 @@ Plan Mode 可以读取 workspace，但必须满足至少一个条件：
 | `workspace/plans/{session_id}.plan.md` | 当前 Plan Mode canonical draft | 不能被旧 plan 覆盖 |
 | 用户上传/明确引用文件 | 当前任务 source of truth | 不能扩大到同目录所有旧文件 |
 | 历史 Markdown 报告 | 风格/结构参考，必须显式标为 reference | 不能当当前事实来源 |
-| 历史 `plan.json` / `lane_summaries.jsonl` | 仅用于调试/复盘或用户明确要求复用 Deep Research lane | 不能当当前计划输入 |
 | `runtime_artifacts/*` | runtime progress/source ledger | 不能直接喂给 Plan Mode 当用户-facing plan |
 
-### INV-4: Deep Research 的 canonical output 仍是 `report.md`
 
-Deep Research 可以维护 `plan_json`、`final.json`、`sources.jsonl`、`claims.jsonl` 等结构化 ledger，但用户-facing plan/report 主路径必须是 Markdown：
 
 - Plan confirmation surface：Markdown plan preview/path 优先。
 - Running/stream surface：`report.md` partial/final 优先。
@@ -158,19 +145,12 @@ Plan Mode allowlist 允许 `list_files/read_file`，但没有：
 
 所以模型可以从 `workspace/` 根目录开始浏览并读旧文件。它没有违反工具权限，但违反了产品意图。
 
-### 4.4 Deep Research needs-plan payload 暴露 `plan_json`
 
-`deep_research_run/start` 在未确认计划时会返回 `plan_json`。这对治理是有用的，但如果直接进入模型上下文和 UI 主视图，会把 JSON 变成事实上的主输入。
 
-### 4.5 Deep Research skill 与 tool discovery 不一致
 
-当前 `load_skill deep-research` 的文字要求用 `deep_research_run/start`，但 production session 里 `tool_search deep_research_run deep_research_start` 返回 no match。这个不一致会把 agent 带进死路：既被 skill 要求使用 dedicated tools，又找不到工具。
 
-### 4.6 Deep Research SSE artifact path 落后于 workflow-native 路径
 
-`deep_research_check()` 已能对 workflow task 使用 `runtime_artifacts/workflow_runs/...`，但 SSE stream 仍默认 `_deep_research_dir()`，即 legacy `runtime_artifacts/long_tasks/...`。
 
-结果：新 workflow-native Deep Research 运行时，UI stream 可能读不到 artifact，表现为 loading/error。
 
 ### 4.7 Work Ledger 空态契约不一致
 
@@ -186,7 +166,6 @@ Plan Mode allowlist 允许 `list_files/read_file`，但没有：
    - 明确“不要默认浏览 workspace 根目录或历史 artifact”。
    - 只有满足 need-scoped 条件才读取 workspace。
    - 读取旧文件必须把它标为 `reference` / `historical` / `current task input`。
-2. 更新 Deep Research skill/runtime guidance：
    - 未确认计划阶段优先展示 Markdown plan preview/path。
    - JSON ledger 不应作为用户-facing plan 正文。
 3. 在文档中明确 workspace read 是 read-only capability，不是 default planning step。
@@ -234,7 +213,6 @@ pytest tests/tools/test_plan_mode_policy.py -k "plan_mode_workspace"
    - 在 reminder 中强约束 workspace read policy。
    - 低风险、快。
 2. tool-result warning cut：
-   - Plan Mode 中首次 `list_files workspace` 或 `list_files workspace/deep_research_reports` 返回额外 warning：
      “Historical artifacts are reference only unless the user explicitly asked for them.”
 3. strict policy cut：
    - 在 Plan Mode metadata 中加 `workspace_read_scope`。
@@ -243,14 +221,11 @@ pytest tests/tools/test_plan_mode_policy.py -k "plan_mode_workspace"
 
 推荐顺序：先 prompt + warning，观察效果；不要第一步就硬禁 `read_file/list_files`，否则会伤害代码/文件相关 Plan Mode。
 
-### Phase 4: Deep Research JSON 降级为 ledger
 
 测试先行：
 
 ```bash
 cd backend
-pytest tests/tools/test_deep_research_handler.py -k "needs_plan"
-pytest tests/services/deep_research/test_plan_mode.py
 ```
 
 实现要点：
@@ -266,24 +241,18 @@ pytest tests/services/deep_research/test_plan_mode.py
 2. `plan_json` 改为 internal/debug field：
    - API 可以保留。
    - Tool result 给模型的主文本不应展开大 JSON。
-3. Deep Research plan contract 中继续保持：
    - canonical output = `report.md`
    - derived output = docx/xlsx/pptx/html/json
 
-### Phase 5: Deep Research tool discovery 一致性
 
 测试先行：
 
 ```bash
 cd backend
-pytest tests/tools/test_tool_search.py -k "deep_research"
-pytest tests/tools/test_tool_registry.py -k "deep_research"
 ```
 
 实现要点：
 
-- 如果 `deep-research` skill 会提示使用 `deep_research_run/start`，那么该 session 的 tool registry/tool_search 必须能发现它们。
-- 如果 Plan Mode 中不允许启动 Deep Research，则 skill 文案必须说清：当前只能规划 Deep Research，确认后由 handoff 启动。
 - 避免“skill 要求用工具，但工具不可发现”的死路。
 
 ### Phase 6: Work Ledger 空态
@@ -308,23 +277,16 @@ npm test -- ChatWorkLedgerDock.test.tsx
 
 推荐：后端返回 empty view，前端兼容 404 一版。
 
-### Phase 7: Deep Research SSE 路径统一
 
 测试先行：
 
 ```bash
 cd backend
-pytest tests/api/test_deep_research_stream.py -k "workflow"
-pytest tests/tools/test_deep_research_handler.py -k "stream"
 ```
 
 实现要点：
 
-- `stream_deep_research_artifacts()` 先查 workflow-native path：
-  - `runtime_artifacts/workflow_runs/{run_id}/deep_research`
 - 不存在时 fallback legacy path：
-  - `runtime_artifacts/long_tasks/{task_id_without_dash}/deep_research`
-- `deep_research_export()` 也应同样支持 workflow path，否则 check 能看到但 export/stream 看不到。
 
 ---
 
@@ -334,7 +296,6 @@ pytest tests/tools/test_deep_research_handler.py -k "stream"
    - 这会破坏文件相关 Plan Mode、代码改造计划、继续已有工作的计划。
 2. 不要把所有历史 workspace 文件自动注入 prompt。
    - 这会把旧上下文污染变成系统级污染。
-3. 不要把 Deep Research `plan_json` 当 Markdown plan 的替代品。
    - JSON 是 ledger，不是用户确认正文。
 4. 不要只改前端 loading 文案。
    - Work Ledger 空态需要 API/UI 契约一致。
@@ -373,14 +334,11 @@ pytest tests/tools/test_deep_research_handler.py -k "stream"
 
 - agent 可以 read 该 exact file。
 - plan 中标明该文件是 structure/style reference，不是当前事实来源。
-- 不自动读取 `workspace/deep_research_reports/*/plan.json`。
 
-### 7.3 复现用例：Deep Research plan
 
 输入：
 
 ```text
-进入计划模式，用 deep research 做跨链桥技术架构报告
 ```
 
 期望：
@@ -388,7 +346,6 @@ pytest tests/tools/test_deep_research_handler.py -k "stream"
 - 未确认前不启动 runtime task。
 - PlanCard/工具结果主展示 Markdown plan preview/path。
 - JSON ledger 可追踪但不污染用户-facing plan。
-- 用户确认后 handoff 启动 workflow-native Deep Research。
 - SSE 能从 workflow path 读到 progress/report/final。
 
 ### 7.4 复现用例：无 Work Ledger session
@@ -413,8 +370,6 @@ pytest tests/tools/test_deep_research_handler.py -k "stream"
 3. 写 workspace read reminder/warning 红测。
 4. 实现 Phase 2 + Phase 3，先修 Plan Mode 主故障。
 5. 写并实现 Work Ledger 空态。
-6. 写并实现 Deep Research SSE workflow path。
-7. 收 Deep Research needs-plan JSON 降级与 tool discovery 一致性。
 8. 部署 backend/frontend，生产用同一 agent/session 新建对话回归。
 
 ---

@@ -40,12 +40,10 @@
 ## 2. 设计原则
 
 1. **Chat-first**：对话框是任务主界面。用户不应该为了查看本轮结果跳到 workspace 手动寻找文件。
-2. **Session transcript is the replayable workflow**：所有 agent runtime 触发来源，包括 web chat、trigger、schedule、workflow、deep research、subagent delegation、heartbeat/dream 后台任务，本质上都必须拥有一个可回放的 `ChatSession` transcript。session 不是 UI 附属物，而是运行过程、用户回看、T0 证据和产物引用的基础容器。纯平台守护任务，例如 health check、RLS 启动检查、migration、ops script，不应伪造成 agent session。
 3. **Workspace remains source of truth**：文件仍然落在 agent workspace；chat artifact 只是面向对话的交付索引和打开入口。
 4. **Durable before live**：WebSocket 只负责实时更新；真实状态必须先能从 DB/history 恢复。断线、刷新、后台完成后仍可看到产物。
 5. **LLM writes meaning, platform attaches references**：assistant 负责用户可读总结；平台只附加结构化文件引用、权限校验、预览/下载入口，不机械生成语义结论。
 6. **No technical trace in primary chat**：默认聊天只展示必要进度、最终回答和交付物。tool call JSON、压缩详情、内部 trace 进入 Activity Log 或调试面板。
-7. **One path**：所有 web chat、trigger、workflow、deep research、office/code execution 产物都走同一个 session transcript + artifact delivery contract，不允许各自拼链接。
 
 ## 3. 目标形态
 
@@ -136,7 +134,6 @@ type ChatArtifactPart = {
   size?: number;
   modified_at?: string;
   preview_kind: "markdown" | "text" | "image" | "pdf" | "office" | "download";
-  source: "workspace_write" | "office" | "deep_research" | "code_exec" | "workflow" | "trigger" | "subagent";
   created_at: string;
 };
 ```
@@ -276,7 +273,6 @@ agent runtime
 ```mermaid
 flowchart TD
   A["Agent runtime source: web chat / trigger / workflow / background task"] --> B["create_or_bind_chat_session"]
-  B --> C["Tool / Office / Deep Research 写入 workspace 文件"]
   C --> D["SessionContext.track_file_write / ArtifactCollector 捕获候选"]
   D --> E["ArtifactPolicy 校验路径、权限、文件类型、可见性"]
   E --> F["RuntimeTask finalizer 绑定 artifact 到最终 assistant message"]
@@ -303,7 +299,6 @@ flowchart TD
 | --- | --- | --- | --- |
 | `write_file` / `edit_file` | filesystem tool handler + `SessionContext.track_file_write` | 写入 `workspace/` 且本轮 run 关联当前 session | `workspace_write` |
 | Office create/apply/export | office tool handler | 输出 docx/xlsx/pptx/pdf 或用户请求的办公文件 | `office` |
-| Deep Research export | deep research finalizer/exporter | 报告、引用清单、结构化结果文件 | `deep_research` |
 | Code execution | sandbox artifact promotion | 从 sandbox 提升到 workspace 的用户可见结果 | `code_exec` |
 | Workflow leaf | workflow runtime leaf finalizer | leaf 声明输出或写入 workspace 的结果 | `workflow` |
 | Subagent | subagent run completion | 子任务返回的文件路径或写入 workspace 的结果 | `subagent` |
@@ -377,7 +372,6 @@ flowchart TD
 | schedule | 是 | 同 trigger | 同 trigger | 同 trigger |
 | workflow root | 是 | 用户启动则 `chat`；后台启动则 `task_updates` | root 或当前 session child | root completion message |
 | workflow leaf | 是 | 默认折叠 | `parent_session_id=workflow root session` | leaf event + leaf artifacts，父 session 汇总 |
-| deep research | 是 | `chat` 或 `task_updates` | 当前 session child 或 root | research summary + exports |
 | subagent | 是 | 默认折叠 | `parent_session_id` 必填 | child transcript + parent handoff summary |
 | heartbeat | 是，内部 session | `hidden` / `activity_log` | agent internal root | 内部 summary，不进普通 chat |
 | dream | 是，内部 session | `hidden` / `evolution` | agent internal root | evolution transcript |
@@ -402,7 +396,6 @@ flowchart TD
 | 类型 | 是否创建 session | 普通用户可见 | 默认入口 |
 | --- | --- | --- | --- |
 | 用户直接发起的 web / IM 对话 | 是 | 是 | Chat 列表 |
-| 用户在对话中启动的 Deep Research / Workflow / 长任务 | 是 | 是 | 原 session 或子 session |
 | trigger / schedule 产生了用户应消费的结果 | 是 | 是 | 任务回报 / Chat 列表 |
 | trigger / schedule 只是例行检查、无有效结果 | 是 | 默认不显示 | Run history / Activity Log |
 | subagent 子任务 | 是 | 默认折叠 | 父 session 内展开 |
@@ -441,7 +434,6 @@ runtime_source:
   trigger
   schedule
   workflow
-  deep_research
   subagent
   heartbeat
   dream
@@ -548,7 +540,6 @@ Activity Log 展示诊断和审计内容：tool call JSON、raw trace、压缩�
 
 1. Web chat 生成 `workspace/report.md` 后，最终 assistant 消息必须带 artifact card；刷新页面后仍存在。
 2. 断开 WebSocket 后任务完成，重新打开 session 仍能看到完成消息和 artifact card。
-3. Deep Research / Office / code execution / workflow 产物不能各自拼接独立 UI 路径，必须走统一 `ChatArtifactPart`。
 4. `memory/`、`evolution/`、`runtime_artifacts/` 不应默认出现在用户聊天产物卡里。
 5. 主聊天不再出现“显示技术详情”按钮；tool call trace 仍可在 Activity Log 查询。
 6. 文件打开必须复用现有 agent file API 权限，不允许前端直接拼无鉴权物理路径。
@@ -591,7 +582,6 @@ Frontend 必测：
 1. Backend red tests：`append_session_event` sequence/idempotency、T0 append、history replay、WS after durable write、active-run 不制造消息。
 2. Backend schema：新增 indexed transcript event 表或等价持久层；新增 `chat_artifacts` 独立表；补 `ChatSession` metadata 字段或 metadata contract；必要 migration 一次完成。
 3. Backend service：实现 `create_or_bind_chat_session`、`append_session_event`、T0 writer adapter、transcript read projection、`ArtifactCollector`、`ArtifactPolicy`、finalizer binding。
-4. Runtime coverage：web chat、trigger/schedule、workflow、deep research、office、code execution、subagent、heartbeat/dream/memory 内部 session 全部接入同一 contract。
 5. Channel coverage：IM/channel delivery 使用同一 transcript/artifact ref；外部消息只做 projection。
 6. Frontend red tests：transcript reducer replay、WS/history 等价、artifact card、preview、history reload、child session folding、notification 定位、移除 primary trace toggle。
 7. Frontend implementation：用 `ChatTranscriptEvent` reducer 替代多状态拼装；`AgentChatMessage.parts`、artifact card、side panel preview、Activity Log 入口调整、session list visibility filter。

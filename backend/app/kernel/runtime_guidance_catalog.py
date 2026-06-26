@@ -863,15 +863,6 @@ HIVE_NATIVE_GUIDANCE_CATALOG: tuple[HiveNativeGuidanceEntry, ...] = (
         ("task_status",),
     ),
     _hive(
-        "deep_research_routing_reminder",
-        "deep_research",
-        AlignmentStatus.HAVE,
-        "Deep Research routing reminder",
-        "kernel/engine.py::_maybe_inject_routing_reminder",
-        "tool_result",
-        "Legacy DR-specific guidance remains isolated until DR revamp.",
-    ),
-    _hive(
         "skill_loaded",
         "skill",
         AlignmentStatus.HAVE,

@@ -52,7 +52,6 @@ Agent 的一切行为最终落在一次次 tool call 上。本文档回答两个
 |---|---|---|
 | Core 常驻(`CORE_TOOL_NAMES` 38 个,`services/agent_tools.py:130`;T1.1 落地后) | 文件IO、execute_code、load_skill/save_skill/tool_search、memory×3、objective×4、set_trigger×4、**delegate_to_agent**、async×3、channel message、exit_plan_mode、web_fetch、get_current_time、**spawn_subagent / preview_workflow / start_workflow(T1.1 ✅,源能力原子对,双路径排除集同 commit)** | 永远 |
 | ~~条件注入~~ → Core 常驻(T1.2 ✅) | track_todo/record_finding/read_ledger 已进 `CORE_TOOL_NAMES`(38→41,享 `_always_tools` 无条件兜底,不再依赖 DB `Tool.is_default`/assignment);`should_enable_work_ledger` 保留,只控制**每轮 reminder + compaction reboot**(invoker:1022 写 metadata→engine 读),从不控制工具列表 | 永远 |
-| Deferred/runtime groups(`runtime_tool_groups.py`) | web_search、feishu/email/office/plaza、coordination_pack、mcp_admin、deep_research/office 等重型工具组；pack 仅作目录/前端展示/治理锚点 | `tool_search` 命中后写入 session 发现集并把匹配 schema 并入当前 tools 数组；`load_skill` 只加载方法知识，不解锁工具 |
 
 ### 3.2 七原语(被混为一谈的概念,各回答不同问题)
 
@@ -146,7 +145,6 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 | Office | `office_document_create/view/query/apply/validate/dump` | 重型生产力工具;普通读取由 `fs_read(mode=document)` 覆盖 |
 | Plaza | `plaza_get_new_posts`,`plaza_create_post`,`plaza_add_comment` | 社交 feed 场景化,不该常驻 |
 | MCP admin/外部 MCP | `discover_resources`,`import_mcp_server`,`list_mcp_resources`,`read_mcp_resource`,`call_mcp_tool`,以及动态 MCP tools | 平台扩展/外部能力安装,默认 deferred;单工具可 `always_load` |
-| Deep Research | `deep_research_run/start/check/cancel/export` | 专属长任务链路,通过 skill/意图发现后加载 |
 | DB 任务记录 | REST/API `tasks` helpers | 与 Work Ledger 分层:ledger 是 agent-facing 认知 scaffold 常驻;DB task 是控制中台执行/监督对象,不作为 LLM tool face 按需加载 |
 | 维护/边缘工具 | `delete_file`,`read_document`,`pin_skill`,`upload_image`,`send_web_message` | 已被 core facade/当前通道工具覆盖,或属于低频维护/外部联系场景 |
 
@@ -209,7 +207,6 @@ Deferred 的对象是"当前 agent 可用,但不该占 turn-1 schema"的工具�
 |---|---|---|---|
 | 必须去 skill 化 **✅ T1.1** | `coordination_pack` 里的源能力:`spawn_subagent`,`preview_workflow`,`start_workflow` | 回答"谁去做/流程怎么强制执行",属于 agent runtime 原语;藏在 skill 后会让模型根本不知道可用 | 已加入 `CORE_TOOL_NAMES`;`coordination_pack` 继续作为目录/前端分组,不再控制这些源能力存在性(红测 #7 钉) |
 | 必须 core 化 **✅ T1.2** | `track_todo`,`record_finding`,`read_ledger` | 工作记忆是 agent 思考工具,不应依赖 DB default/assignment 才出现;`should_enable_work_ledger` 只管 reminder 频率 | 已加入 `CORE_TOOL_NAMES`;reminder gate 保留不动 |
-| 已去 skill unlock 化 **✅ C2** | `web_search/firecrawl_fetch/xcrawl_scrape`,`feishu_pack`,`email_pack`,`office_pack`,`plaza_pack`,`deep_research_pack`,`mcp_admin_pack`,`DB task tools` | 垂直集成/重型工具/账号配置/专属长任务仍可由 skill 指导方法,但 schema 存在性不再由 skill 控制 | 通过 `tool_search` 发现 schema；`load_skill`/读 `SKILL.md` 不再触发 tool expansion |
 | 上下文常驻 | HR/SystemHR 工具、当前 channel 必需回复工具、少数未来 `always_load` MCP 工具 | 只有特定 profile/channel turn-1 必需 | 维持条件注入;不提升为所有 agent 全局常驻 |
 
 这条路线的实现含义:

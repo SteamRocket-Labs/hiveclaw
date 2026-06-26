@@ -28,7 +28,6 @@ def test_prompt_text_contract_covers_agent_lifecycle_surfaces() -> None:
         "Session Continuity",
         "Team",
         "Work Ledger",
-        "Deep Research",
         "MCP / Extensions",
         "Compaction",
         "Compaction Trace / Resume",

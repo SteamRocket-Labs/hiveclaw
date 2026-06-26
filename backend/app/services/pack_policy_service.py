@@ -177,9 +177,8 @@ def policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
     """Return policy-relevant pack names for a tool.
 
     Static packs infer membership from `app.tools.runtime_tool_groups`. Dedicated tool
-    handlers also declare `ToolMeta.pack`; this keeps first-class tools such as
-    `deep_research_run` attached to their pack without incorrectly tagging
-    shared dependencies like `web_search` as Deep Research.
+    handlers may also declare `ToolMeta.pack`, keeping first-class tools attached
+    to their pack without incorrectly tagging shared dependencies.
     """
     global _REGISTERED_TOOL_PACK_NAMES
     if _REGISTERED_TOOL_PACK_NAMES is None:

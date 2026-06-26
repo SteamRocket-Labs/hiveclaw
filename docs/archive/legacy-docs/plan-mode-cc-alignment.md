@@ -94,8 +94,6 @@ estimated_cost / wake_policy / handoff_target / handoff_payload
 当前 live Web Chat 的 Plan Mode 默认 target：
 
 ```python
-if is_deep_research:
-    handoff_target = "deep_research"
 elif decision.action_kind == "create_enabled_trigger":
     handoff_target = "objective_trigger"
 else:
@@ -108,7 +106,6 @@ else:
 
 ```python
 objective_trigger
-deep_research
 delegation
 ```
 
@@ -169,7 +166,6 @@ Detached / autonomous 分支：
 ```text
 confirmed
   -> handed_off_objective_trigger
-  -> handed_off_deep_research
   -> handed_off_delegation
   -> handed_off_detached_runtime_task
 ```
@@ -179,7 +175,6 @@ confirmed
 - `awaiting_confirmation` 前不能有 unresolved blocking questions。
 - `confirmed` 不代表执行已经开始；执行开始必须体现在 `handoff_status` 或 session run 状态。
 - live chat 默认 `executing_current_session`，不是 detached `long_task`。
-- detached handoff 必须返回用户可见的 `runtime_task_id` / `objective_id` / `deep_research_id` / `delegation_id`。
 
 ### 3.2 执行 target 枚举
 
@@ -188,7 +183,6 @@ confirmed
 | target | 何时使用 | 用户体验 |
 |---|---|---|
 | `continue_current_session` | live web chat / 当前对话里确认的普通工作、报告、研究、代码任务 | 当前对话继续流式执行并给结果 |
-| `deep_research` | 确认后确实要用 Deep Research engine | 当前会话显示启动、进度、结果；不是静默后台 |
 | `objective_trigger` | 确认后要创建/启用 objective、trigger、schedule | 当前会话显示已创建对象和后续唤醒策略 |
 | `delegation` | 确认后把工作交给另一个 agent | 当前会话显示 delegation id、接收方、回收方式 |
 | `detached_runtime_task` | 用户明确要求后台跑、离线跑、跑完通知我，或无人值守确认后执行 | 必须返回 task id、ledger、取消入口 |
@@ -297,19 +291,14 @@ confirm plan
   - delivery channel / completion notification policy
 - 旧 `long_task` target 只能作为兼容 alias，不能作为新 plan 默认值。
 
-### 4.4 Backend：Deep Research 不是“绕过当前对话”
 
-Deep Research 可以是执行 engine，但不能破坏用户体验：
 
 ```text
-confirmed plan target = deep_research
-  -> start deep_research engine
   -> same session emits progress/status
   -> result artifact appears in same chat
   -> if delivery file is produced, same chat reports attachment/ref
 ```
 
-也就是说，Deep Research 可以异步实现，但不能让用户感觉“当前对话断了，任务消失到后台”。
 
 ### 4.5 Frontend：PlanCard 全部读真实状态
 
@@ -347,7 +336,6 @@ confirmed plan target = deep_research
 - `handoff_status`
 - `handoff_payload`
 - active session run
-- runtime task id / deep research id / delegation id
 
 回答规则：
 
@@ -371,7 +359,6 @@ confirmed plan target = deep_research
 | 用户创建定时/监控 | recommend -> accepted -> Plan Mode | `objective_trigger` | 不经确认直接启用 |
 | 用户拒绝定时/监控 Plan Mode 推荐 | trusted opt-out | 可继续低风险 schedule | agent 自填 opt-out |
 | 用户委派给另一个 agent | Plan Mode hard gate | `delegation` | 当前 agent 直接移交执行权 |
-| Deep Research 报告 | main-loop Plan Mode + deep research engine | same session progress + artifact | 后台静默、无 session 结果 |
 | Feishu/IM 有人在场 | channel session Plan Mode | channel-bound continuation / confirmation | regex 直接造 plan |
 | Trigger/heartbeat 无人值守命中 gate | system plan run -> awaiting_confirmation | 用户确认后按 target 执行 | 未确认自动执行 |
 | REST/API legacy create plan | 创建 draft 或 system plan run | 等确认后执行 | API 直接写 confirmed plan |
@@ -404,7 +391,6 @@ confirmed plan target = deep_research
 6. blocking question 存在时不能进入 `awaiting_confirmation`。
 7. `exit_plan_mode` 拒绝 meta steps。
 8. `author_type` 对 main-loop authored plan 不再是 `workflow`。
-9. `deep_research` handoff 产生 same-session progress/status event。
 10. no session id + `continue_current_session` 必须 fail closed。
 
 命令：
@@ -494,7 +480,6 @@ limit 5;
 - 不把 schedule/monitor recommendation 改成一律 hard gate。
 - 不把 Work Ledger 当成用户确认 plan。
 - 不用 prompt-only 修复替代运行时状态和 handoff 修复。
-- 不把 Deep Research 当成 Plan Mode 唯一答案。
 
 ---
 
@@ -543,7 +528,6 @@ current-session agent planning quality
 
 4. **续跑把计划注入 prompt，不只塞 metadata。** `start_web_chat_run` 的 `content` 硬编码 role=user，所以续跑时 `content=完整计划执行指令`（agent 的 marching orders，含 approved plan_markdown）、`display_content="✅ 计划已确认，开始执行"`（UI 干净）。metadata 仍带 `approved_plan_id/version/hash` 供审计。
 
-小项：§4.4 Deep Research 同会话进度，DR×Workflow 统一后可能已流式到会话，动手前先核实现状再算工作量。
 
 落地序：§4.1 计划质量 contract（吸收先前 Phase A/B/D 的 plan_markdown 正文 + author_type + meta-step + ledger 工具）→ §4.2 `continue_current_session` handler → §4.5 前端 `InlinePlanCard` 取代合成卡片 → §6.3 两个验收用例。
 

@@ -1769,6 +1769,10 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
         title="Feishu Session",
         last_message_at=None,
         delivery_target_json={"channel": "feishu", "receive_id": "ou_1"},
+        transcript_metadata_json={
+            "permission_mode": "bypassPermissions",
+            "session_permission_allowed_tools": ["web_search"],
+        },
     )
     db = _FakeDB(active_run=None)
     scheduled = []
@@ -1809,11 +1813,11 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     assert task.metadata_json["source"] == "feishu"
     assert task.metadata_json["channel"] == "feishu"
     assert task.metadata_json["delivery_target_json"] == session.delivery_target_json
-    assert task.metadata_json["permission_mode"] == "auto"
+    assert task.metadata_json["permission_mode"] == "bypassPermissions"
     assert task.metadata_json["writable_roots"] == ["workspace/"]
     assert task.metadata_json["permission_profile"] == {
-        "mode": "auto",
-        "allowed_tools": [],
+        "mode": "bypassPermissions",
+        "allowed_tools": ["web_search"],
         "writable_roots": ["workspace/"],
     }
     assert scheduled
@@ -2933,19 +2937,16 @@ async def test_activate_interactive_plan_mode_provisions_markdown_plan_file(tmp_
 
 
 @pytest.mark.asyncio
-async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_plan(monkeypatch):
+async def test_maybe_handle_plan_mode_entry_activates_interactive_plan(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
     session_context = SimpleNamespace(metadata={})
 
-    # A: entry is user-explicit (plan_mode_requested=True). Deep Research is kept
-    # as hidden execution intent; Plan Mode itself still hands back to the current
-    # session after confirmation instead of becoming a product-specific branch.
     result = await runtime._maybe_handle_plan_mode_entry(
         agent_id=uuid4(),
         user_id=uuid4(),
         session_id="session-1",
-        content="使用 deepresearch做一个web3的全景报告",
+        content="做一个web3的全景报告",
         plan_mode_requested=True,
         runtime_session_context=session_context,
     )
@@ -2953,18 +2954,11 @@ async def test_maybe_handle_plan_mode_entry_activates_deep_research_interactive_
     assert result is None
     assert session_context.metadata["plan_mode"]["active"] is True
     assert session_context.metadata["plan_mode"]["handoff_target"] == "continue_current_session"
-    assert session_context.metadata["plan_mode"]["deep_research"] is True
-    assert (
-        session_context.metadata["plan_mode"]["deep_research_args"]["question"]
-        == "使用 deepresearch做一个web3的全景报告"
-    )
 
 
 @pytest.mark.asyncio
-async def test_maybe_handle_plan_mode_entry_does_not_auto_enter_for_deep_research_text(monkeypatch):
-    """A (user correction): deep-research wording alone must NOT auto-enter Plan
-    Mode. Without an explicit request the agent's judgment never triggers entry —
-    no plan_mode state is written."""
+async def test_maybe_handle_plan_mode_entry_does_not_auto_enter_without_explicit_request(monkeypatch):
+    """Without an explicit request the agent's judgment never triggers entry."""
     import app.services.web_chat_runtime as runtime
 
     session_context = SimpleNamespace(metadata={})
@@ -2973,7 +2967,7 @@ async def test_maybe_handle_plan_mode_entry_does_not_auto_enter_for_deep_researc
         agent_id=uuid4(),
         user_id=uuid4(),
         session_id="session-1",
-        content="使用 deepresearch做一个web3的全景报告",
+        content="做一个web3的全景报告",
         plan_mode_requested=False,
         runtime_session_context=session_context,
     )

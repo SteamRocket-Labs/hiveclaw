@@ -106,7 +106,7 @@ Current closures that must not regress:
 - Durable self-evolution promotion requires evidence, verification/eval, rollback metadata, and audit records.
 - Web chat and long tasks are `RuntimeTask` backed and restart-resumable; browser disconnects are subscription changes, not cancellation.
 - Plan Mode is a first-class confirmation/planning boundary: substantive plan content must be agent-authored, clarification must be first-class, and unconfirmed autonomous/high-risk work must not execute.
-- Workflow is a first-class deterministic orchestration substrate parallel to Plan Mode: `RuntimeTask(task_type="workflow")`, workflow step/leaf journals, run quotas, gate/wait/resume, trigger integration, admin ops, and Deep Research workflow-native execution must remain governed and auditable.
+- Workflow is a first-class deterministic orchestration substrate parallel to Plan Mode: `RuntimeTask(task_type="workflow")`, workflow step/leaf journals, run quotas, gate/wait/resume, trigger integration, admin ops, and governed auditability.
 - Subagent/delegation is a first-class collaboration capability: lightweight workers, peer delegation, fanout, context isolation, result distillation, governed shared tool execution, and replay-safe resume boundaries must remain distinct from Workflow control flow.
 - Agent TodoList / Work Ledger / Progress Ledger is the CC Task/Todo-equivalent agent-authored task board: `track_todo` records todos/dependencies, `record_finding` records findings/failures/replan, and `read_ledger` restores state. Writing a todo is cognitive bookkeeping; it must not start execution.
 - Skill is a progressive-disclosure capability capsule, not merely a Markdown prompt. A Skill may package instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions; loading a Skill adds context/guidance only. Executable components still run through their governed runtime (`preview_workflow`/`start_workflow`, `spawn_subagent`/`delegate_to_agent`, or approved sandbox/code execution).
@@ -214,10 +214,10 @@ Tools follow a registry + executor + governance pattern:
 | `governance.py` | `run_tool_governance()` — 2-layer preflight: security zone → capability gate |
 | `governance_resolver.py` | Connects governance to real DB (security_zone, capability policies, approval) |
 | `packs.py` | `ToolPackSpec` — static capability bundles (web, feishu, email, etc.) |
-| `handlers/` | 18 handler files: filesystem, search, communication, email, feishu, plaza, skills, triggers, hr, mcp, office, memory, plan_mode, subagent, tasks, work_ledger, workflow, deep_research |
+| `handlers/` | 17 handler files: filesystem, search, communication, email, feishu, plaza, skills, triggers, hr, mcp, office, memory, plan_mode, subagent, tasks, work_ledger, workflow |
 | `workspace.py` | `ensure_workspace()` — bootstraps agent filesystem (soul.md, memory/, skills/, workspace/) |
 
-**100+ registered built-in tool definitions** across categories: file I/O, web search/fetch, Feishu office (docs/wiki/sheets/base/tasks/calendar), OfficeCLI/ONLYOFFICE document workflows, email, messaging, Agent Circle/plaza, triggers, skills, deep research, workflows, work ledger, MCP.
+**100+ registered built-in tool definitions** across categories: file I/O, web search/fetch, Feishu office (docs/wiki/sheets/base/tasks/calendar), OfficeCLI/ONLYOFFICE document workflows, email, messaging, Agent Circle/plaza, triggers, skills, workflows, work ledger, MCP.
 
 ### Skill System (`app/skills/`)
 
@@ -380,7 +380,6 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 
 | Directory | Count | Purpose |
 |-----------|-------|---------|
-| `api/` | 62 files | FastAPI routers — agents, auth, chat sessions, enterprise, triggers, channels, admin, plaza, office, deep research, interoperability |
 | `models/` | 43 files | SQLAlchemy ORM — all async, tenant-scoped with RLS, including invocation spans and session feedback |
 | `services/` | 163 files | Business logic — LLM client, trigger/evolution daemons, channel streaming, memory, office, quota, approval, trace, MCP authz, interoperability |
 | `services/agent_tool_domains/` | 21 files | Tool domain implementations — Feishu, messaging, tasks, workspace, email |
@@ -400,7 +399,6 @@ Soul refinement prompt teaches the LLM the full 4-layer architecture, soul-vs-fo
 | `pages/` | 16 page entries + 40 nested page/section helper files — AgentDetail, Agent Circle, Company Admin workbench/settings, Admin |
 | `components/` | 9 reusable components — ChannelConfig, FileBrowser, MarkdownRenderer, etc. |
 | `api/core/` | HTTP abstraction — `request<T>()` with JWT, error handling, upload progress |
-| `api/domains/` | 37 files including tests and index — agents, enterprise, tools, chat, office, deep research, memory, notifications, etc. |
 | `stores/` | Zustand — `useAuthStore` (user/token) + `useAppStore` (sidebar/selection) |
 | `i18n/` | i18next — `en.json` + `zh.json` (both must be updated for any UI text) |
 | `types/` | Core TypeScript interfaces — User, Agent, Task, ChatMessage |

@@ -1044,6 +1044,7 @@ async def start_channel_chat_run_from_saved_turn(
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
     ]
     writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
+    permission_mode = normalize_permission_mode(session_metadata.get("permission_mode") or "auto").value
     metadata = {
         "user_id": str(user.id),
         "session_id": str(session.id),
@@ -1059,9 +1060,9 @@ async def start_channel_chat_run_from_saved_turn(
         "plan_mode_requested": bool(plan_mode_requested),
         "existing_user_message_saved": True,
         "latest_user_prompt_overrides_history": True,
-        "permission_mode": "auto",
+        "permission_mode": permission_mode,
         "writable_roots": writable_roots,
-        "permission_profile": {"mode": "auto", "allowed_tools": allowed_tools, "writable_roots": writable_roots},
+        "permission_profile": {"mode": permission_mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
         **(extra_metadata or {}),
     }
     runtime_task = RuntimeTask(
@@ -1903,8 +1904,6 @@ def _activate_interactive_plan_mode(
 ) -> dict[str, Any]:
     from app.runtime.session import PlanModeState
 
-    route_text = routing_request or original_request
-    is_deep_research = _is_deep_research_chat_request(route_text)
     if decision.action_kind == "create_enabled_trigger":
         handoff_target = "scheduled_trigger"
     else:
@@ -1922,8 +1921,6 @@ def _activate_interactive_plan_mode(
         tool_name=decision.tool_name,
         reason=decision.reason,
         handoff_target=handoff_target,
-        deep_research=is_deep_research,
-        deep_research_args=_deep_research_chat_arguments(original_request) if is_deep_research else {},
         plan_file_path=plan_file_path,
         source="web_chat",
     )
@@ -1997,28 +1994,6 @@ def _clear_stale_plan_mode_for_new_turn(
         return
     logger.info("[WebChatRun] Clearing stale Plan Mode state before ordinary new turn")
     _clear_interactive_plan_mode(runtime_session_context)
-
-
-_DEEP_RESEARCH_CHAT_RE = re.compile(r"(deep\s*research|deepresearch|深度研究|深度调研)", re.IGNORECASE)
-
-
-def _is_deep_research_chat_request(content: str) -> bool:
-    return bool(_DEEP_RESEARCH_CHAT_RE.search(str(content or "")))
-
-
-def _deep_research_chat_arguments(content: str) -> dict[str, Any]:
-    text = str(content or "").strip()
-    is_chinese = bool(re.search(r"[\u4e00-\u9fff]", text))
-    is_industry = bool(re.search(r"(行业|全景|赛道|市场|landscape|industry|sector)", text, re.IGNORECASE))
-    is_full_depth = bool(re.search(r"(全景|深度|完整|报告|full|deep|comprehensive)", text, re.IGNORECASE))
-    return {
-        "question": text,
-        "mode": "industry_research" if is_industry else "topic_deep_dive",
-        "depth": "full" if is_full_depth else "standard",
-        "output_language": "zh-CN" if is_chinese else "",
-        "output_format": "markdown",
-        "source_policy": "primary_preferred",
-    }
 
 
 async def _accept_latest_plan_mode_recommendation(

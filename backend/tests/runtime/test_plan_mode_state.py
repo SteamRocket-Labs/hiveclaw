@@ -34,7 +34,7 @@ def test_session_context_has_typed_plan_mode_field_inactive_by_default():
     assert ctx.plan_mode is not other.plan_mode
 
 
-def test_to_metadata_matches_legacy_dict_shape_for_non_deep_research():
+def test_to_metadata_matches_legacy_dict_shape():
     state = PlanModeState(
         active=True,
         original_request="帮我完整调研这个行业",
@@ -54,27 +54,6 @@ def test_to_metadata_matches_legacy_dict_shape_for_non_deep_research():
         "reason": "explicit_request",
         "handoff_target": "long_task",
     }
-    # Non-deep-research plans MUST NOT carry deep_research keys.
-    assert "deep_research" not in data
-    assert "deep_research_args" not in data
-
-
-def test_to_metadata_includes_deep_research_payload_when_set():
-    state = PlanModeState(
-        active=True,
-        original_request="使用 deepresearch做一个web3的全景报告",
-        intent_type="in_session_execution",
-        action_kind="start_long_task",
-        tool_name="start_long_task",
-        reason="deep_research_request",
-        handoff_target="deep_research",
-        deep_research=True,
-        deep_research_args={"question": "使用 deepresearch做一个web3的全景报告"},
-    )
-    data = state.to_metadata()
-    assert data["handoff_target"] == "deep_research"
-    assert data["deep_research"] is True
-    assert data["deep_research_args"]["question"] == "使用 deepresearch做一个web3的全景报告"
 
 
 def test_runtime_only_fields_never_leak_into_metadata_mirror():
@@ -164,7 +143,6 @@ def test_from_metadata_round_trips_core_fields():
         tool_name="set_trigger",
         reason="explicit_request",
         handoff_target="scheduled_trigger",
-        deep_research=False,
     )
     restored = PlanModeState.from_metadata(original.to_metadata())
     assert restored.active is True
@@ -174,7 +152,6 @@ def test_from_metadata_round_trips_core_fields():
     assert restored.tool_name == "set_trigger"
     assert restored.reason == "explicit_request"
     assert restored.handoff_target == "scheduled_trigger"
-    assert restored.deep_research is False
 
 
 def test_from_metadata_handles_none_and_empty_safely():

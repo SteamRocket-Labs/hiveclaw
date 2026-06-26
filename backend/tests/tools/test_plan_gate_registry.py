@@ -32,7 +32,6 @@ def test_first_batch_tools_are_tagged_with_expected_action_kinds():
     # binding to start_long_task remains (REST/manual trigger keep the action_kind).
     assert "manage_tasks" not in tagged
     assert "create_digital_employee" not in tagged
-    assert tagged["deep_research_start"] == BRIDGE_SELF
 
 
 def test_trigger_tool_schema_does_not_expose_plan_mode_decline_parameter():
@@ -145,7 +144,6 @@ def test_bridge_self_tools_are_not_hard_gated():
     generic tool service; their runtime owns the final boundary check."""
     from app.tools.plan_gate_registry import hard_gated_action_kind
 
-    assert hard_gated_action_kind("deep_research_start") is None
     assert hard_gated_action_kind("delegate_to_agent") is None
 
 

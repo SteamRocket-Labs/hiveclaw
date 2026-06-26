@@ -101,7 +101,6 @@ CC 早期的 `TodoWrite`（V1，纯内存认知清单）已淘汰，交互式默
   LLM-callable tools；agent-facing DB Task 工具面已退役。
 - `backend/app/services/agent_tool_domains/tasks.py::_manage_tasks` 保留为 REST/control-plane 复用的纯 CRUD helper，
   不承担 agent 认知追踪。
-- 当前 agent 启动异步/长任务的入口是 `delegate_to_agent`、`spawn_subagent`、`start_workflow`、Deep Research
   或 confirmed REST task；DB Task helper 不应重新接回 LLM 工具面。
 
 > **边界**：DB Task 可以继续服务控制中台和人类派活；agent 自己的 todo/task board 只走 Work Ledger。
@@ -173,7 +172,6 @@ CC V2 Task          = [agent 工具] + [创建≠执行] + [全会话] + [owner/
 ### 5.4 Delta-3：解开"创建即执行"耦合
 
 - `track_todo` **只写认知状态，绝不触发执行**。这是它能当思考草稿的前提。
-- 启动受治理执行走 `delegate_to_agent`、`spawn_subagent`、`start_workflow`、Deep Research 或 confirmed REST
   task；认知追踪走 `track_todo`。DB Task helper 不再作为 agent-facing 启动工具。
 - prompt（`prompt_sections/tasks.py` 或 executing_actions）补一段对标 CC 的引导：
   *复杂多步任务主动用 `track_todo` 拆解+追踪进度；开始一步前标 in_progress、做完标 complete。*

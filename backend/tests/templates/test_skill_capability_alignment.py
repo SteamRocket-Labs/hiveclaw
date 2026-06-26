@@ -559,7 +559,7 @@ class TestWorkspaceGuidePathContract:
 
         required_phrases = {
             "workspace/uploads/",
-            "workspace/deep_research_reports/",
+            "workspace/workflow_reports/",
             "workspace/tool_results/",
             "runtime_artifacts/",
             "`run_command` works from `workspace/`",
@@ -567,5 +567,5 @@ class TestWorkspaceGuidePathContract:
         missing = sorted(phrase for phrase in required_phrases if phrase not in content)
         assert not missing, (
             "Workspace Guide must teach agents where platform writes land so they can rediscover "
-            f"files after uploads, Deep Research, large tool-result spillover, and sandbox commands: {missing}"
+            f"files after uploads, workflow reports, large tool-result spillover, and sandbox commands: {missing}"
         )

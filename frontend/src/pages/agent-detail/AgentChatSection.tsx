@@ -23,7 +23,6 @@ import type { AgentPermissions } from '../../api/domains/agents';
 import AskUserQuestionCard from './AskUserQuestionCard';
 import PlanModeRequestCard from './PlanModeRequestCard';
 import CopyMessageButton from './CopyMessageButton';
-import DeepResearchStreamPanel from './DeepResearchStreamPanel';
 import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
@@ -319,13 +318,7 @@ type ArtifactPreviewState = {
 
 type Translate = ReturnType<typeof useTranslation>['t'];
 
-const _LIVE_DEEP_RESEARCH_STATUSES = new Set(['running', 'pending', 'in_progress']);
 const PLAN_ID_RE = /\bplan_id\s*[=:]\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
-
-function _isLiveDeepResearchStatus(status: string | null | undefined): boolean {
-  if (!status) return false;
-  return _LIVE_DEEP_RESEARCH_STATUSES.has(status.toLowerCase());
-}
 
 export function extractPlanIdFromPlanModeMessage(content: string | null | undefined): string | null {
   if (!content) return null;
@@ -745,9 +738,21 @@ function ArtifactCards({
       {visibleArtifacts.map((artifact) => {
         const href = fileApi.downloadUrl(String(agentId), artifact.path);
         const size = formatArtifactSize(artifact.size);
+        const openArtifact = () => onOpenArtifact?.(artifact);
         return (
           <div
             key={`${artifact.id || artifact.path}`}
+            role="button"
+            tabIndex={0}
+            data-testid="chat-artifact-row-open"
+            aria-label={t('agent.chat.artifacts.openNamed', 'Open {{name}}', { name: artifact.name })}
+            onClick={openArtifact}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                openArtifact();
+              }
+            }}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -757,6 +762,7 @@ function ArtifactCards({
               border: '1px solid var(--border-subtle)',
               background: 'var(--bg-elevated)',
               minWidth: 0,
+              cursor: onOpenArtifact ? 'pointer' : 'default',
             }}
           >
             <IconFileText size={16} color="var(--text-tertiary)" style={{ flexShrink: 0 }} />
@@ -788,7 +794,10 @@ function ArtifactCards({
             <button
               type="button"
               data-testid="chat-artifact-open"
-              onClick={() => onOpenArtifact?.(artifact)}
+              onClick={(event) => {
+                event.stopPropagation();
+                openArtifact();
+              }}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -808,6 +817,7 @@ function ArtifactCards({
             <a
               href={href}
               download={artifact.name}
+              onClick={(event) => event.stopPropagation()}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -1011,48 +1021,6 @@ export function StructuredToolResultBody({
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
             {toolMeta.summary || t('agent.plan.needsConfirmation', 'A plan needs your confirmation.')}
           </div>
-        )}
-      </div>
-    );
-  }
-
-  if (toolMeta.kind === 'deep_research') {
-    const gateRows = Object.entries(toolMeta.qualityGates).map(([gate, state]) => `${gate}: ${state}`);
-    const statRows = [
-      toolMeta.taskId ? `${t('agent.chat.toolResults.taskId', 'Task')}: ${toolMeta.taskId}` : '',
-      toolMeta.status ? `${t('agent.chat.toolResults.status', 'Status')}: ${toolMeta.status}` : '',
-      typeof toolMeta.sourceCount === 'number' ? `${t('agent.chat.toolResults.sources', 'Sources')}: ${toolMeta.sourceCount}` : '',
-      typeof toolMeta.claimCount === 'number' ? `${t('agent.chat.toolResults.claims', 'Claims')}: ${toolMeta.claimCount}` : '',
-      toolMeta.reportPath ? `${t('agent.chat.toolResults.report', 'Report')}: ${toolMeta.reportPath}` : '',
-    ].filter(Boolean);
-    const showRawOutput = rawText.length > 0 && rawText !== toolResult;
-    const shouldStreamLive =
-      Boolean(agentId) &&
-      Boolean(toolMeta.taskId) &&
-      _isLiveDeepResearchStatus(toolMeta.status);
-    return (
-      <div style={{ display: 'grid', gap: '8px' }}>
-        <div style={{ display: 'grid', gap: '4px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-text)' }}>
-            {t('agent.chat.toolResults.deepResearchTitle', 'Deep Research')}
-          </div>
-          {toolMeta.summary && <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{toolMeta.summary}</div>}
-        </div>
-        {shouldStreamLive && (
-          <DeepResearchStreamPanel agentId={agentId as string} taskId={toolMeta.taskId as string} />
-        )}
-        <StructuredToolSection label={t('agent.chat.toolResults.runState', 'Run State')} items={statRows} />
-        <StructuredToolSection label={t('agent.chat.toolResults.qualityGates', 'Quality Gates')} items={gateRows} />
-        <StructuredToolSection label={t('agent.chat.toolResults.gaps', 'Gaps')} items={toolMeta.gaps} />
-        {showRawOutput && (
-          <details>
-            <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)' }}>
-              {t('agent.chat.toolResults.rawOutput', 'Raw output')}
-            </summary>
-            <div style={{ marginTop: '6px' }}>
-              <RawToolResultBlock text={rawText} />
-            </div>
-          </details>
         )}
       </div>
     );
@@ -1366,10 +1334,14 @@ export default function AgentChatSection({
 
   const renderEventMessage = React.useCallback(
     (msg: AgentChatMessage, index: number) => {
+      const permissionRequest = msg.sessionPermissionRequest;
+      const isSessionPermissionRequest = Boolean(permissionRequest && msg.eventStatus === 'session_permission_required');
+      const permissionToolLabel =
+        permissionRequest?.tool_display_name || permissionRequest?.tool_name || msg.eventToolName || 'this tool';
       const statusColor =
         msg.eventStatus === 'blocked' || msg.eventStatus === 'capability_denied'
           ? 'var(--error)'
-          : msg.eventStatus === 'approval_required'
+          : msg.eventStatus === 'approval_required' || isSessionPermissionRequest
             ? 'var(--warning)'
             : 'var(--accent-primary)';
       const metaParts: string[] = [];
@@ -1392,16 +1364,15 @@ export default function AgentChatSection({
         );
       }
       if (msg.eventToolName) metaParts.push(msg.eventToolName);
-      if (msg.eventCapability) metaParts.push(msg.eventCapability);
-      if (msg.eventSecurityZone) metaParts.push(`zone:${msg.eventSecurityZone}`);
-      if (msg.eventApprovalId) metaParts.push(`approval:${msg.eventApprovalId}`);
+      if (!isSessionPermissionRequest && msg.eventCapability) metaParts.push(msg.eventCapability);
+      if (!isSessionPermissionRequest && msg.eventSecurityZone) metaParts.push(`zone:${msg.eventSecurityZone}`);
+      if (!isSessionPermissionRequest && msg.eventApprovalId) metaParts.push(`approval:${msg.eventApprovalId}`);
       const isCompactionEvent = msg.eventType === 'session_compact';
       const compactionDisplay = isCompactionEvent ? getCompactionDisplayContent(msg.content) : null;
       const compactionDetails = isCompactionEvent
         ? compactionDisplay?.details || (msg.content?.trim() ? msg.content : null)
         : null;
       const compactionInProgress = msg.eventStatus === 'running' || msg.eventStatus === 'in_progress';
-      const permissionRequest = msg.sessionPermissionRequest;
       const permissionActions = permissionRequest && msg.eventStatus === 'session_permission_required' ? (
         <SessionPermissionActions
           permissionRequest={permissionRequest}
@@ -1447,6 +1418,12 @@ export default function AgentChatSection({
                     </div>
                   </details>
                 )}
+              </div>
+            ) : isSessionPermissionRequest ? (
+              <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>
+                {t('agent.chat.runtime.permissionNeeded', 'The agent needs permission to use {{tool}}.', {
+                  tool: permissionToolLabel,
+                })}
               </div>
             ) : (
               <div style={{ fontSize: '12px', lineHeight: 1.6, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{msg.content}</div>

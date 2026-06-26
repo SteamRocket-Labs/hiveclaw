@@ -1,8 +1,8 @@
 """Tests for the subagent source capability (cut ①, runtime-only).
 
-Style mirrors tests/deep_research/test_worker.py: inject a fake ``invoke`` in
-place of the real kernel and assert on the AgentInvocationRequest fields + the
-returned SubagentResult. No DB, no mocks of the functional core.
+Inject a fake ``invoke`` in place of the real kernel and assert on the
+AgentInvocationRequest fields + the returned SubagentResult. No DB, no mocks
+of the functional core.
 """
 
 from __future__ import annotations

@@ -149,6 +149,149 @@ def _parse_channel_permission_action(text: str) -> str | None:
     return None
 
 
+_CHANNEL_PERMISSION_MODE_LABELS = {
+    "default": ("请求批准", "Ask first"),
+    "auto": ("替我批准", "Auto"),
+    "bypassPermissions": ("完全访问", "Full access"),
+}
+
+
+def _channel_permission_mode_label(mode: str) -> str:
+    zh, _en = _CHANNEL_PERMISSION_MODE_LABELS.get(mode, _CHANNEL_PERMISSION_MODE_LABELS["auto"])
+    return zh
+
+
+def _channel_permission_mode_label_with_en(mode: str) -> str:
+    zh, en = _CHANNEL_PERMISSION_MODE_LABELS.get(mode, _CHANNEL_PERMISSION_MODE_LABELS["auto"])
+    return f"{zh}（{en}）"
+
+
+def _parse_channel_permission_mode_command(text: str) -> tuple[str, str | None] | None:
+    import re
+
+    clean = (text or "").strip()
+    if not clean:
+        return None
+    lower = clean.lower()
+
+    if lower.startswith(("/permissions", "/permission")):
+        parts = clean.split()
+        if len(parts) == 1:
+            return ("show", None)
+        arg = parts[1].strip().lower()
+        if arg in {"ask", "default", "request", "approve-first"}:
+            return ("set", "default")
+        if arg in {"auto", "approve", "approve-for-me"}:
+            return ("set", "auto")
+        if arg in {"full", "bypass", "bypasspermissions", "bypass-permissions", "full-access"}:
+            return ("set", "bypassPermissions")
+        return ("show", None)
+
+    if re.search(r"(查看|查询|当前).*(权限模式|权限设置)|^权限模式$|^查看权限$", clean, re.IGNORECASE):
+        return ("show", None)
+    if re.search(r"(切换|设置|改成|改为).*(请求批准|ask first|ask|default)", clean, re.IGNORECASE):
+        return ("set", "default")
+    if re.search(r"(切换|设置|改成|改为).*(替我批准|auto|approve for me)", clean, re.IGNORECASE):
+        return ("set", "auto")
+    if re.search(r"(切换|设置|改成|改为).*(完全访问|full access|full|bypass)", clean, re.IGNORECASE):
+        return ("set", "bypassPermissions")
+    return None
+
+
+async def _load_channel_session(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    session_id: str | None,
+    durable_session: Any = None,
+) -> Any | None:
+    if durable_session is not None:
+        return durable_session
+    session_uuid = _uuid_or_none(session_id)
+    if session_uuid is None:
+        return None
+    from app.models.chat_session import ChatSession
+
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_uuid, ChatSession.agent_id == agent_id))
+    return result.scalar_one_or_none()
+
+
+async def try_handle_channel_permission_mode_command(
+    *,
+    db: AsyncSession,
+    agent_id: uuid.UUID,
+    user: Any,
+    user_text: str,
+    session_id: str | None,
+    session_source: str,
+    durable_session: Any = None,
+) -> str | None:
+    """Handle IM-local CCPlus session permission mode query/switch commands."""
+    parsed = _parse_channel_permission_mode_command(user_text)
+    if parsed is None:
+        return None
+
+    from app.api import chat_sessions as chat_sessions_api
+    from app.models.runtime_task import RuntimeTask
+    from app.runtime.ccplus_contracts import normalize_permission_mode
+
+    action, requested_mode = parsed
+    session = await _load_channel_session(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        durable_session=durable_session,
+    )
+    if session is None:
+        return "当前没有可切换的会话。请先在当前 IM 会话里发起一次任务，或到 Web 端查看权限模式。"
+
+    if action == "show":
+        metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
+        mode = normalize_permission_mode(metadata.get("permission_mode") or "auto").value
+        allowed_tools = [
+            str(item) for item in (metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
+        ]
+        allowed_text = ", ".join(allowed_tools) if allowed_tools else "暂无"
+        return (
+            f"当前权限模式：{_channel_permission_mode_label_with_en(mode)}\n"
+            f"本会话已授权工具：{allowed_text}\n"
+            "可切换为：\n"
+            "1. 请求批准：/permissions ask\n"
+            "2. 替我批准：/permissions auto\n"
+            "3. 完全访问：/permissions full"
+        )
+
+    if user is None:
+        return "权限模式切换需要可审计的用户身份。请先绑定账号，或到 Web 端会话内切换。"
+
+    mode = normalize_permission_mode(requested_mode or "auto").value
+    permission_metadata = chat_sessions_api._session_permission_metadata(mode, session)
+    session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
+    session_metadata.update(permission_metadata)
+    session.transcript_metadata_json = session_metadata
+
+    session_uuid = _uuid_or_none(session_id or getattr(session, "id", None))
+    if session_uuid is not None:
+        active_result = await db.execute(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.parent_agent_id == agent_id,
+                RuntimeTask.parent_session_id == str(session_uuid),
+                RuntimeTask.status.in_(("pending", "running")),
+            )
+            .order_by(RuntimeTask.created_at.desc())
+            .limit(1)
+        )
+        active_run = active_result.scalar_one_or_none()
+        if active_run is not None:
+            active_metadata = dict(getattr(active_run, "metadata_json", None) or {})
+            active_metadata.update(permission_metadata)
+            active_run.metadata_json = active_metadata
+
+    await db.commit()
+    return f"已将当前会话权限模式切换为：{_channel_permission_mode_label(mode)}。"
+
+
 async def try_resolve_channel_session_permission_from_text(
     *,
     db: AsyncSession,
@@ -272,10 +415,25 @@ async def call_agent_llm(
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
     effective_user_id = user_id or agent_id
+    channel_audit_user = durable_user
+    if channel_audit_user is None and user_id is not None:
+        channel_audit_user = SimpleNamespace(id=user_id, username=str(user_id), display_name=str(user_id))
+    permission_mode_reply = await try_handle_channel_permission_mode_command(
+        db=db,
+        agent_id=agent_id,
+        user=channel_audit_user,
+        user_text=user_text,
+        session_id=session_id,
+        session_source=session_source,
+        durable_session=durable_session,
+    )
+    if permission_mode_reply is not None:
+        return permission_mode_reply
+
     session_permission_reply = await try_resolve_channel_session_permission_from_text(
         db=db,
         agent_id=agent_id,
-        user=durable_user,
+        user=channel_audit_user,
         user_text=user_text,
         session_id=session_id,
         session_source=session_source,

@@ -187,7 +187,7 @@ describe('parseCreateEmployeeToolResult', () => {
 
   it('falls back to plan_preview when plan_json is absent on a needs_plan result', () => {
     const normalized = normalizeToolCallResult(
-      'deep_research_start',
+      'start_workflow',
       JSON.stringify({
         status: 'needs_plan',
         plan_id: 'plan-uuid-2',
@@ -214,7 +214,7 @@ describe('parseCreateEmployeeToolResult', () => {
         plan_hash: null,
         summary: '计划未通过校验，需要修改后重新生成。',
         next_action: '请修改可见计划内容后重新提交；不要确认或开始执行这个失败计划。',
-        planning_errors: ['user-visible plan leaks internal workflow detail: deep_research_* tool call'],
+        planning_errors: ['user-visible plan leaks internal workflow detail: internal tool call'],
       }),
     );
 

@@ -7,7 +7,6 @@
 - P0 文档入口：已完成，本文档挂入 `docs/README.md`。
 - P1 前端 disclosure layer：已完成。普通 `tool_call` 不再默认隐藏；连续的 `thinking/tool_call/session_compact/permission` 会按 assistant turn 聚合成一个 `RunDisclosureBlock`；AskQuestion 保持单面板多问题交互。
 - P2 后端 durable tool step contract：已完成。`running` tool call 也写 transcript；`done/failed` 写 completion event；事件带 `tool_call_id`、`step_id`、`duration_ms`、`visibility` 并回填到 WebSocket payload。
-- P3 runtime source unification：已完成第一层产品闭环。Deep Research、Workflow、Subagent/delegation、Trigger/schedule 类工具结果都进入同一 disclosure projection。
 - P4 环境信息侧栏：跳过，不作为当前目标。
 
 ## 0. 结论
@@ -124,7 +123,6 @@ Hive 现在不是“完全没有 transcript replay 基础”。后端已经能�
 4. 没充分强调 backend durability：running step 如果不持久化，刷新期间会丢过程。
 5. 没把 AskQuestion 定义成一个 blocking process step + 单面板多问题交互。
 6. 没把 visibility policy 明确拆成默认可见、默认折叠、debug/admin。
-7. 没把 deep research、workflow、subagent、trigger 等 runtime source 统一回 ChatSession transcript 的原则写进这个 UX contract。
 
 本文档替代它成为当前实现入口；旧文档只保留为历史参考。
 
@@ -185,7 +183,6 @@ Hive 要学习的是：成功结果可以降噪，但过程本身不能消失；
   - permission request。
   - AskQuestion / Plan Mode confirmation。
   - session_compact。
-  - workflow / subagent / deep research 子运行入口。
 
 ### 5.2 默认折叠但可展开
 
@@ -196,7 +193,6 @@ Hive 要学习的是：成功结果可以降噪，但过程本身不能消失；
 - reasoning summary 的完整文本。
 - compaction summary 和 token pressure detail。
 - Work Ledger / TodoList / finding 细节。
-- deep research 子步骤。
 - artifact metadata。
 
 ### 5.3 只在 debug/admin/trace 模式可见
@@ -241,7 +237,6 @@ export type RunStepKind =
   | 'compaction'
   | 'workflow'
   | 'subagent'
-  | 'deep_research'
   | 'artifact'
   | 'event';
 
@@ -383,7 +378,6 @@ Codex rollout trace 会把重 payload 作为 reference，而不是全塞进主 U
 - Web chat。
 - Plan Mode。
 - AskQuestion。
-- Deep Research。
 - Workflow。
 - Subagent/delegation。
 - Trigger / schedule。
@@ -470,13 +464,11 @@ pytest \
 - 对 `runtime_event_to_ws(...)` 的 permission/compaction/tool activation 统一 step event metadata。
 - 更新 frontend adapter 兼容新旧 event。
 
-### P3 — Deep Research / Workflow / Subagent 统一
 
 目标：后台长任务和协作任务不要另开一套不可回放 UI。
 
 覆盖：
 
-- Deep Research SSE step 映射进 nested timeline。
 - Workflow step/leaf journal 映射进 nested timeline。
 - Subagent spawn/delegate/result 映射进 nested timeline。
 - Trigger / schedule 触发的结果有 ChatSession replay window。

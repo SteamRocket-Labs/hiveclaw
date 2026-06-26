@@ -52,14 +52,12 @@ Counts are from the current tree, not historical docs.
 | API routers | 62 files | Mounted under both `/api` and `/api/v1`, except public webhooks and WebSocket. |
 | ORM models | 43 files | Tenant-scoped SQLAlchemy models, including runtime tasks, coordination, objectives, identity, pending replies, channel config, invocation spans, and session feedback. |
 | Services | 163 files | Runtime, channel delivery, memory, extraction, evolution, office, Feishu, triggers, skills, governance, trace, MCP authz, interoperability. |
-| Tool handlers | 18 files / 100+ registered definitions | filesystem, search, communication, email, Feishu, memory, office, HR, MCP, deep research, plan mode, subagent, plaza, tasks, triggers, work ledger, workflow. |
 | Tool domain services | 21 files | Feishu office domains, workspace, messaging, objectives, web MCP, code exec, image upload. |
 | Memory modules | 25 files | write gate, activation, retriever, T2 store, lifecycle, retention, access log, replay corpus, hygiene, optional backends. |
 | Runtime modules | 17 files | invoker, prompt builder, context engines, hooks, session, recovery manifest, coordinator, workflow compiler/engine, eval helpers. |
 | Alembic migrations | 79 files | `alembic heads` must stay single-head before new migrations. |
 | Frontend pages | 16 page entry files | App, workspace, admin, login/setup, agent detail, Agent Circle. |
 | Frontend nested page/section helpers | 40 files | Agent detail, workspace admin, admin companies, layout helpers. |
-| Frontend API domains | 37 files | Typed adapters for agents, chat, office, deep research, memory, autonomy, enterprise, etc.; count includes tests and index files. |
 
 ## Product Surfaces
 
@@ -147,7 +145,6 @@ Important routers added or promoted in the current architecture:
 
 - `chat_sessions.py`: web chat sessions and durable run endpoints.
 - `office.py`: ONLYOFFICE editor config, download/callback/force-save endpoints.
-- `deep_research.py`: deep research job control and stream proxy.
 - `interoperability.py`: machine-readable platform interoperability profile.
 - `tenant_channels.py`, `email_channel.py`, `telegram.py`, `wechat_personal.py`: per-channel configuration and runtime surfaces.
 - `objectives.py`, `autonomy.py`: durable objectives and autonomy overview/repair.
@@ -489,7 +486,6 @@ Static tool packs currently include:
 - `mcp_admin_pack`
 - `finance_pack` (experimental, tenant-enabled)
 - `office_pack`
-- `deep_research_pack`
 
 MCP server imports generate dynamic pack names such as `mcp_server:{slug}`.
 MCP auth is intentionally conservative: registry URLs with userinfo,

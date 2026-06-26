@@ -77,7 +77,7 @@ class _FailingPlanService(_PlanService):
             plan_hash=None,
             plan_json={},
             metadata_json={
-                "planning_errors": ["user-visible plan leaks internal workflow detail: deep_research_* tool call"]
+                "planning_errors": ["user-visible plan leaks internal workflow detail: load_skill"]
             },
         )
 
@@ -115,11 +115,9 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
 
     token = set_interactive_plan_mode(
         {
-            "original_request": "使用 deepresearch做一个web3的全景报告",
+            "original_request": "做一个web3的全景报告",
             "intent_type": "in_session_execution",
             "handoff_target": "continue_current_session",
-            "deep_research": True,
-            "deep_research_args": {"question": "使用 deepresearch做一个web3的全景报告", "depth": "full"},
         }
     )
     try:
@@ -151,9 +149,7 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
     assert result["plan_json"]["title"] == "Web3 全景研究计划"
     assert result["plan_json"]["steps"][0]["order"] == 1
     assert result["plan_json"]["handoff"]["target"] == "continue_current_session"
-    assert result["plan_json"]["execution_contract"]["type"] == "workflow"
-    assert result["plan_json"]["execution_contract"]["workflow_ref"] == "deep_research.v1"
-    assert result["plan_json"]["execution_contract"]["args"]["question"] == "使用 deepresearch做一个web3的全景报告"
+    assert "execution_contract" not in result["plan_json"]
     assert service.calls
     call = service.calls[0]
     assert call["intent_type"] == "in_session_execution"
@@ -174,7 +170,7 @@ async def test_exit_plan_mode_returns_planning_failed_without_needs_plan_success
     token = set_interactive_plan_mode(
         {
             "active": True,
-            "original_request": "使用 deepresearch做一个web3的全景报告",
+            "original_request": "做一个web3的全景报告",
             "intent_type": "in_session_execution",
         }
     )
@@ -185,8 +181,8 @@ async def test_exit_plan_mode_returns_planning_failed_without_needs_plan_success
                     {
                         "title": "Bad plan",
                         "objective": "Expose internals.",
-                        "plan_markdown": "## Plan\nCall deep_research_start directly.",
-                        "steps": ["Run deep_research_start"],
+                        "plan_markdown": "## Plan\nCall load_skill directly.",
+                        "steps": ["Run load_skill"],
                         "success_criteria": ["Report is generated"],
                         "stop_conditions": ["User rejects"],
                     }
@@ -200,7 +196,7 @@ async def test_exit_plan_mode_returns_planning_failed_without_needs_plan_success
     assert result["item_type"] == "plan_proposal"
     assert "等待用户确认" not in result["summary"]
     assert "confirm" not in result["next_action"].lower()
-    assert "deep_research_* tool call" in "\n".join(result["planning_errors"])
+    assert "load_skill" in "\n".join(result["planning_errors"])
 
 
 @pytest.mark.asyncio
@@ -213,11 +209,11 @@ async def test_exit_plan_mode_preserves_hidden_execution_contract_without_visibl
 
     contract = {
         "type": "workflow",
-        "workflow_ref": "deep_research.v1",
-        "workflow_definition_hash": "hash-dr",
+        "workflow_ref": "custom_research.v1",
+        "workflow_definition_hash": "hash-workflow",
         "args": {
             "question": "Web3 landscape",
-            "internal_tool_note": "deep_research_start writes runtime_artifacts/workflow_runs/run/deep_research",
+            "internal_tool_note": "start_workflow writes runtime_artifacts/workflow_runs/run",
         },
     }
     token = set_interactive_plan_mode(

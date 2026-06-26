@@ -61,7 +61,6 @@ Scope: CCPlus V1 单 Agent runtime 收口后的全系统断点取证 + "是否�
 
 | # | 断点 | 证据 | 判定 | 严重度 |
 |---|---|---|---|---|
-| A-1 | **Deep Research 零 session artifact**:报告+来源只落 workspace 文件,DR 全树 grep `append_session_event/chat_artifact_delivery` 为空 | `deep_research/workflow_definition.py:263-289`、`leaf_presets.py:210/646` | 声称但死 | **Critical** |
 | A-2 | **Workflow 完成只投状态行**,outputs/leaf artifact/deliverable 从不进 session(走 channel push+Signal,在时间线外) | `workflow_runtime_service.py:788-799` vs `:1093/:1117` | 声称但死 | High |
 | A-3 | **A2A peer/async delegation 是 result-summary-first**,父时间线无完成投影(subagent 路径已解决、delegation 没做) | `agents/orchestrator.py:1350/1499`、`messaging.py:1254` | 缺失 | High |
 | A-4 | **Turn-state 机器是桩**:enum 缺 `waiting_for_permission/blocked_by_hook/waiting_for_child/waiting_for_workflow/cancelled`,未知态静默 coerce 成 `running` | `ccplus_contracts.py:23-31`、`session_control_plane.py:204` | 桩 | High |
@@ -125,7 +124,6 @@ Agent Kernel 主路径(完整历史喂 LLM 压缩、10×重试+model fallback、
 
 | # | 解决 | 真实 live 接线(file:line) | revert-sensitive 测试 |
 |---|---|---|---|
-| A-1 | DR 最终报告/来源现注册成 session artifact(免迁移、绕开 `message_id NOT NULL`) | `deep_research/workflow_definition.py:345` `_deliver_deep_research_report_to_session` 经新 `chat_artifact_delivery.py:154` `build_session_artifact_parts`(row-free)发 `artifact_delivery` 事件到父 session | `test_build_session_artifact_parts_returns_rowless_parts_for_safe_paths`、DR delivery 测试 |
 | A-2 | workflow 完成事件投 `outputs`/deliverable,不再只投状态行 | `workflow_runtime_service.py` `_append_run_session_event(outputs=...)` + 完成调用点 `outputs=outcome.outputs` | `test_completion_session_event_projects_run_outputs` |
 | A-3 | delegation 完成投 `child_session` 进父时间线(镜像 subagent) | `orchestrator.py:1242-1322` `_project_delegation_completion_to_parent`,在 `_spawn_async_delegation_task` 终态调用 | `test_delegation_completion_projects_child_session_event_to_parent`(+3) |
 | A-4 | `TurnStatus` 补 5 态 + 从 session 事件真实派生 wait 态 + `killed→cancelled`(修"killed 静默成 running") | `ccplus_contracts.py` TurnStatus;`session_control_plane.py` `_derive_active_turn_status`/`_coerce_turn_status`,接线于 `build_session_workbench:609`;API 类型 `ccParity.ts:131` 已暴露 `active_turn.status` | `test_turn_state_derives_waiting_for_permission`、`_blocked_by_hook_child_and_workflow`、`_coerce_maps_killed_..._to_cancelled`(5 新)+ 更正既有 killed 测试 |
@@ -154,7 +152,6 @@ Agent Kernel 主路径(完整历史喂 LLM 压缩、10×重试+model fallback、
 
 ### 验证
 
-- 已完成区域定向回归:turn_state/side_effects/hooks/fast_reflection/memory_integration/orchestrator/workflow_runtime/conversation_summarizer/memory_service/compression_alignment → **163 passed**;DR/artifact/web_chat/deep_research → **175 passed**;hook wire standard → **14 passed**。
 - 全量后端回归:见下方"最终全量回归"。
 - ruff:所有改动文件 `ruff check` 全过。
 - 范围纪律:未触碰 migrations/models/schema;C-1/C-2 的生产翻转未擅自执行(安全闸门)。

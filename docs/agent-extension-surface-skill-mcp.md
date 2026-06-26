@@ -16,7 +16,6 @@ Hive's user-facing agent extension surface should expose only two module types:
 
 Everything else is internal:
 
-- `package`, `pack`, `capability pack`, `web_pack`, `office_pack`, `deep_research_pack`, `plan_mode_pack`, and similar tool-group names must not be shown as installable user modules.
 - `capability` remains a governance/policy concept, not an agent extension module.
 - `Tool` remains an execution primitive, not the primary user-facing unit for MCP installation.
 
@@ -38,14 +37,12 @@ Internal Runtime
 
 The current codebase has already chosen Skill + MCP as the install model. `backend/app/services/capability_install_service.py` builds install records for `platform_skill`, `clawhub_skill`, `mcp_server`, and external skill URLs. It does not define `pack` as an install kind.
 
-That makes pack a legacy runtime grouping concept, not a clean product module. The main problem is not that every user literally sees raw names like `web_pack` everywhere. Some frontend places translate internal names into labels such as "Office" or "Deep Research". The real problem is that the codebase still maintains two parallel product concepts:
 
 - Skill/MCP as the install surface.
 - Pack/package as an exposed API/runtime surface.
 
 The current pack leakage is concentrated in these places:
 
-- `backend/app/tools/packs.py` defines static tool groups such as `web_pack`, `feishu_pack`, `mcp_admin_pack`, `office_pack`, `deep_research_pack`, and `plan_mode_pack`.
 - `backend/app/api/packs.py` exposes `/packs`, `/agents/{agent_id}/packs`, `/enterprise/packs/policies`, `/agents/{agent_id}/capability-summary`, and `/chat/sessions/{session_id}/runtime-summary`. The same file also hosts the `/enterprise/mcp-servers` route family, so the pack routes that get removed and the MCP routes that get reshaped share one module (see §7.3).
 - `backend/app/services/pack_service.py` returns fields such as `available_packs`, `channel_backed_packs`, `skill_declared_packs`, and `activated_packs`.
 - `backend/app/services/chat_message_parts.py` serializes `pack_activation` events with the title "Capability Packs Activated", but the events are actually emitted upstream in `backend/app/runtime/invoker.py` (three sites) and `backend/app/kernel/engine.py`. The rename must cover the emit sources, not just the serializer.
@@ -110,7 +107,6 @@ Agent detail should not show:
 - `skill_declared_packs`
 - `web_pack`
 - `office_pack`
-- `deep_research_pack`
 - `mcp_admin_pack`
 - `plan_mode_pack`
 
@@ -904,7 +900,6 @@ Purely additive — new server-first API on the Part 1 tables; existing pack rou
 - `ToolsManager.tsx` rewritten: drives off `GET /agents/{id}/extensions`; two modules — Skills + MCP Servers. Each MCP server is one card (name, status, tool_count, enabled toggle → PUT assignment); individual tools live in a collapsed "Advanced tool controls" drawer per card, hidden by default.
 - Company admin `WorkspaceToolsSection.tsx`: server-first MCP Servers view from `/enterprise/mcp-servers/records`; no pack-policy product UI. Skill Registry stays in its own tab.
 - Chat runtime: recognizes `tool_group_activation` (+ historical `pack_activation` read-normalized); shows a generic count, never raw internal names like `web_pack`.
-- i18n: `agent.packs.*` → `agent.extensions.*` in both en.json + zh.json (lockstep); user-facing pack/package/capability-pack labels removed. Internal category keys office_pack/deep_research_pack kept (they key raw backend `tool.category` and display clean "Office"/"Deep Research").
 - Removed the orphaned `getPacks` adapter (no consumers).
 - Evidence: `npx tsc --noEmit` exit 0; `npm run build` exit 0; targeted tests (chatRuntime, AgentDetailSections, WorkspaceRemainingSections, AgentDetail, AgentDetail.query-gating) **47 passed**. Reviewed: tsc re-run confirmed green; removed one unused React default import.
 

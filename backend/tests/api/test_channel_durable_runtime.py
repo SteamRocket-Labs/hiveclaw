@@ -126,6 +126,161 @@ async def test_channel_reply_resolves_latest_session_permission(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_channel_permission_mode_command_reports_current_profile() -> None:
+    from app.services.channel_agent_runtime import try_handle_channel_permission_mode_command
+
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), username="feishu_u")
+    session = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        user_id=user.id,
+        transcript_metadata_json={
+            "permission_mode": "auto",
+            "session_permission_allowed_tools": ["web_search", "read_file"],
+        },
+    )
+
+    class _DB:
+        async def execute(self, _stmt):
+            raise AssertionError("provided durable_session should be enough for query")
+
+    reply = await try_handle_channel_permission_mode_command(
+        db=_DB(),
+        agent_id=agent_id,
+        user=user,
+        user_text="/permissions",
+        session_id=str(session.id),
+        session_source="feishu",
+        durable_session=session,
+    )
+
+    assert reply is not None
+    assert "当前权限模式：替我批准（Auto）" in reply
+    assert "本会话已授权工具：web_search, read_file" in reply
+    assert "/permissions ask" in reply
+    assert "/permissions auto" in reply
+    assert "/permissions full" in reply
+
+
+@pytest.mark.asyncio
+async def test_channel_permission_mode_command_switches_session_and_active_run() -> None:
+    from app.services.channel_agent_runtime import try_handle_channel_permission_mode_command
+
+    agent_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), username="feishu_u")
+    session = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        user_id=user.id,
+        transcript_metadata_json={
+            "permission_mode": "auto",
+            "session_permission_allowed_tools": ["track_todo"],
+        },
+    )
+    active_run = SimpleNamespace(metadata_json={"permission_mode": "auto"})
+
+    class _Result:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    class _DB:
+        def __init__(self):
+            self.calls = 0
+            self.commits = 0
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            return _Result(active_run)
+
+        async def commit(self):
+            self.commits += 1
+
+    db = _DB()
+
+    reply = await try_handle_channel_permission_mode_command(
+        db=db,
+        agent_id=agent_id,
+        user=user,
+        user_text="切换到完全访问",
+        session_id=str(session.id),
+        session_source="feishu",
+        durable_session=session,
+    )
+
+    assert reply == "已将当前会话权限模式切换为：完全访问。"
+    assert session.transcript_metadata_json["permission_mode"] == "bypassPermissions"
+    assert session.transcript_metadata_json["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["track_todo"],
+        "writable_roots": ["workspace/"],
+    }
+    assert active_run.metadata_json["permission_mode"] == "bypassPermissions"
+    assert active_run.metadata_json["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["track_todo"],
+        "writable_roots": ["workspace/"],
+    }
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_call_agent_llm_permission_mode_command_uses_channel_user_id_without_durable_user() -> None:
+    from app.services.channel_agent_runtime import call_agent_llm
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, name="Agent", tenant_id=uuid4(), agent_type="chat", role_description="")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        transcript_metadata_json={"permission_mode": "auto"},
+    )
+    active_run = SimpleNamespace(metadata_json={"permission_mode": "auto"})
+
+    class _Result:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    class _DB:
+        def __init__(self):
+            self.values = [agent, active_run]
+            self.commits = 0
+
+        async def execute(self, _stmt):
+            return _Result(self.values.pop(0))
+
+        async def commit(self):
+            self.commits += 1
+
+    db = _DB()
+
+    reply = await call_agent_llm(
+        db,
+        agent_id,
+        "/permissions full",
+        user_id=user_id,
+        session_id=str(session_id),
+        session_source="feishu",
+        durable_session=session,
+        durable_user=None,
+    )
+
+    assert reply == "已将当前会话权限模式切换为：完全访问。"
+    assert session.transcript_metadata_json["permission_mode"] == "bypassPermissions"
+    assert active_run.metadata_json["permission_mode"] == "bypassPermissions"
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
 async def test_channel_reply_can_allow_session_permission(monkeypatch) -> None:
     from app.api import chat_sessions as chat_sessions_api
     from app.services.channel_agent_runtime import try_resolve_channel_session_permission_from_text

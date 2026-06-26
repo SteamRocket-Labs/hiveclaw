@@ -8,7 +8,6 @@ Status: canonical ledger plus current implementation evidence
 
 This document defines the full session-native system Hive must reach before calling CCPlus complete.
 
-The question is not whether Hive has isolated features named Plan Mode, Hook, Workflow, Sub-agent, Deep Research, permissions, workspace, or automation. The question is whether the whole CC-style lifecycle is closed inside a Session:
 
 ```text
 accepted input -> transcript/T0 append -> model loop -> hook loop -> permission loop -> tool loop
@@ -55,10 +54,8 @@ These facts were checked against current files before writing this ledger:
 | Interactive pause detection | `web_chat_runtime.py` detects `session_permission_required`, `ask_user_question`, `request_plan_mode`, `exit_plan_mode`, and `create_digital_employee_success` as interactive pause / terminal states. | Some interactive control states are session-aware. |
 | Artifact delivery | `chat_artifact_delivery.py` registers artifacts for file and Office writes and preserves `revision_id`, `action`, `tool_call_id`, and `diff_summary`. | File/Office artifact loop now carries revision metadata into session parts. |
 | Sub-agent background | `spawn_subagent(run_in_background=true)` returns `run_id`, `child_session_id`, continuation address, transcript refs, and terminal child-session projection into the parent session. | Child-session completion is visible from the parent timeline. |
-| Workflow start | `WorkflowRuntimeService.start_run` accepts parent/root session IDs and appends `workflow_run` / `workflow_step` events into the parent session. `workflow_ref` trigger fires now create `trigger_run` sessions and pass them into workflow runtime. | Workflow is no longer run-handle-only for tool, deep research, and trigger launch paths. |
 | Hook runtime | `runtime/hooks.py` owns the Hive Hook wire standard, including the 27 baseline event names and JSON/exit-code normalization into `HookResult`; `hook_runner.py` is only the deferred external runner that persists progress/attachments/summary events when enabled. | Hook event standard and output parser are implemented from a single runtime control module. |
 | Goal / once / schedule / team commands | `/goal`, `/schedule`, `/once`, and `/team` command APIs append session-native events when invoked with a session. | Command-created background/control work is now projected back into the originating session. |
-| Frontend chat | `AgentChatSection.tsx` renders session workbench, active-run cells, session permission actions, artifacts, slash commands, and session-native controls. | Session UI has the right container but still lacks full run tree, hook stream, workflow/deep research child tree, and revision states. |
 | Session native controls | `SessionNativeControls.tsx` exposes JSON export, hook control plane, session goal, advanced plan, and Agent Team operations. | Codex-style control panel exists but is still a mixed control surface; not all controls are tied to session timeline events. |
 
 ## 4. Full CC Session Capability Map
@@ -74,7 +71,6 @@ These facts were checked against current files before writing this ledger:
 | Elicitation / clarification | Tool or runtime can ask user for structured input and continue. | User clarification / MCP elicitation cards with typed response and continuation. |
 | Sub-agent / team | Child work can run separately but rejoins via task notification / sidechain transcript. | Child sessions with parent timeline card, wake, read/send/wait/interrupt/close operations. |
 | Workflow | Deterministic work can run in steps but must report state and outputs back to session. | Workflow run tree, step events, gate/wait states, final artifacts, and export in session. |
-| Deep Research | A session-native orchestration pattern using skills, web tools, subagents, source artifacts, and final report. | Parent session owns research; workers are child sessions/segments; final report is clickable artifact. |
 | Workspace files | Disk is storage; session shows file output/path/preview. | Workspace remains storage; session owns artifact delivery and revision cards. |
 | Office/docs | Editor is storage/editing surface; created/modified document appears in session. | Office artifacts in session with open/preview/download and revision history. |
 | Tasks/goals/schedules | Background work may run later but each execution has session evidence. | Goal/once/scheduled fire creates or binds a session and posts completion there. |
@@ -87,8 +83,6 @@ These facts were checked against current files before writing this ledger:
 
 | Gap | Current state | Required closure | Codex-style improvement |
 | --- | --- | --- | --- |
-| Session topology | Root session, some child sessions, branch lineage, and export exist. | Add a complete parent/child/run topology API for all runtime sources: web chat, subagent, team, workflow, deep research, goal, schedule. | `thread/read`, `thread/list`, child session tree, typed links. |
-| Runtime source coverage | Web chat is session-first; workflow/deep research/schedule still rely heavily on RuntimeTask/journal/result summary. | Every runtime source must create/bind `ChatSession` and append events. | One session workbench model for all sources. |
 | Turn state machine | Active run and steering exist, but hook/wait/child/wake states are not fully typed. | Standard states: `running`, `waiting_for_permission`, `waiting_for_user`, `blocked_by_hook`, `waiting_for_child`, `waiting_for_workflow`, `completed`, `failed`, `cancelled`. | Typed turn notifications and inspector badges. |
 | Export completeness | Session JSON export exists. | Export must include hook invocations, child sessions refs, workflow tree, artifacts, approvals, compactions, memory candidates, and branch edges. | Stable export schema with versioning and schema tests. |
 
@@ -116,18 +110,14 @@ These facts were checked against current files before writing this ledger:
 
 | Gap | Current state | Required closure | Codex-style improvement |
 | --- | --- | --- | --- |
-| Artifact coverage | Only known write/Office tools are registered. | All user-facing produced artifacts from tools/workflow/deep research/subagents must register session artifacts. | Artifact registry with source tool/run/child session refs. |
 | Artifact revision | Backend artifact parts preserve `revision_id`, `action`, `tool_call_id`, and `diff_summary`. | Render created/updated/finalized revision timeline in session UI. | Diff-aware cards and stable artifact IDs. |
 | Workspace bridge | Workspace can be used as separate browser/editor. | Session-initiated workspace changes append artifact/update events back to session. | Inspector shows storage path and session provenance. |
 | Final response delivery | Assistant may still point to workspace. | Final answer must include clickable artifact part for delivered files. | "deliverable" field in session export. |
 
-### P0 - Workflow And Deep Research
 
 | Gap | Current state | Required closure | Codex-style improvement |
 | --- | --- | --- | --- |
-| Workflow start surface | Parent session receives `workflow_run` and `workflow_step` events for tool, deep research, and workflow-trigger launches. | Add richer workflow card details: definition hash, args hash, waits, gate decisions, outputs. | Read/wait/interrupt workflow as session child run. |
 | Workflow export | Workflow run/step events now enter session transcript. | Ensure export folds in full workflow journal and leaf artifacts, not just projected events. | Typed workflow timeline cell model. |
-| Deep Research ownership | Deep research launch now passes parent/root session IDs into workflow runtime. | Ensure worker sources and final report always register as session artifacts. | Parallel child tree, progress notifications, source refs. |
 | Research final handoff | Final report may be a workspace file. | Final report must render in session as clickable artifact with preview. | Artifact plus source-map inspector. |
 
 ### P0 - Sub-agent / Team / A2A
@@ -162,7 +152,6 @@ These facts were checked against current files before writing this ledger:
 | Composer command surface | Slash commands and plus menu exist, but command collapse still needs product discipline. | User commands expose small wrappers; backend raw capabilities stay hidden. | Command palette inserts plain command + prompt, not raw JSON templates unless required. |
 | Permission selector | Composer menu exists. | It must remain session-local and show current mode state consistently across refresh/session switch. | Permission snapshot per turn in inspector. |
 | Session timeline | Active-run cell exists. | Add timeline cells for hooks, workflow tree, child sessions, schedule fires, memory candidates, artifact revisions. | Typed timeline model, no ad hoc message parsing. |
-| Inspector | Session-native controls exist. | Inspector shows hook invocations, permission profile, child sessions, artifacts, workflow/deep research state, export links. | Codex-style thread/turn inspector. |
 
 ## 6. Implementation Order
 
@@ -177,12 +166,10 @@ Do not implement this as disconnected UI fixes. The order should be:
 2. Backend substrate:
    - Hook invocation records and CC-compatible schemas.
    - Session topology API.
-   - Workflow/deep research/subagent/session event appenders.
    - Artifact registry and revision metadata.
    - Schedule/once/goal session binding.
 
 3. Frontend session workbench:
-   - Timeline cells for hook/permission/workflow/deep research/subagent/artifact revision.
    - Inspector panels from typed APIs.
    - Composer and command surface cleanup.
 
@@ -199,7 +186,6 @@ Hive can call this layer complete only when all are true:
 - The canonical Hook event set matches CC's 27 events.
 - Every blocking hook, permission prompt, clarification, Plan Mode card, workflow wait, subagent wake, and schedule fire is visible in the originating session.
 - Every produced or modified user-facing artifact is clickable from session.
-- Deep Research final output is delivered inside session, with sources/artifacts reachable.
 - Workflow state is readable from session, not only from workflow journals.
 - Background subagent/team/A2A work is continuable through child sessions.
 - Goal/once/schedule execution creates or binds a session and delivers result there.

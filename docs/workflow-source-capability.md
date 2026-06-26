@@ -1,12 +1,10 @@
 # Workflow 源能力设计：Hive 确定性执行编排底座（轴 2）
 
-> **定位**：Workflow 是 Hive 的 **runtime 基础能力**，与 Plan Mode **并列**的底座——不是 subagent / deep research / office / Work Ledger 的附属方案。
 >
 > **状态**：**v0.6 草稿（v1 决策已按 review 收紧，完整实现路线已排，并补齐执行路线缺口）**。v0 的两处主干被推翻重写（见 §0.2）；前置调研 `docs/archive/legacy-docs/workflow-vs-skill-a2a-discussion.md`（v0.1）。
 >
 > **方法论**：Hive = CC superset——先对标 CC 基线，再叠 Hive delta，**绝不做减法、不自创范式**。
 >
-> **次序铁律（用户拍板）**：轴 2 讨论 → 设计 → 实装；**deep research 接入是最后一步**。
 
 ---
 
@@ -14,7 +12,6 @@
 
 1. **Workflow 是 Hive 的确定性执行编排基础能力，与 Plan Mode 并列。**
 2. **Confirmation / Plan Mode 管确认边界**（能不能开始执行、是否需要人确认、显式计划怎么被确认）；**Workflow 管执行控制流**（执行开始后，控制流如何确定性推进、暂停、恢复、审计）。两者可组合，**不能混成一个概念**——Workflow run 可以要求确认，但 Workflow 本身不是 Plan Mode 的一个 action type。
-3. **Workflow 不属于 subagent、deep research、office 或 Work Ledger**；这些只是它的**调用方、叶子执行器或观察面**。
 4. **同一套 runtime engine，支持 ephemeral 与 registered 两种 definition 来源**——不是两条 runtime。
 
 ### 0.2 对 v0 的修正记录（诚实留痕）
@@ -148,7 +145,6 @@ registered ──本次需要微调──▶ fork ──▶ ephemeral run
 | 6.2 | **触发层（6 类，一个不加）** | trigger 是 workflow 的一个**调用方** | 时间组 cron/once/interval + 事件组 webhook/poll/on_message 全覆盖"何时开始"；拟新增融合点 = fire 后的 payload 分支：`trigger.config.workflow_ref={definition_name, definition_version, definition_hash, args}` → 引擎 start/resume，无 ref → 现状散文 ReAct（`_invoke_agent_for_triggers` 一个分支）；创建带 ref 的 enabled trigger 走既有 `create_enabled_trigger` gate，**授权绑定 creation-time 的 definition_version + definition_hash**；fire 时必须校验 version/hash，mismatch → suspend / needs re-confirmation，不能静默运行新版 definition；once 只作为 `sleep_until` / `delay_until` 的时间恢复点（`fire_count==0`），不承载 approval/budget/signal 恢复；webhook `_webhook_payload` → run args |
 | 6.3 | **Subagent（轴 1）** | **叶子执行器** | agent_step → `spawn_subagent`；fanout_step → `fanout_subagents`（per_agent_budget 透传）；治理/隔离/budget/Signal 全继承，不开第二条执行路 |
 | 6.4 | **Work Ledger** | **观察面**（单向） | run 创建时 `initialize_agent_work_ledger_artifact(runtime_task_id=run_id)`（`agent_work_ledger.py:206`）；step 进度镜像 todo（`assign_todo_owner:559` / `record_delegated_todo_status:595`）；**引擎绝不读 ledger 驱动控制流**（cognitive-scaffold §8 不变量①认知≠治理） |
-| 6.5 | **office / deep research** | **调用方 example** | office = §4 三阶段的主场景；DR = 未来的一个 registered definition（plan→fanout(explorer×N)→synthesize→critic，吸收 `_run_worker_fanout` / `controller.py` 预算循环 / RC13 散文）——**最后做，另行拍板** |
 | 6.6 | **自我进化** | promote 建议机制 | "N 次同类 ephemeral → 建议 promote"接 `skill_distiller.WorkflowSignature` 感知 + `fast_reflection_service` 的 `repeated_workflow_signature` 通道 + evolution_ledger 审计——**方向，非本期** |
 
 ---
@@ -172,7 +168,6 @@ registered ──本次需要微调──▶ fork ──▶ ephemeral run
 | 切口 3 | P6 | registered lifecycle、promote、fork、version/hash |
 | 切口 4 | P7-P9 | gate_step、wait_until、trigger integration、ledger mirror、audit |
 | 切口 5 | P10-P11 | cross-worker persistence、drain、wait_signal v2 前置机制 |
-| 切口 6 | P14 | Deep Research 迁移试点，最后做且 feature-flagged |
 | 产品面 | P12-P13 | workflow creation/run UI 与 Office 场景化入口 |
 
 ---
@@ -183,7 +178,6 @@ registered ──本次需要微调──▶ fork ──▶ ephemeral run
 
 - **TDD 固定顺序**：每个切口先写失败测试（Red），再实现最小代码（Green），最后清理结构（Refactor）。
 - **每阶段可独立回滚**：不把 schema、engine、trigger、DR 迁移绑成一个大提交。
-- **先底座后场景**：Workflow runtime 全能力完成前，不接 Deep Research；office / DR 都只能作为调用方 example。
 - **先单 worker 正确，再跨 worker 持久**：DB journal / quota / hash pinning 第一天就正确；跨 worker consumer 和 drain 放后段。
 - **真持久化必须真 PG 验收**：涉及 migration、RLS、journal、advisory lock、worker lease、cross-worker resume 的测试必须使用 Testcontainers 真 PostgreSQL fixture；mock session 只允许测 pure logic 或无 DB 控制流。
 
@@ -665,35 +659,22 @@ cd backend
 pytest tests/runtime/test_office_workflows.py tests/services/test_workflow_promote_suggestions.py
 ```
 
-### P14 Deep Research 接入（最后一步）
 
-> **✅ 完成（2026-06-04）** — 证据：`.venv/bin/python -m pytest tests/deep_research/test_workflow_definition.py tests/tools/test_deep_research_handler.py::test_deep_research_start_uses_workflow_when_rollout_flag_enabled ...` → 本轮 P14/P15 targeted **10 passed**（含 Testcontainers 真 PG）；最终后端全量 `.venv/bin/python -m pytest tests/ -q` → **3659 passed, 7 skipped**；`ruff check app tests` clean。
 >
-> - `services/deep_research/workflow_definition.py`：新增 `deep_research.v1` registered definition builder，结构固定为 `plan -> explore(fanout) -> synthesize -> critic`，leaf catalog = `deep_research_planner / explorer / synthesizer / critic`，通过现有 `compile_workflow` + `admit_workflow`。
-> - `deep_research_start` 与 Plan Mode handoff `start_deep_research_background_run` 均接入 `WORKFLOW_DEEP_RESEARCH_ENABLED` 分流；flag 默认 **false**，旧 `RuntimeTask(task_type="deep_research") + background orchestrator` 路径保持可回滚。
-> - flag 开启时自动 ensure tenant-scoped active `deep_research.v1` definition，并以 `definition_source=registered:<name>:v<version>:<hash>` 启动同一 workflow runtime；返回 `workflow_run_id`、`definition_version`、`definition_hash` 和 `legacy_path_available=true`。
 > - 本轮先迁移入口与结构壳；旧 DR 内部 `_run_worker_fanout` / controller 细粒度策略仍作为 leaf 内部能力逐步下沉，不再作为 P14 阻塞项。
 
 目标：把 DR 迁到 registered workflow，但只在底座完成后做。
 
 改动面：
-- 注册 `deep_research.v1` definition：plan → bounded fanout(explorer) → synthesize → critic。
-- confirmed Deep Research start / Plan Mode handoff 通过 `WORKFLOW_DEEP_RESEARCH_ENABLED` 灰度切到 workflow runtime。
 - 保留旧 DR path feature flag off 回滚。
 
 Red tests：
-- `deep_research.v1` definition compile + admission。
-- feature flag on 时 `deep_research_start` 不再创建旧 `deep_research` RuntimeTask，而返回 `workflow_run_id`。
-- feature flag off 时旧路径仍工作（既有 `test_deep_research_start_creates_runtime_task` 保留）。
 - explorer leaf journal resume、coverage/critic failed/suspended 由通用 fanout/leaf journal/runtime 测试覆盖。
 
 验收命令：
 
 ```bash
 cd backend
-pytest tests/deep_research/test_workflow_definition.py \
-  tests/tools/test_deep_research_handler.py::test_deep_research_start_creates_runtime_task \
-  tests/tools/test_deep_research_handler.py::test_deep_research_start_uses_workflow_when_rollout_flag_enabled \
   tests/services/test_workflow_leaf_journal.py
 ```
 
@@ -701,13 +682,11 @@ pytest tests/deep_research/test_workflow_definition.py \
 
 > **✅ 完成（2026-06-04）** — 证据：`.venv/bin/python -m pytest tests/api/test_admin_workflow_ops.py tests/services/test_workflow_runtime_service.py::test_runtime_feature_flag_fails_closed_before_creating_run tests/services/test_workflow_runtime_service.py::test_workflow_metrics_record_run_step_leaf_resume_and_quota_denial tests/services/test_trigger_daemon_workflow.py::test_workflow_trigger_feature_flag_fails_closed_before_launch tests/services/test_workflow_ops.py` → 本轮 P14/P15 targeted **10 passed**（含 Testcontainers 真 PG）；最终后端全量 `.venv/bin/python -m pytest tests/ -q` → **3659 passed, 7 skipped**；`ruff check app tests` clean。
 >
-> - Feature flags 已落到 `Settings`：`WORKFLOW_RUNTIME_ENABLED`（默认 true）、`WORKFLOW_TRIGGER_ENABLED`（默认 true）、`WORKFLOW_DEEP_RESEARCH_ENABLED`（默认 false）。
 > - Runtime fail-closed：`WORKFLOW_RUNTIME_ENABLED=false` 在 `WorkflowRuntimeService.start_run` 创建任何 run 前拒绝；`WORKFLOW_TRIGGER_ENABLED=false` 在 `workflow_ref` launch 前拒绝。
 > - Metrics：`services/workflow_metrics.py` + `/admin/metrics/workflows`，覆盖 run started/finished、step totals、step duration、leaf call totals、resume attempts/finished、quota denials、hash mismatches。
 > - Admin repair：`services/workflow_ops.py` + `/admin/workflows/{run_id}`、`/journal`、`/cancel`、`/force-suspend`、`/replay-from-step`；全部 `require_role("platform_admin")`。
 > - Runbook：`docs/workflow-ops-runbook.md`；Railway deploy 仍需上线时按 runbook 做 production health/logs/migration/非 superuser DSN 验收。
 >
-> **🔧 Review 修复轮（2026-06-04，P14/P15 之上）** — 证据：第一轮后端全量 **3669 passed, 7 skipped**（+10 新测试）、`ruff` clean、前端 Vitest **152**、build ✓、Playwright **2 passed**；第二轮 targeted：`tests/deep_research/test_workflow_definition.py` **5 passed**，`tests/services/test_workflow_ops.py tests/api/test_admin_workflow_ops.py` **8 passed**。
 >
 > - **P1 历史死锁（已废弃链路）**：旧方案把 workflow 启动绑定到 confirmed-plan artifact，且 artifact 无生产写入方，合法确认后仍可能 `action_artifact_missing`。2026-06-18 后 `start_workflow` 不再走 PlanModeGate action artifact；必要确认用 `confirmation_required` / `user_confirmed`，显式 Plan Mode 只作为可选 provenance。
 > - **force-suspend mid-run 生效**：`should_continue` 现认 `("killed","suspended")`，下一步边界停；收尾不再把 operator 的 suspended 覆盖成 killed（resume 前已标 running，无回归）。
@@ -715,13 +694,11 @@ pytest tests/deep_research/test_workflow_definition.py \
 > - **Replay quota 回退**：删除 fanout leaf 行前按其 `token_usage` 全额退还（floored 0）；普通 agent_step 无行级计量不退，runbook 声明。
 > - **Replay quiescence 硬门**：`replay_from_step` 拒绝 `RuntimeTask.status=running` 或任意 `workflow_steps` / `workflow_leaf_calls` 仍为 `running` 的 run，API 映射 `409 Conflict`；必须先 force-suspend 并等 step boundary 停稳，防止 destructive journal surgery 与 in-flight worker 竞写。
 > - **Replay × P10 对账锚硬门**：rewound 范围含 `unknown_requires_reconciliation` 步 → `409 Conflict` 拒绝。实证链（真 PG repro，CheckpointGateDecider 生产配置）：replay 删锚行而 gate 的 CoordinationCheckpoint approval 持久不清 → resume 静默重放未对账外向操作（repro 实测 `sent=['Send externally']`，无任何新审批）。对账出路（人工 SQL，刻意不给 API 捷径）写入 runbook：效果已发生→标 done；verifiably 未发生→删行重跑。回归测试覆盖"replay 该步本身"与"上游范围扫到"两种形态。**后续可选（未排期）**：`resolve-reconciliation` 正式 admin 命令（`{step_id, resolution: executed|not_executed, reason}`，同 audit/409 纪律）替代手工 SQL — v1 刻意保留对账摩擦，待真实运维需求出现再做（runbook 同步记载）。
-> - **DR ensure 并发幂等 + tenant 显式隔离**：per-tenant session 级 advisory lock 串行化 check-then-create（并发双版本竞态消除）；active record 查询显式带 `tenant_id` predicate，不能依赖 RLS 隐式过滤（owner/superuser DSN 会绕过）。真 PG 幂等/并发/跨 tenant 测试覆盖（`tests/deep_research/conftest.py` 新建 re-export）。
 > - **coordination_rls_0604 加 `_table_exists` guard**（与 add_workflow_tables_0604 幂等模式一致）；前端 stale workflow selector 与 args JSON 错误分流（`StaleWorkflowRefError` + i18n 双语）；runbook 写死 ① `WORKFLOW_RUNTIME_ENABLED=false`=stop-new-starts 非全局 kill switch ② **DR flag 在旧 DR leaf 能力（source ledger/RC12/RC13/workspace 报告落盘）下沉前禁止生产开启** ③ replay quota 语义。
 
 目标：让生产上线可观察、可回滚、可限流。
 
 改动面：
-- Feature flags：`WORKFLOW_RUNTIME_ENABLED`、`WORKFLOW_TRIGGER_ENABLED`、`WORKFLOW_DEEP_RESEARCH_ENABLED`。
 - Metrics：run counts、step duration、leaf failures、quota denials、resume counts、hash mismatch count。
 - Admin repair commands：inspect run, cancel run, force suspend, replay from step, export journal。
 - Docs：developer implementation guide、operator runbook、product help。
@@ -740,13 +717,11 @@ pytest tests/api/test_admin_workflow_ops.py \
 alembic heads
 ```
 
-完成定义：P0-P15 全部完成后，Workflow 具备 ephemeral / registered 双来源、确定性控制流、step/leaf journal、kill-resume、预算硬顶、gate/wait_until、trigger 调用、权限治理、ledger/audit 可观测、cross-worker 持久、office 场景、Deep Research 迁移与生产运维闭环。
 
 ---
 
 ## 10. 非目标 / 不变量 / v1 决策
 
-**非目标**：形态 A（已被三件套覆盖）；改 Coordinator Mode / 对话 agent；本阶段不动 deep research；租户图灵完备脚本（载体已定数据）。
 
 **不变量**：① definition = 结构化数据，**无任意代码执行面**；② 叶子必须是轴 1 原语（治理/隔离/budget 继承）；③ ephemeral 与 registered **共享同一引擎/journal/budget/resume/gate/tenant/audit，绝不分叉两条 runtime**；④ journal ≠ ledger，单向镜像；⑤ 对外/不可逆步必过 gate_step，不自动重试；⑥ journal/quota 第一天带 tenant_id；⑦ 增量演进，每切口独立可回滚。
 

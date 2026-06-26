@@ -109,7 +109,7 @@ Current implemented closures that future work must preserve:
 - Hard verification and rollback metadata are required for durable self-evolution promotion.
 - `RuntimeTask` execution is restart-resumable and web chat disconnects do not cancel runs.
 - Plan Mode is a first-class confirmation/planning boundary: substantive plan content must be agent-authored, clarification must be first-class, and unconfirmed autonomous/high-risk work must not execute.
-- Workflow is a first-class deterministic orchestration substrate parallel to Plan Mode: `RuntimeTask(task_type="workflow")`, workflow step/leaf journals, run quotas, gate/wait/resume, trigger integration, admin ops, and Deep Research workflow-native execution must remain governed and auditable.
+- Workflow is a first-class deterministic orchestration substrate parallel to Plan Mode: `RuntimeTask(task_type="workflow")`, workflow step/leaf journals, run quotas, gate/wait/resume, trigger integration, admin ops, and governed auditability.
 - Subagent/delegation is a first-class collaboration capability: lightweight workers, peer delegation, fanout, context isolation, result distillation, governed shared tool execution, and replay-safe resume boundaries must remain distinct from Workflow control flow.
 - Agent TodoList / Work Ledger / Progress Ledger is the CC Task/Todo-equivalent agent-authored task board: `track_todo` records todos/dependencies, `record_finding` records findings/failures/replan, and `read_ledger` restores state. Writing a todo is cognitive bookkeeping; it must not start execution.
 - Skill is a progressive-disclosure capability capsule, not merely a Markdown prompt. A Skill may package instructions, references, templates, scripts, evals, workflow definitions, and subagent definitions; loading a Skill adds context/guidance only. Executable components still run through their governed runtime (`preview_workflow`/`start_workflow`, `spawn_subagent`/`delegate_to_agent`, or approved sandbox/code execution).
@@ -167,7 +167,7 @@ docker compose up -d --build       # Full stack → :3008
 ### API Routers (62 files)
 
 Core: `agents`, `auth`, `users`, `tenants`, `enterprise`, `admin`
-Agent features: `tasks`, `triggers`, `schedules`, `relationships`, `skills`, `files`, `chat_sessions`, `objectives`, `autonomy`, `deep_research`
+Agent features: `tasks`, `triggers`, `schedules`, `relationships`, `skills`, `files`, `chat_sessions`, `objectives`, `autonomy`
 Channels: `feishu`, `slack`, `discord_bot`, `dingtalk`, `wecom`, `wechat_personal`, `teams`, `telegram`, `email_channel`, `tenant_channels`
 Platform: `tools`, `packs`, `capabilities`, `plaza`, `notification`, `websocket`, `office`, `interoperability`
 Enterprise: `organization`, `memory`, `guard_policies`, `feature_flags`, `config_history`, `role_templates`
@@ -225,7 +225,7 @@ Web chat runs are durable background tasks:
 - `web_chat_runtime.py` creates and executes `RuntimeTask(task_type="web_chat_turn")`.
 - `web_chat_broker.py` broadcasts session-scoped runtime events to WebSocket subscribers.
 - `websocket.py` is a subscription and compatibility start path; disconnecting the browser must not cancel the run.
-- Active-run uniqueness and persisted `RuntimeTask` scanning prevent duplicate web-chat/deep-research runs after process restarts.
+- Active-run uniqueness and persisted `RuntimeTask` scanning prevent duplicate web-chat runs after process restarts.
 - Frontend `AgentDetail.tsx` sends a 30s keepalive ping while waiting/streaming; backend replies with `pong`.
 - `WS_IDLE_TIMEOUT_SECONDS` defaults to 3600; if an active run exists, idle close is deferred.
 
@@ -265,7 +265,6 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 | `email` | send_email, read_emails, reply_email |
 | `feishu` | feishu_wiki_list, feishu_doc_read/append/create/share |
 | `office` | office_document_create/view/query/apply/validate/dump |
-| `deep_research` | deep_research_run/start/check/cancel/export |
 | `memory` | save_memory and memory-control helpers |
 | `plaza` | plaza_get_new_posts, plaza_create_post, plaza_add_comment |
 | `skills` | load_skill, tool_search |
@@ -310,7 +309,7 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 
 Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put<T>()` with JWT auth and tenant header injection.
 
-37 files in `api/domains/` including tests and index, covering agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, deepResearch, memory, knowledge, plans, workflows, subagents, extensions, autonomy, and evolution.
+36 files in `api/domains/` including tests and index, covering agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, memory, knowledge, plans, workflows, subagents, extensions, autonomy, and evolution.
 
 ## Conventions
 

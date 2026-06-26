@@ -2,7 +2,7 @@
 
 日期：2026-06-26
 
-状态：设计方案。本文档定义下一轮 Plan Mode 优化的产品、runtime、prompt、UI/UX 与验收边界；不包含代码改动。
+状态：Plan Mode 优化的产品契约与当前实装记录。本文档定义产品、runtime、prompt、UI/UX、验收边界和当前代码证据。
 
 关联文档：
 
@@ -18,6 +18,31 @@
 CC / FreeCode 继续作为 Plan Mode 的底层语义合同。
 Codex 的 typed plan output、工作笔记式呈现、计划提案节奏，是 CCPlus 要吸收的体验层。
 Hive 的企业治理只叠加在硬规则和 hook 边界上，不替代 session 内 Plan Mode 循环。
+```
+
+## 0. 当前实装闭环
+
+截至 2026-06-26，本方案中的核心项已经落地：
+
+- Plan Mode prompt source 已从 runtime reminder 中抽出到 `backend/app/runtime/prompts/plan_mode.py`。
+- Prompt 测试已约束 `plan_markdown` 必须包含固定用户可读结构：当前理解、已观察事实、关键判断、执行范围、执行步骤、验证方式、风险与确认点。
+- `ask_user_question` 与 `exit_plan_mode` 的边界继续保持：澄清用 `ask_user_question`，最终计划确认必须走 `exit_plan_mode` / plan card。
+- `exit_plan_mode` 继续以 runtime-provisioned plan file 作为可信计划正文来源，避免模型通过 tool args 填一个旧 plan。
+- 前端 PlanCard 保留为 session timeline 的一等计划卡片；执行过程改用工作笔记 + 折叠工具组呈现。
+- session run disclosure 已聚合工具摘要，避免 Plan Mode 期间直接暴露裸 tool 流水账。
+- 权限菜单、权限卡片、交付物 inspector 已按 `ccplus-session-ux-contract-2026-06-26.md` 同步收口。
+
+当前验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/kernel/test_plan_mode_reminder.py \
+  tests/tools/test_exit_plan_mode_tool.py::test_exit_plan_mode_treats_provisioned_plan_file_as_authoritative \
+  tests/tools/test_exit_plan_mode_tool.py::test_exit_plan_mode_rejects_blank_plan_markdown -q
+
+cd frontend && npm test -- --run \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts \
+  src/pages/agent-detail/AgentDetailSections.test.tsx
 ```
 
 ## 1. 目标
@@ -121,12 +146,12 @@ Codex 的不足：
 - `backend/app/runtime/prompts/runtime_reminders.py`
   - Plan Mode reminder 已经强调 read-only、domain-neutral、`plan_markdown`、`ask_user_question` / `exit_plan_mode` 分工。
 
-当前缺口：
+当前已关闭的缺口：
 
-- 提示词还没有足够强地约束“计划内容结构”。
-- 前端还没有 Codex 式 typed plan output；现在更多是 tool result -> PlanCard。
-- 工具摘要、工作笔记、计划提案、确认卡片之间的信息层级还不够清楚。
-- `plan_markdown` 虽然已经是主内容，但还没有被明确约束为“当前理解 / 已观察事实 / 关键判断 / 执行范围 / 验证方式 / 风险与确认点 / 执行步骤”。
+- 提示词已经通过 `plan_mode.py` 和 `test_plan_mode_reminder.py` 约束“计划内容结构”。
+- 前端已经把计划、权限、工具摘要、交付物放回 session timeline / inspector，而不是默认 raw JSON。
+- 工具摘要、工作笔记、计划提案、确认卡片的信息层级已通过 disclosure reducer 和 PlanCard 测试固定下来。
+- `plan_markdown` 已被明确约束为“当前理解 / 已观察事实 / 关键判断 / 执行范围 / 执行步骤 / 验证方式 / 风险与确认点”。
 
 ## 3. 产品原则
 
@@ -186,12 +211,9 @@ Hive 的 Plan Mode 必须支持：
 
 这是第一优先级。
 
-当前 Hive 没有独立的 `plan.md` prompt source 文件，Plan Mode 提示词主要落在 `runtime_reminders.py`。下一轮应该把 Plan Mode prompt 抽成更清晰的 source-of-truth，名字可以是：
+当前 Hive 已经有独立的 Plan Mode prompt source：`backend/app/runtime/prompts/plan_mode.py`。本文中的 `plan.md` 指这个 canonical prompt 模板的产品形态，不要求实际文件名必须是 `.md`。
 
-- `backend/app/runtime/prompts/plan_mode.md`
-- 或 `backend/app/runtime/prompts/plan_mode.py` + markdown template 常量。
-
-本文统一称为 `plan.md`，指 Plan Mode 的 canonical prompt 模板，而不是 workspace 里的用户计划文件。
+如果未来需要把模板改成纯 Markdown 文件，也必须保持同一套测试合同。
 
 ### 4.1 `plan.md` 的核心目标
 
@@ -457,10 +479,9 @@ Plan Mode 的输出质量用这些标准判断：
 
 ### 8.1 Prompt 切分
 
-新增或重构：
+已落地：
 
-- `backend/app/runtime/prompts/plan_mode.md`
-- 或 `backend/app/runtime/prompts/plan_mode_prompt.py`
+- `backend/app/runtime/prompts/plan_mode.py`
 
 把当前 `PLAN_MODE_REMINDER_FULL` 中的长文拆为：
 
@@ -480,7 +501,7 @@ Plan Mode 的输出质量用这些标准判断：
 
 ### 8.2 Runtime item
 
-新增：
+已落地的方向：
 
 - plan proposal event / read model。
 - 从 `exit_plan_mode` result 生成 typed `plan_proposal`。
@@ -494,7 +515,7 @@ Plan Mode 的输出质量用这些标准判断：
 
 ### 8.3 Frontend 渲染
 
-修改：
+已落地：
 
 - `frontend/src/pages/agent-detail/PlanCard.tsx`
 - `frontend/src/pages/agent-detail/toolResultEnvelope.ts`
@@ -508,7 +529,7 @@ Plan Mode 的输出质量用这些标准判断：
 
 测试：
 
-- `frontend/src/pages/agent-detail/PlanCard.test.tsx`
+- `frontend/src/pages/agent-detail/AgentDetailSections.test.tsx`
 - `frontend/src/pages/agent-detail/AgentDetailSections.test.tsx`
 - `frontend/src/pages/agent-detail/toolResultEnvelope.test.ts`
 
@@ -543,6 +564,8 @@ Plan Mode 中，Agent 在调用工具前后应形成用户可读的工作笔记�
 
 如果缺少 blocking decision，必须先 `ask_user_question`，不能提交空泛计划。
 
+当前状态：已通过 `backend/tests/kernel/test_plan_mode_reminder.py` 固定。
+
 ### 9.2 安全验收
 
 Plan Mode 未批准前：
@@ -558,6 +581,8 @@ Plan Mode 未批准前：
 
 - 写 runtime-provisioned exact plan file。
 
+当前状态：继续由 Plan Mode policy / exit_plan_mode tests 约束。
+
 ### 9.3 UI 验收
 
 用户在 session 中看到：
@@ -568,6 +593,8 @@ Plan Mode 未批准前：
 - 可以实施、调整、忽略。
 - 批准后在同一 session 内继续执行。
 
+当前状态：已通过 `PlanCard`、`AgentDetailSections`、`chatDisclosureReducer` 相关测试约束。
+
 ### 9.4 质量验收
 
 用三类任务做人工验收：
@@ -577,6 +604,8 @@ Plan Mode 未批准前：
 3. 定时/一次性自动化任务。
 
 每类任务的 Plan Mode 输出都必须 domain-appropriate，不能全部写成 coding checklist。
+
+当前状态：prompt 已具备 domain-specific adaptation 规则；人工验收仍应作为发布前 product QA 场景执行，但不再是代码缺口。
 
 ## 10. 不做的事
 

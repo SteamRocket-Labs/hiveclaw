@@ -18,45 +18,6 @@ def test_is_seedable_skill_template_file_skips_pycache_and_pyc():
     assert _is_seedable_skill_template_file(Path("scripts/render.cpython-313.pyc")) is False
 
 
-def test_pack_skill_seeder_exposes_one_deep_research_entrypoint():
-    folders = _pack_skill_folders()
-
-    assert "deep-research" in folders
-    assert "topic-deep-dive" not in folders
-    assert "industry-research" not in folders
-    assert "source-ledger-audit" not in folders
-
-
-def test_deep_research_skill_declares_only_dedicated_tools():
-    from app.skills.parser import SkillParser
-
-    skill_path = Path(__file__).resolve().parents[2] / "packs" / "deep_research_pack" / "skills" / "deep-research" / "SKILL.md"
-    parsed = SkillParser().parse_file(
-        skill_path,
-        relative_path="skills/deep-research/SKILL.md",
-        default_name="deep-research",
-    )
-
-    assert set(parsed.metadata.declared_tools) == {
-        "deep_research_run",
-        "deep_research_start",
-        "deep_research_check",
-        "deep_research_cancel",
-        "deep_research_export",
-    }
-    assert "web_search" not in parsed.metadata.declared_tools
-    assert "web_fetch" not in parsed.metadata.declared_tools
-
-
-def test_deep_research_skill_forbids_trigger_polling_and_full_sync_run():
-    skill_path = Path(__file__).resolve().parents[2] / "packs" / "deep_research_pack" / "skills" / "deep-research" / "SKILL.md"
-    content = skill_path.read_text(encoding="utf-8")
-
-    assert "Do not call `deep_research_run` for `depth=full` or `depth=flagship`" in content
-    assert "Do not use `set_trigger` or `update_trigger` to poll Deep Research tasks" in content
-    assert "Do not synthesize a separate report with `write_file`" in content
-
-
 def test_pack_skill_seeder_exposes_one_office_entrypoint():
     folders = _pack_skill_folders()
 

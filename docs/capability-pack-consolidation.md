@@ -53,7 +53,6 @@ Plan/交互 `request_plan_mode` `exit_plan_mode` `ask_user_question` ·
 | `coordination_pack` | system | ✓ | 8 | **8/8 全在 CORE（死 pack）** |
 | `mcp_admin_pack` | mcp | ✓ | 5 | 无（健康，source=mcp 特殊路由） |
 | `office_pack` | system | ✗ | 9 | `read_file` `list_files` `send_channel_file` 在 CORE（底座混入） |
-| `deep_research_pack` | system | ✗ | 5 | 无（健康） |
 | `plan_mode_pack` | system | ✗ | 3 | **3/3 全在 CORE（死 pack）** |
 
 ---
@@ -159,7 +158,6 @@ CORE 同时有细分版(`read_file`/`write_file`/`list_files`/`glob_search`/`gre
 | `email_pack` | 保留（健康） | 无 |
 | `plaza_pack` | 保留（健康） | 无 |
 | `mcp_admin_pack` | 保留（健康） | 无 |
-| `deep_research_pack` | 保留（健康） | 无 |
 
 ### CORE 净增删
 
@@ -202,7 +200,6 @@ pack 的两个打架职责拆开：
 3. **CORE 增删** — `CORE_TOOL_NAMES` 删 `fs_read/fs_write/fs_list`、加 `web_search`/`read_document`；
    删 `fs_*` handler；核对 mode 映射无能力缺口。红测：文件能力无回退、web_search 常驻可见。
 4. **pack 处置** — 删 `coordination_pack`/`plan_mode_pack`；`web_pack`→`web_provider_pack`；`office_pack` 提纯。
-   扫 `pack_policy_service`/`capability_gate`/`skill_seeder`/`deep_research` 引用，清孤儿映射。
 5. **职责统一** — `activation_mode` 枚举化、`infer_from_tools` 规则化、CORE 工具排除出 tool_search 发现。
 6. **文档归位** — 修 `CLAUDE.md`(packs.py→runtime_tool_groups.py、工具/pack 计数)；本文档转交付记录。
 
@@ -220,7 +217,6 @@ pack 的两个打架职责拆开：
 
 ## 9. 风险
 
-- **DR 耦合**：`web_search` 被 `deep_research/leaf_presets.py`、`routing_reminder.py` 引用；改 pack 归属/凭据
   来源须验 DR 工具激活链不破。
 - **SearXNG 可靠性**：自托管实例需监控；实例挂时 DDG 兜底链必须验证生效(fail-soft 不可静默全断)。
 - **凭据迁移**：per-agent→tenant 迁移是数据迁移，按"交付纪律"唯一例外用 dry-run + 确认门(非 MVP 分期)。

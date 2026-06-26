@@ -140,7 +140,6 @@ Conway & Pleydell-Pearce 的 self-memory system 把 autobiographical memory 与 
 对 Hive 的启发：
 
 1. **Atom / Scenario / Persona 这条链路值得借鉴**，但 Hive 要把 Persona 拆成 `soul_candidate`，不能让 L3 直接写 soul。
-2. **Mermaid canvas 很适合 long-task / deep-research 的 working memory**，它不是长期事实，而是任务现场的可视化索引。
 3. **traceability 是核心**：每个高层条目都必须能 drill down 到原始对话或 artifact。
 
 ### 3.2 agentmemory

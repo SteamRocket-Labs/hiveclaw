@@ -10,7 +10,6 @@
 >
 ✅ **G/H.1**（`dfea173e` + 清理 `296d47d6`，用户选「安全改名·保行为」）：`request.execution_mode`(概念 b 调用作用域)→`invocation_scope` 机械改名贯穿调用链；**coordinator 双用语义原封保留**（`request.invocation_scope=="coordinator"` 与 `agent.execution_mode=="coordinator"` 并行）；**概念 a 未动**（`agent.execution_mode` DB列/schemas/api + `RuntimeConfig.execution_mode` 导管）；零行为变化、无断言改动。
 >
-> **🏁🏁 全部 6 站收官（2026-06-08）**：12 提交全绿，**最终全面回归 3556 passed / 2 skipped / 0 failed**（tests/agents+tools+runtime+kernel+templates+services+api+deep_research）。分支 `feat/session-loop-cc-alignment` 待 push/PR（用户未指示前不 push）。三处 subagent 测试债（budget/F-1/F-2/G/H.1）均经我亲自验证+清理（"绿测试≠完成"）。
 >
 > 交付纪律（仓库 CLAUDE.md「一次改完·禁 MVP·零债」）：每个决策点的设计必须**完整 scope up front**——测试、边界、错误路径、schema 迁移、legacy 回填、生产清理、可观测，全部一次到位。
 

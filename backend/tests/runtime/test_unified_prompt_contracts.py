@@ -63,8 +63,7 @@ def test_command_parity_tools_explain_command_layer_semantics() -> None:
     assert "does not execute the plan" in verify_plan.meta.description
 
 
-def test_mcp_and_deep_research_descriptions_have_routing_contracts() -> None:
-    from app.tools.handlers.deep_research import deep_research_run, deep_research_start
+def test_mcp_descriptions_have_routing_contracts() -> None:
     from app.tools.handlers.mcp import (
         call_mcp_tool,
         import_mcp_server,
@@ -73,12 +72,6 @@ def test_mcp_and_deep_research_descriptions_have_routing_contracts() -> None:
         mcp_list_resources,
         mcp_read_resource,
     )
-
-    assert "not for simple lookup" in deep_research_run.meta.description
-    assert "preview/confirmation gate" in deep_research_run.meta.description
-    assert "Use web_search/web_fetch for simple lookups" in deep_research_run.meta.description
-    assert "long-running" in deep_research_start.meta.description
-    assert "requires the same preview/confirmation gate" in deep_research_start.meta.description
 
     assert "imported MCP tools" in list_mcp_tools.meta.description
     assert "tool schemas, not protocol resources" in list_mcp_tools.meta.description

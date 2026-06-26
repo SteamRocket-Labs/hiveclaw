@@ -135,23 +135,6 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         infer_from_tools=False,
     ),
     RuntimeToolGroupSpec(
-        name="deep_research_pack",
-        summary="Dedicated Deep Research tools for planning, retrieval, extraction, evidence ledgers, evaluation, and report generation.",
-        source="system",
-        activation_mode=(
-            "Discover dedicated deep_research_* schemas through tool_search; load the Deep Research skill only when "
-            "method guidance is needed."
-        ),
-        tools=(
-            "deep_research_run",
-            "deep_research_start",
-            "deep_research_check",
-            "deep_research_cancel",
-            "deep_research_export",
-        ),
-        infer_from_tools=False,
-    ),
-    RuntimeToolGroupSpec(
         name="command_pack",
         summary=(
             "CC/Codex-style command-layer tools for session task bookkeeping, runtime task output/stop, "

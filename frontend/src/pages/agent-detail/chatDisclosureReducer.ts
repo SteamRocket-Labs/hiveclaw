@@ -13,7 +13,6 @@ export type RunStepKind =
   | 'workflow'
   | 'subagent'
   | 'trigger'
-  | 'deep_research'
   | 'artifact'
   | 'event';
 
@@ -41,6 +40,7 @@ export interface RunTimelineSnapshot {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
+  summary?: string;
   steps: RunStepSnapshot[];
   answerMessageId?: string;
 }
@@ -68,7 +68,6 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'workflow_run',
   'workflow_step',
   'dynamic_workflow',
-  'deep_research',
   'child_session',
   'subagent',
   'team_member',
@@ -126,9 +125,6 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   if (message.toolMeta?.kind === 'plan_proposal') {
     return message.toolMeta.summary || message.toolMeta.nextAction || '';
   }
-  if (message.toolMeta?.kind === 'deep_research') {
-    return message.toolMeta.summary || message.toolMeta.status || '';
-  }
   if (COMMAND_TOOLS.has(name)) return summarizeCommandTool(message);
   if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeFileTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
@@ -150,7 +146,6 @@ function eventMetadataSummary(message: AgentChatMessage): string {
     message.eventRuntimeTaskId ? `run:${message.eventRuntimeTaskId}` : '',
     message.eventWorkflowRunId ? `workflow:${message.eventWorkflowRunId}` : '',
     message.eventWorkflowStepId ? `step:${message.eventWorkflowStepId}` : '',
-    message.eventDeepResearchRunId ? `research:${message.eventDeepResearchRunId}` : '',
     message.eventScheduleFireId ? `fire:${message.eventScheduleFireId}` : '',
     message.eventScheduleId ? `schedule:${message.eventScheduleId}` : '',
     message.eventGoalId ? `goal:${message.eventGoalId}` : '',
@@ -171,6 +166,14 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
   }
 
   if (message.role === 'event') {
+    if (message.sessionPermissionRequest && message.eventStatus === 'session_permission_required') {
+      const tool =
+        message.sessionPermissionRequest.tool_display_name ||
+        message.sessionPermissionRequest.tool_name ||
+        message.eventToolName ||
+        'this tool';
+      return `Permission needed for ${tool}`;
+    }
     return [compactText(message.content || message.eventReason || message.eventNextStep || ''), eventMetadataSummary(message)]
       .filter(Boolean)
       .join(' · ');
@@ -182,7 +185,6 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
 function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   if (message.toolMeta?.kind === 'user_clarification') return 'question';
   if (message.toolMeta?.kind === 'plan_mode_request' || message.toolMeta?.kind === 'plan_proposal') return 'plan';
-  if (message.toolMeta?.kind === 'deep_research') return 'deep_research';
 
   const name = (message.toolName || '').toLowerCase();
   if (COMMAND_TOOLS.has(name)) return 'command';
@@ -218,7 +220,6 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'workflow_run' || message.eventType === 'workflow_step' || message.eventType === 'dynamic_workflow') return 'workflow';
   if (message.eventType === 'child_session' || message.eventType === 'subagent' || message.eventType === 'team_member') return 'subagent';
   if (message.eventType === 'schedule' || message.eventType === 'schedule_fire' || message.eventType === 'once') return 'trigger';
-  if (message.eventType === 'deep_research') return 'deep_research';
   if (message.eventType === 'artifact_update' || message.eventType === 'artifact_delivery') return 'artifact';
   return 'event';
 }
@@ -226,7 +227,6 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
 function statusForMessage(message: AgentChatMessage): RunStepStatus {
   if (message.role === 'tool_call') {
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking) return 'blocked';
-    if (message.toolMeta?.kind === 'deep_research' && message.toolMeta.status === 'running') return 'running';
     if (message.toolMeta?.kind === 'runtime_step' && message.toolMeta.status === 'failed') return 'failed';
     return message.toolStatus === 'running' ? 'running' : 'done';
   }
@@ -320,6 +320,23 @@ function getTimelineStatus(steps: RunStepSnapshot[], hasAnswer: boolean): RunTim
   return 'idle';
 }
 
+function formatCount(count: number, singular: string, plural: string): string {
+  return count === 1 ? singular : plural;
+}
+
+function buildAggregateSummary(steps: RunStepSnapshot[]): string {
+  const fileCount = steps.filter((step) => step.kind === 'file').length;
+  const searchCount = steps.filter((step) => step.kind === 'search').length;
+  const commandCount = steps.filter((step) => step.kind === 'command').length;
+  const parts: string[] = [];
+
+  if (fileCount > 0) parts.push(`Read ${fileCount} ${formatCount(fileCount, 'file', 'files')}`);
+  if (searchCount > 0) parts.push(`Searched web ${searchCount} ${formatCount(searchCount, 'time', 'times')}`);
+  if (commandCount > 0) parts.push(`Ran ${commandCount} ${formatCount(commandCount, 'command', 'commands')}`);
+
+  return parts.join(' · ');
+}
+
 export function buildRunTimelineFromMessages(
   messages: AgentChatMessage[],
   options: TimelineBuildOptions = {},
@@ -342,6 +359,7 @@ export function buildRunTimelineFromMessages(
     startedAt: firstTime != null ? new Date(firstTime).toISOString() : undefined,
     completedAt: completedAt != null ? new Date(completedAt).toISOString() : undefined,
     durationMs: firstTime != null && durationEnd != null ? Math.max(0, durationEnd - firstTime) : undefined,
+    summary: buildAggregateSummary(steps) || undefined,
     steps,
     answerMessageId: answer ? answer.id || `answer-${answerIndex}` : undefined,
   };

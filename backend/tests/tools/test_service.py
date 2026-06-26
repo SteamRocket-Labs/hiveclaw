@@ -539,7 +539,6 @@ async def test_tool_runtime_service_timeout_returns_structured_error():
     [
         ("spawn_subagent", 180.0),
         ("start_workflow", 180.0),
-        ("deep_research_run", 180.0),
     ],
 )
 async def test_tool_runtime_service_long_running_tools_have_explicit_timeout(

@@ -96,7 +96,6 @@ def test_t2_append_persists_container_candidate(tmp_path) -> None:
         extractions=[
             {
                 "category": "strategy",
-                "content": "Deep-research planner gate must wait for explicit user approval",
                 "container_candidate": "workflow_candidate",
             }
         ],

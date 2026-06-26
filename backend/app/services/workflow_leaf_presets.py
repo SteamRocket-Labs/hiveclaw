@@ -1,4 +1,4 @@
-"""Leaf preset registry (DR-1, docs/deep-research-workflow-unification.md D1).
+"""Leaf preset registry.
 
 A *leaf preset* is system-side capability injection for a workflow leaf,
 keyed by leaf name: subagent spec overrides (tool allow/deny lists, system

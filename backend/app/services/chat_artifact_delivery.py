@@ -184,10 +184,10 @@ def build_session_artifact_parts(
     """Build artifact-delivery parts for safe workspace paths WITHOUT DB rows.
 
     ``ChatArtifact.message_id`` is non-nullable, so producers that have no chat
-    message (e.g. a Deep Research workflow run) cannot persist artifact rows.
-    They still need the report to surface as a clickable timeline artifact, so
-    this returns transcript-ready parts using the same mechanical path-safety
-    and preview-kind decisions as :func:`build_artifact_candidate`.
+    message cannot persist artifact rows. They still need outputs to surface as
+    clickable timeline artifacts, so this returns transcript-ready parts using
+    the same mechanical path-safety and preview-kind decisions as
+    :func:`build_artifact_candidate`.
     """
     parts: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()

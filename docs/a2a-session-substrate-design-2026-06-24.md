@@ -614,7 +614,6 @@ ConversationSession
 | Trigger run | `ChatSession(trigger_run)` + event append | trigger fire 是 session turn | session state/export/topology 还需统一 |
 | Heartbeat/dream/internal maintenance | maintenance ChatSession 雏形 | internal hidden session | 后续事件必须统一走 `append_session_event` |
 | Local Agent Channel | local channel tables + optional bound ChatSession | local 是 IM transport，ChatSession/T0 是 truth | 直接写 `ChatMessage`/local events 的路径需要改成 transcript writer |
-| Workflow / Deep Research | RuntimeTask/journal/artifacts 为主 | workflow run 是 Session 里的 deterministic run/tree | leaf journal/artifact 需要 session envelope 和 JSON export |
 
 判断标准：任何 runtime source 如果只能通过 workspace file、notification、`RuntimeTask.result_summary`、local event 表、或某个专用 journal 回放，而不能从一个 Session JSON/T0 envelope 回放，就还没有达标。
 

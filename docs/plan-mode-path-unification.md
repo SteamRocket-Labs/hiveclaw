@@ -120,7 +120,6 @@ trigger/heartbeat run 里调 gated tool → #4 tool 拦截进 Path B。
 - 删除 `web_chat_runtime.py:499` / `feishu.py:55` 的 regex auto-sync 旁路。
 - 删除 `feishu.py:2291` 的 classification 直造 plan 旁路。
 - 改为:这些渠道的用户消息正常进 agent 主循环;agent 若判断要启动自主执行/触发器,**自己调
-  `delegate_to_agent` / `start_workflow` / `deep_research_start` / `set_trigger`** → tool gate(`service.py:646`)拦截 → 因为是 live chat,`defer_to_interactive` 为真
   → 翻转进 interactive plan mode(Path A)。
 - **安全等价**:原 regex 路径的价值是"拦住'创建任务'文字 → 不静默后台执行"。统一后这个语义由
   **tool gate** 保证(agent 调真正启动自主执行的工具必过 gate),不依赖 regex。
@@ -178,7 +177,6 @@ prompt(`_planner_system_prompt`)、独立工具集(`PLANNER_ALLOWED_TOOLS`)、�
 | `plan-mode-design.md` | 治理框架/handoff 契约不动,引用 |
 | `plan-mode-agent-authored-planning.md` | "计划由 agent 撰写"原则,本文是它的彻底化(连无人值守也 agent 撰写) |
 | `agent-task-cognitive-scaffold.md` | task 那块押后;但无人值守 plan run 的"主循环复用"机制与之同源 |
-| `archive/legacy-docs/plan-mode-md-first-workspace-boundary.md` | 2026-06-08 生产复盘后的补充边界:Plan Mode 计划正文必须 MD-first,workspace read 是按需能力而非默认扫描,Deep Research JSON 只能作为 ledger |
 
 ---
 
@@ -315,7 +313,6 @@ classification)通过**启动一个 system_plan_run**(预激活 Plan Mode + 带 
 
 **治理不变量(逐字节未动)**:`_apply_generation` / `compute_plan_hash` / `validate_plan_json` / `PlanModeGate` /
 `validate_confirmation` / 禁自我确认。多租户 scope + RLS 全程保持(launcher 经 `invoke_agent` 标准治理路径)。
-未动切口② 的 trigger/heartbeat 激活;未动 deep_research 的 `ensure_awaiting_plan_from_fill` 路径。
 
 **subtle**:(1)launcher run `source="system_plan_run"` 已 active,不会被
 `_maybe_activate_interactive_plan_from_tool_result` 二次激活(`engine:1006` short-circuit);其 gated 写工具被

@@ -81,7 +81,6 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 - 整改状态(2026-06-12):已删除 synthetic signature 行为;`LLMMessage.to_anthropic_format()` 只有在 `reasoning_signature` 存在时才发 thinking block,无签名时保留 text 内容并省略 thinking。证据见 §12.1。
 
 **P0-D1 startup 孤儿 reconciler 无差别击杀 workflow 的跨进程恢复**(主审已亲核)
-- 现状:`reconcile_orphaned_runtime_tasks` 把**所有** `status=="running"` 的 RuntimeTask 标 failed(`runtime_task_service.py:222`,select 无 task_type 过滤);它在 `main.py:345-352` 先执行,workflow daemon 的 `resume_pending_runs`(只扫 running/suspended)在 :~470 后启动。**进程死亡时 in-flight workflow(含 Deep Research)先被改成 failed,daemon 永远接不到**——P0-P13 建好的 journal 重放/advisory-lock/外部步 reconciliation 在最需要的场景(每次 Railway 部署)被自家启动逻辑打穿。
 - 修复:reconciler 加 `task_type != "workflow"` 过滤(workflow 孤儿判定交给 daemon 的 lease)。**一行级修复,价值极大。**
 - 整改状态(2026-06-12):已在 DB 查询和循环内双层排除 `task_type == "workflow"`;workflow run 不再被 startup orphan sweep 标 failed。证据见 §12.1。
 
@@ -90,10 +89,8 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 - 修复:生产与消费统一经 `pick_gateway`;`_emit_completion_signal` 改走 gateway;startup 加配置一致性断言。
 - 整改状态(2026-06-12):workflow completion signal 写侧已从硬编码 `coordination_runtime` 改为 `gateway_scope(tenant_id=...)`;memory backend 仍落 in-process gateway,postgres backend 会落 `CoordinationRepository`。完成后主动回流/通知仍归 P1-10,不由本条冒充。证据见 §12.2。
 
-**P0-D3 同步长工具被 30 秒默认 timeout 必杀:spawn_subagent / start_workflow / deep_research_run**(主审已亲核)
 - 现状:`ToolRuntimeService.execute` 对所有工具 `asyncio.wait_for(timeout=_TOOL_TIMEOUTS.get(tool_name, 30.0))`(`tools/service.py:304-330`),三个长工具都不在覆盖表;`spawn_subagent` 同步等子代理整跑完(工具面无 background 参数,`run_in_background` 能力存在但不可达);子代理单轮 LLM call 的 httpx timeout 就有 120s。**subagent 源能力实际无法承载任何非平凡同步任务**(只有 <30s 的短任务才活,这正是它「看似可用」的原因)。结构性矛盾:工具层 timeout < 单次 LLM call timeout。
 - 修复:ToolMeta 加 timeout 字段或长任务白名单升分钟级;spawn_subagent 暴露 run_in_background;同步 DR 路由到后台。
-- 整改状态(2026-06-12):已把局部 `_TOOL_TIMEOUTS` 提升为模块级 `TOOL_TIMEOUTS`,并为 `spawn_subagent`、`start_workflow`、`deep_research_run` 配置 180s,消除 30s 默认误杀。后台化/异步完成回流仍属于 P1-8/P1-10 长任务恢复与通知闭环,不可用本条替代。证据见 §12.1。
 
 ### 3.2 执行隔离与资源管控(Goal-2 地基)— 2 条 + RLS 现状
 
@@ -178,7 +175,6 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 | P1-7 | **once trigger ack 语义已接入(2026-06-12)**:tick 不再预先递增 `fire_count` 或禁用 once;只写 `config._fire_inflight`。成功 invocation ack 后才更新 `last_fired_at/fire_count/is_enabled`;失败 path 清理 inflight 并走 backoff。证据见 §12.15 | `trigger_daemon.py` / `tests/services/test_trigger_daemon.py` | fresh inflight 会抑制重复触发;stale inflight 超时后可重试,不再静默蒸发 |
 | P1-8 | **web chat startup resume 已接入(2026-06-12)**:startup 现在调用 `resume_persisted_web_chat_runs()`,把仍处 active 的 `web_chat_turn` 重新调度,并将 resumed ids 传给 orphan reconciler 排除,避免刚恢复即标 failed。证据见 §12.16 | `web_chat_runtime.py` / `main.py` / `runtime_task_service.py` | queued plan handoff 的 terminal cleanup 已由恢复后的 `execute_web_chat_run()` 继续执行;不再永久卡死 |
 | P1-9 | **长任务 resume context 已接入 P1-8(2026-06-12)**:恢复 web-chat run 时构造 `build_long_task_resume_context()`,写入 `RuntimeTask.metadata_json.restart_resume_context`;执行时把 `resume_prompt` 注入 `system_prompt_suffix`。证据见 §12.16 | `web_chat_runtime.py` / `long_task_runtime.py` / `tests/services/test_web_chat_runtime.py` | 缺失 artifact 时记录 `restart_resume_context_error`,但恢复泵仍继续执行原 run |
-| P1-10 | **异步任务完成回流已接入(2026-06-12)**:workflow run metadata 可携带 `delivery_target_json`;`workflow_launch` 从当前 `channel_delivery_target` 透传;completed 边沿除 `workflow_completed` signal 外,还通过 `ChannelDeliveryService.send_text(..., delivery_mode=\"async_completion\")` 推送用户。Deep Research 基于 workflow launch 同路继承。证据见 §12.17 | `workflow_runtime_service.py` / `workflow_launch.py` / `tests/services/test_workflow_completion_signal_gateway.py` | 当前通知为简短 completion 文本;报告正文仍通过 artifact/check/export 获取 |
 | P1-11 | **Prometheus metrics 端点已接入(2026-06-12)**:memory 指标不再只停留在 admin JSON 与日志;新增无前缀 `/metrics` Prometheus text exporter,首批包含 extract failure ratio 与高失败率 gauge;后续已接 hook failure、prompt cache 与 daemon liveness。证据见 §12.21、§12.22、§12.28、§12.34 | `memory/metrics.py` / `api/metrics.py` / `main.py` | 后续继续把结构化 daemon trace 与更多业务 SLO 接入同一 exporter |
 | P1-12 | **kernel hook 吞错已接入告警指标(2026-06-12)**:`RESPONSE_COMPLETE` / `PRE_COMPACTION` / `POST_COMPACTION` 失败不再只 debug 或 unobserved task exception;统一 warning + `hook_failure_total` + Prometheus 导出。证据见 §12.22 | `kernel/engine.py` / `runtime/hooks.py` / `memory/metrics.py` | 131 处泛 DEBUG 吞错仍按管线关键度分批;本批先封住记忆/压缩三条热路径 |
 | P1-13 | **CI/eval gate 已接入(2026-06-12)**:新增 Harness CI 跑 pytest、memory retrieval/retirement eval、prompt_eval、internal eval、self-evolution bakeoff;`self_evolution_bakeoff` 的 Hive 侧从源码 marker 改为临时 workspace 行为场景,报告改用 `behavior_assertions`。证据见 §12.23 与 §12.33 | `.github/workflows/harness-ci.yml` / `memory/retrieval_eval.py` / `evals/self_evolution_bakeoff.py` / `docs/self-evolution-bakeoff-report.json` | CI 中 Hermes 为显式 baseline fixture;外部 Hermes live CLI 仍由 `core_v1` bakeoff runtime 环境化运行,不再把旧 92/85 字符串检查当北极星证据 |
@@ -191,7 +187,6 @@ Hive 今天是一台**晴天机器**:每个部件(循环、压缩、治理、记
 
 ## 5. P2 与其余(简表)
 
-**已整改(2026-06-12)**:工具并行 all-or-nothing、取消不穿透工具执行、round 耗尽冷错误、缺 turn 级 token 预算、空 tool result 防御已按 §12.36 收口;PTL 恢复顺序已改为先 LLM full-compress、后机械 round-group fallback,见 §12.37;refreshTools/外部文件变更 attachment、prompt sections 三振规则重复、双时钟双时区、压缩恢复指针精确化已按 §12.38 收口;`SECRETS_MASTER_KEY` 生产空值 fail-fast、审批 org_admin 同租户解析、delegation 显式 `execution_identity` 传递/恢复、worker-safe delegation memory-write grant 泄漏已按 §12.39 收口;审计 hash 链 tenant-scoped 串行化、hash 覆盖 `details`、读类工具 activity log 已按 §12.40 收口;默认 JSON logs 与无请求 daemon 日志稳定 process trace 已按 §12.41 收口;`team_memory` 服务层接入 `prepare_memory_write`、记忆写入 prompt-injection 机械拒绝兜底已按 §12.42 收口;heartbeat `curated` lane 不再折叠为 `action_taken`,scorecard/activity/hook/runtime metadata 已按 §12.43 收口;Deep Research dedup 已从纯进程内 dict 升级为 signature + active RuntimeTask 持久扫描,plan handoff 同路继承,见 §12.44;全量 backend/frontend 测试、ruff、compileall 的契约漂移已按 §12.45 收口。复核发现 §12.45 后端命令曾绑定到缺少 `testcontainers` 的全局 Python,导致真 PG 测试被 skip;生产镜像 `bwrap`、compose secrets 透传、Alembic version 表宽度、Deep Research empty-topic signature 与 `.venv` 真 PG 全量验收已按 §12.46 收口。Claude review 中其余 5 个非红线设计缺陷(legacy audit hash 兼容、approval 长持锁、write_gate 误漏判与 T2 静默丢弃、读工具审计 tenant 热路径、turn_token_budget 生产构造)已按 §12.47 收口。复核追打发现的 `write_gate` L1 债、合法业务保密误杀、T2/T3/team-memory/subagent-memory runtime 主路径未接 LLM classifier、compose 默认 debug 绕过 fail-fast 已按 §12.48 收口。
 
 本轮结论:§12.36-§12.48 列出的 P2 清单、部署红线、review 设计缺陷与全量测试漂移已清零;§12.45 的旧后端数字只保留为验收盲区复盘,当前后端真 PG 口径以 §12.48 最终复验为准。后续只保留本文其它章节已明确标出的系统性工程项与生产级复验项,不再把已实装项留作隐性 TODO。
 
@@ -327,7 +322,6 @@ pytest tests/services/test_llm_client_token_limits.py tests/services/test_runtim
 - P0-K1: LLM HTTP status retry matrix 的第一性断点;覆盖 OpenAI-compatible complete/stream、OpenAI Responses complete、Gemini complete/stream、Anthropic complete/stream。
 - P0-K2: Anthropic thinking 无签名不再伪造 synthetic signature。
 - P0-D1: startup orphan reconciler 不再把 workflow run 标 failed。
-- P0-D3: `spawn_subagent`、`start_workflow`、`deep_research_run` 不再落入 30s 默认 timeout。
 - P0-G1: agent-controlled subprocess 不再继承平台进程 secret env;同类 `dict(os.environ)` 执行路径统一收口。
 
 **代码证据**
@@ -970,7 +964,6 @@ ruff check app/services/web_chat_runtime.py app/services/long_task_runtime.py ap
 **范围**
 - workflow run 不再只发内部 `workflow_completed` signal;带 delivery target 的异步 workflow 完成后会推送用户。
 - `WorkflowRuntimeService.start_run()` 新增可选 `delivery_target`,写入 `RuntimeTask.metadata_json.delivery_target_json`。
-- `workflow_launch.start_workflow_run()` 从当前 `channel_delivery_target` ContextVar 读取 IM/web reply target 并透传给 workflow run;Deep Research 的 workflow 启动同路继承。
 - terminal completed 边沿调用 `ChannelDeliveryService.send_text(..., delivery_mode="async_completion")`。
 
 **代码证据**
@@ -997,7 +990,6 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/services/test_workflow_completion_signal_gateway.py \
   tests/runtime/test_workflow_completion_signal.py tests/services/test_workflow_runtime_service.py \
-  tests/tools/test_deep_research_handler.py tests/tools/test_workflow_tool.py -q
 python -m py_compile app/services/workflow_runtime_service.py app/services/workflow_launch.py
 ruff check app/services/workflow_runtime_service.py app/services/workflow_launch.py \
   tests/services/test_workflow_completion_signal_gateway.py
@@ -2236,19 +2228,10 @@ pytest backend/tests/services/test_heartbeat.py -q
 
 当前结果:新增红线 2 passed;heartbeat 服务回归 31 passed,11 warnings。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
 
-### 12.44 2026-06-12 第四十四批:Deep Research durable dedup
 
 **范围**
-- Deep Research dedup 不再只依赖 `_INFLIGHT_DEEP_RESEARCH` 进程内 dict;启动前按稳定 `deep_research_signature` 扫描 active `RuntimeTask(status in pending/running)`,进程重启后仍能命中同一 agent 的同一研究请求。
-- `deep_research_start()` 与 plan handoff 入口 `start_deep_research_background_run()` 共用同一 signature/dedup 逻辑;命中时返回已有 `task_id/workflow_run_id` 和 `deduped=true`,不再重复创建 workflow run。
-- background runner 在 RuntimeTask metadata 写入 `deep_research_signature`、`deep_research_question` 与结果 payload;workflow args 同步包含 `deep_research_signature`,便于从 workflow metadata/args 两种形态回收匹配。
-- 进程内 `_INFLIGHT_DEEP_RESEARCH` 只保留为同进程快速 guard;持久 RuntimeTask 扫描才是重启恢复后的事实来源。
 
 **代码证据**
-- `backend/app/tools/handlers/deep_research.py`:新增 `_deep_research_signature()`、`_find_active_deep_research_task()`、`_metadata_deep_research_signature()`、`_deep_research_dedup_payload()`;`deep_research_start()` 与 `start_deep_research_background_run()` 在 schedule 前先查进程内 slot,再查 active RuntimeTask。
-- `backend/app/tools/handlers/deep_research.py`:`_schedule_deep_research_workflow_background()` 写入 `metadata_json.deep_research_signature/deep_research_question/deep_research_result`,并按 signature key 清理 in-flight slot。
-- `backend/app/services/deep_research/workflow_definition.py`:`deep_research_workflow_args()` 生成 `deep_research_signature`;`args_schema` 接纳该字段,避免 workflow definition admission 把 dedup 元数据当未知参数拒绝。
-- `backend/tests/tools/test_deep_research_handler.py`:新增 active RuntimeTask dedup 与 background metadata signature 回归;既有 start 测试清理逻辑改为按 agent 清理 signature key,不再假设旧 question key。
 
 **回归测试**
 
@@ -2256,25 +2239,16 @@ Red 阶段失败摘要:
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main
-pytest backend/tests/tools/test_deep_research_handler.py::test_deep_research_start_dedups_against_persisted_active_runtime_task \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_background_metadata_records_signature -q
 ```
 
-初始结果:2 failed。失败点为 `deep_research_start()` 没有扫描 persisted active RuntimeTask,且 background metadata 没有 `deep_research_signature`。
 
 Green 阶段通过摘要:
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main
-pytest backend/tests/tools/test_deep_research_handler.py::test_deep_research_start_dedups_against_persisted_active_runtime_task \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_background_metadata_records_signature -q
 
-pytest backend/tests/tools/test_deep_research_handler.py \
-  backend/tests/deep_research/test_workflow_definition.py \
-  backend/tests/deep_research/test_deep_research_handler.py -q
 ```
 
-当前结果:新增红线 2 passed;Deep Research handler/workflow definition 相关回归 18 passed,5 skipped,11 warnings。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
 
 ### 12.45 2026-06-12 第四十五批:全量验收漂移收口
 
@@ -2314,16 +2288,13 @@ npm run test
 - 生产镜像补齐 `bubblewrap`,使 `HIVE_CODE_SANDBOX_MODE=auto` 在 Linux 容器内能进入 `bwrap` sandbox,不再因镜像缺依赖而 fail-closed 拒绝所有 `execute_code/run_command`。
 - `docker-compose.yml` 转发 `DEBUG` 与 `SECRETS_MASTER_KEY`;本节先补齐变量透传,默认值在后续 §12.48 进一步收紧为 `DEBUG=false`,避免默认 compose 绕过生产 secrets fail-fast。
 - Alembic `alembic_version.version_num` 从旧默认 `VARCHAR(32)` 扩到 `VARCHAR(255)`,并在 bootstrap path 与正常 Alembic path 都先建/改宽,避免 `rls_stage2c_drop_orphan_tables_0611` 这类长 revision id 在真 PG 上截断。
-- Deep Research dedup signature 与 workflow args 统一 empty `worker_topics` 语义:创建与查询均把空 worker topics canonicalize 为 `[question]`,重启后 DB dedup 不再 miss。
 
 **代码证据**
 - `Dockerfile` / `backend/Dockerfile`:production apt install 均加入 `bubblewrap`。
 - `docker-compose.yml`:backend service environment 增加 `DEBUG` 与 `SECRETS_MASTER_KEY` 透传;`DEBUG` 默认值由 §12.48 收紧为 `${DEBUG:-false}`。
 - `backend/app/db_bootstrap.py`:新增 `ensure_alembic_version_table_width()`,bootstrap 与 `run_migrations_with_bootstrap()` 正常迁移 path 均调用;PostgreSQL 执行 `ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)`。
-- `backend/app/tools/handlers/deep_research.py`:`_deep_research_signature()` 过滤空白 topics,空列表回退为 `[research_request.question]`,与 `deep_research_workflow_args()` 一致。
 - `backend/tests/architecture/test_deployment_contracts.py`:新增部署契约测试,防止生产镜像再次漏装 `bubblewrap` 或 compose 漏转发 secrets/debug。
 - `backend/tests/test_alembic_bootstrap.py`:新增 `VARCHAR(255)` schema 与长 revision id 覆盖;正常迁移 path 也断言会准备宽表。
-- `backend/tests/tools/test_deep_research_handler.py`:新增 empty worker topics signature 等价测试,并把 persisted dedup 测试改为使用 workflow args 的 canonical signature。
 
 **回归测试**
 
@@ -2334,12 +2305,8 @@ cd /Users/rocky243/vc-saas/hiveclaw-main
 pytest backend/tests/architecture/test_deployment_contracts.py \
   backend/tests/test_alembic_bootstrap.py::test_bootstrap_alembic_version_accepts_long_revision_ids \
   backend/tests/test_alembic_bootstrap.py::test_normal_migration_path_prepares_wide_alembic_version_table \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_start_dedups_against_persisted_active_runtime_task \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_background_metadata_records_signature \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_signature_matches_workflow_args_for_empty_worker_topics -q
 ```
 
-初始结果:`6 failed,1 passed,10 warnings`。失败点分别为 production Dockerfile 未安装 `bubblewrap`、compose 未转发 `DEBUG/SECRETS_MASTER_KEY`、正常 Alembic path 不会准备宽 `alembic_version`、Deep Research empty-topic signature 创建/查询不一致、persisted active RuntimeTask dedup miss。
 
 Green 阶段通过摘要:
 
@@ -2348,18 +2315,11 @@ cd /Users/rocky243/vc-saas/hiveclaw-main
 pytest backend/tests/architecture/test_deployment_contracts.py \
   backend/tests/test_alembic_bootstrap.py::test_bootstrap_alembic_version_accepts_long_revision_ids \
   backend/tests/test_alembic_bootstrap.py::test_normal_migration_path_prepares_wide_alembic_version_table \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_start_dedups_against_persisted_active_runtime_task \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_background_metadata_records_signature \
-  backend/tests/tools/test_deep_research_handler.py::test_deep_research_signature_matches_workflow_args_for_empty_worker_topics -q
 
 pytest backend/tests/test_alembic_bootstrap.py \
-  backend/tests/tools/test_deep_research_handler.py \
-  backend/tests/deep_research/test_workflow_definition.py \
   backend/tests/architecture/test_deployment_contracts.py -q
 
-backend/.venv/bin/python -m pytest backend/tests/integration backend/tests/migrations backend/tests/models backend/tests/runtime backend/tests/deep_research -q -rs
 backend/.venv/bin/python -m pytest backend/tests -q
-backend/.venv/bin/ruff check backend/app/db_bootstrap.py backend/app/tools/handlers/deep_research.py backend/tests/architecture/test_deployment_contracts.py backend/tests/test_alembic_bootstrap.py backend/tests/tools/test_deep_research_handler.py
 ```
 
 当批结果:聚焦红线 `7 passed,10 warnings`;相关 Alembic/DR/deployment 回归 `27 passed,5 skipped,11 warnings`;真实 PG/Testcontainers 关键目录 `668 passed,4 warnings`;后端全量真 PG `4138 passed,7 skipped,4 warnings`。后续 §12.47 新增设计缺陷测试后,最终后端全量真 PG 口径更新为 `4144 passed,7 skipped`;ruff `All checks passed!`。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
@@ -2431,7 +2391,6 @@ backend/.venv/bin/python -m pytest backend/tests/services/test_audit_query_servi
   backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_db_exception_sets_tenant_error \
   backend/tests/runtime/test_invoker.py::test_resolve_runtime_config_success_does_not_set_tenant_error -q
 
-backend/.venv/bin/ruff check backend/app/core/policy.py backend/app/services/audit_query_service.py backend/app/services/approval_service.py backend/app/memory/write_gate.py backend/app/memory/t2_store.py backend/app/services/tenant_resolver.py backend/app/services/activity_logger.py backend/app/tools/service.py backend/app/runtime/invoker.py backend/tests/services/test_audit_query_service.py backend/tests/services/test_approval_service.py backend/tests/memory/test_write_gate.py backend/tests/memory/test_t2_store.py backend/tests/services/test_tenant_resolver.py backend/tests/runtime/test_invoker.py backend/tests/tools/test_service.py backend/tests/architecture/test_deployment_contracts.py backend/tests/test_alembic_bootstrap.py backend/tests/tools/test_deep_research_handler.py
 backend/.venv/bin/python -m compileall -q backend/app backend/tests
 backend/.venv/bin/python -m pytest backend/tests -q
 ```

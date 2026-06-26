@@ -1113,36 +1113,7 @@
         "deferredCapabilities": "Deferred Capabilities",
         "warnings": "Warnings",
         "manualSteps": "Manual Steps",
-        "rawOutput": "Raw output",
-        "deepResearchTitle": "Deep Research",
-        "taskId": "Task",
-        "status": "Status",
-        "sources": "Sources",
-        "claims": "Claims",
-        "report": "Report",
-        "runState": "Run State",
-        "qualityGates": "Quality Gates",
-        "gaps": "Gaps"
-      },
-      "deepResearchStream": {
-        "status": {
-          "idle": "Idle",
-          "streaming": "Streaming",
-          "completed": "Completed",
-          "failed": "Failed",
-          "aborted": "Aborted"
-        },
-        "taskLabel": "Task",
-        "abort": "Stop stream",
-        "sources": "Sources",
-        "claims": "Claims",
-        "lanes": "Lanes",
-        "steps": "Steps",
-        "heartbeats": "Heartbeats",
-        "latestReflection": "Latest reflection",
-        "latestControllerStep": "Controller action",
-        "reportPreview": "Report preview",
-        "errorLabel": "Stream error"
+        "rawOutput": "Raw output"
       },
       "workLedger": {
         "title": "Agent work ledger",
@@ -1194,7 +1165,8 @@
         "compactedNotice": "Context was compressed. The active working state was preserved.",
         "compactionDetails": "Show compression details",
         "compactionMeta": "Kept {{kept}} of {{original}} messages",
-        "toolGroupsActivated": "{{count}} runtime tool groups activated"
+        "toolGroupsActivated": "{{count}} runtime tool groups activated",
+        "permissionNeeded": "The agent needs permission to use {{tool}}."
       }
     },
     "office": {
@@ -1576,7 +1548,6 @@
       "mcp": "MCP",
       "plaza": "Agent Circle",
       "office_pack": "Office",
-      "deep_research_pack": "Deep Research",
       "social": "Social",
       "code": "Code & Execution",
       "discovery": "Discovery",

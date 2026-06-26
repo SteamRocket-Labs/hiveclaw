@@ -58,9 +58,8 @@ class ToolMeta:
     # that must be confirmed before it runs. The value is the PlanModeGate
     # action_kind (app.services.plan_mode_core.ACTION_KINDS), EXCEPT the sentinel
     # "bridge:self" which registers a tool while delegating the actual gate to
-    # the tool's own confirmation (for example Deep Research's user_confirmed
-    # path). This is a code-level registry tag — NOT Tool.config, which the
-    # seeder does not overwrite when already non-empty.
+    # the tool's own confirmation path. This is a code-level registry tag —
+    # NOT Tool.config, which the seeder does not overwrite when already non-empty.
     plan_gate_action_kind: str = ""
 
     # Pack membership

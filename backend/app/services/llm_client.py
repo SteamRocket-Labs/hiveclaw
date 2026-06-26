@@ -2316,9 +2316,9 @@ def get_llm_model_identifier_error(provider: str | None, model: str | None) -> s
 # no DB override may exceed this, regardless of provider spec.
 ABSOLUTE_MAX_OUTPUT_TOKENS = 524288
 
-# Retained for backward compatibility (referenced by deep-research budgeting
-# notes). Output ceilings are now per-provider via ``ProviderSpec.max_output_tokens``;
-# this falls back to the class default when no provider context is available.
+# Retained for backward compatibility with older budgeting callers. Output ceilings
+# are now per-provider via ``ProviderSpec.max_output_tokens``; this falls back to
+# the class default when no provider context is available.
 MAX_OUTPUT_TOKENS_HARD_LIMIT = ProviderSpec.max_output_tokens
 
 

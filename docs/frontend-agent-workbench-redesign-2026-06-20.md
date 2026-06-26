@@ -27,7 +27,6 @@ The target is **CC Design as product structure, Codex Desktop as interaction qua
 
 1. **CC Design prototype is the structural baseline.** It defines the employee workspace, control plane split, Notion-tree IA, digital employee lifecycle, task flow, and governance surfaces.
 2. **Codex Desktop is the interaction-quality overlay.** It defines composer density, message rhythm, command menu, low-noise status, artifact inspection, and side panel behavior.
-3. **Hive runtime is the source of truth.** Existing routes, guards, React Query clients, websocket runtime, Plan Mode, Work Ledger, Office/files/deep-research, memory, workflows, skills, subagents, approvals, audit, local agents, and enterprise settings must be preserved.
 
 Part 2 is not a second chat polish pass. It is the broader frontend transformation after session-internal parity:
 
@@ -473,7 +472,6 @@ These are not deleted. They are folded into product areas:
 | Target area | Current modules |
 | --- | --- |
 | Overview | `status`, runtime summary, recent `activityLog`, pending approvals, active sessions |
-| Conversation & Tasks | `chat`, `plans`, Work Ledger, `PlanCard`, `PlanModeRequestCard`, Deep Research stream, artifacts |
 | Capabilities | `tools`, `skills`, `workflows`, MCP/extension status, Office capability, channels capability |
 | Memory & Knowledge | `knowledge`, `evolution`, memory events, soul candidates, skill/workflow candidate links |
 | A2A / Team | `subagents`, `relationships`, delegation traces, peer/team memory summaries |
@@ -566,7 +564,6 @@ Rules:
 | Plan Review | Pending plan confirmations and ask-user questions surfaced from Home attention blocks, Agent Detail, or command/search | plans API, chat runtime state, approval metadata |
 | Automations | Workflows, scheduled/triggered runs, save successful task as workflow from Home or Agent Detail | workflows API, schedules/triggers, skill/workflow promotion |
 | Memory & Knowledge | Per-agent memory/knowledge tabs plus workspace-wide entry from Home/Control Plane | knowledge API, memory API, workspace memory config |
-| Documents & Research | Generated artifacts, Office docs, deep research outputs from Home cards, Agent Detail, and document surfaces | files API, Office API, deep research, artifacts |
 | Local Agent Channel | Local bridge connection, local workspace files, local transcript under Bridge and Agent/session context | localBridge API, existing `LocalAgents` page |
 | Approvals | User-facing approvals from Home needs-you, Agent Detail, and Control Plane | agent/workspace approvals APIs |
 
@@ -732,7 +729,6 @@ Required:
 
 1. Generated artifacts list and preview.
 2. Office document editing route/surface.
-3. Deep Research output browsing.
 4. File download/open/continue actions.
 5. Source and sensitivity disclosure where applicable.
 
@@ -783,7 +779,6 @@ Capability ownership matrix:
 | Plans and ask-user | Conversation & Tasks | `plans.ts`, chat tool envelopes |
 | Work Ledger | Conversation & Tasks / right inspector | `autonomyApi.getSessionWorkLedger()` |
 | Artifacts/files | Documents & Workspace / inspector | `files.ts`, chat artifact parts |
-| Deep Research | Documents & Research / session stream | `deepResearch.ts`, runtime panels |
 | Office | Documents & Workspace | `office.ts`, Office service |
 | Skills | Capabilities / Control Plane assets | `skills.ts`, skill registry/files |
 | Workflows | Automations / Capabilities | `workflows.ts`, schedules/triggers |

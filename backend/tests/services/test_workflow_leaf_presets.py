@@ -36,7 +36,7 @@ def _ctx() -> SubagentSpawnContext:
     )
 
 
-def _request(leaf_name: str = "deep_research_explorer") -> LeafRequest:
+def _request(leaf_name: str = "source_explorer") -> LeafRequest:
     return LeafRequest(
         run_id=str(uuid.uuid4()),
         step_id="explore",
@@ -62,7 +62,7 @@ def _fake_spawn(captured: list):
 
 async def test_preset_overrides_reach_spawn():
     register_leaf_preset(
-        "deep_research_explorer",
+        "source_explorer",
         LeafPreset(
             allowed_tools=("web_search", "web_fetch"),
             excluded_tools=("write_file",),
@@ -84,17 +84,17 @@ async def test_preset_overrides_reach_spawn():
 
 
 async def test_disable_tools_preset_flows_into_spec():
-    register_leaf_preset("deep_research_synthesizer", LeafPreset(disable_tools=True))
+    register_leaf_preset("source_synthesizer", LeafPreset(disable_tools=True))
     captured: list = []
     executor = build_subagent_leaf_executor(_ctx(), spawn=_fake_spawn(captured))
 
-    await executor(_request("deep_research_synthesizer"))
+    await executor(_request("source_synthesizer"))
 
     assert captured[0]["spec"].disable_tools is True
 
 
 async def test_leaf_without_preset_spawns_unchanged():
-    """Office and any non-DR workflow must be byte-for-byte unaffected."""
+    """Office and any workflow without a preset must be byte-for-byte unaffected."""
     captured: list = []
     executor = build_subagent_leaf_executor(_ctx(), spawn=_fake_spawn(captured))
 
@@ -120,7 +120,7 @@ async def test_pre_process_rewrites_task_and_post_process_transforms_outcome():
             tokens_used=outcome.tokens_used,
         )
 
-    register_leaf_preset("deep_research_explorer", LeafPreset(pre_process=pre, post_process=post))
+    register_leaf_preset("source_explorer", LeafPreset(pre_process=pre, post_process=post))
     captured: list = []
     executor = build_subagent_leaf_executor(_ctx(), spawn=_fake_spawn(captured))
 

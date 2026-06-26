@@ -376,11 +376,11 @@ vi.mock('@tanstack/react-query', () => ({
       return {
         data: {
           schema: 'agent_work_ledger_view.v1',
-          runtime_task_id: 'task-deep-1',
+          runtime_task_id: 'workflow-run-1',
           session_id: 'session-1',
-          source: 'deep_research',
+          source: 'workflow',
           status: 'running',
-          current_phase: 'collect_sources',
+          current_phase: 'execute_steps',
           todo_items: [
             { id: 'todo-1', title: 'Collect and grade sources', status: 'running', required: true },
             { id: 'todo-2', title: 'Write final report', status: 'pending', required: true },
@@ -393,7 +393,7 @@ vi.mock('@tanstack/react-query', () => ({
           ],
           failures: [],
           findings: [],
-          evidence_refs: ['runtime_artifacts/long_tasks/task-deep-1/deep_research/report.md'],
+          evidence_refs: ['runtime_artifacts/workflow_runs/workflow-run-1/report.md'],
           counts: {
             todos_total: 2,
             todos_complete: 0,
@@ -1775,6 +1775,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('market-report.md');
     expect(markup).toContain('Open');
     expect(markup).toContain('Download');
+    expect(markup).toContain('data-testid="chat-artifact-row-open"');
     expect(markup).toContain('/api/agents/agent-1/files/download?path=workspace%2Fmarket-report.md');
   });
 
@@ -1933,6 +1934,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('proposal.docx');
     expect(markup).toContain('Open');
     expect(markup).toContain('Download');
+    expect(markup).toContain('data-testid="chat-artifact-row-open"');
   });
 
   it('groups consecutive runtime steps into one turn-level disclosure block before the final answer', () => {
@@ -2033,6 +2035,8 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup.match(/data-testid="run-disclosure-block"/g)?.length).toBe(1);
     expect(markup).toContain('Thinking');
+    expect(markup).toContain('Read 1 file');
+    expect(markup).toContain('Ran 1 command');
     expect(markup).toContain('Read file');
     expect(markup).toContain('Context Compacted');
     expect(markup).toContain('Run command');
@@ -2131,6 +2135,9 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('Permission Gate');
     expect(markup).toContain('send_email');
+    expect(markup).toContain('The agent needs permission to use send_email.');
+    expect(markup).not.toContain('Tool &#x27;send_email&#x27; requires session permission');
+    expect(markup).not.toContain('communication.email.send');
     expect(markup).toContain('Allow once');
     expect(markup).toContain('Allow for this session');
     expect(markup).toContain('Deny');
@@ -2616,21 +2623,9 @@ describe('AgentDetail extracted sections', () => {
           {
             role: 'tool_call',
             content: '',
-            toolName: 'deep_research_start',
+            toolName: 'start_workflow',
             toolStatus: 'done',
-            toolResult: 'Deep research running',
-            toolMeta: {
-              kind: 'deep_research',
-              taskId: 'task-deep-1',
-              status: 'running',
-              summary: 'Research has started.',
-              reportPath: null,
-              artifactDir: 'runtime_artifacts/long_tasks/task-deep-1/deep_research',
-              sourceCount: null,
-              claimCount: null,
-              qualityGates: {},
-              gaps: [],
-            },
+            toolResult: 'Workflow running',
           },
         ]}
         chatMessagesSessionId="session-1"
@@ -2667,7 +2662,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Create team');
   });
 
-  it('does not keep polling a stale historical Deep Research start result', () => {
+  it('does not mount the work ledger dock for a stale historical running tool result', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-01T17:18:00Z'));
     try {
@@ -2685,7 +2680,7 @@ describe('AgentDetail extracted sections', () => {
           activeSession={{
             id: 'stale-session',
             user_id: 'user-1',
-            title: 'Old Deep Research run',
+            title: 'Old workflow run',
             created_at: '2026-05-29T07:18:00Z',
           }}
           wsConnected
@@ -2707,22 +2702,10 @@ describe('AgentDetail extracted sections', () => {
             {
               role: 'tool_call',
               content: '',
-              toolName: 'deep_research_start',
+              toolName: 'start_workflow',
               toolStatus: 'done',
-              toolResult: 'Deep research running',
+              toolResult: 'Workflow running',
               timestamp: '2026-05-29T07:18:00Z',
-              toolMeta: {
-                kind: 'deep_research',
-                taskId: 'old-deep-task',
-                status: 'running',
-                summary: 'Research has started.',
-                reportPath: null,
-                artifactDir: 'runtime_artifacts/long_tasks/old-deep-task/deep_research',
-                sourceCount: null,
-                claimCount: null,
-                qualityGates: {},
-                gaps: [],
-              },
             },
           ]}
           chatMessagesSessionId="stale-session"
@@ -2751,7 +2734,6 @@ describe('AgentDetail extracted sections', () => {
       );
 
       expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
-      expect(markup).not.toContain('old-deep-task');
     } finally {
       vi.useRealTimers();
     }
@@ -3441,7 +3423,7 @@ describe('AgentDetail extracted sections', () => {
       requested_by_user_id: null,
       source: 'web_chat',
       intent_type: 'long_task',
-      original_request: '使用 deepresearch做一个web3的全景报告',
+      original_request: 'Plan a source-grounded market report',
       status: 'awaiting_confirmation',
       plan_version: 1,
       plan_hash: 'sha256:abc123',
@@ -3488,13 +3470,12 @@ describe('AgentDetail extracted sections', () => {
       requested_by_user_id: null,
       source: 'web_chat',
       intent_type: 'long_task',
-      original_request: '使用 deepresearch做一个RWA pre-ipo的全景报告',
+      original_request: 'Plan a source-grounded market report',
       status: 'planning_failed',
       plan_version: 1,
       plan_hash: null,
       plan_markdown_path: null,
       plan_json: {
-        title: '使用 deepresearch做一个RWA pre-ipo的全景报告',
       },
       handoff_status: null,
       handoff_payload: null,
@@ -3517,7 +3498,6 @@ describe('AgentDetail extracted sections', () => {
 
     const markup = renderToStaticMarkup(<PlanCard agentId="agent-1" plan={plan} />);
 
-    expect(markup).toContain('使用 deepresearch做一个RWA pre-ipo的全景报告');
     expect(markup).toContain('Planning failed');
     expect(markup).toContain('missing required field: objective');
     expect(markup).toContain('Retry plan generation');

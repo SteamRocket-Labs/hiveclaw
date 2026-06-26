@@ -67,13 +67,48 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps[0].summary).not.toContain('query:');
   });
 
+  it('adds a turn-level aggregate summary for repeated tool groups', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'read_file',
+        toolArgs: { path: 'workspace/a.md' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'read_file',
+        toolArgs: { path: 'workspace/b.md' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'web_search',
+        toolArgs: { query: 'session ux' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'execute_code',
+        toolArgs: { command: 'npm test' },
+        toolStatus: 'done',
+      },
+    ]);
+
+    expect(timeline.summary).toBe('Read 2 files · Searched web 1 time · Ran 1 command');
+  });
+
   it('summarizes tool discovery without exposing raw select queries', () => {
     const timeline = buildRunTimelineFromMessages([
       {
         role: 'tool_call',
         content: '',
         toolName: 'tool_search',
-        toolArgs: { query: 'select:deep_research_run' },
+        toolArgs: { query: 'select:start_workflow' },
         toolStatus: 'done',
       },
     ]);
@@ -83,7 +118,7 @@ describe('chatDisclosureReducer', () => {
       title: 'Loading tools',
       summary: 'Checking available tools',
     });
-    expect(timeline.steps[0].summary).not.toContain('select:deep_research_run');
+    expect(timeline.steps[0].summary).not.toContain('select:start_workflow');
   });
 
   it('preserves backend step ids, tool call ids, and duration metadata', () => {
@@ -116,19 +151,12 @@ describe('chatDisclosureReducer', () => {
     });
   });
 
-  it('classifies workflow, subagent, trigger, and deep research runtime sources as first-class steps', () => {
+  it('classifies workflow, subagent, and trigger runtime sources as first-class steps', () => {
     const messages: AgentChatMessage[] = [
       { role: 'tool_call', content: '', toolName: 'start_workflow', toolStatus: 'running' },
       { role: 'tool_call', content: '', toolName: 'spawn_subagent', toolStatus: 'done' },
       { role: 'tool_call', content: '', toolName: 'set_trigger', toolStatus: 'done' },
       { role: 'event', content: 'Schedule created', eventType: 'schedule', eventStatus: 'created', eventScheduleId: 'schedule-1' },
-      {
-        role: 'tool_call',
-        content: '',
-        toolName: 'deep_research_start',
-        toolStatus: 'done',
-        toolMeta: { kind: 'deep_research', status: 'running', taskId: 'research-1', qualityGates: {}, gaps: [] },
-      },
     ] as AgentChatMessage[];
 
     const timeline = buildRunTimelineFromMessages(messages);
@@ -138,7 +166,6 @@ describe('chatDisclosureReducer', () => {
       'subagent',
       'trigger',
       'trigger',
-      'deep_research',
     ]);
     expect(timeline.status).toBe('running');
   });

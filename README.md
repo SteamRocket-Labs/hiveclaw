@@ -42,7 +42,6 @@ Hive is built for a company operating many digital employees. Company Admin, Pla
 
 **4. Harness-grade runtime**
 
-Agents do not only work while a browser tab is open. Web chat, triggers, workflows, subagents, Heartbeat, Dream, deep research, and IM webhooks all flow through one stateless kernel and governed tool runtime. `RuntimeTask` execution is restart-resumable, `invocation_spans` provide a database trace spine, and provider retry/overload fallback, Anthropic thinking-signature preservation, prompt-cache anchoring, token budget gates, completion deduplication, and sandboxed code execution are runtime contracts.
 
 ## Current Baseline After Two Major Passes
 
@@ -202,10 +201,8 @@ Channel configs are **per-agent**, so different employees can live in different 
 
 | Layer | Files | Notes |
 |-------|-------|-------|
-| API routers | 62 | Agents, auth, chat sessions, enterprise, channels, admin, Agent Circle/plaza, triggers, office, deep research, interoperability |
 | ORM models | 43 | Tenant-scoped SQLAlchemy models with RLS, runtime tasks, coordination, objectives, identity, invocation spans, session feedback |
 | Services | 163 | LLM client, trigger/evolution daemons, channel streamers, memory, office, governance, skills, trace, MCP authz, interoperability |
-| Tool handlers | 18 modules / 100+ registered definitions | filesystem · search · communication · email · feishu · office · memory · deep research · workflows · work ledger · plaza · skills · triggers · hr · mcp |
 | Kernel | 1 stateless engine | 200 default max tool rounds · 75% compaction threshold · 50KB tool result eviction · trace spans · thinking signatures |
 | Migrations | 79 | Alembic, single-head invariant |
 | Frontend pages | 16 page entries + 40 nested page/section helpers | AgentDetail, Agent Circle, Company Admin workbench/settings, Platform Admin |

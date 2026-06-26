@@ -52,12 +52,10 @@
 | 定时任务 Trigger | ✅ | `trigger` | `services/trigger_daemon.py:1193` |
 | Heartbeat | ✅ | `heartbeat` | `services/heartbeat.py:1619` |
 | Delegation（agent→agent） | ✅ | `agent` | `agents/subagent.py:678` |
-| Deep Research | ⚠️ 独立循环，仅 synthesis 调 `invoke_agent(disable_tools=True)` | `tool` | `tools/handlers/deep_research.py` |
 | Workflow | ⚠️ 确定性引擎，每步 `spawn_subagent` → kernel | `workflow` | `runtime/workflow_engine.py:542` |
 
 **"新开 Session" 的代码含义**：`SessionContext(session_id=uuid, source, channel)`；续跑则复用 `session_id` + `metadata`（命中 prompt 前缀缓存、保留 active_tool_groups/skills）。
 
-> **结论：用户的命题"本质都是新开 Session → 循环 → 工具 → 输出"在代码里成立。** 10+ 入口干净地收敛到 `invoke_agent → kernel.handle`。Deep Research / Workflow 是两条有意的特化分支（不是债）。**底座不需要返工。**
 
 ---
 
@@ -107,9 +105,7 @@
 
 > 澄清（与"全机械"的印象相反）：交互式 web chat 路径上**计划正文 `plan_markdown` 现在确实是 LLM 亲自写的**（`reminder_scheduler.py:61-66` 要求写文章、`plan_mode.py:215-231` 拒空、`PlanCard.tsx:404-415` markdown 渲染）。机械化残留在 entry/确认/字段，以及下面的 D。
 
-### 病灶 D 🔴 — Deep Research 整篇 plan 是硬编码模板
 
-`deep_research/plan_mode.py:57-198` `build_deep_research_plan_fill`：steps / success_criteria / stop_conditions / motivation 全是 Python 字符串常量，**没有一个字是 LLM 写的**，且绕过 agent 主循环授权（`plan_mode_service.py:192-243`）。DR 这个高频场景的"计划"100% 机械生成。
 
 ### 病灶 E 🔴 — **plan 正文 ↔ 定时执行脱节（第一手验证，命中你最关心的场景）**
 
@@ -148,7 +144,6 @@
 2. **无"认领"机制**：当前 push 指派，非 sub-agent 从看板 claim。
 3. **看板↔派发脱节（最大结构差距）**：用户图景核心"Task 看板作为调度中枢"当前不成立——看板（还分 `track_todo`/`manage_tasks` 两套）与派发是两套系统，看板不驱动派发。
 
-**Deep Research 定性（印证用户）**：DR = 固定 Workflow 实例——角色 prompt 是代码常量（planner/explorer/critic/synthesizer，`leaf_presets.py`）、worker 拆解由主 Agent 的 `worker_topics` 生成、主 Agent = 调 `deep_research_start` 的全功能对话 agent、synthesizer 专门写报告。**DR ≠ Plan Mode，是 Workflow 的产物**。✅
 
 > 看板自身的 MD-first / 双轨（`manage_tasks` DB+tasks.json create-即-execute vs `track_todo` ledger JSON 写不触发执行、两套 status 枚举 `done`/`completed`）仍是待收敛债，但已从属于"看板该不该成为调度中枢"这个更大的结构决策（见 §5.3）。
 

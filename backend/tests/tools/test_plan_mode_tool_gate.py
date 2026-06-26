@@ -300,26 +300,6 @@ async def test_execute_does_not_gate_untagged_tool():
 
 
 @pytest.mark.asyncio
-async def test_execute_does_not_hard_gate_bridge_self_tool():
-    """deep_research_start self-gates (plan_confirmed); the service must not
-    invoke the gate for it, or it would double-block."""
-    context = _context()
-    registry = _FakeRegistry("DR")
-    gate = _RecordingGate(_BLOCKED)
-    service = _make_service(context=context, registry=registry, gate=gate)
-
-    result = await service.execute(
-        "deep_research_start",
-        {"question": "Research X"},
-        agent_id=context.agent_id,
-        user_id=context.user_id,
-    )
-
-    assert result == "DR"
-    assert gate.calls == []
-
-
-@pytest.mark.asyncio
 async def test_execute_does_not_plan_gate_create_digital_employee():
     """HR creation already has its own blueprint/sensitive governance path.
     Plan Mode must not misclassify it as trigger creation, or final creation

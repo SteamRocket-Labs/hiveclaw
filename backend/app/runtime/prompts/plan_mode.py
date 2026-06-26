@@ -61,7 +61,7 @@ PLAN_MODE_REMINDER_FULL = (
     "there is no relevant source to inspect or a product decision is blocking. Do not invent file paths, "
     "APIs, dependencies, or external facts - mark anything unverified as an assumption.\n"
     "   Workspace reads must be need-scoped: Do not browse the workspace root, historical artifact "
-    "folders, or deep_research_reports by default. Read files only when the user explicitly "
+    "folders or runtime artifact directories by default. Read files only when the user explicitly "
     "references them, the planned work depends on existing state, a gated action points at a path, "
     "or the task is to continue/repair/review prior work. Treat old reports, plan.json, and other "
     "historical artifact files as reference material only unless the user made them current-task "
@@ -98,4 +98,3 @@ PLAN_MODE_FILE_HINT = (
     "{plan_file}. This exact file is the source of plan_markdown when you call exit_plan_mode. "
     "Writing the file does not submit it - you must still call exit_plan_mode to request approval."
 )
-

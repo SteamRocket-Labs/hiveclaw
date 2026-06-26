@@ -2,12 +2,10 @@
 
 > **定位**：这是一篇聚焦**单一核心**的源能力设计文档——补齐 Hive 的 **subagent 体系**（多 agent 协作/委派/并行的底层能力）。
 >
-> **缘起**：deep research 产出质量长期不高，我们打了 RC11→RC15 一长串 prompt 补丁仍解不开（RC15 是 prompt 死结）。根因不是产物、不是提示词——是 **deep research 依赖的源能力本身残缺**。deep research 是组合产物；它脆，是因为它在手搓一个本该是平台源能力、但 Hive 还没有的东西。
 >
 > **两轴框架**：Hive 要成为"加强版团队 Claude Code",缺两根正交的源能力轴:
 > - **轴 1 — Subagent 体系**（本文）：一个 agent 能声明式派生 / 并行 fan-out / 隔离 / 回收 / 治理一群轻量子 agent。
 > - **轴 2 — 工作流编排**（独立讨论，本文只留接口）：代码拥有确定性控制流（pipeline / parallel / barrier / loop），而非 agent 即兴。借鉴 Claude Code 的 **Workflow 工具**范式。
-> - **deep research = 轴1（并行子 agent）× 轴2（编排控制流）的一次组合**。补齐两轴，deep research 是它们的自然应用——水到渠成。
 >
 > 本文只钉死轴 1。轴 2 待专门讨论。
 
@@ -32,10 +30,7 @@ Hive 此前已收紧过 agent 语义，本文的"subagent"**专指其中一类**
 
 1. **subagent 源能力 = 7 块骨架**（调研 Claude Code + Codex 源码提炼，剥开"md vs toml""软 vs 硬"的风格差异后，两家骨架一致）。
 2. **Hive 现状**：3 块健康地基（context 隔离 / 结果回收 / 治理共享+防递归），4 块缺口（统一 spawn 入口 / 轻量子 agent type / 并行 fan-out 原语 / 异步完成重入）。
-3. **deep research 的 worker fan-out 被坐实是"手搓残缺 subagent"**：私有 `asyncio.gather+Semaphore`、worker 是"被砍了工具的父 agent 克隆"（复用父灵魂/记忆，非轻量 type）、和 delegation 两套零共享、一串 RC/F 补丁堵 fan-out 没有资源配额导致的事故。
-4. **设计主张**：把这 4 块缺口补成**平台级源能力**，**建在现有 3 块健康地基上**（不另起炉灶）；让 deep research 和 delegation 共用同一套 subagent 原语。
 5. **取舍**：Hive 不照搬 CC/Codex。取 Codex 的**硬约束治理 + thread 隔离 + fork 旋钮**，取 CC 的**声明式定义 + 并行 fan-out + 结果回结论 + async 通知**，关键是引入**持久具名子 agent 实体**（explorer/worker/critic 类，`定义.md` + `记忆.md`；无数字员工身份层 soul/T3/dream，但**有自己的可进化 `记忆.md`**——CC 也有 agent memory（user/project/local 文件 scope），**Hive 的差异是 tenant-scoped + RLS + governed + audit-ready**，落控制中台护城河），并支持**两种调用**：主 agent 临时 spawn（对话中即兴）/ 工作流固化引用（持久定义里）。
-6. **deep research = 轴1（持久 subagent 实体）× 轴2（固化工作流定义）的组合**：工作流固化引用 subagent，subagent 随每次执行把经验写回 `记忆.md` → 工作流产物越用越好、代码一行不改。
 
 ---
 
@@ -73,34 +68,27 @@ Claude Code 和 Codex 在风格上**故意做反**，恰好暴露了哪些是"�
 
 | # | 骨架块 | 状态 | 现状 + 证据 |
 |---|---|---|---|
-| 1 | 单一 spawn 入口 | 🟡 半成品 | 三条分裂路径都接 `invoke_agent`（`runtime/invoker.py:942`），但没收口：同步 `delegate_to_agent`（`agents/orchestrator.py:630`）、异步 `delegate_async`（`:1007`）、deep research 私有 `RuntimeResearchWorker.run`。 |
 | 2 | 声明式子 agent 定义 | 🟡 半成品 | `_DELEGATION_TOOL_PROFILES`（`orchestrator.py:46-145`，4 个 profile）只声明**工具面+记忆策略**，缺 model/maxTurns/隔离级别/**type**；派生的是**整个目标数字员工**重新 invoke，不是轻量子 agent。 |
 | 3 | context 隔离 + 可控继承 | ✅ 有 | 独立 `child_session_id` + `_build_delegation_brief`（`:500-528`）压成末 8 条 ≤4000 字 brief；隔离契约写死在 prompt（`:194`）。（继承量固定，非按需声明。） |
-| 4 | 并行 fan-out 原语 | 🟡 半成品 | 全平台**唯一**真并行是 deep research 私有 `_run_worker_fanout`（`services/deep_research/orchestrator.py:592-622`，裸 `asyncio.gather+Semaphore(≤3)`）。delegation 侧无通用并行，只能逐个 `delegate_async` + 轮询。 |
 | 5 | 结果回收（只回结论） | ✅ 有 | worker 中间过程不进父 context，只回 `intermediate_report` ≤600 字 digest（`worker.py:142-149`）；delegation 返回结构化 `AgentDelegationResult`（`orchestrator.py:441-483`）。 |
 | 6 | 同步阻塞 + 异步通知 | 🟡 半成品 | 同步✅（`:838` await）+ 异步✅（`:1007` task_id）；但**异步是轮询不是重入**——父只能主动 `check_async_task`（`communication.py:162`），没有"子 done→自动唤醒父"闭环。Signal 原语存在（`coordination.py:100`）但没接成重入。 |
 | 7 | 治理共享 + 防递归 | ✅ 有 | 子工具强制过 `ToolRuntimeService.execute→run_tool_governance`（`invoker.py:769`→`agent_tools.py:528`），无法绕过；防递归三重：`max_depth=2`（`:327`）+ per-trace 环检测 + worker profile 禁 delegate 工具 + `delegation_token`。 |
 
-**工作流编排（轴 2）= 无 first-class 确定性引擎**（不是"能力为零"——下列 workflow-ish 机制存在，但都非代码控制流）：`FinanceWorkflowRunner` 已随 commit `c0ea7fe` 删除，grep 全 `app/` 无任何 `WorkflowRunner` 残留（已复核 ✅）；无 pipeline/parallel/barrier/loop 引擎；coordinator mode（`runtime/coordinator.py`）、skill workflow 蒸馏、deep research controller 是 workflow-ish，但 coordinator 仍 LLM 驱动、**不是代码拥有的确定性控制流**。`coordination.py` 的 Lease/Signal/Checkpoint 是 agent 间**协调/信令**原语（不是 subagent 派生体系），与轴 1 正交。
 
 ---
 
-## 3. 核心判断：deep research 的 fan-out 是手搓残缺 subagent
 
 坐实（证据见基线核实）：
 
-1. **并行逻辑是 deep research 私有函数**（`_run_worker_fanout`），不是平台原语——delegation 想并行只能父 agent 循环 `delegate_async`+轮询。
 2. **"worker" 不是轻量子 agent，是父 agent 克隆**：`RuntimeResearchWorker(agent_id=reasoner.agent_id, ...)`（`orchestrator.py:525`）复用父的身份/灵魂/记忆，只把工具面砍成 4 个只读 web 工具 + `max_tool_rounds=8`。这正是 §1 骨架 2 要避免的反模式。
 3. **和 delegation 两套零共享**：`research_readonly` profile 的工具集和 worker allowed tools 几乎一模一样——重复造轮子的活证据。
 4. **修复史印证残缺**：`worker.py` 里 RC1/RC2/RC3/F1/F2/F3 补丁（单源 12K 封顶、单 worker 8 源封顶、round-robin 取源防第一个 worker 吃满预算）——都是 fan-out 没有结构化资源配额导致的生产事故事后打补丁。**有源能力的 fan-out 会把"每个子 agent 的 token/源预算"做进契约，而不是一个个场景去堵。**
 
-**一句话**：deep research fan-out = `asyncio.gather` 包 Semaphore，跑 N 个"被砍了工具的父 agent 副本"，靠手工 round-robin 配额 + reasoner 二次综合。能跑，但它是 §2 缺口 2+4 双缺位下的场景特化补偿，**不是源能力**。
 
 ---
 
 ## 4. 取舍：Hive 不照搬，取什么
 
-Hive 的独特位置：已经有**比 CC/Codex 都强**的东西——数字员工（soul/skills/memory/自我进化）+ 治理控制中台 + deep research 引擎。所以补 subagent 不是抄，是"在已有内核上补缺的 4 块"：
 
 | 取自 | 取什么 | 为什么 |
 |---|---|---|
@@ -130,7 +118,6 @@ async def spawn_subagent(
 ) -> SubagentHandle: ...
 ```
 
-deep research 的 `_run_worker_fanout` 改为调它（它就是 lightweight worker spawn）。**`delegate_to_agent`/`delegate_async` 不并入**——它们是 peer delegation，保持独立入口；`invoke_agent` 仍是三者共用的底座，但 spawn 语义只收敛 worker 这一层。
 
 ### 5.2 子 agent = 持久具名实体（定义.md + 记忆.md）
 
@@ -156,7 +143,6 @@ class SubagentSpec:
 ```
 
 - **内置 type**：`explorer`（只读勘察、并行友好）、`worker`（限定工具的执行）、`critic`（只读审查/验证，对标 CC `verification` agent 的"只验不改"）。每个**具名实体**（如 `market-research-explorer`）= 一份固化的 `定义.md` + `记忆.md`。
-- `_DELEGATION_TOOL_PROFILES` 升级为 `SubagentSpec` 预设；deep research worker 的 `RESEARCH_WORKER_ALLOWED_TOOLS` 收敛为一个具名 `explorer` 实体。
 - **删掉原稿的 `long_term_memory=False`**：那是错误的"临时工"模型。子 agent **有**自己的 `记忆.md`；阉割掉的只是数字员工的**身份演化**（soul/T3/dream），不是记忆本身。（**目标态 vs 实现顺序**：spec 含 memory 字段，但 §8 切口 1 的 runtime 先走无 memory 路径，memory daemon 是最后一个切口。）
 
 ### 5.2.1 两种调用入口（都需要 —— 同一实体的两种用法）
@@ -166,7 +152,6 @@ class SubagentSpec:
 | 调用方式 | 入口 | 场景 | 执行层 |
 |---|---|---|---|
 | **临时 spawn** | 主 agent 在对话中调 `spawn_subagent`（轴1） | 对话中即兴（"并行探索 3 个方向"） | 运行时状态用完回收 |
-| **工作流固化** | 固化的工作流定义**引用** subagent 当步骤（轴2） | deep research 等固定流程 | 同上 |
 
 **关键闭环**：两种调用 → 同一实体 → **执行完都把经验写回它的 `记忆.md`**。临时和固化不是两个子 agent，是**同一可进化实体的两种用法**；固化工作流里的进化收益最稳（同类任务反复 → `记忆.md` 越用越厚 → 工作流产物自然变好，代码一行不改）。**这就是轴1（实体）× 轴2（固化引用）的接缝。**
 
@@ -210,9 +195,7 @@ Workflow（轴2）固化的是**显性知识**（SOP：分几步、每步派谁�
 - `fork="brief"`：task + `_build_delegation_brief`（现状）
 - `fork="all"`：task + 父完整近期 history（少用，重型委派）
 
-### 5.4 并行 fan-out 原语（补缺口 4，deep research 最先受益）
 
-一个平台级 fan-out，带**结构化资源配额**（直接消解 deep research 那串 RC/F 补丁）：
 
 ```python
 async def fanout_subagents(
@@ -225,12 +208,10 @@ async def fanout_subagents(
 ```
 
 - 复用 §2 block 5（结果只回结论）：每个 job 回结构化 digest，中间过程不灌父 context。
-- `deep_research._run_worker_fanout` 改为调它；`per_agent_budget` 取代 worker.py 里手工的单源/单 worker 封顶。
 - 失败隔离对标 CC（单 subagent 失败降级为 partial，不炸整体）。
 
 ### 5.5 异步完成重入（补缺口 6）
 
-接上现有 `coordination.py` 的 Signal，闭环"子 done → 投递 signal → 父被重新 invoke"，消灭父 agent busy-poll（记忆里 deep_research busy-loop / LoopGuard 正是这个坑）：
 - 子 agent 完成 → `coordination` 投递完成 Signal（带子结果 digest）
 - 调度层把 Signal 转成父的下一轮输入（fire-and-forget + notify），而非父主动 `check_async_task`。
 - 对标 CC `<task-notification>` 重入 / Codex mailbox `trigger_turn`。
@@ -241,11 +222,8 @@ async def fanout_subagents(
 
 ---
 
-## 6. 与 Deep Research 的关系：水到渠成的证明
 
-补齐 §5 后，deep research 退化成 subagent 源能力的**一个普通应用**：
 
-| deep research 现在（手搓） | 补源能力后（自然应用） |
 |---|---|
 | 私有 `_run_worker_fanout`（asyncio.gather+Semaphore） | `fanout_subagents(jobs=[explorer×N], per_agent_budget=...)` |
 | worker = 砍了工具的父 agent 克隆 | 具名 `explorer` 实体（`SubagentSpec(soul=False, has_own_memory=True)`，自带可进化 `记忆.md`） |
@@ -253,7 +231,6 @@ async def fanout_subagents(
 | reasoner 一次性 synthesis（RC15 死结） | synthesis subagent + **独立 critic subagent**（覆盖检查从 prompt 强制挪到独立 agent，解 RC15） |
 | 父 busy-poll worker 状态（LoopGuard 坑） | §5.5 完成重入 |
 
-**deep research 不再需要自己造 reasoner/orchestrator——它只是"轴1 fan-out + 轴2 编排"的一次组合调用。** 这就是你说的水到渠成。
 
 ---
 
@@ -263,7 +240,6 @@ async def fanout_subagents(
 
 - **现状**：Hive **无 first-class 确定性编排引擎**（finance 删后无通用 WorkflowRunner；coordinator/DR controller 是 workflow-ish 但 LLM 驱动、非代码控制流）。
 - **范本**：借鉴 **Claude Code 的 Workflow 工具**（`pipeline` / `parallel` / `barrier` / `agent` fan-out / `loop-until-dry` / `phase`）——"代码拥有控制流、agent 当 worker"，与 Codex"agent 即编排"恰好相反。
-- **接口**：轴 2 的编排步（如 deep research 的 plan→fan-out→synthesize→critic）调用轴 1 的 `fanout_subagents` / `spawn_subagent` 当 worker。即**轴 2 编排控制流，轴 1 提供被编排的 subagent**。
 - **多租户/治理 blocker**：轴 2 落地 Hive 需解决 RLS、tenant 隔离、与现有治理层的关系（见 `project_workflow_determinism_hive`）。这些在轴 2 专门文档里钉。
 
 > **下一次讨论轴 2 时**：以 Claude Code Workflow 工具的实现方式为蓝本，映射到 Hive 多租户 + 治理约束。
@@ -272,7 +248,6 @@ async def fanout_subagents(
 
 ## 8. 增量切口（v3 重排——DR 接入抽离，subagent 先成完整源能力）
 
-不要一次重写。按风险从低到高，每步独立可验证、可回滚。**v3 关键校准（用户 2026-06-02 拍板）**：不再让 deep research 当"边做边接"的验证驱动——**subagent 是第一性源能力，先把它做完整、做对、做成平台原语；deep research 是它的第一个应用，等源能力上线后再回头一次性改造**（原 v2 切口 2/3 的"DR 改调""DR critic 应用"从主线抽离，见下「后续阶段」）。**"完整"= 做到含持久实体 + 阉割版记忆进化（切口⑥），不停在无记忆临时工**（踩中 North Star Goal 1 自我进化）。
 
 **纯 subagent 源能力主线（6 刀）：**
 
@@ -287,16 +262,12 @@ async def fanout_subagents(
 
 **后续阶段（独立，不在本主线；等上面 6 刀全部上线后）：**
 
-- **DR-A**：deep research `_run_worker_fanout` 改调 `fanout_subagents`——保留现有 RC/F 配额作 backstop（新旧并存验证，不推倒；DR 刚被 RC11-15 修到生产能跑），`per_agent_budget` 验稳后再撤旧补丁。
-- **DR-B**：deep research synthesis 引入独立 `critic` subagent（§6），解 RC15（覆盖检查从 prompt 强制挪到独立只读 agent）。
 - **轴2**：工作流编排（§7），借鉴 CC Workflow 工具，映射 Hive 多租户+治理（独立文档）。
 
 ---
 
 ## 9. 非目标 / 风险 / 不变量
 
-- **非目标**：本文不做轴 2 工作流编排（独立文档）；不重写 deep research reasoner（只把它的 fan-out/worker 替换为源能力）；不动数字员工/soul/记忆体系。
-- **不变量（绝不破）**：① 子 agent 必须过同一治理层（§5.6），绝不开后门；② 防递归（max_depth + 环检测 + token）保持；③ 结果回收"只回结论、不灌父 context"保持；④ 增量演进，每切口独立可回滚——deep research 刚被 RC11-15 修到生产能跑，不推倒。
 - **风险**：轻量子 agent（无灵魂；切口①-⑤ 阶段无 memory 写回，切口⑥ 补 tenant 记忆进化）的产出质量是否够——靠 `critic` type 二次验证兜底；fan-out 并发资源（token/连接）需压测。
 
 ---
@@ -312,8 +283,6 @@ async def fanout_subagents(
 | 4 | ④ 异步完成重入（P0：Signal 完成通知+read-once 消费；调度层自动重入见后续） | ✅ done | `c1987fa` + 本轮闭环 |
 | 5 | ⑤ 持久 定义.md + tenant path boundary + definition-driven spawn | ✅ done | `b825449` + 本轮闭环 |
 | 6 | ⑥ tenant 记忆.md + 进化（P0：governed write+store+runtime 注入+distill writeback 入口；T0 扫描/周期调度见后续） | ✅ done | `90f325e` + 本轮闭环 |
-| DR-A | deep research 接 fanout（保留 RC/F backstop） | ⏸ 后续 | — |
-| DR-B | deep research critic 解 RC15 | ⏸ 后续 | — |
 | 轴2 | 工作流编排（借鉴 CC Workflow） | ⏸ 后续 | — |
 | C1 | 配置面：agent 级 store + 解析链 + 记忆跟随作用域（§12） | ✅ done（2026-06-05） | 本切口 commit |
 | C2 | 配置面：8 端点 API（§12.7，7+1 detail 修正） | ✅ done（2026-06-05） | 本切口 commit |
@@ -355,7 +324,6 @@ async def fanout_subagents(
 
 - 切口④仍是同进程/当前 coordination runtime 的 completion Signal read-once；"完成后自动唤醒父 agent 下一轮"还需要跨 worker wake-consumer loop / PostgreSQL-backed coordination 接线。
 - 切口⑥已做到 runtime 记忆注入与 governed writeback hook；离线 daemon 的 T0 日志扫描、周期调度、LLM distiller 仍按 §10 后续边界处理。
-- deep research 接入（DR-A/DR-B）仍未在本轮改造；本文主线继续只关闭 subagent 源能力。
 
 ---
 
@@ -469,7 +437,6 @@ DELETE /enterprise/subagents/{name}
 | **B** | 定义无 `description`（whenToUse）字段——父 agent 选人零依据 | `parseAgentFromMarkdown` 必填 `name`+`description`，父 agent 靠 description 决定派谁 | `SubagentSpec.description` + parse/render 双侧必填守卫（渲染出的必能读回）；内置三类型 `_TYPE_DESCRIPTIONS` 移植 CC whenToUse；spawn 工具 description 静态写明三类型 + not-found 可用列表每行带 description；API `_spec_summary`/`_definition_row`/builtin 行全带；前端列表行 ellipsis 列 + 新建模板含 `description:` 行 |
 | **C** | suffix 叠加语义——subagent 继承宿主完整 prompt（soul/memory/skills/tasks）再叠 spec.system_prompt | `getSystemPrompt()` 返回值**就是** subagent 全部 system prompt（替换不叠加；Explore/Plan 还 `omitClaudeMd` 省 token） | `AgentInvocationRequest.standalone_system_prompt`（kernel contracts 贯穿）：设置时 `_build_system_prompt` 直接返回该文本，宿主 memory snapshot / retrieval / navigation 三 resolver 全短路返回空；`_spawn_one` 改走 standalone（`_build_standalone_system_prompt` = role prompt + subagent 自有 记忆.md，对应 CC `loadAgentMemoryPrompt` 拼接）。`system_prompt_suffix` 的 channel/delegation 叠加语义原样保留，零影响 |
 
-附带修正：inline spawn 增加 `type` 参数（此前硬编码 explorer，worker/critic 内置类型从 spawn 面**不可达**）；未知 type 报错附合法清单。DR/workflow leaf 走同一 `_spawn_one` 路径，自动获得替换语义——其 leaf prompt 本就写成独立身份（"SUB-AGENT ROLE: …"），此前实际叠在宿主 prompt 后属于偏差，本次顺势归位（tests/deep_research + workflow leaf 回归绿）。
 
 **Breaking**：存量定义.md 无 `description` 者 parse 拒绝（list 跳过 + warn，不空整表——同 CC failedFiles 语义）；配置面上线仅一天、存量≈0，用户知情拍板。证据：后端全量 **3804 passed**（新增 standalone 套件 `tests/runtime/test_standalone_prompt.py` 5 例：standalone 替换宿主身份/三 resolver 短路/控制组宿主路径不动）；前端 subagent 测试 6 passed / 我方文件 tsc 干净。
 

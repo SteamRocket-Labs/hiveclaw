@@ -75,19 +75,6 @@ def test_capability_map_covers_agent_settings_controls_and_destructive_feishu_to
         assert CAPABILITY_MAP.get(tool_name) == capability
 
 
-def test_capability_map_covers_deep_research_pack_tools():
-    expected = {
-        "deep_research_run": "research.deep.run",
-        "deep_research_start": "research.deep.run",
-        "deep_research_check": "research.deep.read",
-        "deep_research_export": "research.deep.read",
-        "deep_research_cancel": "research.deep.modify",
-    }
-
-    for tool_name, capability in expected.items():
-        assert CAPABILITY_MAP.get(tool_name) == capability
-
-
 def test_capability_map_covers_subagent_spawn_tool():
     assert CAPABILITY_MAP.get("spawn_subagent") == "agent.subagent.spawn"
 

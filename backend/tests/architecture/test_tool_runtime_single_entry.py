@@ -49,9 +49,6 @@ def test_application_tool_calls_enter_runtime_through_public_boundaries() -> Non
         "app/services/heartbeat.py",
         "app/services/agent_tool_domains/messaging.py",
         "app/runtime/invoker.py",
-        # deep research's _default_tool_executor delegates to the governed
-        # execute_tool with agent/user context (same boundary role as heartbeat)
-        "app/services/deep_research/orchestrator.py",
         # Command execution API is an HTTP public boundary. It delegates to the
         # governed execute_tool entrypoint and must not construct registry
         # requests itself.

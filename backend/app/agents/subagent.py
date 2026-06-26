@@ -57,7 +57,7 @@ SUBAGENT_TYPE_WORKER = "worker"
 SUBAGENT_TYPE_CRITIC = "critic"
 
 # Explorer preset: read-only reconnaissance, parallel-friendly. Union of the
-# deep-research worker web tools and the review_readonly file/memory tools.
+# Worker web tools and review_readonly file/memory tools.
 _EXPLORER_ALLOWED_TOOLS: tuple[str, ...] = (
     "list_files",
     "read_file",
@@ -111,7 +111,7 @@ _CRITIC_ALLOWED_TOOLS: tuple[str, ...] = (
 _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
-DEFAULT_SUBAGENT_TOOL_ROUNDS = 8  # mirrors the deep-research worker default
+DEFAULT_SUBAGENT_TOOL_ROUNDS = 8
 _SOURCE_CAPTURE_TOOLS: frozenset[str] = frozenset({"web_fetch", "firecrawl_fetch", "xcrawl_scrape", "read_webpage"})
 _SAFE_T0_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 
@@ -327,9 +327,8 @@ class SubagentSpawnContext:
 class SubagentBudget:
     """Structured resource quota baked into the contract.
 
-    This is what lets fan-out drop the per-incident RC/F patches deep-research
-    accumulated (single-source cap, per-worker source cap, round-robin): the
-    caps live in the spec instead of being hand-rolled per call site.
+    This is what lets fan-out share source-capture caps across call sites:
+    the caps live in the spec instead of being hand-rolled per caller.
     """
 
     max_tool_rounds: int = DEFAULT_SUBAGENT_TOOL_ROUNDS

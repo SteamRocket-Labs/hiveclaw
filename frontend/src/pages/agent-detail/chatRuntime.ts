@@ -21,7 +21,6 @@ export type RuntimeEventType =
   | 'workflow_run'
   | 'workflow_step'
   | 'dynamic_workflow'
-  | 'deep_research'
   | 'child_session'
   | 'subagent'
   | 'team_member'
@@ -73,7 +72,6 @@ export interface AgentChatMessage {
   eventRootSessionId?: string;
   eventWorkflowRunId?: string;
   eventWorkflowStepId?: string;
-  eventDeepResearchRunId?: string;
   eventScheduleId?: string;
   eventScheduleFireId?: string;
   eventGoalId?: string;
@@ -844,7 +842,6 @@ type EventPart = {
   root_session_id?: string;
   workflow_run_id?: string;
   workflow_step_id?: string;
-  deep_research_run_id?: string;
   schedule_id?: string;
   schedule_fire_id?: string;
   goal_id?: string;
@@ -880,7 +877,6 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'workflow_run',
   'workflow_step',
   'dynamic_workflow',
-  'deep_research',
   'child_session',
   'subagent',
   'team_member',
@@ -1186,7 +1182,6 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
     eventRootSessionId: payload?.eventRootSessionId || payload?.root_session_id || part?.root_session_id,
     eventWorkflowRunId: payload?.eventWorkflowRunId || payload?.workflow_run_id || part?.workflow_run_id,
     eventWorkflowStepId: payload?.eventWorkflowStepId || payload?.workflow_step_id || part?.workflow_step_id,
-    eventDeepResearchRunId: payload?.eventDeepResearchRunId || payload?.deep_research_run_id || part?.deep_research_run_id,
     eventScheduleId: payload?.eventScheduleId || payload?.schedule_id || part?.schedule_id,
     eventScheduleFireId: payload?.eventScheduleFireId || payload?.schedule_fire_id || part?.schedule_fire_id,
     eventGoalId: payload?.eventGoalId || payload?.goal_id || part?.goal_id,

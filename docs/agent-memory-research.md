@@ -1,7 +1,6 @@
 # Agent Memory 研究报告 — 理论基础与实践参照（为 MD-first 记忆引擎规格化服务）
 
 > 日期：2026-06-04 · 服务对象：`docs/knowledge-container-boundaries.md` 收敛为"环节全显式的完整规格"
-> 方法：deep-research workflow（部分成功，抢救 59 条一手论断）+ 7 路 agent 克隆源码深读 + 主 agent 亲读 Tencent/basic-memory 源码
 > 原则：所有结论带引用（arXiv 链接 / GitHub 文件路径）。脑科学是检验"蒸馏"设计的第一性原理，但**本报告对"蒸馏=脑科学"的假设给出证伪性结论，不做护教**。
 
 ---
@@ -107,7 +106,6 @@
 **Tencent L3 Persona 生成**（`persona-generation.ts:33`）— =Hive dream→soul：
 - **用 write/edit 文件工具写 persona.md（MD-first）**，2000 字硬上限
 - **四层深度扫描**：基础锚点→兴趣图谱(区分活跃/被动/休眠)→交互协议(怎么说话)→认知内核(决策逻辑)
-- **"叙事连贯性 / 寻找贯穿线 / 禁止 bullet-point 罗列"**（正是 Deep Research RC15"要分析师不要信息聚合器"的现成解法）
 - 反幻觉：**禁止用非场景来源信息**（不从 workspace 目录/文件路径/系统元数据提取用户信息=治理边界）
 - 增量决策：强化/补充/修正/重构/不改
 
@@ -264,5 +262,3 @@ claude-mem 的 `search → timeline → get_observations` 三步取详情、CC �
 - langchain-ai/langmem — `src/langmem/knowledge/extraction.py`、`src/langmem/prompts/{gradient,metaprompt}.py`（三分+prompt optimizer）
 - rohitg00/agentmemory — `src/prompts/{compression,consolidation,reflect,graph-extraction}.ts`、`src/functions/{retention,auto-forget}.ts`（5 段蒸馏+Ebbinghaus）
 - claude-mem（本地插件）— observation 压缩 + index/get_observations + type×concept 治理信号
-
-**研究方法注记**：deep-research workflow 因 rate-limit 致对抗验证阶段 100% StructuredOutput 失败、误报"all refuted"——59 条一手论断实为**未验证非被驳倒**，已由 7 路源码深读 agent 补全验证。GitHub 仓库 WebFetch 普遍失败，改用 clone 源码直读。

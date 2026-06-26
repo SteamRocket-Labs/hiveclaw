@@ -14,7 +14,6 @@
 1. `claude-design-for-hiveclaw/` 是原型片段集合，不是可运行产品工程。它没有独立 `package.json`，依赖 `window.HiveUI`、`window.HivePages` 和 mock data。
 2. 当前 `frontend/src/` 已经有真实路由、鉴权、React Query、i18n、通知、租户切换、AgentDetail、Workspace Admin、API domain layer。
 3. 原型主要解决的是信息架构、视觉语言和产品化聚合方式，不是替代现有业务能力。
-4. 直接重写会丢失当前已有的 chat runtime、Plan Mode、Work Ledger、Deep Research、Office、tools、skills、subagents、workflow、approvals、audit 等真实接线。
 
 实施原则：
 
@@ -52,7 +51,6 @@
 | 对话与任务 | `AgentChatSection`、PlanCard、runtime summary、Work Ledger 已有真实能力 | 缺少右侧任务详情 rail 和完整“计划确认到产物”的统一任务视图 |
 | 自动化 | `AgentWorkflowsSection` 和 `workflows` API 已存在 | 缺少员工侧全局自动化列表、保存成功任务为流程的产品入口 |
 | 记忆与知识 | `AgentKnowledgeSection`、workspace memory 已存在 | 缺少员工侧跨 agent 的记忆与知识页，以及“本次任务使用来源”聚合 |
-| 文档与研究 | Office workbench、files、deep research 已存在 | 缺少员工侧统一文档/研究产物浏览页 |
 | 审批 | Agent approvals 和 workspace approvals 已存在 | 需要统一员工侧审批和管理侧审批中心的信息层级 |
 | 管理中台 | EnterpriseSettings sections 很全 | 缺少控制中台总览、数字员工治理、资产库、渠道连接、预算页的聚合型 UI |
 | 登录/onboarding | Login、CompanySetup 已存在真实 auth flow | 视觉和 workspace picker 与原型不一致 |
@@ -139,7 +137,6 @@
 1. `PlanCard`
 2. `PlanModeRequestCard`
 3. `ChatWorkLedgerDock`
-4. `DeepResearchStreamPanel`
 5. `toolResultEnvelope`
 6. durable web chat runtime
 
@@ -290,7 +287,6 @@ npm test -- --run \
 1. `frontend/src/pages/agent-detail/AgentChatSection.tsx`
 2. `frontend/src/pages/agent-detail/PlanCard.tsx`
 3. `frontend/src/pages/agent-detail/ChatWorkLedgerDock.tsx`
-4. `frontend/src/pages/agent-detail/DeepResearchStreamPanel.tsx`
 5. `frontend/src/pages/agent-detail/chatRuntime.ts`
 6. `frontend/src/pages/agent-detail/toolResultEnvelope.ts`
 
@@ -299,7 +295,6 @@ npm test -- --run \
 1. pending/running/done/error 都有清晰任务状态。
 2. Plan Mode 确认卡片不丢失 immutable plan version。
 3. Work Ledger 默认克制展示，详细内容可展开。
-4. 产物可进入 Office/files/deep research 对应真实页面。
 
 ### Pass 7：管理中台聚合页
 
@@ -328,7 +323,6 @@ npm test -- --run \
 2. 推荐数字员工/公司模板列表。
 3. 员工侧全局 task feed。
 4. 员工侧 global approvals feed。
-5. 文档与研究产物列表，统一 files、office、deep research artifacts。
 6. 自动化列表，统一 workflow definitions、schedules、runs。
 7. 保存任务为流程。
 8. 资产候选提交与审核。

@@ -215,7 +215,6 @@ Implemented in the current production fix:
 - The decision is written back into the session transcript and broadcast to the session.
 - `PermissionRequest` hooks run before rendering the session-local prompt. A hook can allow, deny, or rewrite `updatedInput`; allow continues the tool call without creating a backend approval row, deny records a session-local denial.
 - The CC 27-event Hook contract is pinned in code and tested against the FreeCode event set. CC JSON output semantics, including `hookSpecificOutput`, `continue`, `decision`, exit code `2`, nonzero diagnostic exits, `async`, and permission decision payloads, normalize into Hive `HookResult`.
-- Workflow, Deep Research, schedule/once/goal/team command paths now project their run/control events back into the originating session when a session is present.
 
 Remaining hardening:
 
@@ -301,7 +300,6 @@ CC stores artifacts and transcripts on disk, but the model-visible and user-visi
 - User input is appended to the session transcript before the model loop runs.
 - Large tool outputs are persisted under a session-scoped path and represented in the session as preview plus readable path.
 - Async subagents and team workers may execute outside the active turn, but they rejoin the parent session through task notifications / sidechain transcripts.
-- Deep Research is not a separate enterprise admin surface in the CC baseline. It is a session-native orchestration pattern built from skills, web tools, subagents, task notifications, and produced artifacts.
 - Hook, permission, stop, and notification effects are injected into the same message / transcript pipeline when they affect the active run.
 
 ### Must Be Session-Native
@@ -316,7 +314,6 @@ These surfaces must be represented as session events / cards / artifacts, even w
 | Plan Mode | Request, plan card, approval / rejection, and exit state are session controls. | Plan runtime and transcript events. |
 | File and document creation | Created file appears as clickable session artifact; final answer must not rely on workspace navigation. | Agent workspace, `ChatArtifact`, Office / file services. |
 | File and document modification | Updated artifact state, revision, action, and diff summary appear in session. | Workspace / Office editor remains storage and editing layer. |
-| Deep Research | Start, worker fanout, progress, source artifacts, intermediate reports, and final report appear in the parent session. | Background workers, subagent child sessions, workflow/runtime tasks. |
 | Dynamic Workflow | Run tree, step state, waits, gate decisions, leaf outputs, and final artifact appear in session. | Workflow runtime, journals, workspace artifacts. |
 | Sub-agent / Agent Team work | Parent session shows child-session card, wake notification, result, continuation actions, and close state. | Child `ChatSession`, runtime task, mailbox / task notification. |
 | Goal / one-off task execution | Creation may be command/UI driven, but execution creates or binds a session and returns result there. | Objective/task scheduler plus session-bound run. |
@@ -363,7 +360,6 @@ These surfaces may create audit logs, but they do not need to become chat messag
 | Enterprise approval projection | Approval rows can live only in approval pages, so the originating session feels blocked without an in-session loop. | Add session pending-approval card / event for enterprise approvals triggered by a session, plus resolution wake / continuation. |
 | Hook / control-plane decision projection | Hook or approval decisions can become invisible control-plane behavior. | Record decisions with `session_id` / `runtime_task_id` and render relevant decisions in session. |
 | Artifact revision metadata | Artifact cards exist, but repeated edits can be hard to follow. | Add revision/action/tool_call/diff fields and render update state in the same session. |
-| Deep Research session tree | Runtime can look like a background task instead of a session-native research run. | Root Deep Research in parent session; workers become child sessions or replayable child segments; final report is a clickable artifact. |
 | Workflow session envelope | Workflow journals/artifacts can be stronger than the session view. | Render workflow run tree, step events, waits, and final artifacts in session and export them through session/T0. |
 | Sub-agent continuation | Task result summaries can hide the child conversation. | Return and render `child_session_id`; parent receives wake notifications and can continue the child session. |
 | Scheduled / one-off task execution | Automation pages can become the only visible result surface. | Every fire/run must create or bind a session and deliver completion there. |

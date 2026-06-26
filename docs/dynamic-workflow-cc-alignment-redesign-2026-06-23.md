@@ -41,7 +41,6 @@ Claude 官方文档和博客给出的定义很明确：
 - 这个 script 在隔离 runtime 里后台执行。
 - script 可以 spawn 多个 subagents，并发运行、保存中间结果、合并输出。
 - 中间结果保存在 script/runtime state 中，而不是全部塞进主会话 context。
-- 适用场景是 codebase-wide audit、大规模迁移、Deep Research、critical double-check、adversarial verification、tournament、loop until done。
 - workflow 可查看 raw script，可保存为项目级或用户级 reusable workflow。
 - runtime 有并发、总 agent 数、预算、确认和 resume 边界。
 
@@ -282,9 +281,7 @@ dynamic candidate approval 必须绑定 exact definition/hash/args/budget/scope
 
 这是 dynamic workflow “成功后固定下来”的雏形。
 
-### 5.6 Deep Research 当前问题
 
-`backend/app/services/deep_research/workflow_definition.py` 当前是固定 workflow：
 
 ```text
 plan
@@ -295,7 +292,6 @@ plan
 
 这不是 dynamic workflow。它只是在 generic workflow runtime 上注册了一个固定 product template。
 
-因此 Deep Research 当前问题不是“缺一个 workflow definition”，而是：
 
 ```text
 它没有动态设计候选 workflow
@@ -428,7 +424,6 @@ Plan Mode
 
 - `propose_dynamic_workflow` 和 `preview_workflow` 可在 Plan Mode 使用。
 - `start_workflow` 在 Plan Mode 内继续禁止，必须在确认后执行。
-- Deep Research 不应再走专用 `deep_research_run/start` 作为主路径，而应走 `dynamic_workflow` 或 registered `deep_research` template。
 
 ## 8. DSL 表达力改造建议
 
@@ -513,16 +508,13 @@ leaf:
 
 执行仍由 subagent runtime 决定，不由 workflow DSL 直接操作 git。
 
-## 9. Deep Research 重构目标
 
-Deep Research 应该从“固定专用工具”变成两层：
 
 ### 9.1 Built-in registered template
 
 保留一个稳定模板：
 
 ```text
-deep_research.v2
   -> scope/classify
   -> plan source angles
   -> search/fetch fanout
@@ -550,7 +542,6 @@ question
   -> run
 ```
 
-这样 Deep Research 才会成为 Plan Mode + Workflow + Subagent 的真正组合拳。
 
 ## 10. 产品与 UX 要求
 
@@ -580,7 +571,6 @@ workflow_ref
 artifact paths
 ```
 
-这两层必须分离。此前 Deep Research plan visible leak 就是两层混合导致的。
 
 ### 10.2 Workflow preview UI
 
@@ -622,7 +612,6 @@ artifact paths
 
 - 本文档作为目标设计入口。
 - 更新 `docs/workflow-source-capability.md`，加入 dynamic workflow 章节和本设计链接。
-- 更新 Deep Research 设计文档，声明 Deep Research 后续走 dynamic workflow/template 双层。
 
 ### P1 Proposal schema + service skeleton
 
@@ -662,11 +651,9 @@ artifact paths
 
 每一项都必须先有 compile/admission/runtime tests。
 
-### P6 Deep Research v2
 
 - 保留 fixed registered template。
 - 复杂任务走 dynamic workflow designer。
-- 移除默认工具表面的 `deep_research_*` 主路径暴露。
 - 用户可见 plan 不出现 internal tool/file/path。
 
 ### P7 Frontend
@@ -683,7 +670,6 @@ artifact paths
 - 不开放任意 JavaScript/Python script 执行。
 - 不让 workflow 自己直接访问 filesystem/shell/network。
 - 不让 child agent 继承全部父工具。
-- 不把 Deep Research 做成独立 runtime。
 - 不让 Work Ledger 驱动 Workflow 控制流。
 - 不把 promotion 自动变 active，必须 human approval。
 - 不为了“像 CC”牺牲 Hive 的 RLS、审计、租户、权限和可恢复性。
@@ -709,7 +695,6 @@ Dynamic Workflow 是 Workflow 上方的“动态设计、评审、试跑、固�
 
 ## 14. 下一步建议
 
-先不要直接改 Deep Research。先做 `DynamicWorkflowProposal` 和 Plan Mode approval contract，否则 Deep Research 继续改也只是在专用流程里补丁。
 
 推荐下一步代码切口：
 
@@ -717,7 +702,6 @@ Dynamic Workflow 是 Workflow 上方的“动态设计、评审、试跑、固�
 P1: DynamicWorkflowProposal schema + DynamicWorkflowDesigner skeleton
 P2: Plan Mode approval contract exact hash binding
 P3: candidate critic preset
-P4: Deep Research 接入 designer/template 双路径
 ```
 
 每个切口都必须 TDD：

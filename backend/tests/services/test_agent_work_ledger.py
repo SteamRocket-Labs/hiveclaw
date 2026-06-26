@@ -114,8 +114,8 @@ def test_agent_work_ledger_display_view_is_chat_safe_and_counted(tmp_path):
     initialize_agent_work_ledger_artifact(
         agent_id=agent_id,
         runtime_task_id=runtime_task_id,
-        source="deep_research",
-        current_phase="collect_sources",
+        source="workflow",
+        current_phase="execute_steps",
         todo_items=[
             {"id": "todo-1", "title": "Plan research lanes", "status": "complete"},
             {"id": "todo-2", "title": "Collect and grade sources", "status": "running"},
@@ -143,7 +143,7 @@ def test_agent_work_ledger_display_view_is_chat_safe_and_counted(tmp_path):
 
     assert view is not None
     assert view["schema"] == "agent_work_ledger_view.v1"
-    assert view["source"] == "deep_research"
+    assert view["source"] == "workflow"
     assert view["current_phase"] == "running"
     assert view["todo_items"][0]["status"] == "completed"
     assert view["todo_items"][1]["status"] == "in_progress"
@@ -200,7 +200,7 @@ def test_agent_work_ledger_view_builds_legacy_long_task_fallback(tmp_path):
                 "runtime_task_id": runtime_task_id.hex,
                 "spec": "Research stablecoin market structure",
                 "acceptance_criteria": ["Collect sources", "Write report.md"],
-                "verification_commands": ["deep_research_check({ task_id })"],
+                "verification_commands": ["read generated report"],
                 "created_at": "2026-05-29T07:18:00+00:00",
             }
         ),
@@ -232,7 +232,7 @@ def test_agent_work_ledger_view_builds_legacy_long_task_fallback(tmp_path):
     assert view["current_phase"] == "running"
     assert [item["title"] for item in view["todo_items"]] == ["Collect sources", "Write report.md"]
     assert [item["status"] for item in view["todo_items"]] == ["in_progress", "pending"]
-    assert view["verification"][0]["title"] == "deep_research_check({ task_id })"
+    assert view["verification"][0]["title"] == "read generated report"
     assert view["progress"][0]["delta"] == "Collected first source batch."
     assert view["counts"]["todos_total"] == 2
     assert view["path"].endswith(f"runtime_artifacts/long_tasks/{runtime_task_id.hex}/plan.json")
@@ -301,7 +301,7 @@ async def test_latest_session_work_ledger_does_not_fallback_to_old_ledger_when_a
     session_id = uuid4()
     older_completed = SimpleNamespace(
         id=uuid4(),
-        task_type="deep_research",
+        task_type="workflow",
         status="completed",
         created_at=None,
     )

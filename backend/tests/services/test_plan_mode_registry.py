@@ -9,7 +9,6 @@ trigger instead of resolving to ``skipped``.
 
 from __future__ import annotations
 
-from app.services.deep_research.plan_mode import deep_research_handoff_handler
 from app.services.plan_mode_delegation_handoff import delegation_handoff_handler
 from app.services.plan_mode_detached_handoff import detached_runtime_task_handoff
 from app.services.plan_mode_agent_team_handoff import agent_team_handoff
@@ -25,7 +24,6 @@ def test_register_plan_mode_handoffs_registers_scheduled_trigger():
 
     # The scheduled_trigger target now resolves to the concrete handler.
     assert service._handoff_handlers["scheduled_trigger"] is scheduled_trigger_handoff_handler
-    assert service._handoff_handlers["deep_research"] is deep_research_handoff_handler
     assert service._handoff_handlers["delegation"] is delegation_handoff_handler
 
 
@@ -66,7 +64,6 @@ def test_register_plan_mode_handoffs_is_idempotent():
     register_plan_mode_handoffs(service)
     register_plan_mode_handoffs(service)
     assert service._handoff_handlers["scheduled_trigger"] is scheduled_trigger_handoff_handler
-    assert service._handoff_handlers["deep_research"] is deep_research_handoff_handler
     assert service._handoff_handlers["delegation"] is delegation_handoff_handler
 
 
@@ -77,5 +74,4 @@ def test_api_shared_service_gets_handler_registered():
 
     register_plan_mode_handoffs(plans_api.get_plan_mode_service())
     assert "scheduled_trigger" in plans_api.get_plan_mode_service()._handoff_handlers
-    assert "deep_research" in plans_api.get_plan_mode_service()._handoff_handlers
     assert "delegation" in plans_api.get_plan_mode_service()._handoff_handlers

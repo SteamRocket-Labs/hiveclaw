@@ -86,9 +86,7 @@ def _wake_policy(value: Any, *, handoff_target: str) -> dict[str, Any]:
 def _handoff(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
     # CC parity default: live chat plans continue in the current session unless an
     # explicit target (scheduled_trigger / delegation / detached) was set on the
-    # args or carried in the plan-mode metadata. Product workflows such as Deep
-    # Research stay in the hidden execution_contract instead of becoming Plan Mode
-    # handoff targets.
+    # args or carried in the plan-mode metadata.
     explicit_target = args.get("handoff_target") or metadata.get("handoff_target")
     contract = args.get("execution_contract")
     if not isinstance(contract, dict):
@@ -99,8 +97,6 @@ def _handoff(args: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
         else "continue_current_session"
     )
     target = str(explicit_target or inferred_target).strip() or inferred_target
-    if target == "deep_research":
-        target = "continue_current_session"
     payload = args.get("handoff_payload") if isinstance(args.get("handoff_payload"), dict) else {}
     return {
         "target": target,
@@ -113,18 +109,6 @@ def _execution_contract(args: dict[str, Any], metadata: dict[str, Any]) -> dict[
     explicit = args.get("execution_contract")
     if isinstance(explicit, dict) and explicit:
         return dict(explicit)
-    if metadata.get("deep_research"):
-        deep_args = dict(metadata.get("deep_research_args") or {})
-        if not deep_args:
-            original_request = str(metadata.get("original_request") or args.get("original_request") or "").strip()
-            if original_request:
-                deep_args["question"] = original_request
-        return {
-            "type": "workflow",
-            "workflow_ref": "deep_research.v1",
-            "args": deep_args,
-            "source": "interactive_plan_mode",
-        }
     return {}
 
 
@@ -373,7 +357,6 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             metadata_json={
                 "interactive_plan_mode": True,
                 "entry_reason": metadata.get("reason"),
-                "deep_research_plan": bool(metadata.get("deep_research")),
             },
         )
 

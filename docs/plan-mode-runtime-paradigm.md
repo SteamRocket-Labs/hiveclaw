@@ -10,19 +10,15 @@
 > - `docs/plan-mode-design.md` — 总设计、数据模型、状态机、安全不变量、API、UI
 > - `docs/plan-mode-agent-authored-planning.md` — agent-authored 原则修正（本文的前序）
 > - `docs/plan-mode-agent-work-ledger.md` — 执行期 Work Ledger（与本文的 plan artifact 分工，见 §10）
-> - `docs/archive/legacy-docs/DEEP_RESEARCH_SOTA_V2.md` — Deep Research 现状（范式外推目标，见 §9）
 
 ---
-
 ## 0. TL;DR
 
-**痛点**：当前 Plan Mode 和 Deep Research 的产出"不像 Claude Code / Codex 的输出"——读起来像机器填表、像资料汇编，不像一个分析师边想边写。
 
 **根因（一句话）**：
 
 > Claude Code 和 Codex 让**主 agent 待在主循环里、用完整能力、对话式渐进地边想边写**——产物是叙述性思考。Hive 在自动触发 / 工具拦截路径上把规划降级成**一次性隔离 RPC 子调用 + 严格 JSON 产物**（`max_tool_rounds=8`、`channel="internal"`、隔离 session）——产物是填表。**形态决定风格：填表永远不像思考。**
 
-**关键事实**：Hive 其实**已经有了正确范式的一半**——`web_chat_runtime` 的 interactive plan mode 就是主循环范式，已部署能跑。问题是它**与 RPC 子调用 planner 并存**，两套范式分裂；而 Deep Research 又是第三套。
 
 **本文主张**：**收敛到单一范式**——主循环内联规划。
 
@@ -109,7 +105,6 @@ web 用户显式说"计划模式" / 长任务
 **这条路径几乎就是 Claude Code 范式**：agent 在主循环、只读、自己写、`exit_plan_mode` 提交审批。它证明了主循环范式在 Hive runtime 里**可行且已部署**。
 
 它与 Claude Code 的差距（本文要补强的）：
-- reminder 挤在 `system_prompt_suffix`（slot 9，硬上限 5000 chars / `prompt_builder.py:46`），与 deep research persona 等抢同一通道。
 - 没有 full / sparse 分档，没有专门的 compaction 保活。
 - plan mode 状态存在 `SessionContext.metadata["plan_mode"]` 无类型字典里（`session.py:19`），不是一等字段。
 
@@ -131,14 +126,11 @@ agent 调 set_trigger / 自动触发被 gate 拦
 
 这条路径用于 **tool 拦截 / 自动触发**（用户没有显式进 plan mode，是 agent 的动作触发了 gate）。它是"填表式"产物的来源（§2.2）。
 
-### 3.3 Deep Research — 第三套范式
 
-Deep Research 完全独立：隔离 reasoner（`deep_research/reasoner.py`，`disable_tools=True`）+ 并行 worker + synthesis。它的 synthesis prompt 自身存在 COVERAGE↔INTEGRATION 矛盾（见 §9 与历史 RC11-RC15），产物最"不像"。**本文不展开 Deep Research 改造**（那是独立的下一篇），但 §9 说明本文范式如何外推过去。
 
 ### 3.4 范式分裂的后果
 
 1. **体验不一致**：同一个"规划"概念，web 显式触发走主循环（较好），tool 拦截走隔离子调用（填表），用户感知割裂。
-2. **prompt 工程重复**：interactive suffix、RPC planner v4 prompt、deep research synthesis 三套 prompt 各自演进，互不复用。
 3. **维护成本**：`use_agent_planner=True/False` 两条 generate_plan 分支（`plan_mode_service.py:393`），认知负担。
 4. **质量上限被钳制**：自动触发场景永远拿不到主循环的探索深度。
 
@@ -267,7 +259,6 @@ Plan Mode 仍激活（完整指令见前文）。只读；若 runtime 提供 exa
 - `fs_write` 只可在 `mode=write|edit` 且 path 命中 exact path 时放行；`mode=delete` 永远禁止。
 - 不开放 `workspace/plans/*` 这类目录级宽泛白名单。
 
-**Phase 4C（后续增强）**：系统读 plan 文件，跑一个轻量"抽取器"（可复用 deep research 的结构化抽取）把 markdown → `plan_json`。好处是 agent 完全聚焦写好 markdown，不分心填 JSON；代价是多一次 LLM 抽取。
 
 无论 4A/4B/4C，`plan_hash = compute_plan_hash(merged)`（`plan_mode_core.py:392`）和加密确认链路不变；hash 绑定的仍是 normalized `plan_json`，不是未校验的原始 markdown。
 
@@ -344,15 +335,11 @@ Plan Mode 激活时：
 
 ---
 
-## 9. 与 Deep Research 的关系（范式外推，本文不展开）
 
-Deep Research 是本范式最大的受益者，但属于**独立的下一篇文档**。这里只锚定方向：
 
-- Deep Research 的"规划"（`refine_plan`）和"综合"（`build_digest_synthesis_instruction`，`reasoner.py:784`）今天都是隔离 `disable_tools=True` 的一次性调用——和本文要淘汰的 RPC 范式同病。
 - 已知的 synthesis 死结：`## Key Findings` 强制"每维度一个 `###` 子节"（COVERAGE IS MANDATORY）与"INTEGRATION NOT SUMMARIZATION"直接打架，导致"6 维度拼接、缺贯穿论点"（历史 RC11-RC15）。
 - 外推主张（下一篇细化）：把 synthesis 也视为"主循环里的一次分析写作"，覆盖检查从"写作时结构强制"挪到"事后独立 critic agent 核查"，让 INTEGRATION 不再被 COVERAGE 钳制。
 
-**本文范式先定稿，Deep Research 重构在其上叠加。**（遵循地基优先）
 
 ---
 
@@ -455,7 +442,6 @@ Deep Research 是本范式最大的受益者，但属于**独立的下一篇文�
 6. `plan_hash` / `validate_confirmation` / `PlanModeGate` 行为与改造前逐字节一致（回归测试证明）。
 7. 自动触发 fallback 路径仍 fail-closed，不绕过任何治理。
 8. Phase 4B 的 plan 文件写白名单只允许 exact path，且 `fs_write mode=delete` 被明确拦截。
-9. 产物体感：人工/eval 评估"读起来像分析师边想边写"，而非填表（与 Deep Research 重构共用评估口径）。
 
 ---
 
@@ -475,7 +461,6 @@ Deep Research 是本范式最大的受益者，但属于**独立的下一篇文�
 - 不把 Plan Mode 变成 `Agent.execution_mode` 持久人格。
 - 不允许 agent 自我确认计划。
 - 不绕过 capability approval / ActionPreflight / Memory Control Plane。
-- 不在本文展开 Deep Research / Work Ledger / 记忆 decision-boundary 改造（各自独立叠加）。
 - 不把所有低风险同步动作升级成 Plan Mode（触发规则沿用 `plan-mode-design.md` §5）。
 
 ---
@@ -488,5 +473,3 @@ Deep Research 是本范式最大的受益者，但属于**独立的下一篇文�
 4. **reminder 语言**：full/sparse reminder 用中文还是英文？（agent system prompt 主体语言、目标用户语言会影响产出语言一致性）
 
 ---
-
-> **下一步**：本文定稿后，按 Phase 推进；Deep Research 重构作为独立文档在本范式之上叠加。

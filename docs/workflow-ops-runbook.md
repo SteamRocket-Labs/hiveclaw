@@ -14,14 +14,7 @@ WORKFLOW_TRIGGER_ENABLED=true
 - `WORKFLOW_RUNTIME_ENABLED=false`: **stop-new-starts, not a global kill switch.** It fail-closes `start_run` before any workflow `RuntimeTask` is created; in-flight and suspended runs still resume normally (daemon, signal consumer, explicit resume) so existing work drains instead of stranding. To halt a specific running workflow, use the admin cancel / force-suspend commands below.
 - `WORKFLOW_TRIGGER_ENABLED=false`: triggers carrying `workflow_ref` stop before launching workflow runtime.
 
-> **Deep Research is workflow-native (DR-6b, 2026-06-05).** The
-> `WORKFLOW_DEEP_RESEARCH_ENABLED` flag and the legacy
-> `RuntimeTask(task_type="deep_research")` orchestrator were retired —
-> `deep_research_run` / `deep_research_start` drive the registered
-> `deep_research.v1` workflow unconditionally (leaf presets carry the source
 > ledger, RC2/RC11/RC12/RC13 gates, per-claim adversarial verdicts, and
-> workspace report materialisation). Historical deep_research RuntimeTasks
-> remain readable through `deep_research_check`'s legacy branch. Halting a
 > misbehaving research run = the standard workflow admin commands below
 > (`cancel` / `force-suspend`), plus `WORKFLOW_RUNTIME_ENABLED=false` to stop
 > new starts platform-wide.
@@ -142,7 +135,6 @@ restart it as a fresh run.
 
 ## Railway Rollout Checks
 
-Before enabling workflow Deep Research:
 
 ```bash
 cd backend

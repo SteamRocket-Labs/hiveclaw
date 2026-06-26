@@ -28,19 +28,6 @@ export interface CreateEmployeeSuccessToolMeta {
   manualSteps: string[];
 }
 
-export interface DeepResearchToolMeta {
-  kind: 'deep_research';
-  taskId: string | null;
-  status: string | null;
-  summary: string | null;
-  reportPath: string | null;
-  artifactDir: string | null;
-  sourceCount: number | null;
-  claimCount: number | null;
-  qualityGates: Record<string, string>;
-  gaps: string[];
-}
-
 export interface PlanProposalToolMeta {
   kind: 'plan_proposal';
   planId: string;
@@ -93,7 +80,6 @@ export interface RuntimeStepToolMeta {
 export type ToolCallMeta =
   | HrPreviewToolResult
   | CreateEmployeeSuccessToolMeta
-  | DeepResearchToolMeta
   | PlanProposalToolMeta
   | UserClarificationToolMeta
   | PlanModeRequestToolMeta
@@ -214,47 +200,6 @@ function buildPreviewDisplayResult(preview: HrPreviewToolResult): string {
     return `Blueprint preview ready for ${preview.name}.`;
   }
   return 'Agent blueprint preview ready.';
-}
-
-function parseDeepResearchToolResult(toolName: string | undefined, rawResult: unknown): DeepResearchToolMeta | null {
-  if (!toolName?.startsWith('deep_research_')) {
-    return null;
-  }
-  const parsed = parseStructuredToolPayload(rawResult);
-  if (!parsed) {
-    return null;
-  }
-  const qualityGates: Record<string, string> = {};
-  if (parsed.quality_gates && typeof parsed.quality_gates === 'object' && !Array.isArray(parsed.quality_gates)) {
-    Object.entries(parsed.quality_gates as Record<string, unknown>).forEach(([key, value]) => {
-      if (typeof value === 'string') {
-        qualityGates[key] = value;
-      }
-    });
-  }
-  const sourceCount = typeof parsed.source_count === 'number' ? parsed.source_count : null;
-  const claimCount = typeof parsed.claim_count === 'number' ? parsed.claim_count : null;
-
-  return {
-    kind: 'deep_research',
-    taskId: typeof parsed.task_id === 'string' ? parsed.task_id : null,
-    status: typeof parsed.status === 'string' ? parsed.status : null,
-    summary: typeof parsed.summary === 'string' ? parsed.summary : null,
-    reportPath: typeof parsed.report_path === 'string' ? parsed.report_path : null,
-    artifactDir: typeof parsed.artifact_dir === 'string' ? parsed.artifact_dir : null,
-    sourceCount,
-    claimCount,
-    qualityGates,
-    gaps: normalizeStringList(parsed.gaps),
-  };
-}
-
-function buildDeepResearchDisplayResult(meta: DeepResearchToolMeta): string {
-  const status = meta.status || 'started';
-  if (status === 'running') {
-    return meta.taskId ? `Deep research running: ${meta.taskId}` : 'Deep research running';
-  }
-  return meta.summary || `Deep research ${status}`;
 }
 
 function parsePlanProposalResult(rawResult: unknown): PlanProposalToolMeta | null {
@@ -407,16 +352,6 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
       createdAgentId: null,
       raw,
       toolMeta: planModeRequest,
-    };
-  }
-
-  const deepResearch = parseDeepResearchToolResult(toolName, rawResult);
-  if (deepResearch) {
-    return {
-      displayResult: buildDeepResearchDisplayResult(deepResearch),
-      createdAgentId: null,
-      raw,
-      toolMeta: deepResearch,
     };
   }
 

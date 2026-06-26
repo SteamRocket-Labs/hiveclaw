@@ -370,7 +370,6 @@ continue from next valid action
 | 场景 | 是否启用 | 原因 |
 |---|---|---|
 | 显式 Plan Mode | 必须 | planner 需要可恢复工作状态 |
-| long task / deep research | 必须 | 多阶段、多工具、高 token 成本 |
 | delegation / A2A | 必须 | handoff 和回收需要状态 |
 | recurring / monitoring / autonomous wake | 必须 | 未来执行必须可审计 |
 | 多文件代码修改 | 建议 | 需要 todo、测试和失败记录 |

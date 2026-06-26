@@ -13,13 +13,10 @@
 
 我们在争一件更窄、更深的事:
 
-> **要不要给 Hive 的"确定性关键管线"(deep-research、自我进化、定时治理)加一层"由代码、而非 LLM 拥有控制流"的编排?**
 
 三个事实把这个问题从"该不该引入陌生概念"重构成了"该不该推广一个我们已经在用的内部模式":
 
 1. **Hive 已经有一个代码驱动 workflow** —— `finance_analysis/workflow_runner.py` 的 `FinanceWorkflowRunner`。它是纯同步 Python、单 agent、无检查点/预算,但**证明了"代码拥有控制流"在 Hive 架构里不是外来物**。
-2. **Hive 已经有一个休眠的预算驱动循环** —— `deep_research/controller.py`(`controller_mode` 默认 `False`,有 `_DEFAULT_TOKEN_BUDGET=200K` + 85% 阈值)。能力在,没接生产。
-3. **真实痛点已经流血** —— deep-research RC13/RC15:`COVERAGE IS MANDATORY` 这句**散文指令**(`reasoner.py:827`)压不住"6 lane 只写 3 维度";一个 `for dim in plan: assert report.has(dim)` 就能确定性压住。
 
 **但是**(这是你今天戳的关键):Hive 是**云端多租户**平台,它的"子代理"底座和 Claude Code 的"单机单用户 Workflow"底座**根本不同**——移植不是搬机制,是在一个**更受限的底座**上重建,难度乘上了"租户隔离 + 公平性 + 跨进程 + 计费"。这一层是第 3 节,是本稿的重心。
 
@@ -109,10 +106,8 @@ Hive 的底座完全不同,而且约束比直觉更严(`调查`,关键条经 fil
 ## 4. "意义"三问
 
 **Q1:Hive 真的需要吗?**
-需要,但**有范围**。对话型 / 开放探索型 agent **不需要**——用户期待的就是 LLM 自主决策,Coordinator Mode 够用。需要的是**确定性关键管线**:deep-research 多 lane + 综合、evolution daemon 的 candidate→eval→promote、定时多步治理任务。这些地方"跳了一步/重复一步/恢复时从头跑"是真实损失。
 
 **Q2:哪里最痛?**
-deep-research(RC13/RC15 实锤:散文压不住覆盖)、自我进化(eval 跑一半崩 → 从头重跑 30 个测试)、未来的公司级定时治理(跨 lane 共享预算,一个 lane 不能吃光全公司额度)。
 
 **Q3:哪里是过度工程?**
 把 workflow DSL 强加给所有 agent 交互;为单步任务建 DAG;在 80% 是 1-3 个工具调用的短任务上做分步 journal。**范围纪律是这个方案成立的前提。**
@@ -133,7 +128,6 @@ deep-research(RC13/RC15 实锤:散文压不住覆盖)、自我进化(eval 跑一
 - **核心**:LLM 拥有的控制流**根本不可确定/不可恢复**;这对"自我进化 + 公司控制中台"是关键漏洞。
 - **要害论据**:`COVERAGE IS MANDATORY`(`reasoner.py:827`)是散文,预算耗尽时模型要么违规略过维度、要么编造,**都失败**;`for dim: assert` 才确定性。自我进化的 candidate→eval→promote 若 eval 崩,`resume`(`:1249`)从**原始输入**重跑,丢光中间结果。
 - **自承软肋**:"把 LLM 调得更强 + 激活 `controller.py`"也许够;但 `controller.py` 休眠,且 LLM 预算循环仍不解决"崩溃后拿不到子任务部分结果"。
-- **何时这方对**:扩到 5-10 并发 run 时,resume 失败 + 预算超支让 deep-research 综合不可靠。
 
 ### 🟦 实用派:"移植内核,不移植平台;复用 A2A 当叶子"
 - **核心**:**不重建**子代理/A2A;只加两个原语(**代码控制流 + 分步 checkpoint journal**),用现成 `delegate_async` 当执行叶子、`acquire_lease` 当并发、`action_preflight` 当门。**只用在确定性关键管线**。
@@ -176,7 +170,6 @@ deep-research(RC13/RC15 实锤:散文压不住覆盖)、自我进化(eval 跑一
 
 ## 8. 待决问题清单(留给我们一起拍)
 
-1. **范围**:认同"只用于确定性关键管线(deep-research/进化/定时治理),不碰对话型 agent"这条边界吗?还是想讨论更大/更小范围?
 2. **时机**:先按怀疑派硬化散文 SOP 跑一阵实测失败率,还是直接按实用派建最小内核?
 3. **底座顺序**:多租户正确(第 6 步:Redis Streams + 优雅 drain + per-tenant 配额)是 Workflow 的**前置**,还是**伴随**?——注意现在单 worker,blocker 多数"还没爆"但加 `--workers` 即爆。
 4. **第 7 节安全风险**:要不要**先于本讨论**独立排查 + 修?
@@ -190,7 +183,6 @@ deep-research(RC13/RC15 实锤:散文压不住覆盖)、自我进化(eval 跑一
 - **A2A / 委派**:`orchestrator.py:592/945/1070/1249/340/341`、`messaging.py:840-1073/1075-1135`、`communication.py:107-297`、`delegation_token.py:32-111`(delegation 维度 verify 44/44)
 - **内核 / 控制流**:`kernel/engine.py:1169(handle)/1522(主循环)/2038(parallel gather)`、`runtime/invoker.py:920(invoke_agent)`、`runtime/coordinator.py:46-184`(kernel 维度 verify 8/8)
 - **协调 / 治理**:`coordination.py:72-227`、`coordination_repository.py:46-99`、`models/coordination.py:23-68`、`governance.py:155-178`、`action_preflight.py:73-100`、`evolution_ledger.py:30-288`(coordination 维度 verify 20/20)
-- **已有 workflow 范本**:`finance_analysis/workflow_runner.py`、`finance_analysis/workflows.py:12-55`、`deep_research/controller.py`(休眠)、`deep_research/reasoner.py:827`(COVERAGE 散文)
 - **多租户底座**:`entrypoint.sh:172`、`main.py:270-274/399-413`、`core/event_bus.py:1-110`、`core/events.py:22-25`、`quota_guard.py:24-66`、`token_tracker.py:32-84`、`database.py:29/49`、`core/tenant_middleware.py:58-98`(本轮未单独 verify,安全条目标注待复核)
 
 > 本稿由 Claude 基于会话内 3 个调查 workflow 撰写;`实证`/`Fact` 之外的 file:line 属 `调查`级,采纳前建议对安全相关条目做针对性验证。

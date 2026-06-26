@@ -474,7 +474,6 @@ class PlanModeService:
             return []
         blocked_patterns = [
             (r"\bload_skill\s*\(", "load_skill"),
-            (r"\bdeep_research_(?:start|check|cancel|export)\b", "deep_research_* tool call"),
             (r"\bplan_confirmed\s*=\s*false\b", "plan_confirmed=false"),
             (r"\bmem_[0-9a-fA-F]{6,}\b", "mem_* memory id"),
             (r"\bruntime_artifacts/", "runtime_artifacts path"),

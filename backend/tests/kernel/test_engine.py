@@ -496,7 +496,7 @@ def test_expand_concatenated_tool_calls_passes_through_clean_payloads():
         {
             "id": "call_2",
             "type": "function",
-            "function": {"name": "load_skill", "arguments": '{"slug":"deep-research"}'},
+            "function": {"name": "load_skill", "arguments": '{"slug":"office-productivity"}'},
         }
     ]
     expanded = _expand_concatenated_tool_calls(original)

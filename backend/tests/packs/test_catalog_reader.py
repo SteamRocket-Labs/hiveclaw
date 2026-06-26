@@ -8,7 +8,7 @@ from app.tools.collector import collect_tools
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PACK_ROOTS = (REPO_ROOT / "packs", REPO_ROOT / "backend" / "packs")
-REQUIRED_CLOUD_PACKS = {"deep_research_pack", "office_pack"}
+REQUIRED_CLOUD_PACKS = {"office_pack"}
 
 
 def test_pack_catalog_reader_loads_manifest_without_runtime_side_effects(tmp_path):
@@ -99,8 +99,7 @@ def test_repo_pack_manifests_cover_cloud_capability_packs():
 
     manifests = {manifest.name: manifest for manifest in reader.list_packs()}
 
-    assert {"deep_research_pack", "office_pack"}.issubset(manifests)
-    assert manifests["deep_research_pack"].skills == ("skills/deep-research",)
+    assert {"office_pack"}.issubset(manifests)
     assert manifests["office_pack"].skills == ("skills/office-productivity",)
 
 

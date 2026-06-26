@@ -114,9 +114,9 @@ async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_to
     tenant_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
-    deep_research_tool = _make_builtin_tool(
-        name="deep_research_run",
-        category="deep_research_pack",
+    office_tool = _make_builtin_tool(
+        name="office_document_create",
+        category="office_pack",
         is_default=False,
     )
     default_tool = _make_builtin_tool(name="read_file", category="file", is_default=True)
@@ -126,13 +126,13 @@ async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_to
         [
             _ScalarResult(agent),  # check_agent_access
             _ListResult([]),  # existing AgentTool rows
-            _ListResult([default_tool, deep_research_tool, undeclared_builtin, unassigned_mcp]),  # visible catalog
+            _ListResult([default_tool, office_tool, undeclared_builtin, unassigned_mcp]),  # visible catalog
         ]
     )
 
     async def fake_skill_declared_tool_names(target_agent_id):
         assert target_agent_id == agent_id
-        return {"deep_research_run"}
+        return {"office_document_create"}
 
     monkeypatch.setattr(tools_api, "_get_agent_skill_declared_tool_names", fake_skill_declared_tool_names)
 
@@ -143,12 +143,12 @@ async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_to
     )
 
     by_name = {row["name"]: row for row in payload}
-    assert set(by_name) == {"read_file", "deep_research_run"}
+    assert set(by_name) == {"read_file", "office_document_create"}
     assert by_name["read_file"]["enabled"] is True
-    assert by_name["deep_research_run"]["category"] == "deep_research_pack"
-    assert by_name["deep_research_run"]["enabled"] is False
-    assert by_name["deep_research_run"]["agent_tool_id"] is None
-    assert by_name["deep_research_run"]["source"] == "system"
+    assert by_name["office_document_create"]["category"] == "office_pack"
+    assert by_name["office_document_create"]["enabled"] is False
+    assert by_name["office_document_create"]["agent_tool_id"] is None
+    assert by_name["office_document_create"]["source"] == "system"
 
 
 @pytest.mark.asyncio
@@ -209,16 +209,16 @@ async def test_update_agent_tools_creates_missing_system_assignment(monkeypatch)
     tenant_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
-    deep_research_tool = _make_builtin_tool(
-        name="deep_research_run",
-        category="deep_research_pack",
+    office_tool = _make_builtin_tool(
+        name="office_document_create",
+        category="office_pack",
         is_default=False,
     )
-    deep_research_tool.id = tool_id
+    office_tool.id = tool_id
     db = _FakeDB(
         [
             _ScalarResult(None),  # _get_agent_tool
-            _ScalarResult(deep_research_tool),  # _get_visible_agent_tool
+            _ScalarResult(office_tool),  # _get_visible_agent_tool
         ]
     )
     created = {}

@@ -10,7 +10,7 @@ state. Automatically managed system directories have stricter ownership.
 - Keep deliverables under `workspace/` unless a skill specifies another path.
 - Prefer structured formats for data artifacts.
 - Rediscover uploaded files under `workspace/uploads/`.
-- Rediscover Deep Research deliverables under `workspace/deep_research_reports/`.
+- Rediscover workflow deliverables under `workspace/workflow_reports/`.
 - Rediscover oversized tool-result spill files under `workspace/tool_results/`.
 - `run_command` executes from `workspace/`; files created by the command are
   found under that directory.

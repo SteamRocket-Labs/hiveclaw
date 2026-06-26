@@ -12,7 +12,6 @@ unit-testable and ``main.py`` only gains a single call.
 
 from __future__ import annotations
 
-from app.services.deep_research.plan_mode import register_deep_research_handoff
 from app.services.plan_mode_agent_team_handoff import register_agent_team_handoff
 from app.services.plan_mode_delegation_handoff import register_delegation_handoff
 from app.services.plan_mode_detached_handoff import register_detached_runtime_task_handoff
@@ -24,7 +23,6 @@ from app.services.plan_mode_session_handoff import register_continue_current_ses
 def register_plan_mode_handoffs(service: PlanModeService) -> None:
     """Register every concrete handoff handler onto ``service`` (idempotent)."""
     register_scheduled_trigger_handoff(service)
-    register_deep_research_handoff(service)
     register_delegation_handoff(service)
     register_agent_team_handoff(service)
     # CC-align §4.2/§4.3: live-chat continuation (also handling the legacy

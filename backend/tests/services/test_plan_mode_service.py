@@ -287,7 +287,7 @@ async def test_generate_plan_repairs_common_agent_output_shape_before_validation
     draft = await service.create_plan_request(
         agent_id=agent_id,
         requested_by_user_id=uuid4(),
-        original_request="使用 deepresearch做一个web3的全景报告",
+        original_request="做一个web3的全景报告",
         intent_type="in_session_execution",
     )
 
@@ -298,7 +298,7 @@ async def test_generate_plan_repairs_common_agent_output_shape_before_validation
         fill={
             "title": "Web3 panorama report",
             "objective": "Produce a structured Web3 panorama report.",
-            "motivation": "The user asked for Deep Research before execution.",
+            "motivation": "The user asked for a source-grounded report before execution.",
             "steps": [
                 {"description": "Frame scope and constraints."},
                 {"description": "Map major Web3 narratives."},
@@ -307,7 +307,7 @@ async def test_generate_plan_repairs_common_agent_output_shape_before_validation
             "success_criteria": ["The user sees a complete plan before execution."],
             "stop_conditions": ["The user rejects the plan."],
             "risk_assessment": {"level": "moderate", "reasons": []},
-            "required_capabilities": ["Deep Research v2"],
+            "required_capabilities": ["Web research"],
         },
     )
 
@@ -596,7 +596,7 @@ async def test_reject_after_confirm_is_blocked(patched_service):
 
 # ---------------------------------------------------------------------------
 # ensure_awaiting_plan_from_fill — the single ledger entry for caller/agent-
-# authored structured fills (Deep Research, exit_plan_mode). The RPC intercept-
+# authored structured fills (specialized tools, exit_plan_mode). The RPC intercept-
 # then-create entry (ensure_awaiting_plan) was removed in path-unification cut ④.
 # ---------------------------------------------------------------------------
 
@@ -605,11 +605,11 @@ async def test_reject_after_confirm_is_blocked(patched_service):
 async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_task_plan(patched_service):
     service, session, _, _ = patched_service
     agent_id = uuid4()
-    signature = "deep-research-signature"
+    signature = "workflow-report-signature"
     fill = {
-        "title": "Deep Research: RWA launchpads",
+        "title": "Workflow Report: RWA launchpads",
         "objective": "Run source-ledger-backed research on RWA launchpads.",
-        "motivation": "The user requested a formal Deep Research report.",
+        "motivation": "The user requested a formal source-grounded report.",
         "steps": [
             {
                 "order": 1,
@@ -624,13 +624,13 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
         ],
         "success_criteria": ["Every material claim is source-bound."],
         "wake_policy": {"type": "none"},
-        "required_capabilities": ["Deep Research", "Office artifact generation"],
+        "required_capabilities": ["Web research", "Office artifact generation"],
         "external_side_effects": [],
         "risk_assessment": {"level": "medium", "reasons": ["Long-running research task"]},
         "estimated_cost": {"tokens_per_run": "high", "expected_duration": "several minutes"},
         "stop_conditions": ["User rejects the plan."],
         "handoff": {
-            "target": "deep_research",
+            "target": "continue_current_session",
             "create_objective": False,
             "create_trigger": False,
             "payload": {
@@ -641,7 +641,6 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
                 "worker_topics": ["official evidence"],
             },
         },
-        "deep_research": {"output_format": "docx", "worker_topics": ["official evidence"]},
     }
 
     first = await service.ensure_awaiting_plan_from_fill(
@@ -651,7 +650,7 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
         fill=fill,
         original_request="Research RWA launchpads",
         source="tool_runtime",
-        metadata_json={"deep_research_plan": True},
+        metadata_json={"interactive_plan_mode": True},
     )
     rows_after_first = len(session.rows)
     second = await service.ensure_awaiting_plan_from_fill(
@@ -661,15 +660,14 @@ async def test_ensure_awaiting_plan_from_fill_creates_and_dedupes_custom_long_ta
         fill={**fill, "title": "Should not create duplicate"},
         original_request="Research RWA launchpads",
         source="tool_runtime",
-        metadata_json={"deep_research_plan": True},
+        metadata_json={"interactive_plan_mode": True},
     )
 
     assert first.status == "awaiting_confirmation"
     assert first.intent_type == "in_session_execution"
-    assert first.plan_json["handoff"]["target"] == "deep_research"
-    assert first.plan_json["deep_research"]["output_format"] == "docx"
+    assert first.plan_json["handoff"]["target"] == "continue_current_session"
     assert first.metadata_json["intercept_signature"] == signature
-    assert first.metadata_json["deep_research_plan"] is True
+    assert first.metadata_json["interactive_plan_mode"] is True
     # Agent-authored via main-loop Plan Mode — not the removed RPC "workflow" planner.
     assert first.metadata_json["author_type"] == "agent"
     assert first.metadata_json["planner_prompt_version"] == "structured_fill.v1"
@@ -687,13 +685,13 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
     service = mod.PlanModeService()
     fill = {
         "title": "Bad internal script",
-        "objective": "Call load_skill and deep_research_start with plan_confirmed=false.",
-        "motivation": "The user requested Deep Research before execution.",
+        "objective": "Call load_skill and start_workflow with plan_confirmed=false.",
+        "motivation": "The user requested a source-grounded report before execution.",
         "steps": [
             {
                 "order": 1,
-                "description": "调用 load_skill('deep-research')。",
-                "expected_output": "A user-approved Deep Research plan.",
+                "description": "调用 load_skill('web-research')。",
+                "expected_output": "A user-approved research plan.",
             },
             {
                 "order": 2,
@@ -703,13 +701,13 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
         ],
         "success_criteria": ["The final report is source-grounded and written in Simplified Chinese."],
         "wake_policy": {"type": "none"},
-        "required_capabilities": ["Deep Research", "source-ledger web research"],
+        "required_capabilities": ["Web research", "source-ledger web research"],
         "external_side_effects": [],
         "risk_assessment": {"level": "medium", "reasons": ["Long-running research workflow."]},
         "estimated_cost": {"tokens_per_run": "high", "expected_duration": "about 8-15 minutes"},
         "stop_conditions": ["The user rejects the plan."],
         "handoff": {
-            "target": "deep_research",
+            "target": "continue_current_session",
             "create_objective": False,
             "create_trigger": False,
             "payload": {
@@ -720,24 +718,22 @@ async def test_ensure_awaiting_plan_from_fill_rejects_internal_tool_script_plan(
                 "worker_topics": ["official evidence"],
             },
         },
-        "deep_research": {"output_format": "markdown", "worker_topics": ["official evidence"]},
     }
 
     plan = await service.ensure_awaiting_plan_from_fill(
         agent_id=uuid4(),
         intent_type="in_session_execution",
-        signature="deep-research:web3",
+        signature="workflow-report:web3",
         fill=fill,
-        original_request="使用 deepresearch做一个web3的全景报告",
+        original_request="做一个web3的全景报告",
         source="web_chat",
-        metadata_json={"deep_research_plan": True},
+        metadata_json={"interactive_plan_mode": True},
     )
 
     assert plan.status == "planning_failed"
     assert plan.plan_hash is None
     errors = "\n".join(plan.metadata_json["planning_errors"])
     assert "load_skill" in errors
-    assert "deep_research_* tool call" in errors
     assert "plan_confirmed" in errors
 
 
@@ -751,10 +747,10 @@ async def test_ensure_awaiting_plan_from_fill_allows_hidden_execution_contract(m
     service = mod.PlanModeService()
     contract = {
         "type": "workflow",
-        "workflow_ref": "deep_research.v1",
+        "workflow_ref": "custom_research.v1",
         "args": {
             "question": "Web3 full landscape",
-            "internal_tool_note": "deep_research_start writes runtime_artifacts/workflow_runs/run/work_ledger.json",
+            "internal_tool_note": "start_workflow writes runtime_artifacts/workflow_runs/run/work_ledger.json",
         },
     }
     fill = {
@@ -787,9 +783,9 @@ async def test_ensure_awaiting_plan_from_fill_allows_hidden_execution_contract(m
     plan = await service.ensure_awaiting_plan_from_fill(
         agent_id=uuid4(),
         intent_type="in_session_execution",
-        signature="deep-research:web3:hidden-contract",
+        signature="workflow-report:web3:hidden-contract",
         fill=fill,
-        original_request="使用 deepresearch做一个web3的全景报告",
+        original_request="做一个web3的全景报告",
         source="web_chat",
         metadata_json={"interactive_plan_mode": True},
     )

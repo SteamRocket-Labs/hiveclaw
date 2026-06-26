@@ -51,7 +51,6 @@ TOOL_TIMEOUTS: dict[str, float] = {
     # must not fall back to the generic 30s timeout.
     "spawn_subagent": 180.0,
     "start_workflow": 180.0,
-    "deep_research_run": 180.0,
     # Synchronous A2A wraps the target's full LLM turn (including tools like
     # feishu_wiki_list / document reads) plus reply write-back. Keep this
     # above AGENT_MESSAGE_TIMEOUT_SECONDS so the wrapper does not preempt the

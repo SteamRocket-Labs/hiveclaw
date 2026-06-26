@@ -166,11 +166,6 @@ CAPABILITY_MAP: dict[str, str] = {
     "firecrawl_fetch": "external.web.read",
     "xcrawl_scrape": "external.web.read",
     "read_webpage": "external.web.read",
-    "deep_research_run": "research.deep.run",
-    "deep_research_start": "research.deep.run",
-    "deep_research_check": "research.deep.read",
-    "deep_research_export": "research.deep.read",
-    "deep_research_cancel": "research.deep.modify",
 }
 
 SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {

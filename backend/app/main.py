@@ -35,7 +35,6 @@ from app.api.files import upload_router as files_upload_router
 from app.api.gateway import router as gateway_router
 from app.api.guard_policies import router as guard_policies_router
 from app.api.hooks import router as hooks_router
-from app.api.deep_research import router as deep_research_router
 from app.api.interoperability import router as interoperability_router
 from app.api.local_agent_channel import local_agent_browser_channel_ws
 from app.api.local_agent_channel import router as local_agent_channel_router
@@ -478,16 +477,6 @@ async def lifespan(app: FastAPI):
 
                 mark_daemon_stopped(t.get_name(), "background task exited")
 
-        # DR-4: register the Deep Research leaf presets BEFORE the workflow
-        # daemon starts — a resumed deep_research.v1 run resolves its presets
-        # from the global registry by leaf name.
-        try:
-            from app.services.deep_research.leaf_presets import register_deep_research_leaf_presets
-
-            register_deep_research_leaf_presets()
-        except Exception as exc:
-            logger.warning(f"Deep Research leaf preset registration failed: {exc}")
-
         startup_background_tasks = [
             ("trigger_daemon", start_trigger_daemon()),
             ("workflow_daemon", start_workflow_daemon()),
@@ -639,7 +628,6 @@ _api_routers = [
     role_templates_router,
     tenant_channels_router,
     tools_router,
-    deep_research_router,
     workflows_router,
     workflow_definitions_router,
     agent_knowledge_router,

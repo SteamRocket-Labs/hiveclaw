@@ -690,8 +690,8 @@ class WorkflowRuntimeService:
         admission = admit_workflow(compiled, args=args, limits=limits, allowed_leaves=allowed_leaves)
 
         args_hash = compute_definition_hash(args)
-        # A caller may pre-generate the id so run-scoped artifacts (e.g. the
-        # Deep Research request.json) can land BEFORE execution starts.
+        # A caller may pre-generate the id so run-scoped artifacts can land
+        # BEFORE execution starts.
         run_id = run_id or uuid.uuid4()
         parent_session_value = str(parent_session_id) if parent_session_id else None
         root_session_value = str(root_session_id or parent_session_id) if root_session_id or parent_session_id else None

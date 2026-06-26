@@ -231,6 +231,20 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
           {expanded ? <IconChevronDown size={14} stroke={2.2} /> : <IconChevronRight size={14} stroke={2.2} />}
           <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>{title}</span>
           {duration && <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{duration}</span>}
+          {timeline.summary && (
+            <span
+              style={{
+                fontSize: '11px',
+                color: 'var(--text-tertiary)',
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {timeline.summary}
+            </span>
+          )}
           <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-tertiary)' }}>{stepCount}</span>
         </button>
         {expanded && (

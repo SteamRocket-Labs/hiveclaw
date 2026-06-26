@@ -126,14 +126,12 @@ Hive 的现有问题不是 platform authority 不够，而是 harness authoring 
 
 ### 4.2 实际文章里经常扩成 8 类
 
-Claude 官方 “A harness for every task” 还提到 triage、exploration/taste、evals、model routing；社区文章也常把 use case 扩成 8 类：migration、deep research、sorting、root-cause investigation、triage、design taste、lightweight evals、verification。
 
 这些不是和 6 patterns 并列的新原语，而是组合结果：
 
 | 实际形态 | 常用组合 |
 | --- | --- |
 | Migration | classify scope + pipeline per file + adversarial verification + loop-until-done |
-| Deep Research | classify question + fanout source angles + claim extraction + adversarial verification + synthesis |
 | Sorting / ranking | classify + fanout scoring + tournament / rubric judge |
 | Root-cause investigation | hypothesis fanout + evidence check + adversarial refutation + loop |
 | Triage | classify-and-act + dedupe + quarantine + escalate/action |
@@ -450,7 +448,6 @@ Promotion 仍只生成 draft/proposal，activation 必须 human approver。
 - 不让 Agent 自己绕过 `preview_workflow -> exact approval -> start_workflow`。
 - 不让 promotion 自动 active。
 - 不用 Work Ledger 驱动 Workflow 控制流；Work Ledger 只做认知/观察镜像。
-- 不把 Deep Research 继续做成专用 runtime；它应成为 fixed template + dynamic harness 的组合案例。
 
 ## 10. 验收标准
 
@@ -465,7 +462,6 @@ Promotion 仍只生成 draft/proposal，activation 必须 human approver。
 7. 已完成 run 会写回 outcome quality evidence。
 8. Promote suggestion 不再只看 run count，还显示 critic pass、成本、失败、manual edits。
 9. Fixed workflow activation 仍要求 human approver。
-10. Deep Research 可以选择 fixed template 或 dynamic research harness，但都走同一 Workflow runtime。
 
 ## 11. 最终判断
 

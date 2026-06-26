@@ -1,7 +1,6 @@
 """B-fail-loud: 主模型配了却解析不到时,运行时必须 fail-loud,不得静默降级。
 
 Web3研究员事故:agent 主模型指向别租户 DeepSeek → 按租户查 None → 静默 fallback
-到 20万窗口的 MiniMax → deep research 反复压缩卡死。判定逻辑必须把"配了但没解析到"
 和"压根没配主模型"区分开:前者报错,后者才允许走 fallback/默认。
 """
 

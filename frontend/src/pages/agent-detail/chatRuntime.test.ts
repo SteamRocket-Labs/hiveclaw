@@ -433,15 +433,15 @@ describe('chatRuntime helpers', () => {
         { role: 'tool_call', content: '', toolName: 'tool_search', toolStatus: 'running' },
       ],
       [{
+        message: { role: 'user', content: 'Plan a source-grounded market report' },
         anchorMessageCount: 2,
-        message: { role: 'user', content: 'Use deep research for this.' },
       }],
     );
 
     expect(merged.messages.map((message) => [message.role, message.content || message.toolName])).toEqual([
       ['user', 'previous request'],
       ['assistant', 'previous answer'],
-      ['user', 'Use deep research for this.'],
+      ['user', 'Plan a source-grounded market report'],
       ['tool_call', 'tool_search'],
     ]);
     expect(merged.pending).toHaveLength(1);
@@ -450,12 +450,16 @@ describe('chatRuntime helpers', () => {
   it('drops an optimistic user prompt once durable transcript contains the same user message', () => {
     const merged = mergePendingUserMessages(
       [
-        { role: 'user', content: 'Use deep research for this.', id: 'durable-user-event' },
+        {
+          id: 'durable-user-event',
+          role: 'user',
+          content: 'Plan a source-grounded market report',
+        },
         { role: 'tool_call', content: '', toolName: 'tool_search', toolStatus: 'running' },
       ],
       [{
+        message: { role: 'user', content: 'Plan a source-grounded market report' },
         anchorMessageCount: 0,
-        message: { role: 'user', content: 'Use deep research for this.' },
       }],
     );
 
@@ -775,7 +779,7 @@ describe('chatRuntime helpers', () => {
           name: 'report.md',
           path: 'workspace/report.md',
           preview_kind: 'markdown',
-          source: 'deep_research',
+          source: 'workflow',
           runtime_task_id: 'rt-1',
           revision_id: 'rev-2',
           action: 'updated',
@@ -792,7 +796,7 @@ describe('chatRuntime helpers', () => {
         name: 'report.md',
         path: 'workspace/report.md',
         previewKind: 'markdown',
-        source: 'deep_research',
+        source: 'workflow',
         mimeType: undefined,
         size: undefined,
         runtimeTaskId: 'rt-1',

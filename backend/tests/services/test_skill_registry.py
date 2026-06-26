@@ -69,7 +69,7 @@ def test_skill_loader_ignores_retired_builtin_skill_folders(tmp_path):
 
     workspace = tmp_path / "agent"
     retired_skill = workspace / "skills" / "meeting-minutes"
-    active_skill = workspace / "skills" / "deep-research"
+    active_skill = workspace / "skills" / "market-research"
     retired_skill.mkdir(parents=True)
     active_skill.mkdir()
     (retired_skill / "SKILL.md").write_text(
@@ -77,7 +77,7 @@ def test_skill_loader_ignores_retired_builtin_skill_folders(tmp_path):
         encoding="utf-8",
     )
     (active_skill / "SKILL.md").write_text(
-        "---\nname: Deep Research\ndescription: active\n---\n# Deep Research\n",
+        "---\nname: Market Research\ndescription: active\n---\n# Market Research\n",
         encoding="utf-8",
     )
 
@@ -85,7 +85,7 @@ def test_skill_loader_ignores_retired_builtin_skill_folders(tmp_path):
     registry = SkillRegistry()
     registry.register_many(loader.load_from_workspace(workspace))
 
-    assert sorted(registry.names()) == ["Deep Research"]
+    assert sorted(registry.names()) == ["Market Research"]
 
 
 def test_skill_parser_supports_declared_packs(tmp_path):

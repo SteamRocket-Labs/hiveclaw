@@ -1048,32 +1048,6 @@ async def _execute_tool_with_hooks(
         return "Blocked by hook: " + (hook_result.reason or "policy"), effective_args, False
 
     tool_started_ms = monotonic_ms()
-    # Tier 2-6: deep-research-aware hard reject for runaway web_search fan-out.
-    if tool_name == "web_search":
-        rejection = _maybe_hard_reject_web_search(
-            tool_name=tool_name,
-            session_id=request.memory_session_id,
-            tools_for_llm=tools_for_llm,
-            api_messages=api_messages,
-        )
-        if rejection:
-            if record_span:
-                await record_span(
-                    span_type="tool",
-                    name=tool_name,
-                    started_at_ms=tool_started_ms,
-                    metadata={"status": "rejected", "reason": "web_search_fanout"},
-                )
-            else:
-                append_invocation_span(
-                    agent_id=request.agent_id,
-                    span_type="tool",
-                    name=tool_name,
-                    started_at_ms=tool_started_ms,
-                    metadata={"status": "rejected", "reason": "web_search_fanout"},
-                )
-            return rejection, effective_args, False
-
     token = None
     try:
         trusted_decline_metadata = _session_trusted_plan_decline_metadata(request, tool_name)
@@ -1512,90 +1486,6 @@ def _expand_concatenated_tool_calls(tool_calls: list[dict]) -> list[dict]:
             split_call["function"] = {**function, "arguments": payload}
             expanded.append(split_call)
     return expanded
-
-
-def _maybe_hard_reject_web_search(
-    *,
-    tool_name: str,
-    session_id: str | None,
-    tools_for_llm: list[dict] | None,
-    api_messages: list | None,
-) -> str | None:
-    """Tier 2-6: deep-research-aware hard reject. Returns a rejection string when the
-    routing_reminder module decides this session has fanned out too many web_search
-    calls without invoking deep_research_*; otherwise None (let the call through)."""
-    try:
-        from app.services.deep_research.routing_reminder import should_hard_reject_web_search
-    except Exception as exc:
-        logger.warning("[Kernel] web_search routing guard unavailable (tier disabled): %s", exc)
-        return None
-
-    available_names: list[str] = []
-    for tool in tools_for_llm or []:
-        if isinstance(tool, dict):
-            name = (tool.get("function") or {}).get("name") or tool.get("name")
-            if name:
-                available_names.append(str(name))
-
-    intent_hints: list[str] = []
-    for message in (api_messages or [])[-10:]:
-        role = getattr(message, "role", None) or (message.get("role") if isinstance(message, dict) else None)
-        if role != "user":
-            continue
-        raw_content = getattr(message, "content", None)
-        if raw_content is None and isinstance(message, dict):
-            raw_content = message.get("content")
-        if raw_content:
-            intent_hints.append(str(raw_content)[:500])
-
-    return should_hard_reject_web_search(
-        session_id=session_id,
-        available_tool_names=available_names,
-        intent_hints=tuple(intent_hints),
-    )
-
-
-def _maybe_inject_routing_reminder(
-    content: str,
-    *,
-    tool_name: str,
-    session_id: str | None,
-    tools_for_llm: list[dict] | None,
-    api_messages: list,
-) -> str:
-    """Tier 1-6 bridge: thin adapter between the kernel and the deep_research routing
-    reminder module. Extracts available tool names and recent user intent strings, then
-    delegates to maybe_inject_routing_reminder."""
-    try:
-        from app.services.deep_research.routing_reminder import maybe_inject_routing_reminder
-    except Exception:
-        return content
-
-    available_names: list[str] = []
-    for tool in tools_for_llm or []:
-        if isinstance(tool, dict):
-            name = (tool.get("function") or {}).get("name") or tool.get("name")
-            if name:
-                available_names.append(str(name))
-
-    intent_hints: list[str] = []
-    for message in (api_messages or [])[-10:]:
-        role = getattr(message, "role", None) or (message.get("role") if isinstance(message, dict) else None)
-        if role != "user":
-            continue
-        raw_content = getattr(message, "content", None)
-        if raw_content is None and isinstance(message, dict):
-            raw_content = message.get("content")
-        if raw_content:
-            intent_hints.append(str(raw_content)[:500])
-
-    return maybe_inject_routing_reminder(
-        content,
-        tool_name=tool_name,
-        session_id=session_id,
-        available_tool_names=available_names,
-        intent_hints=tuple(intent_hints),
-    )
 
 
 def _sanitize_tool_calls_for_history(tool_calls: list[dict]) -> list[dict]:
@@ -3945,13 +3835,6 @@ class AgentKernel:
                                         + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
                                     )
                             _round_tool_chars += len(_content)
-                            _content = _maybe_inject_routing_reminder(
-                                _content,
-                                tool_name=tool_name,
-                                session_id=request.memory_session_id,
-                                tools_for_llm=tools_for_llm,
-                                api_messages=api_messages,
-                            )
                             done_payload = {
                                 "name": tool_name,
                                 "args": effective_args,
@@ -4211,13 +4094,6 @@ class AgentKernel:
                                         + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
                                     )
                             _round_tool_chars += len(_content)
-                            _content = _maybe_inject_routing_reminder(
-                                _content,
-                                tool_name=tool_name,
-                                session_id=request.memory_session_id,
-                                tools_for_llm=tools_for_llm,
-                                api_messages=api_messages,
-                            )
                             done_payload = {
                                 "name": tool_name,
                                 "args": args,

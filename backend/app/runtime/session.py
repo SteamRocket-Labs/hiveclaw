@@ -41,8 +41,6 @@ class PlanModeState:
     original_request: str | None = None
     handoff_target: str | None = None
     reason: str | None = None
-    deep_research: bool = False
-    deep_research_args: dict[str, Any] = field(default_factory=dict)
     # Phase 4B plan-file writing target (reserved; unused until that phase).
     plan_file_path: str | None = None
     source: str = "web_chat"
@@ -50,9 +48,9 @@ class PlanModeState:
     def to_metadata(self) -> dict[str, Any]:
         """Render the legacy ``metadata['plan_mode']`` dict shape.
 
-        Byte-compatible with ``_activate_interactive_plan_mode``: deep-research
-        keys are emitted only when ``deep_research`` is set, matching the
-        conditional update the legacy code performed.
+        Byte-compatible with ``_activate_interactive_plan_mode``: optional keys
+        are emitted only when present, matching the conditional update the
+        legacy code performed.
         """
         data: dict[str, Any] = {
             "active": self.active,
@@ -72,9 +70,6 @@ class PlanModeState:
         # bound action stay byte-compatible with the legacy shape.
         if self.action_artifact:
             data["action_artifact"] = dict(self.action_artifact)
-        if self.deep_research:
-            data["deep_research"] = True
-            data["deep_research_args"] = dict(self.deep_research_args)
         # Phase 4B: the read-only gate reads the plan file off the ContextVar
         # mirror, so a provisioned plan_file_path must round-trip.
         if self.plan_file_path:
@@ -100,8 +95,6 @@ class PlanModeState:
             original_request=data.get("original_request"),
             handoff_target=data.get("handoff_target"),
             reason=data.get("reason"),
-            deep_research=bool(data.get("deep_research")),
-            deep_research_args=dict(data.get("deep_research_args") or {}),
             plan_file_path=data.get("plan_file_path"),
             source=str(data.get("source") or "web_chat"),
         )

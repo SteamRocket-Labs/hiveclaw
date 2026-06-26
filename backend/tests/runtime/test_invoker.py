@@ -565,7 +565,7 @@ async def test_tool_search_records_discovered_tools_and_returns_deferred_schema(
 
 
 @pytest.mark.asyncio
-async def test_tool_search_records_compact_deep_research_tool_alias(monkeypatch):
+async def test_tool_search_records_compact_requested_tool_alias(monkeypatch):
     import app.runtime.invoker as invoker
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
     from app.runtime.session import SessionContext
@@ -581,7 +581,7 @@ async def test_tool_search_records_compact_deep_research_tool_alias(monkeypatch)
         return [
             {
                 "type": "function",
-                "function": {"name": "deep_research_run", "description": "", "parameters": {"type": "object"}},
+                "function": {"name": "firecrawl_fetch", "description": "", "parameters": {"type": "object"}},
             }
         ]
 
@@ -592,7 +592,7 @@ async def test_tool_search_records_compact_deep_research_tool_alias(monkeypatch)
             model=SimpleNamespace(
                 provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
             ),
-            messages=[{"role": "user", "content": "use deepresearchrun"}],
+            messages=[{"role": "user", "content": "use firecrawlfetch"}],
             agent_name="Researcher",
             role_description="Research agent",
             agent_id=agent_id,
@@ -600,12 +600,12 @@ async def test_tool_search_records_compact_deep_research_tool_alias(monkeypatch)
             session_context=session,
         ),
         "tool_search",
-        {"query": "deepresearchrun"},
+        {"query": "firecrawlfetch"},
     )
 
     assert result is not None
-    assert requested_names_seen == [["deep_research_run"]]
-    assert session.discovered_tools == ["deep_research_run"]
+    assert requested_names_seen == [["firecrawl_fetch"]]
+    assert session.discovered_tools == ["firecrawl_fetch"]
 
 
 @pytest.mark.asyncio
@@ -2031,14 +2031,11 @@ async def test_invoke_agent_aborts_when_tenant_resolution_fails(monkeypatch):
 async def test_disable_tools_yields_empty_tool_surface(monkeypatch):
     """RC11: a disable_tools request must expose ZERO tools to the LLM.
 
-    Deep Research reasoning passes (plan/extract/synthesize/devil's advocate) are
-    pure-text calls. Previously they set core_tools_only=True, which still leaked
-    write_file even though the prompt declared "Tools are disabled". The synthesis
-    LLM then wrote a full report and emitted it via a write_file tool call; with
-    max_tool_rounds=1 that call blew the round budget and the kernel returned
-    "[Error] Too many tool call rounds" — scored below the synthesis floor.
-    disable_tools makes the surface genuinely empty so the model must answer in
-    text.
+    Pure-text reasoning passes must expose ZERO tools to the LLM. Previously
+    they set core_tools_only=True, which still leaked write_file even though
+    the prompt declared "Tools are disabled". With low max_tool_rounds that
+    extra write_file call could blow the round budget; disable_tools makes the
+    surface genuinely empty so the model must answer in text.
     """
     from app.runtime.invoker import AgentInvocationRequest, get_agent_kernel
 

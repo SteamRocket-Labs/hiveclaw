@@ -1,8 +1,6 @@
 # Hive Plan Mode 设计文档
 
-> **2026-06-18 当前口径修正**：本文早期段落里“长任务 / 高风险 / tool gate 自动进入 Plan Mode”的说法已经废弃。Plan Mode 入口只有两类：用户显式进入，或 agent 调 `request_plan_mode` 后由用户批准进入。工具、REST、Workflow、Deep Research 需要阻断执行时返回 `requires_confirmation` / `confirmation_required`，不能创建 PlanRequest，也不能产出 `needs_plan`，除非用户已经显式进入 Plan Mode。
 >
-> 本文定义 Hive 的完整 Plan Mode。它不是单个 skill、不是 Deep Research 的专用参数、也不是
 > `Agent.execution_mode` 的一种取值。Plan Mode 是 Hive runtime 的一等阶段:
 >
 > **先规划 -> 用户确认 -> 再执行 / 落地自主行为。**
@@ -61,7 +59,6 @@ Plan Mode 不等于“永远不执行”。它的目标是让执行有明确边�
 
 | 现有机制 | 当前作用 | 缺口 |
 |---|---|---|
-| Deep Research confirmation gate | `user_confirmed=false` 时返回 `requires_confirmation`,不执行研究 | 只覆盖 deep research 工具,不是全局 runtime gate，也不创建 PlanRequest |
 | Complex Task Executor skill | 让 agent 对复杂任务写 `workspace/<task>/plan.md` | 是 prompt/skill 习惯,不是安全边界,不能阻止工具执行 |
 | long task artifact | 写 `runtime_artifacts/long_tasks/<id>/plan.json` 和 progress | 是恢复/审计 artifact,不是用户确认闸门 |
 | objective proposed gate | `objective_task` 绑定 proposed/requires_approval objective 时 trigger preflight 会 skip | 只覆盖 objective_task,不覆盖普通 scheduled_job、REST trigger、agent set_trigger |
@@ -164,7 +161,6 @@ Plan Mode 是底层能力,但入口不能一律"强制计划"。正确分层是:
 |---|---|---|
 | 用户显式选择/表达 Plan Mode | 立即创建 PlanRequest | 前端 Plan Mode toggle、"先做计划"、"进入计划模式" |
 | agent 调 `request_plan_mode` | 返回 `plan_mode_entry_requested`，等待用户批准后进入 | agent 判断需要先计划多步骤任务 |
-| 长任务 / 定时 / 监控 / 委派 / Workflow / Deep Research | 需要确认时返回 `requires_confirmation` / `confirmation_required`；不自动进入 Plan Mode | "完整调研这个行业并出报告"、"每天 9 点帮我整理新闻" |
 | 工具/REST 兜底发现即将开启未来自主行为 | hard gate，返回确认需求或要求真实用户确认 | agent 直接调 `set_trigger`、legacy schedule API |
 
 定时/监控的默认 UX 是**确认需求**,不是硬强制 Plan Mode:agent 应先说明需要确认频率、范围、成本、停止条件和通知方式。信任根必须来自真实用户事件；agent 工具参数不能暴露或信任内部确认字段。
@@ -436,7 +432,6 @@ Plan Mode 的安全保证**不是单点锚**(早期草案一度以为是"工具�
 
 ```text
 早拦层(体验:尽早提示用户去确认计划)
-  tool(tagged):set_trigger / update_trigger / delegate_to_agent / start_workflow / deep_research_start
   REST:triggers / schedules / objectives 激活 / collaborate-delegate / tasks 自动执行
   hook:objective intake 不再把 wake_policy 意图直接判 active
 
@@ -459,7 +454,6 @@ Plan Mode 接入方式:
 
 1. 在 web chat run 创建后,先做 intent classification。
 2. 如果用户显式进入 Plan Mode，或批准了 agent 的 `request_plan_mode` 请求，创建 `agent_plan_requests` row。
-   - 长任务 / 定时 / 监控 / 委派 / Workflow / Deep Research 本身不再自动创建 PlanRequest。
    - 这些动作需要阻断时返回 `requires_confirmation` / `confirmation_required`。
 3. 创建 PlanRequest 后:
    - 启动受限 agent-authored planning invocation,生成 plan draft。
@@ -471,7 +465,6 @@ Plan Mode 接入方式:
 Planning invocation 必须由 agent 产出 substantive plan content;deterministic builder 只能作为 schema envelope / validation helper,不能作为最终可确认计划。Planning invocation 必须禁用高风险工具,且**复用现有工具收窄机制,不新增 `execution_mode` 字段**(与 §4 非目标一致):
 
 ```text
-# 复用 InvocationRequest 现有字段 + deep research RC11 已加的 disable_tools
 allowed_tool_names=("list_files", "read_file", "web_search", "web_fetch", "list_triggers", "list_objectives")
 excluded_tool_names=("set_trigger", "update_trigger", "send_*", "delete_file", "write_file")
 max_tool_rounds=8
@@ -495,7 +488,6 @@ set_trigger                       # 启用未来自主 wake;只能信真实用�
 update_trigger                    # 只有显式替换为 autonomous wake config 时 confirmation gate;改 reason/name 等不 gate
 delegate_to_agent                 # 交出执行权,异步推进；用户当前请求触发的委派可直接执行，后台/无人值守需确认
 start_workflow                    # 确定性长任务/编排启动；按 confirmation_required/user_confirmed，不进 Plan Mode
-deep_research_start               # user_confirmed=false 时返回 requires_confirmation，不登记 PlanRequest
 ```
 
 **不要**把 `send_feishu_message` / `write_file` / `edit_file` / `delete_file` / `create_digital_employee` 放进 Plan Mode 强拦——当前轮明确授权的低风险同步动作和 HR blueprint 已确认的创建动作不该进 Plan Mode,它们继续走现有 ActionPreflight / capability approval / HR blueprint 确认。只有"未来自动发送、批量覆盖、改生产配置"这类才升级到确认需求或显式 Plan Mode 请求。
@@ -559,7 +551,6 @@ PlanRequest.confirmed
 ```text
 PlanRequest.awaiting_confirmation
   -> 用户确认
-  -> RuntimeTask(task_type="long_task"/"deep_research"/...)
   -> runtime_artifacts/long_tasks/<id>/plan.json
 ```
 
@@ -818,7 +809,6 @@ npm test -- planMode
 | plan confirmed 后被修改 | hash 改变,旧确认不能执行 |
 | confirmed handoff 成功 | 创建 objective/trigger,记录 IDs |
 | rejected plan | 不创建 objective/trigger/runtime task |
-| deep research 未确认 | 返回 `requires_confirmation`,不登记 PlanRequest |
 | low-risk read-only chat | 不进入 Plan Mode |
 | external action plan confirmed | 开始执行,具体 send 仍走 ActionPreflight/approval |
 
@@ -873,7 +863,6 @@ Plan Mode 视为完成,当且仅当:
 
 1. `agent_plan_requests` + `PlanModeService` + `PlanModeGate`。
 2. **早拦层**:
-   - tool gate(代码级 ToolMeta 打标):`set_trigger`/`update_trigger`/`delegate_to_agent`/`deep_research_start`,在 `execute`/`execute_direct`/`execute_approved` 全入口生效；`start_workflow` 用 workflow preview/start 的 `confirmation_required`，不走 PlanModeGate。
    - REST gate:`triggers` + legacy `schedules` + `objectives` 激活/wake_policy + `collaborate/delegate` + `tasks` 自动执行。
 3. **兜底层(安全保证)**:
    - `wake_reconciler`:只为已确认 / 豁免 objective 建 enabled trigger。

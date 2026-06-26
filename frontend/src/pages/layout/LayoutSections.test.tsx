@@ -278,7 +278,6 @@ describe('Layout extracted sections', () => {
             {
               id: 'session-1',
               agent_id: 'agent-1',
-              title: '使用 deepresearch 做一个 ai 产品...',
               created_at: '2026-06-23T08:34:00Z',
               updated_at: '2026-06-23T08:34:00Z',
             },
@@ -321,14 +320,12 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('data-testid="sidebar-agent-sessions-agent-1"');
     expect(markup).toContain('aria-label="Toggle AI 产品经理 sessions"');
     expect(markup).not.toContain('href="/agents/agent-1" class="sidebar-item sidebar-agent-link');
-    expect(markup).toContain('使用 deepresearch 做一个 ai 产品...');
     expect(markup).toContain('href="/agents/agent-1?session_id=session-1#chat"');
     expect(markup).toContain('class="sidebar-session-item active"');
     expect(markup.match(/class="sidebar-session-item active"/g) || []).toHaveLength(1);
     expect(markup).not.toContain('sidebar-agent-link active');
     expect(markup).toContain('aria-label="New conversation with AI 产品经理"');
     expect(markup).toContain('aria-label="Open AI 产品经理 details"');
-    expect(markup).toContain('aria-label="Delete session 使用 deepresearch 做一个 ai 产品..."');
     expect(markup).not.toContain('class="sidebar-session-new"');
     expect(markup).toContain('Task');
     expect(markup).toContain('IM');

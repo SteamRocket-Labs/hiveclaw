@@ -57,11 +57,6 @@ vi.mock('@tanstack/react-query', () => ({
     return { data: undefined, isLoading: false, isError: false, error: null };
   },
 }));
-
-vi.mock('./DeepResearchStreamPanel', () => ({
-  default: ({ taskId }: { taskId: string }) => <div>stream:{taskId}</div>,
-}));
-
 function ledger(runtimeTaskId: string, title: string): RuntimeWorkLedgerView {
   return {
     schema: 'agent_work_ledger_view.v1',

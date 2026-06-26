@@ -42,7 +42,6 @@ Hive 面向的是一家公司运营一批数字员工：Company Admin、Platform
 
 **4. Harness-grade Runtime**
 
-Agent 不是只在网页打开时才工作。Web chat、trigger、workflow、subagent、Heartbeat、Dream、deep research 和 IM webhook 都流经同一个 stateless kernel 与 governed tool runtime。`RuntimeTask` 支持重启恢复，`invocation_spans` 提供 DB 级 trace，provider retry/overload fallback、Anthropic thinking-signature preservation、prompt-cache anchoring、token budget gate、completion dedup 和 sandboxed code execution 都是运行时契约。
 
 ## 两轮大改后的当前基线
 
@@ -199,10 +198,8 @@ Hive 现在分成三层界面：
 
 | 模块 | 文件数 | 说明 |
 |-------|-------|-------|
-| API 路由 | 62 | Agents、auth、chat sessions、enterprise、channels、admin、Agent圈/plaza、triggers、office、deep research、interoperability |
 | ORM 模型 | 43 | 租户隔离 SQLAlchemy 模型，包含 runtime tasks、coordination、objectives、identity、invocation spans、session feedback |
 | 业务服务 | 163 | LLM 客户端、trigger/evolution 守护、渠道流、记忆、Office、治理、技能、trace、MCP authz、interoperability |
-| 工具处理器 | 18 个模块 / 100+ 个已注册定义 | filesystem · search · communication · email · feishu · office · memory · deep research · workflows · work ledger · plaza · skills · triggers · hr · mcp |
 | Kernel | 1 个无状态引擎 | 默认最多 200 轮工具 · 75% 上下文压缩阈值 · 50KB 单工具结果上限 · trace spans · thinking signatures |
 | 数据库迁移 | 79 | Alembic，单 head 不可变约束 |
 | 前端页面 | 16 个页面入口 + 40 个嵌套页面/区块辅助文件 | AgentDetail、Agent圈、公司后台工作台/设置、平台后台 |

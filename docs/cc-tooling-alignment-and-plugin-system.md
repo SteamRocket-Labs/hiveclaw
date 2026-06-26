@@ -173,7 +173,6 @@ Step 0/§2③ 的 cut_invented "死代码"列表**不可盲信**，Step 0 执行
 
 **structural/cosmetic 十条：** 前端插件安装/管理 UI(`WorkspaceToolsSection.tsx` 加第四视图，否则=`feedback_surface_not_plumbing` 病) ·
 遗留 `app/api/packs.py` 曾仍 wired 在 `main.py`（Step 11 已迁 summary routes 到 `capabilities.py` 并移除 `packs_router` 挂载） · `pack_policy_service` 级联消费者 · `skill_seeder` pack→skill 落地 ·
-deep_research 还有 `routing_reminder` 硬编码(不止 leaf_presets) · i18n 双语键(en+zh) · 前端 extensions API 关系 ·
 **`ToolResultEnvelope` 命名碰撞**(`result_envelope.py` 已有内容，Step 2 改名或扩展现有) ·
 lazy-loaded tool state 的 compaction/replay/prompt-cache 保持 · 7+ 个 pack 测试会断需迁移。
 
@@ -199,7 +198,6 @@ Step 5 把 `is_pack_enabled` 的**"缺省=启用"静默翻成"未安装=禁用"*
 
 ## 7. 风险
 
-- **DR 耦合**：web_search 改动波及 `deep_research/leaf_presets.py` + `routing_reminder.py`，验工具激活链不破。
 - **三源坍缩半迁移**：`pack.yaml` 升唯一真相源若只迁部分 pack = 半迁移技术债，必须全量(含 backfill §5.3)。
 - **多模态回灌的 provider 中立**：typed content `blocks` 必须是 provider-中立 content block 抽象(守 L3 模型平等)，Anthropic/OpenAI/Gemini 仅在 adapter 层映射。
 - **回归面**：pack 重命名/删除波及 `pack_policy_service`/`capability_gate`/`skill_seeder`/前端/测试，全量回归 + Testcontainers 真 PG 验 RLS。
@@ -225,7 +223,6 @@ Step 5 把 `is_pack_enabled` 的**"缺省=启用"静默翻成"未安装=禁用"*
 
 **发现与修正（与设计稿的偏差）：**
 1. **§5.1 cut 清单全核实为活机件，禁删**：`fanout_subagents`(`subagent.py:113` recursion guard)、`SubagentJob`/`SubagentBudget`(`workflow_launch.py` 活引用)、`FALLBACK_EXECUTOR_NAME`(`runtime.py:51` `try_execute` 活兜底) 全部保留——deep-dive 的"死代码"判定是错的（critic 2 已预警）。
-2. **pack.yaml manifest 确实存在**（纠正设计稿初判"无 pack.yaml"）：在 `<repo>/packs/` 与 `<backend>/packs/` **两套副本**，仅 `office_pack`/`deep_research_pack` 两包有 manifest，`find_pack_dirs` 爬祖先 `packs/` 目录。这把 Step 4-5 从"从零创建 manifest"修正为"清理+升级现有 manifest（且两套副本须同步）"。
 3. **断言边界 = 只管 RUNTIME_TOOL_GROUPS（runtime 真相源），不管 manifest**：manifest(`catalog_reader.py:3`"不参与 runtime")合理地把 CORE 工具列为工作流依赖（office 的 read_file、DR 的 web_fetch）——这是 Step 4 才拆 owns/requires_core 的输入，不是 Step 0 的脚踏两船。断言纳入 manifest *owns* 留待 Step 4。
 
 **零行为变更论证：** turn-1 always 工具 = `_ALWAYS_INCLUDE_CORE`(=`CORE_TOOL_NAMES`，本 Step 未改一字)。退役的 pack 成员全是 CORE（已 turn-1 可见）；脚踏两船工具是 CORE（清出 pack 不影响其 turn-1 可见性）。`RUNTIME_TOOL_GROUPS` 仅供 `tool_search` 懒发现 schema，删的两 pack 成员本就 turn-1 可见、无需经 `tool_search` 发现 → agent 实际工具集不变。
@@ -302,7 +299,6 @@ $ ruff check <核心文件>     # All checks passed!
 
 **改动文件：**
 - `app/packs/catalog_reader.py`：删 severance 注释（不再"intentionally does not participate"）；`PackManifest` 加 `agents`/`hooks`/`dependencies`/`source` 字段 + **role-based 工具分类**（每个 tool entry 的 `role`: owns/requires_core/optional_provider；`owns_names`/`requires_core_names`/`optional_provider_names` properties）；新增 `validate_manifest()` **fail-closed** 校验（未知 role、raw/非 allowlist hook handler、unpinned dependency、未识别/远程 source kind 全部结构化拒绝）。
-- 为 7 个活 pack 创建/升级 `pack.yaml`（`packs/` + `backend/packs/` 两套副本，共 14 文件）：web/feishu/plaza/email/mcp_admin（新建）+ office/deep_research（升级为 role-based）。office 清理掉混入的 email/feishu 工具（归各自 pack），CORE 文件工具标 requires_core；deep_research 的 web_search/web_fetch 标 requires_core、firecrawl/xcrawl 标 optional_provider。
 - `app/tools/audit.py`：`assert_core_pack_disjoint` 扩展覆盖 manifest `owns`（requires_core 允许引用 CORE）；新增 `assert_manifests_valid()`（validation_errors + manifest 声明工具必须是注册 @tool = manifest/decorator 一致）+ `_iter_manifests()`（跨 repo/backend 副本去重）。
 - `app/main.py`：startup 调用 `assert_manifests_valid()`（fail-closed）。
 - `app/services/pack_service.py`：`get_pack_catalog` 改为 manifest **增强而非覆盖** RUNTIME_TOOL_GROUPS——runtime 字段（source/requires_channel/summary/tools）保留，manifest 加 install/composition 字段（version/skills/owns/requires_core/optional_providers/credential_requirements）。

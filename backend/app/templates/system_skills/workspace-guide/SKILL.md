@@ -78,8 +78,8 @@ memory/legacy/      — Optional import/quarantine area for old learnings/log im
 skills/              — Active skill packages; final semantic writes go through Agent/Skill Writer + Skill Gate
 workspace/           — Your work files (reports, documents, artifacts)
   uploads/           — Files uploaded from chat or channels
-  deep_research_reports/
-                      — User-facing Deep Research report packets
+  workflow_reports/
+                      — User-facing workflow report packets
   tool_results/      — Large tool outputs spilled to files
 runtime_artifacts/   — Runtime recovery/audit artifacts; read only by explicit need
   traces/            — Compatibility invocation span JSONL; DB spans are canonical
@@ -132,7 +132,7 @@ Verify before asserting: `read_file` before claiming a file's contents, `glob_se
 ### Finding platform-written artifacts
 
 - Uploaded files are saved under `workspace/uploads/`.
-- Deep Research copies user-facing artifacts to `workspace/deep_research_reports/<run_id>/`; internal recovery evidence remains under `runtime_artifacts/`.
+- Workflows may copy user-facing artifacts to `workspace/workflow_reports/<run_id>/`; internal recovery evidence remains under `runtime_artifacts/`.
 - Oversized tool outputs can be written under `workspace/tool_results/`; read those files before relying on truncated inline output.
 - Treat `runtime_artifacts/` as recovery/audit evidence, not the default deliverable folder. Prefer the mirrored `workspace/` path when one is provided by a tool result.
 

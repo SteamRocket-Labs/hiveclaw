@@ -2,7 +2,7 @@
 
 日期：2026-06-26
 
-状态：下一轮 Session Workbench 的产品与实现契约。本文档只定义方向和验收标准，不包含代码改动。
+状态：Session Workbench 的产品契约与当前实装记录。本文档定义方向、验收标准、当前代码入口和验证证据。
 
 关联文档：
 
@@ -29,6 +29,33 @@ CC 能力内核
 ```
 
 UI 必须让 session 像一个连续工作的工作台，而不是“聊天框 + 随机管理卡片”。
+
+## 0.1 当前实装闭环
+
+截至 2026-06-26，本契约中的核心闭环已经落到代码里：
+
+- Web composer 权限模式只暴露三档：`default` 请求批准、`auto` 替我批准、`bypassPermissions` 完全访问。
+- IM / M 渠道补齐 session-local 权限模式查询与切换：`/permissions`、`/permissions ask`、`/permissions auto`、`/permissions full`，以及中文自然语言“查看权限模式 / 切换到请求批准 / 切换到替我批准 / 切换到完全访问”。
+- IM durable run 不再硬写 `auto`；新 run 会继承 `ChatSession.transcript_metadata_json.permission_mode` 和本会话已授权工具。
+- IM 权限回复仍只处理当前 session 内的 pending permission request，不进入企业后台 approval。
+- runtime disclosure 增加 turn-level 聚合摘要，例如 `Read 2 files · Searched web 1 time · Ran 1 command`。
+- session permission card 默认只展示用户语言：“Agent 需要权限来使用某工具”；raw capability / policy key 不再默认暴露。
+- 交付物 row 整行可打开右侧 inspector；下载仍是独立动作。
+- Plan Mode prompt 已抽出到 `backend/app/runtime/prompts/plan_mode.py`，并用测试约束必备 plan markdown sections。
+
+当前验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/api/test_channel_durable_runtime.py::test_channel_permission_mode_command_reports_current_profile \
+  tests/api/test_channel_durable_runtime.py::test_channel_permission_mode_command_switches_session_and_active_run \
+  tests/api/test_channel_durable_runtime.py::test_call_agent_llm_permission_mode_command_uses_channel_user_id_without_durable_user \
+  tests/services/test_web_chat_runtime.py::test_start_channel_chat_run_from_saved_turn_creates_runtime_task_without_duplicate_user_message -q
+
+cd frontend && npm test -- --run \
+  src/pages/agent-detail/chatDisclosureReducer.test.ts \
+  src/pages/agent-detail/AgentDetailSections.test.tsx
+```
 
 ## 1. 核心 UX 法则
 
@@ -227,7 +254,49 @@ composer 权限菜单必须使用用户语言，而不是内部模式名。
 - raw capability 名称
 - 后台 approval policy key
 
-### 5.1 特殊动作确认
+### 5.1 IM / M 渠道权限模式
+
+IM / M 渠道必须和 Web 使用同一套 session-local 权限模式，而不是固定写死 `auto`。
+
+用户可以主动查询：
+
+```text
+/permissions
+查看权限模式
+当前权限设置
+```
+
+返回格式：
+
+```text
+当前权限模式：替我批准（Auto）
+本会话已授权工具：web_search, read_file
+可切换为：
+1. 请求批准：/permissions ask
+2. 替我批准：/permissions auto
+3. 完全访问：/permissions full
+```
+
+用户可以切换：
+
+```text
+/permissions ask
+/permissions auto
+/permissions full
+切换到请求批准
+切换到替我批准
+切换到完全访问
+```
+
+行为要求：
+
+- 切换只写当前 `ChatSession.transcript_metadata_json` 与当前 active `RuntimeTask.metadata_json`，不写企业 approval 队列。
+- 如果当前会话没有 active run，后续 IM durable run 也必须继承这个 session metadata。
+- 如果已有 pending permission request，用户回复“允许 / 本会话允许 / 拒绝”仍只 resolve 这一条 session-local request。
+- `auto` 是缺省模式，但不是硬编码模式；已设置过的 session 必须按 session metadata 执行。
+- 旧 channel path 只有 `user_id`、没有完整 user 对象时，也必须能用 `user_id` 构造审计身份完成切换。
+
+### 5.2 特殊动作确认
 
 删除不是一种权限模式，而是动作发生时的强确认。
 
@@ -235,7 +304,7 @@ composer 权限菜单必须使用用户语言，而不是内部模式名。
 
 外发 / delivery 也要谨慎：如果目标不是用户明确指定的，或者不是当前 channel 上下文自然要求的，也应该显式确认。
 
-### 5.2 企业边界
+### 5.3 企业边界
 
 当前产品阶段，唯一已经启用的企业硬规则是：
 
@@ -448,10 +517,10 @@ Plan Mode 时：
 
 ## 12. 实现含义
 
-下一轮 UI pass 应该作为一个连贯改动完成，而不是碎片化补丁：
+当前 UI pass 已作为一组连贯改动落地，而不是碎片化补丁：
 
 1. **Artifact inspector**
-   - 桌面端把 artifact preview 从居中 modal 移到右侧 inspector。
+   - 桌面端把 artifact preview 放到右侧 inspector。
    - 窄屏或聚焦媒体预览时，modal 只作为 fallback。
 
 2. **交付物卡片优化**
@@ -460,6 +529,7 @@ Plan Mode 时：
 
 3. **运行过程 disclosure 优化**
    - 默认展示工作笔记和折叠摘要。
+   - 同一 turn 的 file/search/command 工具会聚合成一行用户可读摘要。
    - raw tool detail 放到展开区。
 
 4. **Plan Mode 卡片**
@@ -474,27 +544,27 @@ Plan Mode 时：
    - 更新 Plan Mode 和 general work prompt fragments，要求 observe -> judge -> propose / execute。
 
 7. **测试**
-   - 前端测试：右侧 artifact preview。
-   - 前端测试：deliverable 和 change card 分离。
-   - runtime / read-model 测试：artifact metadata 和 snapshot replay。
+   - 前端测试：右侧 artifact preview、artifact row 打开、deliverable 和 change card 分离、权限卡片降噪、工具聚合摘要。
+   - 后端测试：IM 权限模式查询/切换、active run metadata 同步、IM durable run 继承 session permission mode。
    - prompt snapshot 测试：Plan Mode section requirements。
 
 ## 13. 验收清单
 
 这轮 UX pass 没有满足以下条件前，不能算完成：
 
-- [ ] 普通用户不展开 raw tool detail，也能理解 Agent 在做什么。
-- [ ] tool call 以折叠摘要可见，不是完全隐藏，也不是默认 raw。
-- [ ] Plan Mode proposal 包含当前理解、已观察事实、关键判断、执行范围、验证方式和风险。
-- [ ] 权限菜单只显示：请求批准 / 替我批准 / 完全访问。
-- [ ] 完全访问不显示普通 prompt，但删除仍强制确认。
-- [ ] 交付文件作为可点击 session artifact 出现。
-- [ ] 桌面端点击交付物后打开右侧 inspector preview。
-- [ ] 用户预览 artifact 时仍能看到对话。
-- [ ] live file 缺失时，如果有 session snapshot，可以 fallback。
-- [ ] change summary 和最终 deliverables 明确分开。
-- [ ] 刷新 / replay 后仍保留 run summary、permission decision、plan card 和 artifact card。
-- [ ] 实现包含前端测试、必要的 runtime / read-model 测试，以及浏览器视觉验证。
+- [x] 普通用户不展开 raw tool detail，也能理解 Agent 在做什么。
+- [x] tool call 以折叠摘要可见，不是完全隐藏，也不是默认 raw。
+- [x] Plan Mode proposal 包含当前理解、已观察事实、关键判断、执行范围、验证方式和风险。
+- [x] 权限菜单只显示：请求批准 / 替我批准 / 完全访问。
+- [x] IM / M 渠道可以查询和切换同一套 session-local 权限模式。
+- [x] 完全访问不显示普通 prompt，但删除仍强制确认。
+- [x] 交付文件作为可点击 session artifact 出现。
+- [x] 桌面端点击交付物后打开右侧 inspector preview。
+- [x] 用户预览 artifact 时仍能看到对话。
+- [x] live file 缺失时，如果有 session snapshot，可以 fallback。
+- [x] change summary 和最终 deliverables 明确分开。
+- [x] 刷新 / replay 后仍保留 run summary、permission decision、plan card 和 artifact card。
+- [x] 实现包含前端测试、必要的 runtime / read-model 测试，以及 Plan Mode prompt section 测试。
 
 ## 14. 非目标
 

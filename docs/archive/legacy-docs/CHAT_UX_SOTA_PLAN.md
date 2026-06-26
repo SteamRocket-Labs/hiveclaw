@@ -2,7 +2,6 @@
 
 > 状态: v2.0 全面重构计划，替代 v1.0 "交互可见性"草案
 > 日期: 2026-05-28
-> 范围: Hive 主 Chat 前端体验、交互状态、组件体系、事件契约、deep research 合流、运行态可观测性
 > 对标: `/Users/rocky243/vc-saas/onyx` 的 chat timeline / packet processor / AgentTimeline / pacing / completed state
 > 目标: 不是修一个 Thinking indicator，而是把 Hive Chat 从调试型界面重构成企业用户可放心使用的 agent 工作台
 
@@ -10,7 +9,6 @@
 
 ## 0. 这次重构的真实性质
 
-当前 Hive Chat 的问题不是"样式不好看"，而是**产品交互模型不成立**。用户给 agent 发出任务后，中间区域长期处于黑箱状态：不知道 agent 是否在工作、在调用什么工具、是否卡住、是否等待权限、是否还会继续输出、deep research 到了哪一步。对于企业经理、运营、HR、市场这类非工程用户，这等于"把工作交给一个没有回执的系统"。
 
 所以本计划不是局部 UI polish，而是一次大型、颠覆性、分层推进的 Chat UI/UX 重构：
 
@@ -22,7 +20,6 @@
 设计北极星：
 
 1. **Every agent action is visible enough to trust.** agent 的工作必须在屏幕上留下可理解、可折叠、可复盘的轨迹。
-2. **普通对话和 deep research 共用同一套 timeline。** deep research 不是另一个 panel，也不是 debug 附属视图。
 3. **状态永不留白。** sent、waiting、thinking、tool running、streaming、reconnecting、continuing、blocked、done 每一态都必须有明确 UI。
 4. **前端不猜文本。** UI 由类型化事件驱动，和 onyx 一样把 packet/event contract 当成渲染契约。
 5. **企业用户优先。** 体验应接近 Notion/Slack 的清晰协作感，叠加 Vercel/Raycast 式精致和响应速度；不是 hacker/debug console。
@@ -46,7 +43,6 @@ Hive 后端已经通过 web chat runtime 发送了关键运行事件：
 | `session_compact` | `build_compaction_event` | 事件卡片，未进入统一工作流 |
 | `pack_activation` | `build_active_packs_event` | 事件卡片，未进入统一工作流 |
 | `done` | `build_done_event` | 收尾 assistant 气泡 |
-| deep research SSE | `backend/app/api/deep_research.py` | 独立 panel，和主 timeline 分叉 |
 
 关键结论：**黑箱主要是前端呈现层问题，不是后端完全没有进度事件。**
 
@@ -57,14 +53,12 @@ Hive 后端已经通过 web chat runtime 发送了关键运行事件：
 - `frontend/src/pages/agent-detail/AgentChatSection.tsx:331` 默认 `showInternalTrace=false`
 - `AgentChatSection.tsx:715-717` 对 `tool_call` 做默认隐藏
 - `AgentDetail.tsx:685-688` 收到 `thinking/chunk/tool_call` 后立刻 `setIsWaiting(false)`，纯工具长轮次会出现静止空窗
-- `DeepResearchStreamPanel.tsx` 只在 deep research tool result 内部挂载，且外层 tool card 又被 trace 开关影响
 - `AgentChatSection.tsx` 与 `AgentDetail.tsx` 都是巨型文件，状态、渲染、会话列表、composer、runtime summary 混在一起
 
 这导致四个用户可感知失败：
 
 1. agent 做事时屏幕没有可信进度。
 2. 工具调用和权限状态被当成 internal trace，而不是用户应该看到的工作过程。
-3. deep research 拥有更丰富的事件，但被分叉成孤立 panel，无法成为主 Chat 体验的一部分。
 4. Chat 组件不可维护，继续堆 inline 条件会让重构不可控。
 
 ### 1.3 已有可复用资产
@@ -72,9 +66,7 @@ Hive 后端已经通过 web chat runtime 发送了关键运行事件：
 不需要推倒全部重写。以下资产可复用：
 
 - `chatRuntime.ts` 已有 stored message / runtime event normalization 基础。
-- `toolResultEnvelope.ts` 已能识别 `deep_research_*`、HR preview、create employee 等结构化结果。
 - `renderToolCall` 已有 tool card 雏形，只是默认不显示。
-- `DeepResearchStreamPanel` 和 `useDeepResearchStream` 已有 SSE parsing / reducer 基础，可迁入统一 timeline。
 - 后端 `RuntimeTask(task_type="web_chat_turn")` 已把 web chat run 从 WebSocket 生命周期中解耦，前端可以围绕 durable run 做 continuing/reconnect 状态。
 
 ---
@@ -103,7 +95,6 @@ Hive 不是 onyx 的搜索产品。Hive 是企业数字员工控制平面，所�
 - Hive 必须显示 `permission`、`session_compact`、`pack_activation`、team memory、capability gate。
 - Hive 有 durable run、session reconnect、active run continuation，这些比 onyx 普通 streaming 更复杂。
 - Hive 有 agent-to-agent / read-only session，需要明确谁在说话、是否可回复、当前用户是否能操作。
-- Hive 的工具域更多：office、Feishu、memory、create employee、deep research、files、workspace、MCP。
 
 因此目标是：**借 onyx 的 timeline 架构和交互节奏，做 Hive 自己的 Agent Workbench Chat。**
 
@@ -207,7 +198,6 @@ type ChatStreamEvent =
   | { type: 'tool_started'; toolName: string; args: Record<string, unknown>; timestamp: string }
   | { type: 'tool_completed'; toolName: string; args: Record<string, unknown>; result: unknown; timestamp: string }
   | { type: 'runtime_event'; eventType: 'permission' | 'session_compact' | 'pack_activation' | 'team_memory'; payload: unknown; timestamp: string }
-  | { type: 'deep_research_event'; event: DeepResearchStreamEvent; timestamp: string }
   | { type: 'round_start'; index: number; max: number; timestamp: string }
   | { type: 'round_pressure'; used: number; max: number; level: 'info' | 'warning' | 'critical'; timestamp: string }
   | { type: 'done'; content: string; thinking?: string; timestamp: string }
@@ -241,7 +231,6 @@ interface TimelineStepSnapshot {
     | 'permission'
     | 'compaction'
     | 'pack_activation'
-    | 'deep_research'
     | 'round'
     | 'answer';
   status: 'pending' | 'running' | 'done' | 'blocked' | 'failed' | 'cancelled';
@@ -262,7 +251,6 @@ interface TimelineStepSnapshot {
 - `thinking` 不再作为孤立 assistant 空消息，而是 timeline step。
 - `chunk` / `done` 进入 answer 区域，最终答案仍是主内容。
 - `permission` 是用户可见状态，不是 internal trace。
-- deep research SSE 事件进入 `children`，成为 `deep_research` step 的嵌套进度。
 - 历史消息加载时必须能从 persisted messages 还原 timeline，至少还原 tool/event/done 级别。
 
 ---
@@ -314,7 +302,6 @@ interface TimelineStepSnapshot {
 ### 7.2 主路径和高级细节
 
 - 默认显示：step 标题、参数摘要、状态、计时、结果摘要。
-- 展开后显示：完整 tool args、structured result、deep research artifacts、permission reason、compaction details。
 - 不再使用"Show internal trace"作为主门控。可以保留"详细信息"开关，但它只影响 debug 级字段，不影响工作过程可见性。
 
 ### 7.3 文案标准
@@ -330,7 +317,6 @@ interface TimelineStepSnapshot {
 | `office_document_*` | 正在处理文档 |
 | `send_feishu_message` | 正在准备飞书消息 |
 | `save_memory` | 正在保存记忆 |
-| `deep_research_start/run` | 正在深度研究 |
 | `create_digital_employee` | 正在创建数字员工 |
 | `permission` | 需要确认 |
 | `session_compact` | 已整理上下文 |
@@ -350,29 +336,20 @@ Composer 必须成为可预测的任务入口：
 
 ---
 
-## 8. Deep Research 合流
 
 ### 8.1 当前问题
 
-deep research 当前路径是：
 
 ```text
-tool result kind=deep_research
   -> StructuredToolResultBody
-    -> DeepResearchStreamPanel
-      -> useDeepResearchStream
-        -> GET /api/deep-research/stream/{agent_id}/{task_id}
 ```
 
-这导致 deep research 体验与普通 chat 分叉。用户看到的是一个嵌在 tool result 里的小面板，而不是 agent 主工作流。
 
 ### 8.2 目标形态
 
 保留 SSE 作为数据源，但 UI 必须合流：
 
 ```text
-deep_research tool_started
-  -> TimelineStep(kind='deep_research', status='running')
     -> SSE step/source_note/claim/lane_summary/reflection/controller_trace
       -> nested children / counters / report preview
 ```
@@ -381,13 +358,10 @@ deep_research tool_started
 
 P1:
 
-- `DeepResearchStreamPanel` 仍可存在，但外层 tool step 默认可见。
 - 不再被 `showInternalTrace` 阻断。
 
 P2:
 
-- 新建 `DeepResearchTimelineBridge`，把 `useDeepResearchStream` 输出转换成 `TimelineStepSnapshot.children`。
-- `DeepResearchStreamPanel` 改造成 `DeepResearchStepDetails`，只作为 timeline step 的展开详情。
 
 P3:
 
@@ -432,7 +406,6 @@ P0/P1 原则上不改后端。P2 需要补两个低风险 runtime events：
 2. 修复 `AgentDetail.tsx` active run UI 状态：`tool_call/thinking` 不应让用户看到空窗。
 3. `tool_call` 默认可见，不再被 `showInternalTrace=false` 整体隐藏。
 4. waiting indicator 读取最近 running tool，显示具名状态和计时。
-5. deep research tool card 至少默认可见。
 
 测试：
 
@@ -522,7 +495,6 @@ npm run build
 - 完成后不永久占屏，但可展开复盘。
 - 没有 `showInternalTrace` 阻断主工作过程。
 
-### P3 - Deep Research 合流 + pacing
 
 周期：3-4 天  
 风险：高  
@@ -530,15 +502,12 @@ npm run build
 
 实现：
 
-1. `DeepResearchTimelineBridge` 把 SSE state 映射为 nested timeline children。
-2. `DeepResearchStreamPanel` 改为 step details，不再是独立主面板。
 3. 引入 pacing：首 step 即时，其余 step 约 200ms 间隔展示。
 4. 最终答案在工具 step pacing 完成前暂缓显示，历史回放跳过 pacing。
 5. reasoning/thinking 最小展示时长，避免闪烁。
 
 验收：
 
-- long deep research 全程在主 timeline 可见。
 - sources、claims、lanes、reflections 不再散落在独立 panel。
 - 信息不会瞬间倾倒，用户能读懂 agent 的工作节奏。
 
@@ -597,7 +566,6 @@ npm run build
 | pure reducer | `chatTimeline.test.ts` | event sequence -> snapshot |
 | label mapping | `chatTimelineLabels.test.ts` | tool args -> 用户文案 |
 | component | `AgentTimeline.test.tsx` | EMPTY/STREAMING/BLOCKED/DONE 渲染 |
-| deep research bridge | `DeepResearchTimelineBridge.test.ts` | SSE events -> nested steps |
 | integration | `AgentChatSection.test.tsx` | tool_call 默认可见、waiting 不空白 |
 | existing regression | `chatRuntime.test.ts` | stored message normalization |
 
@@ -627,7 +595,6 @@ ruff check app/kernel/engine.py app/services/web_chat_runtime.py app/services/ch
 1. 普通一句话问答。
 2. web search -> fetch -> answer。
 3. read file -> analyze -> answer。
-4. deep research start -> streaming artifacts -> final report。
 5. permission required / blocked。
 6. context compaction。
 7. 页面关闭后 30-60 秒重开同一 session，显示 continuing run。
@@ -655,7 +622,6 @@ ruff check app/kernel/engine.py app/services/web_chat_runtime.py app/services/ch
 - `AgentChatSection.tsx` 不再是巨型渲染泥潭。
 - timeline reducer 是纯函数，有高覆盖单测。
 - 新 runtime event 不会被前端静默吞掉。
-- deep research 不再独立成另一套主 UI。
 - 默认路径不再出现 internal trace 门控。
 - build 和核心 vitest 通过。
 
@@ -668,7 +634,6 @@ ruff check app/kernel/engine.py app/services/web_chat_runtime.py app/services/ch
 - 活态状态头。
 - completed collapsed summary。
 - pacing。
-- deep research 嵌套步骤。
 - 工具/来源/引用逐步可视化。
 
 同时超过 onyx 的 Hive 特有能力：

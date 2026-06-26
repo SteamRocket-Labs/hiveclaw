@@ -178,12 +178,12 @@ def test_tool_session_write_paths_skips_non_derivable_or_consumer_tools(tool_nam
 
 
 def test_build_session_artifact_parts_returns_rowless_parts_for_safe_paths(tmp_path):
-    """A-1 helper: producers without a chat message (Deep Research workflow run)
+    """A-1 helper: producers without a chat message (workflow run)
     build artifact-delivery parts directly from safe workspace paths."""
     from app.services.chat_artifact_delivery import build_session_artifact_parts
 
     workspace = tmp_path / "agent"
-    report = workspace / "workspace" / "deep_research_reports" / "run-1" / "report.md"
+    report = workspace / "workspace" / "workflow_reports" / "run-1" / "report.md"
     report.parent.mkdir(parents=True)
     report.write_text("# Report\n", encoding="utf-8")
 
@@ -191,17 +191,17 @@ def test_build_session_artifact_parts_returns_rowless_parts_for_safe_paths(tmp_p
         agent_id=uuid4(),
         session_id=uuid4(),
         runtime_task_id=uuid4(),
-        paths=["workspace/deep_research_reports/run-1/report.md", "memory/t3/user.md"],
+        paths=["workspace/workflow_reports/run-1/report.md", "memory/t3/user.md"],
         workspace_root=workspace,
-        source="deep_research",
+        source="workflow",
     )
 
     assert len(parts) == 1  # internal memory path rejected, report kept
     part = parts[0]
     assert part["type"] == "artifact"
-    assert part["path"] == "workspace/deep_research_reports/run-1/report.md"
+    assert part["path"] == "workspace/workflow_reports/run-1/report.md"
     assert part["preview_kind"] == "markdown"
-    assert part["source"] == "deep_research"
+    assert part["source"] == "workflow"
     assert part["artifact_id"]
     assert part["preview_snapshot_content"] == "# Report\n"
 

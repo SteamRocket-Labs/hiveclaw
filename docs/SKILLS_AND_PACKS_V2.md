@@ -5,7 +5,6 @@
 | **状态** | Proposal / Implementation Checkpoint v0.5 |
 | **日期** | 2026-05-02 |
 | **作者** | Hive Engineering |
-| **范围** | Skill 系统重构 + Capability Pack catalog 升级 + 三个内容能力包（deep-research / finance / office）+ finance data layer + finance analysis layer |
 | **依赖** | `agentskills.io` 开放标准（**兼容**而非全盘采纳） |
 | **预计工期** | 10–14 周（6 个 v1 stage + 1 个推迟的 runtime 迁移 stage） |
 
@@ -26,11 +25,9 @@
 | Stage | 状态 | 已落地文件/能力 |
 |-------|------|----------------|
 | Stage 1 Parser v2 | 已完成基础实现 | `backend/app/skills/parser.py` 改 PyYAML tolerant parser；`types.py` 补 v2 metadata；`loader.py` 补 `list_resources()` / `read_resource()`；`registry.py` 补 dependency body loading |
-| Stage 2 Pack manifest catalog | 已完成 catalog 旁路 | `backend/app/packs/catalog_reader.py`；根目录 `packs/deep_research_pack` / `packs/finance_pack` / `packs/office_pack`；`get_pack_catalog()` 展示 manifest pack，runtime 仍由 `@tool(ToolMeta.pack)` 决定 |
 | Stage 3a Office package skeleton | 已完成目录契约 | docx/xlsx/pptx/pdf 增加 `references/` `templates/` `evals/`；新增 `weekly-report-generator` / `meeting-minutes` / `pitch-deck-generator` SOP package |
 | Stage 5 Finance foundation skeleton | 已完成可测试骨架 | `backend/app/finance_data/schemas.py` 提供 entity/source ledger；`backend/app/finance_analysis` 提供 research packet、DCF calculator、IC memo artifact、workflow spec |
 
-未在 v0.5 内宣称完成：真实外部金融 connector、OAuth 外部账户工具、deep-research 工具 handler、finance tool handler 注册、Stage 6 runtime pack 迁移。
 
 ### v0.1 → v0.2 订正记录
 
@@ -38,7 +35,6 @@
 |---|----------|----------|------|
 | 1 | "现有 skill 全部是单 SKILL.md" | pdf-generator 已有 `scripts/`；skill-creator 由 `services/skill_creator_content.py` 动态生成；docx/xlsx/pptx/find-skills/skill-vetter 5 个仍是单文件 | `ls backend/app/templates/skills/pdf-generator/` 实测 |
 | 2 | "Stage 0 是低风险纯重构" | Stage 0 是**中风险**。collector 用 `@tool(ToolMeta(... pack=...))` 收集，runtime 改造牵动 collector / pack_service / runtime/invoker / capability_gate / tool_seeder / UI / 测试。**runtime 改造推迟到 Stage 6 单独立项**，前 5 个 stage 不动收集机制 | `backend/app/tools/collector.py:124-142` |
-| 3 | "deep-research 必须先做，finance/office 不能平行" | **协议先定，实施可并行**。deep-research SOP 协议先定，但 office 文档 package 化和 finance 数据 adapter 完全可平行打底 | 业务依赖分析：office 生成 PPT 不依赖 5-phase；finance 数据拉取不依赖 orchestrator |
 | 4 | 工具命名用 dotted name（`finance.get_price_history`） | **全部改 underscore**：`finance_get_price_history` / `office_read_docx`。OpenAI function name 规范是 `[a-zA-Z0-9_-]`，dotted name 进 LLM API 会报错 | `backend/app/tools/collector.py:54-63` 直接把 `meta.name` 塞进 OpenAI function schema |
 | 5 | "`metadata.hive.version` 强制 semver" | **全部 optional + tolerant 解析**。strict YAML validator 跨平台风险真实，硬约束应放 pack.yaml / DB，不放 frontmatter | agentskills.io spec 公开 spec 偏简单 key-value |
 | 6 | Office pack 先做 ~15 个 atomic tool | **先 package 化现有 4 个 skill，不堆 atomic tool**。`pyproject.toml:28-41` 已装 pdfplumber / python-docx / openpyxl / python-pptx / reportlab / pypdf / xlsxwriter，核心库不缺。Anthropic 范式本身是"教 LLM 写代码"，堆 atomic tool 反范式。外部账户工具（gmail/outlook/imap）单独做 | `backend/pyproject.toml:28-41` 实测 |
@@ -90,7 +86,6 @@ Hive 当前 skill 系统在文件级看似不薄（pdf-generator 已有 scripts/
 | 2. Pack manifest catalog 旁路 | `packs/*/pack.yaml` 作为元数据读取层；runtime 仍走 @tool decorator | 1 周 | 低 |
 | 3a. Office package 化 | 现有 4 个 skill 升级为完整 package + 3 个新 SOP | 1-2 周 | 低-中 |
 | 3b. Office external accounts | gmail/outlook/imap/gcal/onedrive/gdrive 等外部账户工具 | 1-2 周 | 中 |
-| 4. Deep-research pack | 5-phase SOP + 8-10 高价值工具 + 独立 citation agent | 2-3 周 | 中 |
 | 5a. Finance data foundation | A 股 / 港股 / 美股一二级 connector + entity master + source ledger；OpenBB 仅可选外接 | 3-4 周 | 高 |
 | 5b. Finance analysis workflows | 二级深度、一级尽调、IPO pipeline、估值模型、组合风险 review；workflow + 特定子 agent + 可复算模型 | 2-3 周 | 中-高 |
 | **6. Pack runtime 迁移**（**单独立项**） | `@tool decorator + ToolMeta.pack` → `pack.yaml` 完全切换。牵动 collector / capability_gate / tool_seeder / UI / 测试 | 后续 | 高 |
@@ -215,7 +210,6 @@ skill-name/
 
 这样跨 Claude Code / OpenCode / Gemini CLI 加载 Hive skill 不会因 strict validator 报错。
 
-### 2.2 Deep Research SOTA 已收敛
 
 Anthropic / OpenAI / Gemini / Perplexity / xAI 五个商业产品 + 10 个开源项目，**所有 SOTA 都用同一个拓扑**：
 
@@ -224,7 +218,6 @@ Anthropic / OpenAI / Gemini / Perplexity / xAI 五个商业产品 + 10 个开源
 | 关键发现 | 数据 | 来源 |
 |---------|------|------|
 | 并行 subagent vs 单 agent 长循环 | **90% 时间节省** | [Anthropic engineering](https://www.anthropic.com/engineering/multi-agent-research-system) |
-| Code-action vs JSON tool calls | GAIA 上 **55.15% vs 33%**（+22 pp）| [HF Open Deep Research](https://huggingface.co/blog/open-deep-research) |
 | Inline citation 幻觉率 | **3-13% URL 幻觉，5-18% 不可解析** | [PIES 论文 arXiv 2601.22984](https://arxiv.org/abs/2601.22984) |
 | Outline-first vs 纯 iterative | STORM / Anthropic / 大多数 OSS 用 outline-first | [STORM](https://github.com/stanford-oval/storm) |
 
@@ -595,20 +588,12 @@ Stage 6 单独立项是因为：collector / pack_service / runtime/invoker / cap
 
 | 能力包 | 依赖于 | 不依赖 | 协议先定 | 实施可并行 |
 |--------|-------|--------|---------|-----------|
-| **deep-research** | parser v2、pack catalog | — | 5-phase 协议、citation 后处理 | — |
-| **office package** | parser v2、pack catalog | deep-research 协议（office 不做研究 SOP）| 现有 4 个 skill 的 package 化模式 | ✓ 可与 deep-research 并行 |
-| **office external accounts** | tenant credential / OAuth / governance | deep-research 协议 | 外部账户工具治理协议 | ✓ 可与 deep-research 并行，但不阻塞 office package |
-| **finance data layer** | parser v2、pack catalog、connector 抽象、entity master | deep-research 协议 | 三市场一二级数据源矩阵、tenant credential 规则 | ✓ 可与 deep-research 并行 |
-| **finance analysis workflow** | finance data layer；研究 SOP 部分依赖 deep-research 协议；输出部分消费 office 工具 | — | research packet schema、analysis result schema、source ledger、子 agent 分工、deterministic calculator 边界 | 等 deep-research 协议和 finance data layer 定稿 |
 
 **结论**：v0.1 文档说"必须串行"是错的。正确说法是：
 
 - **Stage 1-2（parser v2 + pack catalog）必须先做** — 这是基础设施
 - **Stage 3a / 4 / 5a 可重叠**：
-  - office package 化 = deep-research 协议无关，**可并行**
-  - finance data layer（connector / entity master / source ledger）= deep-research 协议无关，**可并行**
   - office external accounts = 可并行，但 credential / OAuth 风险单独管理
-  - finance analysis workflow（二级深度 / 一级尽调 / IPO pipeline / 组合风险）= 等 deep-research 协议和 finance data layer 定稿后做
 
 ### 5.2 修订后的依赖图
 
@@ -638,7 +623,6 @@ Stage 6 单独立项是因为：collector / pack_service / runtime/invoker / cap
 
 ## 6. 三包内容矩阵
 
-### 6.1 deep-research-pack — 8-10 高价值工具（不是 14）
 
 #### 工具清单（cloud locale，underscore 命名）
 
@@ -770,7 +754,6 @@ Finance Data Layer
 
 | Skill | 依赖 | v1 包含 |
 |------|------|--------|
-| `secondary-equity-deep-dive` | deep-research 协议 + finance data layer | ✓ |
 | `dcf-valuation` | 估值工具 + source ledger | ✓ |
 | `comps-valuation` | peer set + multiples + filings | ✓ |
 | `ipo-pipeline-monitor` | SEC / HKEX / CSRC / 交易所 connector | ✓ |
@@ -780,7 +763,6 @@ Finance Data Layer
 | `mna-deal-analysis` | deal database + filings + valuation models | P1 |
 | `macro-regime-brief` | economics + rates + policy + geopolitics sources | P1 |
 | `earnings-call-analysis` | 财报 + 新闻 + transcript 源 | 后续 |
-| `industry-mapping` | deep-research 协议 + comps | 后续 |
 | `alpha-factor-lab` | factor data + backtest engine + model eval | 后续 / gated |
 
 #### 数据搞定之后，finance analysis layer 应该提供什么
@@ -803,7 +785,6 @@ finance_workflows
 | **二级 equity research** | Equity Research、financial statement analysis、DCF、multiples、technicals、news/sentiment | `secondary-equity-deep-dive` + `dcf-valuation` + `comps-valuation` | Markdown/PDF 深度报告 + Excel 估值模型 + source ledger |
 | **一级 / 投行 / PEVC** | M&A analytics、startup valuation、LBO、fairness opinion、deal database、SEC filing scanner | `primary-market-due-diligence` + `ipo-pipeline-monitor` + `mna-deal-analysis` | IC memo、IPO pipeline、deal teardown、LBO/VC method 模型 |
 | **组合与风险** | Portfolio analytics、optimization、VaR/CVaR、stress test、factor exposure | `portfolio-risk-review` | 组合风险报告、暴露拆解、再平衡建议、stress scenario |
-| **宏观 / 地缘 / 新闻事件** | economics modules、news correlation、instability score、prediction-market overlay、geopolitics agents | `macro-regime-brief` + deep-research | 市场 regime brief、风险地图、行业/供应链影响分析 |
 | **量化 / alpha 实验** | AI Quant Lab、factor discovery、backtesting、technical nodes、pairs/regime detection | `alpha-factor-lab`（后续 gated） | factor tear sheet、backtest report、signal diagnostics |
 | **交易执行 / broker / HFT / RL** | algo trading、live signals、HFT、RL trading、order nodes | 不进默认 cloud v1 | Enterprise/Desktop 或客户自担风险环境 |
 
@@ -1129,7 +1110,6 @@ xlsxwriter>=3.x
 | `backend/app/skills/registry.py` | catalog 渲染已对齐 Claude Code，加 `requires_skills` 解析在激活时尝试连带加载（缺则 warn）| 0.5 天 | 低 |
 | **新增** `backend/app/packs/catalog_reader.py` | **新建**：扫描 `packs/*/pack.yaml`，提供 `list_packs()` / `get_pack(name)` API（**只读，不影响 runtime**）| 1 天 | 低 |
 | `backend/app/templates/skills/docx-generator/` etc. | 4 个现有 skill 升级为完整 package（加 references/ scripts/ templates/ evals/）| 4-5 天 | 低 |
-| **新增** `backend/app/tools/handlers/research/*.py` | 8-10 个 deep research 工具 | 1 周 | 中 |
 | **新增** `backend/app/finance_data/schemas.py` | `EntityMaster` / `Security` / `Filing` / `FundingRound` / `IPOEvent` / `SourceLedger` 统一 schema | 2-3 天 | 中 |
 | **新增** `backend/app/finance_data/connectors/*.py` | SEC / HKEX / cninfo / akshare / yfinance / GLEIF / sanctions connectors；付费源只声明 adapter 接口 | 1.5-2 周 | 高 |
 | **新增** `backend/app/finance_data/entity_master.py` | 多源 ID 映射、company/person/fund/deal 归一化 | 1 周 | 高 |
@@ -1302,7 +1282,6 @@ class PackCatalogReader:
 | **2. Pack manifest catalog** | `packs/*/pack.yaml` 文件 + `PackCatalogReader` 新文件；UI 加"Pack 详情"页面；**不动 collector / pack_service / runtime** | 1 周 | 低 | 串行（基础设施）|
 | **3a. Office package 化** | 现有 4 个 skill 升级为完整 package（references/scripts/templates/evals）；加 markitdown/docxtpl/pypandoc/weasyprint；新增 3 个 SOP skill（weekly-report / meeting-minutes / pitch-deck） | 1-2 周 | 低-中 | **可与 Stage 4/5a 并行** |
 | **3b. Office external accounts** | 新增 12-15 个外部账户工具（gmail/outlook/imap/gcal/onedrive/gdrive）；tenant credential + OAuth + audit | 1-2 周 | 中（外部 API + OAuth）| **可与 Stage 4/5a 并行；不阻塞 3a** |
-| **4. Deep-research pack** | 8-10 个高价值工具实现 + 5-phase orchestrator SOP（`industry-research` `topic-deep-dive`）+ 独立 `compile_citations` agent + 与 4 层记忆集成 | 2-3 周 | 中（PIES 失败模式）| **可与 Stage 3a/5a 并行** |
 | **5a. Finance data foundation** | 美股/港股/A股一二级 connector + entity master + source ledger + tenant credential policy；OpenBB optional only | 3-4 周 | 高 | **可与 Stage 3a/4 并行** |
 | **5b. Finance analysis workflows** | `secondary-equity-deep-dive` + `dcf-valuation` + `comps-valuation` + `ipo-pipeline-monitor` + `primary-market-due-diligence` + `portfolio-risk-review` + `ic-memo-generator` | 2-3 周 | 中-高 | 必须在 Stage 4 协议和 Stage 5a 数据层定稿后 |
 | **6. Pack runtime 迁移**（**单独立项**） | `@tool(ToolMeta(... pack=...))` → `pack.yaml` 完全切换；改 collector / pack_service / runtime/invoker / capability_gate / tool_seeder / UI / 测试 | 后续单独排期 | 高 | 串行 |
@@ -1348,7 +1327,6 @@ Stage 1 开工前需要确认：
 | **pack catalog** | 读取 `pack.yaml`、展示工具/skill/MCP/credential requirements；runtime 行为不变 | pack API/UI 可显示；collector output 不变 |
 | **office package** | docx/xlsx/pptx/pdf golden samples；文件能打开；渲染截图检查文字溢出/低对比/布局错位 | 每类至少 3 个样本通过 |
 | **office external accounts** | OAuth / IMAP / SMTP / calendar mock；tenant A/B credential 隔离；audit log 记录 | 跨租户不能读到对方凭证或数据 |
-| **deep-research** | source ledger 完整；citation URL 可解析；引用和报告段落能对应；subagent findings 可复现 | citation 可解析率 ≥95%，所有关键结论有来源 |
 | **finance data layer** | 每个市场至少 1 个端到端样本：A 股、港股、美股；每个字段有 source ledger | 价格/财报/filing/IPO pipeline 样本全通；数字可追溯 |
 | **finance analysis workflow** | 二级深度、一级尽调、IPO pipeline、组合风险、IC memo golden tasks | 报告内所有关键数字有来源；估值/风险模型可重算；subagent findings 有结构化 evidence |
 
@@ -1580,17 +1558,11 @@ sandbox_requirements:
 - [modelcontextprotocol.io 2025-06-18 tools spec](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)
 - [docs.composio.dev custom tools](https://docs.composio.dev/docs/custom-tools)
 
-### Deep Research
 
 - [Anthropic — How we built our multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system)
-- [OpenAI — Introducing deep research](https://openai.com/index/introducing-deep-research/)
-- [Google — Deep Research Max](https://blog.google/innovation-and-ai/models-and-research/gemini-models/next-generation-gemini-deep-research/)
-- [Perplexity — Introducing Deep Research](https://www.perplexity.ai/hub/blog/introducing-perplexity-deep-research)
-- [HuggingFace — Open Deep Research](https://huggingface.co/blog/open-deep-research)
 - [PIES paper (arXiv 2601.22984)](https://arxiv.org/abs/2601.22984)
 - [assafelovic/gpt-researcher](https://github.com/assafelovic/gpt-researcher)
 - [stanford-oval/storm](https://github.com/stanford-oval/storm)
-- [langchain-ai/open_deep_research](https://github.com/langchain-ai/open_deep_research)
 - [Tavily docs](https://docs.tavily.com/welcome)
 - [Exa Answer API](https://exa.ai/docs/reference/answer)
 
@@ -1646,7 +1618,6 @@ sandbox_requirements:
 本文件总结自 4 份独立研究报告，并补充 FinceptTerminal 本地取证：
 
 - `/tmp/hive-research-skills.md` — Skill 标准对比（8 平台）
-- `/tmp/hive-research-deep-research.md` — Deep Research SOTA 调研
 - `/tmp/hive-research-finance.md` — Finance pack 设计
 - `/tmp/hive-research-office.md` — Office pack 设计
 - `/Users/rocky243/testing-project/FinceptTerminal/.ultra/research/02-primary-market-modules.md` — 一级市场模块和工作流

@@ -10,7 +10,6 @@
 
 当前判断:
 
-1. Hive 的大部分 CC / FreeCode 机制已经有实现面: session/resume/checkpoint/fork/compact, hooks, skill, subagent, workflow, team, work ledger, goal, tool search, permissions, Deep Research, MCP, Dream/T3。
 2. 真正的问题是 prompt fleet 没有一个统一 owner: 系统提示词、工具描述、runtime reminder、loop guard、system skills、auto-compaction summarizer、Dream/T3 background prompts 都在影响模型, 但现在不是由同一份 contract 驱动。
 3. 自动压缩本身已经比较强: Hive 的 `_SUMMARIZE_SYSTEM_PROMPT` 比 CC 的基础 compact prompt 多了 session-state-vs-memory 边界、autonomous run state、11 字段结构和 20k 输出预算; 但它缺统一的 prompt contract / golden tests, 也没有把 CC 的 partial compact variants 和 Codex 的 typed handoff summary 明确纳入目标形态。
 4. 下一步不是再补一句 prompt, 而是一次完整 prompt fleet rewrite + golden suite: 所有 model-visible 和 model-behavior-affecting 文本都要归入同一套 contract。
@@ -50,7 +49,6 @@
 | Work Ledger | `work_ledger.py`, reminders, executing_actions | track_todo/record_finding/read_ledger 语义强。 | 需要独立短 protocol, 并和 TaskCreate cognitive-only 保持一致。 |
 | Runtime Reminders | `kernel/reminder_scheduler.py`, `kernel/loop_guard.py` | Plan FULL/SPARSE, ledger, round pressure, loop guard 都会进当前请求。 | 之前不是 first-class prompt surface。必须有 golden tests, 并从 canonical modules 渲染, 不再 inline drift。 |
 | Auto Compaction | `services/conversation_summarizer.py`, `kernel/engine.py` | 详细见 §3。 | 缺 compact prompt contract/golden; 缺 route-specific variants 说明; PTL/microcompact/post-restore 也要作为同一域测试。 |
-| Deep Research | `tools/handlers/deep_research.py` | preview confirmation, async RuntimeTask, artifacts, no repeated polling 已有。 | 缺 when-to-use: source-ledger research vs simple lookup / known URL / Workflow / Subagent。 |
 | MCP / Extensions | `tools/handlers/mcp.py`, `tools/handlers/search.py` | search escalation 好; MCP import/call 文案偏短。 | 需要 explicit extension workflow, list/inspect before call, resource vs tool, approval policy。 |
 | Memory Activation | `prompt_sections/memory.py`, memory activation/retriever | T0/T2/T3/explicit overlay 边界已存在。 | 要避免 Memory 变成基座; Memory 是增强层, 不能替代 session transcript/tool loop/resume。 |
 | Dream / T3 Background Prompts | `services/auto_dream.py`, `templates/{DREAM,DREAM_CONSOLIDATOR,T3_CONSOLIDATOR,T3_MEMORY_GATE}.md` | soul/T3 gate 边界强; legacy prompt 仍保留 validation/human inspection。 | 要登记为 prompt surface; legacy prompt 不得成为 active write path; Dream 不得直接写 accepted T3。 |
@@ -163,7 +161,6 @@ Codex 值得吸收的是:
 | P1 | Workflow 缺 authoring grammar | `workflow.py` | args schema / steps / gates / waits / budget / hash / resume evidence。 |
 | P1 | Permissions 文案过机械 | `permissions.py` | Codex-style readable permission policy, prompt not grant。 |
 | P1 | Runtime reminders / loop guard 不在 owner list | `reminder_scheduler.py`, `loop_guard.py` | canonical module + transient-only tests。 |
-| P1 | Deep Research 缺 decision contract | `deep_research.py` | source-ledger-heavy research 才用; simple lookup 不用; preview confirmation required。 |
 | P1 | MCP import/call 边界偏弱 | `mcp.py`, `search.py` | builtin first, provider tools via tool_search, MCP import explicit extension, inspect before call。 |
 | P1 | Dream/T3 prompts 没纳入 prompt fleet | `auto_dream.py`, `templates/DREAM*.md`, `T3*.md` | active writer path 和 validation legacy prompt 分清; Dream 不直接写 accepted T3。 |
 | P2 | Golden tests 分散且不完整 | `backend/tests/**` | semantic tests by surface, not only exact string snapshots。 |
@@ -202,7 +199,6 @@ Codex 值得吸收的是:
 | `command_parity.py` | Task/Goal/Team/AdvancedPlan/VerifyPlan semantics。 |
 | `runtime_reminders.py` | Plan/ledger/round pressure/loop guard reminder text。 |
 | `compaction.py` | auto/manual/PTL/microcompact/post-restore compact prompt contract。 |
-| `deep_research.py` | Deep Research decision and confirmation contract。 |
 | `mcp.py` | MCP extension/import/call/resource boundary。 |
 | `dream_memory.py` | Dream/T3 prompt surface contract, not mechanism implementation。 |
 
@@ -244,7 +240,6 @@ Codex 值得吸收的是:
 3. Refactor existing prompt sections and tool descriptions to import/render canonical clauses.
 4. Move compaction prompt into `runtime/prompts/compaction.py` and keep `conversation_summarizer.py` as caller.
 5. Replace inline reminder/loop guard texts with `runtime_reminders.py`.
-6. Expand command parity, delegation, MCP, Deep Research tool descriptions.
 7. Run prompt_eval + targeted tests.
 8. Only after Prompt fleet closes, enter Dream/Memory mechanism redesign.
 
@@ -272,11 +267,9 @@ Prompt layer is complete only when:
 | General behavior contract | `backend/app/runtime/prompts/behavior.py`, `backend/app/runtime/prompt_sections/system.py` | System Prompt now carries a short vendor-neutral behavior contract: no hidden assumptions, act when enough context exists, simplest working solution, surgical changes, success criteria first, evidence-backed progress, pause only on real blockers, no hidden-reasoning extraction. |
 | Delegation brief grammar | `backend/app/runtime/prompts/delegation.py`, `backend/app/tools/handlers/communication.py` | `delegate_to_agent` now exposes the structured brief grammar directly in tool schema: Goal / Context / Known facts / Constraints / Evidence needed / Output / Stop condition. |
 | Command parity | `backend/app/runtime/prompts/command_parity.py`, `backend/app/tools/handlers/command_parity.py` | Task/Goal/Team/AdvancedPlan/VerifyPlan now explain their relation to execution primitives: Task is cognitive-only, Goal is resume/continuation state, Team is enterable member-session workspace, AdvancedPlan is planning-only, VerifyPlan is evidence-only. |
-| Deep Research routing | `backend/app/runtime/prompts/deep_research.py`, `backend/app/tools/handlers/deep_research.py` | Tool descriptions now say Deep Research is not for simple lookup, must pass preview/confirmation, and should defer simple source reads to `web_search` / `web_fetch`. |
 | MCP routing | `backend/app/runtime/prompts/mcp.py`, `backend/app/tools/handlers/mcp.py` | MCP tools now distinguish imported tool schemas, inspect-before-call, explicit platform-extension import, `resources/list`, and `resources/read`. |
 | Auto-compaction prompt | `backend/app/runtime/prompts/compaction.py`, `backend/app/services/conversation_summarizer.py` | `_SUMMARIZE_SYSTEM_PROMPT` imports the canonical long-run compaction contract: progress claims require evidence, assumptions/tradeoffs/user-approved scope survive compaction, tactical state stays non-durable, hidden reasoning is not requested, and resume anchors to the latest explicit request. |
 | Runtime reminders / loop guard | `backend/app/runtime/prompts/runtime_reminders.py`, `backend/app/kernel/reminder_scheduler.py`, `backend/app/kernel/loop_guard.py` | Plan Mode FULL/SPARSE reminders, Work Ledger reminder, replan policy, round-pressure warning, and loop-guard warning now share canonical prompt fragments instead of drifting inline strings. |
-| Golden tests | `backend/tests/runtime/test_unified_prompt_contracts.py` | New test locks the behavior contract, delegation grammar, command parity semantics, Deep Research/MCP routing, compaction long-run state, runtime reminders, and loop-guard prompt ownership. Existing prompt/compaction tests still pass. |
 
 Reference handling:
 
@@ -293,7 +286,6 @@ cd backend && source .venv/bin/activate && pytest tests/runtime/test_unified_pro
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_unified_prompt_contracts.py tests/services/test_prompt_contracts.py tests/services/test_conversation_summarizer_prompt.py tests/kernel/test_autonomy_prompt_boundaries.py tests/architecture/test_prompt_text_contract_doc.py -q
 # 61 passed, 4 warnings
 
-cd backend && source .venv/bin/activate && ruff check app/runtime/prompts app/runtime/prompt_sections/system.py app/kernel/reminder_scheduler.py app/kernel/loop_guard.py app/tools/handlers/communication.py app/tools/handlers/command_parity.py app/tools/handlers/deep_research.py app/tools/handlers/mcp.py app/services/conversation_summarizer.py tests/runtime/test_unified_prompt_contracts.py
 # All checks passed
 ```
 

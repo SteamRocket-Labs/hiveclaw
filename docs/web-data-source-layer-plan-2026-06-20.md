@@ -18,7 +18,6 @@
 正确做法是做 Hive 自己的 `Web Data Source Layer`：
 
 ```
-Agent tools / Skills / Deep Research
   -> Source Router
   -> Provider Registry
   -> Connector Runtime
@@ -66,10 +65,7 @@ Agent tools / Skills / Deep Research
    - `xcrawl_scrape`：XCrawl scrape，支持 `js_render`；失败时 fallback 到 `firecrawl_fetch`。
    - `web_fetch` 在 HTTP 错误、空内容、不可读 PDF、JS shell 时，会按 key 可用性升级到 Firecrawl/XCrawl。
 
-6. Deep Research ledger
-   - Deep Research 已有 `EvidenceLedger`，会写 `sources.jsonl` / `claims.jsonl`。
    - source 记录包含 `source_id`、URL、title、publisher、content、lane、query、fetch_tool，并做 evidence grade。
-   - 但这是 Deep Research run-local ledger，不是跨工具共享的数据源 ledger。
 
 7. `trafilatura`
    - `backend/pyproject.toml` 已安装 `trafilatura>=1.12.0`。
@@ -87,8 +83,6 @@ Agent tools / Skills / Deep Research
 
 - 有较完整的联网搜索/抓取链。
 - 有 custom API 连接器。
-- 有 deep research source ledger 方向。
-- 没有跨 `web_pack` / `custom_api` / deep research 共用的 `SourceArtifact` / data source ledger。
 - 没有“先 API、再 search/fetch fallback”的 data source router。
 - 没有把 Custom API 升级成 provider template / operation catalog。
 - 没有金融、行业、科研、社媒数据源的领域 connector。
@@ -176,7 +170,6 @@ Source Router 根据任务选择数据路径：
 |------|----------|
 | 已知 URL | `web_fetch` source acquisition -> `DocumentConversionService` Markdown artifact -> source ledger；JS/blocked case 再走 Jina/Crawl4AI/Firecrawl provider fallback |
 | 普通公开资料 | `web_search` -> `web_fetch` -> Markdown artifact/source ledger |
-| 高召回研究 | Exa category/search type 或 Tavily topic/search_depth -> reader/crawler -> Markdown artifact -> deep research/统一 ledger |
 | 金融市场/财报/filing | finance provider registry -> official/API source first -> web fallback |
 | 科研/专利/政府监管 | official API first -> web fallback |
 | 社媒 | official API / approved provider first -> web fallback only for public pages and low-risk cases |
@@ -314,7 +307,6 @@ backend/app/data_sources/
 
 - 在现有 `web_fetch`、`firecrawl_fetch`、`xcrawl_scrape`、custom API test/run 外围写 `SourceArtifact`。
 - 对可转为 agent-readable prose 的 source，记录 `markdown_artifact_path`、`content_hash`、conversion engine 和 source acquisition provider。
-- Deep Research 可以读取统一 ledger，而不是只用自己的局部 ledger。
 
 ### Step 3: Web context provider adapter
 

@@ -180,11 +180,11 @@ class AgentInvocationRequest:
     smart_model_routing: dict[str, Any] | None = None
     delegation_token: Any | None = None
     # RC11: when True the kernel exposes ZERO tools to the LLM (see get_agent_kernel).
-    # Deep Research reasoning passes set this so the synthesis LLM returns its report
-    # as text instead of routing it through a write_file call that blows the round budget.
+    # Specialized reasoning passes set this so text synthesis cannot route through
+    # write_file and blow the round budget.
     disable_tools: bool = False
-    # Task1: per-call output-token ceiling override. Deep Research synthesis sets
-    # this so the full report is not truncated at the model's chat default; the
+    # Task1: per-call output-token ceiling override. Specialized synthesis can
+    # set this so long output is not truncated at the model's chat default; the
     # kernel feeds it into get_max_tokens (still clamped to the hard limit).
     max_output_tokens: int | None = None
     # Durable chat runtimes append their terminal assistant transcript after the
@@ -936,9 +936,8 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         return await _resolve_memory_navigation_context(request, tenant_id)  # type: ignore[arg-type]
 
     async def _kernel_get_tools(agent_id: uuid.UUID, core_only: bool) -> list[dict]:
-        # RC11: deep-research reasoning passes disable the tool surface entirely so the
-        # synthesis LLM cannot route its report through a write_file call (which blew the
-        # 1-round budget and surfaced as "[Error] Too many tool call rounds").
+        # RC11: specialized reasoning passes can disable the tool surface entirely so
+        # synthesis cannot route through write_file and exhaust the round budget.
         if disable_tools:
             return []
         # Auto-include channel-specific tools so agents don't need to

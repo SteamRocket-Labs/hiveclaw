@@ -39,13 +39,11 @@ Owner 判断(2026-06-08):**「Plan Mode、Task、Subagent 全部过一遍,特别
 
 ## 0.3 实施进度(在 main 上逐 commit 推进,2026-06-08)
 
-> owner 拍板:直接在 main 改、每部分一个 commit、每步更新本文带证据。main 本地推进,未 push。long_task 区分两层:plan intent(本线收敛)vs `long_task_runtime.py`(deep research 异步基建,**不动**)。
 
 | # | 内容 | 关键改动 | 证据 |
 |---|------|---------|------|
 | 0 | 设计文档 v1 落地 | 四块审计 + 砍/收敛/保留三分框架 | `cd50356d` |
 | 1 | 砍 `external_action` / `state_change` 孤儿 plan intent | `INTENT_TYPES` 5→3;`_INTENT_HANDOFF_TARGET` 去 2 条;`plan_request` 注释 | red-first(`test_intent_types` 先红)→535 plan/intent/handoff/dr 测试绿 |
-| 2 | **重命名归位** plan intent `long_task` → `in_session_execution`(owner 拍 A) | `INTENT_TYPES`/`_ACTION_INTENT`/`_INTENT_HANDOFF_TARGET` + handlers/deep_research/web_chat;alembic data migration backfill 存量;**保留** legacy target word + `long_task_runtime` + `start_long_task` action_kind 名 | 全量 4057 绿;migration head 测试更新;保留 intent-match Goal-2 治理 |
 | 3 | **plan handoff 解开 objective**:`objective_trigger` → `scheduled_trigger` 直连 | `plan_mode_handoff.py` 整重写=从 plan `wake_policy` **直接建 `scheduled_job` cron trigger**(盖 `config.plan_id` backstop,零 AgentObjective);`autonomous_wake` intent 重指 `scheduled_trigger`;**detached 桩补成真 once**(§7 step1:`force_once` 复用同机器);registry/web_chat/handlers/plan_mode `create_objective` 字段去除;plan_mode_handoff 自此**脱离 objective 爆炸半径** | red-first(handoff/e2e 重写)→ 130 plan-mode 测试绿 + web_chat/gate 84 绿;e2e 断言 `session.objectives == []` |
 
 **C3 净效果**:plan 确认后只剩三条干净 handoff —— `continue_current_session`(当前会话)/ `scheduled_trigger`(周期 cron,从 plan 直建)/ `detached→once`(后台一次),全部不经 objective。下一步 objective 子系统可整体退役(已无 plan 客户)。
@@ -268,7 +266,6 @@ Hive 两轴:`spawn_subagent`(worker)+ `delegate_to_agent`(peer delegation)。已
 
 | # | Hive 概念 | loc | 处置 | 理由 |
 |---|-----------|-----|------|------|
-| S-D2 | `fanout_subagents` 独立原语(Semaphore + `SubagentBudget`) | subagent.py:963 | **收敛** | CC 靠模型在一条 message 发多个 Agent call 并行,无 fan-out 函数。当前不暴露为 LLM 工具(对的);**保留为 deep-research 内部细节,不提升一等、不进工具目录** |
 | S-D3 | `ForkLevel` 三档 `none/brief/all` | subagent.py:138 | **收敛(砍 brief)** | CC 刻意二元:fresh(`subagent_type` 在场)vs full-fork(省略)。`brief`(压缩父消息)是自创中间态,且 LLM spawn 工具根本不暴露 fork 参数。收敛为 `none`+`all` |
 
 ### 5.3 保留:进化闭环 = North Star Goal 1(✅ owner 2026-06-08 已拍 —— 保留全套)
@@ -313,7 +310,6 @@ Hive 两轴:`spawn_subagent`(worker)+ `delegate_to_agent`(peer delegation)。已
 | Plan | `start_workflow→long_task` 映射 / `wake_policy` 嵌 plan | 按风险直接 gate / schedule 归 trigger |
 | Task | 业务 DB `Task` 第二套 + `execute_task` lane | 回归 Work Ledger 单板 + 统一 runtime |
 | Task | `should_enable_work_ledger` 机械门 / `required` 完成门 | 常驻可用 + prompt 驱动 / advisory 非 blocker |
-| Subagent | `fanout_subagents` / `SubagentBudget` | 降为 deep-research 内部细节,不提升一等 |
 
 ### 保留(有意 Hive delta,标为非 CC 对齐项)
 

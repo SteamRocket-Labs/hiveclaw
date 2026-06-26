@@ -149,6 +149,10 @@ _DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "secret exfiltration",
     ),
 )
+_DESTRUCTIVE_DELETE_CAPABILITY = "workspace.command.destructive_delete"
+_DESTRUCTIVE_DELETE_RISK_CLASS = "destructive_delete"
+_DESTRUCTIVE_DELETE_CONFIRMATION_KIND = "destructive_once"
+_DESTRUCTIVE_COMMANDS = frozenset({"rm", "rmdir", "unlink", "trash", "shred"})
 _RUN_COMMAND_PATH_SYNTAX_CAPABILITY = "workspace.command.path_syntax"
 _RUN_COMMAND_PATH_SYNTAX_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^//"), "UNC/network path syntax"),
@@ -209,7 +213,7 @@ async def _emit_event(event_callback: EventCallback | None, payload: dict[str, A
 
 def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str] | None:
     if tool_name != "run_command":
-        return None
+        return _detect_destructive_delete(tool_name, arguments)
     command = str(arguments.get("command", "")).strip()
     if not command:
         return None
@@ -217,11 +221,51 @@ def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> tupl
         path_syntax = _detect_high_risk_path_syntax(subcommand)
         if path_syntax:
             return _RUN_COMMAND_PATH_SYNTAX_CAPABILITY, path_syntax
+    destructive_delete = _detect_destructive_delete(tool_name, arguments)
+    if destructive_delete:
+        return destructive_delete
     for candidate in (command, *_split_shell_subcommands(command)):
         lowered = candidate.lower()
         for pattern, capability, description in _DANGEROUS_COMMAND_PATTERNS:
             if pattern.search(lowered):
                 return capability, description
+    return None
+
+
+def _detect_destructive_delete(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str] | None:
+    if tool_name == "delete_file":
+        return _DESTRUCTIVE_DELETE_CAPABILITY, "delete_file removes a workspace file"
+
+    if tool_name == "fs_write":
+        mode = str(arguments.get("mode") or arguments.get("action") or arguments.get("operation") or "").strip().lower()
+        if mode == "delete":
+            return _DESTRUCTIVE_DELETE_CAPABILITY, "fs_write delete removes a workspace file"
+        return None
+
+    if tool_name != "run_command":
+        return None
+
+    command = str(arguments.get("command", "")).strip()
+    if not command:
+        return None
+
+    import shlex
+
+    for subcommand in _split_shell_subcommands(command):
+        try:
+            tokens = shlex.split(subcommand, posix=True)
+        except ValueError:
+            tokens = subcommand.split()
+        if not tokens:
+            continue
+        executable = tokens[0].split("/")[-1].lower()
+        if executable in _DESTRUCTIVE_COMMANDS:
+            return _DESTRUCTIVE_DELETE_CAPABILITY, f"delete command: {tokens[0]}"
+        lowered = subcommand.lower()
+        if re.search(r"\bgit\s+clean\b", lowered):
+            return _DESTRUCTIVE_DELETE_CAPABILITY, "git clean deletes untracked files"
+        if re.search(r"\bfind\b.+\s-delete\b", lowered):
+            return _DESTRUCTIVE_DELETE_CAPABILITY, "find -delete removes files"
     return None
 
 
@@ -343,6 +387,8 @@ def _session_no_policy_action(context: ToolGovernanceContext) -> str:
     allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
     if context.tool_name in allowed_tools:
         return "allow"
+    if _detect_destructive_delete(context.tool_name, context.arguments):
+        return "ask"
 
     mode = _permission_mode_for_context(context)
     if mode == PermissionMode.BYPASS_PERMISSIONS:
@@ -367,6 +413,8 @@ def _session_explicit_policy_action(context: ToolGovernanceContext) -> str:
     allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
     if context.tool_name in allowed_tools:
         return "allow"
+    if _detect_destructive_delete(context.tool_name, context.arguments):
+        return "ask"
 
     mode = _permission_mode_for_context(context)
     if mode == PermissionMode.BYPASS_PERMISSIONS:
@@ -388,6 +436,19 @@ async def _emit_session_no_policy_result(
         return None
 
     mode = _permission_mode_for_context(context)
+    destructive_delete = _detect_destructive_delete(context.tool_name, context.arguments)
+    request_capability = capability
+    request_reason = reason
+    risk_metadata: dict[str, Any] = {}
+    if destructive_delete:
+        request_capability, delete_reason = destructive_delete
+        request_reason = request_reason or delete_reason
+        risk_metadata = {
+            "risk_class": _DESTRUCTIVE_DELETE_RISK_CLASS,
+            "confirmation_kind": _DESTRUCTIVE_DELETE_CONFIRMATION_KIND,
+            "allow_session_allowed": False,
+            "destructive": True,
+        }
     if action == "deny":
         message = _teaching_block_message(
             context.tool_name,
@@ -395,7 +456,7 @@ async def _emit_session_no_policy_result(
                 f"permission mode '{mode.value}' denies this tool because no enterprise capability policy "
                 "is configured for it"
             ),
-            capability=capability,
+            capability=request_capability,
             next_steps=[
                 "continue with allowed read-only tools",
                 "ask the user to change the session permission mode if this action is intended",
@@ -406,7 +467,7 @@ async def _emit_session_no_policy_result(
             context=context,
             permission_request=None,
             reason=message,
-            capability=capability,
+            capability=request_capability,
             mode=mode.value,
         )
         await _emit_event(
@@ -416,16 +477,17 @@ async def _emit_session_no_policy_result(
                 "tool_name": context.tool_name,
                 "status": "permission_denied",
                 "message": message,
-                "capability": capability,
+                "capability": request_capability,
                 "permission_mode": mode.value,
+                **risk_metadata,
             },
         )
         return message
 
     message = (
         f"⏳ Tool '{context.tool_name}' requires session permission"
-        f" [capability: {capability or context.tool_name}; mode: {mode.value}]. "
-        f"Reason: {reason or 'no enterprise capability policy is configured for this tool'}. "
+        f" [capability: {request_capability or context.tool_name}; mode: {mode.value}]. "
+        f"Reason: {request_reason or 'no enterprise capability policy is configured for this tool'}. "
         "Ask the current session user for approval before retrying this tool; do not create a backend approval request."
     )
     permission_request = {
@@ -434,17 +496,18 @@ async def _emit_session_no_policy_result(
         "tool_name": context.tool_name,
         "tool_display_name": context.tool_name,
         "arguments": context.arguments,
-        "capability": capability,
+        "capability": request_capability,
         "permission_mode": mode.value,
-        "decision_reason": reason or "no enterprise capability policy is configured for this tool",
+        "decision_reason": request_reason or "no enterprise capability policy is configured for this tool",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+        **risk_metadata,
     }
     hook_decision = await _apply_permission_request_hook(
         context=context,
         permission_request=permission_request,
-        capability=capability,
-        reason=reason,
+        capability=request_capability,
+        reason=request_reason,
         mode=mode.value,
         event_callback=event_callback,
     )
@@ -458,10 +521,11 @@ async def _emit_session_no_policy_result(
             "tool_name": context.tool_name,
             "status": "session_permission_required",
             "message": message,
-            "capability": capability,
+            "capability": request_capability,
             "permission_mode": mode.value,
             "permission_request_id": permission_request["permission_request_id"],
             "permission_request": permission_request,
+            **risk_metadata,
         },
     )
     return json.dumps(
@@ -1037,6 +1101,88 @@ async def _run_governance_inner(
                     },
                 )
                 return message
+        if dangerous_capability == _DESTRUCTIVE_DELETE_CAPABILITY:
+            if tenant_uuid is not None:
+                try:
+                    dangerous_result = await _maybe_await(
+                        deps.check_capability(tenant_uuid, context.agent_id, dangerous_capability)
+                    )
+                    if dangerous_result is not None and not hasattr(dangerous_result, "denied"):
+                        logger.warning(
+                            "[Governance] Unexpected destructive capability result type: %s — blocking (fail-closed)",
+                            type(dangerous_result),
+                        )
+                        return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
+                    if getattr(dangerous_result, "denied", False):
+                        message = _teaching_block_message(
+                            context.tool_name,
+                            reason=(
+                                "this delete operation matched a destructive pattern and capability policy denied it "
+                                f"({dangerous_result.reason})"
+                            ),
+                            capability=getattr(dangerous_result, "capability", None) or dangerous_capability,
+                            next_steps=[
+                                "avoid deleting files from the session",
+                                "ask an operator to perform this deletion outside the agent session if it is required",
+                            ],
+                        )
+                        await _maybe_await(
+                            deps.write_audit_event(
+                                event_type="capability.denied",
+                                severity="warn",
+                                actor_type="agent",
+                                actor_id=context.agent_id,
+                                tenant_id=tenant_uuid,
+                                action="capability_denied",
+                                resource_type="tool",
+                                resource_id=None,
+                                details={
+                                    "tool": context.tool_name,
+                                    "capability": getattr(dangerous_result, "capability", None)
+                                    or dangerous_capability,
+                                },
+                            )
+                        )
+                        await _emit_event(
+                            event_callback,
+                            {
+                                "type": "permission",
+                                "tool_name": context.tool_name,
+                                "status": "capability_denied",
+                                "message": message,
+                                "capability": getattr(dangerous_result, "capability", None)
+                                or dangerous_capability,
+                            },
+                        )
+                        return message
+                except Exception as exc:
+                    logger.warning(
+                        "Destructive delete capability check failed for tool %s (fail-closed): %s",
+                        context.tool_name,
+                        exc,
+                    )
+                    message = f"🔒 Tool '{context.tool_name}' blocked — capability check unavailable. Please retry."
+                    await _emit_event(
+                        event_callback,
+                        {
+                            "type": "permission",
+                            "tool_name": context.tool_name,
+                            "status": "blocked",
+                            "message": message,
+                            "capability": dangerous_capability,
+                        },
+                    )
+                    return message
+            message = await _emit_session_no_policy_result(
+                context,
+                capability=dangerous_capability,
+                reason=dangerous_reason,
+                action=_session_explicit_policy_action(context),
+                event_callback=event_callback,
+            )
+            if message is not None:
+                return message
+            return None
         dangerous_allowed_by_specific_policy = False
         if tenant_uuid is not None:
             try:

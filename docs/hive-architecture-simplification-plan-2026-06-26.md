@@ -69,6 +69,8 @@ Contracts(纯 dataclass)
 
 T0/T2/T3/soul 四层分层、`ccplus_contracts` session/permission/context 族(重度 live)、`tools/audit.py` 三源对账断言、`mcp_backfill` core/shell 拆分、`deep_research/` 16-stage 管线、feishu 子域拆分、core/ 12 文件——**都是有意且正确的,不在精简目标内**。本仓库有"活兜底误判成死代码"前科,以上均已复核为 live 或显式 fenced-deferred。
 
+**当前工作树新增的 Session UX / permission / artifact canonical 面也要保留(2026-06-26 复核)**:`docs/ccplus-session-ux-contract-2026-06-26.md` 是 session 用户体验契约;`services/chat_artifact_delivery.py` 是当前单一路径的 session artifact 交付 helper;`ChatArtifact` + `artifact_delivery` transcript event + 前端 artifact card / inspector 是活的交付物路径;`ChatSession.transcript_metadata_json` / `RuntimeTask.metadata_json` / `runtime_session_context.metadata` 的 permission profile 三层同步是当前运行面,不能在清理时当成重复字段随手删。它们需要另走 §5.4 SUNSET/收口纪律,不是 §5.1 死代码删除。
+
 ### 3.3 services/ 扁平 207 → 13 个 domain 包(= "重打包",见 §7)
 
 ---
@@ -88,6 +90,18 @@ T0/T2/T3/soul 四层分层、`ccplus_contracts` session/permission/context 族(�
 **为什么这样就不会炸线上**:T0/T1 本来就不碰运行时数据/契约;T2/T3 的危险点是"老路径还在被调用 / 老数据还在老模型里",所以**先确认/迁移/验证,最后才删**——任何一步发现覆盖不全,停在那步回滚,绝不会出现"删了才发现线上还在用"。T4 的危险点是 ALTER 补丁现在是**真在兜底**漂移,所以**先证明 alembic 在生产能干净跑,再拆兜底网**(否则会把"静默带病启动"变成"硬崩")。
 
 > 一句话给你:**线上不会受影响的前提是"删除永远是最后一步,且前面每一步都在生产实证过覆盖"。** 这正是你们做 RLS 迁移时定的纪律,复用它即可。
+
+### 4.1 当前工作树先决条件(Phase 0)
+
+2026-06-26 当前工作树又新增了一条 Session UX / permission / artifact 主线(约 1500+ 行改动,集中在 `web_chat_runtime.py`、`chat_sessions.py`、`tools/governance.py`、`chat_artifact_delivery.py`、`chatRuntime.ts`、`AgentChatSection.tsx`)。这条主线不推翻本精简计划,但它必须先稳定,否则 A 阶段删除会和 session runtime 改动混在一起,难以判断失败来源。
+
+**新的执行前提**:先完成 Phase 0(当前 session 改动的目标测试 + contract 核对),再动 §5.1 的 13 项删除。Phase 0 的验收重点:
+
+- Session permission profile 在 `ChatSession.transcript_metadata_json`、`RuntimeTask.metadata_json`、`runtime_session_context.metadata` 三层一致,取消/disconnect/replay 后不漂移。
+- 用户可见 permission mode 只暴露 `default` / `auto` / `bypassPermissions`;`acceptEdits`、`dontAsk`、`plan` 及旧别名只作 persisted compatibility,不进入新 UI。
+- session artifact 统一走 `chat_artifact_delivery.py` 产生 `ChatArtifact` 或 row-free `artifact_delivery` parts;前端 replay 后仍能展示 artifact card / inspector。
+- destructive delete 即使在 `bypassPermissions` 下也只能 allow once,不能 allow session。
+- 当前主线绿后,再进入 §5.1 删除,避免把"新 session 行为失败"误判成"删除死代码失败"。
 
 ---
 
@@ -121,14 +135,18 @@ T0/T2/T3/soul 四层分层、`ccplus_contracts` session/permission/context 族(�
 
 **净结果:13 项过闸可删**(#13 需连删 `evolution_daemon` 整个 try/except 块、#6 是局部删)、**6 项确认保留**;删除合计净减约 2000+ 行,**每项带 caller 证据,可作为删除执行单**。
 
+**删除验收补充(2026-06-26 当前工作树)**:A 阶段不只是"删代码 + 跑测试"。凡删除本表项目,必须同步移除/改写仍把旧路径当当前实现的 truth docs 和保护旧实现的 tests。否则会重新制造"地图对不上地形"。尤其要核 `extract_queue_replay`、`heartbeat_reflection_backfill`、`understanding_store`、`PromotionRouter`、`scene_curator`/`wiki_curator`、`Dashboard.tsx`、`hook_runner` 在 docs 下的当前 truth 引用;历史/archive 允许保留,当前 truth doc 必须改成"已退役"或移除执行入口。
+
 **执行前核验命令(删任何东西前必跑)**:
 
 ```bash
 # 1) 复核 decision_trace 边界:只删 backfill/import 方法,persistent_default/_load/_append 必须仍 live
 rg -n "backfill_decision_trace_jsonl_to_sql|import_decision|import_feedback|DecisionTraceStore\.persistent_default|persistent_default\(" backend/app backend/tests
-# 2) 后端全量回归(删后必须仍绿)
+# 2) 复核当前 truth docs 不再把已删路径写成 live 入口
+rg -n "extract_queue_replay|heartbeat_reflection_backfill|understanding_store|PromotionRouter|scene_curator|wiki_curator|Dashboard\.tsx|hook_runner" docs --glob '!docs/archive/**'
+# 3) 后端全量回归(删后必须仍绿)
 cd backend && source .venv/bin/activate && pytest tests -q
-# 3) 前端构建(删 Dashboard.tsx 后必须仍过)
+# 4) 前端构建(删 Dashboard.tsx 后必须仍过)
 cd ../frontend && npm run build
 ```
 
@@ -154,6 +172,11 @@ cd ../frontend && npm run build
 ### 5.4 SUNSET — 给过渡期双跑挂日落(T2)
 
 `t0_logger` startup backfill、`extract_agent` admin backfill、`legacy_migration`、`auto_dream` 迁移、`mcp_backfill_service`、filesystem 老工具 facade、Gemini openai-fallback、plan_mode `long_task` 兜底——**逐个挂"日落条件 + 删除 ticket"**:确认生产已迁移/已无走老路 → gate off 观察 → 删。不是现在删,是给每条退役路径一个明确终点,而不是永生。
+
+新增两条当前 session 主线的日落纪律:
+
+- **Permission metadata mirror**:`ChatSession.transcript_metadata_json` / `RuntimeTask.metadata_json` / `runtime_session_context.metadata` 目前是运行时即时切换 permission profile 的三层同步面,短期保留;但它必须有一致性测试,并在后续 Session Workbench read model 稳定后收敛到一个 canonical read surface。删除或合并前置条件:active run、replay、disconnect/cancel、permission update、resume 五类路径都证明读同一份规范化 `permission_profile`。
+- **Permission mode legacy alias**:`acceptEdits`、`dontAsk`、`plan`、`accept_edits`、`dont_ask_low_risk`、`auto_review`、`break_glass`、`full_access`、`bypass_permissions` 只用于 persisted metadata 兼容和 CC baseline internal semantics;用户菜单 canonical 只有 `default` / `auto` / `bypassPermissions`。日落条件:生产 metadata census 证明旧值为 0,或提供一次性 migration 把旧值规范化到三值集合;在此之前禁止把旧 alias 当新产品入口继续扩散。
 
 ### 5.5 RE-FILE — 归位(T1)
 
@@ -216,6 +239,7 @@ app/services/                         app/services/
 5. **services 按 domain 包组织**,新文件进对应包,禁平铺。
 6. **地图跟代码同步**(CLAUDE.md 计数生成化)。
 7. **删除前过"穷举 caller 闸"**(静态 import + **函数内动态 import** + tool 参数 schema + transcript/T0 replay + admin/startup/daemon),**单次 grep 不算证据**——"活兜底误判成死"是本仓库反复踩的坑(2026-06-26 §5.1 又被抽查逮到 5 处误判:动态 import 的 `search_smithery`、独立 writer 的 `distillation_audit`、public schema 的 `container_candidate`、heavily-wired 的 `agent_manager`、还 gate live 路径的 retriever 参数)。
+8. **新 canonical 面必须先登记再扩张**:新增 session artifact、permission profile、metadata mirror、UI read model 这类跨后端/前端/T0 的面时,必须在本计划或对应 truth doc 里明确"canonical surface / compatibility surface / sunset condition";否则它们会成为下一轮永久兼容双轨。
 
 ---
 
@@ -231,6 +255,7 @@ Codex 这轮把 **`cc_hook_contract.py` 删除、CC wire standard 折叠进 `hoo
 
 | 阶段 | 内容 | Tier | 何时 |
 |---|---|---|---|
+| **0. Session 主线稳定** | 当前工作树的 Session UX / permission profile / artifact delivery 改动先跑目标测试并核对契约:permission 三层 metadata 不漂移、artifact replay 可见、destructive delete one-shot、UI 只暴露三种 permission mode | T1/T2 | **A 之前** |
 | **A. 逐项核实退役**(非"一把清") | §5.1 候选**逐项过"穷举 caller 闸"**后才删 + §9 删 hook_runner(也需先核实零 caller)+ §5.5 删 Dashboard/归位 eval | T0/T1 | 先做穷举审计,只删全过闸的项;Codex 已证 census grep 不够 |
 | **B. 收敛碎片** | §5.3 CONSOLIDATE(plan_mode handoff、小卫星合并先做;channel/本地桥放后) | T1 | A 后 |
 | **C. Schema freeze** | §6 第 1-3 步(立纪律 + 核对 + 去重 create_all) | T4 前段 | 与 A/B 并行,纪律即生效 |
@@ -238,7 +263,7 @@ Codex 这轮把 **`cc_hook_contract.py` 删除、CC wire standard 折叠进 `hoo
 | **E. 重打包**(可选) | §7 services → domain 包 | T1 | 看你 §决策 |
 | **F. Schema un-swallow** | §6 第 4-5 步(需生产 alembic 实证) | T4 后段 | 最后,最谨慎 |
 
-**先动 A 中已过闸的 13 项(逐项已带 caller 证据,见 §5.1),低风险但删后仍需全量回归兜底,非"零风险一把清";C 第 1 步(freeze 纪律)今天就能立,从此债不再长大。D/F 是碰生产的部分,逐个走 expand→verify→contract,不 big-bang。**
+**先收口 Phase 0 当前 session 主线,再动 A 中已过闸的 13 项(逐项已带 caller 证据,见 §5.1),低风险但删后仍需全量回归兜底,非"零风险一把清";C 第 1 步(freeze 纪律)今天就能立,从此债不再长大。D/F 是碰生产的部分,逐个走 expand→verify→contract,不 big-bang。**
 
 ---
 

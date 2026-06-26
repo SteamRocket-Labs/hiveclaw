@@ -749,6 +749,19 @@ function AgentDetailInner() {
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
     const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>('auto');
+    const handleSetSessionPermissionMode = async (mode: SessionPermissionMode) => {
+        const previous = sessionPermissionMode;
+        setSessionPermissionMode(mode);
+        if (!id || !activeSession?.id) return;
+        try {
+            await chatApi.updateSessionPermissionProfile(id, String(activeSession.id), { permission_mode: mode });
+            invalidateSessionRuntimeQueries(id, String(activeSession.id));
+        } catch (err: any) {
+            setSessionPermissionMode(previous);
+            const msg = err?.message || t('agent.chat.permission.updateFailed', 'Failed to update session permission mode');
+            showToast(msg, 'error');
+        }
+    };
     const planModeScopeKey = buildPlanModeScopeKey(id, activeSession?.id);
     const planModeScopeKeyRef = useRef(planModeScopeKey);
     useEffect(() => {
@@ -2130,7 +2143,7 @@ function AgentDetailInner() {
                             planModeRequested={planModeRequested}
                             onTogglePlanMode={() => setPlanModeRequested((value) => !value)}
                             sessionPermissionMode={sessionPermissionMode}
-                            onSetSessionPermissionMode={setSessionPermissionMode}
+                            onSetSessionPermissionMode={handleSetSessionPermissionMode}
                             onResolveSessionPermission={resolveSessionPermission}
 
                             chatEndRef={chatEndRef}

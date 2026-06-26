@@ -107,6 +107,10 @@ export interface SessionPermissionRequest {
   capability?: string | null;
   permission_mode?: string | null;
   decision_reason?: string | null;
+  risk_class?: string | null;
+  confirmation_kind?: string | null;
+  allow_session_allowed?: boolean | null;
+  destructive?: boolean | null;
   created_at?: string | null;
   expires_at?: string | null;
 }
@@ -124,6 +128,8 @@ export interface ChatArtifactPart {
   action?: string;
   toolCallId?: string;
   diffSummary?: string;
+  previewSnapshotContent?: string;
+  previewSnapshotTruncated?: boolean;
 }
 
 function mergeClarificationAnswerMetadata(
@@ -158,6 +164,8 @@ export type ChatTranscriptEventPayload = {
   actor_type?: string;
   role?: AgentChatMessage['role'] | string;
   content?: string;
+  permission_request_id?: string;
+  status?: string;
   parts?: Array<Record<string, unknown>>;
   metadata?: Record<string, unknown>;
   created_at?: string;
@@ -185,6 +193,7 @@ export interface TranscriptReplayState {
   messages: AgentChatMessage[];
   ui: SessionUiState;
   seenEventIds: Set<string>;
+  pendingSessionPermissions: AgentChatMessage[];
 }
 
 export interface PendingUserMessage {
@@ -299,6 +308,7 @@ export function createEmptyTranscriptReplayState(): TranscriptReplayState {
     messages: [],
     ui: { isWaiting: false, isStreaming: false },
     seenEventIds: new Set<string>(),
+    pendingSessionPermissions: [],
   };
 }
 
@@ -465,6 +475,65 @@ function numberOrNull(value: unknown): number | null {
   return null;
 }
 
+function sessionPermissionRequestId(message: AgentChatMessage): string | null {
+  const requestId = message.sessionPermissionRequest?.permission_request_id;
+  return typeof requestId === 'string' && requestId.trim() ? requestId : null;
+}
+
+function isPendingSessionPermissionMessage(message: AgentChatMessage): boolean {
+  return (
+    message.role === 'event' &&
+    message.eventStatus === 'session_permission_required' &&
+    Boolean(sessionPermissionRequestId(message))
+  );
+}
+
+function permissionDecisionRequestId(event: ChatTranscriptEventPayload, content: string): string | null {
+  const eventId = event.permission_request_id;
+  if (typeof eventId === 'string' && eventId.trim()) return eventId;
+  const metadataId = event.metadata?.permission_request_id;
+  if (typeof metadataId === 'string' && metadataId.trim()) return metadataId;
+  const parsed = parseTranscriptObject(content);
+  const parsedId = parsed?.permission_request_id;
+  return typeof parsedId === 'string' && parsedId.trim() ? parsedId : null;
+}
+
+function removeSessionPermissionMessage(
+  messages: AgentChatMessage[],
+  permissionRequestId: string,
+): AgentChatMessage[] {
+  return messages.filter((message) => sessionPermissionRequestId(message) !== permissionRequestId);
+}
+
+function renderSessionPermissionQueue(
+  messages: AgentChatMessage[],
+  pendingSessionPermissions: AgentChatMessage[],
+): AgentChatMessage[] {
+  const messagesWithoutPending = messages.filter((message) => !isPendingSessionPermissionMessage(message));
+  const visiblePermission = pendingSessionPermissions[0];
+  return visiblePermission ? [...messagesWithoutPending, visiblePermission] : messagesWithoutPending;
+}
+
+function upsertSessionPermissionQueue(
+  pendingSessionPermissions: AgentChatMessage[],
+  permissionMessage: AgentChatMessage,
+): AgentChatMessage[] {
+  const requestId = sessionPermissionRequestId(permissionMessage);
+  if (!requestId) return pendingSessionPermissions;
+  const existingIndex = pendingSessionPermissions.findIndex(
+    (message) => sessionPermissionRequestId(message) === requestId,
+  );
+  if (existingIndex < 0) return [...pendingSessionPermissions, permissionMessage];
+  return pendingSessionPermissions.map((message, index) => (index === existingIndex ? permissionMessage : message));
+}
+
+function resolveSessionPermissionQueue(
+  pendingSessionPermissions: AgentChatMessage[],
+  permissionRequestId: string,
+): AgentChatMessage[] {
+  return pendingSessionPermissions.filter((message) => sessionPermissionRequestId(message) !== permissionRequestId);
+}
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -541,12 +610,14 @@ export function applyTranscriptEvent(
   const eventType = transcriptEventType(event);
   const timestamp = event.created_at || event.timestamp;
   const content = event.content || '';
+  const pendingSessionPermissions = state.pendingSessionPermissions || [];
 
   if (eventType === 'run_started') {
     return {
       messages: state.messages,
       seenEventIds,
       ui: { isWaiting: true, isStreaming: false },
+      pendingSessionPermissions,
     };
   }
 
@@ -555,6 +626,25 @@ export function applyTranscriptEvent(
       messages: state.messages,
       seenEventIds,
       ui: { isWaiting: false, isStreaming: false },
+      pendingSessionPermissions,
+    };
+  }
+
+  if (eventType === 'session_permission_decision' || eventType === 'permission_resolved') {
+    const requestId = permissionDecisionRequestId(event, content);
+    const nextPendingSessionPermissions = requestId
+      ? resolveSessionPermissionQueue(pendingSessionPermissions, requestId)
+      : pendingSessionPermissions;
+    return {
+      messages: requestId
+        ? renderSessionPermissionQueue(
+            removeSessionPermissionMessage(state.messages, requestId),
+            nextPendingSessionPermissions,
+          )
+        : state.messages,
+      seenEventIds,
+      ui: { isWaiting: false, isStreaming: false },
+      pendingSessionPermissions: nextPendingSessionPermissions,
     };
   }
 
@@ -566,6 +656,7 @@ export function applyTranscriptEvent(
       }),
       seenEventIds,
       ui: { isWaiting: false, isStreaming: true },
+      pendingSessionPermissions,
     };
   }
 
@@ -574,6 +665,7 @@ export function applyTranscriptEvent(
       messages: applyStreamingChunkEvent(state.messages, { type: 'chunk', content }),
       seenEventIds,
       ui: { isWaiting: false, isStreaming: true },
+      pendingSessionPermissions,
     };
   }
 
@@ -590,6 +682,7 @@ export function applyTranscriptEvent(
       ],
       seenEventIds,
       ui: state.ui,
+      pendingSessionPermissions,
     };
   }
 
@@ -599,7 +692,7 @@ export function applyTranscriptEvent(
       parts: event.parts,
     });
     if (messageAlreadyContainsArtifacts(state.messages[state.messages.length - 1], artifacts)) {
-      return { messages: state.messages, seenEventIds, ui: state.ui };
+      return { messages: state.messages, seenEventIds, ui: state.ui, pendingSessionPermissions };
     }
     const messages = applyRuntimeDoneEvent(state.messages, {
       type: 'done',
@@ -615,6 +708,7 @@ export function applyTranscriptEvent(
       )),
       seenEventIds,
       ui: state.ui,
+      pendingSessionPermissions,
     };
   }
 
@@ -646,6 +740,7 @@ export function applyTranscriptEvent(
       ui: isBlockingToolMessage(toolMessage)
         ? { isWaiting: false, isStreaming: false }
         : { isWaiting: false, isStreaming: state.ui.isStreaming },
+      pendingSessionPermissions,
     };
   }
 
@@ -664,15 +759,33 @@ export function applyTranscriptEvent(
       )),
       seenEventIds,
       ui: { isWaiting: false, isStreaming: false },
+      pendingSessionPermissions,
     };
   }
 
-  const runtimeEvent = getRuntimeEventMessage({ ...event, type: eventType, timestamp });
+  const runtimeEvent = getRuntimeEventMessage({
+    ...(event.metadata || {}),
+    ...event,
+    content: content || (typeof event.metadata?.message === 'string' ? event.metadata.message : ''),
+    type: eventType,
+    timestamp,
+  });
   if (runtimeEvent) {
+    const pendingRequestId = sessionPermissionRequestId(runtimeEvent);
+    if (runtimeEvent.eventStatus === 'session_permission_required' && pendingRequestId) {
+      const nextPendingSessionPermissions = upsertSessionPermissionQueue(pendingSessionPermissions, runtimeEvent);
+      return {
+        messages: renderSessionPermissionQueue(state.messages, nextPendingSessionPermissions),
+        seenEventIds,
+        ui: { isWaiting: false, isStreaming: false },
+        pendingSessionPermissions: nextPendingSessionPermissions,
+      };
+    }
     return {
       messages: [...state.messages, runtimeEvent],
       seenEventIds,
       ui: { isWaiting: false, isStreaming: false },
+      pendingSessionPermissions,
     };
   }
 
@@ -835,6 +948,12 @@ function normalizeArtifactPart(part: any): ChatArtifactPart | null {
     action: typeof part.action === 'string' ? part.action : undefined,
     toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : (typeof part.tool_call_id === 'string' ? part.tool_call_id : undefined),
     diffSummary: typeof part.diffSummary === 'string' ? part.diffSummary : (typeof part.diff_summary === 'string' ? part.diff_summary : undefined),
+    previewSnapshotContent: typeof part.previewSnapshotContent === 'string'
+      ? part.previewSnapshotContent
+      : (typeof part.preview_snapshot_content === 'string' ? part.preview_snapshot_content : undefined),
+    previewSnapshotTruncated: typeof part.previewSnapshotTruncated === 'boolean'
+      ? part.previewSnapshotTruncated
+      : (typeof part.preview_snapshot_truncated === 'boolean' ? part.preview_snapshot_truncated : undefined),
   };
 }
 

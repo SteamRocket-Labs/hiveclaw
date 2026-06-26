@@ -175,6 +175,7 @@ CAPABILITY_MAP: dict[str, str] = {
 
 SYNTHETIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
     "workspace.command.dangerous": ["run_command"],
+    "workspace.command.destructive_delete": ["run_command", "delete_file", "fs_write"],
     "workspace.command.path_syntax": ["run_command"],
     "workspace.command.secret_exfiltration": ["run_command"],
 }

@@ -18,6 +18,9 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalars(self):
+        return SimpleNamespace(all=lambda: [self._value] if self._value else [])
+
 
 class _FakeDB:
     def __init__(self, session):
@@ -25,6 +28,27 @@ class _FakeDB:
 
     async def execute(self, _stmt):
         return _ScalarResult(self.session)
+
+    async def commit(self):
+        return None
+
+    async def flush(self):
+        return None
+
+
+class _UpdatePermissionModeDB:
+    def __init__(self, session, active_run):
+        self.session = session
+        self.active_run = active_run
+        self.calls = 0
+        self.commits = 0
+
+    async def execute(self, _stmt):
+        self.calls += 1
+        return _ScalarResult(self.session if self.calls == 1 else self.active_run)
+
+    async def commit(self):
+        self.commits += 1
 
 
 class _ScalarsResult:
@@ -120,7 +144,8 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
     assert captured["content"] == "hello"
     assert captured["extra_metadata"] == {
         "permission_mode": "auto",
-        "permission_profile": {"mode": "auto", "allowed_tools": []},
+        "writable_roots": ["workspace/"],
+        "permission_profile": {"mode": "auto", "allowed_tools": [], "writable_roots": ["workspace/"]},
     }
 
 
@@ -154,8 +179,65 @@ def test_start_session_run_threads_ccplus_permission_profile(monkeypatch):
     assert response.status_code == 201
     assert captured["extra_metadata"] == {
         "permission_mode": "default",
-        "permission_profile": {"mode": "default", "allowed_tools": ["send_email"]},
+        "writable_roots": ["workspace/"],
+        "permission_profile": {"mode": "default", "allowed_tools": ["send_email"], "writable_roots": ["workspace/"]},
     }
+
+
+def test_update_session_permission_mode_updates_session_active_run_and_runtime_context(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        transcript_metadata_json={"permission_mode": "default", "session_permission_allowed_tools": ["track_todo"]},
+    )
+    active_run = SimpleNamespace(id=uuid4(), metadata_json={"permission_mode": "default"})
+    db = _UpdatePermissionModeDB(session, active_run)
+    runtime_context = SimpleNamespace(metadata={})
+
+    class _FakeBroker:
+        async def get_or_create_runtime_session(self, agent_id_arg, session_id_arg):
+            assert agent_id_arg == str(agent_id)
+            assert session_id_arg == str(session_id)
+            return runtime_context
+
+    monkeypatch.setattr(chat_sessions_api, "web_chat_broker", _FakeBroker())
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.patch(
+        f"/agents/{agent_id}/sessions/{session_id}/permissions/profile",
+        json={"permission_mode": "bypassPermissions"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["permission_mode"] == "bypassPermissions"
+    assert session.transcript_metadata_json["permission_mode"] == "bypassPermissions"
+    assert session.transcript_metadata_json["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["track_todo"],
+        "writable_roots": ["workspace/"],
+    }
+    assert session.transcript_metadata_json["writable_roots"] == ["workspace/"]
+    assert active_run.metadata_json["permission_mode"] == "bypassPermissions"
+    assert active_run.metadata_json["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["track_todo"],
+        "writable_roots": ["workspace/"],
+    }
+    assert active_run.metadata_json["writable_roots"] == ["workspace/"]
+    assert runtime_context.metadata["permission_mode"] == "bypassPermissions"
+    assert runtime_context.metadata["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["track_todo"],
+        "writable_roots": ["workspace/"],
+    }
+    assert runtime_context.metadata["writable_roots"] == ["workspace/"]
+    assert db.commits == 1
 
 
 def test_start_session_run_rejects_non_owner_without_manage_access(monkeypatch):
@@ -355,6 +437,72 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     assert appended_events[-1]["metadata"]["source_event_id"] == str(event.id)
     assert emitted_hooks[-1][1]["tool_name"] == "write_file"
     assert broadcasts[-1][2]["status"] == "denied"
+
+
+def test_resolve_session_permission_rejects_allow_session_for_destructive_request(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    permission_request = {
+        "permission_request_id": str(permission_request_id),
+        "tool_name": "run_command",
+        "arguments": {"command": "rm workspace/report.md"},
+        "capability": "workspace.command.destructive_delete",
+        "permission_mode": "bypassPermissions",
+        "risk_class": "destructive_delete",
+        "confirmation_kind": "destructive_once",
+        "allow_session_allowed": False,
+    }
+    event = SimpleNamespace(
+        id=uuid4(),
+        run_id=run_id,
+        event_type="permission",
+        content=json.dumps(
+            {
+                "type": "permission",
+                "status": "session_permission_required",
+                "permission_request_id": str(permission_request_id),
+                "permission_request": permission_request,
+                "tool_name": "run_command",
+            }
+        ),
+        metadata_json={
+            "runtime_event_type": "permission",
+            "permission_request_id": str(permission_request_id),
+            "permission_request": permission_request,
+        },
+    )
+    db = _FilteringPermissionDB([event])
+
+    async def fake_get_run_session_and_agent(**_kwargs):
+        return session, agent, "use"
+
+    async def fake_append_session_event(**_kwargs):
+        raise AssertionError("rejected allow_session must not append a decision event")
+
+    async def fake_execute_session_permission_tool(*_args, **_kwargs):
+        raise AssertionError("rejected allow_session must not execute the tool")
+
+    import app.services.agent_tools as agent_tools_service
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
+    client = _client(monkeypatch, db=db, user=user, agent=agent, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve",
+        json={"action": "allow_session"},
+    )
+
+    assert response.status_code == 400
+    assert "only be allowed once" in response.text
+    assert session.transcript_metadata_json == {}
 
 
 def test_resolve_session_permission_allow_failure_records_session_event_instead_of_500(monkeypatch):

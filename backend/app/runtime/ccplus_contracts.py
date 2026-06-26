@@ -52,11 +52,14 @@ class SandboxProfile(str, Enum):
     EXTERNAL_SANDBOX = "external_sandbox"
 
 
+DEFAULT_CCPLUS_WRITABLE_ROOTS: tuple[str, ...] = ("workspace/",)
+
+
 @dataclass(frozen=True, slots=True)
 class PermissionProfileV1:
     mode: PermissionMode = PermissionMode.AUTO
     approval_policy: str = "granular"
-    writable_roots: tuple[str, ...] = ()
+    writable_roots: tuple[str, ...] = DEFAULT_CCPLUS_WRITABLE_ROOTS
     readable_roots: tuple[str, ...] = ()
     denied_reads: tuple[str, ...] = ()
     network_access: str = "governed"

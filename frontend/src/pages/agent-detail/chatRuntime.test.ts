@@ -20,6 +20,7 @@ import {
   createEmptyTranscriptReplayState,
   filterSessionsForAgent,
   mergePendingUserMessages,
+  replayTranscriptEvents,
   sessionBelongsToAgent,
   shouldClearStaleRuntimeState,
 } from './chatRuntime';
@@ -77,6 +78,189 @@ describe('chatRuntime helpers', () => {
       toolMeta: { kind: 'user_clarification', blocking: true },
     });
     expect(next.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
+  it('keeps only the oldest unresolved session permission gate visible', () => {
+    const state = replayTranscriptEvents([
+      {
+        id: 'evt-permission-1',
+        sequence: 1,
+        type: 'permission',
+        event_type: 'permission',
+        role: 'system',
+        content: 'first permission',
+        metadata: {
+          status: 'session_permission_required',
+          permission_request_id: 'permission-1',
+          permission_request: {
+            permission_request_id: 'permission-1',
+            tool_name: 'track_todo',
+          },
+        },
+        created_at: '2026-06-26T16:20:00Z',
+      },
+      {
+        id: 'evt-permission-2',
+        sequence: 2,
+        type: 'permission',
+        event_type: 'permission',
+        role: 'system',
+        content: 'second permission',
+        metadata: {
+          status: 'session_permission_required',
+          permission_request_id: 'permission-2',
+          permission_request: {
+            permission_request_id: 'permission-2',
+            tool_name: 'track_todo',
+          },
+        },
+        created_at: '2026-06-26T16:21:00Z',
+      },
+    ]);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: 'event',
+      eventStatus: 'session_permission_required',
+      sessionPermissionRequest: { permission_request_id: 'permission-1' },
+    });
+  });
+
+  it('reveals the next queued session permission gate after the visible one is resolved', () => {
+    const state = replayTranscriptEvents([
+      {
+        id: 'evt-permission-1',
+        sequence: 1,
+        type: 'permission',
+        event_type: 'permission',
+        role: 'system',
+        content: 'first permission',
+        metadata: {
+          status: 'session_permission_required',
+          permission_request_id: 'permission-1',
+          permission_request: {
+            permission_request_id: 'permission-1',
+            tool_name: 'track_todo',
+          },
+        },
+        created_at: '2026-06-26T16:20:00Z',
+      },
+      {
+        id: 'evt-permission-2',
+        sequence: 2,
+        type: 'permission',
+        event_type: 'permission',
+        role: 'system',
+        content: 'second permission',
+        metadata: {
+          status: 'session_permission_required',
+          permission_request_id: 'permission-2',
+          permission_request: {
+            permission_request_id: 'permission-2',
+            tool_name: 'track_todo',
+          },
+        },
+        created_at: '2026-06-26T16:21:00Z',
+      },
+      {
+        id: 'evt-decision-1',
+        sequence: 3,
+        type: 'session_permission_decision',
+        event_type: 'session_permission_decision',
+        role: 'system',
+        content: JSON.stringify({
+          permission_request_id: 'permission-1',
+          decision: 'allow_session',
+        }),
+        metadata: {
+          permission_request_id: 'permission-1',
+          decision: 'allow_session',
+        },
+        created_at: '2026-06-26T16:22:00Z',
+      },
+    ]);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: 'event',
+      eventStatus: 'session_permission_required',
+      sessionPermissionRequest: { permission_request_id: 'permission-2' },
+    });
+  });
+
+  it('removes a resolved session permission gate from replayed transcript state', () => {
+    const state = replayTranscriptEvents([
+      {
+        id: 'evt-permission',
+        sequence: 1,
+        type: 'permission',
+        event_type: 'permission',
+        role: 'system',
+        content: 'permission',
+        metadata: {
+          status: 'session_permission_required',
+          permission_request_id: 'permission-1',
+          permission_request: {
+            permission_request_id: 'permission-1',
+            tool_name: 'track_todo',
+          },
+        },
+        created_at: '2026-06-26T16:20:00Z',
+      },
+      {
+        id: 'evt-decision',
+        sequence: 2,
+        type: 'session_permission_decision',
+        event_type: 'session_permission_decision',
+        role: 'system',
+        content: JSON.stringify({
+          permission_request_id: 'permission-1',
+          decision: 'allow_session',
+        }),
+        metadata: {
+          permission_request_id: 'permission-1',
+          decision: 'allow_session',
+        },
+        created_at: '2026-06-26T16:21:00Z',
+      },
+    ]);
+
+    expect(state.messages).toHaveLength(0);
+    expect(state.ui).toEqual({ isWaiting: false, isStreaming: false });
+  });
+
+  it('removes a resolved session permission gate from live broadcast payloads', () => {
+    const state = replayTranscriptEvents([
+      {
+        id: 'evt-permission',
+        sequence: 1,
+        type: 'permission',
+        event_type: 'permission',
+        role: 'system',
+        content: 'permission',
+        metadata: {
+          status: 'session_permission_required',
+          permission_request_id: 'permission-1',
+          permission_request: {
+            permission_request_id: 'permission-1',
+            tool_name: 'track_todo',
+          },
+        },
+        created_at: '2026-06-26T16:20:00Z',
+      },
+      {
+        id: 'evt-resolved',
+        sequence: 2,
+        type: 'permission_resolved',
+        event_type: 'permission_resolved',
+        role: 'system',
+        permission_request_id: 'permission-1',
+        status: 'allowed',
+        created_at: '2026-06-26T16:21:00Z',
+      },
+    ]);
+
+    expect(state.messages).toHaveLength(0);
   });
 
   it('unwraps persisted tool-result envelopes before rendering clarification cards', () => {
@@ -597,6 +781,7 @@ describe('chatRuntime helpers', () => {
           action: 'updated',
           tool_call_id: 'tool-9',
           diff_summary: '+3 -1',
+          preview_snapshot_content: '# Report\n',
         },
       ],
     });
@@ -615,8 +800,33 @@ describe('chatRuntime helpers', () => {
         action: 'updated',
         toolCallId: 'tool-9',
         diffSummary: '+3 -1',
+        previewSnapshotContent: '# Report\n',
       },
     ]);
+  });
+
+  it('preserves destructive permission metadata from runtime events', () => {
+    const message = getRuntimeEventMessage({
+      type: 'permission',
+      status: 'session_permission_required',
+      content: "Tool 'run_command' requires session permission",
+      permission_request_id: 'permission-1',
+      permission_request: {
+        permission_request_id: 'permission-1',
+        tool_name: 'run_command',
+        risk_class: 'destructive_delete',
+        confirmation_kind: 'destructive_once',
+        allow_session_allowed: false,
+      },
+    });
+
+    expect(message?.sessionPermissionRequest).toMatchObject({
+      permission_request_id: 'permission-1',
+      tool_name: 'run_command',
+      risk_class: 'destructive_delete',
+      confirmation_kind: 'destructive_once',
+      allow_session_allowed: false,
+    });
   });
 
   it('replays artifact delivery transcript events as session artifact cards', () => {

@@ -1070,7 +1070,9 @@
       "permission": {
         "allowOnce": "本次允许",
         "allowSession": "本会话允许",
-        "deny": "拒绝"
+        "deny": "拒绝",
+        "deleteOnceOnly": "删除类操作只能本次允许。",
+        "updateFailed": "更新会话权限模式失败"
       },
       "thinking": "思考中...",
       "continuingRun": "Agent 正在继续执行...",
@@ -1096,6 +1098,8 @@
         "preview": "预览",
         "openInNewTab": "新窗口打开",
         "previewFailed": "预览失败",
+        "snapshotPreview": "正在预览会话保存快照",
+        "missingNoSnapshot": "这个文件已不在 workspace 中。",
         "emptyPending": "文件当前还是空的。会话权限通过或写入完成后，内容会显示在这里。"
       },
       "toolResults": {

@@ -136,33 +136,46 @@ function SessionPermissionActions({
   onResolveSessionPermission?: (request: SessionPermissionRequest, action: 'allow_once' | 'allow_session' | 'deny') => void | Promise<unknown>;
   t: (key: string, fallback: string) => string;
 }) {
+  const allowSession =
+    permissionRequest.allow_session_allowed !== false
+    && permissionRequest.risk_class !== 'destructive_delete'
+    && permissionRequest.confirmation_kind !== 'destructive_once';
   return (
-    <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-      <button
-        type="button"
-        className="btn btn-secondary"
-        onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_once')}
-        style={{ fontSize: '12px', padding: '6px 10px' }}
-      >
-        {t('agent.chat.permission.allowOnce', 'Allow once')}
-      </button>
-      <button
-        type="button"
-        className="btn btn-secondary"
-        onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_session')}
-        style={{ fontSize: '12px', padding: '6px 10px' }}
-      >
-        {t('agent.chat.permission.allowSession', 'Allow for this session')}
-      </button>
-      <button
-        type="button"
-        className="btn btn-secondary"
-        onClick={() => onResolveSessionPermission?.(permissionRequest, 'deny')}
-        style={{ fontSize: '12px', padding: '6px 10px' }}
-      >
-        {t('agent.chat.permission.deny', 'Deny')}
-      </button>
-    </div>
+    <>
+      <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_once')}
+          style={{ fontSize: '12px', padding: '6px 10px' }}
+        >
+          {t('agent.chat.permission.allowOnce', 'Allow once')}
+        </button>
+        {allowSession && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_session')}
+            style={{ fontSize: '12px', padding: '6px 10px' }}
+          >
+            {t('agent.chat.permission.allowSession', 'Allow for this session')}
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => onResolveSessionPermission?.(permissionRequest, 'deny')}
+          style={{ fontSize: '12px', padding: '6px 10px' }}
+        >
+          {t('agent.chat.permission.deny', 'Deny')}
+        </button>
+      </div>
+      {!allowSession && (
+        <div style={{ marginTop: '7px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+          {t('agent.chat.permission.deleteOnceOnly', 'Delete actions can only be allowed once.')}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -261,7 +274,7 @@ interface AgentChatSectionProps {
   planModeRequested?: boolean;
   onTogglePlanMode?: () => void;
   sessionPermissionMode?: SessionPermissionMode;
-  onSetSessionPermissionMode?: (mode: SessionPermissionMode) => void;
+  onSetSessionPermissionMode?: (mode: SessionPermissionMode) => void | Promise<unknown>;
   onResolveSessionPermission?: (
     request: SessionPermissionRequest,
     action: 'allow_once' | 'allow_session' | 'deny',
@@ -301,6 +314,7 @@ type ArtifactPreviewState = {
   url?: string;
   loading?: boolean;
   error?: string;
+  usingSnapshot?: boolean;
 };
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -526,7 +540,7 @@ function formatArtifactSize(size: number | undefined): string | null {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export type ArtifactOpenMode = 'inline_preview' | 'download';
+export type ArtifactOpenMode = 'modal_preview' | 'download';
 
 function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): string {
   const explicit = artifact.previewKind?.toLowerCase();
@@ -542,7 +556,7 @@ function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart, 'name'
 export function getArtifactOpenMode(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): ArtifactOpenMode {
   const previewKind = getEffectiveArtifactPreviewKind(artifact);
   if (previewKind && ['markdown', 'text', 'image', 'pdf'].includes(previewKind)) {
-    return 'inline_preview';
+    return 'modal_preview';
   }
   return 'download';
 }
@@ -592,100 +606,124 @@ function ArtifactPreviewPanel({
     </div>
   );
   return (
-    <section
-      data-testid="session-artifact-inspector"
+    <div
+      data-testid="session-artifact-preview-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label={preview.artifact.name}
       style={{
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '8px',
-        background: 'var(--bg-secondary)',
-        overflow: 'hidden',
+        position: 'fixed',
+        inset: 0,
+        zIndex: 80,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px',
+        background: 'rgba(15, 23, 42, 0.32)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
-        <IconFileText size={15} color="var(--text-tertiary)" />
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {preview.artifact.name}
+      <section
+        data-testid="session-artifact-inspector"
+        style={{
+          width: 'min(920px, calc(100vw - 48px))',
+          maxHeight: 'min(76vh, 720px)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '10px',
+          background: 'var(--bg-secondary)',
+          boxShadow: '0 24px 80px rgba(15, 23, 42, 0.24)',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
+          <IconFileText size={15} color="var(--text-tertiary)" />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {preview.artifact.name}
+            </div>
+            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+              {preview.usingSnapshot
+                ? t('agent.chat.artifacts.snapshotPreview', 'Previewing saved session snapshot')
+                : t('agent.chat.artifacts.preview', 'Preview')}
+            </div>
           </div>
-          <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
-            {t('agent.chat.artifacts.preview', 'Preview')}
-          </div>
-        </div>
-        {preview.url && (
-          <a
-            href={preview.url}
-            target="_blank"
-            rel="noreferrer"
-            style={{ color: 'var(--text-tertiary)', display: 'inline-flex', alignItems: 'center' }}
-            title={t('agent.chat.artifacts.openInNewTab', 'Open in new tab')}
-          >
-            <IconExternalLink size={14} />
-          </a>
-        )}
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t('common.close', 'Close')}
-          title={t('common.close', 'Close')}
-          style={{
-            border: '1px solid var(--border-subtle)',
-            background: 'transparent',
-            borderRadius: '6px',
-            padding: '3px',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <IconX size={13} />
-        </button>
-      </div>
-      <div style={{ padding: '10px', maxHeight: '42vh', overflow: 'auto' }}>
-        {preview.loading ? (
-          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-            {t('common.loading', 'Loading')}
-          </div>
-        ) : preview.error ? (
-          <div style={{ fontSize: '12px', color: 'var(--danger-text)' }}>
-            {preview.error}
-          </div>
-        ) : previewKind === 'image' && preview.url ? (
-          <img
-            src={preview.url}
-            alt={preview.artifact.name}
-            style={{ maxWidth: '100%', maxHeight: '34vh', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}
-          />
-        ) : previewKind === 'pdf' && preview.url ? (
-          <iframe
-            title={preview.artifact.name}
-            src={preview.url}
-            style={{ width: '100%', height: '34vh', border: '1px solid var(--border-subtle)', borderRadius: '6px' }}
-          />
-        ) : previewKind === 'markdown' ? (
-          <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
-            {showPendingEmptyPreview ? pendingEmptyPreview : <MarkdownRenderer content={preview.content || ''} />}
-          </div>
-        ) : (
-          <pre
+          {preview.url && (
+            <a
+              href={preview.url}
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: 'var(--text-tertiary)', display: 'inline-flex', alignItems: 'center' }}
+              title={t('agent.chat.artifacts.openInNewTab', 'Open in new tab')}
+            >
+              <IconExternalLink size={14} />
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t('common.close', 'Close')}
+            title={t('common.close', 'Close')}
             style={{
-              margin: 0,
-              fontSize: '11px',
-              lineHeight: 1.55,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
+              border: '1px solid var(--border-subtle)',
+              background: 'transparent',
+              borderRadius: '6px',
+              padding: '3px',
               color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            {showPendingEmptyPreview ? t(
-              'agent.chat.artifacts.emptyPending',
-              'This file is empty for now. Its content will appear here after the session permission is approved or the write finishes.',
-            ) : preview.content || ''}
-          </pre>
-        )}
-      </div>
-    </section>
+            <IconX size={13} />
+          </button>
+        </div>
+        <div style={{ padding: '12px', overflow: 'auto', flex: 1, minHeight: 0 }}>
+          {preview.loading ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              {t('common.loading', 'Loading')}
+            </div>
+          ) : preview.error ? (
+            <div style={{ fontSize: '12px', color: 'var(--danger-text)' }}>
+              {preview.error}
+            </div>
+          ) : previewKind === 'image' && preview.url ? (
+            <img
+              src={preview.url}
+              alt={preview.artifact.name}
+              style={{ maxWidth: '100%', maxHeight: '62vh', borderRadius: '6px', border: '1px solid var(--border-subtle)' }}
+            />
+          ) : previewKind === 'pdf' && preview.url ? (
+            <iframe
+              title={preview.artifact.name}
+              src={preview.url}
+              style={{ width: '100%', height: '62vh', border: '1px solid var(--border-subtle)', borderRadius: '6px' }}
+            />
+          ) : previewKind === 'markdown' ? (
+            <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
+              {showPendingEmptyPreview ? pendingEmptyPreview : <MarkdownRenderer content={preview.content || ''} />}
+            </div>
+          ) : (
+            <pre
+              style={{
+                margin: 0,
+                fontSize: '11px',
+                lineHeight: 1.55,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              {showPendingEmptyPreview ? t(
+                'agent.chat.artifacts.emptyPending',
+                'This file is empty for now. Its content will appear here after the session permission is approved or the write finishes.',
+              ) : preview.content || ''}
+            </pre>
+          )}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1294,10 +1332,21 @@ export default function AgentChatSection({
         const response = await fileApi.read(effectiveAgentId, artifact.path);
         setArtifactPreview({ artifact, content: response.content || '', url: href });
       } catch (error) {
+        if (typeof artifact.previewSnapshotContent === 'string') {
+          setArtifactPreview({
+            artifact,
+            content: artifact.previewSnapshotContent,
+            url: href,
+            usingSnapshot: true,
+          });
+          return;
+        }
         setArtifactPreview({
           artifact,
           url: href,
-          error: error instanceof Error ? error.message : t('agent.chat.artifacts.previewFailed', 'Preview failed'),
+          error: error instanceof Error && !String(error.message || '').includes('File not found')
+            ? error.message
+            : t('agent.chat.artifacts.missingNoSnapshot', 'This file is no longer available in the workspace.'),
         });
       }
       return;
@@ -2154,13 +2203,11 @@ export default function AgentChatSection({
               }}
             >
               {artifactPreview && (
-                <div data-testid="session-artifact-panel-inline" style={{ padding: '0 0 8px' }}>
-                  <ArtifactPreviewPanel
-                    preview={artifactPreview}
-                    onClose={() => setArtifactPreview(null)}
-                    t={t}
-                  />
-                </div>
+                <ArtifactPreviewPanel
+                  preview={artifactPreview}
+                  onClose={() => setArtifactPreview(null)}
+                  t={t}
+                />
               )}
               {effectiveAgentId && activeSession?.id && (
                 <SlashCommandMenu

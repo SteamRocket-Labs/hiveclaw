@@ -97,6 +97,163 @@ def test_terminal_task_update_persists_and_projects_terminal_reason():
     assert payload["terminal_reason"] == "provider_error"
 
 
+def test_runtime_session_permission_metadata_prefers_latest_session_override():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import SessionContext
+
+    context = SessionContext(session_id="session-1", source="web", channel="web")
+
+    merged = runtime._merge_runtime_permission_metadata(
+        runtime_metadata={
+            "permission_mode": "default",
+            "writable_roots": ["workspace/"],
+            "permission_profile": {"mode": "default", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        },
+        session_metadata={
+            "permission_mode": "bypassPermissions",
+            "permission_profile": {"mode": "bypassPermissions", "allowed_tools": ["track_todo"]},
+        },
+    )
+    runtime._sync_runtime_session_permission_metadata(context, merged)
+
+    assert merged["permission_mode"] == "bypassPermissions"
+    assert merged["writable_roots"] == ["workspace/"]
+    assert merged["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["track_todo"],
+        "writable_roots": ["workspace/"],
+    }
+    assert context.metadata["permission_mode"] == "bypassPermissions"
+    assert context.metadata["writable_roots"] == ["workspace/"]
+    assert context.metadata["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["track_todo"],
+        "writable_roots": ["workspace/"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web_turn(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="web follow-up",
+        metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web"},
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    captured = {}
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, [], SimpleNamespace(delivery_target_json={"channel": "feishu"})
+
+    async def fake_invoke(request):
+        captured["excluded_tool_names"] = request.excluded_tool_names
+        captured["system_prompt_suffix"] = request.system_prompt_suffix
+        return SimpleNamespace(content="web answer", reasoning_signature=None)
+
+    async def fake_finalize(**_kwargs):
+        return False
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert "send_channel_message" not in captured["excluded_tool_names"]
+    assert "send_channel_file" not in captured["excluded_tool_names"]
+    assert "only call them when the user explicitly asks" in captured["system_prompt_suffix"]
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_allows_channel_delivery_tools_for_explicit_web_request(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.services.channel_delivery_service import channel_delivery_target
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    target = {"channel": "feishu", "chat_id": "oc_x"}
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="把这份报告发送到飞书",
+        metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web"},
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    captured = {}
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, [], SimpleNamespace(delivery_target_json=target)
+
+    async def fake_invoke(request):
+        captured["excluded_tool_names"] = request.excluded_tool_names
+        captured["delivery_target"] = channel_delivery_target.get(None)
+        return SimpleNamespace(content="sent", reasoning_signature=None)
+
+    async def fake_finalize(**_kwargs):
+        return False
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", noop_async)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert "send_channel_message" not in captured["excluded_tool_names"]
+    assert "send_channel_file" not in captured["excluded_tool_names"]
+    assert captured["delivery_target"] == target
+
+
 def test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id():
     from app.services.web_chat_runtime import conversation_from_history_messages
 
@@ -1653,7 +1810,12 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     assert task.metadata_json["channel"] == "feishu"
     assert task.metadata_json["delivery_target_json"] == session.delivery_target_json
     assert task.metadata_json["permission_mode"] == "auto"
-    assert task.metadata_json["permission_profile"] == {"mode": "auto", "allowed_tools": []}
+    assert task.metadata_json["writable_roots"] == ["workspace/"]
+    assert task.metadata_json["permission_profile"] == {
+        "mode": "auto",
+        "allowed_tools": [],
+        "writable_roots": ["workspace/"],
+    }
     assert scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert [(event.event_type, event.role, event.content) for event in events] == [
@@ -2896,6 +3058,68 @@ async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_except
     ]
     assert updates == []
     assert broadcasts[-1] == {"type": "error", "content": "[LLM Error] AI 模型调用异常，请稍后重试。"}
+
+
+@pytest.mark.asyncio
+async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_target(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="web follow-up",
+        metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web"},
+        trace_id=f"web_chat_turn:{run_id.hex}",
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    session = SimpleNamespace(delivery_target_json={"channel": "feishu", "chat_id": "oc_x"})
+    delivered = {"n": 0}
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, [], session
+
+    async def fake_invoke(_request):
+        return SimpleNamespace(content="web answer", reasoning_signature=None)
+
+    async def fake_finalize(**_kwargs):
+        return True
+
+    async def fake_deliver(*_args, **_kwargs):
+        delivered["n"] += 1
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", fake_deliver)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert delivered["n"] == 0
 
 
 @pytest.mark.asyncio

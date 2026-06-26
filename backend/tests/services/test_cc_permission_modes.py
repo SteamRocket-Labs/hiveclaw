@@ -228,16 +228,44 @@ async def test_auto_mode_allows_low_risk_workspace_edit_but_asks_dangerous_comma
 
 
 @pytest.mark.asyncio
-async def test_bypass_permissions_allows_cc_local_sensitive_tool_without_backend_approval() -> None:
+async def test_auto_mode_requires_one_time_confirmation_for_delete_writes() -> None:
+    message, approval_calls, _audit_calls, events = await _govern(
+        tool_name="fs_write",
+        mode=PermissionMode.AUTO,
+        arguments={"path": "workspace/report.md", "mode": "delete"},
+    )
+
+    assert message is not None
+    payload = json.loads(message)
+    request = payload["permission_request"]
+    assert payload["status"] == "session_permission_required"
+    assert request["risk_class"] == "destructive_delete"
+    assert request["confirmation_kind"] == "destructive_once"
+    assert request["allow_session_allowed"] is False
+    assert approval_calls == []
+    assert events[-1]["status"] == "session_permission_required"
+    assert events[-1]["permission_request"]["allow_session_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_bypass_permissions_still_requires_one_time_confirmation_for_delete_commands() -> None:
     message, approval_calls, _audit_calls, events = await _govern(
         tool_name="run_command",
         mode=PermissionMode.BYPASS_PERMISSIONS,
-        arguments={"command": "rm -rf workspace/tmp"},
+        arguments={"command": "rm workspace/tmp.txt"},
     )
 
-    assert message is None
+    assert message is not None
+    payload = json.loads(message)
+    request = payload["permission_request"]
+    assert payload["status"] == "session_permission_required"
+    assert request["risk_class"] == "destructive_delete"
+    assert request["confirmation_kind"] == "destructive_once"
+    assert request["allow_session_allowed"] is False
+    assert request["capability"] == "workspace.command.destructive_delete"
     assert approval_calls == []
-    assert events == []
+    assert events[-1]["status"] == "session_permission_required"
+    assert events[-1]["permission_request"]["allow_session_allowed"] is False
 
 
 @pytest.mark.asyncio

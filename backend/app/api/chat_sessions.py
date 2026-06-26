@@ -20,8 +20,9 @@ from app.models.chat_artifact import ChatArtifact
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.chat_session import ChatSession
 from app.models.agent import Agent
+from app.models.runtime_task import RuntimeTask
 from app.models.user import User
-from app.runtime.ccplus_contracts import normalize_permission_mode
+from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_WRITABLE_ROOTS, normalize_permission_mode
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_artifact_delivery import artifact_part_from_model
 from app.services.chat_message_parts import build_session_native_event, serialize_chat_message, split_inline_tools
@@ -35,6 +36,7 @@ from app.services.web_chat_runtime import (
     start_web_chat_run,
     steer_active_web_chat_turn,
 )
+from app.services.web_chat_broker import web_chat_broker
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.session_index import read_session_index
 from app.services.session_feedback import record_session_feedback
@@ -100,9 +102,11 @@ def _session_permission_metadata(permission_mode: str | None, session: ChatSessi
     allowed_tools = [
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
     ]
+    writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
     return {
         "permission_mode": mode,
-        "permission_profile": {"mode": mode, "allowed_tools": allowed_tools},
+        "writable_roots": writable_roots,
+        "permission_profile": {"mode": mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
     }
 
 
@@ -168,6 +172,10 @@ def _permission_request_from_payload(payload: dict[str, Any]) -> dict[str, Any] 
                 "capability",
                 "permission_mode",
                 "decision_reason",
+                "risk_class",
+                "confirmation_kind",
+                "allow_session_allowed",
+                "destructive",
                 "created_at",
                 "expires_at",
             }
@@ -196,12 +204,26 @@ def _session_permission_exception_message(exc: Exception) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+def _permission_request_allows_session_scope(request_payload: dict[str, Any]) -> bool:
+    if request_payload.get("allow_session_allowed") is False:
+        return False
+    if request_payload.get("risk_class") == "destructive_delete":
+        return False
+    if request_payload.get("confirmation_kind") == "destructive_once":
+        return False
+    return True
+
+
 class CreateSessionIn(BaseModel):
     title: Optional[str] = None
 
 
 class PatchSessionIn(BaseModel):
     title: str
+
+
+class UpdateSessionPermissionProfileIn(BaseModel):
+    permission_mode: str = "auto"
 
 
 class StartSessionRunIn(BaseModel):
@@ -527,6 +549,58 @@ async def rename_session(
     session.title = body.title
     await db.commit()
     return {"id": str(session.id), "title": session.title}
+
+
+@router.patch("/{agent_id}/sessions/{session_id}/permissions/profile")
+async def update_session_permission_profile(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    body: UpdateSessionPermissionProfileIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the current CCPlus session permission mode immediately."""
+    session, _agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    permission_metadata = _session_permission_metadata(body.permission_mode, session)
+    session_metadata = dict(session.transcript_metadata_json or {})
+    session_metadata.update(permission_metadata)
+    session.transcript_metadata_json = session_metadata
+
+    active_result = await db.execute(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.parent_agent_id == agent_id,
+            RuntimeTask.parent_session_id == str(session_id),
+            RuntimeTask.status.in_(("pending", "running")),
+        )
+        .order_by(RuntimeTask.created_at.desc())
+        .limit(1)
+    )
+    active_run = active_result.scalar_one_or_none()
+    if active_run is not None:
+        active_metadata = dict(getattr(active_run, "metadata_json", None) or {})
+        active_metadata.update(permission_metadata)
+        active_run.metadata_json = active_metadata
+
+    await db.commit()
+
+    runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent_id), str(session_id))
+    runtime_session_context.metadata.update(permission_metadata)
+    await broadcast_web_chat_event(
+        agent_id,
+        session_id,
+        {
+            "type": "permission_profile_updated",
+            "event_type": "permission_profile_updated",
+            **permission_metadata,
+        },
+    )
+    return permission_metadata
 
 
 @router.post("/{agent_id}/sessions/{session_id}/feedback")
@@ -884,6 +958,9 @@ async def resolve_session_permission(
     tool_name = str(request_payload.get("tool_name") or "")
     arguments = request_payload.get("arguments") if isinstance(request_payload.get("arguments"), dict) else {}
 
+    if body.action == "allow_session" and not _permission_request_allows_session_scope(request_payload):
+        raise HTTPException(status_code=400, detail="Destructive permissions can only be allowed once")
+
     if body.action == "allow_session":
         session_metadata = dict(session.transcript_metadata_json or {})
         allowed_tools = [str(item) for item in (session_metadata.get("session_permission_allowed_tools") or [])]
@@ -943,7 +1020,11 @@ async def resolve_session_permission(
             agent_id=agent_id,
             user_id=current_user.id,
             session_id=str(session_id),
-            permission_profile={"mode": "bypassPermissions", "allowed_tools": [tool_name]},
+            permission_profile={
+                "mode": "bypassPermissions",
+                "allowed_tools": [tool_name],
+                "writable_roots": list(DEFAULT_CCPLUS_WRITABLE_ROOTS),
+            },
         )
         persisted_tool_event = await _persist_tool_call(
             agent_id=agent_id,

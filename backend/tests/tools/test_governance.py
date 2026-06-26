@@ -447,6 +447,60 @@ async def test_governance_allows_secret_command_when_specific_policy_allows_with
 
 
 @pytest.mark.asyncio
+async def test_governance_requires_session_confirmation_for_simple_delete_command_even_when_run_allowed():
+    from app.services.capability_gate import CapabilityCheckResult
+    from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    checked_tools = []
+    events = []
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, tool_name):
+        checked_tools.append(tool_name)
+        return CapabilityCheckResult(
+            allowed=True,
+            denied=False,
+            escalate_to_l3=False,
+            capability=tool_name if tool_name.startswith("workspace.") else "workspace.command.execute",
+            reason="",
+            policy_found=True,
+        )
+
+    async def write_audit(**kwargs):
+        raise AssertionError("delete confirmation should remain session-local")
+
+    async def request_approval(*args, **kwargs):
+        raise AssertionError("delete confirmation should not create enterprise approval")
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="run_command",
+            arguments={"command": "rm workspace/report.md"},
+            permission_profile=PermissionProfileV1(mode=PermissionMode.BYPASS_PERMISSIONS),
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=resolve_security_zone,
+            check_capability=check_capability,
+            write_audit_event=write_audit,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "requires session permission" in message
+    assert checked_tools == ["run_command", "workspace.command.destructive_delete"]
+    assert events[-1]["capability"] == "workspace.command.destructive_delete"
+    assert events[-1]["permission_request"]["allow_session_allowed"] is False
+
+
+@pytest.mark.asyncio
 async def test_governance_blocks_managed_channel_env_probe_without_approval_request():
     from app.services.capability_gate import CapabilityCheckResult
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
@@ -571,7 +625,8 @@ async def test_governance_asks_session_for_dangerous_run_command_even_when_base_
     assert "requires session permission" in message
     assert approval_calls == []
     assert events and events[-1]["status"] == "session_permission_required"
-    assert events[-1]["capability"] == "workspace.command.dangerous"
+    assert events[-1]["capability"] == "workspace.command.destructive_delete"
+    assert events[-1]["permission_request"]["allow_session_allowed"] is False
     assert "approval_id" not in events[-1]
 
 
@@ -618,7 +673,7 @@ async def test_governance_asks_session_for_dangerous_run_command_subcommand():
     )
 
     assert "requires session permission" in message
-    assert checked_tools == ["run_command", "workspace.command.dangerous"]
+    assert checked_tools == ["run_command", "workspace.command.destructive_delete"]
     assert approval_calls == []
 
 

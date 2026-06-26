@@ -9,6 +9,9 @@ better results:
   - Write files: `write_file` (or `fs_write` with mode=write/edit/delete) instead of echo redirection
   - List files: `list_files` (or `fs_list`) instead of find -type f
   - Search by name/content: use file search tools instead of find/grep
+- For user-facing reports, research notes, plans, and session deliverables, default to Markdown files \
+under `workspace/*.md`. Use `.txt` only for temporary probes/log snippets or when the user asks for \
+plain text.
 - The `fs_read` / `fs_write` / `fs_list` facades dispatch to the underlying \
 per-action tools via a `mode` parameter; pick whichever surface keeps the \
 intent clearest.

@@ -2,7 +2,7 @@
  * Chat domain adapter — history, sessions, file upload.
  */
 
-import { get, post, del, upload } from '../core';
+import { get, post, patch, del, upload } from '../core';
 import type { RequestOptions } from '../core/request';
 import type { ChatMessage } from '../../types';
 
@@ -91,6 +91,10 @@ export interface StartSessionRunInput {
   permission_mode?: 'auto' | 'default' | 'bypassPermissions';
   attachments?: Array<Record<string, unknown>>;
   parts?: Array<Record<string, unknown>>;
+}
+
+export interface UpdateSessionPermissionProfileInput {
+  permission_mode: 'auto' | 'default' | 'bypassPermissions';
 }
 
 export type ConversationBranchMode =
@@ -219,4 +223,10 @@ export const chatApi = {
     input: { action: 'allow_once' | 'allow_session' | 'deny'; feedback?: string },
   ) =>
     post<unknown>(`/agents/${agentId}/sessions/${sessionId}/permissions/${permissionRequestId}/resolve`, input),
+  updateSessionPermissionProfile: (
+    agentId: string,
+    sessionId: string,
+    input: UpdateSessionPermissionProfileInput,
+  ) =>
+    patch<unknown>(`/agents/${agentId}/sessions/${sessionId}/permissions/profile`, input),
 };

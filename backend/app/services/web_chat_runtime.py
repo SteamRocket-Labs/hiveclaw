@@ -27,6 +27,7 @@ from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_WRITABLE_ROOTS, normalize_permission_mode
 from app.services.chat_message_parts import (
     SESSION_NATIVE_EVENT_TYPES,
     build_chunk_event,
@@ -59,6 +60,16 @@ _TERMINAL_TRANSCRIPT_EVENT_TYPES = ("assistant_message", "run_completed", "done"
 _USER_VISIBLE_WEB_CHAT_ERROR = "[LLM Error] AI 模型调用异常，请稍后重试。"
 _CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _TASKS: dict[str, asyncio.Task] = {}
+_PERMISSION_METADATA_KEYS = ("permission_mode", "permission_profile", "writable_roots")
+_CHANNEL_DELIVERY_TOOL_NAMES = ("send_channel_message", "send_channel_file")
+_CHANNEL_DELIVERY_CHANNEL_HINT_RE = re.compile(
+    r"(飞书|feishu|lark|即时通讯|企业微信|wecom|微信|wechat|telegram|slack|discord|im)",
+    re.IGNORECASE,
+)
+_CHANNEL_DELIVERY_ACTION_HINT_RE = re.compile(
+    r"(发给|发送|转发|同步|推送|回传|传回|发回|投递|share|send|forward|deliver|post)",
+    re.IGNORECASE,
+)
 
 
 class ActiveWebChatRunExists(Exception):
@@ -77,6 +88,132 @@ class _TerminalToolCardSignal(Exception):
 
 def _run_id(value: str | uuid.UUID) -> uuid.UUID:
     return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _permission_metadata_from_mapping(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    raw_profile = metadata.get("permission_profile")
+    profile = dict(raw_profile) if isinstance(raw_profile, dict) else {}
+    has_permission_override = any(key in metadata for key in _PERMISSION_METADATA_KEYS) or "mode" in profile
+    if not has_permission_override:
+        return {}
+    mode = normalize_permission_mode(profile.get("mode") or metadata.get("permission_mode")).value
+    allowed_tools = _string_list(profile.get("allowed_tools"))
+    if not allowed_tools:
+        allowed_tools = _string_list(metadata.get("session_permission_allowed_tools"))
+    if "writable_roots" in profile:
+        writable_roots = _string_list(profile.get("writable_roots"))
+    elif "writable_roots" in metadata:
+        writable_roots = _string_list(metadata.get("writable_roots"))
+    else:
+        writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
+    normalized_profile = {
+        **profile,
+        "mode": mode,
+        "allowed_tools": allowed_tools,
+        "writable_roots": writable_roots,
+    }
+    return {
+        "permission_mode": mode,
+        "writable_roots": writable_roots,
+        "permission_profile": normalized_profile,
+    }
+
+
+def _merge_runtime_permission_metadata(
+    *,
+    runtime_metadata: dict[str, Any] | None,
+    session_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged = dict(runtime_metadata or {})
+    session_permission = _permission_metadata_from_mapping(session_metadata)
+    if session_permission:
+        merged.update(session_permission)
+    else:
+        runtime_permission = _permission_metadata_from_mapping(merged)
+        if runtime_permission:
+            merged.update(runtime_permission)
+    return merged
+
+
+def _sync_runtime_session_permission_metadata(runtime_session_context: Any, metadata: dict[str, Any]) -> None:
+    context_metadata = getattr(runtime_session_context, "metadata", None)
+    if not isinstance(context_metadata, dict):
+        return
+    for key in _PERMISSION_METADATA_KEYS:
+        if key in metadata:
+            context_metadata[key] = metadata[key]
+
+
+def _is_web_origin_turn(metadata: dict[str, Any], runtime_session_context: Any) -> bool:
+    source = str(metadata.get("source") or getattr(runtime_session_context, "source", None) or "web").strip().lower()
+    return source in {"", "web", "web_chat"}
+
+
+def _explicit_channel_delivery_requested(metadata: dict[str, Any], prompt: str | None = None) -> bool:
+    if metadata.get("allow_channel_delivery_tools") is True:
+        return True
+    text = " ".join(
+        part
+        for part in (
+            prompt,
+            metadata.get("display_content"),
+            metadata.get("llm_content"),
+            metadata.get("content"),
+        )
+        if isinstance(part, str) and part.strip()
+    )
+    return bool(
+        _CHANNEL_DELIVERY_CHANNEL_HINT_RE.search(text)
+        and _CHANNEL_DELIVERY_ACTION_HINT_RE.search(text)
+    )
+
+
+def _runtime_turn_excluded_tool_names(
+    metadata: dict[str, Any],
+    runtime_session_context: Any,
+    *,
+    prompt: str | None = None,
+) -> tuple[str, ...]:
+    excluded = _string_list(metadata.get("excluded_tool_names"))
+    return tuple(dict.fromkeys(excluded))
+
+
+def _channel_delivery_prompt_suffix_for_turn(metadata: dict[str, Any], runtime_session_context: Any) -> str:
+    if not _is_web_origin_turn(metadata, runtime_session_context):
+        return ""
+    return (
+        "Channel delivery boundary for Hive web chat: `send_channel_message` and `send_channel_file` remain "
+        "available, but only call them when the user explicitly asks to send, forward, sync, push, or deliver "
+        "content to an IM channel such as Feishu/Lark, WeCom, WeChat, Telegram, Slack, or Discord. If the user "
+        "is just chatting in Web, answer normally in this session and do not proactively push content to IM."
+    )
+
+
+def _active_channel_delivery_target_for_turn(
+    *,
+    metadata: dict[str, Any],
+    runtime_session_context: Any,
+    session: Any,
+    prompt: str | None = None,
+) -> dict[str, Any] | None:
+    if not (_is_web_origin_turn(metadata, runtime_session_context) and _explicit_channel_delivery_requested(metadata, prompt)):
+        return None
+    target = getattr(session, "delivery_target_json", None)
+    if not isinstance(target, dict):
+        target = metadata.get("delivery_target_json")
+    if not isinstance(target, dict):
+        return None
+    if str(target.get("channel") or "").strip().lower() == "web":
+        return None
+    return dict(target)
 
 
 def is_executable_chat_task_type(task_type: str | None) -> bool:
@@ -906,6 +1043,7 @@ async def start_channel_chat_run_from_saved_turn(
     allowed_tools = [
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
     ]
+    writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
     metadata = {
         "user_id": str(user.id),
         "session_id": str(session.id),
@@ -922,7 +1060,8 @@ async def start_channel_chat_run_from_saved_turn(
         "existing_user_message_saved": True,
         "latest_user_prompt_overrides_history": True,
         "permission_mode": "auto",
-        "permission_profile": {"mode": "auto", "allowed_tools": allowed_tools},
+        "writable_roots": writable_roots,
+        "permission_profile": {"mode": "auto", "allowed_tools": allowed_tools, "writable_roots": writable_roots},
         **(extra_metadata or {}),
     }
     runtime_task = RuntimeTask(
@@ -1992,12 +2131,21 @@ async def _update_runtime_task(
 
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
-) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage]]:
+) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage], ChatSession | None]:
     async with _async_session() as db, enter_rls_bypass(db, reason=f"durable web-run bootstrap for run {run_uuid}"):
         task_result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == run_uuid))
         runtime_task = task_result.scalar_one_or_none()
         if runtime_task is None:
             raise RuntimeError(f"RuntimeTask {run_uuid.hex} not found")
+        session = None
+        if runtime_task.parent_session_id:
+            try:
+                session_uuid = uuid.UUID(str(runtime_task.parent_session_id))
+            except (TypeError, ValueError):
+                session_uuid = None
+            if session_uuid is not None:
+                session_result = await db.execute(select(ChatSession).where(ChatSession.id == session_uuid))
+                session = session_result.scalar_one_or_none()
 
         agent_result = await db.execute(
             select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == runtime_task.parent_agent_id)
@@ -2061,7 +2209,7 @@ async def _load_runtime_context(
             .limit(history_limit)
         )
         history_messages = list(reversed(history_result.scalars().all()))
-        return runtime_task, agent, user, primary_model, fallback_model, history_messages
+        return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 
 async def _resume_queued_plan_handoffs(
@@ -2172,13 +2320,21 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     terminal_runtime_metadata: dict[str, Any] | None = None
 
     try:
-        runtime_task, agent, user, llm_model, fallback_model, history_messages = await _load_runtime_context(run_uuid)
+        loaded_context = await _load_runtime_context(run_uuid)
+        if len(loaded_context) == 6:
+            runtime_task, agent, user, llm_model, fallback_model, history_messages = loaded_context
+            session = None
+        else:
+            runtime_task, agent, user, llm_model, fallback_model, history_messages, session = loaded_context
         session_id = str(runtime_task.parent_session_id)
         terminal_agent_id = agent.id
         terminal_session_id = session_id
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
-        metadata = runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {}
+        metadata = _merge_runtime_permission_metadata(
+            runtime_metadata=runtime_task.metadata_json if isinstance(runtime_task.metadata_json, dict) else {},
+            session_metadata=getattr(session, "transcript_metadata_json", None) if session is not None else None,
+        )
         terminal_runtime_metadata = metadata
         if metadata.get("latest_user_prompt_overrides_history") and prompt:
             for idx in range(len(conversation) - 1, -1, -1):
@@ -2247,6 +2403,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             runtime_session_context.metadata["side_session_kind"] = metadata.get("side_session_kind") or "btw"
         if metadata.get("tool_policy"):
             runtime_session_context.metadata["tool_policy"] = metadata.get("tool_policy")
+        _sync_runtime_session_permission_metadata(runtime_session_context, metadata)
+        channel_delivery_suffix = _channel_delivery_prompt_suffix_for_turn(metadata, runtime_session_context)
 
         _clear_stale_plan_mode_for_new_turn(
             runtime_session_context,
@@ -2359,6 +2517,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     f"starting over.\n{resume_prompt}"
                 )
                 pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, restart_suffix) if part)
+        if channel_delivery_suffix:
+            pending_reply_suffix = "\n\n".join(part for part in (pending_reply_suffix, channel_delivery_suffix) if part)
 
         trusted_decline = plan_mode_core.trusted_decline_metadata(
             content=str(metadata.get("display_content") or prompt),
@@ -2404,6 +2564,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
         active_plan_mode_metadata = runtime_session_context.metadata.get("plan_mode")
         disable_tools_for_turn = bool(
             metadata.get("disable_tools") or metadata.get("tool_policy") == "disabled_by_default"
+        )
+        excluded_tool_names_for_turn = _runtime_turn_excluded_tool_names(
+            metadata,
+            runtime_session_context,
+            prompt=prompt,
         )
 
         plan_mode_submitted = False
@@ -2518,11 +2683,22 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     raise _TerminalToolCardSignal(pause_summary)
 
         plan_mode_token = None
+        channel_delivery_token = None
         try:
             if isinstance(active_plan_mode_metadata, dict) and active_plan_mode_metadata.get("active"):
                 from app.services.plan_mode_runtime_context import set_interactive_plan_mode
 
                 plan_mode_token = set_interactive_plan_mode(active_plan_mode_metadata)
+            active_channel_delivery_target = _active_channel_delivery_target_for_turn(
+                metadata=metadata,
+                runtime_session_context=runtime_session_context,
+                session=session,
+                prompt=prompt,
+            )
+            if active_channel_delivery_target:
+                from app.services.channel_delivery_service import channel_delivery_target
+
+                channel_delivery_token = channel_delivery_target.set(active_channel_delivery_target)
             try:
                 result = await invoke_agent(
                     AgentInvocationRequest(
@@ -2550,6 +2726,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                         system_prompt_suffix=pending_reply_suffix,
                         mid_run_message_drain=lambda: _claim_pending_mid_run_user_messages(run_uuid),
                         disable_tools=disable_tools_for_turn,
+                        excluded_tool_names=excluded_tool_names_for_turn,
                         emit_turn_stop=False,
                     )
                 )
@@ -2557,6 +2734,10 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 interactive_pause_summary = signal.summary
                 result = None
         finally:
+            if channel_delivery_token is not None:
+                from app.services.channel_delivery_service import channel_delivery_target
+
+                channel_delivery_target.reset(channel_delivery_token)
             if plan_mode_token is not None:
                 from app.services.plan_mode_runtime_context import reset_interactive_plan_mode
 
@@ -2679,7 +2860,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             session_id,
             build_done_event(assistant_response, thinking=thinking, artifacts=metadata_update.get("artifacts")),
         )
-        if status == "completed":
+        if status == "completed" and not _is_web_origin_turn(metadata, runtime_session_context):
             # P1-2: deliver the result back to the origin IM channel (no-op for
             # web sessions). Without this, an IM plan confirmation that continues
             # in-session streamed only to the web UI — the IM user heard nothing.

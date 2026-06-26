@@ -29,6 +29,8 @@ def test_artifact_policy_accepts_workspace_user_artifact(tmp_path):
     assert artifact["name"] == "report.md"
     assert artifact["preview_kind"] == "markdown"
     assert artifact["size"] == report.stat().st_size
+    assert artifact["snapshot"]["preview_content"] == "# Report\n"
+    assert artifact["preview_snapshot_content"] == "# Report\n"
 
 
 @pytest.mark.parametrize(
@@ -201,6 +203,7 @@ def test_build_session_artifact_parts_returns_rowless_parts_for_safe_paths(tmp_p
     assert part["preview_kind"] == "markdown"
     assert part["source"] == "deep_research"
     assert part["artifact_id"]
+    assert part["preview_snapshot_content"] == "# Report\n"
 
 
 def test_build_session_artifact_parts_dedupes_identical_paths(tmp_path):

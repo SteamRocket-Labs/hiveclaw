@@ -385,7 +385,9 @@ async def get_current_time(agent_id: uuid.UUID, arguments: dict) -> str:
         description=(
             "Send a text reply back to the current requester on the active channel or persisted reply target.\n\n"
             "Usage:\n"
-            "- Use this when you need to reply to the current user in Feishu, Telegram, WeCom, personal WeChat, or web.\n"
+            "- Use this when you need to reply to the current user in Feishu, Telegram, WeCom, or personal WeChat.\n"
+            "- In Hive web chat, use this only when the user explicitly asks to send, forward, sync, or push the "
+            "content back to the bound IM channel. Otherwise return normal assistant text in the web session.\n"
             "- This tool sends only to the current requester / bound reply target.\n"
             "- Do NOT use this for arbitrary lookup-by-name messaging; keep using send_feishu_message for that Feishu-only case."
         ),
@@ -419,7 +421,13 @@ async def send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
 @tool(
     ToolMeta(
         name="send_channel_file",
-        description="Send a file to the user via the current communication channel (Feishu, Telegram, Slack, Discord, WeChat personal, or web). Call this when you have created a file and the user would benefit from receiving it directly. Provide the workspace-relative file path (e.g. workspace/report.md).",
+        description=(
+            "Send a file to the user via the current IM communication channel "
+            "(Feishu, Telegram, Slack, Discord, or WeChat personal). In Hive web chat, use this for IM delivery "
+            "only when the user explicitly asks to send, forward, sync, or push the file back to the bound IM "
+            "channel; otherwise surface the file as a session artifact/preview. Provide the workspace-relative "
+            "file path (e.g. workspace/report.md)."
+        ),
         parameters={
             "type": "object",
             "properties": {

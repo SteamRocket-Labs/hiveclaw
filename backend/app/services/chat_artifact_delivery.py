@@ -23,6 +23,7 @@ MARKDOWN_EXTENSIONS = {".md", ".markdown"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 PDF_EXTENSIONS = {".pdf"}
 OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
+TEXT_PREVIEW_SNAPSHOT_MAX_BYTES = 64 * 1024
 
 
 def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
@@ -83,6 +84,18 @@ def _snapshot_hash(*, rel_path: PurePosixPath, stat_data: Any | None) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _read_preview_snapshot(path: Path, preview_kind: str) -> tuple[str | None, bool]:
+    if preview_kind not in {"markdown", "text"}:
+        return None, False
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None, False
+    truncated = len(data) > TEXT_PREVIEW_SNAPSHOT_MAX_BYTES
+    content = data[:TEXT_PREVIEW_SNAPSHOT_MAX_BYTES].decode("utf-8", errors="replace")
+    return content, truncated
+
+
 def build_artifact_candidate(
     *,
     agent_id: uuid.UUID,
@@ -117,6 +130,8 @@ def build_artifact_candidate(
     mime_type, _encoding = mimetypes.guess_type(rel.name)
     modified_at = datetime.fromtimestamp(stat_data.st_mtime, tz=timezone.utc).isoformat()
     snapshot_hash = _snapshot_hash(rel_path=rel, stat_data=stat_data)
+    preview_kind = _preview_kind_for_path(rel)
+    preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(absolute, preview_kind)
     snapshot = {
         "exists": True,
         "size": stat_data.st_size,
@@ -127,6 +142,9 @@ def build_artifact_candidate(
         "tool_call_id": str(tool_call_id) if tool_call_id else None,
         "diff_summary": diff_summary,
     }
+    if preview_snapshot_content is not None:
+        snapshot["preview_content"] = preview_snapshot_content
+        snapshot["preview_content_truncated"] = preview_snapshot_truncated
     artifact_id = uuid.uuid4()
     return {
         "id": str(artifact_id),
@@ -139,10 +157,12 @@ def build_artifact_candidate(
         "mime_type": mime_type,
         "size": stat_data.st_size,
         "modified_at": modified_at,
-        "preview_kind": _preview_kind_for_path(rel),
+        "preview_kind": preview_kind,
         "source": source,
         "snapshot_hash": snapshot_hash,
         "snapshot": snapshot,
+        "preview_snapshot_content": preview_snapshot_content,
+        "preview_snapshot_truncated": preview_snapshot_truncated if preview_snapshot_content is not None else None,
         "revision_id": snapshot_hash,
         "action": action,
         "tool_call_id": str(tool_call_id) if tool_call_id else None,
@@ -208,6 +228,8 @@ def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "action": candidate.get("action"),
         "tool_call_id": candidate.get("tool_call_id"),
         "diff_summary": candidate.get("diff_summary"),
+        "preview_snapshot_content": candidate.get("preview_snapshot_content"),
+        "preview_snapshot_truncated": candidate.get("preview_snapshot_truncated"),
     }
 
 
@@ -229,6 +251,8 @@ def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
         "action": snapshot.get("action"),
         "tool_call_id": snapshot.get("tool_call_id"),
         "diff_summary": snapshot.get("diff_summary"),
+        "preview_snapshot_content": snapshot.get("preview_content"),
+        "preview_snapshot_truncated": snapshot.get("preview_content_truncated"),
     }
 
 

@@ -125,6 +125,7 @@ def test_ccplus_v1_profiles_default_to_governed_safe_values():
     permission = PermissionProfileV1()
     assert permission.mode == PermissionMode.AUTO
     assert permission.sandbox == SandboxProfile.WORKSPACE_WRITE
+    assert permission.writable_roots == ("workspace/",)
     assert permission.default_decision == "escalate"
 
     turn = TurnStateV1(session_id="session-1", runtime_task_id="task-1")

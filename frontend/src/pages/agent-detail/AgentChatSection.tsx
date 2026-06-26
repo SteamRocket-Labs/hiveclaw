@@ -998,7 +998,7 @@ export function StructuredToolResultBody({
     );
   }
 
-  if (toolMeta.kind === 'plan_needs_confirmation') {
+  if (toolMeta.kind === 'plan_proposal') {
     // CC-align §4.5: render the REAL plan by id (InlinePlanCard fetches it and
     // refetches), NOT a synthetic card hardcoded to awaiting_confirmation — the
     // synthetic one left a stale confirm button after the user confirmed, so a
@@ -1797,7 +1797,7 @@ export default function AgentChatSection({
   const isInlineToolCardMessage = (message: AgentChatMessage) => (
     message.role === 'tool_call' && (
       Boolean(message.artifacts?.length) ||
-      message.toolMeta?.kind === 'plan_needs_confirmation' ||
+      message.toolMeta?.kind === 'plan_proposal' ||
       message.toolMeta?.kind === 'user_clarification' ||
       message.toolMeta?.kind === 'plan_mode_request' ||
       message.toolMeta?.kind === 'create_employee_success' ||

@@ -41,8 +41,8 @@ export interface DeepResearchToolMeta {
   gaps: string[];
 }
 
-export interface PlanNeedsConfirmationToolMeta {
-  kind: 'plan_needs_confirmation';
+export interface PlanProposalToolMeta {
+  kind: 'plan_proposal';
   planId: string;
   planVersion: number;
   planHash: string | null;
@@ -94,7 +94,7 @@ export type ToolCallMeta =
   | HrPreviewToolResult
   | CreateEmployeeSuccessToolMeta
   | DeepResearchToolMeta
-  | PlanNeedsConfirmationToolMeta
+  | PlanProposalToolMeta
   | UserClarificationToolMeta
   | PlanModeRequestToolMeta
   | RuntimeStepToolMeta;
@@ -257,7 +257,7 @@ function buildDeepResearchDisplayResult(meta: DeepResearchToolMeta): string {
   return meta.summary || `Deep research ${status}`;
 }
 
-function parsePlanNeedsConfirmationResult(rawResult: unknown): PlanNeedsConfirmationToolMeta | null {
+function parsePlanProposalResult(rawResult: unknown): PlanProposalToolMeta | null {
   const parsed = parseStructuredToolPayload(rawResult);
   if (!parsed) {
     return null;
@@ -273,7 +273,7 @@ function parsePlanNeedsConfirmationResult(rawResult: unknown): PlanNeedsConfirma
         ? (parsed.plan_preview as Record<string, unknown>)
         : {};
   return {
-    kind: 'plan_needs_confirmation',
+    kind: 'plan_proposal',
     planId: parsed.plan_id,
     planVersion: typeof parsed.plan_version === 'number' ? parsed.plan_version : 1,
     planHash: typeof parsed.plan_hash === 'string' ? parsed.plan_hash : null,
@@ -284,7 +284,7 @@ function parsePlanNeedsConfirmationResult(rawResult: unknown): PlanNeedsConfirma
   };
 }
 
-function buildPlanNeedsConfirmationDisplayResult(meta: PlanNeedsConfirmationToolMeta): string {
+function buildPlanProposalDisplayResult(meta: PlanProposalToolMeta): string {
   if (meta.status === 'planning_failed') {
     return meta.summary || 'Plan failed validation and needs revision.';
   }
@@ -380,13 +380,13 @@ function buildPlanModeRequestDisplayResult(meta: PlanModeRequestToolMeta): strin
 export function normalizeToolCallResult(toolName: string | undefined, rawResult: unknown): NormalizedToolCallResult {
   const raw = coerceToolResultToString(rawResult);
 
-  const planNeedsConfirmation = parsePlanNeedsConfirmationResult(rawResult);
-  if (planNeedsConfirmation) {
+  const planProposal = parsePlanProposalResult(rawResult);
+  if (planProposal) {
     return {
-      displayResult: buildPlanNeedsConfirmationDisplayResult(planNeedsConfirmation),
+      displayResult: buildPlanProposalDisplayResult(planProposal),
       createdAgentId: null,
       raw,
-      toolMeta: planNeedsConfirmation,
+      toolMeta: planProposal,
     };
   }
 

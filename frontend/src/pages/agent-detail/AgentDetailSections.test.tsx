@@ -2444,7 +2444,7 @@ describe('AgentDetail extracted sections', () => {
             toolStatus: 'done',
             toolResult: 'Plan created',
             toolMeta: {
-              kind: 'plan_needs_confirmation',
+              kind: 'plan_proposal',
               planId: 'a7cdfa75-cec5-4062-8bda-b18b2d2821a3',
               planVersion: 1,
               planHash: 'sha256:inline-tool',
@@ -2484,7 +2484,7 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    // CC-align §4.5: plan_needs_confirmation now renders InlinePlanCard (the REAL
+    // CC-align §4.5: plan_proposal now renders InlinePlanCard (the REAL
     // plan fetched by id), NOT a synthetic card built from toolMeta — so the
     // fetched plan title shows, the stale toolMeta title does not, and the card
     // reflects live status instead of a hardcoded awaiting_confirmation.

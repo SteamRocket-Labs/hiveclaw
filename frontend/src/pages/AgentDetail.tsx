@@ -475,7 +475,7 @@ function AgentDetailInner() {
         return Boolean(
             toolMeta?.blocking
             || kind === 'user_clarification'
-            || kind === 'plan_needs_confirmation'
+            || kind === 'plan_proposal'
             || kind === 'plan_mode_request'
             || kind === 'create_employee_success'
             || kind === 'hr_preview',

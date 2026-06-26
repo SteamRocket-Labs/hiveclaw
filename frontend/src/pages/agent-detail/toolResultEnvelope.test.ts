@@ -157,7 +157,7 @@ describe('parseCreateEmployeeToolResult', () => {
     });
   });
 
-  it('normalizes a needs_plan tool result into plan confirmation metadata regardless of tool name', () => {
+  it('normalizes a needs_plan tool result into a typed plan proposal regardless of tool name', () => {
     const normalized = normalizeToolCallResult(
       'set_trigger',
       JSON.stringify({
@@ -174,7 +174,7 @@ describe('parseCreateEmployeeToolResult', () => {
 
     expect(normalized.displayResult).toBe('Confirm the plan before creating this autonomous wake policy.');
     expect(normalized.toolMeta).toEqual({
-      kind: 'plan_needs_confirmation',
+      kind: 'plan_proposal',
       planId: 'plan-uuid-1',
       planVersion: 1,
       planHash: 'sha256:deadbeef',
@@ -196,7 +196,7 @@ describe('parseCreateEmployeeToolResult', () => {
     );
 
     expect(normalized.toolMeta).toMatchObject({
-      kind: 'plan_needs_confirmation',
+      kind: 'plan_proposal',
       planId: 'plan-uuid-2',
       planVersion: 1,
       planHash: null,
@@ -220,7 +220,7 @@ describe('parseCreateEmployeeToolResult', () => {
 
     expect(normalized.displayResult).toBe('计划未通过校验，需要修改后重新生成。');
     expect(normalized.toolMeta).toEqual({
-      kind: 'plan_needs_confirmation',
+      kind: 'plan_proposal',
       planId: 'plan-uuid-failed',
       planVersion: 1,
       planHash: null,

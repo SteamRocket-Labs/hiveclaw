@@ -384,6 +384,7 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
             planning_errors = []
         payload = {
             "status": "planning_failed",
+            "item_type": "plan_proposal",
             "plan_id": str(plan.id),
             "plan_version": getattr(plan, "plan_version", 1),
             "plan_hash": getattr(plan, "plan_hash", None),
@@ -397,6 +398,7 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
 
     payload = {
         "status": "needs_plan",
+        "item_type": "plan_proposal",
         "plan_id": str(plan.id),
         "plan_version": getattr(plan, "plan_version", 1),
         "plan_hash": getattr(plan, "plan_hash", None),

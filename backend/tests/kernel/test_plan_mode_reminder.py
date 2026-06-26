@@ -32,6 +32,22 @@ def test_full_reminder_carries_the_load_bearing_constraints():
     assert "not the approval artifact" in full
 
 
+def test_full_reminder_defines_the_required_plan_markdown_sections():
+    """Plan Mode output quality is a prompt contract, not just a UI concern."""
+    full = _PLAN_MODE_REMINDER_FULL
+    for section in (
+        "Current understanding",
+        "Observed facts",
+        "Key judgment",
+        "Execution scope",
+        "Execution steps",
+        "Verification plan",
+        "Risks and confirmation points",
+    ):
+        assert section in full
+    assert "Do not submit a bare task list" in full
+
+
 def test_sparse_reminder_is_shorter_but_keeps_exit_and_readonly():
     sparse = _PLAN_MODE_REMINDER_SPARSE
     assert "exit_plan_mode" in sparse

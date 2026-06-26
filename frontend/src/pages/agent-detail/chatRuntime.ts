@@ -343,7 +343,7 @@ function isTerminalToolCard(message: AgentChatMessage): boolean {
   if (message.role !== 'tool_call' || message.toolStatus !== 'done') return false;
   const kind = message.toolMeta?.kind;
   return kind === 'user_clarification'
-    || kind === 'plan_needs_confirmation'
+    || kind === 'plan_proposal'
     || kind === 'plan_mode_request'
     || kind === 'create_employee_success';
 }

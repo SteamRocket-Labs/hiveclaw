@@ -146,6 +146,7 @@ async def test_exit_plan_mode_creates_needs_plan_payload_from_active_context(mon
         reset_interactive_plan_mode(token)
 
     assert result["status"] == "needs_plan"
+    assert result["item_type"] == "plan_proposal"
     assert result["plan_id"]
     assert result["plan_json"]["title"] == "Web3 全景研究计划"
     assert result["plan_json"]["steps"][0]["order"] == 1
@@ -196,6 +197,7 @@ async def test_exit_plan_mode_returns_planning_failed_without_needs_plan_success
         reset_interactive_plan_mode(token)
 
     assert result["status"] == "planning_failed"
+    assert result["item_type"] == "plan_proposal"
     assert "等待用户确认" not in result["summary"]
     assert "confirm" not in result["next_action"].lower()
     assert "deep_research_* tool call" in "\n".join(result["planning_errors"])

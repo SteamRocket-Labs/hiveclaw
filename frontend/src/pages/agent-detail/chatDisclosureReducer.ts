@@ -142,7 +142,7 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
       const count = message.toolMeta.questions.length;
       return count === 1 ? '1 question' : `${count} questions`;
     }
-    if (message.toolMeta?.kind === 'plan_needs_confirmation') {
+    if (message.toolMeta?.kind === 'plan_proposal') {
       return message.toolMeta.summary || message.toolMeta.nextAction || '';
     }
     if (message.toolMeta?.kind === 'deep_research') {
@@ -162,7 +162,7 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
 
 function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   if (message.toolMeta?.kind === 'user_clarification') return 'question';
-  if (message.toolMeta?.kind === 'plan_mode_request' || message.toolMeta?.kind === 'plan_needs_confirmation') return 'plan';
+  if (message.toolMeta?.kind === 'plan_mode_request' || message.toolMeta?.kind === 'plan_proposal') return 'plan';
   if (message.toolMeta?.kind === 'deep_research') return 'deep_research';
 
   const name = (message.toolName || '').toLowerCase();

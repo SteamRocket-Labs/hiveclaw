@@ -35,10 +35,11 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.status).toBe('done');
     expect(timeline.steps.map((step) => [step.kind, step.title, step.status, step.visibility])).toEqual([
       ['reasoning', 'Thinking', 'done', 'collapsed'],
-      ['file', 'read_file', 'done', 'collapsed'],
+      ['file', 'Read file', 'done', 'collapsed'],
       ['compaction', 'Context Compacted', 'done', 'collapsed'],
     ]);
-    expect(timeline.steps[1].summary).toContain('path: frontend/src/pages/agent-detail/AgentChatSection.tsx');
+    expect(timeline.steps[1].summary).toContain('AgentChatSection.tsx');
+    expect(timeline.steps[1].summary).not.toContain('path:');
     expect(timeline.answerMessageId).toBe('answer-3');
   });
 
@@ -52,17 +53,18 @@ describe('chatDisclosureReducer', () => {
     };
 
     expect(isDisclosureStepMessage(message)).toBe(true);
-    expect(getDisclosureStepSummary(message)).toBe('query: Hive chat runtime disclosure');
+    expect(getDisclosureStepSummary(message)).toBe('Hive chat runtime disclosure');
 
     const timeline = buildRunTimelineFromMessages([message], { now: new Date('2026-06-22T10:00:10Z') });
 
     expect(timeline.status).toBe('running');
     expect(timeline.steps[0]).toMatchObject({
       kind: 'search',
-      title: 'web_search',
+      title: 'Search web',
       status: 'running',
-      summary: 'query: Hive chat runtime disclosure',
+      summary: 'Hive chat runtime disclosure',
     });
+    expect(timeline.steps[0].summary).not.toContain('query:');
   });
 
   it('summarizes tool discovery without exposing raw select queries', () => {

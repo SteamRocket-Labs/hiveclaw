@@ -1847,8 +1847,9 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Processed');
-    expect(markup).toContain('read_file');
-    expect(markup).toContain('workspace/report.md');
+    expect(markup).toContain('Read file');
+    expect(markup).toContain('report.md');
+    expect(markup).not.toContain('path:');
     expect(markup).not.toContain('RAW FILE CONTENT SHOULD NOT BE INLINE');
   });
 
@@ -2032,9 +2033,9 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup.match(/data-testid="run-disclosure-block"/g)?.length).toBe(1);
     expect(markup).toContain('Thinking');
-    expect(markup).toContain('read_file');
+    expect(markup).toContain('Read file');
     expect(markup).toContain('Context Compacted');
-    expect(markup).toContain('execute_code');
+    expect(markup).toContain('Run command');
     expect(markup).toContain('最终答案已经完成。');
     expect(markup).not.toContain('RAW READ FILE CONTENT');
     expect(markup).not.toContain('RAW COMMAND OUTPUT');
@@ -2304,11 +2305,11 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('run:run-1');
   });
 
-  it('routes chat artifacts to modal preview only when the file type is previewable', () => {
-    expect(getArtifactOpenMode({ name: 'report.md', path: 'workspace/report.md', previewKind: 'markdown' })).toBe('modal_preview');
-    expect(getArtifactOpenMode({ name: 'notes.txt', path: 'workspace/notes.txt', previewKind: 'text' })).toBe('modal_preview');
-    expect(getArtifactOpenMode({ name: 'chart.png', path: 'workspace/chart.png', previewKind: 'image' })).toBe('modal_preview');
-    expect(getArtifactOpenMode({ name: 'slides.pdf', path: 'workspace/slides.pdf', previewKind: 'pdf' })).toBe('modal_preview');
+  it('routes chat artifacts to the session inspector only when the file type is previewable', () => {
+    expect(getArtifactOpenMode({ name: 'report.md', path: 'workspace/report.md', previewKind: 'markdown' })).toBe('inspector_preview');
+    expect(getArtifactOpenMode({ name: 'notes.txt', path: 'workspace/notes.txt', previewKind: 'text' })).toBe('inspector_preview');
+    expect(getArtifactOpenMode({ name: 'chart.png', path: 'workspace/chart.png', previewKind: 'image' })).toBe('inspector_preview');
+    expect(getArtifactOpenMode({ name: 'slides.pdf', path: 'workspace/slides.pdf', previewKind: 'pdf' })).toBe('inspector_preview');
     expect(getArtifactOpenMode({ name: 'deck.pptx', path: 'workspace/deck.pptx', previewKind: 'office' })).toBe('download');
     expect(getArtifactOpenMode({ name: 'archive.zip', path: 'workspace/archive.zip', previewKind: 'download' })).toBe('download');
   });
@@ -2400,7 +2401,11 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Daily Reddit investor monitoring plan');
-    expect(markup).toContain('Confirm and start');
+    expect(markup).toContain('Implement this plan');
+    expect(markup).toContain('Adjust plan');
+    expect(markup).toContain('Ignore / exit plan');
+    expect(markup).toContain('Tell the agent what to adjust');
+    expect(markup).toContain('Reason for leaving Plan Mode');
   });
 
   it('keeps Plan Mode tool-result cards visible when internal trace is hidden', () => {
@@ -2490,7 +2495,7 @@ describe('AgentDetail extracted sections', () => {
     // reflects live status instead of a hardcoded awaiting_confirmation.
     expect(markup).toContain('Daily Reddit investor monitoring plan');
     expect(markup).not.toContain('Inline tool plan');
-    expect(markup).toContain('Confirm and start');
+    expect(markup).toContain('Implement this plan');
     expect(markup).not.toContain('Confirm before creating the trigger.');
   });
 
@@ -3417,13 +3422,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('User wants Asia-market focus by default.');
     expect(markup).toContain('Which sectors should the brief prioritise?');
     // Actionable while awaiting confirmation; confirmation should clearly start handoff.
-    expect(markup).toContain('Confirm and start');
-    expect(markup).toContain('Request changes');
-    expect(markup).toContain('Reject');
+    expect(markup).toContain('Implement this plan');
+    expect(markup).toContain('Adjust plan');
+    expect(markup).toContain('Ignore / exit plan');
     expect(markup).toContain('data-testid="plan-revision-composer"');
     expect(markup).toContain('data-testid="plan-reject-composer"');
-    expect(markup).toContain('What should change about this plan?');
-    expect(markup).toContain('Reason for rejecting this plan');
+    expect(markup).toContain('Tell the agent what to adjust');
+    expect(markup).toContain('Reason for leaving Plan Mode');
   });
 
   it('does not expose internal ledger paths or empty side-effect placeholders in PlanCard', () => {
@@ -3516,9 +3521,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Planning failed');
     expect(markup).toContain('missing required field: objective');
     expect(markup).toContain('Retry plan generation');
-    expect(markup).toContain('Revise and retry');
-    expect(markup).toContain('Reject');
-    expect(markup).not.toContain('Confirm and start');
+    expect(markup).toContain('Adjust and retry');
+    expect(markup).toContain('Ignore / exit plan');
+    expect(markup).not.toContain('Implement this plan');
     expect(markup).not.toContain('No actions available for this plan.');
   });
 
@@ -3558,7 +3563,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Market research report');
     expect(markup).toContain('Planning in progress');
     expect(markup).toContain('The agent is drafting a confirmable plan.');
-    expect(markup).not.toContain('Confirm and start');
+    expect(markup).not.toContain('Implement this plan');
     expect(markup).not.toContain('Retry plan generation');
     expect(markup).not.toContain('No actions available for this plan.');
   });
@@ -3641,8 +3646,8 @@ describe('AgentDetail extracted sections', () => {
     // handoff banner (here: started, executing in this conversation) — never a
     // stale confirm/revise button.
     expect(markup).toContain('Started — executing in this conversation');
-    expect(markup).not.toContain('Request changes');
-    expect(markup).not.toContain('Confirm and start');
+    expect(markup).not.toContain('Adjust plan');
+    expect(markup).not.toContain('Implement this plan');
   });
 
   it('renders PlanCard handoff states: queued, skipped reason, and the markdown body', () => {
@@ -3682,7 +3687,7 @@ describe('AgentDetail extracted sections', () => {
     // Markdown body is the primary surface (CC-align §4.1).
     expect(queuedMarkup).toContain('聚焦三条赛道，给出投资视角。');
     expect(queuedMarkup).toContain('Confirmed — waiting for the current run to finish');
-    expect(queuedMarkup).not.toContain('Confirm and start');
+    expect(queuedMarkup).not.toContain('Implement this plan');
 
     // skipped: visible reason, not a silent state.
     const skipped = {

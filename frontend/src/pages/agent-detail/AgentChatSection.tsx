@@ -540,7 +540,7 @@ function formatArtifactSize(size: number | undefined): string | null {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export type ArtifactOpenMode = 'modal_preview' | 'download';
+export type ArtifactOpenMode = 'inspector_preview' | 'download';
 
 function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): string {
   const explicit = artifact.previewKind?.toLowerCase();
@@ -556,7 +556,7 @@ function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart, 'name'
 export function getArtifactOpenMode(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): ArtifactOpenMode {
   const previewKind = getEffectiveArtifactPreviewKind(artifact);
   if (previewKind && ['markdown', 'text', 'image', 'pdf'].includes(previewKind)) {
-    return 'modal_preview';
+    return 'inspector_preview';
   }
   return 'download';
 }
@@ -607,33 +607,33 @@ function ArtifactPreviewPanel({
   );
   return (
     <div
-      data-testid="session-artifact-preview-modal"
-      role="dialog"
-      aria-modal="true"
+      data-testid="session-artifact-preview-inspector"
+      role="complementary"
       aria-label={preview.artifact.name}
       style={{
         position: 'fixed',
-        inset: 0,
         zIndex: 80,
+        top: '76px',
+        right: '16px',
+        bottom: '112px',
+        width: 'min(680px, calc(100vw - 32px))',
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '24px',
-        background: 'rgba(15, 23, 42, 0.32)',
+        pointerEvents: 'none',
       }}
     >
       <section
         data-testid="session-artifact-inspector"
         style={{
-          width: 'min(920px, calc(100vw - 48px))',
-          maxHeight: 'min(76vh, 720px)',
+          width: '100%',
+          minHeight: 0,
           border: '1px solid var(--border-subtle)',
           borderRadius: '10px',
           background: 'var(--bg-secondary)',
-          boxShadow: '0 24px 80px rgba(15, 23, 42, 0.24)',
+          boxShadow: '0 18px 64px rgba(15, 23, 42, 0.24)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
+          pointerEvents: 'auto',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 10px', borderBottom: '1px solid var(--border-subtle)' }}>

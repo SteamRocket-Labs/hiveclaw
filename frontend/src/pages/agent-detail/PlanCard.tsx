@@ -496,22 +496,22 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           <div className="plan-inline-actions">
             <PlanDecisionComposer
               testId="plan-revision-composer"
-              title={t('agent.plan.requestChanges', 'Request changes')}
-              label={t('agent.plan.requestChangesPrompt', 'What should change about this plan?')}
+              title={t('agent.plan.adjustPlan', 'Adjust plan')}
+              label={t('agent.plan.adjustPrompt', 'Tell the agent what to adjust')}
               value={revisionRequest}
               disabled={busy !== null}
-              submitLabel={busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.sendRevision', 'Send revision request')}
+              submitLabel={busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.sendAdjustment', 'Send adjustment')}
               onChange={setRevisionRequest}
               onSubmit={onRequestChanges}
             />
             <PlanDecisionComposer
               testId="plan-reject-composer"
-              title={t('agent.plan.reject', 'Reject')}
-              label={t('agent.plan.rejectPrompt', 'Reason for rejecting this plan (optional)')}
+              title={t('agent.plan.ignoreExit', 'Ignore / exit plan')}
+              label={t('agent.plan.exitPrompt', 'Reason for leaving Plan Mode (optional)')}
               value={rejectReason}
               disabled={busy !== null}
               danger
-              submitLabel={busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.submitReject', 'Reject plan')}
+              submitLabel={busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.submitExit', 'Exit Plan Mode')}
               onChange={setRejectReason}
               onSubmit={onReject}
             />
@@ -523,7 +523,7 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
             disabled={busy !== null}
             onClick={onConfirm}
           >
-            {busy === 'confirm' ? t('common.loading', 'Loading...') : t('agent.plan.confirmAndStart', 'Confirm and start')}
+            {busy === 'confirm' ? t('common.loading', 'Loading...') : t('agent.plan.implementPlan', 'Implement this plan')}
           </button>
         </div>
       ) : isPlanningFailed ? (
@@ -531,22 +531,22 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
           <div className="plan-inline-actions">
             <PlanDecisionComposer
               testId="plan-revision-composer"
-              title={t('agent.plan.reviseAndRetry', 'Revise and retry')}
-              label={t('agent.plan.requestChangesPrompt', 'What should change about this plan?')}
+              title={t('agent.plan.adjustAndRetry', 'Adjust and retry')}
+              label={t('agent.plan.adjustPrompt', 'Tell the agent what to adjust')}
               value={revisionRequest}
               disabled={busy !== null}
-              submitLabel={busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.sendRevision', 'Send revision request')}
+              submitLabel={busy === 'revise' ? t('common.loading', 'Loading...') : t('agent.plan.sendAdjustment', 'Send adjustment')}
               onChange={setRevisionRequest}
               onSubmit={onRequestChanges}
             />
             <PlanDecisionComposer
               testId="plan-reject-composer"
-              title={t('agent.plan.reject', 'Reject')}
-              label={t('agent.plan.rejectPrompt', 'Reason for rejecting this plan (optional)')}
+              title={t('agent.plan.ignoreExit', 'Ignore / exit plan')}
+              label={t('agent.plan.exitPrompt', 'Reason for leaving Plan Mode (optional)')}
               value={rejectReason}
               disabled={busy !== null}
               danger
-              submitLabel={busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.submitReject', 'Reject plan')}
+              submitLabel={busy === 'reject' ? t('common.loading', 'Loading...') : t('agent.plan.submitExit', 'Exit Plan Mode')}
               onChange={setRejectReason}
               onSubmit={onReject}
             />

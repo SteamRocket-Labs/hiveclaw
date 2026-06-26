@@ -81,22 +81,58 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'artifact_delivery',
 ]);
 
-function compactValue(value: unknown): string {
-  if (typeof value === 'string') return value.length > 80 ? `${value.slice(0, 77)}...` : value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (value == null) return String(value);
-  try {
-    const serialized = JSON.stringify(value);
-    return serialized.length > 80 ? `${serialized.slice(0, 77)}...` : serialized;
-  } catch {
-    return String(value);
-  }
-}
-
 function compactText(text: string, limit = 160): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function stringArg(message: AgentChatMessage, keys: string[]): string {
+  for (const key of keys) {
+    const value = message.toolArgs?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function basename(path: string): string {
+  return path.split('/').filter(Boolean).pop() || path;
+}
+
+function summarizeFileTool(message: AgentChatMessage): string {
+  const target = stringArg(message, ['path', 'file_path', 'target_path', 'source_path', 'name']);
+  return target ? compactText(basename(target), 120) : 'Workspace file operation';
+}
+
+function summarizeSearchTool(message: AgentChatMessage): string {
+  const target = stringArg(message, ['query', 'url', 'domain']);
+  return target ? compactText(target, 120) : 'Search request';
+}
+
+function summarizeCommandTool(message: AgentChatMessage): string {
+  const command = stringArg(message, ['cmd', 'command']);
+  if (!command) return 'Command execution';
+  const head = command.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
+  return head ? compactText(`${head}${command.length > head.length ? ' ...' : ''}`, 120) : 'Command execution';
+}
+
+function summarizeToolMessage(message: AgentChatMessage): string {
+  const name = (message.toolName || '').toLowerCase();
+  if (message.toolName === 'tool_search') return 'Checking available tools';
+  if (message.toolMeta?.kind === 'user_clarification') {
+    const count = message.toolMeta.questions.length;
+    return count === 1 ? '1 question' : `${count} questions`;
+  }
+  if (message.toolMeta?.kind === 'plan_proposal') {
+    return message.toolMeta.summary || message.toolMeta.nextAction || '';
+  }
+  if (message.toolMeta?.kind === 'deep_research') {
+    return message.toolMeta.summary || message.toolMeta.status || '';
+  }
+  if (COMMAND_TOOLS.has(name)) return summarizeCommandTool(message);
+  if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeFileTool(message);
+  if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
+  return message.toolArgs && Object.keys(message.toolArgs).length > 0 ? 'Details available' : '';
 }
 
 function stepIdForMessage(message: AgentChatMessage, index: number): string {
@@ -131,24 +167,7 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
   }
 
   if (message.role === 'tool_call') {
-    if (message.toolName === 'tool_search') {
-      return 'Checking available tools';
-    }
-    const entries = Object.entries(message.toolArgs || {});
-    if (entries.length > 0) {
-      return entries.map(([key, value]) => `${key}: ${compactValue(value)}`).join(', ');
-    }
-    if (message.toolMeta?.kind === 'user_clarification') {
-      const count = message.toolMeta.questions.length;
-      return count === 1 ? '1 question' : `${count} questions`;
-    }
-    if (message.toolMeta?.kind === 'plan_proposal') {
-      return message.toolMeta.summary || message.toolMeta.nextAction || '';
-    }
-    if (message.toolMeta?.kind === 'deep_research') {
-      return message.toolMeta.summary || message.toolMeta.status || '';
-    }
-    return '';
+    return summarizeToolMessage(message);
   }
 
   if (message.role === 'event') {
@@ -177,6 +196,18 @@ function kindForToolMessage(message: AgentChatMessage): RunStepKind {
 
 function titleForToolMessage(message: AgentChatMessage): string {
   if (message.toolName === 'tool_search') return 'Loading tools';
+  const name = (message.toolName || '').toLowerCase();
+  if (name === 'read_file') return 'Read file';
+  if (name === 'write_file') return 'Write file';
+  if (name === 'edit_file') return 'Edit file';
+  if (name === 'delete_file') return 'Delete file';
+  if (name === 'list_files') return 'List files';
+  if (name === 'web_search') return 'Search web';
+  if (name === 'web_fetch' || name === 'firecrawl_fetch' || name === 'xcrawl_scrape') return 'Fetch web page';
+  if (COMMAND_TOOLS.has(name)) return 'Run command';
+  if (name.includes('workflow')) return 'Workflow step';
+  if (name.includes('subagent') || name.includes('delegate')) return 'Sub-agent step';
+  if (name.includes('trigger') || name.includes('schedule')) return 'Schedule step';
   return message.toolName || 'Tool call';
 }
 

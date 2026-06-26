@@ -40,6 +40,7 @@ from app.services.chat_message_parts import (
     build_tool_call_event,
     build_tool_group_activation_event,
 )
+from app.services.chat_artifact_delivery import tool_session_write_paths
 from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
 from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
 from app.services.llm_utils import LLMError, LLMMessage, LLMResponse, STREAM_RETRY_TOMBSTONE
@@ -895,6 +896,14 @@ def _coerce_str_list(value: Any) -> list[str]:
     return []
 
 
+def _plan_mode_writable_roots(metadata: dict[str, Any]) -> list[str]:
+    plan_mode = metadata.get("plan_mode")
+    if not isinstance(plan_mode, dict) or not plan_mode.get("active"):
+        return []
+    plan_file_path = str(plan_mode.get("plan_file_path") or "").strip()
+    return [plan_file_path] if plan_file_path else []
+
+
 def _build_permissions_context(request: InvocationRequest, runtime_config: RuntimeConfig | None) -> str:
     if (request.standalone_system_prompt or "").strip():
         return ""
@@ -916,6 +925,10 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
     allowed_tools = _coerce_str_list(policy_dict.get("allowed_tools") or metadata.get("allowed_tools"))
     if not allowed_tools and request.allowed_tool_names:
         allowed_tools = _coerce_str_list(request.allowed_tool_names)
+    writable_roots = _coerce_str_list(policy_dict.get("writable_roots") or metadata.get("writable_roots"))
+    for root in _plan_mode_writable_roots(metadata):
+        if root not in writable_roots:
+            writable_roots.append(root)
     denied_actions = _coerce_str_list(policy_dict.get("denied_actions") or metadata.get("denied_actions"))
     if getattr(runtime_config, "tenant_resolution_error", None):
         denied_actions.append("tool_execution_without_tenant")
@@ -925,7 +938,7 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
         PermissionsPromptContext(
             approval_policy=approval_policy,
             network_access=network_access,
-            writable_roots=_coerce_str_list(policy_dict.get("writable_roots") or metadata.get("writable_roots")),
+            writable_roots=writable_roots,
             denied_reads=_coerce_str_list(policy_dict.get("denied_reads") or metadata.get("denied_reads")),
             allowed_tools=allowed_tools,
             denied_actions=denied_actions,
@@ -1228,9 +1241,8 @@ async def _execute_tool_with_hooks(
             _skill = _args_dict.get("skill_name") or _args_dict.get("name", "")
             if _skill:
                 _session.track_skill_loaded(_skill)
-        elif tool_name in ("write_file", "edit_file", "fs_write"):
-            _path = _args_dict.get("path", "")
-            if _path:
+        elif _write_paths := tool_session_write_paths(tool_name, _args_dict):
+            for _path in _write_paths:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None
                 _session.track_file_write(_path, snapshot=_snapshot)
                 _session.track_tool_outcome(tool_name, "Wrote " + _path)

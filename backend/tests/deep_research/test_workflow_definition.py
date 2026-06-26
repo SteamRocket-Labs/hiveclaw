@@ -237,6 +237,149 @@ async def test_start_workflow_run_writes_request_json_and_returns_real_dirs(tmp_
     reset_leaf_presets()
 
 
+async def test_completed_run_delivers_report_artifact_to_parent_session(tmp_path, monkeypatch):
+    """A-1: a DR run with parent_session_id must surface the published report
+    to the parent chat session as a row-free ``artifact_delivery`` event
+    pointing at the workspace report path — otherwise a chat-initiated DR
+    leaves the user with run/step status but no clickable report."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.config import get_settings
+    from app.services.deep_research import workflow_definition as wf_def
+    from app.services.deep_research.leaf_presets import run_artifact_dir
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.workflow_leaf_presets import reset_leaf_presets
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path / "agents"))
+    reset_leaf_presets()
+
+    agent_id = uuid.uuid4()
+    tenant = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+
+    async def fake_resolve(aid, **kwargs):
+        return SimpleNamespace(id=aid, tenant_id=tenant, name="A", role_description=""), SimpleNamespace()
+
+    async def fake_ensure(**kwargs):
+        return SimpleNamespace(
+            name="deep_research.v1",
+            definition_version=1,
+            definition_hash="hash-1",
+            definition_json={"name": "deep_research.v1"},
+        )
+
+    async def fake_launch(**kwargs):
+        run_id = kwargs["run_id"]
+        root = run_artifact_dir(agent_id, run_id)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "report.md").write_text("# RWA report\n", encoding="utf-8")
+        (root / "final.json").write_text("{}", encoding="utf-8")
+        return SimpleNamespace(run_id=run_id, outcome=SimpleNamespace(status="completed", reason=None))
+
+    captured: dict = {}
+
+    async def fake_append(**kwargs):
+        captured["append"] = kwargs
+        return SimpleNamespace(event_id=uuid.uuid4())
+
+    @asynccontextmanager
+    async def fake_session(*args, **kwargs):
+        yield SimpleNamespace(commit=_noop_commit)
+
+    monkeypatch.setattr(wf_def, "resolve_agent_runtime", fake_resolve)
+    monkeypatch.setattr(wf_def, "ensure_deep_research_workflow_definition", fake_ensure)
+    monkeypatch.setattr(wf_def, "start_ephemeral_workflow_for_agent", fake_launch)
+    monkeypatch.setattr(wf_def, "tenant_scoped_session", fake_session)
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    payload = await wf_def.start_deep_research_workflow_run(
+        request=ResearchRequest.from_arguments({"question": "RWA market", "output_language": "en"}),
+        agent_id=agent_id,
+        user_id=uuid.uuid4(),
+        workspace=workspace,
+        parent_session_id=parent_session_id,
+    )
+
+    assert payload["status"] == "completed"
+    assert "append" in captured, "completed DR with parent session must emit an artifact_delivery event"
+    event = captured["append"]
+    assert event["event_type"] == "artifact_delivery"
+    assert event["materialize_chat_message"] is False
+    assert str(event["session_id"]) == str(parent_session_id)
+    parts = event["parts"]
+    assert parts and parts[0]["type"] == "artifact"
+    report_paths = [part["path"] for part in parts]
+    assert "workspace/deep_research_reports/{}/report.md".format(payload["created_workflow_run_id"]) in report_paths
+    assert all(part["source"] == "deep_research" for part in parts)
+    reset_leaf_presets()
+
+
+async def test_completed_run_without_parent_session_emits_no_artifact_event(tmp_path, monkeypatch):
+    """A-1 guard: trigger/heartbeat DR (no parent_session_id) must not attempt
+    an artifact_delivery event — there is no chat timeline to deliver to."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from app.config import get_settings
+    from app.services.deep_research import workflow_definition as wf_def
+    from app.services.deep_research.leaf_presets import run_artifact_dir
+    from app.services.deep_research.schemas import ResearchRequest
+    from app.services.workflow_leaf_presets import reset_leaf_presets
+
+    monkeypatch.setattr(get_settings(), "AGENT_DATA_DIR", str(tmp_path / "agents"))
+    reset_leaf_presets()
+
+    agent_id = uuid.uuid4()
+    tenant = uuid.uuid4()
+
+    async def fake_resolve(aid, **kwargs):
+        return SimpleNamespace(id=aid, tenant_id=tenant, name="A", role_description=""), SimpleNamespace()
+
+    async def fake_ensure(**kwargs):
+        return SimpleNamespace(
+            name="deep_research.v1", definition_version=1, definition_hash="h", definition_json={"name": "deep_research.v1"}
+        )
+
+    async def fake_launch(**kwargs):
+        run_id = kwargs["run_id"]
+        root = run_artifact_dir(agent_id, run_id)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "report.md").write_text("# r\n", encoding="utf-8")
+        (root / "final.json").write_text("{}", encoding="utf-8")
+        return SimpleNamespace(run_id=run_id, outcome=SimpleNamespace(status="completed", reason=None))
+
+    calls: list = []
+
+    @asynccontextmanager
+    async def fake_session(*args, **kwargs):
+        calls.append(args)
+        yield SimpleNamespace(commit=_noop_commit)
+
+    monkeypatch.setattr(wf_def, "resolve_agent_runtime", fake_resolve)
+    monkeypatch.setattr(wf_def, "ensure_deep_research_workflow_definition", fake_ensure)
+    monkeypatch.setattr(wf_def, "start_ephemeral_workflow_for_agent", fake_launch)
+    monkeypatch.setattr(wf_def, "tenant_scoped_session", fake_session)
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    await wf_def.start_deep_research_workflow_run(
+        request=ResearchRequest.from_arguments({"question": "RWA market"}),
+        agent_id=agent_id,
+        user_id=uuid.uuid4(),
+        workspace=workspace,
+        parent_session_id=None,
+    )
+    assert calls == [], "no parent session → no artifact_delivery session must be opened"
+    reset_leaf_presets()
+
+
+async def _noop_commit():
+    return None
+
+
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_runtime_start_run_accepts_injected_run_id(pg_tenant_id, owner_sessionmaker):
     """DR-4 plumbing: the caller may pre-generate the run id so artifacts can

@@ -92,7 +92,13 @@ def _managed_system_path_message(path: str) -> str | None:
 
 
 _ROOT_FILE_WRITE_ALLOWLIST: set[str] = set()
-_ROOT_PREFIX_WRITE_ALLOWLIST = {"workspace", "skills", "subagents", "enterprise_info"}
+_ROOT_PREFIX_WRITE_ALLOWLIST = {"workspace", "skills"}
+_ENTERPRISE_ASSET_PREFIX_MESSAGES = {
+    "subagents": "subagents/ contains enterprise Sub-agent assets; use governed Sub-agent APIs instead of raw file writes.",
+    "enterprise_info": (
+        "enterprise_info/ contains governed company knowledge; use enterprise knowledge APIs instead of raw file writes."
+    ),
+}
 _ROOT_MANAGED_FILE_MESSAGES = {
     "soul.md": (
         "soul.md is governed by Dream/Soul promotion; direct file API writes are refused. "
@@ -116,6 +122,9 @@ def _root_write_guard_message(path: str) -> str | None:
     if managed_file_message:
         return managed_file_message
     top_level = normalized.split("/", 1)[0]
+    enterprise_asset_message = _ENTERPRISE_ASSET_PREFIX_MESSAGES.get(top_level)
+    if enterprise_asset_message:
+        return enterprise_asset_message
     if "/" in normalized and top_level in _ROOT_PREFIX_WRITE_ALLOWLIST:
         return None
     if "/" not in normalized:

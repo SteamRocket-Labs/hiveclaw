@@ -28,15 +28,14 @@ from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.services.chat_message_parts import (
+    SESSION_NATIVE_EVENT_TYPES,
     build_chunk_event,
-    build_compaction_event,
     build_done_event,
-    build_permission_event,
+    build_session_native_event,
     build_thinking_event,
     build_tool_call_event,
-    build_tool_group_activation_event,
 )
-from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
+from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
 from app.services.chat_transcript import append_session_event
 from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
 from app.services.llm_error_policy import is_llm_error_message
@@ -338,11 +337,15 @@ async def _queue_mid_run_user_message(
     file_name: str = "",
     attachments: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     message_id = uuid.uuid4()
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     session.last_message_at = datetime.now(timezone.utc)
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
+    supplied_metadata = dict(extra_metadata or {})
+    if supplied_metadata:
+        metadata.update(supplied_metadata)
     pending = list(metadata.get("pending_user_messages") or [])
     queued = {
         "id": message_id.hex,
@@ -352,6 +355,7 @@ async def _queue_mid_run_user_message(
         "file_name": file_name,
         "attachments": attachments or [],
         "parts": parts or [],
+        "metadata": supplied_metadata,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     pending.append(queued)
@@ -379,6 +383,7 @@ async def _queue_mid_run_user_message(
             "file_name": file_name,
             "llm_content_present": bool(content and content != saved_content),
             "attachments": attachments or [],
+            **supplied_metadata,
         },
     )
     if getattr(user_event, "event_id", None):
@@ -571,6 +576,7 @@ async def steer_active_web_chat_turn(
     expected_turn_id: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Queue a user steering message into the currently active durable turn."""
     if not (content or "").strip():
@@ -594,6 +600,7 @@ async def steer_active_web_chat_turn(
         file_name=file_name,
         attachments=attachments,
         parts=parts,
+        extra_metadata=extra_metadata,
     )
     payload = _runtime_task_to_run(active)
     payload["turn_id"] = active_turn_id
@@ -642,6 +649,7 @@ async def start_web_chat_run(
             file_name=file_name,
             attachments=attachments,
             parts=parts,
+            extra_metadata=extra_metadata,
         )
         payload = _runtime_task_to_run(active)
         payload["queued_user_message"] = queued
@@ -1512,6 +1520,16 @@ async def _persist_tool_call(
     status = str(data.get("status") or "done")
     raw_result = data.get("result") or ""
     raw_str = str(raw_result)
+    parsed_raw_result: dict[str, Any] = {}
+    if isinstance(raw_result, dict):
+        parsed_raw_result = raw_result
+    else:
+        try:
+            maybe_payload = json.loads(raw_str or "{}")
+            if isinstance(maybe_payload, dict):
+                parsed_raw_result = maybe_payload
+        except Exception:
+            parsed_raw_result = {}
     model_seen_result = data.get("model_seen_result")
     content_replacement = data.get("content_replacement")
     if len(raw_str) > 50000:
@@ -1553,13 +1571,30 @@ async def _persist_tool_call(
         }
     payload = {key: value for key, value in payload.items() if value is not None}
     event_type = "tool_result" if status in {"done", "completed", "failed"} else "tool_call"
+    runtime_task_id = data.get("runtime_task_id") or data.get("run_id")
     async with tenant_scoped_session(tenant_id) as db:
+        artifact_parts: list[dict[str, Any]] = []
+        if event_type == "tool_result":
+            tool_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+            artifact_paths = tool_session_write_paths(str(data.get("name") or ""), tool_args)
+            if artifact_paths:
+                artifact_parts = create_chat_artifacts_for_message(
+                    db=db,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    message_id=message_id,
+                    runtime_task_id=runtime_task_id,
+                    paths=artifact_paths,
+                    workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
+                    source="workspace_write",
+                )
         result = await append_session_event(
             db=db,
             agent_id=agent_id,
             tenant_id=tenant_id,
             session_id=session_id,
-            run_id=data.get("runtime_task_id") or data.get("run_id"),
+            run_id=runtime_task_id,
             actor_type="tool",
             event_type=event_type,
             role="tool_call",
@@ -1569,10 +1604,18 @@ async def _persist_tool_call(
             message_id=message_id,
             source="web_chat_runtime",
             decision_trace_id=decision_trace_id,
+            parts=artifact_parts or None,
             metadata={
                 "source": "web_chat_runtime",
                 "tool_name": data.get("name", ""),
                 "status": status,
+                "permission_status": parsed_raw_result.get("status"),
+                "permission_request_id": (
+                    (parsed_raw_result.get("permission_request") or {}).get("permission_request_id")
+                    if isinstance(parsed_raw_result.get("permission_request"), dict)
+                    else None
+                ),
+                "permission_request": parsed_raw_result.get("permission_request"),
                 "tool_call_id": data.get("tool_call_id"),
                 "step_id": data.get("step_id"),
                 "duration_ms": data.get("duration_ms"),
@@ -1596,6 +1639,13 @@ async def _persist_runtime_event(
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
         event_type = str(data.get("event_type") or data.get("type") or "runtime_event")
+        event_payload = build_session_native_event(data) if event_type in SESSION_NATIVE_EVENT_TYPES else data
+        event_parts = [event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None
+        event_metadata = {
+            "source": "web_chat_runtime",
+            "runtime_event_type": event_type,
+            **{key: value for key, value in data.items() if value is not None},
+        }
         await append_session_event(
             db=db,
             agent_id=agent_id,
@@ -1608,7 +1658,8 @@ async def _persist_runtime_event(
             user_id=user_id,
             content=json.dumps(data, ensure_ascii=False),
             source="web_chat_runtime",
-            metadata={"source": "web_chat_runtime", "runtime_event_type": event_type},
+            parts=event_parts,
+            metadata=event_metadata,
         )
         await db.commit()
 
@@ -1621,8 +1672,6 @@ def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None
     if data.get("status") != "done":
         return None
     tool_name = str(data.get("name") or "")
-    if tool_name not in {"ask_user_question", "request_plan_mode", "exit_plan_mode", "create_digital_employee"}:
-        return None
     raw_result = data.get("result")
     if isinstance(raw_result, dict):
         payload = raw_result
@@ -1632,6 +1681,10 @@ def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None
         except (TypeError, ValueError):
             return None
     if not isinstance(payload, dict):
+        return None
+    if payload.get("status") == "session_permission_required":
+        return "awaiting_session_permission"
+    if tool_name not in {"ask_user_question", "request_plan_mode", "exit_plan_mode", "create_digital_employee"}:
         return None
     if tool_name == "ask_user_question":
         if payload.get("status") == "awaiting_user_clarification" and payload.get("blocking", True) is not False:
@@ -2270,18 +2323,13 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 streamed_chunks.clear()
                 await broadcast_web_chat_event(agent.id, session_id, build_chunk_event("", reset=True))
                 return
-            if data.get("type") == "permission":
-                event_payload = build_permission_event(data)
-            elif data.get("type") == "session_compact":
-                event_payload = build_compaction_event(data)
-            # "pack_activation" retained as a historical reader shim alongside the
-            # current "tool_group_activation" type; both map to the same builder.
-            elif data.get("type") in {"tool_group_activation", "pack_activation"}:
-                event_payload = build_tool_group_activation_event(data)
+            event_type = str(data.get("type") or data.get("event_type") or "")
+            if event_type in SESSION_NATIVE_EVENT_TYPES:
+                event_payload = build_session_native_event(data)
             else:
                 event_payload = data
             await broadcast_web_chat_event(agent.id, session_id, event_payload)
-            if data.get("type") in {"permission", "session_compact", "tool_group_activation", "pack_activation"}:
+            if event_type in SESSION_NATIVE_EVENT_TYPES:
                 await _persist_runtime_event(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
 
         pending_reply_suffix = ""
@@ -2417,6 +2465,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 )
                 ws_event = build_tool_call_event(data)
                 if persisted_event:
+                    event_parts = persisted_event.transcript_event.parts_json or []
                     ws_event.update(
                         {
                             "transcript_event_id": str(persisted_event.event_id),
@@ -2425,6 +2474,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                             "role": "tool_call",
                             "content": persisted_event.transcript_event.content or "",
                             "message_id": str(persisted_event.message_id) if persisted_event.message_id else None,
+                            "parts": event_parts or None,
+                            "artifacts": [part for part in event_parts if part.get("type") == "artifact"] or None,
                             "metadata": persisted_event.transcript_event.metadata_json or {},
                         }
                     )
@@ -2436,6 +2487,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             ws_event = build_tool_call_event(data)
             if persisted_event:
+                event_parts = persisted_event.transcript_event.parts_json or []
                 ws_event.update(
                     {
                         "transcript_event_id": str(persisted_event.event_id),
@@ -2444,6 +2496,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                         "role": "tool_call",
                         "content": persisted_event.transcript_event.content or "",
                         "message_id": str(persisted_event.message_id) if persisted_event.message_id else None,
+                        "parts": event_parts or None,
+                        "artifacts": [part for part in event_parts if part.get("type") == "artifact"] or None,
                         "metadata": persisted_event.transcript_event.metadata_json or {},
                     }
                 )

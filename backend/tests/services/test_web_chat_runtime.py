@@ -268,6 +268,62 @@ def test_interactive_pause_summary_accepts_structured_tool_payloads():
     )
 
 
+@pytest.mark.asyncio
+async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    import app.services.tenant_resolver as tenant_resolver
+
+    captured: dict = {}
+    tenant_id = uuid4()
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return _FakeDB()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    async def fake_append_session_event(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None)
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _SessionCtx())
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+
+    await runtime._persist_runtime_event(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_id=str(uuid4()),
+        data={
+            "type": "hook_progress",
+            "message": "Running PreToolUse hook",
+            "status": "running",
+            "runtime_task_id": str(uuid4()),
+            "hook_event": "PreToolUse",
+            "hook_key": "guard",
+        },
+    )
+
+    assert captured["event_type"] == "hook_progress"
+    assert captured["role"] == "system"
+    assert captured["parts"] == [{
+        "type": "event",
+        "event_type": "hook_progress",
+        "title": "Hook Progress",
+        "text": "Running PreToolUse hook",
+        "status": "running",
+        "hook_event": "PreToolUse",
+        "hook_key": "guard",
+        "runtime_task_id": captured["run_id"],
+    }]
+    assert captured["metadata"]["runtime_event_type"] == "hook_progress"
+    assert captured["metadata"]["hook_event"] == "PreToolUse"
+
+
 def test_plan_mode_unsubmitted_terminal_error_blocks_plain_assistant_completion():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import PlanModeState, SessionContext
@@ -1887,6 +1943,75 @@ async def test_persist_tool_call_appends_t0_tool_result(monkeypatch, tmp_path):
     assert events[0].metadata["tool_name"] == "read_file"
     assert events[0].metadata["status"] == "done"
     assert '"result": "file content"' in events[0].content
+
+
+@pytest.mark.asyncio
+async def test_persist_tool_call_attaches_written_artifact_parts(monkeypatch, tmp_path):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    run_id = uuid4()
+    artifact_file = tmp_path / str(agent_id) / "workspace" / "proposal.docx"
+    artifact_file.parent.mkdir(parents=True)
+    artifact_file.write_bytes(b"docx")
+    added = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def add(self, value):
+            added.append(value)
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+    monkeypatch.setattr(runtime, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    await runtime._persist_tool_call(
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        data={
+            "name": "office_document_apply",
+            "args": {
+                "path": "workspace/proposal.docx",
+                "operations": [{"op": "replace_text", "text": "new"}],
+            },
+            "status": "done",
+            "result": '{"ok": true}',
+            "runtime_task_id": str(run_id),
+        },
+    )
+
+    artifacts = [item for item in added if isinstance(item, ChatArtifact)]
+    transcript_events = [item for item in added if isinstance(item, ChatTranscriptEvent)]
+    tool_event = next(event for event in transcript_events if event.event_type == "tool_result")
+
+    assert len(artifacts) == 1
+    assert artifacts[0].path == "workspace/proposal.docx"
+    assert tool_event.parts_json
+    assert tool_event.parts_json[0]["type"] == "artifact"
+    assert tool_event.parts_json[0]["path"] == "workspace/proposal.docx"
+    assert tool_event.metadata_json["artifact_ids"] == [str(artifacts[0].id)]
 
 
 @pytest.mark.asyncio

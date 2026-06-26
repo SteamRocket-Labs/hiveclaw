@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -152,6 +153,85 @@ async def test_run_completer_maps_failure_to_failed(monkeypatch):
     assert captured["status"] == "failed"
     assert "boom" in captured["result_summary"]
     assert captured["metadata_json"]["completion_journal"][-1]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_subagent_completion_projects_child_session_event_to_parent(monkeypatch):
+    child_session_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    captured_events: list[dict] = []
+
+    session = SimpleNamespace(
+        id=child_session_id,
+        agent_id=parent_agent_id,
+        tenant_id=tenant_id,
+        user_id=parent_user_id,
+        transcript_metadata_json={"session_contract": {"kind": "subagent_child_session"}},
+        root_session_id=parent_session_id,
+        parent_session_id=parent_session_id,
+        visibility_scope="team",
+        listed_surface="parent",
+    )
+
+    class _Scalar:
+        def scalar_one_or_none(self):
+            return session
+
+    class _FakeSession:
+        async def execute(self, _stmt):
+            return _Scalar()
+
+        async def commit(self):
+            return None
+
+    class _Ctx:
+        async def __aenter__(self):
+            return _FakeSession()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_get_runtime_task_record(_run_id):
+        return {
+            "task_id": "run-1",
+            "parent_agent_id": str(parent_agent_id),
+            "child_session_id": str(child_session_id),
+            "parent_session_id": str(parent_session_id),
+            "metadata": {"child_session_id": str(child_session_id)},
+        }
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    async def fake_append_session_event(**kwargs):
+        captured_events.append(kwargs)
+        return SimpleNamespace(event_id=uuid.uuid4(), sequence=len(captured_events), message_id=None)
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(svc, "tenant_scoped_session", lambda _tenant_id: _Ctx())
+    monkeypatch.setattr(svc, "append_session_event", fake_append_session_event)
+
+    await svc.update_subagent_child_session_state_for_run(run_id="run-1", status="completed", summary="done")
+
+    parent_event = next(event for event in captured_events if event["session_id"] == parent_session_id)
+    assert parent_event["event_type"] == "child_session"
+    assert parent_event["role"] == "system"
+    assert parent_event["parts"] == [{
+        "type": "event",
+        "event_type": "child_session",
+        "title": "Child Session",
+        "text": "done",
+        "status": "completed",
+        "runtime_task_id": "run-1",
+        "child_session_id": str(child_session_id),
+        "parent_session_id": str(parent_session_id),
+        "root_session_id": str(parent_session_id),
+        "reason": "subagent_task_completed",
+    }]
 
 
 @pytest.mark.asyncio

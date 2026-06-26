@@ -35,14 +35,14 @@ async def test_hooks_api_lists_registrations_with_runtime_config(monkeypatch):
                 "category": "tool",
                 "handler_count": 0,
                 "blocking_supported": True,
-                "cc_parity": True,
+                "standard": True,
             },
             {
                 "event": "stop",
                 "category": "turn",
                 "handler_count": 1,
                 "blocking_supported": True,
-                "cc_parity": True,
+                "standard": True,
             },
         ],
         raising=False,
@@ -63,14 +63,14 @@ async def test_hooks_api_lists_registrations_with_runtime_config(monkeypatch):
             "category": "tool",
             "handler_count": 0,
             "blocking_supported": True,
-            "cc_parity": True,
+            "standard": True,
         },
         {
             "event": "stop",
             "category": "turn",
             "handler_count": 1,
             "blocking_supported": True,
-            "cc_parity": True,
+            "standard": True,
         },
     ]
     assert result["registrations"][0]["runtime_config"] == {

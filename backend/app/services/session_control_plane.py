@@ -194,20 +194,77 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
     }
 
 
+# Run-lifecycle status strings that are not TurnStatus enum values map here so a
+# terminal cancel surfaces as CANCELLED instead of silently collapsing to RUNNING.
+_RUN_STATUS_ALIASES: dict[str, TurnStatus] = {
+    "killed": TurnStatus.CANCELLED,
+    "cancelled": TurnStatus.CANCELLED,
+    "canceled": TurnStatus.CANCELLED,
+    "skipped": TurnStatus.CANCELLED,
+    "queued": TurnStatus.RUNNING,
+    "pending": TurnStatus.RUNNING,
+}
+
+_PERMISSION_PENDING_EVENT_TYPES = {"permission", "permission_request", "session_permission_required"}
+_PERMISSION_RESOLVED_EVENT_TYPES = {"permission_resolved", "session_permission_decision"}
+_CHILD_WAIT_EVENT_TYPES = {"child_session", "subagent"}
+_WORKFLOW_WAIT_EVENT_TYPES = {"workflow_run", "workflow_step"}
+_ACTIVE_PROGRESS_EVENT_TYPES = {"assistant_message", "tool_result", "user_message"}
+_CHILD_TERMINAL_STATUSES = {"completed", "failed", "done", "cancelled", "canceled", "killed", "skipped", "error"}
+
+
 def _coerce_turn_status(raw: Any) -> TurnStatus:
     """Map the live run's raw status string onto the TurnStateV1 status enum.
 
     Unknown/absent values fall back to RUNNING because the projection only
-    surfaces an active turn when there is a live web-chat run in flight.
+    surfaces an active turn when there is a live web-chat run in flight. A
+    ``killed``/``skipped`` run is a terminal cancel and maps to CANCELLED.
     """
     value = str(raw or "").strip().lower()
+    if value in _RUN_STATUS_ALIASES:
+        return _RUN_STATUS_ALIASES[value]
     try:
         return TurnStatus(value)
     except ValueError:
         return TurnStatus.RUNNING
 
 
-def _build_active_turn_state(*, session: ChatSession, active_run: Any) -> TurnStateV1 | None:
+def _derive_active_turn_status(events: list[Any], base: TurnStatus) -> TurnStatus:
+    """Derive the specific wait-state the active turn is blocked on.
+
+    The run's raw lifecycle status is only ``running``/``pending``/``killed``/etc.,
+    so a turn paused on a permission prompt, blocked by a hook, or waiting on a
+    child session / workflow would otherwise project as a generic RUNNING. This
+    scans recent session events backward for the most recent unresolved "wait
+    concern" and surfaces the typed state, so the turn-state machine reflects
+    reality instead of collapsing every wait to RUNNING.
+    """
+    if base in {TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.INTERRUPTED}:
+        return base
+    for event in reversed(events[-50:]):
+        event_type = str(getattr(event, "event_type", "") or "")
+        if not event_type:
+            continue
+        metadata = getattr(event, "metadata_json", None)
+        status = str(metadata.get("status") or "").strip().lower() if isinstance(metadata, dict) else ""
+        if event_type in _PERMISSION_RESOLVED_EVENT_TYPES:
+            return base
+        if event_type in _PERMISSION_PENDING_EVENT_TYPES:
+            return TurnStatus.WAITING_FOR_PERMISSION
+        if event_type == "hook_blocked":
+            return TurnStatus.BLOCKED_BY_HOOK
+        if event_type in _CHILD_WAIT_EVENT_TYPES:
+            return base if status in _CHILD_TERMINAL_STATUSES else TurnStatus.WAITING_FOR_CHILD
+        if event_type in _WORKFLOW_WAIT_EVENT_TYPES:
+            return base if status in _CHILD_TERMINAL_STATUSES else TurnStatus.WAITING_FOR_WORKFLOW
+        if event_type in _ACTIVE_PROGRESS_EVENT_TYPES:
+            return base
+    return base
+
+
+def _build_active_turn_state(
+    *, session: ChatSession, active_run: Any, events: list[Any] | None = None
+) -> TurnStateV1 | None:
     """Derive a TurnStateV1 from the REAL active run, or None when idle.
 
     Pulls live status, runtime_task_id, the active tool-call ids, and the
@@ -226,7 +283,10 @@ def _build_active_turn_state(*, session: ChatSession, active_run: Any) -> TurnSt
         session_id=str(session.id),
         runtime_task_id=runtime_task_id or None,
         turn_id=turn_id or None,
-        status=_coerce_turn_status(_active_run_value(active_run, "status") or metadata.get("status")),
+        status=_derive_active_turn_status(
+            events or [],
+            _coerce_turn_status(_active_run_value(active_run, "status") or metadata.get("status")),
+        ),
         terminal_reason=metadata.get("terminal_reason"),
         active_tool_call_ids=active_tool_call_ids,
         pending_steer_messages=tuple(metadata.get("pending_user_messages") or ()),
@@ -606,7 +666,7 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
     goals = await _list_goals(db, agent_id=agent.id, session_id=session.id)
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
-    turn_state = _build_active_turn_state(session=session, active_run=active_run)
+    turn_state = _build_active_turn_state(session=session, active_run=active_run, events=events)
     active_turn = _active_turn_payload(turn_state=turn_state)
     agent_session = _agent_session_payload(session=session, runtime_tasks=runtime_tasks, turn_state=turn_state)
     session_graph = _session_graph_payload(session=session, runtime_tasks=runtime_tasks, teams=teams)

@@ -1044,7 +1044,17 @@
         "useAccess": "使用权限",
         "readAccess": "只读权限",
         "permissionUnknown": "权限未知",
-        "permissionTitle": "后端访问权限",
+        "permissionTitle": "会话权限模式",
+        "permissionMode": {
+          "auto": "替我批准",
+          "default": "请求批准",
+          "bypassPermissions": "完全访问"
+        },
+        "permissionModeDesc": {
+          "auto": "低风险自动批准，高风险在会话内请求确认",
+          "default": "敏感会话动作执行前先请求批准",
+          "bypassPermissions": "跳过会话内批准弹窗，但仍遵守企业硬规则"
+        },
         "planModeActive": "计划模式",
         "goalModeActive": "目标模式",
         "scheduleModeActive": "定时任务",
@@ -1054,6 +1064,11 @@
         "planPlaceholder": "描述需要 agent 先规划的事情...",
         "goalPlaceholder": "定义这个会话的目标...",
         "schedulePlaceholder": "描述定时计划、触发条件和任务..."
+      },
+      "permission": {
+        "allowOnce": "本次允许",
+        "allowSession": "本会话允许",
+        "deny": "拒绝"
       },
       "thinking": "思考中...",
       "continuingRun": "Agent 正在继续执行...",
@@ -1078,7 +1093,8 @@
         "download": "下载",
         "preview": "预览",
         "openInNewTab": "新窗口打开",
-        "previewFailed": "预览失败"
+        "previewFailed": "预览失败",
+        "emptyPending": "文件当前还是空的。会话权限通过或写入完成后，内容会显示在这里。"
       },
       "toolResults": {
         "blueprintPreviewTitle": "Agent 蓝图预览",

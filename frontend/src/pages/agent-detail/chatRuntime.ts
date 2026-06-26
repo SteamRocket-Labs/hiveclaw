@@ -7,11 +7,31 @@ export const CHAT_SOCKET_KEEPALIVE_INTERVAL_MS = 30_000;
 
 export type RuntimeEventType =
   | 'permission'
+  | 'permission_request'
+  | 'permission_resolved'
   | 'session_compact'
   | 'tool_group_activation'
   | 'deferred_tools_delta'
   | 'pack_activation'
-  | 'team_memory';
+  | 'team_memory'
+  | 'hook_progress'
+  | 'hook_summary'
+  | 'hook_attachment'
+  | 'hook_blocked'
+  | 'workflow_run'
+  | 'workflow_step'
+  | 'dynamic_workflow'
+  | 'deep_research'
+  | 'child_session'
+  | 'subagent'
+  | 'team_member'
+  | 'schedule'
+  | 'schedule_fire'
+  | 'goal'
+  | 'once'
+  | 'memory_candidate'
+  | 'artifact_update'
+  | 'artifact_delivery';
 
 export interface AgentChatMessage {
   role: 'user' | 'assistant' | 'tool_call' | 'event';
@@ -41,6 +61,29 @@ export interface AgentChatMessage {
   eventNextStep?: string;
   eventRetryable?: boolean;
   eventRetryReason?: string;
+  sessionPermissionRequest?: SessionPermissionRequest;
+  eventRuntimeTaskId?: string;
+  eventTurnId?: string;
+  eventToolCallId?: string;
+  eventHookEvent?: string;
+  eventHookKey?: string;
+  eventHookType?: string;
+  eventChildSessionId?: string;
+  eventParentSessionId?: string;
+  eventRootSessionId?: string;
+  eventWorkflowRunId?: string;
+  eventWorkflowStepId?: string;
+  eventDeepResearchRunId?: string;
+  eventScheduleId?: string;
+  eventScheduleFireId?: string;
+  eventGoalId?: string;
+  eventOnceId?: string;
+  eventMemoryCandidateId?: string;
+  eventArtifactId?: string;
+  eventPath?: string;
+  eventRevisionId?: string;
+  eventAction?: string;
+  eventDiffSummary?: string;
   originalMessageCount?: number;
   keptMessageCount?: number;
   continuitySectionsInjected?: string[];
@@ -52,6 +95,22 @@ export interface AgentChatMessage {
   artifacts?: ChatArtifactPart[];
 }
 
+export interface SessionPermissionRequest {
+  permission_request_id: string;
+  session_id?: string | null;
+  runtime_task_id?: string | null;
+  turn_id?: string | null;
+  tool_call_id?: string | null;
+  tool_name?: string | null;
+  tool_display_name?: string | null;
+  arguments?: Record<string, unknown>;
+  capability?: string | null;
+  permission_mode?: string | null;
+  decision_reason?: string | null;
+  created_at?: string | null;
+  expires_at?: string | null;
+}
+
 export interface ChatArtifactPart {
   id?: string;
   name: string;
@@ -60,6 +119,11 @@ export interface ChatArtifactPart {
   mimeType?: string;
   size?: number;
   source?: string;
+  runtimeTaskId?: string;
+  revisionId?: string;
+  action?: string;
+  toolCallId?: string;
+  diffSummary?: string;
 }
 
 function mergeClarificationAnswerMetadata(
@@ -529,6 +593,31 @@ export function applyTranscriptEvent(
     };
   }
 
+  if (eventType === 'artifact_delivery') {
+    const artifacts = extractArtifactParts({
+      artifacts: event.metadata?.artifacts,
+      parts: event.parts,
+    });
+    if (messageAlreadyContainsArtifacts(state.messages[state.messages.length - 1], artifacts)) {
+      return { messages: state.messages, seenEventIds, ui: state.ui };
+    }
+    const messages = applyRuntimeDoneEvent(state.messages, {
+      type: 'done',
+      content: '',
+      artifacts,
+      created_at: timestamp,
+    });
+    return {
+      messages: messages.map((message, index, arr) => (
+        index === arr.length - 1 && message.role === 'assistant'
+          ? { ...message, timestamp, id: event.message_id || event.id }
+          : message
+      )),
+      seenEventIds,
+      ui: state.ui,
+    };
+  }
+
   if (eventType === 'tool_result' || eventType === 'tool_call' || event.role === 'tool_call') {
     const toolPayload = toolResultFromTranscriptEvent(event);
     const normalized = normalizeToolCallResult(toolPayload.toolName, toolPayload.result);
@@ -537,6 +626,7 @@ export function applyTranscriptEvent(
       normalized.toolMeta || toolPayload.runtimeStepMeta || null,
       event.metadata,
     );
+    const artifacts = extractArtifactParts(event);
     const toolMessage: AgentChatMessage = {
       role: 'tool_call',
       content: '',
@@ -546,6 +636,7 @@ export function applyTranscriptEvent(
       toolResult: normalized.displayResult,
       toolRawResult: normalized.raw,
       toolMeta,
+      artifacts: artifacts.length > 0 ? artifacts : undefined,
       timestamp,
       id: event.message_id || event.id,
     };
@@ -627,6 +718,30 @@ type EventPart = {
   next_step?: string;
   retryable?: boolean;
   retry_reason?: string;
+  permission_request_id?: string;
+  permission_request?: SessionPermissionRequest;
+  hook_event?: string;
+  hook_key?: string;
+  hook_type?: string;
+  runtime_task_id?: string;
+  turn_id?: string;
+  tool_call_id?: string;
+  child_session_id?: string;
+  parent_session_id?: string;
+  root_session_id?: string;
+  workflow_run_id?: string;
+  workflow_step_id?: string;
+  deep_research_run_id?: string;
+  schedule_id?: string;
+  schedule_fire_id?: string;
+  goal_id?: string;
+  once_id?: string;
+  memory_candidate_id?: string;
+  artifact_id?: string;
+  path?: string;
+  revision_id?: string;
+  action?: string;
+  diff_summary?: string;
   original_message_count?: number;
   kept_message_count?: number;
   continuity_sections_injected?: string[];
@@ -643,6 +758,26 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'deferred_tools_delta',
   'pack_activation',
   'team_memory',
+  'permission_request',
+  'permission_resolved',
+  'hook_progress',
+  'hook_summary',
+  'hook_attachment',
+  'hook_blocked',
+  'workflow_run',
+  'workflow_step',
+  'dynamic_workflow',
+  'deep_research',
+  'child_session',
+  'subagent',
+  'team_member',
+  'schedule',
+  'schedule_fire',
+  'goal',
+  'once',
+  'memory_candidate',
+  'artifact_update',
+  'artifact_delivery',
 ]);
 const RAW_COMPACTION_SECTION_LABELS = [
   'Task Ledger',
@@ -695,6 +830,11 @@ function normalizeArtifactPart(part: any): ChatArtifactPart | null {
     mimeType: typeof part.mimeType === 'string' ? part.mimeType : (typeof part.mime_type === 'string' ? part.mime_type : undefined),
     size,
     source: typeof part.source === 'string' ? part.source : undefined,
+    runtimeTaskId: typeof part.runtimeTaskId === 'string' ? part.runtimeTaskId : (typeof part.runtime_task_id === 'string' ? part.runtime_task_id : undefined),
+    revisionId: typeof part.revisionId === 'string' ? part.revisionId : (typeof part.revision_id === 'string' ? part.revision_id : undefined),
+    action: typeof part.action === 'string' ? part.action : undefined,
+    toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : (typeof part.tool_call_id === 'string' ? part.tool_call_id : undefined),
+    diffSummary: typeof part.diffSummary === 'string' ? part.diffSummary : (typeof part.diff_summary === 'string' ? part.diff_summary : undefined),
   };
 }
 
@@ -714,6 +854,17 @@ export function extractArtifactParts(payload: any): ChatArtifactPart[] {
     artifacts.push(artifact);
   }
   return artifacts;
+}
+
+function messageAlreadyContainsArtifacts(message: AgentChatMessage | undefined, artifacts: ChatArtifactPart[]): boolean {
+  if (!message || message.role !== 'assistant' || artifacts.length === 0) return false;
+  const existingArtifacts = message.artifacts || [];
+  if (existingArtifacts.length === 0) return false;
+  const existingIds = new Set(existingArtifacts.map((artifact) => artifact.id).filter(Boolean));
+  const existingPaths = new Set(existingArtifacts.map((artifact) => artifact.path).filter(Boolean));
+  return artifacts.every((artifact) => (
+    (artifact.id && existingIds.has(artifact.id)) || existingPaths.has(artifact.path)
+  ));
 }
 
 function countActivatedToolGroups(
@@ -905,6 +1056,35 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
     eventNextStep: payload?.eventNextStep || payload?.next_step || part?.next_step,
     eventRetryable: payload?.eventRetryable ?? payload?.retryable ?? part?.retryable,
     eventRetryReason: payload?.eventRetryReason || payload?.retry_reason || part?.retry_reason,
+    eventRuntimeTaskId: payload?.eventRuntimeTaskId || payload?.runtime_task_id || part?.runtime_task_id,
+    eventTurnId: payload?.eventTurnId || payload?.turn_id || part?.turn_id,
+    eventToolCallId: payload?.eventToolCallId || payload?.tool_call_id || part?.tool_call_id,
+    eventHookEvent: payload?.eventHookEvent || payload?.hook_event || part?.hook_event,
+    eventHookKey: payload?.eventHookKey || payload?.hook_key || part?.hook_key,
+    eventHookType: payload?.eventHookType || payload?.hook_type || part?.hook_type,
+    eventChildSessionId: payload?.eventChildSessionId || payload?.child_session_id || part?.child_session_id,
+    eventParentSessionId: payload?.eventParentSessionId || payload?.parent_session_id || part?.parent_session_id,
+    eventRootSessionId: payload?.eventRootSessionId || payload?.root_session_id || part?.root_session_id,
+    eventWorkflowRunId: payload?.eventWorkflowRunId || payload?.workflow_run_id || part?.workflow_run_id,
+    eventWorkflowStepId: payload?.eventWorkflowStepId || payload?.workflow_step_id || part?.workflow_step_id,
+    eventDeepResearchRunId: payload?.eventDeepResearchRunId || payload?.deep_research_run_id || part?.deep_research_run_id,
+    eventScheduleId: payload?.eventScheduleId || payload?.schedule_id || part?.schedule_id,
+    eventScheduleFireId: payload?.eventScheduleFireId || payload?.schedule_fire_id || part?.schedule_fire_id,
+    eventGoalId: payload?.eventGoalId || payload?.goal_id || part?.goal_id,
+    eventOnceId: payload?.eventOnceId || payload?.once_id || part?.once_id,
+    eventMemoryCandidateId: payload?.eventMemoryCandidateId || payload?.memory_candidate_id || part?.memory_candidate_id,
+    eventArtifactId: payload?.eventArtifactId || payload?.artifact_id || part?.artifact_id,
+    eventPath: payload?.eventPath || payload?.path || part?.path,
+    eventRevisionId: payload?.eventRevisionId || payload?.revision_id || part?.revision_id,
+    eventAction: payload?.eventAction || payload?.action || part?.action,
+    eventDiffSummary: payload?.eventDiffSummary || payload?.diff_summary || part?.diff_summary,
+    sessionPermissionRequest:
+      payload?.sessionPermissionRequest ||
+      payload?.permission_request ||
+      part?.permission_request ||
+      (payload?.permission_request_id || part?.permission_request_id
+        ? { permission_request_id: payload?.permission_request_id || part?.permission_request_id }
+        : undefined),
     originalMessageCount:
       payload?.originalMessageCount ??
       payload?.original_message_count ??
@@ -950,6 +1130,7 @@ export function normalizeStoredChatMessage(payload: any): AgentChatMessage {
       toolResult: normalized.toolMeta ? normalized.displayResult : payload?.toolResult,
       toolRawResult: payload?.toolRawResult ?? payload?.toolResult ?? normalized.raw,
       toolMeta,
+      artifacts: artifacts.length > 0 ? artifacts : undefined,
       thinking: payload?.thinking,
       timestamp: payload?.created_at || payload?.timestamp,
       sender_name: payload?.sender_name,

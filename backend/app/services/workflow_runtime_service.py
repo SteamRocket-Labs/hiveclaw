@@ -33,6 +33,8 @@ from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
 from app.services.channel_delivery_service import ChannelDeliveryService
+from app.services.chat_message_parts import build_session_native_event
+from app.services.chat_transcript import append_session_event
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import CompiledWorkflow, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
@@ -98,11 +100,17 @@ class _PGWorkflowJournal:
         *,
         agent_id: uuid.UUID | None = None,
         run_id: uuid.UUID | None = None,
+        parent_session_id: uuid.UUID | str | None = None,
+        root_session_id: uuid.UUID | str | None = None,
+        user_id: uuid.UUID | str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._tenant_id = tenant_id
         self._agent_id = agent_id
         self._run_id = run_id
+        self._parent_session_id = str(parent_session_id) if parent_session_id else None
+        self._root_session_id = str(root_session_id) if root_session_id else None
+        self._user_id = str(user_id) if user_id else None
         self._step_started_at: dict[tuple[str, str], float] = {}
 
     def _mirror_step(self, step_id: str, status: str) -> None:
@@ -174,6 +182,54 @@ class _PGWorkflowJournal:
             for key, value in values.items():
                 setattr(row, key, value)
 
+    async def _append_step_event(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        status: str,
+        reason: str | None = None,
+        result_ref: str | None = None,
+    ) -> None:
+        if not self._parent_session_id or self._agent_id is None:
+            return
+        payload = {
+            "type": "workflow_step",
+            "status": status,
+            "message": f"Workflow step {step_id} {status}",
+            "workflow_run_id": run_id,
+            "workflow_step_id": step_id,
+            "runtime_task_id": run_id,
+            "parent_session_id": self._parent_session_id,
+            "root_session_id": self._root_session_id or self._parent_session_id,
+            "reason": reason,
+            "result_ref": result_ref,
+        }
+        event = build_session_native_event(payload)
+        try:
+            async with self._session() as session:
+                await append_session_event(
+                    db=session,
+                    agent_id=self._agent_id,
+                    tenant_id=self._tenant_id,
+                    session_id=self._parent_session_id,
+                    actor_type="system",
+                    event_type="workflow_step",
+                    role="system",
+                    user_id=self._user_id,
+                    run_id=run_id,
+                    runtime_task_id=run_id,
+                    root_session_id=self._root_session_id or self._parent_session_id,
+                    parent_session_id=self._parent_session_id,
+                    content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    source="workflow_runtime",
+                    parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
+                    metadata={"source": "workflow_runtime", **payload},
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("[Workflow] session event projection for step %s failed (non-fatal): %s", step_id, exc)
+
     async def record_step_start(
         self, run_id: str, step_id: str, *, step_type: str, input_hash: str | None, definition_hash: str
     ) -> None:
@@ -193,6 +249,7 @@ class _PGWorkflowJournal:
         )
         record_workflow_step("running")
         self._mirror_step(step_id, "running")
+        await self._append_step_event(run_id, step_id, status="running")
 
     def _observe_step_finished(self, run_id: str, step_id: str, status: str) -> None:
         from app.services.workflow_metrics import observe_workflow_step_duration, record_workflow_step
@@ -209,6 +266,7 @@ class _PGWorkflowJournal:
         await self._upsert(run_id, step_id, status="done", result_ref=encoded, finished_at=func.now())
         self._observe_step_finished(run_id, step_id, "done")
         self._mirror_step(step_id, "done")
+        await self._append_step_event(run_id, step_id, status="done", result_ref=encoded)
 
     async def record_step_failed(self, run_id: str, step_id: str, *, error: str) -> None:
         from sqlalchemy import func
@@ -216,17 +274,20 @@ class _PGWorkflowJournal:
         await self._upsert(run_id, step_id, status="failed", error=error[:4000], finished_at=func.now())
         self._observe_step_finished(run_id, step_id, "failed")
         self._mirror_step(step_id, "failed")
+        await self._append_step_event(run_id, step_id, status="failed", reason=error[:4000])
 
     async def record_step_skipped(self, run_id: str, step_id: str, *, definition_hash: str) -> None:
         from app.services.workflow_metrics import record_workflow_step
 
         await self._upsert(run_id, step_id, status="skipped", definition_hash=definition_hash)
         record_workflow_step("skipped")
+        await self._append_step_event(run_id, step_id, status="skipped")
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None:
         await self._upsert(run_id, step_id, status="suspended", error=reason[:4000])
         self._observe_step_finished(run_id, step_id, "suspended")
         self._mirror_step(step_id, "suspended")
+        await self._append_step_event(run_id, step_id, status="suspended", reason=reason[:4000])
 
     # ── leaf-level journal (v1 decision 6) ───────────────────────
 
@@ -614,10 +675,13 @@ class WorkflowRuntimeService:
         leaf_executor: LeafExecutor,
         definition_source: str = "ephemeral",
         agent_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | str | None = None,
         confirmed_plan_id: uuid.UUID | str | None = None,
         allowed_leaves: set[str] | None = None,
         run_id: uuid.UUID | None = None,
         delivery_target: dict[str, Any] | None = None,
+        parent_session_id: uuid.UUID | str | None = None,
+        root_session_id: uuid.UUID | str | None = None,
     ) -> WorkflowRunHandle:
         if not get_settings().WORKFLOW_RUNTIME_ENABLED:
             raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
@@ -629,6 +693,8 @@ class WorkflowRuntimeService:
         # A caller may pre-generate the id so run-scoped artifacts (e.g. the
         # Deep Research request.json) can land BEFORE execution starts.
         run_id = run_id or uuid.uuid4()
+        parent_session_value = str(parent_session_id) if parent_session_id else None
+        root_session_value = str(root_session_id or parent_session_id) if root_session_id or parent_session_id else None
         async with self._session(tenant_id) as session:
             task = RuntimeTask(
                 id=run_id,
@@ -636,6 +702,8 @@ class WorkflowRuntimeService:
                 tenant_id=tenant_id,
                 status="running",
                 parent_agent_id=agent_id,
+                parent_session_id=parent_session_value,
+                child_session_id=parent_session_value,
                 metadata_json={
                     "definition_source": definition_source,
                     "definition_hash": compiled.definition_hash,
@@ -643,6 +711,10 @@ class WorkflowRuntimeService:
                     "confirmed_plan_id": str(confirmed_plan_id) if confirmed_plan_id else None,
                     "tenant_id": str(tenant_id),
                     "delivery_target_json": delivery_target,
+                    "parent_session_id": parent_session_value,
+                    "root_session_id": root_session_value,
+                    "user_id": str(user_id) if user_id else None,
+                    "session_bound": bool(parent_session_value),
                     # Ephemeral archive (§3.1): the run must be replayable
                     # without the original conversation.
                     "definition_json": compiled.definition.canonical_dict()
@@ -659,6 +731,30 @@ class WorkflowRuntimeService:
                     allocated_tokens=admission.budget_tokens,
                 )
             )
+
+        # §A-6: a run with no parent session (standalone / scheduled / admin /
+        # heartbeat) gets a freshly bound ChatSession so it is session-visible
+        # instead of a silent no-op; the "has parent session" path is unchanged.
+        parent_session_value, root_session_value, user_session_value = await self._ensure_run_session(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=user_id,
+            run_id=run_id,
+            parent_session_id=parent_session_value,
+            root_session_id=root_session_value,
+        )
+
+        await self._append_run_session_event(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=user_session_value or user_id,
+            run_id=run_id,
+            parent_session_id=parent_session_value,
+            root_session_id=root_session_value,
+            status="running",
+            definition_source=definition_source,
+            definition_hash=compiled.definition_hash,
+        )
 
         from app.services.workflow_metrics import record_workflow_run_started
 
@@ -683,6 +779,164 @@ class WorkflowRuntimeService:
             compiled, run_id=run_id, tenant_id=tenant_id, args=args, leaf_executor=leaf_executor
         )
         return WorkflowRunHandle(run_id=run_id, outcome=outcome)
+
+    async def _ensure_run_session(
+        self,
+        *,
+        tenant_id: uuid.UUID | str,
+        agent_id: uuid.UUID | None,
+        user_id: uuid.UUID | str | None,
+        run_id: uuid.UUID,
+        parent_session_id: uuid.UUID | str | None,
+        root_session_id: uuid.UUID | str | None,
+    ) -> tuple[str | None, str | None, str | None]:
+        """Make a headless workflow run session-visible (§A-6).
+
+        A run started WITHOUT a parent session (standalone / scheduled / admin /
+        heartbeat-triggered) would otherwise produce a RuntimeTask + journal that
+        the session timeline never sees. Mirror the subagent precedent
+        (``create_subagent_child_session``): bind the run to a freshly created
+        ``ChatSession`` so its lifecycle/step events project into a real session.
+
+        Returns the resolved ``(parent_session_id, root_session_id, user_id)`` —
+        the existing "has parent session" path is preserved untouched, and a run
+        with no agent to attach to stays unbound (returns the inputs)."""
+        resolved_user = str(user_id) if user_id else None
+        if parent_session_id or agent_id is None:
+            return (
+                str(parent_session_id) if parent_session_id else None,
+                str(root_session_id or parent_session_id) if (root_session_id or parent_session_id) else None,
+                resolved_user,
+            )
+
+        from app.models.agent import Agent
+        from app.models.chat_session import ChatSession
+
+        new_session_id = uuid.uuid4()
+        try:
+            async with self._session(tenant_id) as session:
+                agent = (
+                    await session.execute(select(Agent).where(Agent.id == agent_id))
+                ).scalar_one_or_none()
+                # Headless runs may carry no user; the agent always has an owning
+                # principal (owner → creator → sponsor) — a valid users.id FK so
+                # the multi-tenant ChatSession row is well-formed.
+                if resolved_user is None and agent is not None:
+                    owner = (
+                        getattr(agent, "owner_user_id", None)
+                        or getattr(agent, "creator_id", None)
+                        or getattr(agent, "sponsor_user_id", None)
+                    )
+                    resolved_user = str(owner) if owner else None
+                if resolved_user is None:
+                    # No principal to attach the session to — leave it unbound
+                    # rather than fabricate an FK; the journal still records it.
+                    return (None, None, None)
+
+                session.add(
+                    ChatSession(
+                        id=new_session_id,
+                        agent_id=agent_id,
+                        tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
+                        user_id=uuid.UUID(resolved_user),
+                        title="Workflow run",
+                        source_channel="workflow",
+                        session_kind="workflow",
+                        actor_type="system",
+                        runtime_source="workflow_runtime",
+                        visibility_scope="team",
+                        listed_surface="parent",
+                        runtime_task_id=run_id,
+                        transcript_metadata_json={
+                            "session_state": "running",
+                            "workflow_run_id": str(run_id),
+                            "headless_workflow": True,
+                        },
+                    )
+                )
+                task = (
+                    await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))
+                ).scalar_one_or_none()
+                if task is not None:
+                    task.parent_session_id = str(new_session_id)
+                    task.child_session_id = str(new_session_id)
+                    metadata = dict(task.metadata_json or {})
+                    metadata["parent_session_id"] = str(new_session_id)
+                    metadata["root_session_id"] = str(new_session_id)
+                    metadata["session_bound"] = True
+                    metadata["headless_session_created"] = True
+                    metadata["user_id"] = resolved_user
+                    task.metadata_json = metadata
+        except Exception as exc:
+            logger.warning("[Workflow] headless session bind for run %s failed (non-fatal): %s", run_id, exc)
+            return (
+                str(parent_session_id) if parent_session_id else None,
+                str(root_session_id or parent_session_id) if (root_session_id or parent_session_id) else None,
+                resolved_user,
+            )
+        return (str(new_session_id), str(new_session_id), resolved_user)
+
+    async def _append_run_session_event(
+        self,
+        *,
+        tenant_id: uuid.UUID | str,
+        agent_id: uuid.UUID | None,
+        user_id: uuid.UUID | str | None,
+        run_id: uuid.UUID | str,
+        parent_session_id: uuid.UUID | str | None,
+        root_session_id: uuid.UUID | str | None,
+        status: str,
+        definition_source: str | None = None,
+        definition_hash: str | None = None,
+        reason: str | None = None,
+        outputs: dict[str, Any] | None = None,
+    ) -> None:
+        if not parent_session_id or agent_id is None:
+            return
+        session_id = str(parent_session_id)
+        payload = {
+            "type": "workflow_run",
+            "status": status,
+            "message": f"Workflow run {status}",
+            "workflow_run_id": str(run_id),
+            "runtime_task_id": str(run_id),
+            "parent_session_id": session_id,
+            "root_session_id": str(root_session_id or parent_session_id),
+            "definition_source": definition_source,
+            "definition_hash": definition_hash,
+            "reason": reason,
+        }
+        if outputs is not None:
+            # Make the session the run's truth surface (gap ledger: workflow
+            # state is readable from session, not only the workflow journal):
+            # project the per-step deliverable outputs plus a compact key list
+            # so a session reader sees WHAT the run produced, not just a status.
+            payload["outputs"] = outputs
+            payload["deliverable_step_ids"] = sorted(str(key) for key in outputs)
+        event = build_session_native_event(payload)
+        try:
+            async with self._session(tenant_id) as session:
+                await append_session_event(
+                    db=session,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    session_id=session_id,
+                    actor_type="system",
+                    event_type="workflow_run",
+                    role="system",
+                    user_id=user_id,
+                    run_id=run_id,
+                    runtime_task_id=run_id,
+                    root_session_id=root_session_id or parent_session_id,
+                    parent_session_id=parent_session_id,
+                    content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    source="workflow_runtime",
+                    parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
+                    metadata={"source": "workflow_runtime", **payload},
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("[Workflow] session event projection for run %s failed (non-fatal): %s", run_id, exc)
 
     async def resume_run(
         self,
@@ -967,11 +1221,11 @@ class WorkflowRuntimeService:
         try:
             async with gateway_scope(tenant_id=tenant_id) as gateway:
                 await gateway.send_signal(
-                from_agent_id=f"workflow:{run_id}",
-                to_agent_id=str(agent_id),
-                content=f"workflow run {run_id} finished: {status}",
-                signal_type="workflow_completed",
-                thread_id=str(run_id),
+                    from_agent_id=f"workflow:{run_id}",
+                    to_agent_id=str(agent_id),
+                    content=f"workflow run {run_id} finished: {status}",
+                    signal_type="workflow_completed",
+                    thread_id=str(run_id),
                 )
         except Exception as exc:
             logger.warning("[Workflow] completion signal failed (non-fatal): %s", exc)
@@ -988,9 +1242,7 @@ class WorkflowRuntimeService:
         if agent_id is None:
             return
         reply_target = (
-            metadata.get("delivery_target_json")
-            or metadata.get("reply_target")
-            or metadata.get("delivery_target")
+            metadata.get("delivery_target_json") or metadata.get("reply_target") or metadata.get("delivery_target")
         )
         if not isinstance(reply_target, dict) or not reply_target.get("channel"):
             return
@@ -1054,11 +1306,35 @@ class WorkflowRuntimeService:
         leaf_executor: LeafExecutor,
     ) -> WorkflowRunOutcome:
         agent_for_mirror: uuid.UUID | None = None
+        parent_session_id: str | None = None
+        root_session_id: str | None = None
+        user_id: str | None = None
         async with self._session(tenant_id) as session:
-            agent_for_mirror = (
-                await session.execute(select(RuntimeTask.parent_agent_id).where(RuntimeTask.id == run_id))
-            ).scalar_one_or_none()
-        journal = _PGWorkflowJournal(self._session_factory, tenant_id, agent_id=agent_for_mirror, run_id=run_id)
+            task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+            agent_for_mirror = task.parent_agent_id
+            task_metadata = dict(task.metadata_json or {})
+            parent_session_id = task.parent_session_id or task_metadata.get("parent_session_id")
+            root_session_id = task_metadata.get("root_session_id") or parent_session_id
+            user_id = task_metadata.get("user_id")
+        # §A-6: cover the resume / startup-scan paths too — bind a session for a
+        # still-headless run. Idempotent: already-bound runs return unchanged.
+        parent_session_id, root_session_id, user_id = await self._ensure_run_session(
+            tenant_id=tenant_id,
+            agent_id=agent_for_mirror,
+            user_id=user_id,
+            run_id=run_id,
+            parent_session_id=parent_session_id,
+            root_session_id=root_session_id,
+        )
+        journal = _PGWorkflowJournal(
+            self._session_factory,
+            tenant_id,
+            agent_id=agent_for_mirror,
+            run_id=run_id,
+            parent_session_id=parent_session_id,
+            root_session_id=root_session_id,
+            user_id=user_id,
+        )
         quota = PGQuotaReserver(self._session_factory, tenant_id, estimate=get_settings().WORKFLOW_LEAF_TOKEN_ESTIMATE)
 
         service = self
@@ -1187,6 +1463,19 @@ class WorkflowRuntimeService:
         from app.services.workflow_metrics import record_workflow_run_finished
 
         record_workflow_run_finished(outcome.status)
+        await self._append_run_session_event(
+            tenant_id=tenant_id,
+            agent_id=agent_for_signal,
+            user_id=task_metadata.get("user_id"),
+            run_id=run_id,
+            parent_session_id=task_metadata.get("parent_session_id"),
+            root_session_id=task_metadata.get("root_session_id") or task_metadata.get("parent_session_id"),
+            status=outcome.status,
+            definition_source=task_metadata.get("definition_source"),
+            definition_hash=definition_hash,
+            reason=outcome.reason,
+            outputs=outcome.outputs,
+        )
         if outcome.status == "completed":
             claimed, task_metadata = await self._claim_completion_side_effects(
                 run_id=run_id,

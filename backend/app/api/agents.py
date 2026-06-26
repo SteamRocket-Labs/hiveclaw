@@ -936,10 +936,13 @@ async def delete_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a digital employee (creator only)."""
+    """Delete a digital employee (admin only)."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent) and current_user.role not in ("org_admin", "platform_admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator or admin can delete agent")
+    if current_user.role not in ("org_admin", "platform_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent is an enterprise asset; only an admin can delete it.",
+        )
 
     # Stop container and archive files (best effort)
     from app.services.agent_manager import agent_manager

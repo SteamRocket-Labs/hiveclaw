@@ -10,7 +10,7 @@ import AgentApprovalsSection from './agent-detail/AgentApprovalsSection';
 import AgentWorkflowsSection from './agent-detail/AgentWorkflowsSection';
 import AgentActivityLogSection from './agent-detail/AgentActivityLogSection';
 import AgentAwareSection from './agent-detail/AgentAwareSection';
-import AgentChatSection, { type BranchLineageItem } from './agent-detail/AgentChatSection';
+import AgentChatSection, { type BranchLineageItem, type SessionPermissionMode } from './agent-detail/AgentChatSection';
 import AgentEvolutionSection from './agent-detail/AgentEvolutionSection';
 import AgentKnowledgeSection from './agent-detail/AgentKnowledgeSection';
 import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
@@ -31,6 +31,7 @@ import {
     buildChatSocketKeepaliveMessage,
     buildRuntimeSummary,
     createEmptyTranscriptReplayState,
+    extractArtifactParts,
     getRuntimeEventMessage,
     getTerminalRunIdFromTranscriptEvent,
     getTransportNotice,
@@ -45,6 +46,7 @@ import {
     type ChatTranscriptEventPayload,
     type ChatRuntimeSummary,
     type PendingUserMessage,
+    type SessionPermissionRequest,
     type SessionRunState,
     type SessionUiState,
     type TranscriptReplayState,
@@ -746,6 +748,7 @@ function AgentDetailInner() {
     const [chatMessagesSessionId, setChatMessagesSessionId] = useState<string | null>(null);
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
+    const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>('auto');
     const planModeScopeKey = buildPlanModeScopeKey(id, activeSession?.id);
     const planModeScopeKeyRef = useRef(planModeScopeKey);
     useEffect(() => {
@@ -1131,6 +1134,7 @@ function AgentDetailInner() {
                     toolResult: normalizedResult.displayResult,
                     toolRawResult: normalizedResult.raw,
                     toolMeta: normalizedResult.toolMeta,
+                    artifacts: extractArtifactParts(d),
                 });
                 if (isTerminalTranscriptToolMessage(toolMsg)) {
                     markActiveRunTerminal(key, d.run_id ? String(d.run_id) : null);
@@ -1331,6 +1335,7 @@ function AgentDetailInner() {
                             content,
                             display_content: displayContent,
                             plan_mode_requested: actionResult.plan_mode_requested === true,
+                            permission_mode: sessionPermissionMode,
                         });
                         commandStartedRun = true;
                         setPlanModeRequested(false);
@@ -1419,6 +1424,7 @@ function AgentDetailInner() {
                 file_name: attachedFiles.map(f => f.name).join(', '),
                 attachments: attachmentPayload,
                 plan_mode_requested: planModeRequested,
+                permission_mode: sessionPermissionMode,
             });
             setPlanModeRequested(false);
             setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
@@ -1459,6 +1465,7 @@ function AgentDetailInner() {
                 content: userMsg,
                 display_content: userMsg,
                 ...(options?.planMode ? { plan_mode_requested: true } : {}),
+                permission_mode: sessionPermissionMode,
             });
             setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
             invalidateSessionRuntimeQueries(id, String(activeSession.id));
@@ -1469,6 +1476,31 @@ function AgentDetailInner() {
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             setChatMessages(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
             throw err;
+        }
+    };
+
+    const resolveSessionPermission = async (
+        request: SessionPermissionRequest,
+        action: 'allow_once' | 'allow_session' | 'deny',
+    ) => {
+        if (!id || !activeSession?.id || !request.permission_request_id) return;
+        const sessionId = String(activeSession.id);
+        const activeRuntimeKey = buildSessionRuntimeKey(id, sessionId);
+        try {
+            const response: any = await chatApi.resolveSessionPermission(id, sessionId, request.permission_request_id, {
+                action,
+            });
+            if (response?.run?.run_id) {
+                setActiveRunState(activeRuntimeKey, {
+                    runId: response.run.run_id,
+                    status: response.run.status || 'running',
+                });
+            }
+            invalidateSessionRuntimeQueries(id, sessionId);
+            await selectSession(activeSession);
+        } catch (err: any) {
+            const msg = err?.message || t('agent.chat.permission.resolveFailed', 'Failed to resolve permission request');
+            showToast(msg, 'error');
         }
     };
 
@@ -1486,6 +1518,7 @@ function AgentDetailInner() {
                 content,
                 display_content: displayContent,
                 start_run: mode !== 'fork',
+                permission_mode: sessionPermissionMode,
             });
             const branchSession = response.session;
             setSessions(prev => {
@@ -2128,6 +2161,9 @@ function AgentDetailInner() {
                             activeRunStatus={currentActiveRunState?.status || null}
                             planModeRequested={planModeRequested}
                             onTogglePlanMode={() => setPlanModeRequested((value) => !value)}
+                            sessionPermissionMode={sessionPermissionMode}
+                            onSetSessionPermissionMode={setSessionPermissionMode}
+                            onResolveSessionPermission={resolveSessionPermission}
 
                             chatEndRef={chatEndRef}
                             showScrollBtn={showScrollBtn}

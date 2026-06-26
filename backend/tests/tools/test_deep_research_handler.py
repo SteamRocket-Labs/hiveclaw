@@ -36,7 +36,10 @@ async def test_deep_research_run_executes_workflow_synchronously(tmp_path, monke
     """DR-6b 单路径：同步工具直接驱动 workflow run 到完成并透传 payload。"""
     from app.tools.handlers.deep_research import deep_research_run
 
-    async def fake_workflow_run(*, request, agent_id, user_id, workspace, plan_id=None, run_id=None, **_kwargs):
+    captured: dict = {}
+
+    async def fake_workflow_run(*, request, agent_id, user_id, workspace, plan_id=None, run_id=None, **kwargs):
+        captured.update(kwargs)
         return {
             "workflow_run_id": "sync-run",
             "status": "completed",
@@ -53,6 +56,8 @@ async def test_deep_research_run_executes_workflow_synchronously(tmp_path, monke
     assert payload["ok"] is True
     assert payload["status"] == "completed"
     assert payload["workflow_run_id"] == "sync-run"
+    assert captured["parent_session_id"] == req.context.session_id
+    assert captured["root_session_id"] == req.context.session_id
 
 
 @pytest.mark.asyncio
@@ -105,6 +110,7 @@ async def test_deep_research_start_schedules_background_workflow(tmp_path, monke
     assert payload["workflow_run_id"] == payload["task_id"]
     assert _uuid.UUID(payload["task_id"])  # well-formed run id
     assert scheduled["agent_id"] == req.context.agent_id
+    assert scheduled["parent_session_id"] == req.context.session_id
     next_action = payload["next_action"]
     # The agent must NOT busy-loop deep_research_check on a still-running async task:
     # 5 identical polls trip the kernel loop guard. The guidance must say so explicitly.
@@ -148,7 +154,9 @@ async def test_deep_research_start_dedups_against_persisted_active_runtime_task(
     def fake_schedule(**kwargs):
         scheduled.update(kwargs)
 
-    monkeypatch.setattr(handler, "list_active_runtime_task_records", fake_list_active_runtime_task_records, raising=False)
+    monkeypatch.setattr(
+        handler, "list_active_runtime_task_records", fake_list_active_runtime_task_records, raising=False
+    )
     monkeypatch.setattr(handler, "_schedule_deep_research_workflow_background", fake_schedule)
 
     payload = json.loads(await handler.deep_research_start(req))
@@ -177,7 +185,10 @@ async def test_deep_research_background_metadata_records_signature(
     signature = deep_research_workflow_args(research_request)["deep_research_signature"]
     updates: list[tuple[str, dict]] = []
 
-    async def fake_workflow_run(**_kwargs):
+    captured: dict = {}
+
+    async def fake_workflow_run(**kwargs):
+        captured.update(kwargs)
         return {"status": "completed", "workflow_run_id": str(run_id)}
 
     async def fake_update_runtime_task_record(task_id, **fields):
@@ -193,6 +204,7 @@ async def test_deep_research_background_metadata_records_signature(
         agent_id=agent_id,
         user_id=user_id,
         workspace=tmp_path,
+        parent_session_id="session-work-ledger",
     )
     await asyncio.sleep(0)
 
@@ -200,6 +212,7 @@ async def test_deep_research_background_metadata_records_signature(
     assert updates[0][0] == run_id.hex
     assert updates[0][1]["metadata_json"]["deep_research_signature"] == signature
     assert updates[0][1]["metadata_json"]["deep_research_question"] == "RWA adoption"
+    assert captured["parent_session_id"] == "session-work-ledger"
 
 
 def test_deep_research_signature_matches_workflow_args_for_empty_worker_topics() -> None:
@@ -211,9 +224,10 @@ def test_deep_research_signature_matches_workflow_args_for_empty_worker_topics()
         {"question": "RWA adoption", "max_rounds": 2, "plan_confirmed": True}
     )
 
-    assert handler._deep_research_signature(research_request) == deep_research_workflow_args(research_request)[
-        "deep_research_signature"
-    ]
+    assert (
+        handler._deep_research_signature(research_request)
+        == deep_research_workflow_args(research_request)["deep_research_signature"]
+    )
 
 
 @pytest.mark.asyncio

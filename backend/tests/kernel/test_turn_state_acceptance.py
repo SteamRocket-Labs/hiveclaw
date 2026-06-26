@@ -307,14 +307,15 @@ async def test_turn_state_projection_surfaces_terminal_reason_via_agent_session(
 
 @pytest.mark.asyncio
 async def test_turn_state_projection_coerces_unknown_run_status_onto_enum(monkeypatch):
-    """An unknown raw run status (e.g. ``killed``) is coerced to RUNNING, not echoed.
+    """A ``killed`` run is a terminal cancel and coerces to CANCELLED, not echoed.
 
     The runtime persists run statuses like ``killed`` that are NOT TurnStatus
-    enum members. ``_coerce_turn_status`` maps unknowns onto ``RUNNING`` so the
-    projection only ever surfaces enum-valid statuses. Revert-sensitive: if the
-    coercion were dropped and the raw status passed through, ``killed`` would
-    leak verbatim onto the contract surface. The terminal_reason still rides
-    through faithfully.
+    enum members. ``_coerce_turn_status`` maps ``killed`` onto the terminal
+    ``CANCELLED`` state (it is a cancel, not an active turn) so the projection
+    only ever surfaces enum-valid statuses. Revert-sensitive: if the coercion
+    were dropped and the raw status passed through, ``killed`` would leak
+    verbatim; and if ``killed`` collapsed to RUNNING (the prior bug) a cancelled
+    turn would look live. The terminal_reason still rides through faithfully.
     """
     import app.services.session_control_plane as service
 
@@ -369,9 +370,10 @@ async def test_turn_state_projection_coerces_unknown_run_status_onto_enum(monkey
     result = await service.build_session_workbench(object(), agent=agent, session=session)
 
     active_turn = result["agent_session"]["active_turn"]
-    # Unknown status coerced to the enum fallback — NOT echoed as "killed".
-    assert active_turn["status"] == "running"
-    assert active_turn["status"] != "killed"
+    # ``killed`` coerced onto the terminal CANCELLED state — NOT echoed verbatim,
+    # and NOT collapsed to the live RUNNING state (the prior bug).
+    assert active_turn["status"] == "cancelled"
+    assert active_turn["status"] not in ("killed", "running")
     # terminal_reason still carries the real cancellation cause.
     assert active_turn["terminal_reason"] == TerminalReason.USER_CANCEL.value
 
@@ -429,3 +431,87 @@ async def test_turn_state_projection_omits_terminal_reason_when_idle(monkeypatch
 
     assert result["agent_session"]["active_turn"] is None
     assert result["active_turn"] is None
+
+
+def _event(event_type: str, **metadata) -> SimpleNamespace:
+    """A minimal transcript-event double exposing event_type + metadata_json."""
+    return SimpleNamespace(event_type=event_type, metadata_json=dict(metadata) if metadata else None)
+
+
+def test_turn_state_coerce_maps_killed_and_skipped_to_cancelled():
+    """``killed``/``skipped`` runs are terminal cancels, not RUNNING.
+
+    Revert-sensitive: drop the _RUN_STATUS_ALIASES mapping and ``killed`` falls
+    through ValueError back to RUNNING (the prior bug where a cancelled turn
+    looked live).
+    """
+    from app.runtime.ccplus_contracts import TurnStatus
+    from app.services.session_control_plane import _coerce_turn_status
+
+    assert _coerce_turn_status("killed") == TurnStatus.CANCELLED
+    assert _coerce_turn_status("skipped") == TurnStatus.CANCELLED
+    assert _coerce_turn_status("running") == TurnStatus.RUNNING
+    # queued/pending are live-but-not-yet-streaming → RUNNING (active).
+    assert _coerce_turn_status("queued") == TurnStatus.RUNNING
+
+
+def test_turn_state_derives_waiting_for_permission_from_pending_request():
+    """A live turn whose latest concern is an unresolved permission request
+    surfaces WAITING_FOR_PERMISSION instead of a generic RUNNING.
+
+    Revert-sensitive: without the derivation the projection collapses every
+    in-flight wait to RUNNING, so a turn paused on a permission prompt is
+    indistinguishable from one actively producing output.
+    """
+    from app.runtime.ccplus_contracts import TurnStatus
+    from app.services.session_control_plane import _derive_active_turn_status
+
+    events = [_event("user_message"), _event("permission_request", status="pending")]
+    assert _derive_active_turn_status(events, TurnStatus.RUNNING) == TurnStatus.WAITING_FOR_PERMISSION
+
+
+def test_turn_state_derives_blocked_by_hook_child_and_workflow():
+    """hook_blocked / running child_session / running workflow_run each surface
+    their specific typed wait-state."""
+    from app.runtime.ccplus_contracts import TurnStatus
+    from app.services.session_control_plane import _derive_active_turn_status
+
+    assert _derive_active_turn_status([_event("hook_blocked")], TurnStatus.RUNNING) == TurnStatus.BLOCKED_BY_HOOK
+    assert (
+        _derive_active_turn_status([_event("child_session", status="running")], TurnStatus.RUNNING)
+        == TurnStatus.WAITING_FOR_CHILD
+    )
+    assert (
+        _derive_active_turn_status([_event("workflow_run", status="running")], TurnStatus.RUNNING)
+        == TurnStatus.WAITING_FOR_WORKFLOW
+    )
+
+
+def test_turn_state_derivation_clears_once_the_wait_resolves():
+    """Resolved waits and active progress fall back to the base RUNNING status.
+
+    A resolved permission, a completed child, or fresh assistant/tool output all
+    mean the turn is no longer blocked — it is actively running again.
+    """
+    from app.runtime.ccplus_contracts import TurnStatus
+    from app.services.session_control_plane import _derive_active_turn_status
+
+    resolved = [_event("permission_request"), _event("permission_resolved", status="allowed")]
+    assert _derive_active_turn_status(resolved, TurnStatus.RUNNING) == TurnStatus.RUNNING
+
+    completed_child = [_event("child_session", status="completed")]
+    assert _derive_active_turn_status(completed_child, TurnStatus.RUNNING) == TurnStatus.RUNNING
+
+    active = [_event("permission_request"), _event("assistant_message")]
+    assert _derive_active_turn_status(active, TurnStatus.RUNNING) == TurnStatus.RUNNING
+
+
+def test_turn_state_derivation_never_overrides_a_terminal_status():
+    """Terminal base statuses (completed/failed/cancelled/interrupted) are never
+    rewritten into a wait-state even if a stale pending event lingers."""
+    from app.runtime.ccplus_contracts import TurnStatus
+    from app.services.session_control_plane import _derive_active_turn_status
+
+    events = [_event("permission_request", status="pending")]
+    for terminal in (TurnStatus.COMPLETED, TurnStatus.FAILED, TurnStatus.CANCELLED, TurnStatus.INTERRUPTED):
+        assert _derive_active_turn_status(events, terminal) == terminal

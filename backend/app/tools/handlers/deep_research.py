@@ -242,6 +242,8 @@ async def deep_research_run(request: ToolExecutionRequest) -> str:
         agent_id=request.context.agent_id,
         user_id=request.context.user_id,
         workspace=request.context.workspace,
+        parent_session_id=request.context.session_id,
+        root_session_id=request.context.session_id,
     )
     return _json({"ok": payload.get("status") == "completed", **payload})
 
@@ -293,6 +295,7 @@ async def deep_research_start(request: ToolExecutionRequest) -> str:
         agent_id=request.context.agent_id,
         user_id=request.context.user_id,
         workspace=request.context.workspace,
+        parent_session_id=request.context.session_id,
         dedup_signature=signature,
         dedup_key=dedup_key,
     )
@@ -462,6 +465,8 @@ async def start_deep_research_background_run(
     user_id: uuid.UUID,
     workspace: Path,
     plan_id: uuid.UUID | str | None = None,
+    parent_session_id: uuid.UUID | str | None = None,
+    root_session_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     """Plan-handoff entry (confirmed plan → background workflow run).
 
@@ -489,6 +494,8 @@ async def start_deep_research_background_run(
         user_id=user_id,
         workspace=workspace,
         plan_id=plan_id,
+        parent_session_id=parent_session_id,
+        root_session_id=root_session_id,
         dedup_signature=signature,
         dedup_key=dedup_key,
     )
@@ -512,6 +519,8 @@ def _schedule_deep_research_workflow_background(
     user_id: uuid.UUID,
     workspace: Path,
     plan_id: uuid.UUID | str | None = None,
+    parent_session_id: uuid.UUID | str | None = None,
+    root_session_id: uuid.UUID | str | None = None,
     dedup_signature: str | None = None,
     dedup_key: tuple[str, str] | None = None,
 ) -> None:
@@ -530,6 +539,8 @@ def _schedule_deep_research_workflow_background(
                 workspace=workspace,
                 plan_id=plan_id,
                 run_id=run_id,
+                parent_session_id=parent_session_id,
+                root_session_id=root_session_id,
             )
             await update_runtime_task_record(
                 run_id.hex,

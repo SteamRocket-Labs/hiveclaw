@@ -103,56 +103,27 @@ async def test_llm_summarize_sends_full_history_and_raised_max_tokens(monkeypatc
     assert "unique-marker-0-end" in captured["user_text"]  # old code kept only last 40
     assert captured["closed"] is True
 
+# ``_extract_summary`` (mechanical 11-section fallback) and its helpers were
+# removed as dead code (B-6) — they had no live caller. Compaction now runs
+# only through the LLM summarizer path, so no replacement test is added here.
 
-def test_extract_summary_emits_structured_state_ledgers():
-    from app.services.conversation_summarizer import _extract_summary
 
-    messages = [
-        {
-            "role": "user",
-            "content": "请修复 /tmp/auth.py 里的 bug，并记住我更喜欢表格格式输出。",
-        },
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "read_file", "arguments": '{"path":"/tmp/auth.py"}'},
-                },
-                {
-                    "id": "call_2",
-                    "type": "function",
-                    "function": {"name": "write_file", "arguments": '{"path":"/tmp/auth.py"}'},
-                },
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_1",
-            "content": "Loaded file /tmp/auth.py",
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_2",
-            "content": "Updated /tmp/auth.py and wrote fix result_id=auth_fix_123",
-        },
-        {
-            "role": "assistant",
-            "content": "我已经修复 auth.py。下一步需要补测试，并继续验证 API 响应。",
-        },
-    ]
+def test_dead_mechanical_extract_helpers_are_removed():
+    """B-6 revert guard: the unused mechanical-compression helpers must stay
+    deleted (no live caller). The LLM-path keeper ``_extract_summary_from_response``
+    must remain importable."""
+    import app.services.conversation_summarizer as cs
 
-    summary = _extract_summary(messages)
+    for dead in (
+        "_extract_summary",
+        "_extract_decisions",
+        "_extract_pending",
+        "_extract_artifacts",
+        "_extract_preferences",
+        "_extract_tool_summary",
+    ):
+        assert not hasattr(cs, dead), f"{dead} was deleted as dead code (B-6); do not reintroduce"
 
-    assert "**Task Ledger:**" in summary
-    assert "**Decision Ledger:**" in summary
-    assert "**Artifact Ledger:**" in summary
-    assert "**Tool Ledger:**" in summary
-    assert "**Preference Ledger:**" in summary
-    assert "**Pending Ledger:**" in summary
-    assert "/tmp/auth.py" in summary
-    assert "read_file" in summary
-    assert "write_file" in summary
-    assert "表格格式输出" in summary
+    # Keepers survive.
+    assert hasattr(cs, "_extract_summary_from_response")
+    assert hasattr(cs, "estimate_tokens")

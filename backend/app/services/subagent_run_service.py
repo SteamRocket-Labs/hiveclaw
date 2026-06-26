@@ -21,6 +21,7 @@ from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
+from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.runtime_task_service import (
     build_completion_journal_entry,
@@ -319,6 +320,44 @@ async def update_subagent_child_session_state_for_run(
             listed_surface=session.listed_surface,
             source="subagent",
         )
+        if session.parent_session_id:
+            parent_session_id = session.parent_session_id
+            root_session_id = session.root_session_id or parent_session_id
+            parent_event_payload = {
+                "type": "child_session",
+                "message": summary,
+                "status": status,
+                "runtime_task_id": run_id,
+                "child_session_id": str(child_session_uuid),
+                "parent_session_id": str(parent_session_id),
+                "root_session_id": str(root_session_id),
+                "reason": "subagent_task_completed" if status == "completed" else "subagent_task_failed",
+            }
+            parent_event = build_session_native_event(parent_event_payload)
+            await append_session_event(
+                db=db,
+                agent_id=parent_agent_uuid,
+                tenant_id=tenant_id,
+                session_id=parent_session_id,
+                actor_type="system",
+                event_type="child_session",
+                content=summary,
+                role="system",
+                user_id=session.user_id,
+                run_id=run_id,
+                runtime_task_id=run_id,
+                root_session_id=root_session_id,
+                parent_session_id=parent_session_id,
+                parts=[parent_event["part"]],
+                metadata={
+                    **parent_event_payload,
+                    "source": "subagent",
+                    "subagent_session_state": status,
+                },
+                visibility_scope="team",
+                listed_surface="chat",
+                source="subagent",
+            )
         await db.commit()
 
 

@@ -27,7 +27,7 @@ def test_dynamic_command_loader_registers_derived_skill_workflow_or_mcp_command(
     assert command.input_schema["properties"]["depth"]["type"] == "string"
 
 
-def test_optional_coding_pack_is_not_core_prompt_default():
+def test_optional_coding_pack_is_registered_but_not_user_or_prompt_default():
     from app.services.command_registry import build_default_command_registry
 
     with pytest.raises(KeyError):
@@ -38,7 +38,8 @@ def test_optional_coding_pack_is_not_core_prompt_default():
     user_names = {entry["name"] for entry in registry.visible_index(surface="user")}
 
     assert "diff" not in prompt_names
-    assert "diff" in user_names
+    assert "diff" not in user_names
+    assert registry.get("diff").execution_mode == "external"
     assert registry.get("shell_pack").execution_mode == "external"
     assert registry.get("shell_pack").bridge_safe is False
 

@@ -15,6 +15,8 @@ import pytest
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
+from app.models.chat_session import ChatSession
+from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.runtime.workflow_engine import WorkflowRunOutcome
 from app.services.workflow_definitions import WorkflowDefinitionService
@@ -127,6 +129,30 @@ async def test_every_trigger_type_starts_workflow_with_args(
     assert calls[0]["args"] == {"week": "W23"}
     assert calls[0]["definition_source"] == "registered"
     assert calls[0]["definition"]["name"] == record.name
+    assert calls[0]["parent_session_id"]
+    assert calls[0]["root_session_id"] == calls[0]["parent_session_id"]
+    assert calls[0]["user_id"]
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        chat_session = (
+            await session.execute(select(ChatSession).where(ChatSession.id == calls[0]["parent_session_id"]))
+        ).scalar_one()
+        events = (
+            (
+                await session.execute(
+                    select(ChatTranscriptEvent)
+                    .where(ChatTranscriptEvent.session_id == chat_session.id)
+                    .order_by(ChatTranscriptEvent.sequence.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert chat_session.session_kind == "trigger_run"
+    assert chat_session.runtime_source == "workflow_trigger"
+    assert chat_session.listed_surface == "task_updates"
+    assert any(event.event_type == "schedule_fire" for event in events)
 
 
 async def test_hash_mismatch_never_runs_new_version(tenant_id, agent_id, definition_service, owner_sessionmaker):
@@ -156,6 +182,8 @@ async def test_hash_mismatch_never_runs_new_version(tenant_id, agent_id, definit
         task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == result.run_id))).scalar_one()
     assert task.status == "suspended"
     assert task.metadata_json["needs_reconfirmation"] is True
+    assert task.parent_session_id
+    assert task.child_session_id == task.parent_session_id
 
 
 async def test_webhook_payload_injected_into_args(tenant_id, agent_id, definition_service, owner_sessionmaker):

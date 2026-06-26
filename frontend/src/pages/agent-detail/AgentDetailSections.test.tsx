@@ -16,6 +16,7 @@ import AgentChatSection, {
   buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
   getArtifactOpenMode,
+  isPendingEmptyArtifactPreview,
   isClarificationCardAnsweredByLaterUserMessage,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
@@ -1352,30 +1353,28 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Always on');
     expect(markup).not.toContain('Enable Heartbeat');
     expect(markup).not.toContain('Agent will periodically check Agent Circle and work status');
-    expect(markup).toContain('Runtime Safety Boundary');
-    expect(markup).toContain('Loose (Default)');
-    expect(markup).toContain('Approval Guard');
-    expect(markup).toContain('Read-only Lockdown');
+    expect(markup).not.toContain('Runtime Safety Boundary');
+    expect(markup).not.toContain('Loose (Default)');
+    expect(markup).not.toContain('Approval Guard');
+    expect(markup).not.toContain('Read-only Lockdown');
     expect(markup).not.toContain('Local Agent Link');
     expect(markup).not.toContain('Local Agent Workbench');
-    expect(markup).toContain('Ordered from loose to strict');
-    expect(markup.indexOf('Loose (Default)')).toBeLessThan(markup.indexOf('Approval Guard'));
-    expect(markup.indexOf('Approval Guard')).toBeLessThan(markup.indexOf('Read-only Lockdown'));
+    expect(markup).not.toContain('Ordered from loose to strict');
     expect(markup).not.toContain('>Public<');
     expect(markup).not.toContain('>Restricted<');
-    expect(markup).toContain('Run Shell Commands');
-    expect(markup).toContain('Secret/Environment Reads');
+    expect(markup).not.toContain('Run Shell Commands');
+    expect(markup).not.toContain('Secret/Environment Reads');
     expect(markup).not.toContain('Manage Tasks');
     expect(markup).not.toContain('Create, update, or complete tasks');
-    expect(markup).toContain('unknown.future.capability');
-    expect(markup).toContain('future_tool');
-    expect(markup).toContain('value="approval" selected=""');
+    expect(markup).not.toContain('unknown.future.capability');
+    expect(markup).not.toContain('future_tool');
+    expect(markup).not.toContain('value="approval" selected=""');
     expect(markup).toContain('welcomeMessage');
-    expect(markup).toContain('value="deny" selected=""');
+    expect(markup).not.toContain('value="deny" selected=""');
     expect(markup).not.toContain('value="L2"');
-    expect(markup).toContain('Access Permissions');
+    expect(markup).not.toContain('Access Permissions');
     expect(markup).toContain('Channel Config Mock');
-    expect(markup).toContain('deleteAgent');
+    expect(markup).not.toContain('deleteAgent');
   });
 
   it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
@@ -1404,7 +1403,7 @@ describe('AgentDetail extracted sections', () => {
     });
   });
 
-  it('lets admins edit access permissions for non-owned agents', () => {
+  it('does not render Agent access permissions inside detail settings', () => {
     const markup = renderToStaticMarkup(
       <AgentSettingsSection
         agentId="agent-1"
@@ -1460,12 +1459,13 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Default Access Level');
-    expect(markup).not.toMatch(/name="perm_scope"[^>]*disabled/);
-    expect(markup).not.toMatch(/Only the creator or admin can change permissions/);
+    expect(markup).not.toContain('Access Permissions');
+    expect(markup).not.toContain('Default Access Level');
+    expect(markup).not.toMatch(/name="perm_scope"/);
+    expect(markup).not.toContain('Delete Agent');
   });
 
-  it('lets admins edit OpenClaw access permissions for non-owned agents', () => {
+  it('does not render OpenClaw access permissions or Agent deletion inside detail settings', () => {
     const markup = renderToStaticMarkup(
       <OpenClawSettings
         agent={{ id: 'agent-1', name: 'OpenClaw Agent', agent_type: 'openclaw', has_api_key: false }}
@@ -1474,9 +1474,10 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Default Access Level');
-    expect(markup).not.toMatch(/name="perm_scope_oc"[^>]*disabled/);
-    expect(markup).not.toMatch(/Only the creator or admin can change permissions/);
+    expect(markup).not.toContain('Access Permissions');
+    expect(markup).not.toContain('Default Access Level');
+    expect(markup).not.toMatch(/name="perm_scope_oc"/);
+    expect(markup).not.toContain('Delete Agent');
   });
 
   it('renders AgentChatSection as a standalone chat module', () => {
@@ -1887,6 +1888,88 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('RAW FILE CONTENT SHOULD NOT BE INLINE');
   });
 
+  it('renders tool-produced artifacts inside the session timeline', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Tool artifact',
+          created_at: '2026-06-20T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'office_document_apply',
+            toolArgs: { path: 'workspace/proposal.docx' },
+            toolStatus: 'done',
+            toolResult: '{"ok": true}',
+            artifacts: [
+              {
+                id: 'artifact-doc',
+                name: 'proposal.docx',
+                path: 'workspace/proposal.docx',
+                previewKind: 'office',
+              },
+            ],
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('office_document_apply');
+    expect(markup).toContain('proposal.docx');
+    expect(markup).toContain('Open');
+    expect(markup).toContain('Download');
+  });
+
   it('groups consecutive runtime steps into one turn-level disclosure block before the final answer', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
@@ -2002,6 +2085,171 @@ describe('AgentDetail extracted sections', () => {
     expect(extractPlanIdFromPlanModeMessage('普通回复，没有计划 ID')).toBeNull();
   });
 
+  it('renders in-session permission requests with resolver actions', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Permission request',
+          created_at: '2026-06-25T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'event',
+            content: "Tool 'send_email' requires session permission",
+            eventType: 'permission',
+            eventTitle: 'Permission Gate',
+            eventStatus: 'session_permission_required',
+            eventToolName: 'send_email',
+            eventCapability: 'communication.email.send',
+            sessionPermissionRequest: {
+              permission_request_id: '11111111-1111-4111-8111-111111111111',
+              session_id: 'session-1',
+              tool_name: 'send_email',
+              arguments: { to: 'a@example.com' },
+              permission_mode: 'default',
+            },
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        agentPermissions={{ scope_type: 'company', scope_ids: [], access_level: 'manage' }}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        onResolveSessionPermission={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Permission Gate');
+    expect(markup).toContain('send_email');
+    expect(markup).toContain('Allow once');
+    expect(markup).toContain('Allow for this session');
+    expect(markup).toContain('Deny');
+  });
+
+  it('renders child session runtime events with continuation metadata', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Parent session',
+          created_at: '2026-06-25T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'event',
+            content: 'Research worker completed.',
+            eventType: 'child_session',
+            eventTitle: 'Child Session',
+            eventStatus: 'completed',
+            eventRuntimeTaskId: 'run-1',
+            eventChildSessionId: 'child-session-1',
+            eventParentSessionId: 'session-1',
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        agentPermissions={{ scope_type: 'company', scope_ids: [], access_level: 'manage' }}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        onResolveSessionPermission={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Child Session');
+    expect(markup).toContain('Research worker completed.');
+    expect(markup).toContain('child:child-session-1');
+    expect(markup).toContain('run:run-1');
+  });
+
   it('routes chat artifacts to inline preview only when the file type is previewable', () => {
     expect(getArtifactOpenMode({ name: 'report.md', path: 'workspace/report.md', previewKind: 'markdown' })).toBe('inline_preview');
     expect(getArtifactOpenMode({ name: 'notes.txt', path: 'workspace/notes.txt', previewKind: 'text' })).toBe('inline_preview');
@@ -2009,6 +2257,27 @@ describe('AgentDetail extracted sections', () => {
     expect(getArtifactOpenMode({ name: 'slides.pdf', path: 'workspace/slides.pdf', previewKind: 'pdf' })).toBe('inline_preview');
     expect(getArtifactOpenMode({ name: 'deck.pptx', path: 'workspace/deck.pptx', previewKind: 'office' })).toBe('download');
     expect(getArtifactOpenMode({ name: 'archive.zip', path: 'workspace/archive.zip', previewKind: 'download' })).toBe('download');
+  });
+
+  it('shows a pending empty-state for zero-byte artifact previews instead of a blank panel', () => {
+    expect(
+      isPendingEmptyArtifactPreview(
+        { name: 'session.plan.md', path: 'workspace/plans/session.plan.md', previewKind: 'markdown', size: 0 },
+        '',
+      ),
+    ).toBe(true);
+    expect(
+      isPendingEmptyArtifactPreview(
+        { name: 'session.plan.md', path: 'workspace/plans/session.plan.md', previewKind: 'markdown', size: 0 },
+        '# Plan',
+      ),
+    ).toBe(false);
+    expect(
+      isPendingEmptyArtifactPreview(
+        { name: 'session.plan.md', path: 'workspace/plans/session.plan.md', previewKind: 'markdown', size: 12 },
+        '',
+      ),
+    ).toBe(false);
   });
 
   it('renders PlanCard inline in the chatbox when an assistant reply contains a plan_id', () => {
@@ -2799,7 +3068,14 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-composer-action-schedule-switch"');
     expect(markup).toContain('role="switch"');
     expect(markup).toContain('aria-checked="false"');
-    expect(markup).toContain('Manage access');
+    expect(markup).toContain('Approve for me');
+    expect(markup).toContain('Ask first');
+    expect(markup).toContain('Full access');
+    expect(markup).toContain('data-testid="session-composer-permission-mode-auto"');
+    expect(markup).toContain('data-testid="session-composer-permission-mode-default"');
+    expect(markup).toContain('data-testid="session-composer-permission-mode-bypassPermissions"');
+    expect(markup).not.toContain('Manage access');
+    expect(markup).not.toContain('acceptEdits');
     expect(markup).toContain('GPT-5.4');
     expect(markup).toContain('25% used');
     expect(markup).not.toMatch(/microphone|voice|语音/i);

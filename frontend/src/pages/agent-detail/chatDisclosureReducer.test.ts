@@ -119,6 +119,7 @@ describe('chatDisclosureReducer', () => {
       { role: 'tool_call', content: '', toolName: 'start_workflow', toolStatus: 'running' },
       { role: 'tool_call', content: '', toolName: 'spawn_subagent', toolStatus: 'done' },
       { role: 'tool_call', content: '', toolName: 'set_trigger', toolStatus: 'done' },
+      { role: 'event', content: 'Schedule created', eventType: 'schedule', eventStatus: 'created', eventScheduleId: 'schedule-1' },
       {
         role: 'tool_call',
         content: '',
@@ -133,6 +134,7 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps.map((step) => step.kind)).toEqual([
       'workflow',
       'subagent',
+      'trigger',
       'trigger',
       'deep_research',
     ]);

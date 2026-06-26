@@ -1239,6 +1239,90 @@ async def _delegate_after_cycle_check(
     return delegation_result
 
 
+async def _project_delegation_completion_to_parent(
+    *,
+    request: AgentDelegationRequest,
+    task_id: str,
+    status: str,
+    summary: str,
+) -> None:
+    """Project an async-delegation terminal state onto the parent session timeline.
+
+    Mirrors `update_subagent_child_session_state_for_run` in
+    ``services/subagent_run_service.py``: peer/async delegation must surface a
+    ``child_session`` event on the initiating (parent) session so the parent
+    timeline shows the delegation finishing, instead of only being pollable via
+    ``RuntimeTask.result_summary``. Headless delegations (no ``parent_session_id``)
+    skip the projection without erroring, matching the child-transcript style.
+    """
+    parent_session_uuid = _maybe_uuid(request.parent_session_id)
+    child_session_uuid = _maybe_uuid(request.session_id)
+    if parent_session_uuid is None or child_session_uuid is None:
+        return
+
+    tenant_uuid = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
+    parent_agent_uuid = _maybe_uuid(request.parent_agent_id)
+    if tenant_uuid is None or parent_agent_uuid is None:
+        return
+
+    from app.database import tenant_scoped_session
+    from app.services.chat_message_parts import build_session_native_event
+    from app.services.chat_transcript import append_session_event
+
+    reason = "delegation_completed" if status == "completed" else "delegation_failed"
+    parent_event_payload = {
+        "type": "child_session",
+        "message": summary,
+        "status": status,
+        "runtime_task_id": task_id,
+        "child_session_id": str(child_session_uuid),
+        "parent_session_id": str(parent_session_uuid),
+        "root_session_id": str(parent_session_uuid),
+        "reason": reason,
+        "interaction_type": request.interaction_type,
+        "to_agent": str(request.target.id),
+        "to_agent_name": request.target.name,
+        "trace_id": request.trace_id,
+        "depth": request.depth,
+    }
+    parent_event = build_session_native_event(parent_event_payload)
+
+    try:
+        async with tenant_scoped_session(tenant_uuid) as db:
+            await append_session_event(
+                db=db,
+                agent_id=parent_agent_uuid,
+                tenant_id=tenant_uuid,
+                session_id=parent_session_uuid,
+                actor_type="system",
+                event_type="child_session",
+                content=summary,
+                role="system",
+                user_id=request.owner_id,
+                run_id=task_id,
+                runtime_task_id=task_id,
+                root_session_id=parent_session_uuid,
+                parent_session_id=parent_session_uuid,
+                parts=[parent_event["part"]],
+                metadata={
+                    **parent_event_payload,
+                    "source": "agent",
+                    "delegation_session_state": status,
+                },
+                visibility_scope="team",
+                listed_surface="chat",
+                source="agent",
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning(
+            "[Orchestrator] Failed to project delegation completion to parent session %s (task=%s): %s",
+            parent_session_uuid,
+            task_id,
+            exc,
+        )
+
+
 def _spawn_async_delegation_task(
     *,
     task_id: str,
@@ -1281,10 +1365,11 @@ def _spawn_async_delegation_task(
                     failed=True,
                 )
             delegation_result = await _delegate(request)
+            terminal_status = "failed" if delegation_result.failed else "completed"
             try:
                 await update_runtime_task_record(
                     task_id,
-                    status="failed" if delegation_result.failed else "completed",
+                    status=terminal_status,
                     result_summary=delegation_result.content,
                     trace_id=delegation_result.trace_id,
                     child_session_id=delegation_result.child_session_id,
@@ -1295,6 +1380,12 @@ def _spawn_async_delegation_task(
                 )
             except Exception as exc:
                 logger.warning("[Orchestrator] Failed to update runtime task %s: %s", task_id, exc)
+            await _project_delegation_completion_to_parent(
+                request=request,
+                task_id=task_id,
+                status=terminal_status,
+                summary=delegation_result.content or "",
+            )
             return delegation_result
         except asyncio.CancelledError:
             try:

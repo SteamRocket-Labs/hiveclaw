@@ -552,8 +552,15 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
     async def fail_execute_tool(*_args, **_kwargs):
         raise AssertionError("goal lifecycle commands must persist directly through the command runtime")
 
+    recorded_events: list[dict] = []
+
+    async def fake_append_session_event(**kwargs):
+        recorded_events.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
     monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
+    monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
 
     start_db = _FilteringExecuteDB({"ChatSession": SimpleNamespace(id=session_id, agent_id=agent_id)})
     started = await commands_api.execute_agent_command(
@@ -574,6 +581,9 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
     assert stored_goal.chat_session_id == session_id
     assert stored_goal.created_by_user_id == current_user.id
     assert start_db.commits == 1
+    assert recorded_events[-1]["event_type"] == "goal"
+    assert recorded_events[-1]["metadata"]["goal_id"] == str(stored_goal.id)
+    assert recorded_events[-1]["metadata"]["status"] == "active"
 
     goal = AgentSessionGoal(
         id=goal_id,
@@ -599,6 +609,8 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
     assert goal.objective == "Finish all parity"
     assert goal.token_budget == 1500
     assert goal.max_continuation_turns == 3
+    assert recorded_events[-1]["event_type"] == "goal"
+    assert recorded_events[-1]["metadata"]["status"] == "active"
 
     stop_db = _FilteringExecuteDB({"AgentSessionGoal": goal})
     stopped = await commands_api.execute_agent_command(
@@ -615,6 +627,8 @@ async def test_commands_api_goal_lifecycle_is_durable_not_requires_api_persist(m
     assert stopped["result"]["status"] == "complete"
     assert goal.status == "complete"
     assert goal.completion_summary == "Done"
+    assert recorded_events[-1]["event_type"] == "goal"
+    assert recorded_events[-1]["metadata"]["status"] == "complete"
 
 
 @pytest.mark.asyncio
@@ -624,6 +638,7 @@ async def test_commands_api_schedule_create_persists_disabled_draft_without_tool
 
     agent_id = uuid4()
     tenant_id = uuid4()
+    session_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
     db = _FakeDB()
@@ -643,10 +658,17 @@ async def test_commands_api_schedule_create_persists_disabled_draft_without_tool
     async def fail_enforce_plan_gate(*_args, **_kwargs):
         raise AssertionError("disabled schedule drafts must not require Plan Mode")
 
+    recorded_events: list[dict] = []
+
+    async def fake_append_session_event(**kwargs):
+        recorded_events.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
     monkeypatch.setattr(commands_api, "is_agent_creator", fake_is_creator)
     monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
     monkeypatch.setattr(commands_api, "enforce_plan_gate", fail_enforce_plan_gate)
+    monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
 
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
@@ -658,7 +680,7 @@ async def test_commands_api_schedule_create_persists_disabled_draft_without_tool
                 "cron_expr": "0 9 * * *",
                 "is_enabled": False,
             },
-            session_id="session-1",
+            session_id=str(session_id),
         ),
         current_user=current_user,
         db=db,
@@ -675,6 +697,9 @@ async def test_commands_api_schedule_create_persists_disabled_draft_without_tool
     assert stored_trigger.config["command"] == "schedule_create"
     assert stored_trigger.config["created_by"] == str(current_user.id)
     assert db.commits == 1
+    assert recorded_events[-1]["event_type"] == "schedule"
+    assert recorded_events[-1]["metadata"]["schedule_id"] == str(stored_trigger.id)
+    assert recorded_events[-1]["metadata"]["status"] == "created"
 
 
 @pytest.mark.asyncio
@@ -684,6 +709,7 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
 
     agent_id = uuid4()
     tenant_id = uuid4()
+    session_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
     db = _FakeDB()
@@ -703,10 +729,17 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
     async def fail_enforce_plan_gate(*_args, **_kwargs):
         raise AssertionError("disabled one-shot schedule drafts must not require Plan Mode")
 
+    recorded_events: list[dict] = []
+
+    async def fake_append_session_event(**kwargs):
+        recorded_events.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
     monkeypatch.setattr(commands_api, "is_agent_creator", fake_is_creator)
     monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
     monkeypatch.setattr(commands_api, "enforce_plan_gate", fail_enforce_plan_gate)
+    monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
 
     result = await commands_api.execute_agent_command(
         agent_id=agent_id,
@@ -718,7 +751,7 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
                 "at": "2026-06-26T09:00:00Z",
                 "is_enabled": False,
             },
-            session_id="session-1",
+            session_id=str(session_id),
         ),
         current_user=current_user,
         db=db,
@@ -736,6 +769,9 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
     assert stored_trigger.config["command"] == "schedule_once"
     assert stored_trigger.config["created_by"] == str(current_user.id)
     assert db.commits == 1
+    assert recorded_events[-1]["event_type"] == "once"
+    assert recorded_events[-1]["metadata"]["once_id"] == str(stored_trigger.id)
+    assert recorded_events[-1]["metadata"]["status"] == "created"
 
 
 @pytest.mark.asyncio
@@ -759,13 +795,19 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
         raise AssertionError("team lifecycle commands must persist directly through the command runtime")
 
     emitted = []
+    recorded_events: list[dict] = []
 
     async def fake_emit_hook(event, **kwargs):
         emitted.append((event.value, kwargs))
 
+    async def fake_append_session_event(**kwargs):
+        recorded_events.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
     monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
     monkeypatch.setattr(commands_api, "emit_hook", fake_emit_hook)
+    monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
 
     create_db = _FilteringExecuteDB({"ChatSession": SimpleNamespace(id=session_id, agent_id=agent_id)})
     created = await commands_api.execute_agent_command(
@@ -794,6 +836,9 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
     assert member.team_id == team.id
     assert member.chat_session_id == member_session.id
     assert emitted[0][0] == "team_created"
+    assert recorded_events[-1]["event_type"] == "team_member"
+    assert recorded_events[-1]["metadata"]["team_id"] == str(team.id)
+    assert recorded_events[-1]["metadata"]["child_session_id"] == str(member_session.id)
 
     existing_team = AgentTeam(
         id=team_id,
@@ -807,7 +852,9 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
     deleted = await commands_api.execute_agent_command(
         agent_id=agent_id,
         command_name="team_delete",
-        body=commands_api.ExecuteCommandIn(arguments={"team_id": str(team_id)}, session_id=str(session_id), origin="agent"),
+        body=commands_api.ExecuteCommandIn(
+            arguments={"team_id": str(team_id)}, session_id=str(session_id), origin="agent"
+        ),
         current_user=current_user,
         db=delete_db,
     )
@@ -815,6 +862,8 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
     assert existing_team.status == "closed"
     assert existing_member.status == "closed"
     assert any(isinstance(item, AgentTeamEvent) and item.event_type == "team_closed" for item in delete_db.added)
+    assert recorded_events[-1]["event_type"] == "team_member"
+    assert recorded_events[-1]["metadata"]["status"] == "closed"
 
 
 @pytest.mark.asyncio
@@ -945,7 +994,11 @@ async def test_commands_api_web_product_commands_return_prompt_or_navigation_act
         db=db,
     )
     assert agent_result["ok"] is True
-    assert ("delegate_to_agent", {"agent_name": "Researcher", "message": "Collect evidence"}, "session-1") in captured_tools
+    assert (
+        "delegate_to_agent",
+        {"agent_name": "Researcher", "message": "Collect evidence"},
+        "session-1",
+    ) in captured_tools
 
 
 @pytest.mark.asyncio

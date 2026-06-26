@@ -25,6 +25,20 @@ PDF_EXTENSIONS = {".pdf"}
 OFFICE_EXTENSIONS = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt"}
 
 
+def tool_session_write_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
+    """Return user-facing workspace artifact paths written by a tool call."""
+    if tool_name in ("write_file", "edit_file", "fs_write"):
+        path = args.get("path")
+        return [str(path)] if path else []
+    if tool_name == "office_document_create":
+        path = args.get("path")
+        return [str(path)] if path else []
+    if tool_name == "office_document_apply":
+        path = args.get("output_path") or args.get("path")
+        return [str(path)] if path else []
+    return []
+
+
 def ensure_agent_session_source(runtime_source: str) -> None:
     """Fail closed if a pure platform job attempts to create an agent session."""
     if runtime_source in PLATFORM_ONLY_RUNTIME_SOURCES:
@@ -77,6 +91,9 @@ def build_artifact_candidate(
     path: str,
     workspace_root: Path,
     source: str = "workspace_write",
+    action: str = "created",
+    tool_call_id: str | uuid.UUID | None = None,
+    diff_summary: str | None = None,
 ) -> dict[str, Any] | None:
     """Return a durable artifact payload for a safe workspace file path.
 
@@ -99,11 +116,16 @@ def build_artifact_candidate(
     stat_data = absolute.stat()
     mime_type, _encoding = mimetypes.guess_type(rel.name)
     modified_at = datetime.fromtimestamp(stat_data.st_mtime, tz=timezone.utc).isoformat()
+    snapshot_hash = _snapshot_hash(rel_path=rel, stat_data=stat_data)
     snapshot = {
         "exists": True,
         "size": stat_data.st_size,
         "mtime_ns": stat_data.st_mtime_ns,
         "path": rel.as_posix(),
+        "revision_id": snapshot_hash,
+        "action": action,
+        "tool_call_id": str(tool_call_id) if tool_call_id else None,
+        "diff_summary": diff_summary,
     }
     artifact_id = uuid.uuid4()
     return {
@@ -119,10 +141,54 @@ def build_artifact_candidate(
         "modified_at": modified_at,
         "preview_kind": _preview_kind_for_path(rel),
         "source": source,
-        "snapshot_hash": _snapshot_hash(rel_path=rel, stat_data=stat_data),
+        "snapshot_hash": snapshot_hash,
         "snapshot": snapshot,
+        "revision_id": snapshot_hash,
+        "action": action,
+        "tool_call_id": str(tool_call_id) if tool_call_id else None,
+        "diff_summary": diff_summary,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def build_session_artifact_parts(
+    *,
+    agent_id: uuid.UUID,
+    session_id: str | uuid.UUID,
+    runtime_task_id: str | uuid.UUID | None,
+    paths: list[str] | tuple[str, ...],
+    workspace_root: Path,
+    source: str = "workspace_write",
+    action: str = "created",
+) -> list[dict[str, Any]]:
+    """Build artifact-delivery parts for safe workspace paths WITHOUT DB rows.
+
+    ``ChatArtifact.message_id`` is non-nullable, so producers that have no chat
+    message (e.g. a Deep Research workflow run) cannot persist artifact rows.
+    They still need the report to surface as a clickable timeline artifact, so
+    this returns transcript-ready parts using the same mechanical path-safety
+    and preview-kind decisions as :func:`build_artifact_candidate`.
+    """
+    parts: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for path in paths:
+        candidate = build_artifact_candidate(
+            agent_id=agent_id,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            path=path,
+            workspace_root=workspace_root,
+            source=source,
+            action=action,
+        )
+        if not candidate:
+            continue
+        dedupe_key = (candidate["path"], candidate["snapshot_hash"])
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        parts.append(_artifact_part_from_candidate(candidate))
+    return parts
 
 
 def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -138,10 +204,15 @@ def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "source": candidate.get("source", "workspace_write"),
         "runtime_task_id": candidate.get("runtime_task_id"),
         "created_at": candidate.get("created_at"),
+        "revision_id": candidate.get("revision_id"),
+        "action": candidate.get("action"),
+        "tool_call_id": candidate.get("tool_call_id"),
+        "diff_summary": candidate.get("diff_summary"),
     }
 
 
 def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
+    snapshot = artifact.snapshot_json or {}
     return {
         "type": "artifact",
         "artifact_id": str(artifact.id),
@@ -154,6 +225,10 @@ def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
         "source": artifact.source,
         "runtime_task_id": str(artifact.runtime_task_id) if artifact.runtime_task_id else None,
         "created_at": artifact.created_at.isoformat() if getattr(artifact, "created_at", None) else None,
+        "revision_id": snapshot.get("revision_id") or artifact.snapshot_hash,
+        "action": snapshot.get("action"),
+        "tool_call_id": snapshot.get("tool_call_id"),
+        "diff_summary": snapshot.get("diff_summary"),
     }
 
 
@@ -168,6 +243,9 @@ def create_chat_artifacts_for_message(
     paths: list[str] | tuple[str, ...],
     workspace_root: Path,
     source: str = "workspace_write",
+    action: str = "created",
+    tool_call_id: str | uuid.UUID | None = None,
+    diff_summary: str | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
     parts: list[dict[str, Any]] = []
@@ -182,6 +260,9 @@ def create_chat_artifacts_for_message(
             path=path,
             workspace_root=workspace_root,
             source=source,
+            action=action,
+            tool_call_id=tool_call_id,
+            diff_summary=diff_summary,
         )
         if not candidate:
             continue

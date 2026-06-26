@@ -10,7 +10,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ class HookEvent(StrEnum):
     TEAMMATE_IDLE = "teammate_idle"
 
 
-_CC_PARITY_HOOK_EVENTS: set[HookEvent] = {
+_HOOK_STANDARD_EVENT_SET: set[HookEvent] = {
     HookEvent.PRE_TOOL_USE,
     HookEvent.POST_TOOL_USE,
     HookEvent.POST_TOOL_FAILURE,
@@ -194,7 +194,6 @@ _HOOK_EVENT_CATEGORIES: dict[HookEvent, str] = {
 
 _DISABLED_NOOP_HOOK_EVENTS: set[HookEvent] = {
     HookEvent.SETUP,
-    HookEvent.PERMISSION_DENIED,
     HookEvent.ELICITATION_RESULT,
     HookEvent.WORKTREE_CREATE,
     HookEvent.WORKTREE_REMOVE,
@@ -207,6 +206,7 @@ _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS: set[HookEvent] = {
     HookEvent.POST_TOOL_FAILURE,
     HookEvent.NOTIFICATION,
     HookEvent.PERMISSION_REQUEST,
+    HookEvent.PERMISSION_DENIED,
     HookEvent.TASK_CREATED,
     HookEvent.TASK_COMPLETED,
     HookEvent.ELICITATION,
@@ -236,6 +236,7 @@ _HOOK_RUNTIME_CONSUMERS: dict[HookEvent, str] = {
     HookEvent.POST_COMPACTION: "memory_compaction_observer",
     HookEvent.NOTIFICATION: "notification_observer",
     HookEvent.PERMISSION_REQUEST: "approval_service_equivalent_observer",
+    HookEvent.PERMISSION_DENIED: "permission_denied_audit_observer",
     HookEvent.TASK_CREATED: "command_task_event_observer",
     HookEvent.TASK_COMPLETED: "command_task_event_observer",
     HookEvent.ELICITATION: "plan_mode_elicitation_observer",
@@ -430,6 +431,260 @@ class HookResult:
     prevent_continuation: bool = False  # Stop/SubagentStop: return final state without another loop.
     stop_reason: str = ""  # Human-readable stop/prevent-continuation reason.
     output_rewrite: str | dict[str, Any] | None = None  # POST_TOOL_USE model-visible result rewrite.
+    suppress_output: bool = False
+    permission_behavior: str | None = None
+    hook_permission_decision_reason: str | None = None
+    permission_request_result: dict[str, Any] | None = None
+    retry: bool | None = None
+    updated_mcp_tool_output: Any | None = None
+    initial_user_message: str | None = None
+    watch_paths: list[str] = field(default_factory=list)
+    async_hook: bool = False
+    async_timeout: float | None = None
+
+
+HOOK_WIRE_EVENTS: tuple[str, ...] = (
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Notification",
+    "UserPromptSubmit",
+    "SessionStart",
+    "SessionEnd",
+    "Stop",
+    "StopFailure",
+    "SubagentStart",
+    "SubagentStop",
+    "PreCompact",
+    "PostCompact",
+    "PermissionRequest",
+    "PermissionDenied",
+    "Setup",
+    "TeammateIdle",
+    "TaskCreated",
+    "TaskCompleted",
+    "Elicitation",
+    "ElicitationResult",
+    "ConfigChange",
+    "WorktreeCreate",
+    "WorktreeRemove",
+    "InstructionsLoaded",
+    "CwdChanged",
+    "FileChanged",
+)
+
+_WIRE_TO_HOOK_EVENT: dict[str, HookEvent] = {
+    "PreToolUse": HookEvent.PRE_TOOL_USE,
+    "PostToolUse": HookEvent.POST_TOOL_USE,
+    "PostToolUseFailure": HookEvent.POST_TOOL_FAILURE,
+    "Notification": HookEvent.NOTIFICATION,
+    "UserPromptSubmit": HookEvent.USER_PROMPT_SUBMIT,
+    "SessionStart": HookEvent.SESSION_START,
+    "SessionEnd": HookEvent.SESSION_END,
+    "Stop": HookEvent.STOP,
+    "StopFailure": HookEvent.STOP_FAILURE,
+    "SubagentStart": HookEvent.SUBAGENT_START,
+    "SubagentStop": HookEvent.SUBAGENT_STOP,
+    "PreCompact": HookEvent.PRE_COMPACTION,
+    "PostCompact": HookEvent.POST_COMPACTION,
+    "PermissionRequest": HookEvent.PERMISSION_REQUEST,
+    "PermissionDenied": HookEvent.PERMISSION_DENIED,
+    "Setup": HookEvent.SETUP,
+    "TeammateIdle": HookEvent.TEAMMATE_IDLE,
+    "TaskCreated": HookEvent.TASK_CREATED,
+    "TaskCompleted": HookEvent.TASK_COMPLETED,
+    "Elicitation": HookEvent.ELICITATION,
+    "ElicitationResult": HookEvent.ELICITATION_RESULT,
+    "ConfigChange": HookEvent.CONFIG_CHANGE,
+    "WorktreeCreate": HookEvent.WORKTREE_CREATE,
+    "WorktreeRemove": HookEvent.WORKTREE_REMOVE,
+    "InstructionsLoaded": HookEvent.INSTRUCTIONS_LOADED,
+    "CwdChanged": HookEvent.CWD_CHANGED,
+    "FileChanged": HookEvent.FILE_CHANGED,
+}
+
+_HOOK_EVENT_TO_WIRE: dict[HookEvent, str] = {event: name for name, event in _WIRE_TO_HOOK_EVENT.items()}
+
+HookParseStatus = Literal["success", "blocked", "non_blocking_error", "async"]
+
+
+@dataclass(frozen=True, slots=True)
+class HookOutputParseResult:
+    status: HookParseStatus
+    hook_result: HookResult | None = None
+    suppress_output: bool = False
+    stdout_visible: bool = True
+
+
+def hook_event_for_wire_name(name: str) -> HookEvent:
+    try:
+        return _WIRE_TO_HOOK_EVENT[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown hook wire event: {name!r}") from exc
+
+
+def wire_name_for_hook_event(event: HookEvent | str) -> str:
+    hook_event = event if isinstance(event, HookEvent) else HookEvent(str(event))
+    try:
+        return _HOOK_EVENT_TO_WIRE[hook_event]
+    except KeyError as exc:
+        raise ValueError(f"HookEvent {hook_event.value!r} is not part of the Hook wire standard") from exc
+
+
+def is_wire_hook_event(event: HookEvent | str) -> bool:
+    try:
+        wire_name_for_hook_event(event)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def _as_contexts(value: Any) -> list[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _as_dict(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _merge_contexts(*values: Any) -> list[str]:
+    contexts: list[str] = []
+    for value in values:
+        contexts.extend(_as_contexts(value))
+    return contexts
+
+
+def _permission_decision_to_behavior(value: Any) -> str | None:
+    if value is None:
+        return None
+    clean = str(value).strip()
+    return clean if clean in {"allow", "deny", "ask", "passthrough"} else None
+
+
+def _hook_output_to_result(
+    *,
+    raw: dict[str, Any],
+    hook_specific: dict[str, Any],
+    fallback_reason: str,
+) -> HookResult | None:
+    reason = str(raw.get("reason") or hook_specific.get("permissionDecisionReason") or fallback_reason or "")
+    additional_contexts = _merge_contexts(
+        raw.get("additionalContext"),
+        raw.get("additional_context"),
+        raw.get("additional_contexts"),
+        raw.get("additional_contexts_for_model"),
+        hook_specific.get("additionalContext"),
+    )
+    updated_input = (
+        _as_dict(hook_specific.get("updatedInput"))
+        or _as_dict(raw.get("updatedInput"))
+        or _as_dict(raw.get("updated_input"))
+        or _as_dict(raw.get("tool_input"))
+    )
+    updated_mcp_output = hook_specific.get("updatedMCPToolOutput", raw.get("updatedMCPToolOutput"))
+    permission_behavior = _permission_decision_to_behavior(
+        hook_specific.get("permissionDecision") or raw.get("permissionDecision") or raw.get("permission_decision")
+    )
+    permission_request_result = _as_dict(hook_specific.get("decision"))
+    retry = hook_specific.get("retry")
+    watch_paths = hook_specific.get("watchPaths") or raw.get("watchPaths") or raw.get("watch_paths")
+
+    block = raw.get("continue") is False or raw.get("decision") == "block" or raw.get("block") is True
+    prevent_continuation = raw.get("preventContinuation") is True or raw.get("prevent_continuation") is True
+    stop_reason = str(raw.get("stopReason") or raw.get("stop_reason") or reason or "")
+    decision = str(raw.get("decision") or "").strip()
+    if decision == "approve" and permission_behavior is None:
+        permission_behavior = "allow"
+
+    has_effect = any(
+        (
+            block,
+            prevent_continuation,
+            updated_input is not None,
+            bool(additional_contexts),
+            updated_mcp_output is not None,
+            permission_behavior is not None,
+            permission_request_result is not None,
+            retry is not None,
+            hook_specific.get("initialUserMessage") is not None,
+            watch_paths,
+            raw.get("suppressOutput") is not None,
+        )
+    )
+    if not has_effect:
+        return None
+
+    return HookResult(
+        block=bool(block),
+        reason=reason or stop_reason,
+        modified_args=updated_input,
+        additional_contexts=additional_contexts,
+        prevent_continuation=bool(prevent_continuation),
+        stop_reason=stop_reason,
+        output_rewrite=updated_mcp_output,
+        suppress_output=bool(raw.get("suppressOutput") or raw.get("suppress_output") or False),
+        permission_behavior=permission_behavior,
+        hook_permission_decision_reason=hook_specific.get("permissionDecisionReason"),
+        permission_request_result=permission_request_result,
+        retry=bool(retry) if retry is not None else None,
+        updated_mcp_tool_output=updated_mcp_output,
+        initial_user_message=hook_specific.get("initialUserMessage"),
+        watch_paths=[str(item) for item in watch_paths] if isinstance(watch_paths, list) else [],
+    )
+
+
+def parse_hook_json_output(
+    event: HookEvent | str,
+    raw: dict[str, Any] | None,
+    *,
+    exit_code: int | None = None,
+    stdout: str = "",
+    stderr: str = "",
+) -> HookOutputParseResult:
+    """Parse the Hive Hook wire JSON output and command exit semantics.
+
+    External command hooks treat exit code 2 as blocking feedback. Other
+    non-zero exits are non-blocking errors. JSON output keeps the public Hook
+    wire field names and normalizes them into Hive's internal ``HookResult``.
+    """
+    if exit_code == 2 and not raw:
+        reason = "\n".join(part for part in (stderr.strip(), stdout.strip()) if part) or "hook returned blocking exit code 2"
+        return HookOutputParseResult(status="blocked", hook_result=HookResult(block=True, reason=reason))
+    if exit_code not in (None, 0, 2):
+        return HookOutputParseResult(status="non_blocking_error")
+
+    payload = dict(raw or {})
+    if payload.get("async") is True:
+        timeout = payload.get("asyncTimeout") or payload.get("timeout_seconds")
+        hook_result = HookResult(async_hook=True, async_timeout=float(timeout) if timeout is not None else None)
+        return HookOutputParseResult(status="async", hook_result=hook_result)
+
+    hook_specific = _as_dict(payload.get("hookSpecificOutput")) or {}
+    expected_name = wire_name_for_hook_event(event)
+    hook_specific_name = hook_specific.get("hookEventName")
+    if hook_specific_name is not None and hook_specific_name != expected_name:
+        raise ValueError(f"hookSpecificOutput hookEventName {hook_specific_name!r} does not match {expected_name!r}")
+
+    fallback_reason = "\n".join(part for part in (stderr.strip(), stdout.strip()) if part)
+    hook_result = _hook_output_to_result(raw=payload, hook_specific=hook_specific, fallback_reason=fallback_reason)
+    if hook_result and hook_result.block:
+        return HookOutputParseResult(
+            status="blocked",
+            hook_result=hook_result,
+            suppress_output=hook_result.suppress_output,
+            stdout_visible=not hook_result.suppress_output,
+        )
+    return HookOutputParseResult(
+        status="success",
+        hook_result=hook_result,
+        suppress_output=bool(hook_result and hook_result.suppress_output),
+        stdout_visible=not bool(hook_result and hook_result.suppress_output),
+    )
 
 
 # Type alias for hook handlers
@@ -909,7 +1164,7 @@ class HookRegistry:
                 "category": _HOOK_EVENT_CATEGORIES.get(event, "runtime"),
                 "handler_count": self.handler_count(event),
                 "blocking_supported": self._blocking_supported(event),
-                "cc_parity": event in _CC_PARITY_HOOK_EVENTS,
+                "standard": event in _HOOK_STANDARD_EVENT_SET,
                 "lifecycle_state": _hook_lifecycle_state(event),
                 "trigger_point": _HOOK_TRIGGER_POINTS.get(event, "runtime hook emission"),
                 "matcher_fields": _hook_matcher_fields(event),
@@ -1004,6 +1259,18 @@ class HookRegistry:
                             reason=result.reason,
                             output_rewrite=result.output_rewrite,
                         )
+                    elif any(
+                        (
+                            result.permission_behavior is not None,
+                            result.permission_request_result is not None,
+                            result.retry is not None,
+                            result.updated_mcp_tool_output is not None,
+                            result.initial_user_message is not None,
+                            bool(result.watch_paths),
+                            result.async_hook,
+                        )
+                    ):
+                        final_result = result
                     if result.block and self._blocking_supported(ctx.event):
                         blocked = HookResult(
                             block=True,

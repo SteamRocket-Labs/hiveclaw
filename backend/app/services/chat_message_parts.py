@@ -7,6 +7,80 @@ import re
 from typing import Any
 
 
+SESSION_NATIVE_EVENT_TITLES: dict[str, str] = {
+    "permission": "Permission Gate",
+    "permission_request": "Permission Request",
+    "permission_resolved": "Permission Resolved",
+    "session_compact": "Context Compacted",
+    "tool_group_activation": "Runtime Tool Groups Activated",
+    "deferred_tools_delta": "Deferred Tools Updated",
+    "pack_activation": "Runtime Tool Groups Activated",
+    "team_memory": "Team Memory",
+    "hook_progress": "Hook Progress",
+    "hook_summary": "Hook Summary",
+    "hook_attachment": "Hook Attachment",
+    "hook_blocked": "Hook Blocked",
+    "workflow_run": "Workflow Run",
+    "workflow_step": "Workflow Step",
+    "dynamic_workflow": "Dynamic Workflow",
+    "deep_research": "Deep Research",
+    "child_session": "Child Session",
+    "subagent": "Sub-Agent",
+    "team_member": "Team Member",
+    "schedule": "Schedule",
+    "schedule_fire": "Schedule Fire",
+    "goal": "Goal",
+    "once": "One-Time Task",
+    "memory_candidate": "Memory Candidate",
+    "artifact_update": "Artifact Update",
+    "artifact_delivery": "Artifact Delivery",
+}
+SESSION_NATIVE_EVENT_TYPES = set(SESSION_NATIVE_EVENT_TITLES)
+
+SESSION_NATIVE_EVENT_METADATA_KEYS = (
+    "tool_name",
+    "approval_id",
+    "security_zone",
+    "capability",
+    "approval_required",
+    "reason",
+    "next_step",
+    "retryable",
+    "retry_reason",
+    "permission_request_id",
+    "permission_request",
+    "original_message_count",
+    "kept_message_count",
+    "continuity_sections_injected",
+    "packs",
+    "tool_groups",
+    "skill_name",
+    "trigger_tool",
+    "hook_event",
+    "hook_key",
+    "hook_type",
+    "runtime_task_id",
+    "turn_id",
+    "tool_call_id",
+    "child_session_id",
+    "parent_session_id",
+    "root_session_id",
+    "workflow_run_id",
+    "workflow_step_id",
+    "deep_research_run_id",
+    "schedule_id",
+    "schedule_fire_id",
+    "goal_id",
+    "once_id",
+    "memory_candidate_id",
+    "artifact_id",
+    "path",
+    "revision_id",
+    "action",
+    "diff_summary",
+)
+
+
 def _build_text_parts(content: str, thinking: str | None = None) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = []
     if thinking:
@@ -61,6 +135,10 @@ def _normalize_artifact_part(artifact: dict[str, Any]) -> dict[str, Any]:
         "source": artifact.get("source", "workspace_write"),
         "runtime_task_id": artifact.get("runtime_task_id"),
         "created_at": artifact.get("created_at"),
+        "revision_id": artifact.get("revision_id"),
+        "action": artifact.get("action"),
+        "tool_call_id": artifact.get("tool_call_id"),
+        "diff_summary": artifact.get("diff_summary"),
     }
     return {key: value for key, value in part.items() if value is not None}
 
@@ -72,6 +150,26 @@ def _append_artifact_parts(entry: dict[str, Any], artifacts: list[dict[str, Any]
     entry.setdefault("parts", [])
     entry["parts"].extend(artifact_parts)
     entry["artifacts"] = artifact_parts
+
+
+def _session_native_event_title(event_type: str, data: dict[str, Any]) -> str:
+    return data.get("title") or SESSION_NATIVE_EVENT_TITLES.get(event_type) or event_type.replace("_", " ").title()
+
+
+def _session_native_event_text_value(data: dict[str, Any], fallback: str = "") -> str:
+    return data.get("message") or data.get("summary") or data.get("text") or fallback or ""
+
+
+def _session_native_event_text(message, data: dict[str, Any]) -> str:
+    return _session_native_event_text_value(data, message.content or "")
+
+
+def _session_native_event_metadata(data: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in SESSION_NATIVE_EVENT_METADATA_KEYS:
+        if key in data:
+            metadata[key] = data.get(key)
+    return metadata
 
 
 def serialize_chat_message(
@@ -114,12 +212,15 @@ def serialize_chat_message(
         # not a dual-write path.
         if event_type == "pack_activation":
             event_type = "tool_group_activation"
-        if event_type in {"permission", "session_compact", "tool_group_activation"}:
+        if event_type in SESSION_NATIVE_EVENT_TYPES:
+            event_title = _session_native_event_title(event_type, data)
+            event_text = _session_native_event_text(message, data)
+            event_status = data.get("status", "info")
             entry["role"] = "event"
-            entry["content"] = data.get("message") or data.get("summary") or message.content
+            entry["content"] = event_text
             entry["eventType"] = event_type
-            entry["eventTitle"] = data.get("title")
-            entry["eventStatus"] = data.get("status", "info")
+            entry["eventTitle"] = event_title
+            entry["eventStatus"] = event_status
             if data.get("tool_name"):
                 entry["eventToolName"] = data["tool_name"]
             if data.get("approval_id"):
@@ -141,9 +242,9 @@ def serialize_chat_message(
                     entry["eventRetryReason"] = data["retry_reason"]
                 entry["parts"] = [_build_event_part(
                     "permission",
-                    data.get("title", "Permission Gate"),
-                    data.get("message", message.content or ""),
-                    status=data.get("status", "info"),
+                    event_title,
+                    event_text,
+                    status=event_status,
                     tool_name=data.get("tool_name"),
                     approval_id=data.get("approval_id"),
                     security_zone=data.get("security_zone"),
@@ -153,18 +254,20 @@ def serialize_chat_message(
                     next_step=data.get("next_step"),
                     retryable=data.get("retryable"),
                     retry_reason=data.get("retry_reason"),
+                    permission_request_id=data.get("permission_request_id"),
+                    permission_request=data.get("permission_request"),
                 )]
             elif event_type == "session_compact":
                 entry["parts"] = [_build_event_part(
                     "session_compact",
-                    data.get("title", "Context Compacted"),
-                    data.get("summary", message.content or ""),
-                    status=data.get("status", "info"),
+                    event_title,
+                    event_text,
+                    status=event_status,
                     original_message_count=data.get("original_message_count"),
                     kept_message_count=data.get("kept_message_count"),
                     continuity_sections_injected=data.get("continuity_sections_injected"),
                 )]
-            else:
+            elif event_type == "tool_group_activation":
                 # Historical reader shim: normalize legacy "packs" payload to
                 # "tool_groups" on read while still surfacing the old key.
                 _tool_groups = data.get("tool_groups")
@@ -172,13 +275,21 @@ def serialize_chat_message(
                     _tool_groups = data.get("packs")
                 entry["parts"] = [_build_event_part(
                     "tool_group_activation",
-                    data.get("title", "Runtime Tool Groups Activated"),
-                    data.get("message", message.content or ""),
-                    status=data.get("status", "info"),
+                    event_title,
+                    event_text,
+                    status=event_status,
                     packs=data.get("packs"),
                     tool_groups=_tool_groups,
                     skill_name=data.get("skill_name"),
                     trigger_tool=data.get("trigger_tool"),
+                )]
+            else:
+                entry["parts"] = [_build_event_part(
+                    event_type,
+                    event_title,
+                    event_text,
+                    status=event_status,
+                    **_session_native_event_metadata(data),
                 )]
         else:
             entry["parts"] = _build_text_parts(message.content or "", thinking)
@@ -313,6 +424,8 @@ def build_permission_event(data: dict[str, Any]) -> dict[str, Any]:
         next_step=data.get("next_step"),
         retryable=data.get("retryable"),
         retry_reason=data.get("retry_reason"),
+        permission_request_id=data.get("permission_request_id"),
+        permission_request=data.get("permission_request"),
     )
     return event
 
@@ -345,6 +458,32 @@ def build_tool_group_activation_event(data: dict[str, Any]) -> dict[str, Any]:
         tool_groups=_tool_groups,
         skill_name=data.get("skill_name"),
         trigger_tool=data.get("trigger_tool"),
+    )
+    return event
+
+
+def build_session_native_event(data: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(data.get("event_type") or data.get("type") or "runtime_event")
+    if event_type == "pack_activation":
+        event_type = "tool_group_activation"
+    if event_type == "permission":
+        return build_permission_event(data)
+    if event_type == "session_compact":
+        payload = dict(data)
+        payload.pop("type", None)
+        payload.pop("event_type", None)
+        return build_compaction_event(payload)
+    if event_type == "tool_group_activation":
+        return build_tool_group_activation_event(data)
+
+    event = {"type": event_type, **data}
+    event["type"] = event_type
+    event["part"] = _build_event_part(
+        event_type,
+        _session_native_event_title(event_type, data),
+        _session_native_event_text_value(data),
+        status=data.get("status", "info"),
+        **_session_native_event_metadata(data),
     )
     return event
 

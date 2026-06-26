@@ -1,18 +1,17 @@
-"""D-12 — PermissionProfileV1.default_decision governs the live governance decision.
+"""CCPlus permission profile routes no-policy tools to session permission.
 
 `check_capability` returns ``escalate_to_l3=True`` (with ``policy_found=False``)
-for the *mapped-capability-no-policy* case. Historically governance routed that
-into an L3 approval request via a hardcoded "escalate". These tests exercise the
-real ``run_tool_governance`` path and pin that the per-turn ``PermissionProfileV1``
-now governs that branch:
+for the *mapped-capability-no-policy* case. That is not an enterprise approval
+request by itself. The real ``run_tool_governance`` path must route it through
+CC session permission modes:
 
-  * ``default_decision="escalate"`` (the contract default) → approval requested
-    (identical to the previous hardcoded behavior — baseline unchanged);
-  * ``default_decision="deny"``                         → tool is DENIED outright.
+  * default / legacy ``default_decision="escalate"`` → local session ask;
+  * ``mode="dontAsk"`` or ``mode="plan"``             → local deny;
+  * explicit enterprise approval policy               → backend approval.
 
 Revert-sensitivity: if the governance wiring is reverted to the hardcoded
-escalate, the ``deny`` case below would request approval instead of blocking,
-so ``test_permission_profile_deny_blocks_mapped_no_policy_capability`` fails.
+escalate, the no-policy cases below would create backend approvals instead of
+session-local asks.
 
 Patterns mirror tests/services/test_capability_gate_strict_mapping.py (fake DB
 returning ``scalar_one_or_none() -> None`` to reach the no-policy branch) and
@@ -22,6 +21,7 @@ tests/tools/test_governance.py (governance dependency stubs).
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,6 +38,22 @@ class _NoPolicyDB:
         class _Result:
             def scalar_one_or_none(self):
                 return None
+
+        return _Result()
+
+
+class _PolicyDB:
+    """Async DB stub returning the same explicit capability policy for lookups."""
+
+    def __init__(self, *, allowed: bool, requires_approval: bool) -> None:
+        self.policy = SimpleNamespace(allowed=allowed, requires_approval=requires_approval)
+
+    async def execute(self, _stmt):
+        policy = self.policy
+
+        class _Result:
+            def scalar_one_or_none(self):
+                return policy
 
         return _Result()
 
@@ -77,45 +93,125 @@ def _live_no_policy_check_capability():
     return _check
 
 
+def _live_policy_check_capability(*, allowed: bool, requires_approval: bool):
+    async def _check(_tenant_id, agent_id, tool_name):
+        return await check_capability(
+            db=_PolicyDB(allowed=allowed, requires_approval=requires_approval),
+            tenant_id=_tenant_id,
+            agent_id=agent_id,
+            tool_name=tool_name,
+        )
+
+    return _check
+
+
 @pytest.mark.asyncio
-async def test_permission_profile_escalate_default_keeps_no_policy_approval() -> None:
-    """default_decision="escalate" (contract default) must preserve the historical
-    hardcoded behavior: a mapped-no-policy capability escalates to L3 approval."""
+async def test_core_read_and_discovery_tools_allow_missing_policy_without_approval() -> None:
+    """Core read/discovery tools must not require approval just because a tenant
+    has not created explicit CapabilityPolicy rows yet."""
     approval_calls: list[dict] = []
     audit_calls: list[dict] = []
+    events: list[dict] = []
+    deps = _governance_deps(
+        check_capability_fn=_live_no_policy_check_capability(),
+        approval_calls=approval_calls,
+        audit_calls=audit_calls,
+    )
+
+    for tool_name, arguments in (
+        ("web_search", {"query": "github trending"}),
+        ("web_fetch", {"url": "https://github.com/trending"}),
+        ("tool_search", {"query": "web search"}),
+        ("load_skill", {"name": "research"}),
+        ("get_current_time", {"timezone": "Asia/Shanghai"}),
+    ):
+        message = await run_tool_governance(
+            ToolGovernanceContext(
+                agent_id=uuid.uuid4(),
+                user_id=uuid.uuid4(),
+                tenant_id=str(uuid.uuid4()),
+                tool_name=tool_name,
+                arguments=arguments,
+                permission_profile=PermissionProfileV1(default_decision="escalate"),
+            ),
+            deps,
+            event_callback=events.append,
+        )
+        assert message is None, tool_name
+
+    assert approval_calls == []
+    assert audit_calls == []
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_core_read_tool_explicit_approval_policy_still_requires_approval() -> None:
+    """The missing-policy default is open for core read/discovery tools, but an
+    explicit tenant/admin approval policy must still be honored."""
+    approval_calls: list[dict] = []
+    audit_calls: list[dict] = []
+    events: list[dict] = []
 
     message = await run_tool_governance(
         ToolGovernanceContext(
             agent_id=uuid.uuid4(),
             user_id=uuid.uuid4(),
             tenant_id=str(uuid.uuid4()),
-            tool_name="write_file",  # maps to workspace.file.write, no policy → escalate
-            arguments={"path": "workspace/notes.md", "content": "x"},
+            tool_name="web_search",
+            arguments={"query": "github trending"},
             permission_profile=PermissionProfileV1(default_decision="escalate"),
         ),
+        _governance_deps(
+            check_capability_fn=_live_policy_check_capability(allowed=True, requires_approval=True),
+            approval_calls=approval_calls,
+            audit_calls=audit_calls,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    assert "requires approval" in message
+    assert approval_calls == [{"tool_name": "web_search", "capability": "external.web.search"}]
+    assert events and events[-1]["status"] == "approval_required"
+
+
+@pytest.mark.asyncio
+async def test_permission_profile_legacy_escalate_default_asks_session_locally() -> None:
+    """Legacy default_decision="escalate" maps to CC local session permission,
+    not Hive backend approval."""
+    approval_calls: list[dict] = []
+    audit_calls: list[dict] = []
+    events: list[dict] = []
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            tenant_id=str(uuid.uuid4()),
+                tool_name="write_file",  # maps to workspace.file.write, no policy → escalate
+                arguments={"path": "workspace/notes.md", "content": "x"},
+                permission_profile=PermissionProfileV1(mode="default", default_decision="escalate"),
+            ),
         _governance_deps(
             check_capability_fn=_live_no_policy_check_capability(),
             approval_calls=approval_calls,
             audit_calls=audit_calls,
         ),
+        event_callback=events.append,
     )
 
     assert message is not None
-    assert "requires approval" in message
-    assert "Approval ID: approval-no-policy" in message
-    # Approval was requested for the mapped capability — the escalate path ran.
-    assert approval_calls == [{"tool_name": "write_file", "capability": "workspace.file.write"}]
-    # And it was audited as an escalation, not a denial.
-    assert any(c["event_type"] == "capability.escalated" for c in audit_calls)
-    assert not any(c.get("action") == "no_policy_default_denied" for c in audit_calls)
+    assert "requires session permission" in message
+    assert "Approval ID" not in message
+    assert approval_calls == []
+    assert audit_calls == []
+    assert events and events[-1]["status"] == "session_permission_required"
 
 
 @pytest.mark.asyncio
-async def test_permission_profile_deny_blocks_mapped_no_policy_capability() -> None:
-    """default_decision="deny" must DENY the mapped-no-policy capability outright —
-    no approval request. Reverting the governance wiring to the hardcoded escalate
-    makes this fail (approval would be requested and ``message`` would say
-    "requires approval" instead of being a teaching denial)."""
+async def test_permission_profile_dont_ask_blocks_mapped_no_policy_capability() -> None:
+    """dontAsk mode must DENY the mapped-no-policy capability outright — no
+    backend approval request."""
     approval_calls: list[dict] = []
     audit_calls: list[dict] = []
     events: list[dict] = []
@@ -133,7 +229,7 @@ async def test_permission_profile_deny_blocks_mapped_no_policy_capability() -> N
             tenant_id=str(uuid.uuid4()),
             tool_name="write_file",
             arguments={"path": "workspace/notes.md", "content": "x"},
-            permission_profile=PermissionProfileV1(default_decision="deny"),
+            permission_profile=PermissionProfileV1(mode="dontAsk"),
         ),
         deps,
         event_callback=events.append,
@@ -148,21 +244,18 @@ async def test_permission_profile_deny_blocks_mapped_no_policy_capability() -> N
     assert "write_file" in message
     assert "workspace.file.write" in message
     assert "What you can do instead" in message
-    # Audit + event reflect the profile-driven denial, distinct from a plain
-    # capability policy deny.
-    assert any(
-        c["event_type"] == "capability.denied" and c.get("action") == "no_policy_default_denied" for c in audit_calls
-    )
-    assert events and events[-1]["status"] == "capability_denied"
+    assert audit_calls == []
+    assert events and events[-1]["status"] == "permission_denied"
     assert events[-1]["tool_name"] == "write_file"
 
 
 @pytest.mark.asyncio
-async def test_permission_profile_none_falls_back_to_escalate() -> None:
-    """No profile threaded onto the turn (the live default, since the resolver
-    leaves it None) → fail-closed escalate, identical to the pre-D-12 baseline."""
+async def test_permission_profile_none_falls_back_to_session_ask() -> None:
+    """No profile threaded onto the turn falls back to CC default mode: ask the
+    session user locally, not Hive backend approval."""
     approval_calls: list[dict] = []
     audit_calls: list[dict] = []
+    events: list[dict] = []
 
     message = await run_tool_governance(
         ToolGovernanceContext(
@@ -178,19 +271,21 @@ async def test_permission_profile_none_falls_back_to_escalate() -> None:
             approval_calls=approval_calls,
             audit_calls=audit_calls,
         ),
+        event_callback=events.append,
     )
 
     assert message is not None
-    assert "requires approval" in message
-    assert approval_calls == [{"tool_name": "write_file", "capability": "workspace.file.write"}]
+    assert "requires session permission" in message
+    assert approval_calls == []
+    assert audit_calls == []
+    assert events and events[-1]["status"] == "session_permission_required"
 
 
 def test_permission_profile_resolve_no_policy_decision_normalizes() -> None:
-    """The pure resolver maps the profile's default_decision to a governance
-    action and fail-closes unknown / None values to "escalate"."""
-    assert capability_gate.resolve_no_policy_decision(None) == "escalate"
-    assert capability_gate.resolve_no_policy_decision(PermissionProfileV1()) == "escalate"
+    """The legacy pure resolver maps default_decision to a session-level action."""
+    assert capability_gate.resolve_no_policy_decision(None) == "ask"
+    assert capability_gate.resolve_no_policy_decision(PermissionProfileV1()) == "ask"
     assert capability_gate.resolve_no_policy_decision(PermissionProfileV1(default_decision="deny")) == "deny"
     assert capability_gate.resolve_no_policy_decision(PermissionProfileV1(default_decision="allow")) == "allow"
-    assert capability_gate.resolve_no_policy_decision(PermissionProfileV1(default_decision="ESCALATE")) == "escalate"
-    assert capability_gate.resolve_no_policy_decision(PermissionProfileV1(default_decision="bogus")) == "escalate"
+    assert capability_gate.resolve_no_policy_decision(PermissionProfileV1(default_decision="ESCALATE")) == "ask"
+    assert capability_gate.resolve_no_policy_decision(PermissionProfileV1(default_decision="bogus")) == "ask"

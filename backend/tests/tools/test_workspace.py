@@ -61,6 +61,25 @@ def test_skill_direct_write_edit_and_delete_are_rejected(tmp_path):
     assert skill_path.read_text(encoding="utf-8") == "---\nname: deploy-checklist\n---\n"
 
 
+def test_enterprise_asset_direct_write_edit_and_delete_are_rejected(tmp_path):
+    from app.services.agent_tool_domains.workspace import _delete_file, _edit_file, _write_file
+
+    for rel_path in ("subagents/reviewer.md", "enterprise_info/company_profile.md"):
+        target = tmp_path / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("platform-owned", encoding="utf-8")
+
+        write_result = _write_file(tmp_path, rel_path, "raw bypass")
+        edit_result = _edit_file(tmp_path, rel_path, "platform-owned", "bypass")
+        delete_result = _delete_file(tmp_path, rel_path)
+
+        for result in (write_result, edit_result, delete_result):
+            assert "auth_or_permission" in result
+
+        assert target.exists()
+        assert target.read_text(encoding="utf-8") == "platform-owned"
+
+
 def test_evolution_write_guard_points_to_platform_bookkeeping_not_missing_tool(tmp_path):
     from app.services.agent_tool_domains.workspace import _edit_file, _write_file
 

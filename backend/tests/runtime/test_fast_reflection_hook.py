@@ -69,7 +69,7 @@ def test_memory_hook_plan_registers_fast_reflection_handler() -> None:
 
     plan = export_memory_hook_plan()
 
-    assert len(_MEMORY_HOOK_REGISTRATIONS) == 16
+    assert len(_MEMORY_HOOK_REGISTRATIONS) == 17
     assert any(
         item["event"] == HookEvent.RESPONSE_COMPLETE.value
         and item["key"] == "memory.response_complete.fast_reflection"
@@ -77,3 +77,20 @@ def test_memory_hook_plan_registers_fast_reflection_handler() -> None:
         for item in plan
     )
     assert any(item["key"] == "evolution.heartbeat_tick_end.maintenance" for item in plan)
+
+
+def test_memory_hook_plan_registers_permission_denied_audit_consumer() -> None:
+    """B-5 regression guard: PERMISSION_DENIED is live-emitted, so a real
+    observe-only audit consumer must be registered (not merely declared in the
+    catalog). Reverting the registration drops this binding."""
+    from app.runtime.hooks import HookEvent
+    from app.runtime.hooks_setup import export_memory_hook_plan
+
+    plan = export_memory_hook_plan()
+
+    assert any(
+        item["event"] == HookEvent.PERMISSION_DENIED.value
+        and item["key"] == "governance.permission_denied.audit"
+        and item["handler_name"] == "audit_permission_denied"
+        for item in plan
+    )

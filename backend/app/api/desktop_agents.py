@@ -154,7 +154,12 @@ async def delete_sub_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a Sub-Agent owned by the current user."""
+    """Delete a Sub-Agent asset (admin only)."""
+    if current_user.role not in ("org_admin", "platform_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sub-agent is an enterprise asset; only an admin can delete it.",
+        )
     agent = await _get_owned_sub_agent(db, current_user, agent_id)
 
     await soft_delete_agent(db, agent, actor_id=current_user.id, reason="desktop_delete_sub_agent")

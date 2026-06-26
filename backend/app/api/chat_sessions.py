@@ -1,5 +1,7 @@
 """Chat session management API endpoints."""
 
+import json
+import logging
 import uuid
 from datetime import datetime, timezone as tz
 from typing import Any, Literal, Optional
@@ -19,10 +21,15 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.chat_session import ChatSession
 from app.models.agent import Agent
 from app.models.user import User
+from app.runtime.ccplus_contracts import normalize_permission_mode
+from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_artifact_delivery import artifact_part_from_model
-from app.services.chat_message_parts import serialize_chat_message, split_inline_tools
+from app.services.chat_message_parts import build_session_native_event, serialize_chat_message, split_inline_tools
+from app.services.chat_transcript import append_session_event
 from app.services.web_chat_runtime import (
     ActiveWebChatRunExists,
+    _persist_tool_call,
+    broadcast_web_chat_event,
     cancel_web_chat_run,
     get_active_web_chat_run,
     start_web_chat_run,
@@ -34,16 +41,14 @@ from app.services.session_feedback import record_session_feedback
 from app.services.session_control_plane import build_session_json_export, build_session_workbench
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
+logger = logging.getLogger(__name__)
 
 _LEGACY_HIDDEN_CHAT_SOURCES = ("trigger", "task", "heartbeat")
 _MINE_HIDDEN_CHAT_SOURCES = ("agent", *_LEGACY_HIDDEN_CHAT_SOURCES)
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
-    return (
-        user.role in ("platform_admin", "org_admin")
-        or str(agent.creator_id) == str(user.id)
-    )
+    return user.role in ("platform_admin", "org_admin") or str(agent.creator_id) == str(user.id)
 
 
 def _can_manage_sessions(user: User, agent: Agent, access_level: str) -> bool:
@@ -56,8 +61,8 @@ class SessionOut(BaseModel):
     id: str
     agent_id: str
     user_id: str
-    username: Optional[str] = None      # display_name ?? username
-    source_channel: str = "web"         # web / feishu / discord / slack / agent
+    username: Optional[str] = None  # display_name ?? username
+    source_channel: str = "web"  # web / feishu / discord / slack / agent
     session_kind: str = "human_chat"
     actor_type: str = "user"
     runtime_source: str = "web_chat"
@@ -73,7 +78,7 @@ class SessionOut(BaseModel):
     # Agent-to-agent session fields
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
-    participant_type: str = "user"       # 'user' | 'agent'
+    participant_type: str = "user"  # 'user' | 'agent'
 
 
 def _session_contract_fields(session: ChatSession) -> dict[str, Optional[str]]:
@@ -89,6 +94,108 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Optional[str]]:
     }
 
 
+def _session_permission_metadata(permission_mode: str | None, session: ChatSession | None = None) -> dict[str, Any]:
+    mode = normalize_permission_mode(permission_mode or "auto").value
+    session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {}) if session is not None else {}
+    allowed_tools = [
+        str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
+    ]
+    return {
+        "permission_mode": mode,
+        "permission_profile": {"mode": mode, "allowed_tools": allowed_tools},
+    }
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _permission_request_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    request_payload = payload.get("permission_request")
+    if isinstance(request_payload, dict):
+        return request_payload
+
+    permission_payload = payload.get("permission")
+    if isinstance(permission_payload, dict):
+        nested_request = permission_payload.get("permission_request")
+        if isinstance(nested_request, dict):
+            return nested_request
+        if permission_payload.get("permission_request_id"):
+            return permission_payload
+
+    part_payload = payload.get("part")
+    if isinstance(part_payload, dict):
+        nested_request = _permission_request_from_payload(part_payload)
+        if nested_request is not None:
+            return nested_request
+
+    parts_payload = payload.get("parts")
+    if isinstance(parts_payload, list):
+        for part in parts_payload:
+            if isinstance(part, dict):
+                nested_request = _permission_request_from_payload(part)
+                if nested_request is not None:
+                    return nested_request
+
+    result_payload = _json_object(payload.get("result"))
+    if result_payload:
+        nested_request = _permission_request_from_payload(result_payload)
+        if nested_request is not None:
+            return nested_request
+
+    if payload.get("permission_request_id") and (payload.get("tool_name") or isinstance(payload.get("arguments"), dict)):
+        return {
+            key: value
+            for key, value in payload.items()
+            if key
+            in {
+                "permission_request_id",
+                "session_id",
+                "runtime_task_id",
+                "turn_id",
+                "tool_call_id",
+                "tool_name",
+                "tool_display_name",
+                "arguments",
+                "capability",
+                "permission_mode",
+                "decision_reason",
+                "created_at",
+                "expires_at",
+            }
+        }
+    return None
+
+
+def _permission_request_payload_from_event(event: ChatTranscriptEvent) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    metadata = dict(getattr(event, "metadata_json", None) or {})
+    tool_payload = _json_object(getattr(event, "content", None))
+    request_payload = _permission_request_from_payload(metadata) or _permission_request_from_payload(tool_payload)
+    if not isinstance(request_payload, dict):
+        return None
+    if not tool_payload and metadata:
+        tool_payload = metadata
+    return request_payload, tool_payload if isinstance(tool_payload, dict) else {}
+
+
+def _session_permission_exception_message(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict):
+            message = detail.get("message") or detail.get("detail")
+            return str(message) if message else json.dumps(detail, ensure_ascii=False, sort_keys=True)
+        return str(detail)
+    return str(exc) or exc.__class__.__name__
+
+
 class CreateSessionIn(BaseModel):
     title: Optional[str] = None
 
@@ -102,6 +209,7 @@ class StartSessionRunIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     plan_mode_requested: bool = False
+    permission_mode: str = "auto"
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -114,6 +222,7 @@ class BranchSessionIn(BaseModel):
     file_name: str = ""
     title: Optional[str] = None
     start_run: bool = True
+    permission_mode: str = "auto"
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -123,8 +232,14 @@ class SteerSessionTurnIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     expected_turn_id: Optional[str] = None
+    permission_mode: str = "auto"
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
+
+
+class ResolveSessionPermissionIn(BaseModel):
+    action: Literal["allow_once", "allow_session", "deny"]
+    feedback: str = ""
 
 
 class SessionRunOut(BaseModel):
@@ -258,26 +373,27 @@ async def list_sessions(
             else:
                 # Human session — resolve username
                 user_r = await db.execute(
-                    select(func.coalesce(User.display_name, User.username))
-                    .where(User.id == session.user_id)
+                    select(func.coalesce(User.display_name, User.username)).where(User.id == session.user_id)
                 )
                 display = user_r.scalar_one_or_none() or "Unknown"
 
-            out.append(SessionOut(
-                id=str(session.id),
-                agent_id=str(session.agent_id),
-                user_id=str(session.user_id),
-                username=display,
-                source_channel=session.source_channel,
-                title=session.title,
-                created_at=session.created_at.isoformat(),
-                last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
-                message_count=count,
-                peer_agent_id=peer_agent_id,
-                peer_agent_name=peer_agent_name,
-                participant_type=participant_type,
-                **_session_contract_fields(session),
-            ))
+            out.append(
+                SessionOut(
+                    id=str(session.id),
+                    agent_id=str(session.agent_id),
+                    user_id=str(session.user_id),
+                    username=display,
+                    source_channel=session.source_channel,
+                    title=session.title,
+                    created_at=session.created_at.isoformat(),
+                    last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+                    message_count=count,
+                    peer_agent_id=peer_agent_id,
+                    peer_agent_name=peer_agent_name,
+                    participant_type=participant_type,
+                    **_session_contract_fields(session),
+                )
+            )
         return out
 
     else:  # scope == "mine"
@@ -333,17 +449,19 @@ async def list_sessions(
                 )
             )
             count = total_result.scalar() or 0
-            out.append(SessionOut(
-                id=str(session.id),
-                agent_id=str(session.agent_id),
-                user_id=str(session.user_id),
-                source_channel=session.source_channel,
-                title=session.title,
-                created_at=session.created_at.isoformat(),
-                last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
-                message_count=count,
-                **_session_contract_fields(session),
-            ))
+            out.append(
+                SessionOut(
+                    id=str(session.id),
+                    agent_id=str(session.agent_id),
+                    user_id=str(session.user_id),
+                    source_channel=session.source_channel,
+                    title=session.title,
+                    created_at=session.created_at.isoformat(),
+                    last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
+                    message_count=count,
+                    **_session_contract_fields(session),
+                )
+            )
         return out
 
 
@@ -397,9 +515,7 @@ async def rename_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Rename a session. Only owner, admin, or creator can rename."""
-    result = await db.execute(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
-    )
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -467,6 +583,7 @@ async def start_session_run(
             display_content=body.display_content,
             file_name=body.file_name,
             plan_mode_requested=body.plan_mode_requested,
+            extra_metadata=_session_permission_metadata(body.permission_mode, session),
             attachments=body.attachments,
             parts=body.parts,
         )
@@ -518,7 +635,10 @@ async def branch_session(
                 attachments=getattr(request, "attachments", None) or [],
                 parts=getattr(request, "parts", None) or [],
                 append_user_message=request.append_user_message,
-                extra_metadata=getattr(request, "extra_metadata", None),
+                extra_metadata={
+                    **(getattr(request, "extra_metadata", None) or {}),
+                    **_session_permission_metadata(body.permission_mode, branch_result.session),
+                },
             )
         except ActiveWebChatRunExists as exc:
             run_payload = {"status": "queued", **exc.run}
@@ -707,7 +827,239 @@ async def steer_session_turn(
         expected_turn_id=body.expected_turn_id,
         attachments=body.attachments,
         parts=body.parts,
+        extra_metadata=_session_permission_metadata(body.permission_mode, session),
     )
+
+
+@router.post("/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve")
+async def resolve_session_permission(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    permission_request_id: uuid.UUID,
+    body: ResolveSessionPermissionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve a CCPlus session-local permission request inside the same chat session."""
+    session, agent, _access_level = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    result = await db.execute(
+        select(ChatTranscriptEvent)
+        .where(
+            ChatTranscriptEvent.agent_id == agent_id,
+            ChatTranscriptEvent.session_id == session_id,
+        )
+        .order_by(ChatTranscriptEvent.created_at.desc())
+        .limit(300)
+    )
+    pending_event: ChatTranscriptEvent | None = None
+    request_payload: dict[str, Any] | None = None
+    tool_payload: dict[str, Any] | None = None
+    for event in result.scalars().all():
+        parsed = _permission_request_payload_from_event(event)
+        if parsed is None:
+            continue
+        candidate_request, candidate_tool = parsed
+        if str(candidate_request.get("permission_request_id")) == str(permission_request_id):
+            pending_event = event
+            request_payload = candidate_request
+            tool_payload = candidate_tool
+            break
+    if pending_event is None or request_payload is None or tool_payload is None:
+        raise HTTPException(status_code=404, detail="Pending session permission request not found")
+
+    resolution_metadata = {
+        "permission_request_id": str(permission_request_id),
+        "permission_request": request_payload,
+        "decision": body.action,
+        "feedback": body.feedback,
+        "tool_name": request_payload.get("tool_name"),
+        "tool_call_id": tool_payload.get("tool_call_id"),
+        "source_event_id": str(pending_event.id),
+    }
+    tool_name = str(request_payload.get("tool_name") or "")
+    arguments = request_payload.get("arguments") if isinstance(request_payload.get("arguments"), dict) else {}
+
+    if body.action == "allow_session":
+        session_metadata = dict(session.transcript_metadata_json or {})
+        allowed_tools = [str(item) for item in (session_metadata.get("session_permission_allowed_tools") or [])]
+        if tool_name and tool_name not in allowed_tools:
+            allowed_tools.append(tool_name)
+        session_metadata["session_permission_allowed_tools"] = allowed_tools
+        session.transcript_metadata_json = session_metadata
+        await db.flush()
+
+    await append_session_event(
+        db=db,
+        agent_id=agent_id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        session_id=session_id,
+        run_id=pending_event.run_id,
+        actor_type="user",
+        event_type="session_permission_decision",
+        user_id=current_user.id,
+        content=json.dumps(resolution_metadata, ensure_ascii=False, sort_keys=True),
+        source="web",
+        metadata=resolution_metadata,
+        materialize_chat_message=False,
+    )
+    await db.commit()
+
+    if body.action == "deny":
+        await emit_hook(
+            HookEvent.PERMISSION_DENIED,
+            agent_id=agent_id,
+            session_id=str(session_id),
+            tool_name=tool_name,
+            tool_args=arguments,
+            source="session_permission_resolve",
+            metadata=resolution_metadata,
+        )
+        await broadcast_web_chat_event(
+            agent_id,
+            session_id,
+            {
+                "type": "permission_resolved",
+                "event_type": "permission_resolved",
+                **resolution_metadata,
+                "status": "denied",
+            },
+        )
+        return {"status": "denied", "permission_request_id": str(permission_request_id)}
+
+    if not tool_name:
+        raise HTTPException(status_code=400, detail="Permission request is missing tool_name")
+
+    from app.services.agent_tools import execute_session_permission_tool
+
+    try:
+        tool_result = await execute_session_permission_tool(
+            tool_name,
+            arguments,
+            agent_id=agent_id,
+            user_id=current_user.id,
+            session_id=str(session_id),
+            permission_profile={"mode": "bypassPermissions", "allowed_tools": [tool_name]},
+        )
+        persisted_tool_event = await _persist_tool_call(
+            agent_id=agent_id,
+            user_id=current_user.id,
+            session_id=str(session_id),
+            data={
+                "name": tool_name,
+                "args": arguments,
+                "status": "done",
+                "result": str(tool_result),
+                "tool_call_id": tool_payload.get("tool_call_id"),
+                "run_id": str(pending_event.run_id) if pending_event.run_id else None,
+                "runtime_task_id": str(pending_event.run_id) if pending_event.run_id else None,
+                "visibility": "expanded",
+            },
+        )
+        await broadcast_web_chat_event(
+            agent_id,
+            session_id,
+            {
+                "type": "tool_call",
+                "event_type": "tool_result",
+                "role": "tool_call",
+                "name": tool_name,
+                "args": arguments,
+                "status": "done",
+                "result": str(tool_result),
+                "tool_call_id": tool_payload.get("tool_call_id"),
+                "transcript_event_id": str(persisted_tool_event.event_id) if persisted_tool_event else None,
+                "sequence": persisted_tool_event.sequence if persisted_tool_event else None,
+                "metadata": persisted_tool_event.transcript_event.metadata_json if persisted_tool_event else {},
+            },
+        )
+
+        active_run = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+        if active_run:
+            run_payload = active_run
+        else:
+            try:
+                run_payload = await start_web_chat_run(
+                    db=db,
+                    agent=agent,
+                    user=current_user,
+                    session=session,
+                    content="Continue after the approved session permission tool result.",
+                    display_content="",
+                    append_user_message=False,
+                    extra_metadata={
+                        **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
+                        "source": "session_permission_resume",
+                        "resumed_from_permission_request_id": str(permission_request_id),
+                    },
+                )
+            except ActiveWebChatRunExists as exc:
+                run_payload = {"status": "queued", **exc.run}
+    except Exception as exc:
+        error_message = _session_permission_exception_message(exc)
+        error_type = exc.__class__.__name__
+        failure_payload = {
+            "type": "permission_resolved",
+            "event_type": "permission_resolved",
+            **resolution_metadata,
+            "status": "failed",
+            "error": error_message,
+            "error_type": error_type,
+            "tool_name": tool_name,
+            "tool_call_id": tool_payload.get("tool_call_id"),
+            "capability": request_payload.get("capability"),
+            "reason": error_message,
+            "message": f"Permission request could not be completed: {error_message}",
+            "retryable": True,
+        }
+        logger.exception(
+            "Session permission resolve failed: agent_id=%s session_id=%s permission_request_id=%s tool=%s",
+            agent_id,
+            session_id,
+            permission_request_id,
+            tool_name,
+        )
+        event_payload = build_session_native_event(failure_payload)
+        await append_session_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session_id,
+            run_id=pending_event.run_id,
+            actor_type="system",
+            event_type="permission_resolved",
+            role="system",
+            user_id=current_user.id,
+            content=json.dumps(failure_payload, ensure_ascii=False, sort_keys=True),
+            source="web",
+            parts=[event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None,
+            metadata=failure_payload,
+        )
+        await db.commit()
+        await broadcast_web_chat_event(agent_id, session_id, failure_payload)
+        return {
+            "status": "failed",
+            "permission_request_id": str(permission_request_id),
+            "error": error_message,
+            "error_type": error_type,
+        }
+
+    await broadcast_web_chat_event(
+        agent_id,
+        session_id,
+        {
+            "type": "permission_resolved",
+            "event_type": "permission_resolved",
+            **resolution_metadata,
+            "status": "allowed",
+            "run": run_payload,
+        },
+    )
+    return {"status": "allowed", "permission_request_id": str(permission_request_id), "run": run_payload}
 
 
 @router.get("/{agent_id}/threads/{session_id}/read")
@@ -823,9 +1175,7 @@ async def delete_session(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a chat session and its messages. Owner, admin, or creator only."""
-    result = await db.execute(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
-    )
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -836,6 +1186,7 @@ async def delete_session(
 
     # Delete associated messages first
     from sqlalchemy import delete as sql_delete
+
     await db.execute(sql_delete(ChatArtifact).where(ChatArtifact.session_id == session_id))
     await db.execute(sql_delete(ChatTranscriptEvent).where(ChatTranscriptEvent.session_id == session_id))
     await db.execute(sql_delete(ChatMessage).where(ChatMessage.conversation_id == str(session_id)))
@@ -879,9 +1230,7 @@ async def get_session_messages(
     artifacts_by_message: dict[uuid.UUID, list[dict]] = {}
     if message_ids:
         artifacts_result = await db.execute(
-            select(ChatArtifact)
-            .where(ChatArtifact.message_id.in_(message_ids))
-            .order_by(ChatArtifact.created_at.asc())
+            select(ChatArtifact).where(ChatArtifact.message_id.in_(message_ids)).order_by(ChatArtifact.created_at.asc())
         )
         for artifact in artifacts_result.scalars().all():
             artifacts_by_message.setdefault(artifact.message_id, []).append(artifact_part_from_model(artifact))
@@ -890,6 +1239,7 @@ async def get_session_messages(
     sender_cache: dict = {}
     if session.source_channel == "agent":
         from app.models.participant import Participant
+
         for m in messages:
             if m.participant_id and str(m.participant_id) not in sender_cache:
                 p_r = await db.execute(select(Participant.display_name).where(Participant.id == m.participant_id))

@@ -57,8 +57,10 @@ class TestHooksIntegration:
         assert hasattr(HookEvent, "SESSION_CLOSE")
         assert hasattr(HookEvent, "SESSION_START")
 
-    def test_hooks_setup_registers_16_handlers(self) -> None:
-        """register_memory_hooks() should register memory + objective intake handlers."""
+    def test_hooks_setup_registers_17_handlers(self) -> None:
+        """register_memory_hooks() should register memory + objective intake handlers.
+
+        17 = 16 memory/T0/projection handlers + 1 PERMISSION_DENIED audit consumer (B-5)."""
         from app.runtime.hooks import HookRegistry
 
         registry = HookRegistry()
@@ -72,24 +74,26 @@ class TestHooksIntegration:
 
             register_memory_hooks()
             total = sum(len(handlers) for handlers in registry._handlers.values())
-            assert total == 16
+            assert total == 17
         finally:
             hooks_mod.hook_registry = original
 
     def test_hooks_setup_declares_registration_specs(self) -> None:
         from app.runtime.hooks_setup import _MEMORY_HOOK_REGISTRATIONS
 
-        assert len(_MEMORY_HOOK_REGISTRATIONS) == 16
+        assert len(_MEMORY_HOOK_REGISTRATIONS) == 17
         assert any(spec.key == "memory.response_complete.fast_reflection" for spec in _MEMORY_HOOK_REGISTRATIONS)
         assert any(spec.key == "evolution.heartbeat_tick_end.maintenance" for spec in _MEMORY_HOOK_REGISTRATIONS)
         assert any(spec.key == "pending_reply.post_tool_use.capture" for spec in _MEMORY_HOOK_REGISTRATIONS)
+        # B-5: live-emitted PERMISSION_DENIED carries a real observe-only audit consumer.
+        assert any(spec.key == "governance.permission_denied.audit" for spec in _MEMORY_HOOK_REGISTRATIONS)
 
     def test_hooks_setup_exports_structured_memory_hook_plan(self) -> None:
         from app.runtime.hooks_setup import export_memory_hook_plan
 
         plan = export_memory_hook_plan()
 
-        assert len(plan) == 16
+        assert len(plan) == 17
         assert plan[0]["key"] == "memory.session_start.log"
         assert plan[0]["handler_name"] == "log_session_start"
         assert any(item["key"] == "memory.response_complete.fast_reflection" for item in plan)
@@ -111,7 +115,7 @@ class TestHooksIntegration:
             register_memory_hooks()
             register_memory_hooks()
             total = sum(len(handlers) for handlers in registry._handlers.values())
-            assert total == 16
+            assert total == 17
         finally:
             hooks_setup_mod.hook_registry = original
 

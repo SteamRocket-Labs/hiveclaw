@@ -58,7 +58,7 @@ def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() ->
 
     for event_name in required:
         entry = catalog[event_name]
-        assert entry["cc_parity"] is True
+        assert entry["standard"] is True
         assert entry["lifecycle_state"] in {"active", "active_observe", "disabled_noop"}
         assert entry["trigger_point"]
         assert isinstance(entry["matcher_fields"], list)
@@ -71,6 +71,21 @@ def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() ->
     assert "worktree_path" in catalog["worktree_create"]["output_schema"]["properties"]
     assert "permission_decision" in catalog["permission_request"]["output_schema"]["properties"]
     assert catalog["pre_tool_use"]["runtime_consumer"] == "kernel_pre_tool_use"
+
+
+def test_permission_denied_reports_live_not_disabled_noop() -> None:
+    """B-5 regression guard: PERMISSION_DENIED is live-emitted by tool governance
+    (governance.py) and the chat-session permission path (chat_sessions.py), so the
+    catalog must NOT classify it as disabled_noop with a noop audit consumer."""
+    registry = HookRegistry()
+    catalog = {item["event"]: item for item in registry.describe_event_catalog()}
+
+    denied = catalog["permission_denied"]
+    assert denied["lifecycle_state"] != "disabled_noop"
+    assert denied["lifecycle_state"] == "active_observe"
+    assert denied["runtime_consumer"] != "disabled_noop_audit"
+    assert denied["runtime_consumer"] == "permission_denied_audit_observer"
+    assert denied["standard"] is True
 
 
 def test_cc_lifecycle_hook_context_carries_standard_payload_fields() -> None:
@@ -114,6 +129,39 @@ async def test_stop_hook_can_return_blocking_result() -> None:
     assert result is not None
     assert result.block is True
     assert result.reason == "final answer needs verification"
+
+
+@pytest.mark.asyncio
+async def test_permission_request_hook_returns_decision_payload() -> None:
+    registry = HookRegistry()
+
+    def approve_permission(ctx: HookContext) -> HookResult:
+        return HookResult(
+            permission_request_result={
+                "behavior": "allow",
+                "updatedInput": {"query": "github trending"},
+                "updatedPermissions": [{"tool": "web_search", "behavior": "allow", "scope": "session"}],
+            }
+        )
+
+    registry.register(HookEvent.PERMISSION_REQUEST, approve_permission)
+
+    result = await registry.emit(
+        HookContext(
+            event=HookEvent.PERMISSION_REQUEST,
+            session_id="s1",
+            tool_name="web_search",
+            tool_args={"query": "github"},
+            metadata={"permission_request": {"tool_name": "web_search"}},
+        )
+    )
+
+    assert result is not None
+    assert result.permission_request_result == {
+        "behavior": "allow",
+        "updatedInput": {"query": "github trending"},
+        "updatedPermissions": [{"tool": "web_search", "behavior": "allow", "scope": "session"}],
+    }
 
 
 @pytest.mark.asyncio

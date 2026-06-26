@@ -25,6 +25,8 @@ from app.models.trigger import AgentTrigger
 from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_tools import execute_tool
+from app.services.chat_message_parts import build_session_native_event
+from app.services.chat_transcript import append_session_event
 from app.services.command_registry import build_default_command_registry
 from app.services.command_registry import CommandDefinition
 from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, execute_diagnostic_command
@@ -158,11 +160,7 @@ async def _build_agent_command_registry(
     include_dynamic_user_commands: bool = False,
 ):
     coding_pack_enabled = await _coding_pack_enabled(db, agent)
-    dynamic_commands = (
-        await _dynamic_skill_commands(db, agent_id=agent.id)
-        if include_dynamic_user_commands
-        else []
-    )
+    dynamic_commands = await _dynamic_skill_commands(db, agent_id=agent.id) if include_dynamic_user_commands else []
     return build_default_command_registry(
         dynamic_commands=dynamic_commands,
         include_optional_coding_pack=bool(include_optional_packs and coding_pack_enabled) or coding_pack_enabled,
@@ -182,7 +180,9 @@ def _parse_uuid(value: uuid.UUID | str | None, *, field: str) -> uuid.UUID:
         raise HTTPException(status_code=400, detail=f"{field} must be a UUID") from exc
 
 
-async def _load_chat_session(db: AsyncSession, *, agent_id: uuid.UUID, session_id: str | uuid.UUID | None) -> ChatSession:
+async def _load_chat_session(
+    db: AsyncSession, *, agent_id: uuid.UUID, session_id: str | uuid.UUID | None
+) -> ChatSession:
     session_uuid = _parse_uuid(session_id, field="session_id")
     result = await db.execute(
         select(ChatSession).where(
@@ -212,6 +212,54 @@ def _goal_payload(goal: AgentSessionGoal, *, requires_api_persist: bool = False)
         "blocked_count": goal.blocked_count,
         "completion_summary": goal.completion_summary,
     }
+
+
+def _uuid_text_or_none(value: Any) -> str | None:
+    if not value:
+        return None
+    try:
+        return str(uuid.UUID(str(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _append_command_session_event(
+    *,
+    db: AsyncSession,
+    agent: Any,
+    user: User,
+    session_id: str | uuid.UUID | None,
+    event_type: str,
+    status: str,
+    message: str,
+    metadata: dict[str, Any],
+) -> None:
+    normalized_session_id = _uuid_text_or_none(session_id)
+    if not normalized_session_id:
+        return
+    payload = {
+        "type": event_type,
+        "status": status,
+        "message": message,
+        **{key: value for key, value in metadata.items() if value is not None},
+    }
+    event = build_session_native_event(payload)
+    await append_session_event(
+        db=db,
+        agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        session_id=normalized_session_id,
+        actor_type="system",
+        event_type=event_type,
+        role="system",
+        user_id=getattr(user, "id", None),
+        root_session_id=normalized_session_id,
+        parent_session_id=normalized_session_id,
+        content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        source="command",
+        parts=[event["part"]] if isinstance(event.get("part"), dict) else None,
+        metadata={"source": "command", **payload},
+    )
 
 
 async def _load_session_goal(
@@ -268,6 +316,22 @@ async def _execute_goal_command(
         )
         db.add(goal)
         await db.flush()
+        await _append_command_session_event(
+            db=db,
+            agent=agent,
+            user=user,
+            session_id=session.id,
+            event_type="goal",
+            status=goal.status,
+            message=f"Goal started: {objective}",
+            metadata={
+                "goal_id": str(goal.id),
+                "objective": objective,
+                "command": command_name,
+                "token_budget": goal.token_budget,
+                "max_continuation_turns": goal.max_continuation_turns,
+            },
+        )
         return {"ok": True, "command": command_name, **_goal_payload(goal)}
 
     goal = await _load_session_goal(db, agent_id=agent.id, session_id=session_id, arguments=arguments)
@@ -291,6 +355,22 @@ async def _execute_goal_command(
             goal.status = status_value
         goal.metadata_json = metadata
         await db.flush()
+        await _append_command_session_event(
+            db=db,
+            agent=agent,
+            user=user,
+            session_id=goal.chat_session_id,
+            event_type="goal",
+            status=goal.status,
+            message=f"Goal updated: {goal.objective}",
+            metadata={
+                "goal_id": str(goal.id),
+                "objective": goal.objective,
+                "command": command_name,
+                "token_budget": goal.token_budget,
+                "max_continuation_turns": goal.max_continuation_turns,
+            },
+        )
         return {"ok": True, "command": command_name, **_goal_payload(goal)}
 
     if command_name == "goal_stop":
@@ -304,6 +384,21 @@ async def _execute_goal_command(
             goal.completed_at = datetime.now(timezone.utc)
         goal.metadata_json = metadata
         await db.flush()
+        await _append_command_session_event(
+            db=db,
+            agent=agent,
+            user=user,
+            session_id=goal.chat_session_id,
+            event_type="goal",
+            status=goal.status,
+            message=f"Goal {goal.status}: {goal.objective}",
+            metadata={
+                "goal_id": str(goal.id),
+                "objective": goal.objective,
+                "command": command_name,
+                "completion_summary": goal.completion_summary,
+            },
+        )
         return {"ok": True, "command": command_name, **_goal_payload(goal)}
 
     raise HTTPException(status_code=501, detail=f"Unsupported goal command {command_name!r}")
@@ -383,6 +478,7 @@ async def _execute_schedule_command(
     agent: Any,
     user: User,
     command_name: str,
+    session_id: str | None,
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
     if command_name not in _SCHEDULE_COMMANDS:
@@ -469,6 +565,27 @@ async def _execute_schedule_command(
     )
     db.add(trigger)
     await db.flush()
+    event_type = "schedule" if command_name == "schedule_create" else "once"
+    await _append_command_session_event(
+        db=db,
+        agent=agent,
+        user=user,
+        session_id=session_id,
+        event_type=event_type,
+        status="created",
+        message=f"{'Schedule' if event_type == 'schedule' else 'One-time task'} created: {name}",
+        metadata={
+            "schedule_id": str(trigger.id) if event_type == "schedule" else None,
+            "once_id": str(trigger.id) if event_type == "once" else None,
+            "name": name,
+            "instruction": instruction,
+            "command": command_name,
+            "schedule_type": trigger.type,
+            "cron_expr": config.get("expr"),
+            "at": config.get("at"),
+            "is_enabled": trigger.is_enabled,
+        },
+    )
     return {"ok": True, "command": command_name, **_schedule_command_payload(trigger)}
 
 
@@ -484,7 +601,9 @@ def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
     }
 
 
-def _team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_api_persist: bool = False) -> dict[str, Any]:
+def _team_payload(
+    team: AgentTeam, members: list[AgentTeamMember], *, requires_api_persist: bool = False
+) -> dict[str, Any]:
     return {
         "requires_api_persist": requires_api_persist,
         "id": str(team.id),
@@ -571,7 +690,9 @@ async def _execute_team_command(
                 member_role=str(raw_member.get("role") or "").strip() or None,
                 model_id=raw_member.get("model_id"),
                 chat_session_id=member_session_id,
-                tool_policy_json=raw_member.get("tool_policy") if isinstance(raw_member.get("tool_policy"), dict) else None,
+                tool_policy_json=raw_member.get("tool_policy")
+                if isinstance(raw_member.get("tool_policy"), dict)
+                else None,
                 budget_json=raw_member.get("budget") if isinstance(raw_member.get("budget"), dict) else None,
                 metadata_json={
                     "runtime_policy": "enterable_chat_session",
@@ -593,9 +714,31 @@ async def _execute_team_command(
             agent_id=agent.id,
             session_id=str(session.id),
             source="agent_team",
-            metadata={"tenant_id": str(getattr(agent, "tenant_id", "") or ""), "team_id": str(team.id), "name": team.name},
+            metadata={
+                "tenant_id": str(getattr(agent, "tenant_id", "") or ""),
+                "team_id": str(team.id),
+                "name": team.name,
+            },
         )
         await db.flush()
+        for member in members:
+            await _append_command_session_event(
+                db=db,
+                agent=agent,
+                user=user,
+                session_id=session.id,
+                event_type="team_member",
+                status="created",
+                message=f"Team member created: {member.member_name}",
+                metadata={
+                    "team_id": str(team.id),
+                    "team_name": team.name,
+                    "child_session_id": str(member.chat_session_id),
+                    "member_id": str(member.id),
+                    "member_name": member.member_name,
+                    "command": command_name,
+                },
+            )
         return {"ok": True, "command": command_name, **_team_payload(team, members)}
 
     if command_name == "team_delete":
@@ -661,6 +804,21 @@ async def _execute_team_command(
             ],
         )
         await db.flush()
+        await _append_command_session_event(
+            db=db,
+            agent=agent,
+            user=user,
+            session_id=team.parent_session_id,
+            event_type="team_member",
+            status="closed",
+            message=f"Team closed: {team.name}",
+            metadata={
+                "team_id": str(team.id),
+                "team_name": team.name,
+                "command": command_name,
+                "member_count": len(members),
+            },
+        )
         return {
             "ok": True,
             "command": command_name,
@@ -782,8 +940,7 @@ async def _execute_dynamic_skill_command(
         loaded = json.dumps(loaded, ensure_ascii=False, default=str)
     request_block = user_request or "Apply this skill to the current task."
     content = (
-        f"<invoked-skill name=\"{skill_name}\">\n{loaded.strip()}\n</invoked-skill>\n\n"
-        f"User request:\n{request_block}"
+        f'<invoked-skill name="{skill_name}">\n{loaded.strip()}\n</invoked-skill>\n\nUser request:\n{request_block}'
     )
     display = f"/{command_name} {user_request}".strip()
     return _chat_prompt_payload(
@@ -1074,6 +1231,7 @@ async def execute_agent_command(
             agent=agent,
             user=current_user,
             command_name=command.name,
+            session_id=body.session_id,
             arguments=body.arguments,
         )
         await db.commit()

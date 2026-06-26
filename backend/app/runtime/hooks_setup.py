@@ -72,6 +72,26 @@ async def _log_memory_extracted(ctx: HookContext) -> None:
     logger.info("[Hooks] MEMORY_EXTRACTED: agent=%s", ctx.agent_id)
 
 
+async def _audit_permission_denied(ctx: HookContext) -> None:
+    """PERMISSION_DENIED → observe-only audit log for governed denials.
+
+    Tool governance and the chat-session permission path both emit this event
+    live when a capability/approval decision blocks execution. This consumer is
+    deliberately observe-only: it records the denial for audit/monitoring and
+    never returns a HookResult, so it cannot alter the already-final decision.
+    """
+    capability = ctx.metadata.get("capability")
+    reason = ctx.metadata.get("reason") or ctx.error or ""
+    logger.info(
+        "[Hooks] PERMISSION_DENIED: agent=%s tool=%s capability=%s mode=%s reason=%s",
+        ctx.agent_id,
+        ctx.tool_name,
+        capability,
+        ctx.metadata.get("permission_mode"),
+        str(reason)[:200],
+    )
+
+
 # ── Session projection handlers (Phase 2) ──
 
 
@@ -821,7 +841,8 @@ def register_memory_hooks() -> None:
     registry.register_many(_MEMORY_HOOK_REGISTRATIONS)
 
     logger.info(
-        "[Hooks] Memory hooks registered: %d handlers (3 log + 2 projection + 1 fast_reflection + 6 T0 + 1 evolution + 1 pending_reply)",
+        "[Hooks] Memory hooks registered: %d handlers "
+        "(3 log + 1 permission_denied_audit + 2 projection + 1 fast_reflection + 6 T0 + 1 evolution + 1 pending_reply)",
         len(_MEMORY_HOOK_REGISTRATIONS),
     )
 
@@ -839,6 +860,7 @@ _MEMORY_HOOK_HANDLERS = {
     "log_session_start": _log_session_start,
     "log_post_compaction": _log_post_compaction,
     "log_memory_extracted": _log_memory_extracted,
+    "audit_permission_denied": _audit_permission_denied,
     "project_on_response": _project_on_response,
     "fast_reflection_on_response": _fast_reflection_on_response,
     "project_on_pre_compaction": _project_on_pre_compaction,
@@ -865,6 +887,11 @@ _MEMORY_HOOK_CONFIGURATION = [
         "event": HookEvent.MEMORY_EXTRACTED.value,
         "handler": "log_memory_extracted",
         "key": "memory.extracted.log",
+    },
+    {
+        "event": HookEvent.PERMISSION_DENIED.value,
+        "handler": "audit_permission_denied",
+        "key": "governance.permission_denied.audit",
     },
     {
         "event": HookEvent.RESPONSE_COMPLETE.value,

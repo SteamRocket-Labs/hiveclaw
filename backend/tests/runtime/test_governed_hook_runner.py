@@ -1,11 +1,57 @@
+"""GovernedHookRunner — DEFERRED CONTRACT tests (B-2).
+
+GovernedHookRunner is a complete, governed runner for *external* command/prompt/
+HTTP/agent hooks, but it is intentionally NOT wired into any production path:
+Hive currently runs only in-process, allowlisted Python hook handlers (see
+``services/plugin_hook_service.py``). These tests exercise the runner's behavior
+to keep the contract honest, and ``test_governed_hook_runner_is_deferred_*``
+guards the deferred status so the runner cannot silently be advertised as a live
+runtime consumer or accidentally wired into startup without intent.
+"""
+
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
 
 from app.runtime.hooks import HookContext, HookEvent
 from app.services.code_execution.contracts import CodeExecutionResult
+
+
+def test_governed_hook_runner_is_deferred_not_wired_into_startup() -> None:
+    """Revert guard: no production startup/registration path imports the governed
+    runner. If this fails, the deferred contract was wired in — update the module
+    docstrings (and route durable records onto invocation_spans), do not silently
+    flip status surfaces to claim it is live."""
+    import app.main as main_mod
+    import app.services.plugin_hook_service as plugin_hooks
+
+    main_src = inspect.getsource(main_mod)
+    assert "register_memory_hooks" in main_src
+    assert "register_installed_plugin_hooks" in main_src
+    assert "GovernedHookRunner" not in main_src
+    assert "register_governed_hook_specs" not in main_src
+
+    # The only live plugin hook handlers are in-process, allowlisted Python fns.
+    plugin_src = inspect.getsource(plugin_hooks)
+    assert "GovernedHookRunner" not in plugin_src
+    assert set(plugin_hooks.PLUGIN_HOOK_HANDLERS) == {
+        "plugin.audit",
+        "plugin.block",
+        "plugin.args_overlay",
+    }
+
+
+def test_governed_hook_runner_is_absent_from_live_hook_catalog() -> None:
+    """Revert guard: describe_event_catalog must not advertise the governed runner
+    as a runtime consumer for any event (it is deferred, not live)."""
+    from app.runtime.hooks import HookRegistry
+
+    catalog = HookRegistry().describe_event_catalog()
+    consumers = {entry["runtime_consumer"] for entry in catalog}
+    assert not any("governed_hook_runner" in consumer for consumer in consumers)
 
 
 @pytest.mark.asyncio

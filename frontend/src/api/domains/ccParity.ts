@@ -184,7 +184,7 @@ export interface HookControlPlane {
     category: string;
     handler_count: number;
     blocking_supported: boolean;
-    cc_parity: boolean;
+    standard: boolean;
   }>;
   registered_events: string[];
   registrations: Array<Record<string, unknown>>;

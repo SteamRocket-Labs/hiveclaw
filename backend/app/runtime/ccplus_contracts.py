@@ -25,19 +25,24 @@ class TurnStatus(str, Enum):
     RUNNING = "running"
     WAITING_FOR_TOOL = "waiting_for_tool"
     WAITING_FOR_USER = "waiting_for_user"
+    WAITING_FOR_PERMISSION = "waiting_for_permission"
+    BLOCKED_BY_HOOK = "blocked_by_hook"
+    WAITING_FOR_CHILD = "waiting_for_child"
+    WAITING_FOR_WORKFLOW = "waiting_for_workflow"
     COMPACTING = "compacting"
     COMPLETED = "completed"
     INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
     FAILED = "failed"
 
 
 class PermissionMode(str, Enum):
     DEFAULT = "default"
     PLAN = "plan"
-    ACCEPT_EDITS = "accept_edits"
-    DONT_ASK_LOW_RISK = "dont_ask_low_risk"
-    AUTO_REVIEW = "auto_review"
-    BREAK_GLASS = "break_glass"
+    ACCEPT_EDITS = "acceptEdits"
+    DONT_ASK = "dontAsk"
+    AUTO = "auto"
+    BYPASS_PERMISSIONS = "bypassPermissions"
 
 
 class SandboxProfile(str, Enum):
@@ -49,7 +54,7 @@ class SandboxProfile(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class PermissionProfileV1:
-    mode: PermissionMode = PermissionMode.DEFAULT
+    mode: PermissionMode = PermissionMode.AUTO
     approval_policy: str = "granular"
     writable_roots: tuple[str, ...] = ()
     readable_roots: tuple[str, ...] = ()
@@ -61,6 +66,34 @@ class PermissionProfileV1:
     denied_actions: tuple[str, ...] = ()
     capability_policy_snapshot: dict[str, Any] = field(default_factory=dict)
     default_decision: str = "escalate"
+
+
+_PERMISSION_MODE_ALIASES: dict[str, PermissionMode] = {
+    PermissionMode.DEFAULT.value: PermissionMode.DEFAULT,
+    PermissionMode.PLAN.value: PermissionMode.PLAN,
+    PermissionMode.ACCEPT_EDITS.value: PermissionMode.ACCEPT_EDITS,
+    PermissionMode.DONT_ASK.value: PermissionMode.DONT_ASK,
+    PermissionMode.AUTO.value: PermissionMode.AUTO,
+    PermissionMode.BYPASS_PERMISSIONS.value: PermissionMode.BYPASS_PERMISSIONS,
+    # Legacy Hive names kept for persisted RuntimeTask / ChatSession metadata.
+    "accept_edits": PermissionMode.ACCEPT_EDITS,
+    "dont_ask_low_risk": PermissionMode.DONT_ASK,
+    "dont_ask": PermissionMode.DONT_ASK,
+    "auto_review": PermissionMode.AUTO,
+    "break_glass": PermissionMode.BYPASS_PERMISSIONS,
+    "full_access": PermissionMode.BYPASS_PERMISSIONS,
+    "bypass_permissions": PermissionMode.BYPASS_PERMISSIONS,
+}
+
+
+def normalize_permission_mode(value: Any) -> PermissionMode:
+    """Normalize CC permission mode values plus legacy Hive aliases."""
+    if isinstance(value, PermissionMode):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return PermissionMode.DEFAULT
+    return _PERMISSION_MODE_ALIASES.get(text, PermissionMode.DEFAULT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +143,8 @@ def build_permission_profile(overrides: dict[str, Any] | None = None) -> Permiss
         return base
     valid = {f.name for f in dataclass_fields(base)}
     clean = {key: value for key, value in overrides.items() if key in valid}
+    if "mode" in clean:
+        clean["mode"] = normalize_permission_mode(clean["mode"])
     return replace(base, **clean) if clean else base
 
 

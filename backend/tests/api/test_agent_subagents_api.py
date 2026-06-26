@@ -451,9 +451,29 @@ def test_put_rejects_invalid_url_name(monkeypatch, data_root):
     assert resp.status_code in (404, 422)  # path-reject or name-guard reject, never 2xx
 
 
-def test_delete_agent_definition_falls_back_to_tenant(monkeypatch, data_root):
+def test_member_manage_cannot_delete_agent_definition_asset(monkeypatch, data_root):
     agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
     client, _db, _user = _build_client(tenant_id=tenant_id)
+    _grant_access(monkeypatch, agent_id, tenant_id)
+
+    definition_store_for_agent(agent_id, agent_data_dir=data_root).save(
+        SubagentSpec(name="dup", description="d", type="explorer", system_prompt="agent version")
+    )
+    definition_store_for_tenant(tenant_id, agent_data_dir=data_root).save(
+        SubagentSpec(name="dup", description="d", type="critic", system_prompt="tenant version")
+    )
+
+    resp = client.delete(f"/agents/{agent_id}/subagents/dup")
+    assert resp.status_code == 403
+
+    detail = client.get(f"/agents/{agent_id}/subagents/dup").json()
+    assert detail["scope"] == "agent"
+    assert "agent version" in detail["definition"]
+
+
+def test_admin_delete_agent_definition_falls_back_to_tenant(monkeypatch, data_root):
+    agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+    client, _db, _user = _build_client(role="org_admin", tenant_id=tenant_id)
     _grant_access(monkeypatch, agent_id, tenant_id)
 
     definition_store_for_agent(agent_id, agent_data_dir=data_root).save(
@@ -473,7 +493,7 @@ def test_delete_agent_definition_falls_back_to_tenant(monkeypatch, data_root):
 
 def test_delete_404_when_no_agent_definition(monkeypatch, data_root):
     agent_id, tenant_id = uuid.uuid4(), uuid.uuid4()
-    client, _db, _user = _build_client(tenant_id=tenant_id)
+    client, _db, _user = _build_client(role="org_admin", tenant_id=tenant_id)
     _grant_access(monkeypatch, agent_id, tenant_id)
 
     # tenant-level definition alone does not make DELETE on agent scope a hit

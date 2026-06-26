@@ -208,6 +208,8 @@ async def start_deep_research_workflow_run(
     session_factory=None,
     spawn=None,
     run_id: uuid.UUID | None = None,
+    parent_session_id: uuid.UUID | str | None = None,
+    root_session_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any]:
     import json
 
@@ -248,6 +250,8 @@ async def start_deep_research_workflow_run(
         "definition_source": f"registered:{record.name}:v{record.definition_version}:{record.definition_hash}",
         "session_factory": session_factory,
         "run_id": run_id,
+        "parent_session_id": parent_session_id,
+        "root_session_id": root_session_id,
     }
     if spawn is not None:
         launch_kwargs["spawn"] = spawn
@@ -269,7 +273,21 @@ async def start_deep_research_workflow_run(
             output_path = _materialize_requested_output_format(workspace, artifact_root, output_format)
         except Exception:  # export is best-effort; report.md is the deliverable
             logging.getLogger(__name__).warning("[DR-workflow] output-format export failed", exc_info=True)
-        _publish_workspace_packet(workspace, run_id, artifact_root)
+        workspace_packet_dir = _publish_workspace_packet(workspace, run_id, artifact_root)
+        # The workflow run has no chat message (ChatArtifact.message_id is
+        # non-nullable), so deliver the published report to the parent session
+        # as a clickable timeline artifact via a row-free artifact_delivery
+        # event. parent_session_id absent (trigger/heartbeat) → skip silently.
+        await _deliver_deep_research_report_to_session(
+            agent_id=agent_id,
+            tenant_id=agent.tenant_id,
+            parent_session_id=parent_session_id,
+            run_id=run_id,
+            workspace=workspace,
+            workspace_packet_dir=workspace_packet_dir,
+            output_path=output_path,
+            session_factory=session_factory,
+        )
 
     return {
         "created_workflow_run_id": str(handle.run_id),
@@ -285,3 +303,108 @@ async def start_deep_research_workflow_run(
         "output_path": str(output_path) if output_path else None,
         "output_format": output_format,
     }
+
+
+def _published_report_relpaths(
+    *,
+    workspace: Path,
+    workspace_packet_dir: Path,
+    output_path: Path | None,
+) -> list[str]:
+    """Workspace-relative paths of the published Deep Research deliverables.
+
+    Registers the requested-format export first (when distinct), then the
+    canonical ``report.md``, both resolved against the published workspace
+    packet so the timeline links the user-facing copy, not the internal
+    ``runtime_artifacts`` source.
+    """
+
+    def _rel(path: Path) -> str | None:
+        try:
+            return path.resolve().relative_to(workspace.resolve()).as_posix()
+        except ValueError:
+            return None
+
+    rel_paths: list[str] = []
+    seen: set[str] = set()
+    candidates: list[Path] = []
+    if output_path is not None and output_path.name != "report.md":
+        candidates.append(workspace_packet_dir / output_path.name)
+    candidates.append(workspace_packet_dir / "report.md")
+    for candidate in candidates:
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        rel = _rel(candidate)
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        rel_paths.append(rel)
+    return rel_paths
+
+
+async def _deliver_deep_research_report_to_session(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    parent_session_id: uuid.UUID | str | None,
+    run_id: uuid.UUID,
+    workspace: Path,
+    workspace_packet_dir: Path,
+    output_path: Path | None,
+    session_factory=None,
+) -> None:
+    """Surface the published Deep Research report as a clickable parent-session artifact."""
+    if not parent_session_id:
+        return
+
+    rel_paths = _published_report_relpaths(
+        workspace=workspace,
+        workspace_packet_dir=workspace_packet_dir,
+        output_path=output_path,
+    )
+    if not rel_paths:
+        return
+
+    from app.services.chat_artifact_delivery import build_session_artifact_parts
+    from app.services.chat_transcript import append_session_event
+
+    artifact_parts = build_session_artifact_parts(
+        agent_id=agent_id,
+        session_id=parent_session_id,
+        runtime_task_id=run_id,
+        paths=rel_paths,
+        workspace_root=workspace,
+        source="deep_research",
+    )
+    if not artifact_parts:
+        return
+
+    try:
+        async with tenant_scoped_session(str(tenant_id) if tenant_id else None, session_factory=session_factory) as db:
+            await append_session_event(
+                db=db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                session_id=parent_session_id,
+                run_id=run_id,
+                actor_type="system",
+                event_type="artifact_delivery",
+                role="system",
+                content="artifact_delivery",
+                source="deep_research",
+                parts=artifact_parts,
+                materialize_chat_message=False,
+                metadata={
+                    "source": "deep_research",
+                    "deep_research_run_id": str(run_id),
+                    "artifact_count": len(artifact_parts),
+                    "artifact_ids": [part.get("artifact_id") for part in artifact_parts],
+                    "artifact_paths": [part.get("path") for part in artifact_parts],
+                    "artifacts": artifact_parts,
+                },
+            )
+            await db.commit()
+    except Exception:  # delivery is best-effort; the report is already on disk
+        logging.getLogger(__name__).warning(
+            "[DR-workflow] artifact_delivery to parent session %s failed", parent_session_id, exc_info=True
+        )

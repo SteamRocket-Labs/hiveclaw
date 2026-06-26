@@ -46,6 +46,34 @@ def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:
     assert restored[0].reasoning_signature == "sig-round-trip"
 
 
+def test_permissions_context_exposes_plan_mode_plan_file_as_writable_root() -> None:
+    from app.kernel import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _build_permissions_context
+    from app.runtime.session import SessionContext
+
+    request = InvocationRequest(
+        model=SimpleNamespace(),
+        messages=[],
+        agent_name="agent",
+        role_description="role",
+        session_context=SessionContext(
+            session_id="session-1",
+            metadata={
+                "permission_profile": {"mode": "default"},
+                "plan_mode": {
+                    "active": True,
+                    "plan_file_path": "workspace/plans/session-1.plan.md",
+                },
+            },
+        ),
+    )
+
+    prompt = _build_permissions_context(request, RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3))
+
+    assert "writable_roots:" in prompt
+    assert "- workspace/plans/session-1.plan.md" in prompt
+
+
 def test_split_concatenated_json_returns_single_object_when_valid():
     """T1-4: a single valid JSON object passes through untouched."""
     from app.kernel.engine import _split_concatenated_json
@@ -733,6 +761,94 @@ async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypat
     assert session.prompt_prefix is None
     assert "prompt_cache_key" not in session.metadata
     assert session.metadata["prompt_cache_invalidated_reason"] == "fs_write:soul.md"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_with_hooks_tracks_office_created_document_as_session_artifact(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    session = SessionContext(session_id="s-office-create")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "create a doc"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="s-office-create",
+    )
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+        return '{"ok": true, "path": "workspace/proposal.docx"}'
+
+    async def emit_event(_event):
+        return None
+
+    await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="office_document_create",
+        tool_args={"path": "workspace/proposal.docx", "kind": "docx"},
+        emit_event=emit_event,
+    )
+
+    assert session.recent_writes == ["workspace/proposal.docx"]
+    assert session.recent_tool_outcomes[-1] == {
+        "tool": "office_document_create",
+        "summary": "Wrote workspace/proposal.docx",
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_with_hooks_tracks_office_apply_output_as_session_artifact(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    session = SessionContext(session_id="s-office-apply")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "update a doc"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="s-office-apply",
+    )
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+        return '{"ok": true, "result": {"path": "workspace/proposal-v2.docx"}}'
+
+    async def emit_event(_event):
+        return None
+
+    await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="office_document_apply",
+        tool_args={
+            "path": "workspace/proposal.docx",
+            "operations": [{"op": "replace_text", "text": "new"}],
+            "output_path": "workspace/proposal-v2.docx",
+        },
+        emit_event=emit_event,
+    )
+
+    assert session.recent_writes == ["workspace/proposal-v2.docx"]
+    assert session.recent_tool_outcomes[-1] == {
+        "tool": "office_document_apply",
+        "summary": "Wrote workspace/proposal-v2.docx",
+    }
 
 
 @pytest.mark.asyncio

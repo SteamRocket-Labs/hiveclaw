@@ -41,6 +41,7 @@ import {
   type AgentChatMessage,
   type ChatArtifactPart,
   type ChatRuntimeSummary,
+  type SessionPermissionRequest,
 } from './chatRuntime';
 
 type AttachedFile = {
@@ -51,6 +52,29 @@ type AttachedFile = {
 };
 
 type ComposerActionKey = 'upload' | 'plan' | 'goal' | 'schedule';
+export type SessionPermissionMode = 'auto' | 'default' | 'bypassPermissions';
+
+const SESSION_PERMISSION_MODE_OPTIONS: Array<{
+  value: SessionPermissionMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'auto',
+    label: 'Approve for me',
+    description: 'Approve low-risk actions and ask for risky ones',
+  },
+  {
+    value: 'default',
+    label: 'Ask first',
+    description: 'Ask before sensitive session actions',
+  },
+  {
+    value: 'bypassPermissions',
+    label: 'Full access',
+    description: 'Bypass session prompts, still obey enterprise rules',
+  },
+];
 
 function formatCompactTokenCount(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '-';
@@ -86,15 +110,13 @@ function getRuntimeUsageTitle(runtimeSummary: ChatRuntimeSummary | null, usageLa
   return parts.join(' · ');
 }
 
-function getPermissionBadgeLabel(
-  agentPermissions: AgentPermissions | null | undefined,
+function getSessionPermissionModeLabel(
+  mode: SessionPermissionMode,
   t: (key: string, fallback: string) => string,
 ): string {
-  const accessLevel = agentPermissions?.access_level;
-  if (accessLevel === 'manage') return t('agent.chat.composer.manageAccess', 'Manage access');
-  if (accessLevel === 'use') return t('agent.chat.composer.useAccess', 'Use access');
-  if (accessLevel === 'read') return t('agent.chat.composer.readAccess', 'Read access');
-  return t('agent.chat.composer.permissionUnknown', 'Access unknown');
+  if (mode === 'default') return t('agent.chat.composer.permissionMode.default', 'Ask first');
+  if (mode === 'bypassPermissions') return t('agent.chat.composer.permissionMode.bypassPermissions', 'Full access');
+  return t('agent.chat.composer.permissionMode.auto', 'Approve for me');
 }
 
 function getComposerIntentLabel(
@@ -103,6 +125,45 @@ function getComposerIntentLabel(
 ): string | null {
   if (planModeRequested) return t('agent.chat.composer.planModeActive', 'Plan Mode');
   return null;
+}
+
+function SessionPermissionActions({
+  permissionRequest,
+  onResolveSessionPermission,
+  t,
+}: {
+  permissionRequest: SessionPermissionRequest;
+  onResolveSessionPermission?: (request: SessionPermissionRequest, action: 'allow_once' | 'allow_session' | 'deny') => void | Promise<unknown>;
+  t: (key: string, fallback: string) => string;
+}) {
+  return (
+    <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_once')}
+        style={{ fontSize: '12px', padding: '6px 10px' }}
+      >
+        {t('agent.chat.permission.allowOnce', 'Allow once')}
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        onClick={() => onResolveSessionPermission?.(permissionRequest, 'allow_session')}
+        style={{ fontSize: '12px', padding: '6px 10px' }}
+      >
+        {t('agent.chat.permission.allowSession', 'Allow for this session')}
+      </button>
+      <button
+        type="button"
+        className="btn btn-secondary"
+        onClick={() => onResolveSessionPermission?.(permissionRequest, 'deny')}
+        style={{ fontSize: '12px', padding: '6px 10px' }}
+      >
+        {t('agent.chat.permission.deny', 'Deny')}
+      </button>
+    </div>
+  );
 }
 
 type ConversationBranchMode =
@@ -199,6 +260,12 @@ interface AgentChatSectionProps {
   onEnterPlanMode?: (reason: string) => void | Promise<unknown>;
   planModeRequested?: boolean;
   onTogglePlanMode?: () => void;
+  sessionPermissionMode?: SessionPermissionMode;
+  onSetSessionPermissionMode?: (mode: SessionPermissionMode) => void;
+  onResolveSessionPermission?: (
+    request: SessionPermissionRequest,
+    action: 'allow_once' | 'allow_session' | 'deny',
+  ) => void | Promise<unknown>;
   isStreaming: boolean;
   onAbortGeneration: () => void;
   sessionOnly?: boolean;
@@ -480,6 +547,16 @@ export function getArtifactOpenMode(artifact: Pick<ChatArtifactPart, 'name' | 'p
   return 'download';
 }
 
+export function isPendingEmptyArtifactPreview(
+  artifact: Partial<ChatArtifactPart>,
+  content?: string,
+  loading?: boolean,
+  error?: string,
+): boolean {
+  if (loading || error) return false;
+  return artifact.size === 0 && !String(content ?? '').trim();
+}
+
 function ArtifactPreviewPanel({
   preview,
   onClose,
@@ -490,6 +567,30 @@ function ArtifactPreviewPanel({
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
+  const showPendingEmptyPreview = isPendingEmptyArtifactPreview(
+    preview.artifact,
+    preview.content,
+    preview.loading,
+    preview.error,
+  );
+  const pendingEmptyPreview = (
+    <div
+      style={{
+        border: '1px dashed var(--border-subtle)',
+        borderRadius: '7px',
+        padding: '14px',
+        color: 'var(--text-tertiary)',
+        fontSize: '12px',
+        lineHeight: 1.6,
+        background: 'var(--bg-primary)',
+      }}
+    >
+      {t(
+        'agent.chat.artifacts.emptyPending',
+        'This file is empty for now. Its content will appear here after the session permission is approved or the write finishes.',
+      )}
+    </div>
+  );
   return (
     <section
       data-testid="session-artifact-inspector"
@@ -564,7 +665,7 @@ function ArtifactPreviewPanel({
           />
         ) : previewKind === 'markdown' ? (
           <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
-            <MarkdownRenderer content={preview.content || ''} />
+            {showPendingEmptyPreview ? pendingEmptyPreview : <MarkdownRenderer content={preview.content || ''} />}
           </div>
         ) : (
           <pre
@@ -577,7 +678,10 @@ function ArtifactPreviewPanel({
               color: 'var(--text-secondary)',
             }}
           >
-            {preview.content || ''}
+            {showPendingEmptyPreview ? t(
+              'agent.chat.artifacts.emptyPending',
+              'This file is empty for now. Its content will appear here after the session permission is approved or the write finishes.',
+            ) : preview.content || ''}
           </pre>
         )}
       </div>
@@ -1074,6 +1178,9 @@ export default function AgentChatSection({
   onEnterPlanMode,
   planModeRequested = false,
   onTogglePlanMode,
+  sessionPermissionMode = 'auto',
+  onSetSessionPermissionMode,
+  onResolveSessionPermission,
   isStreaming,
   onAbortGeneration,
   sessionOnly = false,
@@ -1091,10 +1198,11 @@ export default function AgentChatSection({
   const [branchDraft, setBranchDraft] = React.useState<BranchComposeDraft | null>(null);
   const [branchBusy, setBranchBusy] = React.useState(false);
   const [composerMenuOpen, setComposerMenuOpen] = React.useState(false);
+  const [permissionMenuOpen, setPermissionMenuOpen] = React.useState(false);
 
   const runtimeUsageLabel = getRuntimeUsageLabel(runtimeSummary);
   const runtimeUsageTitle = getRuntimeUsageTitle(runtimeSummary, runtimeUsageLabel);
-  const permissionBadgeLabel = getPermissionBadgeLabel(agentPermissions, t);
+  const permissionModeLabel = getSessionPermissionModeLabel(sessionPermissionMode, t);
   const composerIntentLabel = getComposerIntentLabel(planModeRequested, t);
   const modelBadgeLabel =
     runtimeSummary?.model?.label ||
@@ -1244,6 +1352,14 @@ export default function AgentChatSection({
         ? compactionDisplay?.details || (msg.content?.trim() ? msg.content : null)
         : null;
       const compactionInProgress = msg.eventStatus === 'running' || msg.eventStatus === 'in_progress';
+      const permissionRequest = msg.sessionPermissionRequest;
+      const permissionActions = permissionRequest && msg.eventStatus === 'session_permission_required' ? (
+        <SessionPermissionActions
+          permissionRequest={permissionRequest}
+          onResolveSessionPermission={onResolveSessionPermission}
+          t={t}
+        />
+      ) : null;
 
       return (
         <div key={`event-${index}`} style={{ paddingLeft: '36px', marginBottom: '8px' }}>
@@ -1292,6 +1408,7 @@ export default function AgentChatSection({
                 {msg.eventNextStep && <div>{msg.eventNextStep}</div>}
               </div>
             )}
+            {permissionActions}
             {metaParts.length > 0 && (
               <div style={{ marginTop: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>{metaParts.join(' · ')}</div>
             )}
@@ -1299,7 +1416,7 @@ export default function AgentChatSection({
         </div>
       );
     },
-    [t],
+    [onResolveSessionPermission, t],
   );
 
   const ChatMessageItem = React.useMemo(
@@ -1484,70 +1601,83 @@ export default function AgentChatSection({
 		    [effectiveAgentId, startBranchAction, openArtifact, t],
 	  );
 
-  const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => (
-    <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-      <details
-        style={{
-          flex: 1,
-          minWidth: 0,
-          borderRadius: '8px',
-          background: 'var(--accent-subtle)',
-          border: '1px solid var(--accent-subtle)',
-          fontSize: '12px',
-          overflow: 'hidden',
-        }}
-      >
-        <summary
+  const renderToolCall = (msg: AgentChatMessage, index: number, running = false) => {
+    const permissionActions = msg.sessionPermissionRequest ? (
+      <SessionPermissionActions
+        permissionRequest={msg.sessionPermissionRequest}
+        onResolveSessionPermission={onResolveSessionPermission}
+        t={t}
+      />
+    ) : null;
+
+    return (
+      <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
+        <details
           style={{
-            padding: '6px 10px',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            userSelect: 'none',
-            listStyle: 'none',
+            flex: 1,
+            minWidth: 0,
+            borderRadius: '8px',
+            background: 'var(--accent-subtle)',
+            border: '1px solid var(--accent-subtle)',
+            fontSize: '12px',
             overflow: 'hidden',
           }}
         >
-          <span style={{ fontSize: '13px' }}>{running ? '⏳' : '⚡'}</span>
-          <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{msg.toolName}</span>
-          {msg.toolArgs && Object.keys(msg.toolArgs).length > 0 && (
-            <span
-              style={{
-                color: 'var(--text-tertiary)',
-                fontSize: '11px',
-                fontFamily: 'var(--font-mono)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                flex: 1,
-              }}
-            >
-              {`(${Object.entries(msg.toolArgs)
-                .map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`)
-                .join(', ')})`}
-            </span>
+          <summary
+            style={{
+              padding: '6px 10px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              userSelect: 'none',
+              listStyle: 'none',
+              overflow: 'hidden',
+            }}
+          >
+            <span style={{ fontSize: '13px' }}>{running ? '⏳' : '⚡'}</span>
+            <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{msg.toolName}</span>
+            {msg.toolArgs && Object.keys(msg.toolArgs).length > 0 && (
+              <span
+                style={{
+                  color: 'var(--text-tertiary)',
+                  fontSize: '11px',
+                  fontFamily: 'var(--font-mono)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  flex: 1,
+                }}
+              >
+                {`(${Object.entries(msg.toolArgs)
+                  .map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`)
+                  .join(', ')})`}
+              </span>
+            )}
+            {running && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginLeft: 'auto' }}>{t('common.loading')}</span>}
+          </summary>
+          {(msg.toolResult || msg.toolMeta) && (
+            <div style={{ padding: '4px 10px 8px' }}>
+              <StructuredToolResultBody
+                toolName={msg.toolName}
+                toolMeta={msg.toolMeta}
+                toolResult={msg.toolResult}
+                toolRawResult={msg.toolRawResult}
+                agentId={effectiveAgentId ?? undefined}
+                agentName={agent?.name}
+                submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
+                onSendMessage={onSendMessage}
+                onEnterPlanMode={onEnterPlanMode}
+              />
+              {permissionActions}
+            </div>
           )}
-          {running && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginLeft: 'auto' }}>{t('common.loading')}</span>}
-        </summary>
-        {(msg.toolResult || msg.toolMeta) && (
-          <div style={{ padding: '4px 10px 8px' }}>
-            <StructuredToolResultBody
-              toolName={msg.toolName}
-              toolMeta={msg.toolMeta}
-              toolResult={msg.toolResult}
-              toolRawResult={msg.toolRawResult}
-              agentId={effectiveAgentId ?? undefined}
-              agentName={agent?.name}
-              submitted={isClarificationCardAnsweredByLaterUserMessage(visibleTimeline, index)}
-              onSendMessage={onSendMessage}
-              onEnterPlanMode={onEnterPlanMode}
-            />
-          </div>
-        )}
-      </details>
-    </div>
-  );
+          {!(msg.toolResult || msg.toolMeta) && permissionActions}
+          <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
+        </details>
+      </div>
+    );
+  };
 
   const renderInlinePlanToolCall = (msg: AgentChatMessage, index: number) => (
     <div key={index} style={{ paddingLeft: '36px', marginBottom: '8px', maxWidth: '75%' }} data-testid="chat-inline-plan-tool-call">
@@ -1562,6 +1692,14 @@ export default function AgentChatSection({
         onSendMessage={onSendMessage}
         onEnterPlanMode={onEnterPlanMode}
       />
+      {msg.sessionPermissionRequest && (
+        <SessionPermissionActions
+          permissionRequest={msg.sessionPermissionRequest}
+          onResolveSessionPermission={onResolveSessionPermission}
+          t={t}
+        />
+      )}
+      <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} />
     </div>
   );
 
@@ -1609,6 +1747,7 @@ export default function AgentChatSection({
 
   const isInlineToolCardMessage = (message: AgentChatMessage) => (
     message.role === 'tool_call' && (
+      Boolean(message.artifacts?.length) ||
       message.toolMeta?.kind === 'plan_needs_confirmation' ||
       message.toolMeta?.kind === 'user_clarification' ||
       message.toolMeta?.kind === 'plan_mode_request' ||
@@ -1660,7 +1799,11 @@ export default function AgentChatSection({
           <div key={cell.id} data-testid="active-run-cell" style={{ marginBottom: '8px' }}>
             <RunDisclosureBlock timeline={cell.timeline} />
             {cell.sourceMessages.map((entry) => (
-              isInlineToolCardMessage(entry.message) ? renderInlinePlanToolCall(entry.message, entry.index) : null
+              entry.message.role === 'event' && entry.message.sessionPermissionRequest
+                ? renderEventMessage(entry.message, entry.index)
+                : isInlineToolCardMessage(entry.message)
+                  ? renderInlinePlanToolCall(entry.message, entry.index)
+                  : null
             ))}
             {cell.answer ? renderConversationMessage(cell.answer, cell.answerIndex ?? 0, resolveIsLeft(cell.answer, cell.answerIndex ?? 0)) : null}
           </div>,
@@ -2286,25 +2429,93 @@ export default function AgentChatSection({
                   >
                     <IconPlus size={20} stroke={1.7} />
                   </button>
-                  <span
+                  <button
+                    type="button"
                     data-testid="session-composer-permission-badge"
-                    title={t('agent.chat.composer.permissionTitle', 'Backend access permission')}
+                    aria-label={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
+                    aria-expanded={permissionMenuOpen}
+                    title={t('agent.chat.composer.permissionTitle', 'Session permission mode')}
+                    onClick={() => {
+                      setPermissionMenuOpen((open) => !open);
+                      setComposerMenuOpen(false);
+                    }}
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: '6px',
                       height: '30px',
                       padding: '0 9px',
+                      border: '1px solid transparent',
                       borderRadius: '8px',
+                      background: permissionMenuOpen ? 'var(--bg-secondary)' : 'transparent',
                       color: 'rgb(194, 86, 0)',
                       fontSize: '12px',
                       fontWeight: 650,
                       whiteSpace: 'nowrap',
+                      cursor: 'pointer',
                     }}
                   >
                     <IconShieldCheck size={15} stroke={1.8} />
-                    {permissionBadgeLabel}
-                  </span>
+                    {permissionModeLabel}
+                  </button>
+                  <div
+                    data-testid="session-composer-permission-menu"
+                    hidden={!permissionMenuOpen}
+                    style={{
+                      position: 'absolute',
+                      left: '52px',
+                      bottom: '44px',
+                      width: '238px',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: '12px',
+                      background: 'var(--bg-primary)',
+                      boxShadow: '0 18px 48px rgba(15, 23, 42, 0.18)',
+                      padding: '6px',
+                      zIndex: 17,
+                      display: permissionMenuOpen ? 'grid' : 'none',
+                      gap: '2px',
+                    }}
+                  >
+                    {SESSION_PERMISSION_MODE_OPTIONS.map((option) => {
+                      const selected = option.value === sessionPermissionMode;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          data-testid={`session-composer-permission-mode-${option.value}`}
+                          aria-pressed={selected}
+                          onClick={() => {
+                            onSetSessionPermissionMode?.(option.value);
+                            setPermissionMenuOpen(false);
+                          }}
+                          style={{
+                            width: '100%',
+                            display: 'grid',
+                            gridTemplateColumns: '20px minmax(0, 1fr)',
+                            gap: '9px',
+                            alignItems: 'center',
+                            padding: '9px 10px',
+                            border: 0,
+                            borderRadius: '8px',
+                            background: selected ? 'var(--bg-secondary)' : 'transparent',
+                            color: 'var(--text-primary)',
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                          }}
+                        >
+                          <IconShieldCheck size={15} stroke={selected ? 2.2 : 1.7} />
+                          <span style={{ display: 'grid', gap: '2px', minWidth: 0 }}>
+                            <strong style={{ fontSize: '12px', fontWeight: 650 }}>
+                              {t(`agent.chat.composer.permissionMode.${option.value}`, option.label)}
+                            </strong>
+                            <span style={{ fontSize: '11px', lineHeight: 1.35, color: 'var(--text-tertiary)' }}>
+                              {t(`agent.chat.composer.permissionModeDesc.${option.value}`, option.description)}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                   {composerIntentLabel && (
                     <span
                       data-testid="session-composer-intent-badge"

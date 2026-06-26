@@ -1044,7 +1044,17 @@
         "useAccess": "Use access",
         "readAccess": "Read access",
         "permissionUnknown": "Access unknown",
-        "permissionTitle": "Backend access permission",
+        "permissionTitle": "Session permission mode",
+        "permissionMode": {
+          "auto": "Approve for me",
+          "default": "Ask first",
+          "bypassPermissions": "Full access"
+        },
+        "permissionModeDesc": {
+          "auto": "Approve low-risk actions and ask for risky ones",
+          "default": "Ask before sensitive session actions",
+          "bypassPermissions": "Bypass session prompts, still obey enterprise rules"
+        },
         "planModeActive": "Plan Mode",
         "goalModeActive": "Goal mode",
         "scheduleModeActive": "Scheduled task",
@@ -1054,6 +1064,11 @@
         "planPlaceholder": "Describe what the agent should plan first...",
         "goalPlaceholder": "Define the goal for this session...",
         "schedulePlaceholder": "Describe the schedule, trigger, and task..."
+      },
+      "permission": {
+        "allowOnce": "Allow once",
+        "allowSession": "Allow for this session",
+        "deny": "Deny"
       },
       "thinking": "Thinking...",
       "continuingRun": "Agent is continuing this run...",
@@ -1078,7 +1093,8 @@
         "download": "Download",
         "preview": "Preview",
         "openInNewTab": "Open in new tab",
-        "previewFailed": "Preview failed"
+        "previewFailed": "Preview failed",
+        "emptyPending": "This file is empty for now. Its content will appear here after the session permission is approved or the write finishes."
       },
       "toolResults": {
         "blueprintPreviewTitle": "Agent Blueprint Preview",

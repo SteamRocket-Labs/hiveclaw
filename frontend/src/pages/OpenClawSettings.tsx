@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { agentApi } from '../api/domains/agents';
 
 interface OpenClawSettingsProps {
@@ -10,19 +9,14 @@ interface OpenClawSettingsProps {
     isAdmin?: boolean;
 }
 
-export default function OpenClawSettings({ agent, agentId, isAdmin = false }: OpenClawSettingsProps) {
+export default function OpenClawSettings({ agent, agentId }: OpenClawSettingsProps) {
     const { t } = useTranslation();
     const queryClient = useQueryClient();
-    const navigate = useNavigate();
     // ─── API Key state ──────────────────────────────────
     const [apiKey, setApiKey] = useState<string | null>(null);
     const [regenerating, setRegenerating] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
     const [copied, setCopied] = useState(false);
-
-    // ─── Delete state ───────────────────────────────────
-    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-    const [deleting, setDeleting] = useState(false);
 
     const hasKey = agent?.has_api_key || false;
 
@@ -51,62 +45,6 @@ export default function OpenClawSettings({ agent, agentId, isAdmin = false }: Op
             setTimeout(() => setCopied(false), 2000);
         } catch { }
     };
-
-    const handleDelete = async () => {
-        setDeleting(true);
-        try {
-            await agentApi.remove(agentId);
-            queryClient.invalidateQueries({ queryKey: ['agents'] });
-            navigate('/');
-        } catch (e) {
-            console.error('Failed to delete agent', e);
-            setDeleting(false);
-        }
-    };
-
-    // ─── Permissions state ──────────────────────────────
-    const { data: permData } = useQuery({
-        queryKey: ['agent-permissions', agentId],
-        queryFn: () => agentApi.getPermissions(agentId),
-        enabled: !!agentId,
-    });
-
-    const isOwner = permData?.is_owner ?? false;
-    const canManageAccessPermissions = isOwner || isAdmin;
-
-    const handleScopeChange = async (newScope: string) => {
-        if (!canManageAccessPermissions) return;
-        try {
-            await agentApi.updatePermissions(agentId, {
-                scope_type: newScope,
-                scope_ids: [],
-                access_level: permData?.access_level || 'use',
-            });
-            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
-            queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-        } catch (e) {
-            console.error('Failed to update permissions', e);
-        }
-    };
-
-    const handleAccessLevelChange = async (newLevel: string) => {
-        if (!canManageAccessPermissions) return;
-        try {
-            await agentApi.updatePermissions(agentId, {
-                scope_type: permData?.scope_type || 'company',
-                scope_ids: permData?.scope_ids || [],
-                access_level: newLevel,
-            });
-            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
-            queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-        } catch (e) {
-            console.error('Failed to update access level', e);
-        }
-    };
-
-    const currentScope = permData?.scope_type || 'company';
-    const currentAccessLevel = permData?.access_level || 'use';
-    const scopeNames = permData?.scope_names || [];
 
     return (
         <div>
@@ -211,162 +149,6 @@ export default function OpenClawSettings({ agent, agentId, isAdmin = false }: Op
                     </div>
                 )}
             </div>
-
-            {/* ── Permissions ── */}
-            <div className="card" style={{ marginBottom: '12px' }}>
-                <h4 style={{ marginBottom: '12px' }}>
-                    {t('agent.settings.perm.title', 'Access Permissions')}
-                </h4>
-                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-                    {t('agent.settings.perm.description', 'Control who can see and interact with this agent. Only the creator or admin can change this.')}
-                </p>
-
-                {/* Scope Selection */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                    {(['company', 'user'] as const).map((scope) => (
-                        <label
-                            key={scope}
-                            style={{
-                                display: 'flex', alignItems: 'center', gap: '10px',
-                                padding: '12px 14px', borderRadius: '8px',
-                                cursor: canManageAccessPermissions ? 'pointer' : 'default',
-                                border: currentScope === scope
-                                    ? '1px solid var(--accent-primary)'
-                                    : '1px solid var(--border-subtle)',
-                                background: currentScope === scope
-                                    ? 'rgba(99,102,241,0.06)'
-                                    : 'transparent',
-                                opacity: canManageAccessPermissions ? 1 : 0.7,
-                                transition: 'all 0.15s',
-                            }}
-                        >
-                            <input
-                                type="radio"
-                                name="perm_scope_oc"
-                                checked={currentScope === scope}
-                                disabled={!canManageAccessPermissions}
-                                onChange={() => handleScopeChange(scope)}
-                                style={{ accentColor: 'var(--accent-primary)' }}
-                            />
-                            <div>
-                                <div style={{ fontWeight: 500, fontSize: '13px' }}>
-                                    {scope === 'company'
-                                        ? t('agent.settings.perm.companyWide', 'Company-wide')
-                                        : t('agent.settings.perm.onlyMe', 'Only Me')}
-                                </div>
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                    {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
-                                    {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
-                                </div>
-                            </div>
-                        </label>
-                    ))}
-                </div>
-
-                {/* Access Level for company scope */}
-                {currentScope === 'company' && canManageAccessPermissions && (
-                    <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '12px' }}>
-                        <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
-                            {t('agent.settings.perm.defaultAccess', 'Default Access Level')}
-                        </label>
-                        <div style={{ display: 'flex', gap: '8px' }}>
-                            {[
-                                { val: 'use', label: t('agent.settings.perm.useAccess', 'Use'), desc: t('agent.settings.perm.useAccessDesc', 'Task, Chat, Tools, Skills, Workspace') },
-                                { val: 'manage', label: t('agent.settings.perm.manageAccess', 'Manage'), desc: t('agent.settings.perm.manageAccessDesc', 'Full access including Settings, Mind, Relationships') },
-                            ].map(opt => (
-                                <label key={opt.val}
-                                    style={{
-                                        flex: 1, padding: '10px 12px', borderRadius: '8px',
-                                        cursor: 'pointer',
-                                        border: currentAccessLevel === opt.val
-                                            ? '1px solid var(--accent-primary)'
-                                            : '1px solid var(--border-subtle)',
-                                        background: currentAccessLevel === opt.val
-                                            ? 'rgba(99,102,241,0.06)'
-                                            : 'transparent',
-                                        transition: 'all 0.15s',
-                                    }}
-                                >
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                        <input type="radio" name="access_level_oc" checked={currentAccessLevel === opt.val}
-                                            onChange={() => handleAccessLevelChange(opt.val)}
-                                            style={{ accentColor: 'var(--accent-primary)' }} />
-                                        <span style={{ fontWeight: 500, fontSize: '13px' }}>{opt.label}</span>
-                                    </div>
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px', marginLeft: '20px' }}>{opt.desc}</div>
-                                </label>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
-                {currentScope !== 'company' && scopeNames.length > 0 && (
-                    <div style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        <span style={{ fontWeight: 500 }}>{t('agent.settings.perm.currentAccess', 'Current access')}:</span>{' '}
-                        {scopeNames.map((s: any) => s.name).join(', ')}
-                    </div>
-                )}
-
-                {!canManageAccessPermissions && (
-                    <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
-                        {t('agent.settings.perm.readOnly', 'Only the creator or admin can change permissions')}
-                    </div>
-                )}
-            </div>
-
-            {/* ── Danger Zone: Delete Agent ── */}
-            {isOwner && (
-                <div className="card" style={{
-                    marginBottom: '12px',
-                    border: '1px solid rgba(255,80,80,0.2)',
-                }}>
-                    <h4 style={{ marginBottom: '4px', color: 'var(--error)' }}>
-                        {t('openclaw.dangerZone')}
-                    </h4>
-                    <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                        {t('openclaw.deleteWarning')}
-                    </p>
-
-                    {showDeleteConfirm ? (
-                        <div style={{
-                            padding: '14px', borderRadius: '8px',
-                            background: 'rgba(255,80,80,0.06)', border: '1px solid rgba(255,80,80,0.2)',
-                        }}>
-                            <div style={{ fontSize: '13px', fontWeight: 500, marginBottom: '8px', color: 'var(--text-primary)' }}>
-                                {t('openclaw.confirmDelete', { name: agent?.name })}
-                            </div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-                                {t('openclaw.irreversible')}
-                            </div>
-                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                                <button
-                                    className="btn btn-secondary"
-                                    onClick={() => setShowDeleteConfirm(false)}
-                                    style={{ padding: '5px 14px', fontSize: '12px' }}
-                                >
-                                    {t('common.cancel')}
-                                </button>
-                                <button
-                                    className="btn btn-danger"
-                                    onClick={handleDelete}
-                                    disabled={deleting}
-                                    style={{ padding: '5px 14px', fontSize: '12px' }}
-                                >
-                                    {deleting ? t('openclaw.deleting') : t('openclaw.confirmDeleteBtn')}
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        <button
-                            className="btn btn-danger"
-                            onClick={() => setShowDeleteConfirm(true)}
-                            style={{ padding: '6px 20px', fontSize: '12px' }}
-                        >
-                            {t('openclaw.deleteAgent')}
-                        </button>
-                    )}
-                </div>
-            )}
         </div>
     );
 }

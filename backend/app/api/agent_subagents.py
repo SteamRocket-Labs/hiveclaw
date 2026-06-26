@@ -374,6 +374,11 @@ async def delete_agent_subagent(
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
     if access_level != "manage":
         raise HTTPException(status_code=403, detail="Deleting subagent definitions requires manage access")
+    if current_user.role not in ("org_admin", "platform_admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Sub-agent definition is an enterprise asset; only an admin can delete it.",
+        )
     try:
         deleted = definition_store_for_agent(agent_id).delete(name)
     except ValueError as exc:

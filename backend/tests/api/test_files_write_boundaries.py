@@ -20,7 +20,12 @@ async def test_file_api_rejects_direct_soul_and_skill_writes(tmp_path, monkeypat
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_access)
 
-    for path in ("soul.md", "skills/deploy-checklist/SKILL.md"):
+    for path in (
+        "soul.md",
+        "skills/deploy-checklist/SKILL.md",
+        "subagents/reviewer.md",
+        "enterprise_info/company_profile.md",
+    ):
         with pytest.raises(HTTPException) as exc_info:
             await files_api.write_file(
                 agent_id=agent_id,
@@ -34,6 +39,8 @@ async def test_file_api_rejects_direct_soul_and_skill_writes(tmp_path, monkeypat
 
     assert not (tmp_path / str(agent_id) / "soul.md").exists()
     assert not (tmp_path / str(agent_id) / "skills" / "deploy-checklist" / "SKILL.md").exists()
+    assert not (tmp_path / str(agent_id) / "subagents" / "reviewer.md").exists()
+    assert not (tmp_path / str(agent_id) / "enterprise_info" / "company_profile.md").exists()
 
 
 def test_file_api_rejects_skill_upload_guard():

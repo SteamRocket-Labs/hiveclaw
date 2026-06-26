@@ -17,6 +17,7 @@ from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.services.workflow_launch import inspect_workflow_confirmation_needs, start_ephemeral_workflow_for_agent
 from app.tools.decorator import ToolMeta, tool
+from app.tools.runtime import ToolExecutionRequest
 
 _PREVIEW_TTL_SECONDS = 60 * 60
 _WORKFLOW_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
@@ -200,7 +201,9 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="sensitive",
     )
 )
-async def start_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
+async def start_workflow(request: ToolExecutionRequest) -> str:
+    agent_id = request.context.agent_id
+    arguments = request.arguments
     definition = arguments.get("definition") or {}
     args = arguments.get("args") or {}
     ledger_todo_id = arguments.get("ledger_todo_id") or None
@@ -222,7 +225,10 @@ async def start_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
             agent_id=agent_id,
             definition=definition,
             args=args,
+            user_id=request.context.user_id,
             ledger_todo_id=ledger_todo_id,
+            parent_session_id=request.context.session_id,
+            root_session_id=request.context.session_id,
         )
     except (WorkflowCompileError, WorkflowAdmissionError, LookupError) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)

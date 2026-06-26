@@ -609,7 +609,7 @@ class TestHookEvents:
         assert HookEvent.TEAM_CLOSED == "team_closed"
         assert HookEvent.TEAMMATE_IDLE == "teammate_idle"
 
-    def test_session_end_restored_for_cc_parity(self) -> None:
+    def test_session_end_restored_for_baseline_standard(self) -> None:
         event_values = [e.value for e in HookEvent]
         assert "session_end" in event_values
 
@@ -696,7 +696,7 @@ class TestHookEvents:
         assert stop["handler_count"] == 1
         assert stop["blocking_supported"] is True
         assert stop["category"] == "turn"
-        assert stop["cc_parity"] is True
+        assert stop["standard"] is True
         assert post_tool["handler_count"] == 0
         assert post_tool["blocking_supported"] is False
         reg.clear()

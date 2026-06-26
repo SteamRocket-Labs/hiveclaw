@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 
 from app.tools.plan_gate_registry import hard_gated_action_kind
+from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
 
 def _low_risk_definition() -> dict:
@@ -48,6 +50,25 @@ def _high_risk_definition() -> dict:
             },
         ],
     }
+
+
+def _start_request(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    session_id: str = "session-workflow",
+) -> ToolExecutionRequest:
+    return ToolExecutionRequest(
+        tool_name="start_workflow",
+        arguments=arguments,
+        context=ToolExecutionContext(
+            agent_id=agent_id,
+            user_id=uuid.uuid4(),
+            tenant_id=str(uuid.uuid4()),
+            workspace=Path("/tmp/hive-workflow-test"),
+            session_id=session_id,
+        ),
+    )
 
 
 # ── plan-gate registry (early intercept) ──────────────────────────
@@ -141,24 +162,29 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
         await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
     )
     result = await workflow_handlers.start_workflow(
-        agent_id,
-        {
-            "definition": _low_risk_definition(),
-            "args": {},
-            "preview_id": preview["preview_id"],
-        },
+        _start_request(
+            agent_id,
+            {
+                "definition": _low_risk_definition(),
+                "args": {},
+                "preview_id": preview["preview_id"],
+            },
+        )
     )
     payload = json.loads(result)
 
     assert payload["status"] == "completed"
     assert captured["agent_id"] == agent_id
     assert captured["definition"]["name"] == "read-probe"
+    assert captured["parent_session_id"] == "session-workflow"
 
 
 async def test_start_workflow_rejects_missing_preview_binding():
     from app.tools.handlers import workflow as workflow_handlers
 
-    result = await workflow_handlers.start_workflow(uuid.uuid4(), {"definition": _low_risk_definition(), "args": {}})
+    result = await workflow_handlers.start_workflow(
+        _start_request(uuid.uuid4(), {"definition": _low_risk_definition(), "args": {}})
+    )
     payload = json.loads(result)
 
     assert payload["ok"] is False
@@ -180,12 +206,14 @@ async def test_start_workflow_rejects_mutated_definition_after_preview(monkeypat
     mutated["steps"][0]["task"] = "Different task"
 
     result = await workflow_handlers.start_workflow(
-        agent_id,
-        {
-            "definition": mutated,
-            "args": {},
-            "preview_id": preview["preview_id"],
-        },
+        _start_request(
+            agent_id,
+            {
+                "definition": mutated,
+                "args": {},
+                "preview_id": preview["preview_id"],
+            },
+        )
     )
     payload = json.loads(result)
 
@@ -211,12 +239,15 @@ async def test_start_workflow_passes_ledger_todo_id(monkeypatch):
         await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
     )
     await workflow_handlers.start_workflow(
-        agent_id,
-        {
-            "definition": _low_risk_definition(),
-            "args": {},
-            "ledger_todo_id": "todo-9",
-            "preview_id": preview["preview_id"],
-        },
+        _start_request(
+            agent_id,
+            {
+                "definition": _low_risk_definition(),
+                "args": {},
+                "ledger_todo_id": "todo-9",
+                "preview_id": preview["preview_id"],
+            },
+        )
     )
     assert captured["ledger_todo_id"] == "todo-9"
+    assert captured["parent_session_id"] == "session-workflow"

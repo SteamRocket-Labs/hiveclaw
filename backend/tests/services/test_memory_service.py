@@ -409,18 +409,8 @@ async def test_persist_runtime_memory_strips_null_bytes_from_summary(monkeypatch
     assert fake_session.commits == 1
 
 
-def test_extract_summary_ignores_llm_error_assistant_messages():
-    from app.services.memory_service import _extract_summary
-
-    summary = _extract_summary(
-        [
-            {"role": "user", "content": "查一下日程"},
-            {"role": "assistant", "content": "[LLM Error] AI 模型服务方已限流，请稍后重试。"},
-        ]
-    )
-
-    assert "AI 模型服务方已限流" not in summary
-    assert "查一下日程" in summary
+# ``_extract_summary`` re-export removed with the dead mechanical fallback (B-6);
+# the LLM-holds-without-fallback behavior is covered by the test below.
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,15 @@ _FAKE_USER = SimpleNamespace(
     tenant_id=_TENANT_ID,
     is_active=True,
 )
+_FAKE_ADMIN_USER = SimpleNamespace(
+    id=_USER_ID,
+    username="admin",
+    email="admin@test.com",
+    display_name="管理员",
+    role="org_admin",
+    tenant_id=_TENANT_ID,
+    is_active=True,
+)
 
 _FAKE_MAIN_AGENT = SimpleNamespace(
     id=_MAIN_AGENT_ID,
@@ -87,13 +96,13 @@ class _FakeDB:
         self.deleted.append(obj)
 
 
-def _build_client(*, main_agent=None, agents_by_id=None):
+def _build_client(*, main_agent=None, agents_by_id=None, user=None):
     app = FastAPI()
     app.include_router(router)
     fake_db = _FakeDB(main_agent=main_agent, agents_by_id=agents_by_id)
 
     async def override_user():
-        return _FAKE_USER
+        return user or _FAKE_USER
 
     async def override_db():
         yield fake_db
@@ -220,8 +229,8 @@ def test_update_own_main_agent_forbidden():
 # ─── DELETE /desktop/agents/{id} ────────────────────────
 
 
-def test_delete_own_sub_agent():
-    """User can soft-delete their own sub-agent without removing identity rows."""
+def test_member_cannot_delete_own_sub_agent():
+    """Sub-agent is an enterprise asset; members cannot delete even their own sub-agent."""
     sub = SimpleNamespace(
         id=_SUB_AGENT_ID,
         name="要删的",
@@ -232,6 +241,26 @@ def test_delete_own_sub_agent():
         deactivated_at=None,
     )
     client, fake_db = _build_client(agents_by_id={_SUB_AGENT_ID: sub})
+    with patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete:
+        resp = client.delete(f"/desktop/agents/{_SUB_AGENT_ID}")
+
+    assert resp.status_code == 403
+    assert fake_db.deleted == []
+    soft_delete.assert_not_awaited()
+
+
+def test_admin_can_delete_own_sub_agent():
+    """Admin can soft-delete a desktop sub-agent asset."""
+    sub = SimpleNamespace(
+        id=_SUB_AGENT_ID,
+        name="要删的",
+        agent_kind="sub",
+        owner_user_id=_USER_ID,
+        parent_agent_id=_MAIN_AGENT_ID,
+        deleted_at=None,
+        deactivated_at=None,
+    )
+    client, fake_db = _build_client(agents_by_id={_SUB_AGENT_ID: sub}, user=_FAKE_ADMIN_USER)
     with (
         patch.object(agents_mod, "bump_sync_version", new_callable=AsyncMock, return_value=4),
         patch.object(agents_mod, "soft_delete_agent", new_callable=AsyncMock) as soft_delete,
@@ -261,9 +290,16 @@ def test_deleted_sub_agent_is_not_editable():
     assert resp.status_code == 404
 
 
-def test_delete_nonexistent_agent():
-    """Deleting a non-existent agent returns 404."""
+def test_member_delete_nonexistent_agent_forbidden_before_lookup():
+    """Members cannot use delete to probe whether an enterprise asset exists."""
     client, _ = _build_client()
+    resp = client.delete(f"/desktop/agents/{uuid4()}")
+    assert resp.status_code == 403
+
+
+def test_admin_delete_nonexistent_agent_returns_404():
+    """Admins get a normal 404 after passing the enterprise delete gate."""
+    client, _ = _build_client(user=_FAKE_ADMIN_USER)
     resp = client.delete(f"/desktop/agents/{uuid4()}")
     assert resp.status_code == 404
 

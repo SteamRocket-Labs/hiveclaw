@@ -408,6 +408,69 @@ describe('chatRuntime helpers', () => {
     });
   });
 
+  it('maps session-native hook and child runtime events into event messages', () => {
+    const hook = getRuntimeEventMessage({
+      type: 'hook_progress',
+      message: 'Running PreToolUse hook',
+      title: 'Hook Progress',
+      status: 'running',
+      hook_event: 'PreToolUse',
+      hook_key: 'guard',
+      runtime_task_id: 'rt-1',
+      turn_id: 'turn-1',
+    });
+
+    expect(hook).toMatchObject({
+      role: 'event',
+      eventType: 'hook_progress',
+      eventTitle: 'Hook Progress',
+      eventStatus: 'running',
+      content: 'Running PreToolUse hook',
+      eventRuntimeTaskId: 'rt-1',
+      eventTurnId: 'turn-1',
+      eventHookEvent: 'PreToolUse',
+      eventHookKey: 'guard',
+    });
+
+    const child = getRuntimeEventMessage({
+      type: 'child_session',
+      message: 'Research worker completed.',
+      title: 'Child Session',
+      status: 'completed',
+      child_session_id: 'child-1',
+      parent_session_id: 'parent-1',
+      runtime_task_id: 'rt-child',
+    });
+
+    expect(child).toMatchObject({
+      role: 'event',
+      eventType: 'child_session',
+      eventTitle: 'Child Session',
+      eventStatus: 'completed',
+      eventChildSessionId: 'child-1',
+      eventParentSessionId: 'parent-1',
+      eventRuntimeTaskId: 'rt-child',
+    });
+
+    const schedule = getRuntimeEventMessage({
+      type: 'schedule',
+      message: 'Schedule created: daily briefing',
+      title: 'Schedule',
+      status: 'created',
+      schedule_id: 'schedule-1',
+      runtime_task_id: 'rt-schedule',
+    });
+
+    expect(schedule).toMatchObject({
+      role: 'event',
+      eventType: 'schedule',
+      eventTitle: 'Schedule',
+      eventStatus: 'created',
+      eventScheduleId: 'schedule-1',
+      eventRuntimeTaskId: 'rt-schedule',
+    });
+  });
+
   it('treats websocket info events as transport notices instead of chat messages', () => {
     expect(
       getTransportNotice({
@@ -514,6 +577,170 @@ describe('chatRuntime helpers', () => {
           previewKind: 'markdown',
         },
       ],
+    });
+  });
+
+  it('preserves artifact revision metadata for session-native delivery', () => {
+    const artifacts = extractArtifactParts({
+      role: 'assistant',
+      content: 'Updated report.',
+      parts: [
+        {
+          type: 'artifact',
+          artifact_id: 'artifact-1',
+          name: 'report.md',
+          path: 'workspace/report.md',
+          preview_kind: 'markdown',
+          source: 'deep_research',
+          runtime_task_id: 'rt-1',
+          revision_id: 'rev-2',
+          action: 'updated',
+          tool_call_id: 'tool-9',
+          diff_summary: '+3 -1',
+        },
+      ],
+    });
+
+    expect(artifacts).toEqual([
+      {
+        id: 'artifact-1',
+        name: 'report.md',
+        path: 'workspace/report.md',
+        previewKind: 'markdown',
+        source: 'deep_research',
+        mimeType: undefined,
+        size: undefined,
+        runtimeTaskId: 'rt-1',
+        revisionId: 'rev-2',
+        action: 'updated',
+        toolCallId: 'tool-9',
+        diffSummary: '+3 -1',
+      },
+    ]);
+  });
+
+  it('replays artifact delivery transcript events as session artifact cards', () => {
+    const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-artifact',
+      sequence: 42,
+      type: 'artifact_delivery',
+      event_type: 'artifact_delivery',
+      actor_type: 'system',
+      role: 'system',
+      content: 'artifact_delivery',
+      parts: [
+        {
+          type: 'artifact',
+          artifact_id: 'artifact-doc',
+          name: 'proposal.docx',
+          path: 'workspace/proposal.docx',
+          preview_kind: 'office',
+          source: 'workspace_write',
+        },
+      ],
+      created_at: '2026-06-25T12:00:00Z',
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: '',
+      id: 'evt-artifact',
+      timestamp: '2026-06-25T12:00:00Z',
+      artifacts: [
+        {
+          id: 'artifact-doc',
+          name: 'proposal.docx',
+          path: 'workspace/proposal.docx',
+          previewKind: 'office',
+          source: 'workspace_write',
+        },
+      ],
+    });
+  });
+
+  it('attaches artifact parts from tool result transcript events to the tool card', () => {
+    const next = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-tool-artifact',
+      sequence: 43,
+      type: 'tool_result',
+      event_type: 'tool_result',
+      actor_type: 'tool',
+      role: 'tool_call',
+      content: JSON.stringify({
+        name: 'office_document_apply',
+        args: { path: 'workspace/proposal.docx' },
+        status: 'done',
+        result: '{"ok": true}',
+      }),
+      parts: [
+        {
+          type: 'artifact',
+          artifact_id: 'artifact-doc',
+          name: 'proposal.docx',
+          path: 'workspace/proposal.docx',
+          preview_kind: 'office',
+        },
+      ],
+      created_at: '2026-06-25T12:00:00Z',
+    });
+
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toMatchObject({
+      role: 'tool_call',
+      toolName: 'office_document_apply',
+      artifacts: [
+        {
+          id: 'artifact-doc',
+          name: 'proposal.docx',
+          path: 'workspace/proposal.docx',
+          previewKind: 'office',
+        },
+      ],
+    });
+  });
+
+  it('does not duplicate artifact delivery when the assistant message already carries the artifact', () => {
+    const assistantEvent = {
+      id: 'evt-assistant',
+      sequence: 41,
+      type: 'assistant_message',
+      event_type: 'assistant_message',
+      actor_type: 'assistant',
+      role: 'assistant',
+      content: 'Proposal updated.',
+      parts: [
+        { type: 'text', text: 'Proposal updated.' },
+        {
+          type: 'artifact',
+          artifact_id: 'artifact-doc',
+          name: 'proposal.docx',
+          path: 'workspace/proposal.docx',
+          preview_kind: 'office',
+        },
+      ],
+      created_at: '2026-06-25T12:00:00Z',
+    };
+    const artifactEvent = {
+      ...assistantEvent,
+      id: 'evt-artifact',
+      sequence: 42,
+      type: 'artifact_delivery',
+      event_type: 'artifact_delivery',
+      actor_type: 'system',
+      role: 'system',
+      content: 'artifact_delivery',
+      parts: assistantEvent.parts.slice(1),
+    };
+
+    const withAssistant = applyTranscriptEvent(createEmptyTranscriptReplayState(), assistantEvent);
+    const withArtifactDelivery = applyTranscriptEvent(withAssistant, artifactEvent);
+
+    expect(withArtifactDelivery.messages).toHaveLength(1);
+    expect(withArtifactDelivery.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: 'Proposal updated.',
+      artifacts: [{ path: 'workspace/proposal.docx' }],
     });
   });
 

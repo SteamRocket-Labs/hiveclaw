@@ -943,6 +943,26 @@ async def execute_tool(
     )
 
 
+async def execute_session_permission_tool(
+    tool_name: str,
+    arguments: dict,
+    *,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    session_id: str,
+    permission_profile: Any,
+) -> str | ToolContentEnvelope:
+    """Replay a session-approved tool through the public governed runtime boundary."""
+    return await execute_tool(
+        tool_name,
+        arguments,
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id=session_id,
+        permission_profile=permission_profile,
+    )
+
+
 async def _execute_tool_inner(
     tool_name: str,
     arguments: dict,

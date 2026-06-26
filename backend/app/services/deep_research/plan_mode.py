@@ -231,6 +231,8 @@ async def deep_research_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
         user_id=user_id,
         workspace=workspace,
         plan_id=plan.id,
+        parent_session_id=getattr(plan, "session_id", None),
+        root_session_id=getattr(plan, "session_id", None),
     )
 
 

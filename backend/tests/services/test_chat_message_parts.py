@@ -275,6 +275,107 @@ def test_serialize_pack_activation_system_message_as_event():
     }]
 
 
+def test_serialize_session_native_runtime_system_events_as_events():
+    from app.services.chat_message_parts import serialize_chat_message
+
+    message = SimpleNamespace(
+        role="system",
+        content=(
+            '{"event_type":"hook_progress","message":"Running PreToolUse hook",'
+            '"status":"running","hook_event":"PreToolUse","hook_key":"guard",'
+            '"runtime_task_id":"rt-1","turn_id":"turn-1"}'
+        ),
+        created_at=datetime.now(timezone.utc),
+        thinking=None,
+    )
+
+    entry = serialize_chat_message(message)
+
+    assert entry["role"] == "event"
+    assert entry["eventType"] == "hook_progress"
+    assert entry["eventTitle"] == "Hook Progress"
+    assert entry["eventStatus"] == "running"
+    assert entry["parts"] == [{
+        "type": "event",
+        "event_type": "hook_progress",
+        "title": "Hook Progress",
+        "text": "Running PreToolUse hook",
+        "status": "running",
+        "hook_event": "PreToolUse",
+        "hook_key": "guard",
+        "runtime_task_id": "rt-1",
+        "turn_id": "turn-1",
+    }]
+
+
+def test_build_session_native_event_preserves_generic_metadata():
+    from app.services.chat_message_parts import build_session_native_event
+
+    event = build_session_native_event({
+        "type": "workflow_step",
+        "message": "Running gather-sources",
+        "status": "running",
+        "runtime_task_id": "rt-1",
+        "workflow_run_id": "wf-1",
+        "workflow_step_id": "step-2",
+    })
+
+    assert event["type"] == "workflow_step"
+    assert event["part"] == {
+        "type": "event",
+        "event_type": "workflow_step",
+        "title": "Workflow Step",
+        "text": "Running gather-sources",
+        "status": "running",
+        "runtime_task_id": "rt-1",
+        "workflow_run_id": "wf-1",
+        "workflow_step_id": "step-2",
+    }
+
+
+def test_artifact_parts_preserve_revision_metadata():
+    from app.services.chat_message_parts import serialize_chat_message
+
+    message = SimpleNamespace(
+        role="assistant",
+        content="Updated report.",
+        created_at=datetime.now(timezone.utc),
+        thinking=None,
+    )
+
+    entry = serialize_chat_message(
+        message,
+        artifacts=[
+            {
+                "artifact_id": "artifact-1",
+                "path": "workspace/report.md",
+                "name": "report.md",
+                "preview_kind": "markdown",
+                "source": "deep_research",
+                "runtime_task_id": "rt-1",
+                "revision_id": "rev-2",
+                "action": "updated",
+                "tool_call_id": "tool-9",
+                "diff_summary": "+3 -1",
+            }
+        ],
+    )
+
+    assert entry["artifacts"] == [{
+        "type": "artifact",
+        "artifact_id": "artifact-1",
+        "path": "workspace/report.md",
+        "name": "report.md",
+        "preview_kind": "markdown",
+        "source": "deep_research",
+        "runtime_task_id": "rt-1",
+        "revision_id": "rev-2",
+        "action": "updated",
+        "tool_call_id": "tool-9",
+        "diff_summary": "+3 -1",
+    }]
+
+
 def test_serialize_permission_system_message_preserves_enriched_metadata():
     from app.services.chat_message_parts import serialize_chat_message
 

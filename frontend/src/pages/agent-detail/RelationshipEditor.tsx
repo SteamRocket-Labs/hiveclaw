@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { put } from '../../api/core';
+import { agentApi } from '../../api/domains/agents';
 import { relationshipsApi } from '../../api/domains/relationships';
 import { usersApi } from '../../api/domains/users';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
@@ -24,6 +25,11 @@ export default function RelationshipEditor({ agentId, agent, readOnly = false }:
     queryFn: () => relationshipsApi.listA2ACollaborators(agentId),
     enabled: !!agentId,
   });
+  const { data: readOnlyAgentFallback = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => agentApi.list(tenantId) as Promise<any[]>,
+    enabled: !!tenantId && readOnly,
+  });
 
   const currentUser = useAuthStore((s) => s.user);
   const { data: fetchedUsers = [] } = useQuery({
@@ -36,8 +42,17 @@ export default function RelationshipEditor({ agentId, agent, readOnly = false }:
     : currentUser ? [{ id: currentUser.id, display_name: currentUser.display_name || currentUser.username, username: currentUser.username, email: currentUser.email || '' }]
     : [];
 
-  const sameOwnerAgents = a2aCollaborators?.same_owner_agents || [];
-  const collaborationGroups = a2aCollaborators?.collaboration_groups || [];
+  const hasGovernedCollaboratorProjection =
+    !!a2aCollaborators
+    && !Array.isArray(a2aCollaborators)
+    && Array.isArray((a2aCollaborators as any).same_owner_agents)
+    && Array.isArray((a2aCollaborators as any).collaboration_groups);
+  const sameOwnerAgents = hasGovernedCollaboratorProjection
+    ? (a2aCollaborators as any).same_owner_agents
+    : readOnlyAgentFallback.filter((peer: any) => peer.id !== agentId);
+  const collaborationGroups = hasGovernedCollaboratorProjection
+    ? (a2aCollaborators as any).collaboration_groups
+    : [];
 
   const [binding, setBinding] = useState(false);
   const [showPicker, setShowPicker] = useState(false);

@@ -16,6 +16,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
 from app.services.workflow_runtime_service import WorkflowRuntimeService
+import app.services.workflow_runtime_service as workflow_runtime
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -57,6 +58,30 @@ def service(owner_sessionmaker) -> WorkflowRuntimeService:
     return WorkflowRuntimeService(session_factory=owner_sessionmaker)
 
 
+@pytest.fixture()
+async def agent_in_db(owner_sessionmaker, tenant_id) -> uuid.UUID:
+    """A real Agent row (+ owning user) so a headless run can bind a ChatSession
+    against live FK constraints (agents.id / users.id)."""
+    from app.models.agent import Agent
+    from app.models.user import User
+
+    aid, uid = uuid.uuid4(), uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=uid,
+                username=f"u-{uid.hex[:10]}",
+                email=f"{uid.hex[:10]}@test.local",
+                password_hash="x",
+                display_name="WF Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await session.flush()
+        session.add(Agent(id=aid, tenant_id=tenant_id, name="wf-agent", role_description="w", creator_id=uid))
+    return aid
+
+
 def _ok_leaf(calls: list[LeafRequest] | None = None):
     async def leaf(request: LeafRequest) -> LeafOutcome:
         if calls is not None:
@@ -91,6 +116,46 @@ async def test_start_run_completes_and_journals(service, tenant_id, owner_sessio
     assert task.metadata_json["tenant_id"] == str(tenant_id)
     assert {s.step_id: s.status for s in steps} == {"scan": "done", "report": "done"}
     assert quota.allocated_tokens == 50_000
+
+
+async def test_start_run_projects_workflow_progress_into_parent_session(service, tenant_id, monkeypatch):
+    session_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    recorded: list[dict] = []
+
+    async def fake_append_session_event(**kwargs):
+        recorded.append(kwargs)
+        return None
+
+    monkeypatch.setattr(workflow_runtime, "append_session_event", fake_append_session_event, raising=False)
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_id,
+        user_id=user_id,
+        parent_session_id=session_id,
+    )
+
+    assert handle.outcome.status == "completed"
+    payloads = [call["metadata"] for call in recorded]
+    event_types = [payload["type"] for payload in payloads]
+    assert event_types[0] == "workflow_run"
+    assert event_types[-1] == "workflow_run"
+    assert event_types.count("workflow_step") >= 4
+    assert {call["session_id"] for call in recorded} == {str(session_id)}
+    assert payloads[0]["status"] == "running"
+    assert payloads[-1]["status"] == "completed"
+    assert payloads[-1]["workflow_run_id"] == str(handle.run_id)
+    assert payloads[-1]["runtime_task_id"] == str(handle.run_id)
+    step_payloads = [payload for payload in payloads if payload["type"] == "workflow_step"]
+    assert {payload["workflow_step_id"] for payload in step_payloads} == {"scan", "report"}
+    assert any(payload["status"] == "running" for payload in step_payloads)
+    assert any(payload["status"] == "done" for payload in step_payloads)
+    assert all(str(call["user_id"]) == str(user_id) for call in recorded)
 
 
 async def test_kill_then_resume_only_runs_remaining_step(service, tenant_id, owner_sessionmaker):
@@ -174,7 +239,9 @@ async def test_startup_resume_picks_up_running_run(service, tenant_id, owner_ses
     assert "completed" in statuses.values()
 
 
-async def test_startup_resume_picks_up_running_run_under_nonowner_rls(tenant_id, owner_sessionmaker, app_user_sessionmaker):
+async def test_startup_resume_picks_up_running_run_under_nonowner_rls(
+    tenant_id, owner_sessionmaker, app_user_sessionmaker
+):
     """The production app role is non-owner. Startup resume must use an audited
     discovery scan, then resume each run inside its tenant scope.
     """
@@ -273,7 +340,9 @@ async def test_load_run_returns_task_and_steps(service, tenant_id):
     assert {s.step_id for s in loaded.steps} == {"scan", "report"}
 
 
-async def test_runtime_feature_flag_fails_closed_before_creating_run(service, tenant_id, owner_sessionmaker, monkeypatch):
+async def test_runtime_feature_flag_fails_closed_before_creating_run(
+    service, tenant_id, owner_sessionmaker, monkeypatch
+):
     from app.config import get_settings
     from app.runtime.workflow_admission import WorkflowAdmissionError
 
@@ -420,3 +489,121 @@ async def test_list_runs_for_agent_scopes_counts_and_provenance(service, tenant_
     assert by_id[second.run_id].promoted_definition_id is None
     assert by_id[first.run_id].step_counts.get("done") == 2
     assert by_id[first.run_id].task.metadata_json["definition_json"]["name"] == "two-step"
+
+
+# ── §A-2: completion event carries the run's deliverable outputs ──────────
+
+
+async def test_completion_session_event_projects_run_outputs(service, tenant_id, monkeypatch):
+    """The session is the run's truth surface: the COMPLETED workflow_run event
+    must carry the per-step deliverable outputs, not just a status row.
+
+    Revert-sensitive: dropping the `outputs=outcome.outputs` wiring (or the
+    payload projection) makes the completion event outputs disappear → fail.
+    """
+    session_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    recorded: list[dict] = []
+
+    async def fake_append_session_event(**kwargs):
+        recorded.append(kwargs)
+        return None
+
+    monkeypatch.setattr(workflow_runtime, "append_session_event", fake_append_session_event, raising=False)
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_id,
+        user_id=user_id,
+        parent_session_id=session_id,
+    )
+
+    assert handle.outcome.status == "completed"
+    run_payloads = [call["metadata"] for call in recorded if call["metadata"]["type"] == "workflow_run"]
+    completion = run_payloads[-1]
+    assert completion["status"] == "completed"
+    # The deliverable outputs of every executed step are projected into session.
+    assert "outputs" in completion, "completion event must project the run outputs into the session"
+    assert set(completion["outputs"]) == {"scan", "report"}
+    assert completion["outputs"]["scan"] == {"echo": "Scan acme"}
+    assert completion["deliverable_step_ids"] == ["report", "scan"]
+    # The 'running' event has no outputs yet — outputs are a completion fact.
+    assert "outputs" not in run_payloads[0]
+
+
+# ── §A-6: a headless run (no parent session) becomes session-visible ──────
+
+
+async def test_headless_run_binds_a_chat_session(service, tenant_id, agent_in_db, owner_sessionmaker):
+    """A workflow started WITHOUT a parent session (standalone / scheduled /
+    admin / heartbeat) must create + bind a ChatSession so the run is visible
+    on a session timeline instead of being a silent no-op.
+
+    Revert-sensitive: removing `_ensure_run_session` (or its wiring) leaves the
+    run with no parent session → no ChatSession row → assertion fails.
+    """
+    from app.models.chat_session import ChatSession
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_in_db,
+        # NB: no parent_session_id / user_id — the headless case.
+    )
+    assert handle.outcome.status == "completed"
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        bound_sessions = (
+            (await session.execute(select(ChatSession).where(ChatSession.runtime_task_id == handle.run_id)))
+            .scalars()
+            .all()
+        )
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+
+    assert len(bound_sessions) == 1, "headless run must create exactly one bound ChatSession"
+    chat = bound_sessions[0]
+    assert chat.agent_id == agent_in_db
+    assert chat.tenant_id == tenant_id
+    assert chat.user_id is not None, "session must resolve a valid owning user (FK)"
+    assert chat.session_kind == "workflow"
+    # The run is now session-bound, not a silent no-op.
+    assert str(task.parent_session_id) == str(chat.id)
+    assert task.metadata_json["session_bound"] is True
+    assert task.metadata_json["headless_session_created"] is True
+
+
+async def test_run_with_parent_session_does_not_create_a_new_session(
+    service, tenant_id, agent_in_db, owner_sessionmaker
+):
+    """The existing 'has a parent session' path is preserved: a run started WITH
+    a parent session must NOT fabricate a second bound session."""
+    from app.models.chat_session import ChatSession
+
+    parent_session_id = uuid.uuid4()
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_in_db,
+        parent_session_id=parent_session_id,
+    )
+    assert handle.outcome.status == "completed"
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        bound_sessions = (
+            (await session.execute(select(ChatSession).where(ChatSession.runtime_task_id == handle.run_id)))
+            .scalars()
+            .all()
+        )
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+
+    assert bound_sessions == [], "a run with a parent session must not create a new bound session"
+    assert str(task.parent_session_id) == str(parent_session_id)
+    assert task.metadata_json.get("headless_session_created") is not True

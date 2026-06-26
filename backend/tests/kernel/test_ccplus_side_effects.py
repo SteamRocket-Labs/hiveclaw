@@ -322,3 +322,38 @@ async def test_done_payload_carries_original_streamed_tool_call_id() -> None:
 
     assert captured_done, "expected a done tool-call payload"
     assert captured_done[0]["tool_call_id"] == original_id
+
+
+def test_side_effect_channel_has_no_production_producer() -> None:
+    """B-3: the ``new_messages`` / ``terminal_signal`` side-effect channel is an
+    explicitly-tracked DEFERRED CONTRACT — the kernel consumes it (the tests
+    above prove that), but no production tool *constructs* an envelope with these
+    fields. Every live terminal/clarification flow uses the JSON-status marker
+    path instead, so the channel stays empty in practice.
+
+    This guard pins that deferral: it scans the live ``app/`` sources for a
+    producer (a ``ToolContentEnvelope(...)`` constructed with ``new_messages=`` or
+    ``terminal_signal=``). If one ever appears, the channel has been activated and
+    the DEFERRED-CONTRACT note on ``ToolContentEnvelope`` must be revisited — so
+    this test fails on purpose to force that review, rather than letting a
+    seeded-but-unwired field silently flip to live without documentation.
+    """
+    from pathlib import Path
+
+    app_root = Path(__file__).resolve().parents[2] / "app"
+    assert app_root.is_dir(), app_root
+    # The definition module declares the fields (annotations, not kwargs); exclude it.
+    definition = (app_root / "tools" / "result_envelope.py").resolve()
+
+    producers: list[str] = []
+    for path in app_root.rglob("*.py"):
+        if path.resolve() == definition:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "new_messages=" in text or "terminal_signal=" in text:
+            producers.append(str(path.relative_to(app_root)))
+
+    assert not producers, (
+        "ToolContentEnvelope side-effect channel gained a production producer "
+        f"({producers}); revisit the DEFERRED CONTRACT note in result_envelope.py."
+    )

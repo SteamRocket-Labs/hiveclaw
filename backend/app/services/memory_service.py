@@ -30,7 +30,7 @@ from app.models.tenant_setting import TenantSetting
 from app.models.user import User
 from app.runtime.context_budget import ContextBudget, compute_context_budget
 from app.services.agency_charter import AgentAccountabilityContext, build_default_accountability_context
-from app.services.conversation_summarizer import estimate_tokens, _extract_summary as _extract_summary
+from app.services.conversation_summarizer import estimate_tokens
 
 logger = logging.getLogger(__name__)
 

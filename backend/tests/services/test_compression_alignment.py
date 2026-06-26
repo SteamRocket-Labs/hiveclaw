@@ -11,7 +11,7 @@ from app.kernel.engine import (
     _MICROCOMPACT_KEEP_RECENT,
     _PTL_MAX_RETRIES,
 )
-from app.services.conversation_summarizer import _extract_summary, _SUMMARIZE_SYSTEM_PROMPT
+from app.services.conversation_summarizer import _SUMMARIZE_SYSTEM_PROMPT
 from app.services.llm_client import LLMMessage
 
 
@@ -183,38 +183,8 @@ class TestSummarizePrompt:
         assert "memory extraction runs as a separate pipeline" in normalized
 
 
-# ── G5: _extract_summary 11-section ──
-
-
-class TestExtractSummary:
-    def test_has_new_sections(self) -> None:
-        msgs = [
-            {"role": "user", "content": "Fix the login bug in auth.py"},
-            {"role": "assistant", "content": "I tried using session tokens but it failed. Then I fixed it with JWT."},
-        ]
-        result = _extract_summary(msgs)
-        assert "**Primary Request and Intent:**" in result
-        assert "**Problem Solving:**" in result
-        assert "**Current Work:**" in result
-
-    def test_no_recovery_context_field(self) -> None:
-        """P3-2: recovery pointers are injected by the wrapper, not emitted as a
-        summary field (keeps mechanical fallback consistent with the LLM format)."""
-        msgs = [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}]
-        result = _extract_summary(msgs)
-        assert "**Recovery Context:**" not in result
-        assert "**Recovery Context:**" not in _extract_summary([])
-
-    def test_problem_solving_extracted(self) -> None:
-        msgs = [
-            {"role": "user", "content": "Debug the crash"},
-            {"role": "assistant", "content": "I tried restarting the service but that didn't work."},
-            {"role": "assistant", "content": "The fix was to update the config."},
-        ]
-        result = _extract_summary(msgs)
-        assert "tried" in result.lower() or "fix" in result.lower()
-
-    def test_empty_messages(self) -> None:
-        result = _extract_summary([])
-        assert "Primary Request and Intent" in result or "Task Ledger" in result
+# G5's mechanical ``_extract_summary`` 11-section fallback was removed as dead
+# code (B-6): it had no live caller — compaction summarization runs through the
+# LLM ``_SUMMARIZE_SYSTEM_PROMPT`` path covered above. No replacement tests are
+# needed; the deleted helper is no longer importable.
 

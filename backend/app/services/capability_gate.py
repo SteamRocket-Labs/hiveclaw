@@ -380,7 +380,8 @@ async def check_capability(
     Lookup order:
     1. Agent-specific policy (tenant_id + agent_id + capability)
     2. Tenant default policy (tenant_id + agent_id=NULL + capability)
-    3. No policy → escalate to approval (fail-closed; no silent grant)
+    3. No policy on core read/discovery tools → allow (explicit policies still win)
+    4. No policy on all other mapped tools → mark as session-permission required.
 
     P1-W2-8: tools missing from CAPABILITY_MAP are always counted; under
     `STRICT_CAPABILITY_MAPPING=True` they are denied (fail-closed).
@@ -437,6 +438,19 @@ async def check_capability(
         policy = result.scalar_one_or_none()
 
     if not policy:
+        if tool_name in _CAPABILITY_GATE_EXEMPT_TOOLS:
+            logger.info(
+                "Capability policy missing for exempt read/discovery tool: tool=%s capability=%s agent=%s tenant=%s — allowing",
+                tool_name,
+                capability,
+                agent_id,
+                tenant_id,
+            )
+            return CapabilityCheckResult(
+                allowed=True,
+                capability=capability,
+                policy_found=False,
+            )
         logger.warning(
             "Capability policy missing: tool=%s capability=%s agent=%s tenant=%s — escalating",
             tool_name,
@@ -484,32 +498,35 @@ async def check_capability(
     return CapabilityCheckResult(allowed=True, capability=capability, policy_found=True)
 
 
-# Allowed values for the per-turn no-policy default. "escalate" is the
-# fail-closed default that preserves the historical hardcoded behavior.
-_NO_POLICY_DECISIONS: frozenset[str] = frozenset({"escalate", "deny", "allow"})
+# Compatibility values for older PermissionProfileV1.default_decision snapshots.
+# Live governance now resolves no-policy tools through CC session permission
+# modes; legacy "escalate" maps to the same local ask surface, not Hive L3
+# approval.
+_NO_POLICY_DECISIONS: frozenset[str] = frozenset({"ask", "deny", "allow"})
+_NO_POLICY_DECISION_ALIASES: dict[str, str] = {
+    "escalate": "ask",
+}
 
 
 def resolve_no_policy_decision(profile: "PermissionProfileV1 | None") -> str:
     """Route the *mapped-capability-no-policy* outcome through PermissionProfileV1.
 
-    ``check_capability`` returns ``escalate_to_l3=True`` (with ``policy_found=False``)
-    when a tool maps to a known capability but no admin ``CapabilityPolicy`` row
-    exists. Historically that was a hardcoded "escalate to L3 approval". This is
-    the D-12 wiring seam: the per-turn ``PermissionProfileV1.default_decision``
-    now governs that branch so a profile can:
+    This helper remains for persisted legacy profiles. Live governance performs
+    the complete mode-aware decision in ``app.tools.governance`` because it
+    needs the tool name and arguments. The compatibility mapping is:
 
-      * ``"escalate"`` (default) → request L3 approval — identical to the
-        previous hardcoded behavior, so the existing baseline is unchanged;
-      * ``"deny"``               → block the tool outright (no approval prompt);
-      * ``"allow"``              → permit the tool despite the missing policy.
+      * ``"ask"`` / legacy ``"escalate"`` → local session permission request;
+      * ``"deny"``                        → block the tool outright;
+      * ``"allow"``                       → permit the tool despite no policy.
 
-    ``None`` / unknown values fall back to the fail-closed ``"escalate"`` so a
-    malformed profile never silently widens authority.
+    ``None`` / unknown values fall back to ``"ask"`` so a malformed profile
+    never silently widens authority.
     """
     if profile is None:
-        return "escalate"
-    decision = (getattr(profile, "default_decision", None) or "escalate").strip().lower()
-    return decision if decision in _NO_POLICY_DECISIONS else "escalate"
+        return "ask"
+    decision = (getattr(profile, "default_decision", None) or "ask").strip().lower()
+    decision = _NO_POLICY_DECISION_ALIASES.get(decision, decision)
+    return decision if decision in _NO_POLICY_DECISIONS else "ask"
 
 
 def get_all_capabilities() -> list[dict]:

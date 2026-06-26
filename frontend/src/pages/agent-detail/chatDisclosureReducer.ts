@@ -52,6 +52,34 @@ type TimelineBuildOptions = {
 const FILE_TOOL_PREFIXES = ['read_', 'write_', 'edit_', 'list_', 'delete_'];
 const SEARCH_TOOL_PREFIXES = ['web_', 'search', 'firecrawl', 'xcrawl'];
 const COMMAND_TOOLS = new Set(['execute_code', 'run_command']);
+const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
+  'permission',
+  'permission_request',
+  'permission_resolved',
+  'session_compact',
+  'tool_group_activation',
+  'pack_activation',
+  'deferred_tools_delta',
+  'team_memory',
+  'hook_progress',
+  'hook_summary',
+  'hook_attachment',
+  'hook_blocked',
+  'workflow_run',
+  'workflow_step',
+  'dynamic_workflow',
+  'deep_research',
+  'child_session',
+  'subagent',
+  'team_member',
+  'schedule',
+  'schedule_fire',
+  'goal',
+  'once',
+  'memory_candidate',
+  'artifact_update',
+  'artifact_delivery',
+]);
 
 function compactValue(value: unknown): string {
   if (typeof value === 'string') return value.length > 80 ? `${value.slice(0, 77)}...` : value;
@@ -78,6 +106,23 @@ function stepIdForMessage(message: AgentChatMessage, index: number): string {
 
 function eventTitle(message: AgentChatMessage): string {
   return message.eventTitle || message.eventType || 'Runtime event';
+}
+
+function eventMetadataSummary(message: AgentChatMessage): string {
+  const parts = [
+    message.eventChildSessionId ? `child:${message.eventChildSessionId}` : '',
+    message.eventRuntimeTaskId ? `run:${message.eventRuntimeTaskId}` : '',
+    message.eventWorkflowRunId ? `workflow:${message.eventWorkflowRunId}` : '',
+    message.eventWorkflowStepId ? `step:${message.eventWorkflowStepId}` : '',
+    message.eventDeepResearchRunId ? `research:${message.eventDeepResearchRunId}` : '',
+    message.eventScheduleFireId ? `fire:${message.eventScheduleFireId}` : '',
+    message.eventScheduleId ? `schedule:${message.eventScheduleId}` : '',
+    message.eventGoalId ? `goal:${message.eventGoalId}` : '',
+    message.eventOnceId ? `once:${message.eventOnceId}` : '',
+    message.eventArtifactId ? `artifact:${message.eventArtifactId}` : '',
+    message.eventRevisionId ? `rev:${message.eventRevisionId}` : '',
+  ].filter(Boolean);
+  return parts.join(' · ');
 }
 
 export function getDisclosureStepSummary(message: AgentChatMessage): string {
@@ -107,7 +152,9 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
   }
 
   if (message.role === 'event') {
-    return compactText(message.content || message.eventReason || message.eventNextStep || '');
+    return [compactText(message.content || message.eventReason || message.eventNextStep || ''), eventMetadataSummary(message)]
+      .filter(Boolean)
+      .join(' · ');
   }
 
   return '';
@@ -137,6 +184,11 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'session_compact') return 'compaction';
   if (message.eventType === 'permission') return 'permission';
   if (message.eventType === 'tool_group_activation' || message.eventType === 'pack_activation') return 'tool';
+  if (message.eventType === 'workflow_run' || message.eventType === 'workflow_step' || message.eventType === 'dynamic_workflow') return 'workflow';
+  if (message.eventType === 'child_session' || message.eventType === 'subagent' || message.eventType === 'team_member') return 'subagent';
+  if (message.eventType === 'schedule' || message.eventType === 'schedule_fire' || message.eventType === 'once') return 'trigger';
+  if (message.eventType === 'deep_research') return 'deep_research';
+  if (message.eventType === 'artifact_update' || message.eventType === 'artifact_delivery') return 'artifact';
   return 'event';
 }
 
@@ -148,6 +200,13 @@ function statusForMessage(message: AgentChatMessage): RunStepStatus {
     return message.toolStatus === 'running' ? 'running' : 'done';
   }
   if (message.role === 'assistant') return 'done';
+  if (message.role === 'event') {
+    const status = String(message.eventStatus || '').toLowerCase();
+    if (status === 'running' || status === 'in_progress' || status === 'pending') return 'running';
+    if (status === 'blocked' || status === 'approval_required' || status === 'session_permission_required') return 'blocked';
+    if (status === 'failed' || status === 'error') return 'failed';
+    if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+  }
   return 'done';
 }
 
@@ -155,7 +214,7 @@ export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
   if (message.role === 'tool_call') return true;
   if (message.role === 'assistant') return Boolean(!message.content?.trim() && message.thinking?.trim());
   if (message.role === 'event') {
-    return Boolean(message.eventType === 'session_compact' || message.eventType === 'permission' || message.eventType === 'tool_group_activation' || message.eventType === 'pack_activation');
+    return Boolean(message.eventType && SESSION_NATIVE_DISCLOSURE_EVENTS.has(message.eventType));
   }
   return false;
 }

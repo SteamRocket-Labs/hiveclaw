@@ -88,6 +88,7 @@ export interface StartSessionRunInput {
   display_content?: string;
   file_name?: string;
   plan_mode_requested?: boolean;
+  permission_mode?: 'auto' | 'default' | 'bypassPermissions';
   attachments?: Array<Record<string, unknown>>;
   parts?: Array<Record<string, unknown>>;
 }
@@ -110,6 +111,7 @@ export interface BranchSessionInput {
   file_name?: string;
   title?: string;
   start_run?: boolean;
+  permission_mode?: 'auto' | 'default' | 'bypassPermissions';
   attachments?: Array<Record<string, unknown>>;
   parts?: Array<Record<string, unknown>>;
 }
@@ -210,4 +212,11 @@ export const chatApi = {
     get<SessionRun | null>(`/agents/${agentId}/sessions/${sessionId}/runs/active`),
   cancelSessionRun: (agentId: string, sessionId: string, runId: string) =>
     post<SessionRun>(`/agents/${agentId}/sessions/${sessionId}/runs/${runId}/cancel`, {}),
+  resolveSessionPermission: (
+    agentId: string,
+    sessionId: string,
+    permissionRequestId: string,
+    input: { action: 'allow_once' | 'allow_session' | 'deny'; feedback?: string },
+  ) =>
+    post<unknown>(`/agents/${agentId}/sessions/${sessionId}/permissions/${permissionRequestId}/resolve`, input),
 };

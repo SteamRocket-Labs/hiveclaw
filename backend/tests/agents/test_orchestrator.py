@@ -1584,3 +1584,208 @@ class TestDelegationResultSerialization:
         result = AgentDelegationResult(content="ok", child_session_id="cs", trace_id="t", depth=1)
         # Will raise on malformed JSON.
         json.loads(result.to_json())
+
+
+def _capture_parent_session_events(monkeypatch):
+    """Stub tenant_scoped_session + append_session_event, returning captured calls."""
+    import contextlib
+
+    captured: list[dict] = []
+
+    class _FakeDB:
+        async def commit(self):
+            return None
+
+    @contextlib.asynccontextmanager
+    async def fake_tenant_scoped_session(_tenant=None):
+        yield _FakeDB()
+
+    async def fake_append_session_event(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", fake_tenant_scoped_session)
+    monkeypatch.setattr("app.services.chat_transcript.append_session_event", fake_append_session_event)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_delegation_completion_projects_child_session_event_to_parent(monkeypatch):
+    """Async delegation completion must append a child_session event to the parent
+    session timeline (parity with subagent_run_service), not only update RuntimeTask.
+
+    Revert-sensitive: removing the parent projection in
+    `_project_delegation_completion_to_parent` drops the captured event and fails this.
+    """
+    from app.agents.orchestrator import AgentDelegationRequest, _project_delegation_completion_to_parent
+
+    captured = _capture_parent_session_events(monkeypatch)
+
+    parent_session_id = uuid4().hex
+    child_session_id = uuid4().hex
+    parent_agent_id = uuid4()
+    tenant_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Researcher", tenant_id=tenant_id)
+
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "go"}],
+        owner_id=uuid4(),
+        session_id=child_session_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id=parent_session_id,
+        trace_id="trace-xyz",
+        depth=1,
+        tenant_id=tenant_id,
+        runtime_task_id="task-1",
+    )
+
+    await _project_delegation_completion_to_parent(
+        request=request,
+        task_id="task-1",
+        status="completed",
+        summary="Found the answer.",
+    )
+
+    import uuid as _uuid
+
+    assert len(captured) == 1, "expected exactly one parent-session projection event"
+    event = captured[0]
+    assert _uuid.UUID(str(event["session_id"])) == _uuid.UUID(parent_session_id)
+    assert event["event_type"] == "child_session"
+    assert _uuid.UUID(event["metadata"]["child_session_id"]) == _uuid.UUID(child_session_id)
+    assert event["metadata"]["status"] == "completed"
+    assert event["metadata"]["reason"] == "delegation_completed"
+    assert event["content"] == "Found the answer."
+    assert event["listed_surface"] == "chat"
+
+
+@pytest.mark.asyncio
+async def test_delegation_failure_projects_failed_child_session_event_to_parent(monkeypatch):
+    """Failed delegations must also surface on the parent timeline with a failed reason."""
+    from app.agents.orchestrator import AgentDelegationRequest, _project_delegation_completion_to_parent
+
+    captured = _capture_parent_session_events(monkeypatch)
+
+    parent_session_id = uuid4().hex
+    request = AgentDelegationRequest(
+        target=SimpleNamespace(id=uuid4(), name="Worker", tenant_id=uuid4()),
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "go"}],
+        owner_id=uuid4(),
+        session_id=uuid4().hex,
+        parent_agent_id=uuid4(),
+        parent_session_id=parent_session_id,
+        trace_id="trace-fail",
+        depth=2,
+        tenant_id=uuid4(),
+        runtime_task_id="task-2",
+    )
+
+    await _project_delegation_completion_to_parent(
+        request=request,
+        task_id="task-2",
+        status="failed",
+        summary="It broke.",
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["metadata"]["status"] == "failed"
+    assert captured[0]["metadata"]["reason"] == "delegation_failed"
+
+
+@pytest.mark.asyncio
+async def test_delegation_completion_skips_projection_for_headless_parent(monkeypatch):
+    """Headless delegation (no parent_session_id) must skip projection without error."""
+    from app.agents.orchestrator import AgentDelegationRequest, _project_delegation_completion_to_parent
+
+    captured = _capture_parent_session_events(monkeypatch)
+
+    request = AgentDelegationRequest(
+        target=SimpleNamespace(id=uuid4(), name="Worker", tenant_id=uuid4()),
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "go"}],
+        owner_id=uuid4(),
+        session_id=uuid4().hex,
+        parent_agent_id=uuid4(),
+        parent_session_id=None,
+        trace_id="trace-headless",
+        depth=1,
+        tenant_id=uuid4(),
+        runtime_task_id="task-3",
+    )
+
+    await _project_delegation_completion_to_parent(
+        request=request,
+        task_id="task-3",
+        status="completed",
+        summary="done",
+    )
+
+    assert captured == [], "headless delegation must not project to a parent session"
+
+
+@pytest.mark.asyncio
+async def test_spawn_async_delegation_task_wires_parent_projection_on_completion(monkeypatch):
+    """The background completion path must call the parent projection on terminal state.
+
+    Revert-sensitive: removing the `_project_delegation_completion_to_parent` call from
+    `_spawn_async_delegation_task._run` leaves `projected` empty and fails this.
+    """
+    from app.agents.orchestrator import (
+        AgentDelegationResult,
+        _async_tasks,
+        _spawn_async_delegation_task,
+    )
+
+    projected: list[dict] = []
+
+    async def fake_delegate(request):
+        return AgentDelegationResult(
+            content="child output",
+            child_session_id=request.session_id,
+            trace_id=request.trace_id,
+            depth=request.depth,
+        )
+
+    async def fake_update_runtime_task_record(*_args, **_kwargs):
+        return True
+
+    async def fake_project(**kwargs):
+        projected.append(kwargs)
+
+    async def fake_plan_gate(_request):
+        return True, None
+
+    monkeypatch.setattr("app.agents.orchestrator._delegate", fake_delegate)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._project_delegation_completion_to_parent", fake_project)
+    monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", fake_plan_gate)
+
+    from app.agents.orchestrator import AgentDelegationRequest
+
+    task_id = "task-wire-1"
+    request = AgentDelegationRequest(
+        target=SimpleNamespace(id=uuid4(), name="Worker", tenant_id=uuid4()),
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "go"}],
+        owner_id=uuid4(),
+        session_id=uuid4().hex,
+        parent_agent_id=uuid4(),
+        parent_session_id=uuid4().hex,
+        trace_id="trace-wire",
+        depth=1,
+        tenant_id=uuid4(),
+        runtime_task_id=task_id,
+    )
+
+    _spawn_async_delegation_task(task_id=task_id, request=request, trace_id="trace-wire")
+    state = _async_tasks.get(task_id)
+    assert state is not None
+    await state.task
+
+    assert len(projected) == 1
+    assert projected[0]["task_id"] == task_id
+    assert projected[0]["status"] == "completed"
+    assert projected[0]["summary"] == "child output"

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import re
 import uuid
 from collections.abc import Iterator, Set
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+from app.runtime.ccplus_contracts import PermissionMode, normalize_permission_mode
 
 if TYPE_CHECKING:
     from app.runtime.ccplus_contracts import PermissionProfileV1
@@ -34,9 +38,19 @@ _STATIC_SENSITIVE_TOOLS = {
     "send_message_to_agent",
 }
 _STATIC_SAFE_TOOLS = {
+    "discover_resources",
+    "get_current_time",
+    "inspect_mcp_tool",
     "list_files",
+    "list_mcp_resources",
+    "list_mcp_tools",
+    "mcp_list_resources",
+    "mcp_read_resource",
     "read_file",
+    "read_mcp_resource",
     "load_skill",
+    "search_clawhub",
+    "tool_search",
     "web_fetch",
     "web_search",
     "exa_search",
@@ -46,6 +60,11 @@ _STATIC_SAFE_TOOLS = {
     "read_document",
     "search_memory",
     "load_memory",
+    "ask_user_question",
+    "request_plan_mode",
+    "check_async_task",
+    "list_async_tasks",
+    "check_subagent",
     # Work Ledger cognitive-scaffold read (切口①): read-only introspection of the
     # agent's own ledger. Kept aligned with _CAPABILITY_GATE_EXEMPT_TOOLS in
     # app.services.capability_gate (the exemption comment requires this).
@@ -92,6 +111,24 @@ class _LazyToolNameSet(Set[str]):
 
 SAFE_TOOLS: Set[str] = _LazyToolNameSet(_STATIC_SAFE_TOOLS, "safe")
 SENSITIVE_TOOLS: Set[str] = _LazyToolNameSet(_STATIC_SENSITIVE_TOOLS, "sensitive")
+_SESSION_WORKSPACE_EDIT_TOOLS = frozenset(
+    {
+        "edit_file",
+        "fs_write",
+        "office_document_apply",
+        "office_document_create",
+        "write_file",
+    }
+)
+_SESSION_AUTO_ALLOW_TOOLS = frozenset(
+    {
+        *_SESSION_WORKSPACE_EDIT_TOOLS,
+        "record_finding",
+        "task_create",
+        "task_update",
+        "track_todo",
+    }
+)
 _DANGEROUS_COMMAND_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\brm\s+-[^\s]*r"), "workspace.command.dangerous", "recursive delete"),
     (re.compile(r"\brm\s+--recursive\b"), "workspace.command.dangerous", "recursive delete"),
@@ -121,6 +158,7 @@ _RUN_COMMAND_PATH_SYNTAX_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*"), "environment variable expansion"),
     (re.compile(r"[*?\[]"), "glob path syntax"),
 )
+_NO_PERMISSION_HOOK_DECISION = object()
 
 
 @dataclass(slots=True)
@@ -283,6 +321,294 @@ def _teaching_block_message(
     if next_steps:
         parts.append("What you can do instead: " + " / ".join(next_steps) + ".")
     return " ".join(parts)
+
+
+def _permission_mode_for_context(context: ToolGovernanceContext) -> PermissionMode:
+    profile = context.permission_profile
+    return normalize_permission_mode(getattr(profile, "mode", None)) if profile is not None else PermissionMode.DEFAULT
+
+
+def _session_no_policy_action(context: ToolGovernanceContext) -> str:
+    """Resolve CC session permission for mapped tools with no enterprise policy.
+
+    This is intentionally separate from CapabilityPolicy. A missing enterprise
+    policy is not an enterprise approval request; it is a per-session CC
+    permission decision unless the tenant/admin has configured an explicit
+    policy.
+    """
+    if context.tool_name in SAFE_TOOLS:
+        return "allow"
+
+    profile = context.permission_profile
+    allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
+    if context.tool_name in allowed_tools:
+        return "allow"
+
+    mode = _permission_mode_for_context(context)
+    if mode == PermissionMode.BYPASS_PERMISSIONS:
+        return "allow"
+    if mode in {PermissionMode.DONT_ASK, PermissionMode.PLAN}:
+        return "deny"
+    if mode == PermissionMode.ACCEPT_EDITS:
+        return "allow" if context.tool_name in _SESSION_WORKSPACE_EDIT_TOOLS else "ask"
+    if mode == PermissionMode.AUTO:
+        return "allow" if context.tool_name in _SESSION_AUTO_ALLOW_TOOLS else "ask"
+    return "ask"
+
+
+async def _emit_session_no_policy_result(
+    context: ToolGovernanceContext,
+    *,
+    capability: str | None,
+    reason: str | None,
+    action: str,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if action == "allow":
+        return None
+
+    mode = _permission_mode_for_context(context)
+    if action == "deny":
+        message = _teaching_block_message(
+            context.tool_name,
+            reason=(
+                f"permission mode '{mode.value}' denies this tool because no enterprise capability policy "
+                "is configured for it"
+            ),
+            capability=capability,
+            next_steps=[
+                "continue with allowed read-only tools",
+                "ask the user to change the session permission mode if this action is intended",
+                "choose an approach that avoids this tool",
+            ],
+        )
+        await _emit_permission_denied_hook(
+            context=context,
+            permission_request=None,
+            reason=message,
+            capability=capability,
+            mode=mode.value,
+        )
+        await _emit_event(
+            event_callback,
+            {
+                "type": "permission",
+                "tool_name": context.tool_name,
+                "status": "permission_denied",
+                "message": message,
+                "capability": capability,
+                "permission_mode": mode.value,
+            },
+        )
+        return message
+
+    message = (
+        f"⏳ Tool '{context.tool_name}' requires session permission"
+        f" [capability: {capability or context.tool_name}; mode: {mode.value}]. "
+        f"Reason: {reason or 'no enterprise capability policy is configured for this tool'}. "
+        "Ask the current session user for approval before retrying this tool; do not create a backend approval request."
+    )
+    permission_request = {
+        "permission_request_id": str(uuid.uuid4()),
+        "session_id": context.session_id,
+        "tool_name": context.tool_name,
+        "tool_display_name": context.tool_name,
+        "arguments": context.arguments,
+        "capability": capability,
+        "permission_mode": mode.value,
+        "decision_reason": reason or "no enterprise capability policy is configured for this tool",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+    }
+    hook_decision = await _apply_permission_request_hook(
+        context=context,
+        permission_request=permission_request,
+        capability=capability,
+        reason=reason,
+        mode=mode.value,
+        event_callback=event_callback,
+    )
+    if hook_decision is not _NO_PERMISSION_HOOK_DECISION:
+        return hook_decision
+
+    await _emit_event(
+        event_callback,
+        {
+            "type": "permission",
+            "tool_name": context.tool_name,
+            "status": "session_permission_required",
+            "message": message,
+            "capability": capability,
+            "permission_mode": mode.value,
+            "permission_request_id": permission_request["permission_request_id"],
+            "permission_request": permission_request,
+        },
+    )
+    return json.dumps(
+        {
+            "status": "session_permission_required",
+            "message": message,
+            "permission_request": permission_request,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _normalize_hook_permission_behavior(value: Any) -> str | None:
+    if value is None:
+        return None
+    clean = str(value).strip()
+    aliases = {
+        "approve": "allow",
+        "approved": "allow",
+        "accept": "allow",
+        "accepted": "allow",
+        "allow": "allow",
+        "deny": "deny",
+        "denied": "deny",
+        "reject": "deny",
+        "rejected": "deny",
+        "ask": "ask",
+        "passthrough": "ask",
+        "noop": "ask",
+    }
+    return aliases.get(clean)
+
+
+def _hook_updated_input(result_payload: dict[str, Any], hook_result: Any) -> dict[str, Any] | None:
+    raw = (
+        result_payload.get("updatedInput")
+        or result_payload.get("updated_input")
+        or result_payload.get("tool_input")
+        or getattr(hook_result, "modified_args", None)
+    )
+    return dict(raw) if isinstance(raw, dict) else None
+
+
+async def _emit_permission_denied_hook(
+    *,
+    context: ToolGovernanceContext,
+    permission_request: dict[str, Any] | None,
+    reason: str,
+    capability: str | None,
+    mode: str,
+) -> None:
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    await emit_hook(
+        HookEvent.PERMISSION_DENIED,
+        agent_id=context.agent_id,
+        session_id=context.session_id,
+        tool_name=context.tool_name,
+        tool_args=context.arguments,
+        source="tool_governance",
+        metadata={
+            "permission": permission_request,
+            "permission_request": permission_request,
+            "capability": capability,
+            "permission_mode": mode,
+            "reason": reason,
+        },
+    )
+
+
+async def _apply_permission_request_hook(
+    *,
+    context: ToolGovernanceContext,
+    permission_request: dict[str, Any],
+    capability: str | None,
+    reason: str | None,
+    mode: str,
+    event_callback: EventCallback | None,
+) -> str | None | object:
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    hook_result = await emit_hook(
+        HookEvent.PERMISSION_REQUEST,
+        agent_id=context.agent_id,
+        session_id=context.session_id,
+        tool_name=context.tool_name,
+        tool_args=context.arguments,
+        source="tool_governance",
+        metadata={
+            "permission": permission_request,
+            "permission_request": permission_request,
+            "capability": capability,
+            "permission_mode": mode,
+            "reason": reason,
+        },
+    )
+    if hook_result is None:
+        return _NO_PERMISSION_HOOK_DECISION
+
+    result_payload = dict(hook_result.permission_request_result or {})
+    behavior = _normalize_hook_permission_behavior(
+        result_payload.get("behavior")
+        or result_payload.get("decision")
+        or result_payload.get("permissionDecision")
+        or hook_result.permission_behavior
+        or ("deny" if hook_result.block else None)
+    )
+    updated_input = _hook_updated_input(result_payload, hook_result)
+    updated_permissions = result_payload.get("updatedPermissions") or result_payload.get("updated_permissions")
+    if behavior == "allow":
+        if updated_input is not None:
+            context.arguments.clear()
+            context.arguments.update(updated_input)
+        await _emit_event(
+            event_callback,
+            {
+                "type": "permission",
+                "tool_name": context.tool_name,
+                "status": "permission_resolved",
+                "decision": "allow",
+                "message": f"PermissionRequest hook allowed tool '{context.tool_name}'.",
+                "capability": capability,
+                "permission_mode": mode,
+                "permission_request_id": permission_request["permission_request_id"],
+                "permission_request": permission_request,
+                "updated_arguments": updated_input,
+                "updated_permissions": updated_permissions,
+            },
+        )
+        return None
+
+    if behavior == "deny":
+        message = _teaching_block_message(
+            context.tool_name,
+            reason=f"PermissionRequest hook denied this tool: {hook_result.reason or reason or 'no reason supplied'}",
+            capability=capability,
+            next_steps=[
+                "continue with allowed tools",
+                "ask the user to change the session permission mode if this action is intended",
+                "choose an approach that avoids this tool",
+            ],
+        )
+        await _emit_permission_denied_hook(
+            context=context,
+            permission_request=permission_request,
+            reason=message,
+            capability=capability,
+            mode=mode,
+        )
+        await _emit_event(
+            event_callback,
+            {
+                "type": "permission",
+                "tool_name": context.tool_name,
+                "status": "permission_denied",
+                "decision": "deny",
+                "message": message,
+                "capability": capability,
+                "permission_mode": mode,
+                "permission_request_id": permission_request["permission_request_id"],
+                "permission_request": permission_request,
+            },
+        )
+        return message
+
+    return _NO_PERMISSION_HOOK_DECISION
 
 
 async def run_tool_governance(
@@ -553,61 +879,18 @@ async def _run_governance_inner(
                 )
                 return message
             cap_escalate = getattr(cap_result, "escalate_to_l3", False)
-            # D-12: when a mapped capability has NO admin policy, the gate
-            # returns escalate_to_l3=True with policy_found=False. That default
-            # is now governed by the per-turn PermissionProfileV1 rather than a
-            # hardcoded "escalate". An explicit policy that requires approval
-            # (policy_found=True) is an admin choice and is left untouched.
             if cap_escalate and getattr(cap_result, "policy_found", True) is False:
-                from app.services.capability_gate import resolve_no_policy_decision
-
-                no_policy_decision = resolve_no_policy_decision(context.permission_profile)
-                if no_policy_decision == "deny":
-                    message = _teaching_block_message(
-                        context.tool_name,
-                        reason=(
-                            "no capability policy is configured and this turn's permission profile "
-                            "denies tools that fall back to the default"
-                        ),
-                        capability=getattr(cap_result, "capability", None),
-                        next_steps=[
-                            "continue with tools you already have",
-                            "ask the user to grant this capability via admin capability settings",
-                            "choose an approach that does not need this tool",
-                        ],
-                    )
-                    await _maybe_await(
-                        deps.write_audit_event(
-                            event_type="capability.denied",
-                            severity="warn",
-                            actor_type="agent",
-                            actor_id=context.agent_id,
-                            tenant_id=tenant_uuid,
-                            action="no_policy_default_denied",
-                            resource_type="tool",
-                            resource_id=None,
-                            details={
-                                "tool": context.tool_name,
-                                "capability": getattr(cap_result, "capability", None),
-                                "default_decision": "deny",
-                            },
-                        )
-                    )
-                    await _emit_event(
-                        event_callback,
-                        {
-                            "type": "permission",
-                            "tool_name": context.tool_name,
-                            "status": "capability_denied",
-                            "message": message,
-                            "capability": getattr(cap_result, "capability", None),
-                        },
-                    )
+                session_action = _session_no_policy_action(context)
+                message = await _emit_session_no_policy_result(
+                    context,
+                    capability=getattr(cap_result, "capability", None),
+                    reason=getattr(cap_result, "reason", None),
+                    action=session_action,
+                    event_callback=event_callback,
+                )
+                if message is not None:
                     return message
-                if no_policy_decision == "allow":
-                    # Profile explicitly widens the no-policy default to allow:
-                    # do not escalate, fall through to the rest of governance.
-                    cap_escalate = False
+                cap_escalate = False
             if cap_escalate:
                 await _maybe_await(
                     deps.write_audit_event(
@@ -828,8 +1111,21 @@ async def _run_governance_inner(
                     )
                     return message
                 if getattr(dangerous_result, "escalate_to_l3", False):
-                    _escalated_capability = getattr(dangerous_result, "capability", None) or dangerous_capability
-                    dangerous_reason = getattr(dangerous_result, "reason", None) or dangerous_reason
+                    if getattr(dangerous_result, "policy_found", True) is False:
+                        session_action = _session_no_policy_action(context)
+                        message = await _emit_session_no_policy_result(
+                            context,
+                            capability=getattr(dangerous_result, "capability", None) or dangerous_capability,
+                            reason=getattr(dangerous_result, "reason", None) or dangerous_reason,
+                            action=session_action,
+                            event_callback=event_callback,
+                        )
+                        if message is not None:
+                            return message
+                        dangerous_allowed_by_specific_policy = True
+                    else:
+                        _escalated_capability = getattr(dangerous_result, "capability", None) or dangerous_capability
+                        dangerous_reason = getattr(dangerous_result, "reason", None) or dangerous_reason
                 else:
                     dangerous_allowed_by_specific_policy = getattr(
                         dangerous_result, "capability", None
@@ -855,6 +1151,18 @@ async def _run_governance_inner(
                     },
                 )
                 return message
+        else:
+            session_action = _session_no_policy_action(context)
+            message = await _emit_session_no_policy_result(
+                context,
+                capability=dangerous_capability,
+                reason=dangerous_reason,
+                action=session_action,
+                event_callback=event_callback,
+            )
+            if message is not None:
+                return message
+            dangerous_allowed_by_specific_policy = True
         if not dangerous_allowed_by_specific_policy and (
             _escalated_capability is None or _approval_reason == restricted_zone_approval_reason
         ):

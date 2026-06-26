@@ -5,6 +5,25 @@ It deliberately does not execute raw subprocesses directly: command hooks use
 the configured code-execution provider, prompt hooks use an injected LLM
 adapter, HTTP hooks use an injected outbound adapter, and agent hooks use an
 injected agent/subagent adapter.
+
+DEFERRED CONTRACT — NOT WIRED INTO ANY PRODUCTION PATH. As of this revision,
+``GovernedHookRunner`` and ``register_governed_hook_specs`` have zero production
+callers: ``main.py`` lifespan registers only ``register_memory_hooks`` (in-process
+Python memory/T0 handlers) and ``register_installed_plugin_hooks`` (in-process
+allowlisted handlers — ``services/plugin_hook_service.py`` enforces "Raw
+code/import paths/webhooks are never executed"). Hive therefore runs only
+in-process Python hook handlers today; there is no external command / prompt /
+HTTP / agent hook runtime, no background executor for ``status="async"`` parse
+results, and no durable ``HookInvocation`` persistence.
+
+This runner is retained as a complete, governed, source-checked design reserved
+for a future external-hook runtime. It is exercised by unit tests but is
+intentionally premature (YAGNI) for the current in-process-only surface. Do not
+treat it as live: keep it out of ``HookRegistry.describe_event_catalog`` /
+memory hook plan status until it is actually wired into a startup/admin path
+(at which point durable invocation records must land on the existing
+``invocation_spans`` surface, not a new table). The injected ``span_recorder``
+already exists so that future wiring can record runs without a schema change.
 """
 
 from __future__ import annotations
@@ -16,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from app.runtime.hooks import HookContext, HookEvent, HookRegistry, HookResult
+from app.runtime.hooks import HookContext, HookEvent, HookRegistry, HookResult, parse_hook_json_output
 from app.services.code_execution.contracts import CodeExecutionResult
 from app.services.code_execution.service import execute_agent_command
 
@@ -163,6 +182,10 @@ def _response_updated_input(response: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _response_to_hook_result(response: dict[str, Any], fallback_text: str) -> HookResult | None:
+    parsed = parse_hook_json_output(HookEvent.PRE_TOOL_USE, response)
+    if parsed.hook_result is not None:
+        return parsed.hook_result
+
     text = str(response.get("text") or response.get("content") or response.get("reason") or fallback_text or "")
     hook_result = _decision_to_result(str(response.get("decision") or "allow"), text)
     updated_input = _response_updated_input(response)
@@ -335,12 +358,11 @@ class GovernedHookRunner:
                 key=spec.key,
                 event=spec.event.value,
                 hook_type=spec.type,
-                status="failed",
+                status="non_blocking_error",
                 stdout=result.stdout,
                 stderr=result.stderr,
                 exit_code=result.exit_code,
                 error=result.error,
-                hook_result=HookResult(block=True, reason=result.error),
             )
         if result.exit_code == 2:
             reason = output_text or "hook returned blocking exit code 2"
@@ -355,12 +377,19 @@ class GovernedHookRunner:
                 output_text=output_text,
                 hook_result=HookResult(block=True, reason=reason),
             )
-        status = "failed" if result.exit_code != 0 or result.timed_out else "success"
         parsed = _parse_json_object(result.stdout)
-        hook_result = _response_to_hook_result(parsed, output_text) if parsed else None
-        if status == "failed":
-            hook_result = HookResult(block=True, reason=output_text)
-        elif hook_result and hook_result.block:
+        parsed_output = parse_hook_json_output(
+            spec.event,
+            parsed,
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+        hook_result = parsed_output.hook_result
+        status = parsed_output.status
+        if result.timed_out and status == "success":
+            status = "non_blocking_error"
+        if hook_result and hook_result.block:
             status = "blocked"
         return HookRunRecord(
             key=spec.key,

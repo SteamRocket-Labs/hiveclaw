@@ -29,11 +29,27 @@ class ToolContentEnvelope:
     provider (Anthropic supports image/document tool_result; OpenAI/Gemini fall
     back to ``text``). ``__str__`` returns ``text`` so existing string-typed
     code paths keep working untouched.
+
+    DEFERRED CONTRACT — ``new_messages`` and ``terminal_signal`` are a tested
+    forward extension point with NO production producer yet. The kernel
+    *consumes* them (``AgentKernel._extract_tool_side_effects`` injects
+    ``new_messages`` into the live conversation and ends the turn on
+    ``terminal_signal``; covered by ``tests/kernel/test_ccplus_side_effects.py``),
+    but every live terminal/clarification flow today is driven by the JSON-status
+    marker path (``_tool_result_requests_user_clarification`` →
+    ``awaiting_user_clarification`` / ``plan_mode_entry_requested``), so these two
+    fields stay empty in practice. They activate when a tool needs to inject
+    follow-up messages or hard-terminate a turn structurally rather than via a
+    JSON marker; until then this is an explicitly-tracked deferral, not a silent
+    seeded-but-unwired field. ``test_side_effect_channel_has_no_production_producer``
+    fails if a producer appears without this note being revisited.
     """
 
     text: str
     blocks: tuple[ToolResultBlock, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Deferred side-effect channel (see class docstring): consumed by the kernel,
+    # no production producer yet — terminal/clarification flows use JSON markers.
     new_messages: tuple[dict[str, Any], ...] = ()
     context_modifier: dict[str, Any] | None = None
     artifacts: tuple[dict[str, Any], ...] = ()

@@ -69,19 +69,21 @@ describe('slashCommand', () => {
     });
   });
 
-  it('parses session side-question and active-turn natural args', () => {
-    expect(parseSlashCommandInput('/btw what does this acronym mean?')).toEqual({
-      name: 'btw',
-      args: { question: 'what does this acronym mean?' },
-    });
-    expect(parseSlashCommandInput('/turn_steer use the stricter interpretation')).toEqual({
-      name: 'turn_steer',
-      args: { content: 'use the stricter interpretation' },
-    });
-    expect(parseSlashCommandInput('/tag cc-parity')).toEqual({
-      name: 'tag',
-      args: { tags: ['cc-parity'] },
-    });
+  it('does not parse hidden or internal commands as user slash commands', () => {
+    for (const input of [
+      '/btw what does this acronym mean?',
+      '/turn_steer use the stricter interpretation',
+      '/tag cc-parity',
+      '/goal_start finish this',
+      '/task_output runtime-1',
+      '/copy',
+      '/export',
+      '/rollback',
+      '/checkpoints',
+      '/interrupt',
+    ]) {
+      expect(parseSlashCommandInput(input)).toBeNull();
+    }
   });
 
   it('rejects malformed JSON args', () => {

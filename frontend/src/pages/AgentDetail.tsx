@@ -778,6 +778,20 @@ function AgentDetailInner() {
             return true;
         }
 
+        if (uiAction.type === 'open_resume_picker') {
+            openSessionCommandControl({
+                type: 'resume_picker',
+                title: message || 'Resume session',
+                message: 'Session resume status is ready.',
+                command: response.command,
+                level: uiAction.level === 'error' ? 'error' : 'info',
+                payload: actionResult,
+            });
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            return true;
+        }
+
         if (uiAction.type === 'copy_to_clipboard') {
             const content = typeof uiAction.content === 'string' ? uiAction.content : '';
             if (content && navigator.clipboard?.writeText) {

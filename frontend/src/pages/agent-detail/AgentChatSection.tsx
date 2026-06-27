@@ -224,7 +224,8 @@ export type SessionCommandControlType =
   | 'usage_panel'
   | 'export_panel'
   | 'side_question'
-  | 'permissions_panel';
+  | 'permissions_panel'
+  | 'resume_picker';
 
 export interface SessionCommandControlState {
   type: SessionCommandControlType;
@@ -546,6 +547,8 @@ function commandPanelTypeLabel(type: SessionCommandControlType): string {
       return 'Side question';
     case 'permissions_panel':
       return 'Permissions';
+    case 'resume_picker':
+      return 'Resume';
     default:
       return 'Session';
   }

@@ -1034,9 +1034,11 @@ async def get_agent_command(
         include_dynamic_user_commands=True,
     )
     try:
-        return registry.get(command_name).model_dump(mode="json")
+        command = registry.get(command_name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Command not found") from exc
+    _enforce_web_user_command_surface(command, command_name, "web")
+    return command.model_dump(mode="json")
 
 
 @router.post("/{command_name}/execute")

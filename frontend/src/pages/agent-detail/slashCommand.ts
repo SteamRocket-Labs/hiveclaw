@@ -4,6 +4,58 @@ export interface ParsedSlashCommand {
 }
 
 const COMMAND_NAME_RE = /^[A-Za-z0-9_:-]+$/;
+const INTERNAL_ONLY_SLASH_COMMAND_NAMES = new Set([
+  'advanced_plan',
+  'btw',
+  'checkpoints',
+  'commit',
+  'commit_push_pr',
+  'config',
+  'copy',
+  'cost',
+  'diff',
+  'doctor',
+  'export',
+  'github_review',
+  'goal_start',
+  'goal_stop',
+  'goal_update',
+  'interrupt',
+  'load_skill',
+  'lsp',
+  'notebook',
+  'preview_workflow',
+  'pr_comments',
+  'rename',
+  'review',
+  'rollback',
+  'schedule_create',
+  'schedule_once',
+  'security_review',
+  'shell_pack',
+  'start_workflow',
+  'stats',
+  'status',
+  'steer',
+  'tag',
+  'task_create',
+  'task_get',
+  'task_list',
+  'task_output',
+  'task_stop',
+  'task_update',
+  'team_create',
+  'team_delete',
+  'turn_steer',
+  'verify_plan',
+  'version',
+  'worktree_enter',
+  'worktree_exit',
+]);
+
+export function isInternalOnlySlashCommandName(name: string): boolean {
+  return INTERNAL_ONLY_SLASH_COMMAND_NAMES.has(name.trim());
+}
 
 export function parseSlashCommandArgs(name: string, argsText: string): Record<string, unknown> {
   if (name === 'goal' || name === 'goal_start' || name === 'advanced_plan') {
@@ -107,6 +159,7 @@ export function parseSlashCommandInput(input: string): ParsedSlashCommand | null
 
   const name = commandMatch[1];
   if (!COMMAND_NAME_RE.test(name)) return null;
+  if (isInternalOnlySlashCommandName(name)) return null;
 
   const argsText = (commandMatch[2] || '').trim();
   if (!argsText) return { name, args: {} };

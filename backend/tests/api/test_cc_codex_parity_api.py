@@ -169,20 +169,20 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
     assert next(item for item in user_index if item["name"] == "once")["canonical_name"] == "schedule_once"
 
     schema = await commands_api.get_agent_command(
-        agent_id=agent_id, command_name="goal_start", current_user=current_user, db=db
+        agent_id=agent_id, command_name="goal", current_user=current_user, db=db
     )
     assert schema["name"] == "goal_start"
     assert schema["input_schema"]["properties"]["objective"]["type"] == "string"
 
     schedule_schema = await commands_api.get_agent_command(
-        agent_id=agent_id, command_name="schedule_create", current_user=current_user, db=db
+        agent_id=agent_id, command_name="schedule", current_user=current_user, db=db
     )
     assert schedule_schema["name"] == "schedule_create"
     assert schedule_schema["category"] == "schedule"
     assert schedule_schema["input_schema"]["properties"]["cron_expr"]["type"] == "string"
 
     once_schema = await commands_api.get_agent_command(
-        agent_id=agent_id, command_name="schedule_once", current_user=current_user, db=db
+        agent_id=agent_id, command_name="once", current_user=current_user, db=db
     )
     assert once_schema["name"] == "schedule_once"
     assert once_schema["category"] == "schedule"
@@ -193,6 +193,55 @@ async def test_commands_api_lists_compact_index_and_schema(monkeypatch):
     )
     assert alias_schema["name"] == "team_create"
     assert alias_schema["aliases"] == ["team"]
+
+
+@pytest.mark.asyncio
+async def test_commands_api_schema_endpoint_uses_user_visible_names(monkeypatch):
+    import app.api.commands as commands_api
+    from fastapi import HTTPException
+
+    agent_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+
+    goal_schema = await commands_api.get_agent_command(
+        agent_id=agent_id,
+        command_name="goal",
+        current_user=current_user,
+        db=db,
+    )
+    assert goal_schema["name"] == "goal_start"
+
+    for hidden_or_canonical in (
+        "goal_start",
+        "team_create",
+        "task_create",
+        "schedule_create",
+        "schedule_once",
+        "copy",
+        "export",
+        "btw",
+        "turn_steer",
+        "rollback",
+        "rename",
+        "tag",
+        "interrupt",
+        "checkpoints",
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await commands_api.get_agent_command(
+                agent_id=agent_id,
+                command_name=hidden_or_canonical,
+                current_user=current_user,
+                db=db,
+            )
+        assert exc.value.status_code == 404
 
 
 @pytest.mark.asyncio

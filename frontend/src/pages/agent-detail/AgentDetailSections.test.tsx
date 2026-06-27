@@ -761,6 +761,29 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('restored_count');
   });
 
+  it('renders resume command status inside the session control panel', () => {
+    const markup = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'resume_picker',
+          title: 'Resume session',
+          message: 'Session resume status is ready.',
+          command: 'resume',
+          payload: {
+            interrupted: true,
+            repair_strategy: 'transcript_replay_chain_repair',
+          },
+        }}
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-command-control-panel"');
+    expect(markup).toContain('Resume session');
+    expect(markup).toContain('transcript_replay_chain_repair');
+  });
+
   it('renders AgentStatusSection as a standalone overview module', () => {
     const markup = renderToStaticMarkup(
       <AgentStatusSection

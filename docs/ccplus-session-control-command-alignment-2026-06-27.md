@@ -2,7 +2,7 @@
 
 日期：2026-06-27
 
-状态：Workstream A 的 typed result / raw JSON suppression、manual `/compact` / `/rewind` next-turn context consumption、workspace rewind snapshot、前端 session command control panel 已按本文测试口径实装。隐藏/兼容命令 UI 深化等剩余边界以 `docs/ccplus-unclosed-gap-register-2026-06-27.md` 为准。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
+状态：Workstream A 的 typed result / raw JSON suppression、manual `/compact` / `/rewind` next-turn context consumption、workspace rewind snapshot、hidden/internal command user surface 裁决、前端 session command control panel 已按本文测试口径实装。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
 
 范围：session 内 slash command 的完整控制面，包括状态改变、只读查询、UI-only 交互、prompt 包装命令，以及 `/btw` 这类 side-question 命令。本文不处理 A2A 产品层协议。
 
@@ -30,6 +30,12 @@
   - 前端统一识别 typed `ui_action`，typed session control result 默认不再格式化为 assistant JSON。
 - `frontend/src/pages/AgentDetail.tsx`
   - slash command 执行后先消费 `ui_action`：`switch_session` 切 session，其它 control action 走 toast / panel / clipboard，不追加 raw assistant JSON。
+  - `open_resume_picker`、checkpoint selector、projection/status、context/usage/export/permissions 都进入同一 `SessionCommandControlPanel`。
+- `backend/app/api/commands.py`
+  - Web command schema endpoint 和 execute endpoint 都复用同一个 user-visible surface gate。
+  - `goal_start`、`team_create`、`task_create`、`schedule_create`、`schedule_once` 等 canonical/internal names 对 Web 用户 404；用户只走 `/goal`、`/team`、`/task`、`/schedule`、`/once`。
+- `frontend/src/pages/agent-detail/slashCommand.ts`
+  - 手写 slash parser 会拒绝 hidden/internal command names；隐藏命令不能绕过菜单直接从 Web composer 执行。
 
 验证命令：
 
@@ -63,6 +69,14 @@ cd frontend && npm run test -- \
 ```bash
 cd frontend && npm run build
 # tsc && vite build completed successfully
+```
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema tests/api/test_cc_codex_parity_api.py::test_commands_api_schema_endpoint_uses_user_visible_names tests/api/test_cc_codex_parity_api.py::test_commands_api_rejects_internal_tool_commands_from_web tests/api/test_cc_codex_parity_api.py::test_commands_api_allows_internal_tool_commands_from_agent_origin -q
+# 4 passed, 3 warnings
+
+cd frontend && npm test -- --run src/pages/agent-detail/slashCommand.test.ts src/pages/agent-detail/CommandPalette.test.tsx src/pages/agent-detail/SlashCommandMenu.test.tsx src/api/domains/ccParity.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
+# 5 files passed, 99 tests passed
 ```
 
 ## 0. 本轮前裁决（历史审计基线）
@@ -140,27 +154,27 @@ parent_session_id + branch metadata 表示 branch lineage。
 | `/permissions` | `permissions` | session setting | 已暴露 | 打开 session-local 权限模式菜单，不走企业后台审批 |
 | `/context` | `context` | diagnostic | 已暴露 | 打开 context 面板，不渲染 JSON |
 | `/usage` | `usage` | diagnostic | 已暴露 | 打开 usage/cost 面板，不渲染 JSON |
-| `/resume` | `resume` | session control | 已暴露 | 应打开 resume picker 或执行 session switch；当前只返回诊断 JSON |
+| `/resume` | `resume` | session control | 已暴露 | 已打开 session 内 resume status panel；不渲染 raw JSON |
 | `/rewind` | `rewind` | session control | 已暴露 | 已打开 checkpoint selector；conversation/both 更新 active projection，workspace/both 走 snapshot restore confirmation gate |
 | `/branch` | `branch` | session control | 已暴露 | 保留用户命令名 `/branch`；存储层创建新 `ChatSession.id` |
-| `/clear` | `clear` | session control | 已暴露 | 创建干净 session 后前端必须切过去；当前只返回 JSON |
-| `/compact` | `compact` | session control | 已暴露 | 必须执行真实 compact pipeline；当前只写 hook/event |
+| `/clear` | `clear` | session control | 已暴露 | 创建干净 session 后前端切换到新 session |
+| `/compact` | `compact` | session control | 已暴露 | 执行真实 compact pipeline 并安装 compacted active projection |
 
 ### 0.5.3 Hive 后端已有但用户不可见的 session 命令
 
-这些不是“没有实现”，而是“后端半实现，但 Web 用户菜单和 UI control 没接上”：
+这些不是 Web 用户命令。它们已裁决为 internal/agent-origin/API-only 或其它产品 UI 的后台能力；不能通过 Web composer 手写 slash 绕过 user-visible command surface：
 
 | 后端命令 | 当前 `visible_to_user` | 当前语义 | 裁决 |
 | --- | --- | --- | --- |
-| `/btw` | false | 创建 durable `side_question` branch session | 需要改成 CC 式 side-question UI，不污染主会话；是否保留 durable trace 只能作为后台 evidence，不应作为用户可切换 branch |
-| `/checkpoints` | false | 返回 checkpoint JSON | 不直接暴露；作为 `/rewind` selector 的数据源 |
-| `/copy` | false | 返回 assistant content / code blocks | 应接前端 clipboard / copy panel，可暴露为用户命令 |
-| `/export` | false | 返回 transcript / artifact JSON | 应接下载/导出面板，可暴露为用户命令 |
-| `/interrupt` | false | cancel active run | 应接停止按钮，也可支持 slash；不应显示大 JSON |
-| `/turn_steer` / `/steer` | false | 给 active turn 追加 steering message | 应作为“要求后续变更”输入态或 hidden command，不一定进入菜单 |
-| `/rename` | false | 修改 session title | 应进入 session menu / title menu，不必进 slash 主菜单 |
-| `/tag` | false | 写 tags metadata | 应进入 session menu，不必进 slash 主菜单 |
-| `/rollback` | false | 当前等同 rewind branch | 不作为用户命令；语义待和 `/rewind` 重新拆分 |
+| `/btw` | false | 创建 durable `side_question` branch session | internal/agent-origin only；未来若做用户 side-question drawer，必须先改 `visible_to_user` 并补 UI 测试 |
+| `/checkpoints` | false | 返回 checkpoint JSON | internal data source；只作为 `/rewind` selector 数据源 |
+| `/copy` | false | 返回 assistant content / code blocks | internal/API-only；Web 用户不得手写 slash，未来暴露需补 clipboard UI |
+| `/export` | false | 返回 transcript / artifact JSON | internal/API-only；当前用户导出走 Workbench/session export API，不走 slash |
+| `/interrupt` | false | cancel active run | internal/API-only；用户停止走现有 stop control，不走 slash |
+| `/turn_steer` / `/steer` | false | 给 active turn 追加 steering message | internal/agent-origin only；用户继续输入走 composer/active turn path |
+| `/rename` | false | 修改 session title | internal/API-only；不进入 slash 主菜单 |
+| `/tag` | false | 写 tags metadata | internal/API-only；不进入 slash 主菜单 |
+| `/rollback` | false | rewind compatibility wrapper | internal/agent-origin only；用户回溯统一走 `/rewind` |
 
 ### 0.5.4 `/branch` vs `/fork` 裁决
 
@@ -188,6 +202,7 @@ parent_session_id + branch metadata 表示 branch lineage。
 | `open_context_panel` | 打开上下文详情 | `/context` |
 | `open_usage_panel` | 打开 usage / cost 详情 | `/usage` |
 | `open_permissions_menu` | 打开三档 session-local 权限菜单 | `/permissions` |
+| `open_resume_picker` | 打开 resume status / interrupted-turn 修复面板 | `/resume` |
 | `toast` | 只需要轻提示的完成态 | `/rename`、`/tag` |
 
 前端可以提供 debug 展开区，但默认不能把 backend result 原样渲染成 assistant message。
@@ -539,10 +554,10 @@ cd backend && source .venv/bin/activate && pytest \
 5. `/rewind mode=both` 同时执行 projection rewind 和 workspace snapshot rewind。
 6. `/branch` 才能创建新 `ChatSession`，且新 session 有 parent/root lineage。
 7. `/clear` 返回 `action: "switch_session"` 或等价 contract，前端可消费。
-8. `/btw` 不能创建用户可切换的 branch session；它必须返回 side-question control action，并且不污染主 timeline。
-9. `/copy` 返回 `copy_to_clipboard` control action，而不是把复制内容作为 assistant JSON 显示。
-10. `/export` 返回 `open_export_panel` / downloadable artifact action。
-11. `/interrupt` 返回 active run cancel state，并能让前端停止按钮和 slash 共用同一路径。
+8. `/btw` 不能成为 Web 用户手写 slash command；internal side-question control 不能污染主 timeline。
+9. `/copy`、`/export`、`/interrupt` 不能从 Web 手写 slash 绕过 user-visible command surface。
+10. `/resume` 返回 `open_resume_picker`，并进入 session command control panel。
+11. 前端停止按钮共享底层 cancel active run 语义，但不暴露 `/interrupt` slash。
 12. `/permissions` 返回 session-local 三档权限状态，不创建企业后台 approval。
 13. `/context`、`/usage` 返回面板数据 contract，不作为聊天消息。
 14. Web surface 只暴露包装命令；`task_create`、`team_create`、`goal_start` 等 canonical 内部命令不能直接出现在用户菜单里。
@@ -580,18 +595,19 @@ cd backend && source .venv/bin/activate && pytest \
 
 5. `/clear` 保持创建新 context boundary，但结果 contract 改成前端可理解的 action。
 
-6. `/btw` 改成 side-question control。
+6. `/btw` 保留为 internal/agent-origin side-question control。
+   - 不作为 Web 用户 slash command 暴露。
    - 不再默认创建用户可见 branch。
    - 后端可记录 background evidence，但返回给前端的是 `ui_action.type = "open_side_question"`。
    - side question 的上下文必须从 compact boundary 后的当前 active projection 取，不从全量 raw T0 取。
 
-7. `/copy`、`/export`、`/context`、`/usage`、`/permissions` 统一改成 typed read/control result。
-   - 这些命令不应该生成 assistant message。
+7. `/context`、`/usage`、`/permissions` 统一改成 typed read/control result；`/copy`、`/export` 保留为 internal/API-only 或 Workbench 原生入口。
+   - 这些路径不应该生成 assistant message。
    - `debug_payload` 可以保留，但默认 UI 不展示。
    - `permissions` 必须是 session-local 模式查询/切换，和企业后台 approval 分离。
 
-8. `/interrupt` 与现有停止按钮合流。
-   - UI 点击 stop 和 slash `/interrupt` 都调用同一个 command contract。
+8. `/interrupt` 保留 internal/API-only，并与现有停止按钮共享底层 cancel active run 语义。
+   - Web 用户点击 stop，不通过手写 slash `/interrupt`。
    - 结果只展示“已中断当前 turn”，不显示 `RuntimeTask` 原始对象。
 
 ## 5. 前端修复计划（已按 0.0 实装；保留为 traceability）
@@ -612,9 +628,9 @@ cd frontend && npm test -- --run \
 3. `/clear` 收到新 session 后自动切换。
 4. `/rewind` 无参数时打开 checkpoint selector；带 checkpoint 时刷新 active projection。
 5. `/branch` 才切换到新 branch session。
-6. `/btw` 打开 side-question drawer/popover，关闭后不向主 timeline 追加消息。
-7. `/copy` 调用 clipboard API 或显示 copy panel，不把 content 作为 chat message。
-8. `/export` 打开导出面板或触发下载，不把 transcript JSON 发到聊天里。
+6. hidden/internal commands 不能被 Web 手写 slash parser 接受。
+7. `/resume` 打开 session 内 resume status panel，不退化为 toast-only。
+8. `/export` 用户路径走 Workbench/session export API，不走 Web slash。
 9. `/context`、`/usage` 打开右侧/弹出面板。
 10. `/permissions` 打开底部三档权限菜单，并和现有底部权限按钮共用状态。
 11. `/interrupt` 和停止按钮共用 UI 状态，完成后清掉 running state。
@@ -634,18 +650,14 @@ type CommandUiAction =
         | 'rewind'
         | 'clear'
         | 'branch'
-        | 'btw'
-        | 'copy'
-        | 'export'
         | 'context'
         | 'usage'
         | 'permissions'
-        | 'interrupt'
+        | 'resume'
       payload: unknown
     }
   | { action: 'switch_session'; sessionId: string }
-  | { action: 'open_panel'; panel: 'checkpoints' | 'side_question' | 'context' | 'usage' | 'export' | 'permissions' }
-  | { action: 'copy_to_clipboard'; text: string }
+  | { action: 'open_panel'; panel: 'checkpoints' | 'resume' | 'context' | 'usage' | 'permissions' }
 ```
 
 2. 停止把 object result 直接 `JSON.stringify` 到 assistant message。
@@ -666,14 +678,12 @@ type CommandUiAction =
    - 未识别 payload 进入 debug fallback，不进入默认聊天正文。
 
 6. 补齐用户触发 UI。
-   - `/resume`：session picker。
+   - `/resume`：resume status panel。
    - `/rewind`：checkpoint selector。
    - `/branch`：branch 创建后切换 / 打开按钮。
-   - `/btw`：side-question drawer/popover。
-   - `/copy`：clipboard / copy panel。
-   - `/export`：export modal。
    - `/context`、`/usage`：信息面板。
    - `/permissions`：底部三档权限菜单。
+   - hidden/internal commands 不进入 Web slash；若未来暴露，必须先改 `visible_to_user` 并补 UI 测试。
 
 ## 6. UI 方向
 

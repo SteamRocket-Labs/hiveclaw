@@ -32,6 +32,7 @@
 - 2026-06-27 R-5/R-6 Sub-agent / Agent Team 已关闭：custom subagent definitions 进入同一 Session Worker listing；team member terminal RuntimeTask 会投影回 `AgentTeamMember` metadata 和 `AgentTeamEvent`，Workbench/Team close 读同一 team read model。
 - 2026-06-27 R-7 Dynamic Workflow 已关闭：新增 `propose_dynamic_workflow`，proposal candidate 会降低到同一 `WorkflowDefinition`，再走 `preview_workflow` exact artifact/hash 和 `start_workflow`；前端 chat tool card 能展示 proposal/candidates/next action。
 - 2026-06-27 B-1 Workspace rewind snapshot 已关闭：user checkpoint 写入时自动捕获 workspace snapshot；`/rewind mode=workspace|both` 先确认再恢复 workspace。旧 session 无 snapshot 时仍 fail-closed `not_supported`。
+- 2026-06-27 B-2 Hidden session commands 已关闭：Web 用户 schema/execute/manual slash 只接受 user-visible command names；hidden/canonical/internal command 保留 agent/local/internal origin，不再作为用户命令宣传或半接 UI。
 
 ## 1. 已关闭项
 
@@ -350,24 +351,37 @@ cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test
 # 2 files passed, 70 tests passed
 ```
 
-## 2. 仍未闭环或待裁决项
-
-### B-2：隐藏 session commands 没有完整 UI
+### C-12：Hidden session commands user surface 裁决
 
 已做：
 
-- 用户可见 command index 约束到一组明确命令。
-- 后端还存在隐藏或兼容命令，例如 `checkpoints`、`btw`、`turn_steer`、`interrupt`、`rename`、`tag`、`export`、`copy`、`rollback`。
+- `backend/app/api/commands.py` 的 `get_agent_command(...)` 现在复用 `_enforce_web_user_command_surface(...)`；Web schema endpoint 只能读取 user-visible 名称。
+- Web 用户读取 `/goal` / `/team` / `/task` / `/schedule` / `/once` schema 时仍返回 canonical command schema；但直接读取 `goal_start`、`team_create`、`task_create`、`schedule_create`、`schedule_once` 会返回 404。
+- Web 用户 schema/execute 对 hidden/internal commands 统一 404，包括 `copy`、`export`、`btw`、`turn_steer`、`rollback`、`rename`、`tag`、`interrupt`、`checkpoints`。
+- `frontend/src/pages/agent-detail/slashCommand.ts` 新增 internal-only slash command blocklist；手写 `/btw`、`/turn_steer`、`/tag`、`/copy`、`/export`、`/rollback`、`/checkpoints` 不再被解析成用户命令。
+- `open_resume_picker` 已进入 `AgentDetail.tsx` 的同一 session command dispatcher，并渲染到 `SessionCommandControlPanel(type="resume_picker")`，不再退化为 toast-only。
 
-未闭环事实：
+闭环事实：
 
-- 多数隐藏命令没有完整 UI 或用户路径。
-- 需要逐个裁决：保留为 internal/tool-only，还是暴露为产品 command。
+- 用户可见 command、schema endpoint、execute endpoint、manual slash parser 现在是同一个 user-visible surface。
+- hidden/internal command 没有“第二条 Web 手写路径”；要么是 internal/agent origin，要么由产品 UI 显式接入后再改 `visible_to_user`。
+- agent/local/internal origin 仍可执行内部命令，不破坏 agent prompt/runtime 的控制面。
+- `/resume` 作为 user-visible command 已有真实 session 内 panel，不再只是提示。
 
-裁决：
+验证证据：
 
-- 不暴露的命令必须标成 internal/hidden，不得在用户文档中当成完成能力宣传。
-- 暴露的命令必须补 UI action 和测试。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema tests/api/test_cc_codex_parity_api.py::test_commands_api_schema_endpoint_uses_user_visible_names tests/api/test_cc_codex_parity_api.py::test_commands_api_rejects_internal_tool_commands_from_web tests/api/test_cc_codex_parity_api.py::test_commands_api_allows_internal_tool_commands_from_agent_origin -q
+# 4 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/api/commands.py tests/api/test_cc_codex_parity_api.py
+# All checks passed!
+
+cd frontend && npm test -- --run src/pages/agent-detail/slashCommand.test.ts src/pages/agent-detail/CommandPalette.test.tsx src/pages/agent-detail/SlashCommandMenu.test.tsx src/api/domains/ccParity.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
+# 5 files passed, 99 tests passed
+```
+
+## 2. 仍未闭环或待裁决项
 
 ### B-3：Background Agent / long-running completion wake 仍需统一验收口径
 
@@ -391,13 +405,13 @@ cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test
 
 以下说法在上述 gap 关闭前都不能继续写：
 
-1. “Session Control 所有命令都已完整闭环。”
-2. “上线前最后一轮所有断点都已补齐。”
+1. “上线前最后一轮所有断点都已补齐。”
 
 允许的准确说法：
 
 ```text
 Session command typed result、raw JSON suppression、manual compact/rewind next-turn context consumption、
+workspace rewind snapshot、hidden/internal command user surface 裁决、
 以及前端 session command control panel 已完成。
 
 Workspace rewind snapshot 已对新 checkpoint 闭环；旧 session 或无 snapshot checkpoint 仍 fail-closed not_supported。
@@ -408,13 +422,12 @@ Workbench read model 只在缺 runtime manifest 时 fallback。
 Hooks external runner、MCP live prompts/auth status、SkillTool/frontmatter hooks 已 production-live。
 
 Dynamic Workflow proposal/runtime/UI 已接入唯一 `propose_dynamic_workflow` -> `preview_workflow` -> `start_workflow` 路径；
-remaining launch blockers 仍是 hidden command 裁决和 background completion wake 统一验收。
+remaining launch blocker 是 background completion wake 统一验收。
 ```
 
 ## 4. 建议修复顺序
 
-1. B-2：收敛隐藏 session commands，逐个裁决 user-visible / internal-only，并补齐需要暴露的 UI action。
-2. B-3：收敛 Background Agent / long-running completion wake 到同一 session mailbox / wake / Workbench state 验收口径。
+1. B-3：收敛 Background Agent / long-running completion wake 到同一 session mailbox / wake / Workbench state 验收口径。
 
 ## 5. 证据检查命令
 
@@ -434,9 +447,11 @@ rg -n "propose_dynamic_workflow|preview_workflow|start_workflow|WorkflowDefiniti
 rg -n "workspace_snapshots|install_workspace_snapshot|session_workspace_rewind|workspace_restore_requires_confirmation|restore_session_workspace_snapshot" backend frontend docs
 cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py tests/services/test_session_command_runtime.py -q
 cd backend && source .venv/bin/activate && pytest tests/services/test_session_workspace_snapshot.py tests/services/test_session_command_runtime.py tests/services/test_web_chat_runtime.py::test_start_web_chat_run_creates_runtime_task_and_user_message tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_user_message_when_run_is_active -q
+cd backend && source .venv/bin/activate && pytest tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema tests/api/test_cc_codex_parity_api.py::test_commands_api_schema_endpoint_uses_user_visible_names tests/api/test_cc_codex_parity_api.py::test_commands_api_rejects_internal_tool_commands_from_web tests/api/test_cc_codex_parity_api.py::test_commands_api_allows_internal_tool_commands_from_agent_origin -q
 cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py -q
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_subagent_listing_section.py tests/services/test_agent_team_runtime_service.py tests/api/test_agent_teams_events_api.py -q
 cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
+cd frontend && npm test -- --run src/pages/agent-detail/slashCommand.test.ts src/pages/agent-detail/CommandPalette.test.tsx src/pages/agent-detail/SlashCommandMenu.test.tsx src/api/domains/ccParity.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
 cd frontend && npm run build
 ```

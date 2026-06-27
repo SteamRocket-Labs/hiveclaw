@@ -27,6 +27,7 @@
 - 2026-06-27 本次复核后，P0-1 `/compact` / `/rewind` next-turn context consumption、P0-2 session command UI action、P0-3 command registry 旧 branch 文案已经关闭。证据见下方“已关闭项”。
 - 2026-06-27 R-1 Hooks external runner 已关闭：`hook.command` / `hook.prompt` / `hook.http` / `hook.agent` 通过现有 plugin hook registration 唯一路径进入 `GovernedHookRunner`，并可在 live hook catalog 中观察到 `governed_hook_runner`。
 - 2026-06-27 R-2 PromptAssemblyManifest 已关闭：真实 kernel prompt assembly 会写入 runtime manifest，Workbench 优先读取该实际 manifest，read-model manifest 只作为无 active runtime metadata 时的 fallback。
+- 2026-06-27 R-3 MCP live prompts/auth 已关闭：`MCPClient` 支持 `prompts/list` / `prompts/get`，Agent Tool surface 新增 `mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`，协议 resources/prompts/auth status 走同一 MCP server resolution 和 capability gate。
 
 ## 1. 已关闭项
 
@@ -161,25 +162,34 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/turn_envelope.
 
 ## 2. 仍未闭环项
 
-### R-3：MCP live prompts/resources parity 没有完整闭环
+### C-6：MCP live prompts/resources/auth status parity
 
 已做：
 
-- `backend/app/services/mcp_server_service.py` 可从 persisted server config/read model 暴露 `tools` / `prompts` / `resources`。
-- `backend/app/services/extension_registry.py` 可把 `mcp_prompt:*` 和 `mcp_resource:skill://*` 映射成 extension effects。
-- MCP governed call path 存在。
+- `backend/app/services/mcp_client.py` 已有 live `resources/list` / `resources/read`，本次新增 live `prompts/list` / `prompts/get`。
+- `backend/app/tools/handlers/mcp.py` 新增 `mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`。
+- `mcp_list_resources`、`mcp_read_resource`、`mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status` 全部复用 `_resolve_agent_mcp_server(...)`，不引入第二条 MCP 权限路径。
+- `mcp_auth_status` 只报告 server、URL、api_key configured/not_configured 和 server-side OAuth 边界，不暴露 token。
+- `backend/app/services/capability_gate.py` 已把新工具映射为 `agent.mcp.read`。
 
-未闭环事实：
+闭环事实：
 
-- live MCP protocol `prompts/list` 不是当前生产 import path。
-- MCP auth pseudo-tool 未实现。
-- resource tool 命名和 CC surface 仍存在 canonical/alias 差异。
+- MCP protocol resources 和 prompts 都有 live Agent Tool path。
+- MCP auth pseudo-tool 已存在，且保持 tokenless/server-side-only 边界。
+- legacy `list_mcp_resources` / `read_mcp_resource` 仍只是 DB tool introspection aliases；protocol resources/prompts 使用 `mcp_*` canonical names。
 
-闭环验收：
+验证证据：
 
-1. 明确 `prompts/list` 是否本轮进入生产 discovery。
-2. 如果进入，必须接入 MCP client、cache、authz、ExtensionRegistry、Workbench、prompt manifest。
-3. 如果不进入，所有文档必须写成 persisted read model parity，不得写成 live MCP prompt parity。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_mcp_authz.py::test_mcp_client_lists_live_prompts tests/services/test_mcp_authz.py::test_mcp_client_gets_live_prompt tests/tools/test_mcp_call_tool.py::test_mcp_list_prompts_uses_live_prompts_list tests/tools/test_mcp_call_tool.py::test_mcp_get_prompt_uses_live_prompts_get tests/tools/test_mcp_call_tool.py::test_mcp_auth_status_reports_server_side_auth_without_token_leak tests/tools/test_mcp_call_tool.py::test_call_mcp_tool_is_in_capability_map -q
+# 6 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_mcp_authz.py tests/tools/test_mcp_call_tool.py tests/runtime/test_unified_prompt_contracts.py tests/services/test_pack_skill_alignment.py -q
+# 33 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/services/mcp_client.py app/tools/handlers/mcp.py app/runtime/prompts/mcp.py app/services/capability_gate.py tests/services/test_mcp_authz.py tests/tools/test_mcp_call_tool.py
+# All checks passed!
+```
 
 ### R-4：SkillTool forked execution 与 skill frontmatter hooks 没有闭环
 
@@ -357,7 +367,7 @@ proposal/runtime/UI 闭环尚未完成。
 ## 5. 建议修复顺序
 
 1. R-1：裁决 Hooks external runner 是本轮实装还是 explicit not-live；按裁决改文档/UI。
-2. R-3 / R-4：裁决 MCP live prompts 和 SkillTool/frontmatter hooks。
+2. R-4：裁决 SkillTool/frontmatter hooks。
 3. R-5 / R-6：补 Sub-agent / Agent Team 的行为级 e2e 验证。
 4. R-7：开始 Dynamic Workflow proposal slice。
 5. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。

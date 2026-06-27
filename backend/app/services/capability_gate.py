@@ -93,6 +93,10 @@ CAPABILITY_MAP: dict[str, str] = {
     # Protocol resources (resources/list + resources/read) — read-only.
     "mcp_list_resources": "agent.mcp.read",
     "mcp_read_resource": "agent.mcp.read",
+    # Protocol prompts/auth status (prompts/list + prompts/get + tokenless auth readout).
+    "mcp_list_prompts": "agent.mcp.read",
+    "mcp_get_prompt": "agent.mcp.read",
+    "mcp_auth_status": "agent.mcp.read",
     "call_mcp_tool": "agent.mcp.call",
     "send_feishu_message": "channel.feishu.message",
     "feishu_wiki_list": "channel.feishu.document",

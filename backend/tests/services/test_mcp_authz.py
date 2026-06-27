@@ -29,6 +29,66 @@ def test_mcp_client_extracts_api_key_query_without_leaking_url_secret() -> None:
     assert client._headers()["Authorization"] == "Bearer server-key"
 
 
+@pytest.mark.asyncio
+async def test_mcp_client_lists_live_prompts(monkeypatch) -> None:
+    from app.services.mcp_client import MCPClient
+
+    client = MCPClient("https://mcp.example/mcp")
+
+    async def fake_request(method: str, params: dict | None = None) -> dict:
+        assert method == "prompts/list"
+        assert params is None
+        return {
+            "result": {
+                "prompts": [
+                    {
+                        "name": "review",
+                        "description": "Review a document",
+                        "arguments": [{"name": "topic", "required": True}],
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(client, "_detect_and_request", fake_request)
+
+    assert await client.list_prompts() == [
+        {
+            "name": "review",
+            "description": "Review a document",
+            "arguments": [{"name": "topic", "required": True}],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_gets_live_prompt(monkeypatch) -> None:
+    from app.services.mcp_client import MCPClient
+
+    client = MCPClient("https://mcp.example/mcp")
+
+    async def fake_request(method: str, params: dict | None = None) -> dict:
+        assert method == "prompts/get"
+        assert params == {"name": "review", "arguments": {"topic": "pricing"}}
+        return {
+            "result": {
+                "description": "Review prompt",
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": "Review pricing."}},
+                    {"role": "assistant", "content": "I will review it."},
+                ],
+            }
+        }
+
+    monkeypatch.setattr(client, "_detect_and_request", fake_request)
+
+    rendered = await client.get_prompt("review", {"topic": "pricing"})
+
+    assert "Review prompt" in rendered
+    assert "user: Review pricing." in rendered
+    assert "assistant: I will review it." in rendered
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value

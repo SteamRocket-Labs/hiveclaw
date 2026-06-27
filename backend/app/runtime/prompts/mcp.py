@@ -36,3 +36,18 @@ MCP_READ_RESOURCE_DESCRIPTION = (
     "Read one MCP server resource by URI via resources/read. Large binary blobs spill "
     "to workspace artifacts."
 )
+
+MCP_LIST_PROMPTS_DESCRIPTION = (
+    "List the first-class prompt templates an imported MCP server exposes via prompts/list, "
+    "distinct from tools and resources."
+)
+
+MCP_GET_PROMPT_DESCRIPTION = (
+    "Render one MCP prompt template via prompts/get. Use mcp_list_prompts first, then pass "
+    "the prompt_name and any required arguments."
+)
+
+MCP_AUTH_STATUS_DESCRIPTION = (
+    "Inspect MCP server authorization status without exposing tokens. Use this when an MCP "
+    "tool, resource, or prompt fails due to authorization."
+)

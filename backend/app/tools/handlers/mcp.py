@@ -9,6 +9,9 @@ from app.runtime.prompts.mcp import (
     IMPORT_MCP_SERVER_DESCRIPTION,
     INSPECT_MCP_TOOL_DESCRIPTION,
     LIST_MCP_TOOLS_DESCRIPTION,
+    MCP_AUTH_STATUS_DESCRIPTION,
+    MCP_GET_PROMPT_DESCRIPTION,
+    MCP_LIST_PROMPTS_DESCRIPTION,
     MCP_LIST_RESOURCES_DESCRIPTION,
     MCP_READ_RESOURCE_DESCRIPTION,
 )
@@ -397,7 +400,12 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
 # from the DB): these reach the live server for its first-class *resources*.
 
 
-async def _resolve_agent_mcp_server(agent_id: uuid.UUID, server: str | None) -> tuple[str, str | None] | str:
+async def _resolve_agent_mcp_server(
+    agent_id: uuid.UUID,
+    server: str | None,
+    *,
+    tool_name: str = "mcp_list_resources",
+) -> tuple[str, str | None, str] | str:
     """Resolve (server_url, api_key) for one MCP server the agent may reach.
 
     Server access follows tool access: the agent must hold at least one enabled,
@@ -431,7 +439,7 @@ async def _resolve_agent_mcp_server(agent_id: uuid.UUID, server: str | None) -> 
             .scalars()
             .all()
         )
-        by_server: dict[str, tuple[str, Tool]] = {}
+        by_server: dict[str, tuple[str, Tool, str]] = {}
         for row in rows:
             url = row.mcp_server_url
             if not url:
@@ -439,11 +447,11 @@ async def _resolve_agent_mcp_server(agent_id: uuid.UUID, server: str | None) -> 
             if await resolve_agent_mcp_tool_mode(db, agent_id, row) == "deny":
                 continue
             name = row.mcp_server_name or url
-            by_server.setdefault(name, (url, row))
+            by_server.setdefault(name, (url, row, name))
 
     if not by_server:
         return render_tool_error(
-            tool_name="mcp_list_resources",
+            tool_name=tool_name,
             error_class="not_found",
             message="This agent has no reachable MCP server.",
             provider="mcp",
@@ -454,7 +462,7 @@ async def _resolve_agent_mcp_server(agent_id: uuid.UUID, server: str | None) -> 
         chosen = by_server.get(server)
         if chosen is None:
             return render_tool_error(
-                tool_name="mcp_list_resources",
+                tool_name=tool_name,
                 error_class="not_found",
                 message=f"No reachable MCP server named '{server}'.",
                 provider="mcp",
@@ -465,16 +473,16 @@ async def _resolve_agent_mcp_server(agent_id: uuid.UUID, server: str | None) -> 
         chosen = next(iter(by_server.values()))
     else:
         return render_tool_error(
-            tool_name="mcp_list_resources",
+            tool_name=tool_name,
             error_class="bad_arguments",
             message="Multiple MCP servers are available; specify which one.",
             provider="mcp",
             retryable=False,
             actionable_hint=f"Pass server=one of: {', '.join(sorted(by_server))}.",
         )
-    url, row = chosen
+    url, row, name = chosen
     api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
-    return url, api_key
+    return url, api_key, name
 
 
 @tool(
@@ -506,7 +514,7 @@ async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict) -> str:
     resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"))
     if isinstance(resolved, str):
         return resolved
-    server_url, api_key = resolved
+    server_url, api_key = resolved[:2]
     try:
         resources = await MCPClient(server_url, api_key=api_key).list_resources()
     except Exception as exc:
@@ -569,7 +577,7 @@ async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict) -> str:
     resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"))
     if isinstance(resolved, str):
         return resolved
-    server_url, api_key = resolved
+    server_url, api_key = resolved[:2]
     try:
         return await MCPClient(server_url, api_key=api_key).read_resource(uri)
     except Exception as exc:
@@ -581,3 +589,166 @@ async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict) -> str:
             retryable=True,
             actionable_hint="Check the URI and that the MCP server is reachable and authorized.",
         )
+
+
+@tool(
+    ToolMeta(
+        name="mcp_list_prompts",
+        description=MCP_LIST_PROMPTS_DESCRIPTION,
+        parameters={
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name (optional when only one server is imported).",
+                },
+            },
+        },
+        category="mcp",
+        display_name="List MCP Prompts",
+        icon="\U0001f4dd",
+        pack="mcp_admin_pack",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
+async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.mcp_client import MCPClient
+
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_list_prompts")
+    if isinstance(resolved, str):
+        return resolved
+    server_url, api_key = resolved[:2]
+    try:
+        prompts = await MCPClient(server_url, api_key=api_key).list_prompts()
+    except Exception as exc:
+        return render_tool_error(
+            tool_name="mcp_list_prompts",
+            error_class="operation_failed",
+            message=f"Failed to list MCP prompts: {type(exc).__name__}: {str(exc)[:200]}",
+            provider="mcp",
+            retryable=True,
+            actionable_hint="Check the MCP server is reachable and authorized.",
+        )
+    if not prompts:
+        return "This MCP server exposes no prompts."
+    lines = [f"## MCP Prompts ({len(prompts)})\n"]
+    for prompt in prompts:
+        args = prompt.get("arguments") or []
+        arg_names = []
+        if isinstance(args, list):
+            arg_names = [str(arg.get("name")) for arg in args if isinstance(arg, dict) and arg.get("name")]
+        desc = f": {prompt['description'][:120]}" if prompt.get("description") else ""
+        suffix = f" args=({', '.join(arg_names)})" if arg_names else ""
+        lines.append(f"- `{prompt['name']}`{suffix}{desc}")
+    return "\n".join(lines)
+
+
+@tool(
+    ToolMeta(
+        name="mcp_get_prompt",
+        description=MCP_GET_PROMPT_DESCRIPTION,
+        parameters={
+            "type": "object",
+            "properties": {
+                "prompt_name": {"type": "string", "description": "Prompt name from mcp_list_prompts."},
+                "arguments": {
+                    "type": "object",
+                    "description": "Prompt arguments matching the prompt's argument schema.",
+                },
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name (optional when only one server is imported).",
+                },
+            },
+            "required": ["prompt_name"],
+        },
+        category="mcp",
+        display_name="Get MCP Prompt",
+        icon="\U0001f4dd",
+        pack="mcp_admin_pack",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
+async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
+    from app.services.mcp_client import MCPClient
+
+    prompt_name = str(arguments.get("prompt_name") or arguments.get("name") or "").strip()
+    if not prompt_name:
+        return render_tool_error(
+            tool_name="mcp_get_prompt",
+            error_class="bad_arguments",
+            message="prompt_name is required.",
+            provider="mcp",
+            retryable=False,
+            actionable_hint="Call mcp_list_prompts first, then pass one of the returned prompt names.",
+        )
+    prompt_arguments = arguments.get("arguments") or {}
+    if not isinstance(prompt_arguments, dict):
+        return render_tool_error(
+            tool_name="mcp_get_prompt",
+            error_class="bad_arguments",
+            message="arguments must be an object.",
+            provider="mcp",
+            retryable=False,
+            actionable_hint="Pass prompt arguments as a JSON object.",
+        )
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_get_prompt")
+    if isinstance(resolved, str):
+        return resolved
+    server_url, api_key = resolved[:2]
+    try:
+        return await MCPClient(server_url, api_key=api_key).get_prompt(prompt_name, prompt_arguments)
+    except Exception as exc:
+        return render_tool_error(
+            tool_name="mcp_get_prompt",
+            error_class="operation_failed",
+            message=f"Failed to get MCP prompt: {type(exc).__name__}: {str(exc)[:200]}",
+            provider="mcp",
+            retryable=True,
+            actionable_hint="Check the prompt name and that the MCP server is reachable and authorized.",
+        )
+
+
+@tool(
+    ToolMeta(
+        name="mcp_auth_status",
+        description=MCP_AUTH_STATUS_DESCRIPTION,
+        parameters={
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "MCP server name (optional when only one server is imported).",
+                },
+            },
+        },
+        category="mcp",
+        display_name="MCP Auth Status",
+        icon="\U0001f510",
+        pack="mcp_admin_pack",
+        read_only=True,
+        parallel_safe=True,
+        governance="safe",
+        adapter="agent_args",
+    )
+)
+async def mcp_auth_status(agent_id: uuid.UUID, arguments: dict) -> str:
+    resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_auth_status")
+    if isinstance(resolved, str):
+        return resolved
+    server_url, api_key, server_name = resolved
+    return "\n".join(
+        [
+            "## MCP Auth Status",
+            f"- server: {server_name}",
+            f"- url: {server_url}",
+            f"- api_key: {'configured' if api_key else 'not_configured'}",
+            "- oauth: server_side_only; tokens are never exposed to the agent",
+        ]
+    )

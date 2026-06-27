@@ -399,6 +399,88 @@ class MCPClient:
         except httpx.HTTPError as e:
             raise Exception(f"Connection failed: {str(e)[:200]}")
 
+    async def list_prompts(self) -> list[dict]:
+        """Fetch available prompt templates from the MCP server (``prompts/list``)."""
+        try:
+            data = await self._detect_and_request("prompts/list")
+            if "error" in data:
+                err = data["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                raise Exception(f"MCP error: {msg}")
+            result = data.get("result", {})
+            prompts = result.get("prompts", []) if isinstance(result, dict) else []
+            return [
+                {
+                    "name": p.get("name", ""),
+                    "description": p.get("description", ""),
+                    "arguments": p.get("arguments", []),
+                }
+                for p in prompts
+                if isinstance(p, dict)
+            ]
+        except httpx.HTTPError as e:
+            raise Exception(f"Connection failed: {str(e)[:200]}")
+
+    def _prompt_content_to_text(self, content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, dict):
+            if content.get("type") == "text":
+                return str(content.get("text") or "")
+            if content.get("text") is not None:
+                return str(content.get("text"))
+            return json.dumps(content, ensure_ascii=False, sort_keys=True)
+        if isinstance(content, list):
+            return "\n".join(self._prompt_content_to_text(item) for item in content)
+        return str(content or "")
+
+    async def get_prompt(self, prompt_name: str, arguments: dict | None = None) -> str:
+        """Render one prompt template via ``prompts/get``."""
+        try:
+            data = await self._detect_and_request(
+                "prompts/get",
+                {"name": prompt_name, "arguments": arguments or {}},
+            )
+            if "error" in data:
+                err = data["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return render_tool_error(
+                    tool_name="mcp_get_prompt",
+                    error_class="provider_error",
+                    message=f"MCP prompt get error: {msg[:200]}",
+                    provider="mcp",
+                    retryable=False,
+                    actionable_hint="Verify the prompt name from mcp_list_prompts and server authorization.",
+                )
+            result = data.get("result", {})
+            if isinstance(result, str):
+                return result
+            if not isinstance(result, dict):
+                return str(result)
+            lines: list[str] = []
+            description = str(result.get("description") or "").strip()
+            if description:
+                lines.append(description)
+            messages = result.get("messages", [])
+            if isinstance(messages, list):
+                for message in messages:
+                    if not isinstance(message, dict):
+                        lines.append(str(message))
+                        continue
+                    role = str(message.get("role") or "message")
+                    text = self._prompt_content_to_text(message.get("content"))
+                    lines.append(f"{role}: {text}")
+            return "\n\n".join(line for line in lines if line) or f"(prompt {prompt_name} returned no messages)"
+        except httpx.HTTPError as e:
+            return render_tool_error(
+                tool_name="mcp_get_prompt",
+                error_class="transport_failure",
+                message=f"MCP connection failed: {str(e)[:200]}",
+                provider="mcp",
+                retryable=True,
+                actionable_hint="Retry later or check the MCP server URL and network reachability.",
+            )
+
     async def read_resource(self, uri: str) -> str:
         """Read one resource by URI (``resources/read``).
 

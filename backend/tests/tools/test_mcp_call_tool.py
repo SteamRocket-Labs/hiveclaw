@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.agent_tool_domains.web_mcp import _execute_mcp_tool
-from app.tools.handlers.mcp import call_mcp_tool, inspect_mcp_tool
+from app.tools.handlers.mcp import call_mcp_tool, inspect_mcp_tool, mcp_auth_status, mcp_get_prompt, mcp_list_prompts
 
 
 # ── DB fake ───────────────────────────────────────────────────
@@ -130,6 +130,7 @@ class _SpyClient:
         self.server_url = server_url
         self.api_key = api_key
         self.call_args: tuple[str, dict] | None = None
+        self.prompt_args: tuple[str, dict] | None = None
         self.raise_on_call: Exception | None = None
         type(self).instances.append(self)
 
@@ -138,6 +139,13 @@ class _SpyClient:
         if self.raise_on_call:
             raise self.raise_on_call
         return f"OK from {tool_name} with {arguments}"
+
+    async def list_prompts(self) -> list[dict]:
+        return [{"name": "review", "description": "Review a document", "arguments": [{"name": "topic"}]}]
+
+    async def get_prompt(self, prompt_name: str, arguments: dict) -> str:
+        self.prompt_args = (prompt_name, arguments)
+        return f"Prompt {prompt_name}: {arguments}"
 
 
 @pytest.fixture(autouse=True)
@@ -349,6 +357,79 @@ async def test_falls_back_to_hive_name_when_mcp_tool_name_unset(install_fake_ses
 
 
 @pytest.mark.asyncio
+async def test_mcp_list_prompts_uses_live_prompts_list(install_fake_session, patch_mcp_client, monkeypatch):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_server_name="docs",
+        mcp_tool_name="get_weather",
+        config={"api_key": "secret-key"},
+    )
+    install_fake_session([_FakeQueryResult(scalars=[row])])
+
+    async def fake_mode(db, aid, tool):
+        return "auto"
+
+    monkeypatch.setattr("app.services.mcp_server_service.resolve_agent_mcp_tool_mode", fake_mode)
+
+    out = await mcp_list_prompts(uuid.uuid4(), {})
+
+    assert "## MCP Prompts" in out
+    assert "`review`" in out
+    assert _SpyClient.instances[0].server_url == "https://mcp.example.com"
+    assert _SpyClient.instances[0].api_key == "secret-key"
+
+
+@pytest.mark.asyncio
+async def test_mcp_get_prompt_uses_live_prompts_get(install_fake_session, patch_mcp_client, monkeypatch):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_server_name="docs",
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    install_fake_session([_FakeQueryResult(scalars=[row])])
+
+    async def fake_mode(db, aid, tool):
+        return "auto"
+
+    monkeypatch.setattr("app.services.mcp_server_service.resolve_agent_mcp_tool_mode", fake_mode)
+
+    out = await mcp_get_prompt(uuid.uuid4(), {"prompt_name": "review", "arguments": {"topic": "pricing"}})
+
+    assert "Prompt review" in out
+    assert _SpyClient.instances[0].prompt_args == ("review", {"topic": "pricing"})
+
+
+@pytest.mark.asyncio
+async def test_mcp_auth_status_reports_server_side_auth_without_token_leak(install_fake_session, monkeypatch):
+    row = SimpleNamespace(
+        name="weather",
+        enabled=True,
+        mcp_server_url="https://mcp.example.com",
+        mcp_server_name="docs",
+        mcp_tool_name="get_weather",
+        config={"api_key": "secret-key"},
+    )
+    install_fake_session([_FakeQueryResult(scalars=[row])])
+
+    async def fake_mode(db, aid, tool):
+        return "approval"
+
+    monkeypatch.setattr("app.services.mcp_server_service.resolve_agent_mcp_tool_mode", fake_mode)
+
+    out = await mcp_auth_status(uuid.uuid4(), {})
+
+    assert "## MCP Auth Status" in out
+    assert "docs" in out
+    assert "api_key: configured" in out
+    assert "secret-key" not in out
+
+
+@pytest.mark.asyncio
 async def test_client_failure_surfaces_as_operation_failed(install_fake_session, patch_mcp_client):
     row = SimpleNamespace(
         name="weather",
@@ -384,6 +465,9 @@ def test_call_mcp_tool_is_in_capability_map() -> None:
     from app.services.capability_gate import CAPABILITY_MAP
 
     assert CAPABILITY_MAP.get("call_mcp_tool") == "agent.mcp.call"
+    assert CAPABILITY_MAP.get("mcp_list_prompts") == "agent.mcp.read"
+    assert CAPABILITY_MAP.get("mcp_get_prompt") == "agent.mcp.read"
+    assert CAPABILITY_MAP.get("mcp_auth_status") == "agent.mcp.read"
 
 
 # ── Closure A2: approval gates execution, not discovery ──────────────

@@ -1,7 +1,7 @@
 # CCPlus Final Prelaunch Convergence Master Plan
 
 日期：2026-06-27
-状态：上线前最后一轮优化的统领性计划；2026-06-27 总检后作为当前上线裁决
+状态：上线前最后一轮优化的统领性计划；2026-06-27 复核后不再作为“全部闭环”证明，当前阻断项以 `docs/ccplus-unclosed-gap-register-2026-06-27.md` 为准。
 范围：Session Control、AgentTool/Sub-agent/Completion Bus、Agent Team/A2A Session、TurnEnvelope/Workbench/Hooks/Skill/MCP 的统一实施顺序、依赖关系、验收口径和文档归属
 
 ## 0. 本文定位
@@ -9,6 +9,8 @@
 本文是上线前最后一轮 CCPlus 优化的总入口。
 
 旧的专项文档仍然保留为证据和细节来源，但后续排期、实现顺序、验收优先级以本文为准。任何专项文档如果与本文冲突，先按本文执行，再回写专项文档。
+
+2026-06-27 复核修正：本文中“已完成 / 已闭合 / 上线裁决”类表述需要按 `docs/ccplus-unclosed-gap-register-2026-06-27.md` 重新解释。特别是 session command typed result、Workbench read model、TurnEnvelope projection、Hook catalog、MCP read model 不能自动等同于运行时闭环。
 
 核心裁决：
 

@@ -2,13 +2,15 @@
 
 日期：2026-06-27
 
-状态：Workstream A 已按本文测试口径实装。当前有效结论以 “0.0 Workstream A 实装证据” 为准；后续历史审计/计划段落保留为 traceability，不再表示当前缺口。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
+状态：Workstream A 的 typed result / raw JSON suppression 已按本文测试口径实装；2026-06-27 复核后确认 manual `/compact` / `/rewind` 尚未闭合 next-turn context consumption，前端部分 `ui_action` 仍只是 toast/invalidate。当前阻断项以 `docs/ccplus-unclosed-gap-register-2026-06-27.md` 为准。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
 
 范围：session 内 slash command 的完整控制面，包括状态改变、只读查询、UI-only 交互、prompt 包装命令，以及 `/btw` 这类 side-question 命令。本文不处理 A2A 产品层协议。
 
 文档关系：本文是 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` 主线 A（Session Control Spine）的专项 contract。上线前最后一轮的总顺序、与 AgentTool / Agent Team / A2A / TurnEnvelope 的依赖关系，以该 master plan 为准。
 
 ## 0.0 Workstream A 实装证据
+
+复核修正：本节只能证明 command result shape、metadata/event 写入和 raw JSON suppression；不能证明 `/compact` / `/rewind` 已真正改变下一轮模型上下文。实际未闭环点见 `docs/ccplus-unclosed-gap-register-2026-06-27.md#p0-1compact--rewind-没有真正影响下一轮模型上下文`。
 
 实装入口：
 

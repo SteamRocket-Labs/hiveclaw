@@ -29,6 +29,7 @@
 - 2026-06-27 R-2 PromptAssemblyManifest 已关闭：真实 kernel prompt assembly 会写入 runtime manifest，Workbench 优先读取该实际 manifest，read-model manifest 只作为无 active runtime metadata 时的 fallback。
 - 2026-06-27 R-3 MCP live prompts/auth 已关闭：`MCPClient` 支持 `prompts/list` / `prompts/get`，Agent Tool surface 新增 `mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`，协议 resources/prompts/auth status 走同一 MCP server resolution 和 capability gate。
 - 2026-06-27 R-4 SkillTool/frontmatter hooks 已关闭：`run_skill_tool` 进入 core tool surface 并复用 code execution provider；loaded skill frontmatter hooks 会注册到 session-scoped `HookRegistry`，并写入 session metadata 可观察。
+- 2026-06-27 R-5/R-6 Sub-agent / Agent Team 已关闭：custom subagent definitions 进入同一 Session Worker listing；team member terminal RuntimeTask 会投影回 `AgentTeamMember` metadata 和 `AgentTeamEvent`，Workbench/Team close 读同一 team read model。
 
 ## 1. 已关闭项
 
@@ -223,9 +224,7 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/skill_hooks.py
 # All checks passed!
 ```
 
-## 2. 仍未闭环项
-
-### R-5：Sub-agent 机制已有主路径，但触发频率和 custom definitions 仍未验证闭环
+### C-8：Sub-agent custom definitions、触发 guidance 与 completion wake 验证
 
 已做：
 
@@ -233,44 +232,57 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/skill_hooks.py
 - tool schema 已兼容 CC AgentTool 的 `description`、`prompt`、`subagent_type`、`model`、`team_name`、`name`、`run_in_background`。
 - coordinator 已改为 To Session Worker 使用 `spawn_subagent`，不再把 `delegate_to_agent` 当 session worker。
 - built-in Session Worker type listing 已进入 prompt section。
+- `backend/app/runtime/prompt_sections/subagent_listing.py` 现在接收当前 `agent_id` / `tenant_id`，并把 agent-scope / tenant-scope custom definitions 以 `definition_name` 方式渲染到同一 `spawn_subagent` 路径。
+- `backend/app/services/agent_context.py` 构建真实 agent context 时会传入当前 agent/tenant，不再只列 builtin worker types。
+- 常驻 executing-actions prompt 已钉死四类 CC 触发场景：独立并行检索、noisy exploration 隔离、写代码后的 critic、独立 verification。
 
-未闭环事实：
+闭环事实：
 
-- custom subagent definitions 的 per-turn listing / delta 仍是增强项，未完全等价 `.claude/agents`。
-- 缺真实长会话 e2e 或 transcript 证据证明模型会按 CC 频率主动触发 subagent。
-- 当前只能说 affordance 和 routing 已加强，不能说行为触发频率已与 CC 一致。
+- custom definitions 不再是 API/tool error 时的补救列表；它们是每轮 agent context 的 Session Worker routing signal。
+- builtin/custom worker 都走同一个 `spawn_subagent` tool；没有 `.claude/agents` 兼容第二路径。
+- 背景 completion 仍走 durable RuntimeTask + coordination/mailbox；`check_subagent` 是 fallback status inspection，不是 busy-poll 主路径。
 
-闭环验收：
+验证证据：
 
-1. 增加 subagent trigger behavior eval：
-   - 大规模并行检索。
-   - 写代码后测试 runner。
-   - noisy exploration 隔离。
-   - critic/verification worker。
-2. 记录 `spawn_subagent` 调用率、拒用原因、completion wake 是否进入主 session。
-3. custom definitions 若作为 parity 目标，必须进入同一 Session Worker listing，不走第二路径。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_subagent_listing_section.py -q
+# 3 passed, 4 warnings
 
-### R-6：Agent Team runtime 已有，但团队完成反馈 / UI / e2e 验证仍不能算全闭环
+cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py::test_cc_session_task_types_are_executable_chat_runs tests/runtime/test_subagent_listing_section.py tests/agents/test_subagent_scope_resolution.py tests/agents/test_subagent_spawn_tool.py -q
+# 35 passed, 4 warnings
+```
+
+### C-9：Agent Team completion feedback / Workbench read model 闭环
 
 已做：
 
 - `AgentTeamRuntimeService` 已能创建 team、member sessions，并通过 mailbox continuation 运行成员 session。
 - `team_create` tool/API 已持久化到同一 team runtime service。
 - To Employee / A2A 已和 To Session Worker 分层。
+- `backend/app/services/agent_team_runtime_service.py` 新增 `project_agent_team_member_completion(...)`：terminal `RuntimeTask(task_type="team_member")` 会把 summary、artifact refs、T0 refs 写回 `AgentTeamMember.metadata_json`，并追加 `AgentTeamEvent(member_completed|member_failed)`。
+- `backend/app/services/web_chat_runtime.py` 的 assistant/tool-card terminal finalizer 会调用该投影函数；普通 web chat、goal continuation、advanced plan 不受影响。
+- `session_control_plane.py` 和 Team close 都继续读取同一 `AgentTeamMember.metadata_json`，没有新增第二个 read model。
 
-未闭环事实：
+闭环事实：
 
-- 还缺完整 e2e 证明：
-  - team_create 后成员 session 自动接收任务。
-  - 成员完成后 team lead/main session 能在下一轮看到 completion。
-  - Workbench / timeline / child read-only view 显示一致。
-- 当前更多是 service/API 单元测试和 read model 证据，不等于完整产品闭环。
+- team_create 后的 member session、mailbox continuation、terminal completion、Workbench/team close 输出共享同一 team runtime/read model。
+- member 完成反馈不再只存在于 RuntimeTask result_summary 或子 session transcript；父侧可通过 team read model 看到 summary/artifacts/t0 refs。
+- Agent Team 和 A2A employee delegation 的边界仍固定：Agent Team 是 session-local enterable workspace；A2A 是同 owner/public/group collaborator。
 
-闭环验收：
+验证证据：
 
-1. 加一条端到端 team run 测试或集成测试。
-2. UI 必须能看到 team、member session、mailbox/completion、artifact refs。
-3. 文档必须把 Agent Team 和 A2A employee delegation 的边界写死，不复用 relationship 旧语义。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team_runtime_service.py tests/api/test_agent_teams_events_api.py -q
+# 9 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py::test_cc_session_task_types_are_executable_chat_runs tests/runtime/test_subagent_listing_section.py tests/agents/test_subagent_scope_resolution.py tests/agents/test_subagent_spawn_tool.py -q
+# 35 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_sections/subagent_listing.py app/services/agent_context.py app/services/agent_team_runtime_service.py app/services/web_chat_runtime.py tests/runtime/test_subagent_listing_section.py tests/services/test_agent_team_runtime_service.py
+# All checks passed!
+```
+
+## 2. 仍未闭环项
 
 ### R-7：Dynamic Workflow 目前是计划文档，不是 proposal runtime 闭环
 
@@ -375,10 +387,9 @@ proposal/runtime/UI 闭环尚未完成。
 
 ## 5. 建议修复顺序
 
-1. R-5 / R-6：补 Sub-agent / Agent Team 的行为级 e2e 验证。
-2. R-7：开始 Dynamic Workflow proposal slice。
-3. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
-4. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
+1. R-7：开始 Dynamic Workflow proposal slice。
+2. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
+3. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
 
 ## 6. 证据检查命令
 
@@ -398,6 +409,7 @@ rg -n "propose_dynamic_workflow|preview_workflow|start_workflow|WorkflowDefiniti
 cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py tests/services/test_session_command_runtime.py -q
 cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py -q
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_subagent_listing_section.py tests/services/test_agent_team_runtime_service.py tests/api/test_agent_teams_events_api.py -q
 cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
 cd frontend && npm run build
 ```

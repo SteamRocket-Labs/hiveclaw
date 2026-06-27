@@ -442,7 +442,7 @@ async def build_agent_context(
 
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)
-    subagent_listing = build_subagent_listing_section()
+    subagent_listing = build_subagent_listing_section(agent_id=agent_id, tenant_id=_agent_tenant_id)
     tone_style = build_tone_style_section()
 
     if include_runtime_metadata:

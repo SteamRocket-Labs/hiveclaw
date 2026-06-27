@@ -1618,6 +1618,15 @@ async def _finalize_web_chat_run_with_assistant(
                 result_summary=result_summary,
                 metadata_json=metadata_json,
             )
+            from app.services.agent_team_runtime_service import project_agent_team_member_completion
+
+            await project_agent_team_member_completion(
+                db=db,
+                task=task,
+                status=status,
+                result_summary=result_summary,
+                metadata_json=metadata_json,
+            )
             await append_session_event(
                 db=db,
                 agent_id=agent_id,
@@ -1679,6 +1688,15 @@ async def _finalize_web_chat_run_with_assistant(
             metadata_json["artifacts"] = artifact_parts
         _apply_terminal_task_update(
             task,
+            status=status,
+            result_summary=result_summary,
+            metadata_json=metadata_json,
+        )
+        from app.services.agent_team_runtime_service import project_agent_team_member_completion
+
+        await project_agent_team_member_completion(
+            db=db,
+            task=task,
             status=status,
             result_summary=result_summary,
             metadata_json=metadata_json,
@@ -1767,6 +1785,15 @@ async def _finalize_web_chat_run_without_assistant(
             metadata_json=metadata_json,
         )
         merged_metadata = dict(getattr(task, "metadata_json", None) or {})
+        from app.services.agent_team_runtime_service import project_agent_team_member_completion
+
+        await project_agent_team_member_completion(
+            db=db,
+            task=task,
+            status=status,
+            result_summary=result_summary,
+            metadata_json=merged_metadata,
+        )
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
             task=task,

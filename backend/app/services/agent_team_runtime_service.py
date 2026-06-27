@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.agent import Agent
@@ -311,6 +311,85 @@ def _stamp_member_runtime(member: AgentTeamMember, run: dict[str, Any], *, statu
     if run_id:
         metadata["last_runtime_task_id"] = str(run_id)
     member.metadata_json = metadata
+
+
+def _member_terminal_status(status: str) -> str:
+    value = str(status or "").strip().lower()
+    if value == "completed":
+        return "completed"
+    if value in {"failed", "killed", "skipped", "cancelled", "canceled"}:
+        return "failed"
+    return value or "completed"
+
+
+async def project_agent_team_member_completion(
+    *,
+    db: Any,
+    task: Any,
+    status: str,
+    result_summary: str | None,
+    metadata_json: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Project a terminal team-member RuntimeTask back into the team read model."""
+    if str(getattr(task, "task_type", "") or "") != "team_member":
+        return None
+
+    filters = []
+    run_id = _uuid_or_none(getattr(task, "id", None))
+    if run_id is not None:
+        filters.append(AgentTeamMember.runtime_task_id == run_id)
+    child_session_id = _uuid_or_none(getattr(task, "child_session_id", None))
+    if child_session_id is not None:
+        filters.append(AgentTeamMember.chat_session_id == child_session_id)
+    if not filters:
+        return None
+
+    member = (
+        await db.execute(
+            select(AgentTeamMember)
+            .where(or_(*filters) if len(filters) > 1 else filters[0])
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if member is None:
+        return None
+
+    terminal_status = _member_terminal_status(status)
+    metadata = dict(member.metadata_json or {})
+    source_metadata = dict(metadata_json or {})
+    artifacts = source_metadata.get("artifacts") or metadata.get("artifacts") or []
+    artifact_paths = source_metadata.get("artifact_paths") or metadata.get("artifact_paths") or []
+    t0_refs = source_metadata.get("t0_refs") or source_metadata.get("transcript_refs") or metadata.get("t0_refs") or []
+    if result_summary is not None:
+        metadata["summary"] = result_summary
+    metadata["status"] = terminal_status
+    metadata["runtime_task_id"] = str(run_id) if run_id is not None else str(getattr(task, "id", "") or "")
+    metadata["artifact_paths"] = artifact_paths
+    metadata["artifacts"] = artifacts
+    metadata["t0_refs"] = t0_refs
+    member.status = terminal_status
+    member.metadata_json = metadata
+
+    payload = {
+        "status": terminal_status,
+        "runtime_task_type": "team_member",
+        "run_id": metadata["runtime_task_id"],
+        "summary": result_summary or "",
+        "artifact_paths": artifact_paths,
+        "artifacts": artifacts,
+        "t0_refs": t0_refs,
+    }
+    db.add(
+        AgentTeamEvent(
+            id=uuid.uuid4(),
+            team_id=member.team_id,
+            receiver_member_id=member.id,
+            event_type=f"member_{terminal_status}",
+            payload_json=payload,
+        )
+    )
+    return payload
 
 
 async def message_agent_team_members_runtime(

@@ -35,6 +35,58 @@ def _low_risk_definition() -> dict:
     }
 
 
+def _dynamic_workflow_proposal() -> dict:
+    return {
+        "goal": "Audit the repository with independent slices and a critic pass.",
+        "why_workflow": "The work needs bounded fan-out, synthesis, and verification without polluting parent context.",
+        "success_criteria": ["Each slice reports evidence refs.", "A critic verifies the synthesized result."],
+        "args": {"slices": ["api", "runtime"]},
+        "candidates": [
+            {
+                "candidate_id": "fanout-critic",
+                "name": "Fanout then critic",
+                "pattern_mix": ["fanout_synthesize", "adversarial_verify"],
+                "risk_level": "medium",
+                "budget": {
+                    "max_steps": 3,
+                    "max_leaf_calls": 8,
+                    "max_concurrency": 2,
+                    "max_tokens": 12000,
+                    "max_wall_clock_seconds": 1800,
+                },
+                "failure_policy": {
+                    "leaf_failure": "record_and_continue",
+                    "repair_rounds": 1,
+                    "no_full_chain_rerun": True,
+                },
+                "lowered_definition": {
+                    "name": "repo-audit-fanout",
+                    "description": "Audit repository slices and verify the synthesis.",
+                    "args_schema": {"slices": {"type": "array", "required": True}},
+                    "default_budget": {"max_total_tokens": 12000, "max_wall_clock_seconds": 1800},
+                    "steps": [
+                        {
+                            "id": "slice",
+                            "type": "fanout_step",
+                            "leaf": {"name": "slice-auditor", "type": "explorer"},
+                            "items_from": "args.slices",
+                            "per_item_task": "Audit {{item}} and return evidence refs.",
+                            "max_concurrency": 2,
+                        },
+                        {
+                            "id": "critic",
+                            "type": "agent_step",
+                            "leaf": {"name": "critic", "type": "critic"},
+                            "task": "Verify the slice outputs independently.",
+                        },
+                    ],
+                },
+            }
+        ],
+        "recommended_candidate_id": "fanout-critic",
+    }
+
+
 def _high_risk_definition() -> dict:
     return {
         "name": "external-send",
@@ -101,6 +153,7 @@ def test_workflow_tools_registered_in_capability_map():
 
     assert "start_workflow" in CAPABILITY_MAP
     assert "preview_workflow" in CAPABILITY_MAP
+    assert "propose_dynamic_workflow" in CAPABILITY_MAP
 
 
 # ── tool handlers ─────────────────────────────────────────────────
@@ -143,6 +196,40 @@ async def test_preview_workflow_reports_compile_errors():
     assert payload["error"]
 
 
+async def test_propose_dynamic_workflow_lowers_candidates_without_starting_runtime():
+    from app.tools.handlers.workflow import propose_dynamic_workflow
+
+    result = await propose_dynamic_workflow(uuid.uuid4(), _dynamic_workflow_proposal())
+    payload = json.loads(result)
+
+    assert payload["ok"] is True
+    assert payload["status"] == "dynamic_workflow_proposed"
+    assert payload["proposal_id"]
+    assert payload["recommended_candidate_id"] == "fanout-critic"
+    assert payload["next_action"].startswith("Call preview_workflow")
+    assert len(payload["candidates"]) == 1
+    candidate = payload["candidates"][0]
+    assert candidate["candidate_id"] == "fanout-critic"
+    assert candidate["definition_hash"]
+    assert candidate["args_hash"]
+    assert candidate["planned_leaf_calls"] == 3
+    assert candidate["lowered_definition"]["name"] == "repo-audit-fanout"
+    assert candidate["preview_args"] == {"slices": ["api", "runtime"]}
+
+
+async def test_propose_dynamic_workflow_rejects_invalid_lowered_definition():
+    from app.tools.handlers.workflow import propose_dynamic_workflow
+
+    proposal = _dynamic_workflow_proposal()
+    proposal["candidates"][0]["lowered_definition"] = {"steps": []}
+
+    result = await propose_dynamic_workflow(uuid.uuid4(), proposal)
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert "lowered_definition" in payload["error"]
+
+
 async def test_start_workflow_low_risk_launches(monkeypatch):
     from app.tools.handlers import workflow as workflow_handlers
 
@@ -177,6 +264,52 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
     assert captured["agent_id"] == agent_id
     assert captured["definition"]["name"] == "read-probe"
     assert captured["parent_session_id"] == "session-workflow"
+
+
+async def test_start_workflow_persists_dynamic_proposal_binding(monkeypatch):
+    from app.tools.handlers import workflow as workflow_handlers
+
+    captured: dict = {}
+
+    async def fake_launch(**kwargs):
+        captured.update(kwargs)
+        from app.runtime.workflow_engine import WorkflowRunOutcome
+        from app.services.workflow_runtime_service import WorkflowRunHandle
+
+        return WorkflowRunHandle(run_id=uuid.uuid4(), outcome=WorkflowRunOutcome(status="completed"))
+
+    monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+    agent_id = uuid.uuid4()
+    proposal = json.loads(await workflow_handlers.propose_dynamic_workflow(agent_id, _dynamic_workflow_proposal()))
+    candidate = proposal["candidates"][0]
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(
+            agent_id,
+            {
+                "definition": candidate["lowered_definition"],
+                "args": candidate["preview_args"],
+                "proposal_id": proposal["proposal_id"],
+                "candidate_id": candidate["candidate_id"],
+            },
+        )
+    )
+
+    await workflow_handlers.start_workflow(
+        _start_request(
+            agent_id,
+            {
+                "definition": candidate["lowered_definition"],
+                "args": candidate["preview_args"],
+                "preview_id": preview["preview_id"],
+                "proposal_id": proposal["proposal_id"],
+                "candidate_id": candidate["candidate_id"],
+            },
+        )
+    )
+
+    assert captured["definition_source"] == "dynamic_workflow"
+    assert captured["run_metadata"]["dynamic_workflow"]["proposal_id"] == proposal["proposal_id"]
+    assert captured["run_metadata"]["dynamic_workflow"]["candidate_id"] == "fanout-critic"
 
 
 async def test_start_workflow_rejects_missing_preview_binding():

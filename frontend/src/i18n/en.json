@@ -1129,6 +1129,14 @@
         "deferredCapabilities": "Deferred Capabilities",
         "warnings": "Warnings",
         "manualSteps": "Manual Steps",
+        "dynamicWorkflowProposalTitle": "Dynamic Workflow Proposal",
+        "successCriteria": "Success Criteria",
+        "candidates": "Candidates",
+        "risk": "Risk",
+        "leafCalls": "Leaf calls",
+        "budgetTokens": "Budget tokens",
+        "confirmationRequired": "Confirmation required",
+        "recommended": "Recommended",
         "rawOutput": "Raw output"
       },
       "workLedger": {

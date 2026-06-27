@@ -261,6 +261,7 @@ CORE_TOOL_NAMES = {
     # (capability gate / plan gate / approval) remains the execution boundary.
     "spawn_subagent",
     "check_subagent",
+    "propose_dynamic_workflow",
     "preview_workflow",
     "start_workflow",
     # Work ledger (T1.2): working memory is an agent thinking tool — it must

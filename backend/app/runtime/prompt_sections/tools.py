@@ -41,7 +41,7 @@ the Memory Guide says they qualify; operational notes and evidence belong in wor
 auto-archival, or to unpin one you no longer need.
 - Work board: use `track_todo` / `read_ledger` to maintain your todo list and findings. \
 Writing a todo never triggers execution — to launch background/autonomous work use \
-`delegate_to_agent` / `spawn_subagent` / `start_workflow`.
+`delegate_to_agent` / `spawn_subagent` / `propose_dynamic_workflow` / `start_workflow`.
 - After writing files, verify the result with `read_file` if correctness is critical.\
 """
 

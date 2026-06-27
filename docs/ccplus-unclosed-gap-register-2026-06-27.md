@@ -30,6 +30,7 @@
 - 2026-06-27 R-3 MCP live prompts/auth 已关闭：`MCPClient` 支持 `prompts/list` / `prompts/get`，Agent Tool surface 新增 `mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`，协议 resources/prompts/auth status 走同一 MCP server resolution 和 capability gate。
 - 2026-06-27 R-4 SkillTool/frontmatter hooks 已关闭：`run_skill_tool` 进入 core tool surface 并复用 code execution provider；loaded skill frontmatter hooks 会注册到 session-scoped `HookRegistry`，并写入 session metadata 可观察。
 - 2026-06-27 R-5/R-6 Sub-agent / Agent Team 已关闭：custom subagent definitions 进入同一 Session Worker listing；team member terminal RuntimeTask 会投影回 `AgentTeamMember` metadata 和 `AgentTeamEvent`，Workbench/Team close 读同一 team read model。
+- 2026-06-27 R-7 Dynamic Workflow 已关闭：新增 `propose_dynamic_workflow`，proposal candidate 会降低到同一 `WorkflowDefinition`，再走 `preview_workflow` exact artifact/hash 和 `start_workflow`；前端 chat tool card 能展示 proposal/candidates/next action。
 
 ## 1. 已关闭项
 
@@ -282,31 +283,42 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_section
 # All checks passed!
 ```
 
-## 2. 仍未闭环项
-
-### R-7：Dynamic Workflow 目前是计划文档，不是 proposal runtime 闭环
+### C-10：Dynamic Workflow proposal runtime / UI / prompt 唯一路径
 
 已做：
 
 - Hive 已有固定 Workflow 下层 runtime：`WorkflowDefinition`、compiler、admission、engine、journal、`preview_workflow`、`start_workflow`。
 - `docs/dynamic-workflow-ccplus-implementation-plan-2026-06-27.md` 已定义 Dynamic Workflow 唯一路径。
+- `backend/app/tools/handlers/workflow.py` 新增 `propose_dynamic_workflow`。
+- proposal/candidate schema 接收 `goal`、`why_workflow`、`success_criteria`、`budget`、`failure_policy`、`lowered_definition` 和 shared/per-candidate `args`。
+- 每个 candidate 必须降低到现有 `WorkflowDefinition`，并通过 `compile_workflow(...)` + `admit_workflow(...)` + `inspect_workflow_confirmation_needs(...)`。
+- `preview_workflow` 可绑定 `proposal_id` / `candidate_id`；`start_workflow` 会校验 preview binding，并把 dynamic binding 写入 workflow run metadata。
+- `WorkflowRuntimeService.start_run(...)` 接收 `run_metadata`，但仍用同一 RuntimeTask、WorkflowEngine、journal、quota 和 session event 路径。
+- `propose_dynamic_workflow` 已加入 `CORE_TOOL_NAMES`、capability map、Plan Mode readonly allowlist 和 child-worker recursion denylist。
+- 常驻 prompt 已统一为 `propose_dynamic_workflow` -> `preview_workflow` -> `start_workflow`，不再保留“直接 preview/start”第二种启动心智模型。
+- 前端 `toolResultEnvelope.ts` / `AgentChatSection.tsx` 已把 `dynamic_workflow_proposed` 渲染成 proposal card，展示 goal、criteria、candidate、recommended、next action。
 
-未闭环事实：
+闭环事实：
 
-- 当前缺 `propose_dynamic_workflow`。
-- 当前缺 dynamic proposal/candidate schema。
-- 当前缺 candidate critic / selector。
-- 当前缺 proposal-aware UI。
-- 当前缺自然语言触发到 proposal -> preview -> exact approval -> start 的完整测试。
+- Dynamic Workflow 默认入口不再是手写 JSON；模型可先提出候选，再把选中候选送入现有 preview/start。
+- Workflow 不执行任意 JS/Python；candidate 的 `lowered_definition` 只能是结构化 `WorkflowDefinition`。
+- `start_workflow` 仍不能凭口头确认启动；它必须绑定 fresh `preview_id` 或 exact `definition_hash + args_hash`。
+- A2A Workflow 没有被塞入 Dynamic Workflow；Dynamic Workflow 仍是当前 session 内的 To Session Worker orchestration。
 
-闭环验收：
+验证证据：
 
-1. 实装 `propose_dynamic_workflow`。
-2. proposal 必须降低到受治理 `WorkflowDefinition`，不执行任意 JS/Python。
-3. UI 走 proposal card / preview / exact approval。
-4. `start_workflow` 只接受 preview artifact/hash，不接受口头确认。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/tools/test_workflow_tool.py tests/services/test_agent_tools_core_surface.py tests/services/test_capability_gate_strict_mapping.py::test_t1_core_promoted_tools_have_capability_mappings tests/tools/test_service.py::test_interactive_plan_mode_allows_only_narrow_readonly_subagent_lane tests/runtime/test_t2_guidance_surface.py tests/services/test_tool_registry.py tests/tools/test_core_pack_disjoint.py -q
+# 49 passed, 4 warnings
 
-## 3. 明确边界或待裁决项
+cd backend && source .venv/bin/activate && ruff check app/tools/handlers/workflow.py app/services/workflow_launch.py app/services/workflow_runtime_service.py app/services/agent_tools.py app/services/capability_gate.py app/tools/plan_mode_policy.py app/agents/tool_policies.py app/runtime/prompt_sections/executing_actions.py app/runtime/prompt_sections/system.py app/runtime/prompt_sections/tools.py tests/tools/test_workflow_tool.py tests/services/test_agent_tools_core_surface.py tests/services/test_capability_gate_strict_mapping.py tests/tools/test_service.py tests/runtime/test_t2_guidance_surface.py tests/services/test_tool_registry.py tests/tools/test_core_pack_disjoint.py
+# All checks passed!
+
+cd frontend && npm test -- --run src/pages/agent-detail/toolResultEnvelope.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
+# 2 files passed, 84 tests passed
+```
+
+## 2. 仍未闭环或待裁决项
 
 ### B-1：Workspace rewind snapshot 没有实现
 
@@ -359,14 +371,13 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_section
 
 - 必须收束到同一 session mailbox / wake / Workbench state，不得让 subagent、team、workflow、A2A 各自发明完成反馈。
 
-## 4. 当前不能再使用的完成说法
+## 3. 当前不能再使用的完成说法
 
 以下说法在上述 gap 关闭前都不能继续写：
 
 1. “Session Control 所有命令都已完整闭环。”
 2. “Workspace rewind 已实现。”
-3. “Dynamic Workflow 已完成。”
-4. “上线前最后一轮所有断点都已补齐。”
+3. “上线前最后一轮所有断点都已补齐。”
 
 允许的准确说法：
 
@@ -381,17 +392,16 @@ Workbench read model 只在缺 runtime manifest 时 fallback。
 
 Hooks external runner、MCP live prompts/auth status、SkillTool/frontmatter hooks 已 production-live。
 
-Dynamic Workflow 当前有下层 fixed workflow runtime 和实施计划；
-proposal/runtime/UI 闭环尚未完成。
+Dynamic Workflow proposal/runtime/UI 已接入唯一 `propose_dynamic_workflow` -> `preview_workflow` -> `start_workflow` 路径；
+remaining launch blockers 仍是 workspace rewind snapshot、hidden command 裁决和 background completion wake 统一验收。
 ```
 
-## 5. 建议修复顺序
+## 4. 建议修复顺序
 
-1. R-7：开始 Dynamic Workflow proposal slice。
-2. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
-3. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
+1. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
+2. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
 
-## 6. 证据检查命令
+## 5. 证据检查命令
 
 本登记表基于以下只读检查：
 

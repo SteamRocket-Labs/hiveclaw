@@ -231,6 +231,59 @@ describe('parseCreateEmployeeToolResult', () => {
     });
   });
 
+  it('normalizes dynamic workflow proposals into structured candidate metadata', () => {
+    const normalized = normalizeToolCallResult(
+      'propose_dynamic_workflow',
+      JSON.stringify({
+        ok: true,
+        status: 'dynamic_workflow_proposed',
+        proposal_id: 'proposal-1',
+        goal: 'Audit repository slices.',
+        why_workflow: 'Needs fanout plus critic verification.',
+        success_criteria: ['Each slice cites evidence.', 'Critic passes.'],
+        recommended_candidate_id: 'fanout-critic',
+        candidates: [
+          {
+            candidate_id: 'fanout-critic',
+            name: 'Fanout then critic',
+            pattern_mix: ['fanout_synthesize', 'adversarial_verify'],
+            risk_level: 'medium',
+            planned_leaf_calls: 3,
+            budget_tokens: 12000,
+            confirmation_required: false,
+            definition_hash: 'hash-1',
+            args_hash: 'args-1',
+          },
+        ],
+        next_action: 'Call preview_workflow with the selected candidate.',
+      }),
+    );
+
+    expect(normalized.displayResult).toBe('Dynamic Workflow proposal ready: Audit repository slices.');
+    expect(normalized.toolMeta).toEqual({
+      kind: 'dynamic_workflow_proposal',
+      proposalId: 'proposal-1',
+      goal: 'Audit repository slices.',
+      whyWorkflow: 'Needs fanout plus critic verification.',
+      successCriteria: ['Each slice cites evidence.', 'Critic passes.'],
+      recommendedCandidateId: 'fanout-critic',
+      nextAction: 'Call preview_workflow with the selected candidate.',
+      candidates: [
+        {
+          candidateId: 'fanout-critic',
+          name: 'Fanout then critic',
+          patternMix: ['fanout_synthesize', 'adversarial_verify'],
+          riskLevel: 'medium',
+          plannedLeafCalls: 3,
+          budgetTokens: 12000,
+          confirmationRequired: false,
+          definitionHash: 'hash-1',
+          argsHash: 'args-1',
+        },
+      ],
+    });
+  });
+
   it('normalizes an awaiting_user_clarification tool result into clarification metadata regardless of tool name', () => {
     const normalized = normalizeToolCallResult(
       'ask_user_question',

@@ -234,6 +234,7 @@ def test_t1_core_promoted_tools_have_capability_mappings() -> None:
     denied at call time, so their mappings are pinned here against drift."""
     for tool_name in (
         "spawn_subagent",
+        "propose_dynamic_workflow",
         "preview_workflow",
         "start_workflow",
         "track_todo",

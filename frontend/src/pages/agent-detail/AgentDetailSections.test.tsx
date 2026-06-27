@@ -3297,6 +3297,43 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('github-research');
   });
 
+  it('renders Dynamic Workflow proposal cards with candidate preview instructions', () => {
+    const markup = renderToStaticMarkup(
+      <StructuredToolResultBody
+        toolName="propose_dynamic_workflow"
+        toolResult='{"status":"dynamic_workflow_proposed"}'
+        toolMeta={{
+          kind: 'dynamic_workflow_proposal',
+          proposalId: 'proposal-1',
+          goal: 'Audit repository slices.',
+          whyWorkflow: 'Needs fanout plus critic verification.',
+          successCriteria: ['Each slice cites evidence.', 'Critic passes.'],
+          recommendedCandidateId: 'fanout-critic',
+          nextAction: 'Call preview_workflow with the selected candidate.',
+          candidates: [
+            {
+              candidateId: 'fanout-critic',
+              name: 'Fanout then critic',
+              patternMix: ['fanout_synthesize', 'adversarial_verify'],
+              riskLevel: 'medium',
+              plannedLeafCalls: 3,
+              budgetTokens: 12000,
+              confirmationRequired: false,
+              definitionHash: 'hash-1',
+              argsHash: 'args-1',
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Dynamic Workflow Proposal');
+    expect(markup).toContain('Audit repository slices.');
+    expect(markup).toContain('Fanout then critic');
+    expect(markup).toContain('Recommended');
+    expect(markup).toContain('Call preview_workflow with the selected candidate.');
+  });
+
   it('treats a persisted clarification card as answered when a later user message exists', () => {
     const messages = [
       {

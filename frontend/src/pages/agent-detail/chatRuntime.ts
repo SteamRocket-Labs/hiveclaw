@@ -342,6 +342,7 @@ function isTerminalToolCard(message: AgentChatMessage): boolean {
   const kind = message.toolMeta?.kind;
   return kind === 'user_clarification'
     || kind === 'plan_proposal'
+    || kind === 'dynamic_workflow_proposal'
     || kind === 'plan_mode_request'
     || kind === 'create_employee_success';
 }

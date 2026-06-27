@@ -194,6 +194,7 @@ async def start_ephemeral_workflow_for_agent(
     run_id: uuid.UUID | None = None,
     parent_session_id: uuid.UUID | str | None = None,
     root_session_id: uuid.UUID | str | None = None,
+    run_metadata: dict[str, Any] | None = None,
 ) -> WorkflowRunHandle:
     """Resolve agent runtime → build governed leaf executor → start the run.
 
@@ -236,6 +237,7 @@ async def start_ephemeral_workflow_for_agent(
         delivery_target=delivery_target,
         parent_session_id=parent_session_id,
         root_session_id=root_session_id,
+        run_metadata=run_metadata,
     )
 
     if ledger_todo_id:

@@ -1129,6 +1129,14 @@
         "deferredCapabilities": "延后能力",
         "warnings": "注意事项",
         "manualSteps": "人工后续步骤",
+        "dynamicWorkflowProposalTitle": "Dynamic Workflow 提案",
+        "successCriteria": "成功标准",
+        "candidates": "候选方案",
+        "risk": "风险",
+        "leafCalls": "Leaf 调用",
+        "budgetTokens": "预算 token",
+        "confirmationRequired": "需要确认",
+        "recommended": "推荐",
         "rawOutput": "原始输出"
       },
       "workLedger": {

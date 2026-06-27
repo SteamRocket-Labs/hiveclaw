@@ -1,7 +1,7 @@
 """T1 core tool surface invariants (docs/execution-mode-spectrum.md §4.6 / §8.1).
 
 T1.1 atomic pair (red tests #1/#3/#7): the source capabilities
-``spawn_subagent`` / ``preview_workflow`` / ``start_workflow`` are promoted to
+``spawn_subagent`` / ``propose_dynamic_workflow`` / ``preview_workflow`` / ``start_workflow`` are promoted to
 ``CORE_TOOL_NAMES`` (turn-1 visible via the ``_always_tools`` fallback), and —
 in the SAME commit — both recursion exclusion sets deny them. Once the tools
 are in core, ``core_tools_only=True`` child profiles would otherwise leak them
@@ -17,7 +17,7 @@ governs reminder frequency (session metadata), never tool visibility.
 
 from __future__ import annotations
 
-SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "preview_workflow", "start_workflow"}
+SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "propose_dynamic_workflow", "preview_workflow", "start_workflow"}
 WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
 ADVANCED_WEB_TOOLS = {"exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"}
 
@@ -99,6 +99,7 @@ def test_delegation_and_subagent_share_one_base_exclusion_policy():
         "spawn_subagent",
         "check_subagent",
         "fanout_subagents",
+        "propose_dynamic_workflow",
         "preview_workflow",
         "start_workflow",
         "ask_user_question",

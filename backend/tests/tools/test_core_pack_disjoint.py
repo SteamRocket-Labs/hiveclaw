@@ -67,5 +67,5 @@ def test_audit_treats_core_membership_as_discovery_path():
     # No CORE tool may be flagged as a functional orphan.
     assert not (report.orphans & CORE_TOOL_NAMES)
     # The retired-pack source capabilities remain covered (via the core path).
-    for tool in ("spawn_subagent", "start_workflow", "request_plan_mode", "web_fetch"):
+    for tool in ("spawn_subagent", "propose_dynamic_workflow", "start_workflow", "request_plan_mode", "web_fetch"):
         assert tool not in report.orphans, tool

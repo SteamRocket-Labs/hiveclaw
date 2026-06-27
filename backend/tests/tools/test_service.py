@@ -885,7 +885,10 @@ def test_interactive_plan_mode_allows_only_narrow_readonly_subagent_lane():
             is None
         )
         assert ToolRuntimeService._interactive_plan_mode_readonly_block("preview_workflow", {"definition": {}}) is None
+        assert ToolRuntimeService._interactive_plan_mode_readonly_block("propose_dynamic_workflow", {"goal": "audit"}) is None
         assert ToolRuntimeService._interactive_plan_mode_readonly_block("check_subagent", {}) is None
+        start = ToolRuntimeService._interactive_plan_mode_readonly_block("start_workflow", {"definition": {}})
+        assert start is not None and "plan_mode_readonly_violation" in start
 
         worker = ToolRuntimeService._interactive_plan_mode_readonly_block(
             "spawn_subagent",

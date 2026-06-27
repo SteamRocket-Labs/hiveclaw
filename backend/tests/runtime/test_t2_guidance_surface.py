@@ -46,6 +46,7 @@ def test_executing_actions_carries_seven_primitive_sequence():
         "tool_search",
         "spawn_subagent",
         "delegate_to_agent",
+        "propose_dynamic_workflow",
         "preview_workflow",
         "start_workflow",
         "set_trigger",

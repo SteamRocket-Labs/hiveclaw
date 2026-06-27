@@ -125,6 +125,9 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   if (message.toolMeta?.kind === 'plan_proposal') {
     return message.toolMeta.summary || message.toolMeta.nextAction || '';
   }
+  if (message.toolMeta?.kind === 'dynamic_workflow_proposal') {
+    return message.toolMeta.goal || message.toolMeta.nextAction || '';
+  }
   if (COMMAND_TOOLS.has(name)) return summarizeCommandTool(message);
   if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeFileTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
@@ -185,6 +188,7 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
 function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   if (message.toolMeta?.kind === 'user_clarification') return 'question';
   if (message.toolMeta?.kind === 'plan_mode_request' || message.toolMeta?.kind === 'plan_proposal') return 'plan';
+  if (message.toolMeta?.kind === 'dynamic_workflow_proposal') return 'workflow';
 
   const name = (message.toolName || '').toLowerCase();
   if (COMMAND_TOOLS.has(name)) return 'command';

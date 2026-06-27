@@ -81,8 +81,9 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "fs_read",
         "fs_write",
         "fs_list",
-        "load_skill",
-        "save_skill",
+            "load_skill",
+            "run_skill_tool",
+            "save_skill",
         "search_memory",
         "load_memory",
         "save_memory",
@@ -116,6 +117,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         # primitives — turn-1 visible, never gated behind a skill pack.
         "spawn_subagent",
         "check_subagent",
+        "propose_dynamic_workflow",
         "preview_workflow",
         "start_workflow",
         # T1.2: work ledger is core working memory, not DB-conditional.

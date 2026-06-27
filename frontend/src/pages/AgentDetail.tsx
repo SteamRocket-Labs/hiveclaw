@@ -505,6 +505,7 @@ function AgentDetailInner() {
             toolMeta?.blocking
             || kind === 'user_clarification'
             || kind === 'plan_proposal'
+            || kind === 'dynamic_workflow_proposal'
             || kind === 'plan_mode_request'
             || kind === 'create_employee_success'
             || kind === 'hr_preview',

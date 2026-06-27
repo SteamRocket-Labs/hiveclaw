@@ -1232,6 +1232,78 @@ export function StructuredToolResultBody({
     );
   }
 
+  if (toolMeta.kind === 'dynamic_workflow_proposal') {
+    return (
+      <div style={{ display: 'grid', gap: '8px' }}>
+        <div style={{ display: 'grid', gap: '4px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--accent-text)' }}>
+            {t('agent.chat.toolResults.dynamicWorkflowProposalTitle', 'Dynamic Workflow Proposal')}
+          </div>
+          {toolMeta.goal && (
+            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>{toolMeta.goal}</div>
+          )}
+          {toolMeta.whyWorkflow && (
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{toolMeta.whyWorkflow}</div>
+          )}
+        </div>
+        <StructuredToolSection
+          label={t('agent.chat.toolResults.successCriteria', 'Success Criteria')}
+          items={toolMeta.successCriteria}
+        />
+        <div style={{ display: 'grid', gap: '6px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-tertiary)' }}>
+            {t('agent.chat.toolResults.candidates', 'Candidates')}
+          </div>
+          {toolMeta.candidates.map((candidate) => {
+            const recommended = candidate.candidateId === toolMeta.recommendedCandidateId;
+            const facts = [
+              candidate.patternMix.length ? candidate.patternMix.join(', ') : '',
+              candidate.riskLevel ? `${t('agent.chat.toolResults.risk', 'Risk')}: ${candidate.riskLevel}` : '',
+              candidate.plannedLeafCalls != null
+                ? `${t('agent.chat.toolResults.leafCalls', 'Leaf calls')}: ${candidate.plannedLeafCalls}`
+                : '',
+              candidate.budgetTokens != null
+                ? `${t('agent.chat.toolResults.budgetTokens', 'Budget tokens')}: ${candidate.budgetTokens}`
+                : '',
+              candidate.confirmationRequired
+                ? t('agent.chat.toolResults.confirmationRequired', 'Confirmation required')
+                : '',
+            ].filter(Boolean);
+            return (
+              <div
+                key={candidate.candidateId}
+                style={{
+                  display: 'grid',
+                  gap: '3px',
+                  padding: '8px',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: '6px',
+                }}
+              >
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    {candidate.name || candidate.candidateId}
+                  </span>
+                  {recommended && (
+                    <span style={{ fontSize: '11px', color: 'var(--accent-text)' }}>
+                      {t('agent.chat.toolResults.recommended', 'Recommended')}
+                    </span>
+                  )}
+                </div>
+                {facts.length > 0 && (
+                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{facts.join(' · ')}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {toolMeta.nextAction && (
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{toolMeta.nextAction}</div>
+        )}
+      </div>
+    );
+  }
+
   if (toolMeta.kind === 'hr_preview') {
     const showRawOutput = rawText.length > 0 && rawText !== toolResult;
     return (
@@ -1984,6 +2056,7 @@ export default function AgentChatSection({
     message.role === 'tool_call' && (
       Boolean(message.artifacts?.length) ||
       message.toolMeta?.kind === 'plan_proposal' ||
+      message.toolMeta?.kind === 'dynamic_workflow_proposal' ||
       message.toolMeta?.kind === 'user_clarification' ||
       message.toolMeta?.kind === 'plan_mode_request' ||
       message.toolMeta?.kind === 'create_employee_success' ||

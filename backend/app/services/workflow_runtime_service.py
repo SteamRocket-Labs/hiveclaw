@@ -682,6 +682,7 @@ class WorkflowRuntimeService:
         delivery_target: dict[str, Any] | None = None,
         parent_session_id: uuid.UUID | str | None = None,
         root_session_id: uuid.UUID | str | None = None,
+        run_metadata: dict[str, Any] | None = None,
     ) -> WorkflowRunHandle:
         if not get_settings().WORKFLOW_RUNTIME_ENABLED:
             raise WorkflowAdmissionError("workflow runtime disabled by feature flag WORKFLOW_RUNTIME_ENABLED")
@@ -695,6 +696,26 @@ class WorkflowRuntimeService:
         run_id = run_id or uuid.uuid4()
         parent_session_value = str(parent_session_id) if parent_session_id else None
         root_session_value = str(root_session_id or parent_session_id) if root_session_id or parent_session_id else None
+        metadata_json = {
+            "definition_source": definition_source,
+            "definition_hash": compiled.definition_hash,
+            "args_hash": args_hash,
+            "confirmed_plan_id": str(confirmed_plan_id) if confirmed_plan_id else None,
+            "tenant_id": str(tenant_id),
+            "delivery_target_json": delivery_target,
+            "parent_session_id": parent_session_value,
+            "root_session_id": root_session_value,
+            "user_id": str(user_id) if user_id else None,
+            "session_bound": bool(parent_session_value),
+            # Ephemeral archive (§3.1): the run must be replayable
+            # without the original conversation.
+            "definition_json": compiled.definition.canonical_dict()
+            if not isinstance(definition_data, dict)
+            else definition_data,
+            "args": args,
+        }
+        if run_metadata:
+            metadata_json.update(run_metadata)
         async with self._session(tenant_id) as session:
             task = RuntimeTask(
                 id=run_id,
@@ -704,24 +725,7 @@ class WorkflowRuntimeService:
                 parent_agent_id=agent_id,
                 parent_session_id=parent_session_value,
                 child_session_id=parent_session_value,
-                metadata_json={
-                    "definition_source": definition_source,
-                    "definition_hash": compiled.definition_hash,
-                    "args_hash": args_hash,
-                    "confirmed_plan_id": str(confirmed_plan_id) if confirmed_plan_id else None,
-                    "tenant_id": str(tenant_id),
-                    "delivery_target_json": delivery_target,
-                    "parent_session_id": parent_session_value,
-                    "root_session_id": root_session_value,
-                    "user_id": str(user_id) if user_id else None,
-                    "session_bound": bool(parent_session_value),
-                    # Ephemeral archive (§3.1): the run must be replayable
-                    # without the original conversation.
-                    "definition_json": compiled.definition.canonical_dict()
-                    if not isinstance(definition_data, dict)
-                    else definition_data,
-                    "args": args,
-                },
+                metadata_json=metadata_json,
             )
             session.add(task)
             session.add(

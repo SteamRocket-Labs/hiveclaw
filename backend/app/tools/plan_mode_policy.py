@@ -43,6 +43,7 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
         "load_skill",
         # CC parity: Plan Mode can inspect deterministic workflow shape and
         # read background subagent status, but may not start execution.
+        "propose_dynamic_workflow",
         "preview_workflow",
         "check_subagent",
         # CC parity: TodoWrite is allowed in plan mode — the work ledger is the

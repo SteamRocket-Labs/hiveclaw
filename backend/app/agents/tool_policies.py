@@ -13,6 +13,7 @@ DELEGATED_WORKER_BASE_EXCLUDED_TOOLS: tuple[str, ...] = (
     "spawn_subagent",
     "check_subagent",
     "fanout_subagents",
+    "propose_dynamic_workflow",
     "preview_workflow",
     "start_workflow",
     "set_trigger",

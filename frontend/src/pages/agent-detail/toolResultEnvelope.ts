@@ -39,6 +39,29 @@ export interface PlanProposalToolMeta {
   planJson: Record<string, unknown>;
 }
 
+export interface DynamicWorkflowCandidateMeta {
+  candidateId: string;
+  name: string | null;
+  patternMix: string[];
+  riskLevel: string | null;
+  plannedLeafCalls: number | null;
+  budgetTokens: number | null;
+  confirmationRequired: boolean;
+  definitionHash: string | null;
+  argsHash: string | null;
+}
+
+export interface DynamicWorkflowProposalToolMeta {
+  kind: 'dynamic_workflow_proposal';
+  proposalId: string;
+  goal: string | null;
+  whyWorkflow: string | null;
+  successCriteria: string[];
+  recommendedCandidateId: string | null;
+  nextAction: string | null;
+  candidates: DynamicWorkflowCandidateMeta[];
+}
+
 export interface ClarificationOption {
   label: string;
   description: string;
@@ -81,6 +104,7 @@ export type ToolCallMeta =
   | HrPreviewToolResult
   | CreateEmployeeSuccessToolMeta
   | PlanProposalToolMeta
+  | DynamicWorkflowProposalToolMeta
   | UserClarificationToolMeta
   | PlanModeRequestToolMeta
   | RuntimeStepToolMeta;
@@ -236,6 +260,65 @@ function buildPlanProposalDisplayResult(meta: PlanProposalToolMeta): string {
   return meta.summary || 'Plan created — confirm before this autonomous work can begin.';
 }
 
+function normalizeNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function parseDynamicWorkflowCandidate(value: unknown): DynamicWorkflowCandidateMeta | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const candidateId = typeof record.candidate_id === 'string' ? record.candidate_id.trim() : '';
+  if (!candidateId) {
+    return null;
+  }
+  return {
+    candidateId,
+    name: typeof record.name === 'string' ? record.name : null,
+    patternMix: normalizeStringList(record.pattern_mix),
+    riskLevel: typeof record.risk_level === 'string' ? record.risk_level : null,
+    plannedLeafCalls: normalizeNumber(record.planned_leaf_calls),
+    budgetTokens: normalizeNumber(record.budget_tokens),
+    confirmationRequired: record.confirmation_required === true,
+    definitionHash: typeof record.definition_hash === 'string' ? record.definition_hash : null,
+    argsHash: typeof record.args_hash === 'string' ? record.args_hash : null,
+  };
+}
+
+function parseDynamicWorkflowProposalResult(rawResult: unknown): DynamicWorkflowProposalToolMeta | null {
+  const parsed = parseStructuredToolPayload(rawResult);
+  if (parsed?.status !== 'dynamic_workflow_proposed' || parsed.ok !== true || typeof parsed.proposal_id !== 'string') {
+    return null;
+  }
+  const candidates = Array.isArray(parsed.candidates)
+    ? parsed.candidates.flatMap((candidate) => {
+        const parsedCandidate = parseDynamicWorkflowCandidate(candidate);
+        return parsedCandidate ? [parsedCandidate] : [];
+      })
+    : [];
+  if (candidates.length === 0) {
+    return null;
+  }
+  return {
+    kind: 'dynamic_workflow_proposal',
+    proposalId: parsed.proposal_id,
+    goal: typeof parsed.goal === 'string' ? parsed.goal : null,
+    whyWorkflow: typeof parsed.why_workflow === 'string' ? parsed.why_workflow : null,
+    successCriteria: normalizeStringList(parsed.success_criteria),
+    recommendedCandidateId:
+      typeof parsed.recommended_candidate_id === 'string' ? parsed.recommended_candidate_id : null,
+    nextAction: typeof parsed.next_action === 'string' ? parsed.next_action : null,
+    candidates,
+  };
+}
+
+function buildDynamicWorkflowProposalDisplayResult(meta: DynamicWorkflowProposalToolMeta): string {
+  return meta.goal
+    ? `Dynamic Workflow proposal ready: ${meta.goal}`
+    : 'Dynamic Workflow proposal ready.';
+}
+
 function parseClarificationOptions(value: unknown): ClarificationOption[] {
   if (!Array.isArray(value)) {
     return [];
@@ -332,6 +415,16 @@ export function normalizeToolCallResult(toolName: string | undefined, rawResult:
       createdAgentId: null,
       raw,
       toolMeta: planProposal,
+    };
+  }
+
+  const dynamicWorkflowProposal = parseDynamicWorkflowProposalResult(rawResult);
+  if (dynamicWorkflowProposal) {
+    return {
+      displayResult: buildDynamicWorkflowProposalDisplayResult(dynamicWorkflowProposal),
+      createdAgentId: null,
+      raw,
+      toolMeta: dynamicWorkflowProposal,
     };
   }
 

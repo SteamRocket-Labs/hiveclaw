@@ -262,7 +262,7 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
             "stored 定义.md. Subagents cannot delegate or spawn further and run under the same governance "
             "as you. To hand work to another standalone digital employee (To Employee), use delegate_to_agent instead. "
             "If the step ORDER itself is the requirement (fixed sequence, mid-run approval gates, "
-            "budgeted fan-out), use preview_workflow/start_workflow instead of spawning."
+            "budgeted fan-out), use propose_dynamic_workflow/preview_workflow/start_workflow instead of spawning."
         ),
         parameters=_SPAWN_PARAMETERS,
         category="coordination",

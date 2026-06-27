@@ -368,6 +368,51 @@ async def test_delegate_to_agent_applies_timeout_and_trace_metadata(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_delegate_to_agent_threads_permission_profile_into_child_runtime(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
+    from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
+
+    target = SimpleNamespace(id=uuid4(), name="Target", role_description="Helpful")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="done")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+
+    result = await _delegate(
+        AgentDelegationRequest(
+            target=target,
+            target_model=target_model,
+            conversation_messages=[{"role": "user", "content": "hello"}],
+            owner_id=uuid4(),
+            session_id="child-session",
+            parent_agent_id="source-agent",
+            parent_session_id="parent-session",
+            trace_id="trace-permission",
+            depth=1,
+            policy=OrchestrationPolicy(timeout_seconds=5.0),
+            permission_profile=PermissionProfileV1(
+                mode=PermissionMode.BYPASS_PERMISSIONS,
+                allowed_tools=("web_search", "feishu_doc_read"),
+            ),
+        )
+    )
+
+    assert result.content == "done"
+    metadata = captured["request"].session_context.metadata
+    assert metadata["permission_mode"] == "bypassPermissions"
+    assert metadata["permission_profile"]["mode"] == "bypassPermissions"
+    assert metadata["permission_profile"]["allowed_tools"] == [
+        "web_search",
+        "feishu_doc_read",
+    ]
+    assert metadata["delegation_parent_session_id"] == "parent-session"
+
+
+@pytest.mark.asyncio
 async def test_delegate_to_agent_supports_memory_readonly_profile(monkeypatch):
     from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
 
@@ -546,6 +591,44 @@ async def test_agent_message_profile_uses_target_agent_tool_surface_without_recu
     assert request.session_context.metadata["agent_message_tool_policy"] == "peer_agent_tool_surface"
     assert request.session_context.metadata["agent_message_memory_policy"] == "peer_read_only_memory"
     assert "peer agent request" in request.system_prompt_suffix
+
+
+@pytest.mark.asyncio
+async def test_peer_agent_delegation_profile_inherits_capability_token_scope(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
+
+    target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge assistant")
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["request"] = request
+        return SimpleNamespace(content="looked up")
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+
+    result = await _delegate(
+        AgentDelegationRequest(
+            target=target,
+            target_model=target_model,
+            conversation_messages=[{"role": "user", "content": "请查飞书知识库里的报告"}],
+            owner_id=uuid4(),
+            session_id="peer-child",
+            parent_agent_id=uuid4(),
+            parent_session_id="parent-session",
+            interaction_type="delegation",
+            policy=OrchestrationPolicy(timeout_seconds=120, tool_profile="agent_message"),
+        )
+    )
+
+    request = captured["request"]
+    assert result.failed is False
+    assert request.core_tools_only is False
+    assert request.allowed_tool_names == ()
+    assert request.delegation_token is not None
+    assert request.delegation_token.inherit_parent_capabilities is True
+    assert request.session_context.metadata["delegation_tool_policy"] == "peer_agent_tool_surface"
+    assert request.session_context.metadata["delegation_memory_policy"] == "peer_read_only_memory"
 
 
 @pytest.mark.asyncio

@@ -105,6 +105,122 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_threads_session_permission_context_into_delegation():
+    from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        session_id="parent-session-1",
+        permission_profile=PermissionProfileV1(
+            mode=PermissionMode.BYPASS_PERMISSIONS,
+            allowed_tools=("web_search", "feishu_doc_read"),
+        ),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="delegate_to_agent",
+        arguments={"agent_name": "Researcher", "message": "go"},
+    )
+    governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
+    registry = _FakeRegistry("TASK")
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=governance_resolver,
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    result = await service.execute(
+        "delegate_to_agent",
+        {"agent_name": "Researcher", "message": "go"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "TASK"
+    governance_arguments = governance_resolver.context_calls[0][2]
+    executed_arguments = registry.calls[0].arguments
+    for arguments in (governance_arguments, executed_arguments):
+        assert arguments["parent_session_id"] == "parent-session-1"
+        assert arguments["_permission_profile"]["mode"] == "bypassPermissions"
+        assert arguments["_permission_profile"]["allowed_tools"] == [
+            "web_search",
+            "feishu_doc_read",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_threads_session_permission_context_into_agent_message():
+    from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        session_id="parent-session-1",
+        permission_profile=PermissionProfileV1(
+            mode=PermissionMode.BYPASS_PERMISSIONS,
+            allowed_tools=("web_search", "feishu_doc_read"),
+        ),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="send_message_to_agent",
+        arguments={"agent_name": "Knowledge", "message": "查一下飞书知识库"},
+    )
+    governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
+    registry = _FakeRegistry("MESSAGE")
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=governance_resolver,
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    result = await service.execute(
+        "send_message_to_agent",
+        {"agent_name": "Knowledge", "message": "查一下飞书知识库"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == "MESSAGE"
+    governance_arguments = governance_resolver.context_calls[0][2]
+    executed_arguments = registry.calls[0].arguments
+    for arguments in (governance_arguments, executed_arguments):
+        assert arguments["parent_session_id"] == "parent-session-1"
+        assert arguments["_permission_profile"]["mode"] == "bypassPermissions"
+        assert arguments["_permission_profile"]["allowed_tools"] == [
+            "web_search",
+            "feishu_doc_read",
+        ]
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_logs_readonly_tool_calls():
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext

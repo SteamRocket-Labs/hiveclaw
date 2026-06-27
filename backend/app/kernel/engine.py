@@ -53,7 +53,8 @@ from app.services.invocation_trace import (
     reset_invocation_id,
     set_invocation_id,
 )
-from app.runtime.ccplus_contracts import ContextPolicyV1
+from app.runtime.ccplus_contracts import ContextPolicyV1, build_context_policy
+from app.runtime.session_context_controller import prepare_session_context_for_request
 from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
 from app.tools.result_envelope import ToolContentEnvelope
 
@@ -753,13 +754,6 @@ def _tool_round_limit_message(max_rounds: int) -> str:
     return (
         f"I reached the configured tool-round limit ({max_rounds}) before I could finish. "
         "The current state has been saved; continue the task to resume from here, or raise max_tool_rounds for this agent."
-    )
-
-
-def _turn_token_budget_message(tokens_used: int, token_budget: int) -> str:
-    return (
-        f"[Runtime Limit] 本轮执行在下一次工具调用前达到运行 token 预算上限（{tokens_used}/{token_budget} tokens）。"
-        "当前进度已保存，但下一次工具调用未执行。请缩小后续请求范围、开启新会话，或让管理员调整该 Agent 的 max_tool_rounds。"
     )
 
 
@@ -2750,6 +2744,95 @@ class AgentKernel:
                             _rec_exc,
                         )
 
+            async def _emit_context_decision_event(data: dict[str, Any]) -> None:
+                event_type = str(data.get("event_type") or "context_window_status")
+                title_by_type = {
+                    "context_window_status": "Context Window",
+                    "tool_result_budget_pass": "Tool Result Budget",
+                    "compaction_skipped": "Compaction Skipped",
+                    "compaction_started": "Compaction Started",
+                    "compaction_completed": "Compaction Completed",
+                }
+                await _emit_event(
+                    {
+                        "type": "session_context",
+                        "visibility": "debug",
+                        **data,
+                        "part": {
+                            "type": "event",
+                            "event_type": event_type,
+                            "title": title_by_type.get(event_type, "Session Context"),
+                            "status": "info",
+                            "visibility": "debug",
+                            **data,
+                        },
+                    }
+                )
+
+            def _context_policy_for_active_model() -> ContextPolicyV1:
+                raw_policy = {}
+                metadata = getattr(request.session_context, "metadata", None) if request.session_context else None
+                if isinstance(metadata, dict) and isinstance(metadata.get("context_policy"), dict):
+                    raw_policy = metadata["context_policy"]
+                model_window = int(
+                    getattr(active_model, "max_input_tokens", None)
+                    or raw_policy.get("model_window")
+                    or raw_policy.get("context_window_tokens")
+                    or 0
+                )
+                return build_context_policy(model_window, overrides=raw_policy)
+
+            async def _prepare_api_messages_for_request() -> None:
+                nonlocal api_messages
+                if len(api_messages) <= 1:
+                    return
+
+                system_message = api_messages[0]
+                conversation_messages = api_messages[1:]
+                policy = _context_policy_for_active_model()
+
+                def _estimate_context_tokens(messages_for_estimate: list[LLMMessage]) -> int:
+                    chars = len(system_message.content or "") + sum(
+                        len(msg.content or "") for msg in messages_for_estimate
+                    )
+                    return self._deps.estimate_tokens_from_chars(chars)
+
+                async def _compress_for_preflight(
+                    messages_as_dicts: list[dict[str, Any]], **kwargs: Any
+                ) -> list[dict[str, Any]]:
+                    return await _maybe_await(
+                        _compress_messages_with_trace(
+                            self._deps.maybe_compress_messages,
+                            messages_as_dicts,
+                            trace_context=compaction_trace_context,
+                            tools=tools_for_llm,
+                            instructions="request_preflight_context_compaction",
+                            **kwargs,
+                        )
+                    )
+
+                prepared = await prepare_session_context_for_request(
+                    messages=conversation_messages,
+                    policy=policy,
+                    estimate_tokens=_estimate_context_tokens,
+                    compress_messages=_compress_for_preflight,
+                    cumulative_run_tokens=context_usage_anchor_tokens,
+                    on_decision=_emit_context_decision_event,
+                    compress_kwargs={
+                        "model_provider": active_model.provider,
+                        "model_name": active_model.model,
+                        "max_input_tokens_override": getattr(active_model, "max_input_tokens", None),
+                        "tenant_id": runtime_config.tenant_id,
+                        "usage_anchor_tokens": context_usage_anchor_tokens,
+                        "agent_id": request.agent_id,
+                        "user_id": request.user_id,
+                        "on_compaction": _emit_compaction_event,
+                    },
+                    tool_result_exempt_names={"read_file", "list_files", "web_search", "web_fetch"},
+                )
+                if prepared.changed:
+                    api_messages = [system_message] + prepared.messages
+
             async def _emit_chunk(text: str) -> None:
                 nonlocal _callback_failure_count, delivered_chunk_count
                 if text == STREAM_RETRY_TOMBSTONE:
@@ -2856,7 +2939,6 @@ class AgentKernel:
                 active_model.model,
                 request.max_output_tokens or getattr(active_model, "max_output_tokens", None),
             )
-            turn_token_budget = getattr(runtime_config, "turn_token_budget", None)
             accumulated_tokens = 0
             # full_toolset tracks expanded tools after deferred-schema discovery.
             # Intentionally persists across rounds — discovered tool schemas stay active once loaded.
@@ -2940,6 +3022,7 @@ class AgentKernel:
                     # Apply capability-driven cache hints.
                     ptl_retries = 0
                     while True:
+                        await _prepare_api_messages_for_request()
                         stream_messages = _clone_api_messages(api_messages)
                         if _transient_reminders:
                             stream_messages = stream_messages + [
@@ -3443,22 +3526,6 @@ class AgentKernel:
                             await _inject_loop_guard_warning(text_loop_decision)
                         else:
                             return await _abort_for_loop_guard(text_loop_decision)
-
-                    if (
-                        turn_token_budget is not None
-                        and turn_token_budget > 0
-                        and accumulated_tokens >= turn_token_budget
-                        and response.tool_calls
-                    ):
-                        budget_msg = _turn_token_budget_message(accumulated_tokens, turn_token_budget)
-                        if request.agent_id and accumulated_tokens > 0:
-                            await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
-                        await self._persist_before_exit(request, runtime_config, budget_msg, api_messages)
-                        return _build_error_result(
-                            budget_msg,
-                            tokens_used=accumulated_tokens,
-                            final_tools=tools_for_llm,
-                        )
 
                     if not response.tool_calls:
                         final_content = response.content or "[LLM returned empty content]"

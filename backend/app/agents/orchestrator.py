@@ -8,7 +8,8 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
+from enum import Enum
 from typing import Any, Awaitable, Callable
 
 from app.agents.coordination_gateway import CoordinationGateway
@@ -178,7 +179,8 @@ _RESTART_REPLAY_SAFE_TOOL_PROFILES: frozenset[str] = frozenset(
 
 
 def _resolve_delegation_tool_profile(name: str | None) -> DelegationToolProfile:
-    return _DELEGATION_TOOL_PROFILES.get(name or "worker_safe", _DELEGATION_TOOL_PROFILES["worker_safe"])
+    profile_name = "agent_message" if name == "peer_agent" else name
+    return _DELEGATION_TOOL_PROFILES.get(profile_name or "worker_safe", _DELEGATION_TOOL_PROFILES["worker_safe"])
 
 
 def _delegation_profile_restart_replay_safe(profile_name: str | None) -> bool:
@@ -212,10 +214,11 @@ def _issue_delegation_token_for_request(
         return None
     parent_agent_id = _maybe_uuid(request.parent_agent_id) or request.owner_id
     ttl_seconds = max(DEFAULT_DELEGATION_TTL_SECONDS, float(request.policy.timeout_seconds) + 30.0)
+    granted_capabilities = None if profile.name == "agent_message" else _delegation_capability_grants(profile)
     return issue_delegation_token(
         parent_agent_id=parent_agent_id,
         child_agent_id=child_agent_id,
-        granted_capabilities=_delegation_capability_grants(profile),
+        granted_capabilities=granted_capabilities,
         ttl_seconds=ttl_seconds,
     )
 
@@ -376,6 +379,36 @@ def _execution_identity_from_metadata(value: Any) -> ExecutionIdentityRef | None
     )
 
 
+def _runtime_json_safe(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, tuple):
+        return [_runtime_json_safe(item) for item in value]
+    if isinstance(value, list):
+        return [_runtime_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _runtime_json_safe(item) for key, item in value.items()}
+    return value
+
+
+def _permission_profile_metadata(value: Any | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return _runtime_json_safe(value)
+    if is_dataclass(value):
+        return _runtime_json_safe(asdict(value))
+    return None
+
+
+def _permission_profile_mode(value: Any | None) -> str | None:
+    metadata = _permission_profile_metadata(value)
+    if not metadata:
+        return None
+    mode = metadata.get("mode")
+    return str(mode) if mode else None
+
+
 def _is_user_initiated_delegation(request: AgentDelegationRequest) -> bool:
     """Return true when a real user is the execution principal for this delegation.
 
@@ -480,6 +513,7 @@ class AgentDelegationRequest:
     parent_agent_name: str | None = None
     runtime_task_id: str | None = None
     restart_replay_contract: dict[str, Any] | None = None
+    permission_profile: Any | None = None
 
 
 def _delegation_coordination_key(request: AgentDelegationRequest) -> str:
@@ -570,6 +604,12 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
         )
     if request.plan_exempt_reason:
         metadata["plan_exempt_reason"] = request.plan_exempt_reason
+    permission_profile = _permission_profile_metadata(request.permission_profile)
+    if permission_profile:
+        metadata["permission_profile"] = permission_profile
+        permission_mode = _permission_profile_mode(request.permission_profile)
+        if permission_mode:
+            metadata["permission_mode"] = permission_mode
     execution_identity = _execution_identity_to_metadata(request.execution_identity)
     if execution_identity:
         metadata["execution_identity"] = execution_identity
@@ -710,6 +750,7 @@ async def delegate_to_agent(
     execution_identity: ExecutionIdentityRef | None = None,
     tenant_id: uuid.UUID | str | None = None,
     ledger_todo_id: str | None = None,
+    permission_profile: Any | None = None,
 ) -> str:
     """Delegate one conversational turn to another agent through the runtime."""
     request = AgentDelegationRequest(
@@ -731,6 +772,7 @@ async def delegate_to_agent(
         execution_identity=execution_identity or _capture_execution_identity_ref(),
         tenant_id=tenant_id,
         ledger_todo_id=ledger_todo_id,
+        permission_profile=permission_profile,
     )
     result = await _delegate(request)
     return result.content
@@ -902,6 +944,12 @@ async def _delegate_after_cycle_check(
     session_metadata: dict[str, Any] = {
         "interaction_type": request.interaction_type,
     }
+    permission_profile = _permission_profile_metadata(request.permission_profile)
+    if permission_profile:
+        session_metadata["permission_profile"] = permission_profile
+        permission_mode = _permission_profile_mode(request.permission_profile)
+        if permission_mode:
+            session_metadata["permission_mode"] = permission_mode
     if request.runtime_task_id:
         session_metadata["runtime_task_id"] = request.runtime_task_id
     if request.restart_replay_contract:
@@ -1045,6 +1093,14 @@ async def _delegate_after_cycle_check(
                         "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
                         "to_agent": str(request.target.id),
                         "to_agent_name": request.target.name,
+                        **(
+                            {
+                                "permission_profile": permission_profile,
+                                "permission_mode": session_metadata.get("permission_mode"),
+                            }
+                            if permission_profile
+                            else {}
+                        ),
                     },
                 )
                 db.add(session)
@@ -1463,6 +1519,7 @@ async def delegate_async(
     confirmed_plan_hash: str | None = None,
     plan_exempt_reason: str | None = None,
     ledger_todo_id: str | None = None,
+    permission_profile: Any | None = None,
 ) -> AsyncDelegationHandle:
     """Launch a child agent in the background and return immediately.
 
@@ -1499,6 +1556,7 @@ async def delegate_async(
         tenant_id=tenant_id,
         ledger_todo_id=ledger_todo_id,
         runtime_task_id=task_id,
+        permission_profile=permission_profile,
     )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:
@@ -1926,6 +1984,7 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             restart_replay_contract=metadata.get("restart_replay_contract")
             if isinstance(metadata.get("restart_replay_contract"), dict)
             else None,
+            permission_profile=metadata.get("permission_profile"),
         )
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)

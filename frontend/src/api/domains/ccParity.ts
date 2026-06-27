@@ -144,6 +144,14 @@ export interface SessionWorkbench {
   approvals?: Record<string, unknown>[];
   hooks?: Record<string, unknown>[];
   compactions?: Record<string, unknown>[];
+  context_window?: {
+    schema: string;
+    decision_count: number;
+    latest_status?: Record<string, unknown> | null;
+    latest_skipped?: Record<string, unknown> | null;
+    latest_tool_result_budget?: Record<string, unknown> | null;
+    decisions?: Record<string, unknown>[];
+  };
   branches?: Record<string, unknown>[];
   permission_profile?: Record<string, unknown>;
   context_policy?: Record<string, unknown>;

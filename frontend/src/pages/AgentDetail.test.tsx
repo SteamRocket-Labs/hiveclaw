@@ -70,7 +70,32 @@ vi.mock('./agent-detail/RelationshipEditor', () => ({ default: () => null }));
 vi.mock('./agent-detail/ToolsManager', () => ({ default: () => null }));
 vi.mock('./OpenClawSettings', () => ({ default: () => null }));
 
-import AgentDetail from './AgentDetail';
+import AgentDetail, { sessionPermissionModeFromSession } from './AgentDetail';
+
+describe('AgentDetail session permission state', () => {
+  it('restores the composer permission mode from persisted session metadata', () => {
+    expect(
+      sessionPermissionModeFromSession({
+        id: 'session-1',
+        permission_mode: 'bypassPermissions',
+      }),
+    ).toBe('bypassPermissions');
+
+    expect(
+      sessionPermissionModeFromSession({
+        id: 'session-2',
+        permission_profile: { mode: 'default' },
+      }),
+    ).toBe('default');
+
+    expect(
+      sessionPermissionModeFromSession({
+        id: 'session-3',
+        transcript_metadata_json: { permission_mode: 'auto' },
+      }),
+    ).toBe('auto');
+  });
+});
 
 describe('AgentDetail access failures', () => {
   beforeEach(() => {

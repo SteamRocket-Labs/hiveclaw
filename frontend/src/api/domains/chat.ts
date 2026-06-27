@@ -15,6 +15,15 @@ export interface ChatSession {
   parent_session_id?: string | null;
   root_session_id?: string | null;
   runtime_task_id?: string | null;
+  permission_mode?: string | null;
+  permission_profile?: {
+    mode?: string | null;
+    allowed_tools?: string[];
+    writable_roots?: string[];
+    [key: string]: unknown;
+  } | null;
+  writable_roots?: string[] | null;
+  transcript_metadata_json?: Record<string, unknown> | null;
 }
 
 export interface UploadedChatFile {

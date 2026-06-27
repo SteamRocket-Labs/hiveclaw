@@ -1535,7 +1535,8 @@ async def test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_eve
     assert len(compress_calls) >= 2
     assert len(fake_client.calls) == 2
     assert len(fake_client.calls[1]["messages"]) < len(fake_client.calls[0]["messages"])
-    assert runtime_events[0] == {
+    session_compact_events = [event for event in runtime_events if event.get("type") == "session_compact"]
+    assert session_compact_events[0] == {
         "type": "session_compact",
         "summary": "Prompt too long; compressed conversation before retry.",
         "original_message_count": 6,
@@ -2345,7 +2346,7 @@ async def test_persist_memory_called_on_max_rounds_exceeded():
 
 
 @pytest.mark.asyncio
-async def test_turn_token_budget_stops_before_next_tool_round():
+async def test_turn_token_budget_does_not_preempt_tool_followup():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -2358,7 +2359,7 @@ async def test_turn_token_budget_stops_before_next_tool_round():
                 reasoning_content=None,
                 usage={"total_tokens": 50},
             ),
-            SimpleNamespace(content="must not run", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+            SimpleNamespace(content="done after tool", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
         ]
     )
     executed: list[str] = []
@@ -2391,7 +2392,7 @@ async def test_turn_token_budget_stops_before_next_tool_round():
     result = await kernel.handle(
         InvocationRequest(
             model=model,
-            messages=[{"role": "user", "content": "respect budget"}],
+            messages=[{"role": "user", "content": "respect tool followup"}],
             agent_name="Agent",
             role_description="test",
             agent_id=uuid4(),
@@ -2400,10 +2401,9 @@ async def test_turn_token_budget_stops_before_next_tool_round():
         )
     )
 
-    assert result.content.startswith("[Runtime Limit]")
-    assert "higher turn budget" not in result.content
-    assert executed == []
-    assert len(fake_client.calls) == 1
+    assert result.content == "done after tool"
+    assert executed == ["read_file"]
+    assert len(fake_client.calls) == 2
     assert persist_calls[0]["session_id"] == "sess-budget"
 
 

@@ -90,6 +90,50 @@ export function getAgentDetailHashTab(hash: string | undefined, validTabs: reado
     return hashTab && validTabs.includes(hashTab) ? hashTab : null;
 }
 
+function normalizeSessionPermissionModeValue(value: unknown): SessionPermissionMode | null {
+    if (value === 'default' || value === 'auto' || value === 'bypassPermissions') {
+        return value;
+    }
+    return null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+export function sessionPermissionModeFromSession(session: unknown): SessionPermissionMode {
+    const sessionRecord = objectValue(session);
+    const profile = objectValue(sessionRecord.permission_profile);
+    const transcriptMetadata = objectValue(sessionRecord.transcript_metadata_json);
+    const metadata = objectValue(sessionRecord.metadata);
+    return (
+        normalizeSessionPermissionModeValue(sessionRecord.permission_mode) ||
+        normalizeSessionPermissionModeValue(profile.mode) ||
+        normalizeSessionPermissionModeValue(transcriptMetadata.permission_mode) ||
+        normalizeSessionPermissionModeValue(metadata.permission_mode) ||
+        'auto'
+    );
+}
+
+function withSessionPermissionMode<T extends Record<string, unknown>>(session: T, mode: SessionPermissionMode): T {
+    const existingProfile = objectValue(session.permission_profile);
+    const writableRoots = Array.isArray(session.writable_roots)
+        ? session.writable_roots
+        : Array.isArray(existingProfile.writable_roots)
+            ? existingProfile.writable_roots
+            : ['workspace/'];
+    return {
+        ...session,
+        permission_mode: mode,
+        writable_roots: writableRoots,
+        permission_profile: {
+            ...existingProfile,
+            mode,
+            writable_roots: writableRoots,
+        },
+    };
+}
+
 export function buildAgentDetailTabNavigation(
     pathname: string,
     search: string,
@@ -585,6 +629,7 @@ function AgentDetailInner() {
         setTransportNotice(null);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting || !!activeRunState);
+        setSessionPermissionMode(sessionPermissionModeFromSession(sess));
         setActiveSession(sess);
         setAgentExpired(false);
         syncActiveSocketState(sess, targetAgentId);
@@ -753,9 +798,23 @@ function AgentDetailInner() {
         const previous = sessionPermissionMode;
         setSessionPermissionMode(mode);
         if (!id || !activeSession?.id) return;
+        const sessionId = String(activeSession.id);
         try {
-            await chatApi.updateSessionPermissionProfile(id, String(activeSession.id), { permission_mode: mode });
-            invalidateSessionRuntimeQueries(id, String(activeSession.id));
+            await chatApi.updateSessionPermissionProfile(id, sessionId, { permission_mode: mode });
+            setActiveSession((current: any | null) =>
+                current && String(current.id) === sessionId ? withSessionPermissionMode(current, mode) : current,
+            );
+            setSessions((current) =>
+                current.map((session) =>
+                    String(session.id) === sessionId ? withSessionPermissionMode(session, mode) : session,
+                ),
+            );
+            setAllSessions((current) =>
+                current.map((session) =>
+                    String(session.id) === sessionId ? withSessionPermissionMode(session, mode) : session,
+                ),
+            );
+            invalidateSessionRuntimeQueries(id, sessionId);
         } catch (err: any) {
             setSessionPermissionMode(previous);
             const msg = err?.message || t('agent.chat.permission.updateFailed', 'Failed to update session permission mode');
@@ -775,6 +834,14 @@ function AgentDetailInner() {
             }),
         );
     }, [planModeScopeKey]);
+    useEffect(() => {
+        setSessionPermissionMode(sessionPermissionModeFromSession(activeSession));
+    }, [
+        activeSession?.id,
+        activeSession?.permission_mode,
+        activeSession?.permission_profile?.mode,
+        activeSession?.transcript_metadata_json?.permission_mode,
+    ]);
     const [wsConnected, setWsConnected] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);

@@ -66,6 +66,13 @@ _CHANNEL_DELIVERY_CHANNEL_HINT_RE = re.compile(
     r"(飞书|feishu|lark|即时通讯|企业微信|wecom|微信|wechat|telegram|slack|discord|im)",
     re.IGNORECASE,
 )
+_SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
+    "context_window_status",
+    "compaction_skipped",
+    "compaction_started",
+    "compaction_completed",
+    "tool_result_budget_pass",
+}
 _CHANNEL_DELIVERY_ACTION_HINT_RE = re.compile(
     r"(发给|发送|转发|同步|推送|回传|传回|发回|投递|share|send|forward|deliver|post)",
     re.IGNORECASE,
@@ -1784,7 +1791,7 @@ async def _persist_runtime_event(
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
-        event_type = str(data.get("event_type") or data.get("type") or "runtime_event")
+        event_type = _runtime_event_storage_type(data)
         event_payload = build_session_native_event(data) if event_type in SESSION_NATIVE_EVENT_TYPES else data
         event_parts = [event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None
         event_metadata = {
@@ -1808,6 +1815,17 @@ async def _persist_runtime_event(
             metadata=event_metadata,
         )
         await db.commit()
+
+
+def _runtime_event_storage_type(data: dict[str, Any]) -> str:
+    return str(data.get("event_type") or data.get("type") or "runtime_event")
+
+
+def _should_persist_runtime_event(data: dict[str, Any]) -> bool:
+    event_type = _runtime_event_storage_type(data)
+    if event_type in SESSION_NATIVE_EVENT_TYPES:
+        return True
+    return data.get("type") == "session_context" and event_type in _SESSION_CONTEXT_RUNTIME_EVENT_TYPES
 
 
 def _simulation_title(content: str) -> str:
@@ -2468,7 +2486,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             else:
                 event_payload = data
             await broadcast_web_chat_event(agent.id, session_id, event_payload)
-            if event_type in SESSION_NATIVE_EVENT_TYPES:
+            if _should_persist_runtime_event(data):
                 await _persist_runtime_event(agent_id=agent.id, user_id=user.id, session_id=session_id, data=data)
 
         pending_reply_suffix = ""

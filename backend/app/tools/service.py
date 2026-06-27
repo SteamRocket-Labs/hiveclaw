@@ -9,8 +9,9 @@ import logging
 import re
 import traceback
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any, Awaitable, Callable
 
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
@@ -174,6 +175,49 @@ async def _resolve_runtime_context(
     return await _maybe_await(runtime_resolver.resolve(**kwargs))
 
 
+def _json_safe_runtime_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, tuple):
+        return [_json_safe_runtime_value(item) for item in value]
+    if isinstance(value, list):
+        return [_json_safe_runtime_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_runtime_value(item) for key, item in value.items()}
+    return value
+
+
+def _permission_profile_payload(permission_profile: Any | None) -> dict[str, Any] | None:
+    if permission_profile is None:
+        return None
+    if isinstance(permission_profile, dict):
+        return _json_safe_runtime_value(permission_profile)
+    if is_dataclass(permission_profile):
+        return _json_safe_runtime_value(asdict(permission_profile))
+    return None
+
+
+def _inject_runtime_context_arguments(
+    tool_name: str,
+    arguments: dict,
+    runtime_context: ToolExecutionContext,
+) -> dict:
+    """Thread runtime-owned session context into tools that must never rely on
+    the model to restate it correctly.
+    """
+    if tool_name not in {"delegate_to_agent", "send_message_to_agent"}:
+        return arguments
+
+    enriched = dict(arguments)
+    if runtime_context.session_id and not enriched.get("parent_session_id"):
+        enriched["parent_session_id"] = runtime_context.session_id
+
+    profile_payload = _permission_profile_payload(runtime_context.permission_profile)
+    if profile_payload and "_permission_profile" not in enriched:
+        enriched["_permission_profile"] = profile_payload
+    return enriched
+
+
 def _extract_tool_error_payload(result: str) -> dict[str, Any] | None:
     if not result or "<tool_error>" not in result:
         return None
@@ -269,6 +313,7 @@ class ToolRuntimeService:
             session_id=session_id,
             permission_profile=permission_profile,
         )
+        arguments = _inject_runtime_context_arguments(tool_name, arguments, runtime_context)
         governance_context = await self.governance_resolver.build_context(
             runtime_context=runtime_context,
             tool_name=tool_name,

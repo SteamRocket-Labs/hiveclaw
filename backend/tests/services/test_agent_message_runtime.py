@@ -93,6 +93,10 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
         session_id="session-1",
         session_agent_id=session_agent_id,
         participant_id=participant_id,
+        permission_profile={
+            "mode": "bypassPermissions",
+            "allowed_tools": ["web_search", "feishu_doc_read"],
+        },
     )
 
     assert reply == "target reply"
@@ -108,6 +112,10 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
     assert captured["kwargs"]["interaction_type"] == "agent_message"
     assert captured["kwargs"]["policy"].timeout_seconds == 300.0
     assert captured["kwargs"]["policy"].tool_profile == "agent_message"
+    assert captured["kwargs"]["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["web_search", "feishu_doc_read"],
+    }
     # PR-19 rewrote A2A_SYSTEM_PROMPT_SUFFIX with XML structure; the A2A
     # identity signal is now carried by "agent-to-agent\ncommunication, 'A2A'"
     # and "peer agent" inside <role>.
@@ -205,6 +213,42 @@ async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delegate_to_agent_async_defaults_to_peer_agent_tool_surface(monkeypatch):
+    from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
+
+    from_agent_id = uuid4()
+    source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
+    target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge worker")
+    target_model = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+    )
+    captured = {}
+
+    async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
+        return source_agent, target, target_model, None
+
+    async def fake_delegate_async(**kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(task_id="task-peer", trace_id="trace-peer", target_name="Feishu Knowledge")
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._resolve_target_agent_runtime", fake_resolve)
+    monkeypatch.setattr("app.agents.orchestrator.delegate_async", fake_delegate_async)
+
+    result = await _delegate_to_agent_async(
+        from_agent_id,
+        {
+            "agent_name": "Feishu Knowledge",
+            "message": "请查飞书知识库并返回报告",
+        },
+    )
+
+    payload = json.loads(result)
+    assert payload["task_id"] == "task-peer"
+    assert captured["kwargs"]["policy"].tool_profile == "agent_message"
+    assert captured["kwargs"]["tenant_id"] == source_agent.tenant_id
+
+
+@pytest.mark.asyncio
 async def test_delegate_to_agent_async_accepts_timeout_override(monkeypatch):
     from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
 
@@ -276,6 +320,50 @@ async def test_delegate_to_agent_async_accepts_research_readonly_profile(monkeyp
     assert payload["task_id"] == "task-2"
     assert payload["session_id"] == captured["kwargs"]["session_id"]
     assert captured["kwargs"]["policy"].tool_profile == "research_readonly"
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_agent_async_threads_permission_profile(monkeypatch):
+    from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
+
+    from_agent_id = uuid4()
+    source_agent = SimpleNamespace(name="Source Agent", creator_id=uuid4(), tenant_id=uuid4())
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent")
+    target_model = SimpleNamespace(
+        provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None
+    )
+    captured = {}
+
+    async def fake_resolve(_from_agent_id, _agent_name, **_kwargs):
+        return source_agent, target, target_model, None
+
+    async def fake_delegate_async(**kwargs):
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(task_id="task-permission", trace_id="trace-permission", target_name="Target Agent")
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._resolve_target_agent_runtime", fake_resolve)
+    monkeypatch.setattr("app.agents.orchestrator.delegate_async", fake_delegate_async)
+
+    result = await _delegate_to_agent_async(
+        from_agent_id,
+        {
+            "agent_name": "Target Agent",
+            "message": "research and report",
+            "parent_session_id": "parent-session-1",
+            "_permission_profile": {
+                "mode": "bypassPermissions",
+                "allowed_tools": ["web_search", "feishu_doc_read"],
+            },
+        },
+    )
+
+    payload = json.loads(result)
+    assert payload["task_id"] == "task-permission"
+    assert captured["kwargs"]["parent_session_id"] == "parent-session-1"
+    assert captured["kwargs"]["permission_profile"] == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["web_search", "feishu_doc_read"],
+    }
 
 
 @pytest.mark.asyncio

@@ -194,9 +194,10 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "tool_profile": {
                     "type": "string",
-                    "enum": ["worker_safe", "memory_readonly", "review_readonly", "research_readonly"],
+                    "enum": ["peer_agent", "worker_safe", "memory_readonly", "review_readonly", "research_readonly"],
                     "description": (
                         "Optional worker tool policy. "
+                        "`peer_agent` (default) lets the target digital employee use its own assigned/read-authorized tools; "
                         "`worker_safe` isolates long-term memory; "
                         "`memory_readonly` allows search_memory/load_memory but still blocks save_memory; "
                         "`review_readonly` restricts the child to read-only review tools; "

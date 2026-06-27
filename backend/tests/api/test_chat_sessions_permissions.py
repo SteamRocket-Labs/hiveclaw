@@ -185,6 +185,52 @@ async def test_list_sessions_all_scope_allows_manage_access_for_non_creator(monk
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_exposes_persisted_session_permission_mode(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=owner_id,
+        source_channel="web",
+        title="Permission Mode Thread",
+        created_at=SimpleNamespace(isoformat=lambda: "2026-03-25T00:00:00+00:00"),
+        last_message_at=SimpleNamespace(isoformat=lambda: "2026-03-25T00:10:00+00:00"),
+        peer_agent_id=None,
+        transcript_metadata_json={
+            "permission_mode": "bypassPermissions",
+            "session_permission_allowed_tools": ["web_search"],
+        },
+    )
+    current_user = SimpleNamespace(id=owner_id, role="member")
+    db = _QueryAwareDB(agent=agent, sessions=[session], counts=[1, 2])
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.list_sessions(
+        agent_id=agent_id,
+        scope="mine",
+        current_user=current_user,
+        db=db,
+    )
+
+    assert len(result) == 1
+    assert result[0].permission_mode == "bypassPermissions"
+    assert result[0].permission_profile == {
+        "mode": "bypassPermissions",
+        "allowed_tools": ["web_search"],
+        "writable_roots": ["workspace/"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_list_sessions_mine_scope_uses_canonical_microsoft_teams_channel(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 

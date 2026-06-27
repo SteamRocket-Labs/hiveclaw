@@ -7,6 +7,86 @@ from uuid import uuid4
 import pytest
 
 
+def test_context_window_payload_extracts_latest_status_and_skipped_reason():
+    import app.services.session_control_plane as service
+
+    events = [
+        SimpleNamespace(
+            id=uuid4(),
+            event_id=uuid4(),
+            sequence=10,
+            event_type="context_window_status",
+            actor_type="system",
+            role="system",
+            content="",
+            metadata_json={
+                "active_context_tokens": 50,
+                "auto_compact_scope_limit": 223000,
+                "tokens_until_compaction": 222950,
+                "cumulative_run_tokens": 1200000,
+            },
+            created_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            event_id=uuid4(),
+            sequence=11,
+            event_type="compaction_skipped",
+            actor_type="system",
+            role="system",
+            content="",
+            metadata_json={
+                "reason": "below_autocompact_threshold",
+                "active_context_tokens": 50,
+                "cumulative_run_tokens": 1200000,
+            },
+            created_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+        ),
+    ]
+
+    payload = service._context_window_payload(events)
+
+    assert payload["schema"] == "hive.ccplus.context_window.v1"
+    assert payload["latest_status"]["active_context_tokens"] == 50
+    assert payload["latest_skipped"]["reason"] == "below_autocompact_threshold"
+    assert payload["latest_skipped"]["cumulative_run_tokens"] == 1200000
+    assert payload["decision_count"] == 2
+
+
+def test_compaction_payloads_ignore_context_window_decision_events():
+    import app.services.session_control_plane as service
+
+    events = [
+        SimpleNamespace(
+            id=uuid4(),
+            event_id=uuid4(),
+            sequence=10,
+            event_type="compaction_skipped",
+            actor_type="system",
+            role="system",
+            content="",
+            metadata_json={"reason": "below_autocompact_threshold"},
+            created_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            event_id=uuid4(),
+            sequence=11,
+            event_type="session_compact",
+            actor_type="system",
+            role="system",
+            content="summary",
+            metadata_json={"kind": "compaction"},
+            created_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+        ),
+    ]
+
+    payloads = service._compaction_payloads(events)
+
+    assert len(payloads) == 1
+    assert payloads[0]["event_type"] == "session_compact"
+
+
 @pytest.mark.asyncio
 async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(monkeypatch):
     import app.services.session_control_plane as service

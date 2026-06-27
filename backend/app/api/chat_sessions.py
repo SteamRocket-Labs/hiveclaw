@@ -8,7 +8,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,13 +77,17 @@ class SessionOut(BaseModel):
     created_at: str
     last_message_at: Optional[str] = None
     message_count: int = 0
+    permission_mode: str = "auto"
+    permission_profile: dict[str, Any] = Field(default_factory=dict)
+    writable_roots: list[str] = Field(default_factory=list)
     # Agent-to-agent session fields
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
     participant_type: str = "user"  # 'user' | 'agent'
 
 
-def _session_contract_fields(session: ChatSession) -> dict[str, Optional[str]]:
+def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
+    session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
     return {
         "session_kind": getattr(session, "session_kind", None) or "human_chat",
         "actor_type": getattr(session, "actor_type", None) or "user",
@@ -93,6 +97,7 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Optional[str]]:
         "parent_session_id": str(session.parent_session_id) if getattr(session, "parent_session_id", None) else None,
         "root_session_id": str(session.root_session_id) if getattr(session, "root_session_id", None) else None,
         "runtime_task_id": str(session.runtime_task_id) if getattr(session, "runtime_task_id", None) else None,
+        **_session_permission_metadata(str(session_metadata.get("permission_mode") or "auto"), session),
     }
 
 

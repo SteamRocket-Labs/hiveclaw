@@ -532,6 +532,14 @@ def _compaction_payloads(events: list[Any]) -> list[dict[str, Any]]:
         payload = _event_payload(event)
         metadata = _event_metadata_from_payload(payload)
         event_type = str(payload.get("event_type") or "")
+        if event_type in {
+            "context_window_status",
+            "compaction_skipped",
+            "compaction_started",
+            "compaction_completed",
+            "tool_result_budget_pass",
+        }:
+            continue
         if "compact" in event_type or metadata.get("kind") == "compaction":
             compactions.append(
                 {
@@ -544,6 +552,56 @@ def _compaction_payloads(events: list[Any]) -> list[dict[str, Any]]:
                 }
             )
     return compactions
+
+
+def _context_window_payload(events: list[Any]) -> dict[str, Any]:
+    decisions: list[dict[str, Any]] = []
+    latest_status: dict[str, Any] | None = None
+    latest_skipped: dict[str, Any] | None = None
+    latest_tool_result_budget: dict[str, Any] | None = None
+    for event in events:
+        payload = _event_payload(event)
+        metadata = {**payload, **_event_metadata_from_payload(payload)}
+        event_type = str(payload.get("event_type") or "")
+        if event_type not in {
+            "context_window_status",
+            "compaction_skipped",
+            "compaction_started",
+            "compaction_completed",
+            "tool_result_budget_pass",
+        }:
+            continue
+        item = {
+            "event_id": payload.get("id"),
+            "sequence": payload.get("sequence"),
+            "event_type": event_type,
+            "reason": metadata.get("reason"),
+            "created_at": payload.get("created_at"),
+            "active_context_tokens": metadata.get("active_context_tokens"),
+            "auto_compact_scope_tokens": metadata.get("auto_compact_scope_tokens"),
+            "auto_compact_scope_limit": metadata.get("auto_compact_scope_limit"),
+            "tokens_until_compaction": metadata.get("tokens_until_compaction"),
+            "full_context_window_limit": metadata.get("full_context_window_limit"),
+            "cumulative_run_tokens": metadata.get("cumulative_run_tokens"),
+            "trimmed_count": metadata.get("trimmed_count"),
+            "changed": metadata.get("changed"),
+        }
+        decisions.append(item)
+        if event_type == "context_window_status":
+            latest_status = item
+        elif event_type == "compaction_skipped":
+            latest_skipped = item
+        elif event_type == "tool_result_budget_pass":
+            latest_tool_result_budget = item
+
+    return {
+        "schema": "hive.ccplus.context_window.v1",
+        "decision_count": len(decisions),
+        "latest_status": latest_status,
+        "latest_skipped": latest_skipped,
+        "latest_tool_result_budget": latest_tool_result_budget,
+        "decisions": decisions[-20:],
+    }
 
 
 def _approval_payload(approval: ApprovalRequest) -> dict[str, Any]:
@@ -694,6 +752,7 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
         "approvals": approvals,
         "hooks": _hook_payloads(events),
         "compactions": _compaction_payloads(events),
+        "context_window": _context_window_payload(events),
         "branches": branches,
         "permission_profile": permission_profile,
         "context_policy": context_policy,

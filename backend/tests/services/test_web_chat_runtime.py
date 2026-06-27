@@ -161,7 +161,15 @@ async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web
     captured = {}
 
     async def fake_load_context(_run_uuid):
-        return runtime_task, agent, user, llm_model, None, [], SimpleNamespace(delivery_target_json={"channel": "feishu"})
+        return (
+            runtime_task,
+            agent,
+            user,
+            llm_model,
+            None,
+            [],
+            SimpleNamespace(delivery_target_json={"channel": "feishu"}),
+        )
 
     async def fake_invoke(request):
         captured["excluded_tool_names"] = request.excluded_tool_names
@@ -467,18 +475,72 @@ async def test_persist_runtime_event_writes_session_native_part(monkeypatch):
 
     assert captured["event_type"] == "hook_progress"
     assert captured["role"] == "system"
-    assert captured["parts"] == [{
-        "type": "event",
-        "event_type": "hook_progress",
-        "title": "Hook Progress",
-        "text": "Running PreToolUse hook",
-        "status": "running",
-        "hook_event": "PreToolUse",
-        "hook_key": "guard",
-        "runtime_task_id": captured["run_id"],
-    }]
+    assert captured["parts"] == [
+        {
+            "type": "event",
+            "event_type": "hook_progress",
+            "title": "Hook Progress",
+            "text": "Running PreToolUse hook",
+            "status": "running",
+            "hook_event": "PreToolUse",
+            "hook_key": "guard",
+            "runtime_task_id": captured["run_id"],
+        }
+    ]
     assert captured["metadata"]["runtime_event_type"] == "hook_progress"
     assert captured["metadata"]["hook_event"] == "PreToolUse"
+
+
+@pytest.mark.asyncio
+async def test_session_context_runtime_event_persists_as_specific_context_event(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    import app.services.tenant_resolver as tenant_resolver
+
+    captured: dict = {}
+    tenant_id = uuid4()
+
+    class _SessionCtx:
+        async def __aenter__(self):
+            return _FakeDB()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    async def fake_append_session_event(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None)
+
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _SessionCtx())
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+
+    data = {
+        "type": "session_context",
+        "event_type": "context_window_status",
+        "active_context_tokens": 120,
+        "auto_compact_scope_limit": 223000,
+        "tokens_until_compaction": 222880,
+        "runtime_task_id": str(uuid4()),
+        "visibility": "debug",
+    }
+
+    assert runtime._should_persist_runtime_event(data)
+
+    await runtime._persist_runtime_event(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_id=str(uuid4()),
+        data=data,
+    )
+
+    assert captured["event_type"] == "context_window_status"
+    assert captured["metadata"]["runtime_event_type"] == "context_window_status"
+    assert captured["metadata"]["active_context_tokens"] == 120
+    assert captured["metadata"]["visibility"] == "debug"
+    assert captured["parts"] is None
 
 
 def test_plan_mode_unsubmitted_terminal_error_blocks_plain_assistant_completion():

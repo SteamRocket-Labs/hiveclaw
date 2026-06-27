@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 
@@ -922,6 +923,7 @@ async def _invoke_agent_message_runtime(
     session_id: str,
     session_agent_id: uuid.UUID,
     participant_id: uuid.UUID | None,
+    permission_profile: Any | None = None,
 ) -> str:
     """Run the target agent reply through the shared runtime kernel."""
     from app.agents.orchestrator import AGENT_MESSAGE_TIMEOUT_SECONDS, OrchestrationPolicy, delegate_to_agent
@@ -949,7 +951,15 @@ async def _invoke_agent_message_runtime(
         # read documents, and synthesize a final answer). Keep the inner budget
         # below the tool wrapper cap, but well above short consult latency.
         policy=OrchestrationPolicy(timeout_seconds=AGENT_MESSAGE_TIMEOUT_SECONDS, tool_profile="agent_message"),
+        permission_profile=permission_profile,
     )
+
+
+def _normalize_delegate_tool_profile(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw or raw == "peer_agent":
+        return "agent_message"
+    return raw
 
 
 async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
@@ -1187,6 +1197,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 session_id=session_id,
                 session_agent_id=session_agent_id,
                 participant_id=tgt_participant_id,
+                permission_profile=args.get("_permission_profile"),
             )
 
             if not target_reply:
@@ -1255,7 +1266,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
     """Spawn an async subagent task and return a runtime handle."""
     agent_name = args.get("agent_name", "").strip()
     message_text = args.get("message", "").strip()
-    tool_profile = str(args.get("tool_profile") or "worker_safe").strip() or "worker_safe"
+    tool_profile = _normalize_delegate_tool_profile(args.get("tool_profile"))
     target_agent_id_raw = args.get("target_agent_id")
     target_agent_id = None
     if target_agent_id_raw:
@@ -1325,6 +1336,7 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             confirmed_plan_version=args.get("confirmed_plan_version"),
             confirmed_plan_hash=args.get("confirmed_plan_hash"),
             ledger_todo_id=str(args.get("ledger_todo_id") or "").strip() or None,
+            permission_profile=args.get("_permission_profile"),
         )
         return json.dumps(
             {

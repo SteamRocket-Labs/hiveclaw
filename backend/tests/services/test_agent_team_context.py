@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -47,6 +48,27 @@ class _SharedCoordinationSession:
         return _ScalarsResult(self.added)
 
 
+class _TeamRowsSession:
+    def __init__(self, *, team, member):
+        self._team = team
+        self._member = member
+        self.execute_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, _stmt):
+        self.execute_calls += 1
+        if self.execute_calls in {1, 2}:
+            return _ScalarsResult([])
+        if self.execute_calls == 3:
+            return _ScalarsResult([self._team])
+        return _ScalarsResult([self._member])
+
+
 def test_render_team_context_block_surfaces_runtime_tasks_and_mailbox() -> None:
     from app.services.agent_team_context import render_team_context_block
 
@@ -81,6 +103,42 @@ def test_render_team_context_block_surfaces_runtime_tasks_and_mailbox() -> None:
     assert "poll" not in block.lower()
     assert "Session/T0" in block
     assert "truth source" not in block
+
+
+@pytest.mark.asyncio
+async def test_prompt_facing_team_context_reads_agent_team_rows(monkeypatch) -> None:
+    from app.services import agent_team_context
+    from app.services.agent_team_context import build_prompt_facing_team_context
+
+    agent_id = uuid4()
+    team_id = uuid4()
+    session_id = uuid4()
+    member_session_id = uuid4()
+    team = SimpleNamespace(id=team_id, name="Review Team", status="active", parent_session_id=session_id)
+    member = SimpleNamespace(
+        id=uuid4(),
+        team_id=team_id,
+        member_name="critic",
+        member_role="Review prompt and hook gaps",
+        chat_session_id=member_session_id,
+        status="idle",
+        runtime_task_id=None,
+        runtime_task_type="team_member",
+    )
+    shared_session = _TeamRowsSession(team=team, member=member)
+    monkeypatch.setattr(agent_team_context, "tenant_scoped_session", lambda _tenant_id: shared_session)
+
+    rendered = await build_prompt_facing_team_context(
+        agent_id=agent_id,
+        tenant_id=uuid4(),
+        session_id=session_id,
+    )
+
+    assert "## Agent Team Workspace" in rendered
+    assert "Review Team" in rendered
+    assert "critic" in rendered
+    assert "Review prompt and hook gaps" in rendered
+    assert str(member_session_id) in rendered
 
 
 @pytest.mark.asyncio

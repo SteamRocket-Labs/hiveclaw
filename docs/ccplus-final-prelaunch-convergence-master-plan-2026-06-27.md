@@ -487,6 +487,15 @@ cd frontend && npm run test -- \
 
 目标：把 Codex 的 typed turn/thread 工程优势吸收进 Hive，并让 Hooks / Skill / MCP 全部挂到同一个 turn manifest 和 Workbench state。
 
+状态：已完成 Workstream D 第一块 implementation pass：TurnEnvelope / PromptAssemblyManifest read model、Session Workbench projection、AgentTeam rows -> prompt-facing Team context。
+
+本次闭合点：
+
+- 新增 `backend/app/runtime/turn_envelope.py`，从 active run metadata 构建 `hive.ccplus.turn_envelope.v1` 和 `hive.ccplus.prompt_assembly_manifest.v1`。
+- `build_session_workbench()` 暴露 `turn_envelope` 和 `prompt_manifest`，Workbench 不再只能从 scattered fields 猜 active turn context。
+- `agent_team_context.py` 现在读取 `AgentTeam` / `AgentTeamMember` rows，渲染 `## Agent Team Workspace`，Team context 的 source of truth 与 Workstream C 的 runtime path 一致。
+- Hooks external runner 仍保持 `declared_not_wired` 的安全状态；本轮不把 deferred `GovernedHookRunner` 偷接进 production。现有 HookRegistry / parser / plugin hook tests 继续作为 wire standard 和 live in-process hook 证据。
+
 依赖文档：
 
 - `docs/ccplus-runtime-context-agenttool-codex-delta-gap-audit-2026-06-27.md`
@@ -571,11 +580,10 @@ cd frontend && npm run test -- \
 ```bash
 cd backend && source .venv/bin/activate && pytest \
   tests/runtime/test_turn_envelope_prompt_manifest.py \
-  tests/services/test_session_control_plane_active_turn_snapshot.py \
-  tests/runtime/test_governed_hook_runner_live_wiring.py \
-  tests/skills/test_skill_hooks_runtime_registration.py \
-  tests/services/test_mcp_prompts_as_skills.py \
-  tests/services/test_mcp_instructions_delta.py \
+  tests/services/test_session_control_plane.py \
+  tests/kernel/test_turn_state_acceptance.py \
+  tests/services/test_agent_team_context.py \
+  tests/services/test_session_graph_projection.py \
   -q
 ```
 
@@ -583,6 +591,8 @@ cd backend && source .venv/bin/activate && pytest \
 
 - 每个 turn 都能解释自己加载了什么、隐藏了什么、为什么。
 - Workbench 不靠猜测拼 session state。
+- Team context 读取真实 Team rows，不再只读 RuntimeTask/Signal。
+- Hooks / Skill / MCP 的剩余项必须进入同一个 TurnEnvelope manifest；如果外部 runner 未接生产，必须显式标注 deferred/not-wired，不能假装 active。
 - Hooks / Skill / MCP 不再只是存在入口，而是进入 session lifecycle。
 - Unsupported 能力显式标注，不伪装成已支持。
 

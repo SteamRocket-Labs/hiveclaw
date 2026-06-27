@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
+from app.models.agent_team import AgentTeam, AgentTeamMember
 from app.models.coordination import CoordinationSignal
 from app.models.runtime_task import RuntimeTask
 
@@ -37,6 +38,18 @@ def _id(value: Any) -> str:
     return _clean(value)
 
 
+def _uuid_or_none(value: Any) -> uuid.UUID | None:
+    if isinstance(value, uuid.UUID):
+        return value
+    text = _clean(value)
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text)
+    except ValueError:
+        return None
+
+
 def _task_line(task: dict[str, Any]) -> str:
     task_id = _id(task.get("id") or task.get("task_id"))[:8]
     task_type = _clean(task.get("task_type")) or "task"
@@ -56,20 +69,53 @@ def _signal_line(signal: dict[str, Any]) -> str:
     return f"- [{signal_type}]{thread_suffix} from {sender}: {content}"
 
 
+def _team_line(team: dict[str, Any]) -> str:
+    name = _clean(team.get("name")) or "Team"
+    status = _clean(team.get("status")) or "active"
+    team_id = _id(team.get("id"))[:8]
+    return f"- team {team_id} [{status}] {name}"
+
+
+def _team_member_line(member: dict[str, Any]) -> str:
+    name = _clean(member.get("member_name")) or "member"
+    role = _short(member.get("member_role"), limit=120)
+    status = _clean(member.get("status")) or "idle"
+    session_id = _id(member.get("chat_session_id"))
+    session_suffix = f" session={session_id}" if session_id else ""
+    role_suffix = f" — {role}" if role else ""
+    return f"  - {name} [{status}]{session_suffix}{role_suffix}"
+
+
 def render_team_context_block(
     *,
     tasks: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     signals: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    teams: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     task_limit: int = 8,
     signal_limit: int = 8,
+    team_limit: int = 5,
 ) -> str:
     task_rows = [task for task in (tasks or []) if isinstance(task, dict)]
     signal_rows = [signal for signal in (signals or []) if isinstance(signal, dict)]
-    if not task_rows and not signal_rows:
+    team_rows = [team for team in (teams or []) if isinstance(team, dict)]
+    if not task_rows and not signal_rows and not team_rows:
         return ""
 
     lines: list[str] = []
+    if team_rows:
+        lines.append("## Agent Team Workspace")
+        lines.append("Current enterable Team workspaces projected from AgentTeam rows and member sessions:")
+        for team in team_rows[: max(1, team_limit)]:
+            lines.append(_team_line(team))
+            for member in list(team.get("members") or [])[: max(1, task_limit)]:
+                if isinstance(member, dict):
+                    lines.append(_team_member_line(member))
+        if len(team_rows) > team_limit:
+            lines.append(f"- ... {len(team_rows) - team_limit} more active team workspace(s)")
+
     if task_rows:
+        if lines:
+            lines.append("")
         lines.append("## Team Context")
         lines.append("Current teammate/workflow state projected from Session/T0-backed runtime records:")
         for task in task_rows[: max(1, task_limit)]:
@@ -118,6 +164,33 @@ def _signal_to_dict(signal: CoordinationSignal) -> dict[str, Any]:
     }
 
 
+def _team_to_dict(team: AgentTeam) -> dict[str, Any] | None:
+    if not all(hasattr(team, attr) for attr in ("id", "name", "status", "parent_session_id")):
+        return None
+    return {
+        "id": team.id,
+        "name": team.name,
+        "status": team.status,
+        "parent_session_id": team.parent_session_id,
+        "members": [],
+    }
+
+
+def _member_to_dict(member: AgentTeamMember) -> dict[str, Any] | None:
+    if not all(hasattr(member, attr) for attr in ("team_id", "member_name", "chat_session_id")):
+        return None
+    return {
+        "id": member.id,
+        "team_id": member.team_id,
+        "member_name": member.member_name,
+        "member_role": getattr(member, "member_role", None),
+        "chat_session_id": member.chat_session_id,
+        "status": getattr(member, "status", None),
+        "runtime_task_id": getattr(member, "runtime_task_id", None),
+        "runtime_task_type": getattr(member, "runtime_task_type", None),
+    }
+
+
 async def build_prompt_facing_team_context(
     *,
     agent_id: uuid.UUID,
@@ -158,4 +231,44 @@ async def build_prompt_facing_team_context(
             signal_stmt = signal_stmt.where(CoordinationSignal.thread_id == session_key)
         signals = [_signal_to_dict(signal) for signal in (await db.execute(signal_stmt)).scalars().all()]
 
-    return render_team_context_block(tasks=tasks, signals=signals, task_limit=task_limit, signal_limit=signal_limit)
+        team_stmt = (
+            select(AgentTeam)
+            .where(AgentTeam.lead_agent_id == agent_id, AgentTeam.status == "active")
+            .order_by(AgentTeam.created_at.desc())
+            .limit(5)
+        )
+        session_uuid = _uuid_or_none(session_key)
+        if session_uuid is not None:
+            team_stmt = team_stmt.where(AgentTeam.parent_session_id == session_uuid)
+        teams = [
+            item
+            for item in (_team_to_dict(team) for team in (await db.execute(team_stmt)).scalars().all())
+            if item is not None
+        ]
+        if teams:
+            team_ids = [team["id"] for team in teams]
+            member_stmt = (
+                select(AgentTeamMember)
+                .where(AgentTeamMember.team_id.in_(team_ids))
+                .order_by(AgentTeamMember.created_at.asc())
+            )
+            members = [
+                item
+                for item in (
+                    _member_to_dict(member) for member in (await db.execute(member_stmt)).scalars().all()
+                )
+                if item is not None
+            ]
+            by_team = {str(team["id"]): team for team in teams}
+            for member in members:
+                team = by_team.get(str(member["team_id"]))
+                if team is not None:
+                    team["members"].append(member)
+
+    return render_team_context_block(
+        tasks=tasks,
+        signals=signals,
+        teams=teams,
+        task_limit=task_limit,
+        signal_limit=signal_limit,
+    )

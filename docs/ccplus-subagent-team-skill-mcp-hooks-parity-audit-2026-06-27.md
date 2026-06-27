@@ -197,7 +197,7 @@ CC 语义：
 
 剩余归属：
 
-1. Team context renderer 和 Session Workbench 的 typed TurnEnvelope 展示进入主线 D，不再作为 Agent Team runtime 第二路径。
+1. Team context renderer 和 Session Workbench 的 typed TurnEnvelope 展示已完成 D 第一块：`agent_team_context.py` 读取 `AgentTeam` rows，Workbench 暴露 `turn_envelope` / `prompt_manifest`。
 2. 共享 task list / teammate completion notice 的 UI 合流进入 Workbench/TurnEnvelope，而不是再新增 Team 私有规则。
 
 判断：Agent Team 的 runtime/tool 断点已在 Workstream C 闭合；剩余是 context projection 和 UI/UX 收口。
@@ -370,7 +370,7 @@ Hive 现在的问题是两种风格混合但没有分层：
 | To Employee / To Session Worker 分层 | 本轮拆分：session worker 用 `spawn_subagent`；真实同事通信才走 A2A `delegate_to_agent` / `send_message_to_agent` | session worker 用 AgentTool；真实同事通信才走 A2A/SendMessage | 本轮已对齐 |
 | Agent Team create | `team_create` model tool / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | TeamCreateTool 直接创建 team / task list / context | runtime 已对齐；shared task list/context 进 D |
 | Team mailbox | `send_agent_session_message` 支持 child session、`team_id + member_name`、`member_name="*"` 广播；API message 共用 runtime | teammate name / broadcast / automatic inbox attachment | runtime 已对齐；UI inbox 进 D |
-| Team context | runtime source of truth 已统一为 `AgentTeam` rows + member sessions | team members / team config / mailbox / shared task list | 待 D：typed TurnEnvelope/context projection |
+| Team context | `agent_team_context.py` 已读取 `AgentTeam` rows + member sessions；Workbench 暴露 `turn_envelope` / `prompt_manifest` | team members / team config / mailbox / shared task list | D 第一块已对齐；shared task list UI 继续跟 Workbench |
 | Skill load | progressive disclosure 有 | SkillTool blocking invocation + forked execution + MCP skill + hooks | 部分对齐 |
 | MCP tools | import/list/call/resources 有 | live model tool injection + prompts/list + auth pseudo-tool + instructions delta | 部分对齐 |
 | Hooks event | event/parser/registry 有 | production command/prompt/http/agent hooks + skill hooks + async executor | 部分对齐 |
@@ -389,7 +389,7 @@ Hive 现在的问题是两种风格混合但没有分层：
    - 已完成：把 model-visible `team_create` 接到真实持久化 service，而不是返回 `requires_api_persist`。
    - 已完成：增强 `send_agent_session_message`，支持 `team_id + member_name` 和 `member_name="*"`。
    - 已完成：API / command / Plan Mode handoff 共用 Team create service；API/team tool 共用 Team message service。
-   - 待主线 D：`agent_team_context` / typed TurnEnvelope 查询 `AgentTeam` / `AgentTeamMember` / `team_member RuntimeTask`，自动渲染 team context 和 teammate mailbox。
+   - 已完成 D 第一块：`agent_team_context` / typed TurnEnvelope 查询 `AgentTeam` / `AgentTeamMember`，自动渲染 Team workspace context；teammate mailbox 继续使用同一 mailbox runtime。
    - 已完成：增加 regression tests：LLM tool `team_create` 调用后必须产生 durable Team payload；Team message by-name/broadcast 走 mailbox runtime。
 
 3. Prompt trigger

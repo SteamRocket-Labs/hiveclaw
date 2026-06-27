@@ -575,14 +575,11 @@ pytest \
 
 ### P0-4：TurnEnvelope / PromptAssemblyManifest
 
-问题：
+状态：Workstream D 第一块已完成。
 
-- prompt/context assembly 组件层面可运行，但没有一个整体可审计 artifact。
-- Codex 的 `TurnContext` 会让每个 turn 的 environment、permissions、source、tool surface、config 显式化。Hive 需要同等工程控制。
+已修复：
 
-必须修复：
-
-- 每次 invocation 生成 `TurnEnvelope`：
+- 新增 `backend/app/runtime/turn_envelope.py`，生成 `TurnEnvelope`：
   - `turn_id`
   - `session_id`
   - `runtime_task_id`
@@ -601,17 +598,30 @@ pytest \
   - `prompt_sections`
   - `output_cap`
   - `trace/span ids`
-- 持久化或在 Session Workbench 暴露 redacted copy。
-- 不允许再只加 prompt glue 而不进入 manifest。
+- 同时生成 `PromptAssemblyManifest`：frozen sections、dynamic sections、context budget、loaded skills、MCP instructions delta、hook-added context。
+- `build_session_workbench()` 已暴露 `turn_envelope` / `prompt_manifest` redacted read model。
+- `agent_team_context.py` 已把 `AgentTeam` / `AgentTeamMember` rows 投影进 prompt-facing `## Agent Team Workspace`。
 
-测试先行：
+仍待：
+
+- invocation/prompt assembly 阶段把完整 prompt section metadata 写入 active run metadata，而不是只由已有 metadata 派生。
+- Hook/Skill/MCP live load/call 事件继续补充进入 envelope metadata。
+
+验证：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
-pytest tests/runtime/test_turn_envelope_prompt_manifest.py -q
-pytest tests/services/test_session_control_plane.py -q
+pytest \
+  tests/runtime/test_turn_envelope_prompt_manifest.py \
+  tests/services/test_session_control_plane.py \
+  tests/kernel/test_turn_state_acceptance.py \
+  tests/services/test_agent_team_context.py \
+  tests/services/test_session_graph_projection.py \
+  -q
 ```
+
+结果：`23 passed, 4 warnings`。
 
 ## 6. P1 差距
 
@@ -805,8 +815,10 @@ frontend/src/pages/session-workbench/*
 
 验收标准：
 
-- 每个 turn 暴露 redacted prompt/context manifest。
-- Workbench 有一个 active-turn snapshot，包含 mailbox、tools、approvals、hooks、permissions、sandbox、runtime task refs。
+- 已完成：每个 workbench active turn 暴露 redacted `turn_envelope` / `prompt_manifest`。
+- 已完成：Workbench active-turn snapshot 包含 permissions、sandbox、runtime task refs、context policy，并可从 envelope 承载 tools、skills、MCP、hooks。
+- 已完成：Team context 读取真实 Team rows。
+- 待补：prompt assembly 写入更完整的 tool/skill/MCP/hook metadata。
 
 ### Pass D：Hooks / Skill / MCP Closure
 
@@ -826,6 +838,7 @@ backend/app/api/hooks.py
 
 - 每个 standard hook 都有 active/observe/unsupported 明确状态。
 - Skill/MCP load/call surfaces 都进入 `TurnEnvelope`。
+- 注意：`GovernedHookRunner` 当前仍是 deferred external runner，有现有 tests 防止被误接入 production；在没有完整 governance/storage/wake 验证前，状态必须保持 declared_not_wired。
 
 ## 10. 验证命令
 

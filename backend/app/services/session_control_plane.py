@@ -26,6 +26,7 @@ from app.runtime.ccplus_contracts import (
     build_context_policy,
     build_permission_profile,
 )
+from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
 from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
 from app.services.enterprise_approval_visibility import is_visible_enterprise_approval
 from app.services.session_index import read_session_index
@@ -740,6 +741,8 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     branches = await _list_branches(db, agent_id=agent.id, session_id=session.id)
     permission_profile = _permission_profile_payload(active_run=active_run, session=session)
     context_policy = _context_policy_payload(active_run=active_run, session=session)
+    turn_envelope = build_turn_envelope(agent_id=agent.id, session=session, active_run=active_run)
+    prompt_manifest = build_prompt_assembly_manifest(turn_envelope)
     return {
         "schema": "hive.ccplus.session_workbench.v1",
         "agent_id": str(agent.id),
@@ -756,6 +759,8 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
         "branches": branches,
         "permission_profile": permission_profile,
         "context_policy": context_policy,
+        "turn_envelope": turn_envelope,
+        "prompt_manifest": prompt_manifest,
         "turn": {
             "truth_source": truth_source,
             "event_count": len(events),

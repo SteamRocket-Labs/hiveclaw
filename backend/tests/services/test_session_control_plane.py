@@ -236,6 +236,13 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
     assert result["branches"] == []
     assert result["permission_profile"]["default_decision"] == "escalate"
     assert result["context_policy"]["model_window"] == 128000
+    assert result["turn_envelope"]["schema"] == "hive.ccplus.turn_envelope.v1"
+    assert result["turn_envelope"]["turn_id"] == "turn-1"
+    assert result["turn_envelope"]["runtime_task_id"] == "run-1"
+    assert result["turn_envelope"]["permission_profile"]["approval_policy"] == "granular"
+    assert result["prompt_manifest"]["schema"] == "hive.ccplus.prompt_assembly_manifest.v1"
+    assert result["prompt_manifest"]["turn_id"] == "turn-1"
+    assert result["prompt_manifest"]["context_budget"]["model_window"] == 128000
     assert result["controls"]["can_start_turn"] is False
     assert result["controls"]["can_stop_active_run"] is True
     assert result["controls"]["expected_turn_id"] == "turn-1"

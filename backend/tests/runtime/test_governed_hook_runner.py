@@ -1,18 +1,16 @@
-"""GovernedHookRunner — DEFERRED CONTRACT tests (B-2).
+"""GovernedHookRunner production wiring tests.
 
-GovernedHookRunner is a complete, governed runner for *external* command/prompt/
-HTTP/agent hooks, but it is intentionally NOT wired into any production path:
-Hive currently runs only in-process, allowlisted Python hook handlers (see
-``services/plugin_hook_service.py``). These tests exercise the runner's behavior
-to keep the contract honest, and ``test_governed_hook_runner_is_deferred_*``
-guards the deferred status so the runner cannot silently be advertised as a live
-runtime consumer or accidentally wired into startup without intent.
+GovernedHookRunner is the single external command/prompt/HTTP/agent hook runner.
+It is wired through the existing plugin hook registration path, not a second
+hook runtime.
 """
 
 from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -20,38 +18,89 @@ from app.runtime.hooks import HookContext, HookEvent
 from app.services.code_execution.contracts import CodeExecutionResult
 
 
-def test_governed_hook_runner_is_deferred_not_wired_into_startup() -> None:
-    """Revert guard: no production startup/registration path imports the governed
-    runner. If this fails, the deferred contract was wired in — update the module
-    docstrings (and route durable records onto invocation_spans), do not silently
-    flip status surfaces to claim it is live."""
-    import app.main as main_mod
+def test_governed_hook_runner_is_registered_through_plugin_hook_service() -> None:
+    """External hooks must enter through plugin_hook_service, not a hidden path."""
+    import app.packs.catalog_reader as catalog_reader
     import app.services.plugin_hook_service as plugin_hooks
 
-    main_src = inspect.getsource(main_mod)
-    assert "register_memory_hooks" in main_src
-    assert "register_installed_plugin_hooks" in main_src
-    assert "GovernedHookRunner" not in main_src
-    assert "register_governed_hook_specs" not in main_src
-
-    # The only live plugin hook handlers are in-process, allowlisted Python fns.
+    assert {"hook.command", "hook.prompt", "hook.http", "hook.agent"} <= set(catalog_reader.HOOK_HANDLER_ALLOWLIST)
     plugin_src = inspect.getsource(plugin_hooks)
-    assert "GovernedHookRunner" not in plugin_src
-    assert set(plugin_hooks.PLUGIN_HOOK_HANDLERS) == {
-        "plugin.audit",
-        "plugin.block",
-        "plugin.args_overlay",
-    }
+    assert "GovernedHookRunner" in plugin_src
+    assert "register_governed_hook_specs" not in plugin_src
 
 
-def test_governed_hook_runner_is_absent_from_live_hook_catalog() -> None:
-    """Revert guard: describe_event_catalog must not advertise the governed runner
-    as a runtime consumer for any event (it is deferred, not live)."""
-    from app.runtime.hooks import HookRegistry
+def test_plugin_hook_row_builds_governed_spec_and_keeps_matcher_separate() -> None:
+    """DB rows carry matcher + governed runner spec without mixing the two."""
+    from app.services import plugin_hook_service as plugin_hooks
 
-    catalog = HookRegistry().describe_event_catalog()
-    consumers = {entry["runtime_consumer"] for entry in catalog}
-    assert not any("governed_hook_runner" in consumer for consumer in consumers)
+    tenant_id = uuid4()
+    row = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        installed_plugin_id=uuid4(),
+        event="pre_tool_use",
+        handler="hook.command",
+        mode="enforce",
+        matcher_json={
+            "matcher": {"tool_names": ["write_file"]},
+            "spec": {
+                "type": "command",
+                "command": "python guard.py",
+                "timeout_seconds": 9,
+                "status_message": "checking write",
+            },
+        },
+    )
+    plugin = SimpleNamespace(plugin_key="guard_pack")
+
+    spec = plugin_hooks._governed_hook_spec_from_row(row, plugin)
+    matcher = plugin_hooks._matcher_for(row, plugin, ["agent-1"])
+
+    assert spec.key.startswith("guard_pack:")
+    assert spec.event == HookEvent.PRE_TOOL_USE
+    assert spec.type == "command"
+    assert spec.command == "python guard.py"
+    assert spec.timeout_seconds == 9
+    assert spec.status_message == "checking write"
+    assert matcher["tool_names"] == ["write_file"]
+    assert matcher["agent_ids"] == ["agent-1"]
+    assert "spec" not in matcher
+
+
+@pytest.mark.asyncio
+async def test_governed_hook_runner_is_visible_in_live_hook_catalog(tmp_path: Path) -> None:
+    from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec
+    from app.runtime.hooks import HookContext, HookEvent, HookRegistry
+    from app.services.code_execution.contracts import CodeExecutionResult
+
+    async def fake_command_executor(_command: list[str], **_kwargs) -> CodeExecutionResult:
+        return CodeExecutionResult(stdout='{"additional_contexts":["registered"]}', exit_code=0)
+
+    registry = HookRegistry()
+    runner = GovernedHookRunner(
+        policy=HookRunnerPolicy(enabled=True, work_dir=tmp_path, allowed_hook_types={"command"}),
+        command_executor=fake_command_executor,
+    )
+    registry.register(
+        HookEvent.USER_PROMPT_SUBMIT,
+        runner.build_handler(
+            HookSpec(
+                key="prompt-context",
+                event=HookEvent.USER_PROMPT_SUBMIT,
+                type="command",
+                command="echo context",
+            )
+        ),
+        key="governed:prompt-context",
+        handler_name="governed_hook_runner",
+    )
+
+    catalog = registry.describe_event_catalog()
+    event = next(item for item in catalog if item["event"] == HookEvent.USER_PROMPT_SUBMIT.value)
+    assert "governed_hook_runner" in event["runtime_consumer"]
+    result = await registry.emit(HookContext(event=HookEvent.USER_PROMPT_SUBMIT, session_id="s1"))
+    assert result is not None
+    assert result.additional_contexts == ["registered"]
 
 
 @pytest.mark.asyncio

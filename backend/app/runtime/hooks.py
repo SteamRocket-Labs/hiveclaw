@@ -1156,6 +1156,17 @@ class HookRegistry:
                 )
         return exported
 
+    def _runtime_consumer_for_event(self, event: HookEvent) -> str:
+        consumer = _hook_runtime_consumer(event)
+        handler_names = {
+            str(binding.handler_name)
+            for binding in self._handlers[event]
+            if binding.handler_name == "governed_hook_runner"
+        }
+        if not handler_names:
+            return consumer
+        return f"{consumer}+{'+'.join(sorted(handler_names))}"
+
     def describe_event_catalog(self) -> list[dict[str, Any]]:
         """Export every supported hook event for control-plane management."""
         return [
@@ -1170,7 +1181,7 @@ class HookRegistry:
                 "matcher_fields": _hook_matcher_fields(event),
                 "input_schema": _hook_input_schema(event),
                 "output_schema": _hook_output_schema(event),
-                "runtime_consumer": _hook_runtime_consumer(event),
+                "runtime_consumer": self._runtime_consumer_for_event(event),
             }
             for event in HookEvent
         ]

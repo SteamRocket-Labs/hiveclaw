@@ -14,9 +14,10 @@ provider credential). ``CORE ∩ owns = ∅`` is asserted in audit; ``requires_c
 may reference CORE.
 
 Governed inclusion (§6 decision 7): ``hooks`` may only bind a platform-allowlisted
-handler (never raw shell/import/webhook); ``dependencies`` must be pinned;
-``source`` is recognized for builtin/local (installable in v1) and structurally
-recognized-but-fail-closed for remote kinds until signature + sandbox infra lands.
+handler or governed external hook type (never raw shell/import/webhook);
+``dependencies`` must be pinned; ``source`` is recognized for builtin/local
+(installable in v1) and structurally recognized-but-fail-closed for remote kinds
+until signature + sandbox infra lands.
 """
 
 from __future__ import annotations
@@ -34,11 +35,15 @@ logger = logging.getLogger(__name__)
 _TOOL_ROLES = frozenset({"owns", "requires_core", "optional_provider"})
 
 # Platform allowlist for declarative hook handlers (governed inclusion §6.7). A
-# manifest may only bind a hook to one of these platform-owned handler names —
-# never raw Python / shell / import paths or webhooks. These names are resolved
-# by app.services.plugin_hook_service; manifests only choose from this catalog.
+# manifest may only bind a hook to one of these platform-owned names. ``plugin.*``
+# maps to in-process Python handlers; ``hook.*`` maps to GovernedHookRunner
+# specs. Manifests never provide raw Python/import paths or direct webhooks.
 HOOK_HANDLER_ALLOWLIST: frozenset[str] = frozenset(
     {
+        "hook.agent",
+        "hook.command",
+        "hook.http",
+        "hook.prompt",
         "plugin.audit",
         "plugin.block",
         "plugin.args_overlay",

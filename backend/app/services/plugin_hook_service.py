@@ -12,18 +12,29 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.installed_plugin import AgentPluginAssignment, PluginHookRegistration, TenantInstalledPlugin
+from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec
 from app.runtime.hooks import HookContext, HookEvent, HookRegistry, HookResult, hook_registry
+from app.services.invocation_trace import current_invocation_id, new_invocation_id, persist_invocation_span
 
 logger = logging.getLogger(__name__)
 
 PluginHookHandler = Callable[[HookContext, dict[str, Any]], Awaitable[HookResult | None] | HookResult | None]
 _PLUGIN_KEY_PREFIX = "plugin:"
+_GOVERNED_HOOK_HANDLER_TYPES = {
+    "hook.agent": "agent",
+    "hook.command": "command",
+    "hook.http": "http",
+    "hook.prompt": "prompt",
+}
 
 
 def _row_meta(row: PluginHookRegistration, plugin: TenantInstalledPlugin) -> dict[str, Any]:
@@ -70,6 +81,130 @@ PLUGIN_HOOK_HANDLERS: dict[str, PluginHookHandler] = {
 }
 
 
+def _matcher_payload(row: PluginHookRegistration) -> dict[str, Any]:
+    raw = dict(row.matcher_json or {})
+    if isinstance(raw.get("matcher"), dict):
+        return dict(raw["matcher"])
+    if isinstance(raw.get("matcher_spec"), dict):
+        return dict(raw["matcher_spec"])
+    raw.pop("spec", None)
+    return raw
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _string_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(item) for key, item in value.items() if key and item is not None}
+
+
+def _governed_hook_spec_from_row(row: PluginHookRegistration, plugin: TenantInstalledPlugin) -> HookSpec:
+    hook_type = _GOVERNED_HOOK_HANDLER_TYPES[str(row.handler)]
+    raw = dict(row.matcher_json or {})
+    declared = raw.get("spec") if isinstance(raw.get("spec"), dict) else {}
+    spec = dict(declared)
+    spec["type"] = hook_type
+    return HookSpec(
+        key=f"{plugin.plugin_key}:{row.id}",
+        event=HookEvent(str(row.event)),
+        type=hook_type,  # type: ignore[arg-type]
+        command=str(spec.get("command") or "") or None,
+        prompt=str(spec.get("prompt") or "") or None,
+        url=str(spec.get("url") or "") or None,
+        shell=str(spec.get("shell") or "bash"),
+        timeout_seconds=_optional_int(spec.get("timeout_seconds") or spec.get("timeout")),
+        status_message=str(spec.get("status_message") or "") or None,
+        async_hook=bool(spec.get("async") or spec.get("async_hook")),
+        async_rewake=bool(spec.get("async_rewake")),
+        env=_string_map(spec.get("env")),
+        headers=_string_map(spec.get("headers")),
+        network_policy=str(spec.get("network_policy") or "deny"),
+    )
+
+
+def _hook_work_dir() -> Path:
+    path = Path(get_settings().AGENT_DATA_DIR) / ".hive" / "hooks"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+async def _default_http_hook_executor(
+    *,
+    url: str | None,
+    headers: dict[str, str],
+    json_payload: dict[str, Any],
+    timeout: int,
+    hook_key: str,
+    event: str,
+    network_policy: str = "deny",
+) -> dict[str, Any]:
+    policy = str(network_policy or "deny").strip().lower()
+    if policy not in {"allow", "allow_outbound", "internet", "public"}:
+        raise RuntimeError(f"http hook {hook_key!r} for {event} denied by network_policy={network_policy!r}")
+    if not url:
+        raise RuntimeError("http hook requires url")
+    parsed = httpx.URL(url)
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        raise RuntimeError("http hook url must be http(s) without userinfo")
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        response = await client.post(str(parsed), headers=headers, json=json_payload)
+    text = response.text
+    parsed_body: Any = None
+    try:
+        parsed_body = response.json()
+    except ValueError:
+        parsed_body = None
+    if isinstance(parsed_body, dict):
+        return {
+            **parsed_body,
+            "status_code": response.status_code,
+            "text": str(parsed_body.get("text") or parsed_body.get("content") or text),
+        }
+    return {"status_code": response.status_code, "text": text, "body": text}
+
+
+async def _record_governed_hook_span(fact: dict[str, Any]) -> None:
+    tenant_id = fact.get("tenant_id")
+    if not tenant_id:
+        return
+    trace_id = str(fact.get("trace_id") or current_invocation_id() or new_invocation_id())
+    hook_key = str(fact.get("hook_key") or "hook")
+    await persist_invocation_span(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        span_id=f"hook-{uuid.uuid4().hex[:12]}",
+        parent_span_id=fact.get("parent_span_id"),
+        parent_trace_id=fact.get("parent_trace_id"),
+        span_type="hook",
+        name=f"hook:{hook_key}",
+        status=str(fact.get("status") or "ok"),
+        duration_ms=0.0,
+        agent_id=fact.get("agent_id"),
+        user_id=fact.get("user_id"),
+        runtime_task_id=fact.get("runtime_task_id"),
+        session_id=fact.get("session_id"),
+        request_id=fact.get("request_id"),
+        metadata=fact,
+        error=str(fact.get("error") or "") or None,
+    )
+
+
+def _build_governed_hook_runner() -> GovernedHookRunner:
+    return GovernedHookRunner(
+        policy=HookRunnerPolicy(enabled=True, work_dir=_hook_work_dir()),
+        http_executor=_default_http_hook_executor,
+        span_recorder=_record_governed_hook_span,
+    )
+
+
 def _make_handler(handler: PluginHookHandler, meta: dict[str, Any]):
     async def _wrapped(ctx: HookContext) -> HookResult | None:
         guard_key = f"_plugin_hook_active:{meta['hook_id']}"
@@ -95,8 +230,7 @@ def _make_handler(handler: PluginHookHandler, meta: dict[str, Any]):
 
 
 def _matcher_for(row: PluginHookRegistration, plugin: TenantInstalledPlugin, agent_ids: list[str]) -> dict[str, Any]:
-    matcher = dict(row.matcher_json or {})
-    spec = dict(matcher.get("matcher_spec") or matcher)
+    spec = _matcher_payload(row)
     spec["tenant_ids"] = [str(row.tenant_id)]
     if agent_ids:
         declared_agents = [str(agent_id) for agent_id in spec.get("agent_ids", []) if agent_id]
@@ -162,7 +296,8 @@ async def refresh_plugin_hooks_for_tenant(tenant_id: uuid.UUID, *, registry: Hoo
     registered = 0
     for row, plugin in rows:
         handler = PLUGIN_HOOK_HANDLERS.get(row.handler)
-        if handler is None:
+        governed_handler = str(row.handler) in _GOVERNED_HOOK_HANDLER_TYPES
+        if handler is None and not governed_handler:
             logger.warning("[plugin-hooks] skip unknown allowlisted handler %s", row.handler)
             continue
         agent_ids = assignments_by_plugin.get(row.installed_plugin_id, [])
@@ -173,15 +308,27 @@ async def refresh_plugin_hooks_for_tenant(tenant_id: uuid.UUID, *, registry: Hoo
         except ValueError:
             logger.warning("[plugin-hooks] skip unknown event %s", row.event)
             continue
-        meta = _row_meta(row, plugin)
-        target.register_spec(
-            event,
-            _make_handler(handler, meta),
-            _matcher_for(row, plugin, agent_ids),
-            key=f"{_PLUGIN_KEY_PREFIX}{tenant_id}:{plugin.plugin_key}:{row.id}",
-            handler_name=row.handler,
-            profile_name=f"plugin:{plugin.plugin_key}",
-        )
+        if governed_handler:
+            spec = _governed_hook_spec_from_row(row, plugin)
+            runner = _build_governed_hook_runner()
+            target.register_spec(
+                event,
+                runner.build_handler(spec),
+                _matcher_for(row, plugin, agent_ids),
+                key=f"{_PLUGIN_KEY_PREFIX}{tenant_id}:{plugin.plugin_key}:{row.id}",
+                handler_name="governed_hook_runner",
+                profile_name=f"plugin:{plugin.plugin_key}:{row.handler}",
+            )
+        else:
+            meta = _row_meta(row, plugin)
+            target.register_spec(
+                event,
+                _make_handler(handler, meta),
+                _matcher_for(row, plugin, agent_ids),
+                key=f"{_PLUGIN_KEY_PREFIX}{tenant_id}:{plugin.plugin_key}:{row.id}",
+                handler_name=row.handler,
+                profile_name=f"plugin:{plugin.plugin_key}",
+            )
         registered += 1
     return registered
 

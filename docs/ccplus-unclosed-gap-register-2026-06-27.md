@@ -25,6 +25,7 @@
 - 复核基线 HEAD：`e3f96ba6 docs: define dynamic workflow implementation plan`
 - 本文初版 commit：`4201e09e docs: record ccplus unclosed gaps`
 - 2026-06-27 本次复核后，P0-1 `/compact` / `/rewind` next-turn context consumption、P0-2 session command UI action、P0-3 command registry 旧 branch 文案已经关闭。证据见下方“已关闭项”。
+- 2026-06-27 R-1 Hooks external runner 已关闭：`hook.command` / `hook.prompt` / `hook.http` / `hook.agent` 通过现有 plugin hook registration 唯一路径进入 `GovernedHookRunner`，并可在 live hook catalog 中观察到 `governed_hook_runner`。
 
 ## 1. 已关闭项
 
@@ -99,37 +100,37 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_p
 # 8 passed, 3 warnings
 ```
 
-## 2. 仍未闭环项
-
-### R-1：Hooks 没有 CC-level 外部 hook runtime 闭环
+### C-4：Hooks external runner 生产入口
 
 已做：
 
-- `backend/app/runtime/hooks.py` 有 HookRegistry、standard event catalog 和 in-process handler。
-- memory hooks / plugin hooks 走 allowlisted in-process Python handler。
-- `TurnEnvelope.hook_state` 能展示 hook explicit status。
+- `backend/app/packs/catalog_reader.py` 的 hook allowlist 已包含 `hook.command`、`hook.prompt`、`hook.http`、`hook.agent`。
+- `backend/app/services/plugin_install_service.py` 会把 `hook.*` manifest 持久化为 `{matcher, spec}`，匹配条件和 external runner spec 分离。
+- `backend/app/services/plugin_hook_service.py` 现在是唯一生产入口：`plugin.*` 继续走 in-process allowlisted Python handler，`hook.*` 转成 `HookSpec` 并注册到同一个 `HookRegistry`。
+- `GovernedHookRunner` 不再是 deferred-only runner；command hook 走现有 code execution provider，HTTP hook 走受 network policy 约束的 outbound adapter，prompt/agent hook 走注入 adapter，未配置时产生可观察 failed hook record。
+- hook run facts 通过注入 `span_recorder` 落到现有 `invocation_spans` 路径；未新增第二张 hook invocation 表。
+- `HookRegistry.describe_event_catalog()` 在事件挂载 `governed_hook_runner` 时会展示该 runtime consumer。
 
-未闭环事实：
+闭环事实：
 
-- `backend/app/runtime/hook_runner.py` 明确写着：
-  - `DEFERRED CONTRACT — NOT WIRED INTO ANY PRODUCTION PATH`
-  - `GovernedHookRunner` / `register_governed_hook_specs` 没有 production caller。
-- `backend/tests/runtime/test_governed_hook_runner.py` 还在防止它被误接入 startup。
-- 当前没有 external command / prompt / HTTP / agent hook runtime。
-- 当前没有 async hook background executor。
-- 当前没有 durable `HookInvocation`，未来也要求落到 `invocation_spans`，但尚未接线。
+- external hook runner 已接入 startup 使用的 installed plugin hook refresh path，不再是 tests-only/deferred。
+- 入口仍保持唯一：pack manifest -> `PluginHookRegistration` -> `plugin_hook_service` -> shared `HookRegistry`。
+- raw shell/import/webhook 仍不能绕过 allowlist；command 执行仍由 governed code execution provider 承担。
 
-现有风险：
+验证证据：
 
-- 如果我们声称 “MCP Hooks / CC Hooks 已对齐”，这是不准确的。
-- 目前只能说：Hook read model 和 in-process hook 已有；external hook runner 是 explicit deferred/not-live。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_governed_hook_runner.py::test_governed_hook_runner_is_registered_through_plugin_hook_service tests/runtime/test_governed_hook_runner.py::test_plugin_hook_row_builds_governed_spec_and_keeps_matcher_separate tests/runtime/test_governed_hook_runner.py::test_governed_hook_runner_is_visible_in_live_hook_catalog tests/services/test_plugin_install_service.py::test_sync_governed_external_hook_persists_matcher_and_runner_spec -q
+# 4 passed, 4 warnings
 
-闭环验收：
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_governed_hook_runner.py tests/services/test_plugin_install_service.py tests/runtime/test_hooks.py tests/tools/test_pack_manifest.py -q
+# 77 passed, 4 warnings
 
-1. 产品上必须二选一：
-   - 如果 CCPlus parity 要求 external hook，必须把 governed runner 接到生产路径，并补 governance、sandbox、outbound policy、span、wake/resume 测试。
-   - 如果本轮不做 external hook，所有文档和 UI 必须标成 not-live，不能说 hooks 已闭合。
-2. skill frontmatter hooks 也必须决定是否接入 HookRegistry；未接入前不得称为 Skill/Hook 闭环。
+cd backend && source .venv/bin/activate && ruff check app/packs/catalog_reader.py app/services/plugin_install_service.py app/services/plugin_hook_service.py app/runtime/hooks.py app/runtime/hook_runner.py tests/runtime/test_governed_hook_runner.py tests/services/test_plugin_install_service.py
+# All checks passed!
+```
+
+## 2. 仍未闭环项
 
 ### R-2：TurnEnvelope / PromptAssemblyManifest 仍主要是 read model，不是实际 prompt assembly source of truth
 

@@ -31,6 +31,25 @@ logger = logging.getLogger(__name__)
 
 _INSTALLABLE_SOURCE_KINDS = frozenset({"builtin", "local"})
 _ACTIVE_STATES = frozenset({"active", "enabled", "on", "true", "1"})
+_GOVERNED_HOOK_HANDLER_TYPES = {
+    "hook.agent": "agent",
+    "hook.command": "command",
+    "hook.http": "http",
+    "hook.prompt": "prompt",
+}
+_GOVERNED_HOOK_SPEC_FIELDS = (
+    "async",
+    "async_rewake",
+    "command",
+    "env",
+    "headers",
+    "network_policy",
+    "prompt",
+    "shell",
+    "status_message",
+    "timeout_seconds",
+    "url",
+)
 
 
 class PluginInstallError(Exception):
@@ -193,6 +212,29 @@ def validate_hook_install_approval(manifest: PackManifest, *, config: dict | Non
                 )
 
 
+def _governed_hook_spec_payload(handler: str, hook: dict) -> dict:
+    hook_type = _GOVERNED_HOOK_HANDLER_TYPES[handler]
+    declared = hook.get("spec") if isinstance(hook.get("spec"), dict) else {}
+    spec = {"type": str(declared.get("type") or hook_type)}
+    for field in _GOVERNED_HOOK_SPEC_FIELDS:
+        value = declared.get(field) if field in declared else hook.get(field)
+        if value is None or value == "" or value == {}:
+            continue
+        spec[field] = value
+    return spec
+
+
+def _hook_registration_payload(handler: str, hook: dict) -> dict:
+    matcher = hook.get("matcher") or {}
+    matcher = dict(matcher) if isinstance(matcher, dict) else {}
+    if handler not in _GOVERNED_HOOK_HANDLER_TYPES:
+        return matcher
+    return {
+        "matcher": matcher,
+        "spec": _governed_hook_spec_payload(handler, hook),
+    }
+
+
 async def _upsert_plugin_record(db, tenant_id: uuid.UUID, resolved: ResolvedPlugin, *, config: dict | None) -> TenantInstalledPlugin:
     manifest = resolved.manifest
     existing = (
@@ -245,7 +287,7 @@ async def _sync_plugin_hooks(db, tenant_id: uuid.UUID, plugin: TenantInstalledPl
                 installed_plugin_id=plugin.id,
                 event=str(hook.get("event") or ""),
                 handler=handler,
-                matcher_json=hook.get("matcher") or {},
+                matcher_json=_hook_registration_payload(handler, hook),
                 mode=str(hook.get("mode") or "observe"),
             )
         )

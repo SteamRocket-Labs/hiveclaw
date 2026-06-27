@@ -1,29 +1,17 @@
 """Governed user/plugin hook runner.
 
-This module is the CC-compatible runner shape for Hive's multi-tenant runtime.
-It deliberately does not execute raw subprocesses directly: command hooks use
-the configured code-execution provider, prompt hooks use an injected LLM
-adapter, HTTP hooks use an injected outbound adapter, and agent hooks use an
-injected agent/subagent adapter.
+This module is Hive's CC-compatible external hook runner. It deliberately does
+not execute raw subprocesses directly: command hooks use the configured
+code-execution provider, prompt hooks use an injected LLM adapter, HTTP hooks use
+an injected outbound adapter, and agent hooks use an injected agent/subagent
+adapter.
 
-DEFERRED CONTRACT — NOT WIRED INTO ANY PRODUCTION PATH. As of this revision,
-``GovernedHookRunner`` and ``register_governed_hook_specs`` have zero production
-callers: ``main.py`` lifespan registers only ``register_memory_hooks`` (in-process
-Python memory/T0 handlers) and ``register_installed_plugin_hooks`` (in-process
-allowlisted handlers — ``services/plugin_hook_service.py`` enforces "Raw
-code/import paths/webhooks are never executed"). Hive therefore runs only
-in-process Python hook handlers today; there is no external command / prompt /
-HTTP / agent hook runtime, no background executor for ``status="async"`` parse
-results, and no durable ``HookInvocation`` persistence.
-
-This runner is retained as a complete, governed, source-checked design reserved
-for a future external-hook runtime. It is exercised by unit tests but is
-intentionally premature (YAGNI) for the current in-process-only surface. Do not
-treat it as live: keep it out of ``HookRegistry.describe_event_catalog`` /
-memory hook plan status until it is actually wired into a startup/admin path
-(at which point durable invocation records must land on the existing
-``invocation_spans`` surface, not a new table). The injected ``span_recorder``
-already exists so that future wiring can record runs without a schema change.
+Production wiring enters through ``services.plugin_hook_service``: pack manifests
+declare ``hook.command`` / ``hook.prompt`` / ``hook.http`` / ``hook.agent`` rows,
+and the plugin hook service turns those rows into ``HookSpec`` instances on the
+shared ``HookRegistry``. Durable run facts are recorded through the existing
+``invocation_spans`` surface via the injected ``span_recorder``; no second hook
+invocation table is introduced.
 """
 
 from __future__ import annotations
@@ -288,22 +276,31 @@ class GovernedHookRunner:
             content=spec.status_message or f"Running {spec.type} hook {spec.key}",
         )
 
-        if spec.type == "command":
-            record = await self._run_command(spec, ctx)
-        elif spec.type == "prompt":
-            record = await self._run_prompt(spec, ctx)
-        elif spec.type == "http":
-            record = await self._run_http(spec, ctx)
-        elif spec.type == "agent":
-            record = await self._run_agent(spec, ctx)
-        else:
+        try:
+            if spec.type == "command":
+                record = await self._run_command(spec, ctx)
+            elif spec.type == "prompt":
+                record = await self._run_prompt(spec, ctx)
+            elif spec.type == "http":
+                record = await self._run_http(spec, ctx)
+            elif spec.type == "agent":
+                record = await self._run_agent(spec, ctx)
+            else:
+                record = HookRunRecord(
+                    key=spec.key,
+                    event=spec.event.value,
+                    hook_type=spec.type,
+                    status="failed",
+                    error=f"unsupported hook type: {spec.type}",
+                    hook_result=HookResult(block=True, reason=f"unsupported hook type: {spec.type}"),
+                )
+        except Exception as exc:  # noqa: BLE001 - hook failures must be observable, not crash the turn.
             record = HookRunRecord(
                 key=spec.key,
                 event=spec.event.value,
                 hook_type=spec.type,
                 status="failed",
-                error=f"unsupported hook type: {spec.type}",
-                hook_result=HookResult(block=True, reason=f"unsupported hook type: {spec.type}"),
+                error=f"{type(exc).__name__}: {exc}",
             )
 
         await self._write_transcript_event(
@@ -322,6 +319,13 @@ class GovernedHookRunner:
                 "status": record.status,
                 "exit_code": record.exit_code,
                 "error": record.error,
+                "agent_id": str(ctx.agent_id) if ctx.agent_id is not None else None,
+                "session_id": ctx.session_id,
+                "tenant_id": ctx.metadata.get("tenant_id"),
+                "user_id": ctx.metadata.get("user_id"),
+                "runtime_task_id": ctx.metadata.get("runtime_task_id"),
+                "request_id": ctx.metadata.get("request_id"),
+                "trace_id": ctx.metadata.get("trace_id"),
             }
         )
         return record
@@ -429,6 +433,7 @@ class GovernedHookRunner:
             timeout=int(spec.timeout_seconds or self.policy.default_timeout_seconds),
             hook_key=spec.key,
             event=spec.event.value,
+            network_policy=spec.network_policy or self.policy.network_policy,
         )
         text = str(response.get("text") or response.get("body") or "")
         hook_result = _response_to_hook_result(spec.event, response, text)

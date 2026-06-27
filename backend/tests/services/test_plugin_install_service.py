@@ -136,6 +136,45 @@ def test_pre_tool_enforce_hook_requires_explicit_admin_approval():
     )
 
 
+@pytest.mark.asyncio
+async def test_sync_governed_external_hook_persists_matcher_and_runner_spec():
+    """hook.command manifests must persist a governed HookSpec, not raw shell paths."""
+    tenant_id = uuid4()
+    plugin = SimpleNamespace(id=uuid4())
+    manifest = PackManifest(
+        name="guard_pack",
+        hooks=(
+            {
+                "event": "pre_tool_use",
+                "handler": "hook.command",
+                "mode": "enforce",
+                "matcher": {"tool_names": ["write_file"]},
+                "command": "python guard.py",
+                "timeout_seconds": 9,
+                "network_policy": "deny",
+                "status_message": "checking write",
+            },
+        ),
+    )
+    spy = _SpyDB([])
+
+    await svc._sync_plugin_hooks(spy, tenant_id, plugin, manifest)
+
+    row = spy.added[0]
+    assert row.handler == "hook.command"
+    assert row.mode == "enforce"
+    assert row.matcher_json == {
+        "matcher": {"tool_names": ["write_file"]},
+        "spec": {
+            "command": "python guard.py",
+            "network_policy": "deny",
+            "status_message": "checking write",
+            "timeout_seconds": 9,
+            "type": "command",
+        },
+    }
+
+
 # ── install (spy session) ───────────────────────────────────────────
 
 

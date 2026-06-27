@@ -106,6 +106,9 @@ export interface AgentTeamMember {
   runtime_task_id: string | null;
   runtime_task_type: string;
   status: string;
+  summary?: string;
+  t0_refs?: unknown[];
+  artifacts?: unknown[];
 }
 
 export interface AgentTeam {
@@ -176,6 +179,9 @@ export interface SessionWorkbench {
   controls: Record<string, unknown>;
   active_run?: Record<string, unknown> | null;
   runtime_tasks: Record<string, unknown>[];
+  completion_wake_policy?: Record<string, unknown>;
+  completion_wake_summary?: Record<string, unknown>;
+  completion_wakes?: Record<string, unknown>[];
   goals: Record<string, unknown>[];
   teams: AgentTeam[];
   session_index?: Record<string, unknown> | null;

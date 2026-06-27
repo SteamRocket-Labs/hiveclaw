@@ -357,6 +357,7 @@ cd backend && source .venv/bin/activate && pytest \
 - `executing_actions` 已移除旧的默认自己做抑制语气；当前规则是小而不可分任务直接做，独立搜索、噪音探索、scoped implementation、独立验证主动走 `spawn_subagent`。
 - `delegate_to_agent` tool description 已明确为 To Employee / A2A collaboration，不是 session-local worker。
 - background subagent completion wake prompt 已移除内部 `consume_subagent_signals`，改为 parent session mailbox + wake path；`check_subagent` 只保留为 fallback status inspection。
+- Background completion wake 已统一到 `session_workbench.completion_wakes`：Sub-agent、Agent Team member、Workflow/long-running RuntimeTask 从 `RuntimeTask + AgentTeamMember.metadata_json + session timeline` 重建同一个 completion inbox，并暴露 `completion_wake_policy` / `completion_wake_summary` 给前端。
 - Codex-style `multi_agent_mode` 已作为 typed TurnEnvelope / Workbench 状态承载；不得另建第二套 coordinator path。
 
 证据：

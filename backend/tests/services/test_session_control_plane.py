@@ -299,3 +299,179 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
     assert result["runtime_tasks"][0]["task_type"] == "goal_continuation"
     assert result["goals"][0]["objective"] == "Finish"
     assert result["teams"][0]["id"] == "team-1"
+
+
+@pytest.mark.asyncio
+async def test_session_workbench_projects_background_completion_wake_state(monkeypatch):
+    import app.services.session_control_plane as service
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    now = datetime(2026, 6, 27, tzinfo=timezone.utc)
+    team_task_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=uuid4(),
+        title="Background wake review",
+        source_channel="web",
+        session_kind="human_chat",
+        actor_type="user",
+        runtime_source="web_chat",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        parent_session_id=None,
+        root_session_id=session_id,
+        runtime_task_id=None,
+        created_at=now,
+        last_message_at=now,
+    )
+    subagent_task = SimpleNamespace(
+        id=uuid4(),
+        task_type="subagent",
+        status="completed",
+        parent_agent_id=agent_id,
+        child_agent_id=None,
+        parent_session_id=str(session_id),
+        child_session_id=str(uuid4()),
+        trace_id="trace-subagent",
+        created_at=now,
+        started_at=now,
+        completed_at=now,
+        result_summary="critic finished review",
+        token_usage={"total": 42},
+        metadata_json={"subagent_name": "critic", "subagent_type": "critic"},
+    )
+    workflow_task = SimpleNamespace(
+        id=uuid4(),
+        task_type="workflow",
+        status="running",
+        parent_agent_id=agent_id,
+        child_agent_id=None,
+        parent_session_id=str(session_id),
+        child_session_id=str(uuid4()),
+        trace_id="trace-workflow",
+        created_at=now,
+        started_at=now,
+        completed_at=None,
+        result_summary=None,
+        token_usage={},
+        metadata_json={"workflow_name": "Release checks"},
+    )
+    team_task = SimpleNamespace(
+        id=team_task_id,
+        task_type="team_member",
+        status="completed",
+        parent_agent_id=agent_id,
+        child_agent_id=None,
+        parent_session_id=str(session_id),
+        child_session_id=str(uuid4()),
+        trace_id="trace-team",
+        created_at=now,
+        started_at=now,
+        completed_at=now,
+        result_summary="team member raw runtime summary",
+        token_usage={},
+        metadata_json={},
+    )
+    foreground_turn = SimpleNamespace(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status="completed",
+        parent_agent_id=agent_id,
+        child_agent_id=None,
+        parent_session_id=str(session_id),
+        child_session_id=None,
+        trace_id="trace-turn",
+        created_at=now,
+        started_at=now,
+        completed_at=now,
+        result_summary="normal assistant turn",
+        token_usage={},
+        metadata_json={},
+    )
+
+    async def fake_load_events(db, *, agent, session, limit):
+        return [], "t0_events_jsonl"
+
+    async def fake_active_run(**_kwargs):
+        return None
+
+    async def fake_session_index(*_args, **_kwargs):
+        return {"schema": "hive.session_index.v1", "checkpoints": []}
+
+    async def fake_runtime_tasks(*_args, **_kwargs):
+        return [subagent_task, workflow_task, team_task, foreground_turn]
+
+    async def fake_goals(*_args, **_kwargs):
+        return []
+
+    async def fake_teams(*_args, **_kwargs):
+        return [
+            {
+                "id": "team-1",
+                "name": "Review Team",
+                "status": "active",
+                "members": [
+                    {
+                        "id": "member-1",
+                        "member_name": "release critic",
+                        "member_role": "Review release risk",
+                        "chat_session_id": str(team_task.child_session_id),
+                        "runtime_task_id": str(team_task_id),
+                        "runtime_task_type": "team_member",
+                        "status": "completed",
+                        "summary": "team read model summary",
+                        "t0_refs": ["session#event-1"],
+                        "artifacts": [{"path": "workspace/release-review.md"}],
+                    }
+                ],
+            }
+        ]
+
+    async def fake_approvals(*_args, **_kwargs):
+        return []
+
+    async def fake_branches(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(service, "_load_events", fake_load_events)
+    monkeypatch.setattr(service, "get_active_web_chat_run", fake_active_run)
+    monkeypatch.setattr(service, "read_session_index", fake_session_index)
+    monkeypatch.setattr(service, "_list_runtime_tasks", fake_runtime_tasks)
+    monkeypatch.setattr(service, "_list_goals", fake_goals)
+    monkeypatch.setattr(service, "_list_teams", fake_teams)
+    monkeypatch.setattr(service, "_list_pending_approvals", fake_approvals)
+    monkeypatch.setattr(service, "_list_branches", fake_branches)
+
+    result = await service.build_session_workbench(object(), agent=agent, session=session)
+
+    assert result["completion_wake_policy"]["schema"] == "hive.ccplus.completion_wake_policy.v1"
+    assert result["completion_wake_policy"]["truth_source"] == "runtime_tasks+agent_team_read_model+session_timeline"
+    assert result["completion_wake_policy"]["delivery_order"] == [
+        "session_event",
+        "parent_agent_wake",
+        "session_workbench",
+        "notification",
+    ]
+    assert result["completion_wake_summary"] == {
+        "total": 3,
+        "pending": 0,
+        "running": 1,
+        "completed": 2,
+        "failed": 0,
+        "terminal": 2,
+        "needs_parent_observation": 2,
+    }
+    assert [wake["kind"] for wake in result["completion_wakes"]] == ["team_member", "subagent", "workflow"]
+    assert [wake["runtime_task_id"] for wake in result["completion_wakes"]].count(str(team_task_id)) == 1
+    team_wake = result["completion_wakes"][0]
+    assert team_wake["source"] == "agent_team_read_model"
+    assert team_wake["summary"] == "team read model summary"
+    assert team_wake["artifacts"] == [{"path": "workspace/release-review.md"}]
+    assert team_wake["t0_refs"] == ["session#event-1"]
+    assert result["completion_wakes"][1]["label"] == "critic"
+    assert result["completion_wakes"][2]["state"] == "running"

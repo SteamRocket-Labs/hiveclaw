@@ -33,6 +33,7 @@
 - 2026-06-27 R-7 Dynamic Workflow 已关闭：新增 `propose_dynamic_workflow`，proposal candidate 会降低到同一 `WorkflowDefinition`，再走 `preview_workflow` exact artifact/hash 和 `start_workflow`；前端 chat tool card 能展示 proposal/candidates/next action。
 - 2026-06-27 B-1 Workspace rewind snapshot 已关闭：user checkpoint 写入时自动捕获 workspace snapshot；`/rewind mode=workspace|both` 先确认再恢复 workspace。旧 session 无 snapshot 时仍 fail-closed `not_supported`。
 - 2026-06-27 B-2 Hidden session commands 已关闭：Web 用户 schema/execute/manual slash 只接受 user-visible command names；hidden/canonical/internal command 保留 agent/local/internal origin，不再作为用户命令宣传或半接 UI。
+- 2026-06-27 B-3 Background completion wake 已关闭：Sub-agent、Agent Team member、Workflow/long-running RuntimeTask 完成状态统一投影为 `session_workbench.completion_wakes`，并附 `completion_wake_policy` / `completion_wake_summary`。父 session 可通过 session event / parent wake / Workbench / notification 顺序观察，断线或重启后从 RuntimeTask + Team read model 重建。
 
 ## 1. 已关闭项
 
@@ -381,31 +382,46 @@ cd frontend && npm test -- --run src/pages/agent-detail/slashCommand.test.ts src
 # 5 files passed, 99 tests passed
 ```
 
-## 2. 仍未闭环或待裁决项
-
-### B-3：Background Agent / long-running completion wake 仍需统一验收口径
+### C-13：Background Agent / long-running completion wake 统一验收口径
 
 已做：
 
-- RuntimeTask、subagent background run、workflow daemon、team mailbox、notification service 都已有不同底座。
+- `backend/app/services/session_control_plane.py` 新增 `completion_wake_policy`、`completion_wake_summary`、`completion_wakes`。
+- completion wake read model 的 mechanical truth source 是现有 `RuntimeTask`；Agent Team member completion 优先读取已闭环的 `AgentTeamMember.metadata_json` 投影，避免同一个 `team_member` RuntimeTask 在 Workbench 中重复出现。
+- `completion_wake_policy.delivery_order` 明确为 `session_event` -> `parent_agent_wake` -> `session_workbench` -> `notification`。
+- 断线/刷新/重启恢复不依赖 WebSocket 或浏览器本地状态；Workbench 每次读取都从 `RuntimeTask + Agent Team read model + session timeline` 重建。
+- `frontend/src/pages/session-workbench/SessionNativeControls.tsx` 直接读取 `sessionWorkbench.completion_wakes`，展示 pending/running/completed/failed 和最近 completion 摘要。
+- `frontend/src/pages/session-workbench/timelineModel.ts` 新增 `buildCompletionWakeModel(...)`，只把后端 `completion_wakes` 归一成 UI model，不从 `runtime_tasks` 临时推导第二套状态。
+- `frontend/src/api/domains/ccParity.ts`、`frontend/src/i18n/en.json`、`frontend/src/i18n/zh.json` 已补齐类型和文案。
 
-未闭环事实：
+闭环事实：
 
-- 还没有一份统一验收证明：
-  - 后台任务完成后如何提醒主 Agent。
-  - 轮询、事件、mailbox、wake、notification 的优先级。
-  - 断线/重启后如何恢复。
-  - 前端如何展示 pending/running/completed。
+- Sub-agent、Agent Team member、Workflow/long-running task 的完成观察面统一为 `session_workbench.completion_wakes`。
+- 父 Agent 的真实唤醒仍走既有 production wake consumer / session event / team mailbox 路径；Workbench 是同一状态的 read model，不是第二条执行路径。
+- `check_subagent` 仍是 fallback status inspection，不作为 busy-poll 主路径。
+- 前端能展示 pending/running/completed/failed；断线或重启后重新拉取 Workbench 即可恢复。
 
-裁决：
+验证证据：
 
-- 必须收束到同一 session mailbox / wake / Workbench state，不得让 subagent、team、workflow、A2A 各自发明完成反馈。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_session_control_plane.py::test_session_workbench_projects_background_completion_wake_state -q
+# 1 passed, 3 warnings
+
+cd frontend && npm test -- --run src/pages/session-workbench/timelineModel.test.ts
+# 1 file passed, 6 tests passed
+```
+
+## 2. 仍未闭环或待裁决项
+
+当前登记表内无剩余上线阻断项。
+
+约束仍然保留：以后任何新增 gap 仍必须按本文 §0 的闭环最低口径重新登记，不能因为本轮清零而降低证据要求。
 
 ## 3. 当前不能再使用的完成说法
 
-以下说法在上述 gap 关闭前都不能继续写：
+以下说法仍不能无证据使用：
 
-1. “上线前最后一轮所有断点都已补齐。”
+1. “上线前最后一轮所有断点都已补齐。”但没有附带代码入口、runtime 消费、前端可观察性和测试证据。
 
 允许的准确说法：
 
@@ -422,12 +438,13 @@ Workbench read model 只在缺 runtime manifest 时 fallback。
 Hooks external runner、MCP live prompts/auth status、SkillTool/frontmatter hooks 已 production-live。
 
 Dynamic Workflow proposal/runtime/UI 已接入唯一 `propose_dynamic_workflow` -> `preview_workflow` -> `start_workflow` 路径；
-remaining launch blocker 是 background completion wake 统一验收。
+Background completion wake 已统一到 `session_workbench.completion_wakes`，Sub-agent、Agent Team member、
+Workflow/long-running RuntimeTask 不再各自发明完成反馈面。
 ```
 
 ## 4. 建议修复顺序
 
-1. B-3：收敛 Background Agent / long-running completion wake 到同一 session mailbox / wake / Workbench state 验收口径。
+当前无剩余修复顺序。后续若发现新断点，必须先登记为新的 B 项，再按“红测 -> 实装 -> 文档证据 -> commit”关闭。
 
 ## 5. 证据检查命令
 
@@ -451,7 +468,9 @@ cd backend && source .venv/bin/activate && pytest tests/api/test_cc_codex_parity
 cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py -q
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_subagent_listing_section.py tests/services/test_agent_team_runtime_service.py tests/api/test_agent_teams_events_api.py -q
+cd backend && source .venv/bin/activate && pytest tests/services/test_session_control_plane.py::test_session_workbench_projects_background_completion_wake_state tests/services/test_subagent_run_service.py::test_subagent_completion_projects_child_session_event_to_parent tests/services/test_workflow_daemon.py -q
 cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
 cd frontend && npm test -- --run src/pages/agent-detail/slashCommand.test.ts src/pages/agent-detail/CommandPalette.test.tsx src/pages/agent-detail/SlashCommandMenu.test.tsx src/api/domains/ccParity.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
+cd frontend && npm test -- --run src/pages/session-workbench/timelineModel.test.ts
 cd frontend && npm run build
 ```

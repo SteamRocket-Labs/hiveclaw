@@ -207,6 +207,198 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
     }
 
 
+_BACKGROUND_COMPLETION_TASK_TYPES = {
+    "subagent",
+    "team_member",
+    "workflow",
+    "delegation",
+    "agent_delegation",
+    "a2a_delegation",
+    "advanced_plan",
+    "goal_continuation",
+    "long_task",
+    "task",
+    "trigger",
+    "schedule",
+}
+_COMPLETION_PENDING_STATUSES = {"created", "pending", "queued", "scheduled"}
+_COMPLETION_RUNNING_STATUSES = {"running", "started", "in_progress", "resuming", "waiting", "blocked"}
+_COMPLETION_COMPLETED_STATUSES = {"completed", "succeeded", "success", "done"}
+_COMPLETION_FAILED_STATUSES = {
+    "failed",
+    "error",
+    "killed",
+    "cancelled",
+    "canceled",
+    "skipped",
+    "needs_reconciliation",
+}
+
+
+def _completion_state(status: Any) -> str:
+    value = str(status or "").strip().lower()
+    if value in _COMPLETION_PENDING_STATUSES:
+        return "pending"
+    if value in _COMPLETION_RUNNING_STATUSES:
+        return "running"
+    if value in _COMPLETION_COMPLETED_STATUSES:
+        return "completed"
+    if value in _COMPLETION_FAILED_STATUSES:
+        return "failed"
+    return "running" if value else "pending"
+
+
+def _completion_task_label(task: RuntimeTask, metadata: dict[str, Any]) -> str:
+    for key in ("subagent_name", "workflow_name", "child_agent_name", "task_name", "name"):
+        raw = metadata.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return str(getattr(task, "task_type", "") or "background_task")
+
+
+def _runtime_completion_wake_payload(task: RuntimeTask) -> dict[str, Any] | None:
+    task_type = str(getattr(task, "task_type", "") or "")
+    if task_type not in _BACKGROUND_COMPLETION_TASK_TYPES:
+        return None
+    metadata = _mapping(getattr(task, "metadata_json", None))
+    state = _completion_state(getattr(task, "status", None))
+    terminal = state in {"completed", "failed"}
+    return {
+        "schema": "hive.ccplus.completion_wake.v1",
+        "id": f"runtime_task:{task.id}",
+        "kind": task_type,
+        "source": "runtime_task",
+        "truth_source": "runtime_tasks",
+        "wake_channel": "session_mailbox_and_workbench",
+        "label": _completion_task_label(task, metadata),
+        "status": getattr(task, "status", None),
+        "state": state,
+        "terminal": terminal,
+        "needs_parent_observation": terminal,
+        "runtime_task_id": str(task.id),
+        "parent_session_id": getattr(task, "parent_session_id", None),
+        "child_session_id": getattr(task, "child_session_id", None),
+        "trace_id": getattr(task, "trace_id", None),
+        "summary": getattr(task, "result_summary", None) or "",
+        "completed_at": _iso(getattr(task, "completed_at", None)),
+        "metadata": metadata,
+        "artifacts": metadata.get("artifacts") or metadata.get("artifact_paths") or [],
+        "t0_refs": metadata.get("t0_refs") or metadata.get("transcript_refs") or [],
+    }
+
+
+def _team_completion_wake_payload(team: dict[str, Any], member: dict[str, Any]) -> dict[str, Any] | None:
+    status = member.get("status")
+    state = _completion_state(status)
+    runtime_task_id = member.get("runtime_task_id")
+    if not runtime_task_id and state not in {"running", "completed", "failed"}:
+        return None
+    terminal = state in {"completed", "failed"}
+    return {
+        "schema": "hive.ccplus.completion_wake.v1",
+        "id": f"team_member:{member.get('id') or runtime_task_id or member.get('chat_session_id')}",
+        "kind": "team_member",
+        "source": "agent_team_read_model",
+        "truth_source": "agent_team_member.metadata_json",
+        "wake_channel": "session_mailbox_and_workbench",
+        "label": str(member.get("member_name") or "team member"),
+        "status": status,
+        "state": state,
+        "terminal": terminal,
+        "needs_parent_observation": terminal,
+        "team_id": team.get("id"),
+        "team_name": team.get("name"),
+        "member_id": member.get("id"),
+        "runtime_task_id": str(runtime_task_id) if runtime_task_id else None,
+        "parent_session_id": team.get("parent_session_id"),
+        "child_session_id": member.get("chat_session_id"),
+        "summary": member.get("summary") or "",
+        "completed_at": member.get("completed_at"),
+        "metadata": {
+            "member_role": member.get("member_role"),
+            "runtime_task_type": member.get("runtime_task_type"),
+        },
+        "artifacts": member.get("artifacts") or [],
+        "t0_refs": member.get("t0_refs") or [],
+    }
+
+
+def _completion_wake_sort_key(wake: dict[str, Any]) -> tuple[int, int, int, str]:
+    state_order = {"completed": 0, "failed": 0, "running": 1, "pending": 2}.get(str(wake.get("state")), 3)
+    source_order = 0 if wake.get("source") == "agent_team_read_model" else 1
+    kind_order = {"team_member": 0, "subagent": 1, "workflow": 2}.get(str(wake.get("kind")), 3)
+    return (state_order, source_order, kind_order, str(wake.get("id") or ""))
+
+
+def _completion_wake_payloads(
+    *,
+    runtime_tasks: list[RuntimeTask],
+    teams: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    wakes: list[dict[str, Any]] = []
+    seen_runtime_task_ids: set[str] = set()
+
+    for team in teams:
+        for member in team.get("members", []):
+            if not isinstance(member, dict):
+                continue
+            payload = _team_completion_wake_payload(team, member)
+            if payload is None:
+                continue
+            runtime_task_id = payload.get("runtime_task_id")
+            if runtime_task_id:
+                seen_runtime_task_ids.add(str(runtime_task_id))
+            wakes.append(payload)
+
+    for task in runtime_tasks:
+        task_id = str(getattr(task, "id", "") or "")
+        if task_id and task_id in seen_runtime_task_ids:
+            continue
+        payload = _runtime_completion_wake_payload(task)
+        if payload is not None:
+            wakes.append(payload)
+
+    wakes.sort(key=_completion_wake_sort_key)
+    return wakes
+
+
+def _completion_wake_summary(wakes: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "total": len(wakes),
+        "pending": 0,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "terminal": 0,
+        "needs_parent_observation": 0,
+    }
+    for wake in wakes:
+        state = str(wake.get("state") or "")
+        if state in {"pending", "running", "completed", "failed"}:
+            summary[state] += 1
+        if wake.get("terminal") is True:
+            summary["terminal"] += 1
+        if wake.get("needs_parent_observation") is True:
+            summary["needs_parent_observation"] += 1
+    return summary
+
+
+def _completion_wake_policy_payload() -> dict[str, Any]:
+    return {
+        "schema": "hive.ccplus.completion_wake_policy.v1",
+        "truth_source": "runtime_tasks+agent_team_read_model+session_timeline",
+        "delivery_order": [
+            "session_event",
+            "parent_agent_wake",
+            "session_workbench",
+            "notification",
+        ],
+        "recovery": "rebuild_from_runtime_tasks_and_team_read_model_after_disconnect_or_restart",
+        "busy_polling": False,
+        "single_read_model": "session_workbench.completion_wakes",
+    }
+
+
 # Run-lifecycle status strings that are not TurnStatus enum values map here so a
 # terminal cancel surfaces as CANCELLED instead of silently collapsing to RUNNING.
 _RUN_STATUS_ALIASES: dict[str, TurnStatus] = {
@@ -808,6 +1000,7 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
     goals = await _list_goals(db, agent_id=agent.id, session_id=session.id)
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
+    completion_wakes = _completion_wake_payloads(runtime_tasks=runtime_tasks, teams=teams)
     turn_state = _build_active_turn_state(session=session, active_run=active_run_projection, events=events)
     active_turn = _active_turn_payload(turn_state=turn_state)
     agent_session = _agent_session_payload(session=session, runtime_tasks=runtime_tasks, turn_state=turn_state)
@@ -863,6 +1056,9 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
         },
         "active_run": active_run_projection,
         "runtime_tasks": [_runtime_task_payload(task) for task in runtime_tasks],
+        "completion_wake_policy": _completion_wake_policy_payload(),
+        "completion_wake_summary": _completion_wake_summary(completion_wakes),
+        "completion_wakes": completion_wakes,
         "goals": [_goal_payload(goal) for goal in goals],
         "teams": teams,
         "session_index": session_index,

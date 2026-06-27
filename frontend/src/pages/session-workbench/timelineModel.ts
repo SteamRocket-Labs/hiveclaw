@@ -76,6 +76,83 @@ export interface BuildThreadTimelineInput {
   activeRunStatus?: string | null;
 }
 
+export type CompletionWakeState = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface CompletionWakeItemModel {
+  id: string;
+  kind: string;
+  label: string;
+  status: string;
+  state: CompletionWakeState;
+  summary: string;
+  source: string;
+}
+
+export interface CompletionWakeModel {
+  summary: {
+    total: number;
+    pending: number;
+    running: number;
+    completed: number;
+    failed: number;
+    terminal: number;
+    needsParentObservation: number;
+  };
+  items: CompletionWakeItemModel[];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function readCount(source: Record<string, unknown> | null, key: string): number {
+  const value = source?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeCompletionState(value: unknown, status: unknown): CompletionWakeState {
+  const raw = String(value || status || '').trim().toLowerCase();
+  if (raw === 'pending' || raw === 'queued' || raw === 'scheduled') return 'pending';
+  if (raw === 'completed' || raw === 'done' || raw === 'success' || raw === 'succeeded') return 'completed';
+  if (raw === 'failed' || raw === 'error' || raw === 'killed' || raw === 'cancelled' || raw === 'canceled') return 'failed';
+  return 'running';
+}
+
+export function buildCompletionWakeModel(sessionWorkbench?: Record<string, unknown> | null): CompletionWakeModel {
+  const summary = asRecord(sessionWorkbench?.completion_wake_summary);
+  const rawItems = Array.isArray(sessionWorkbench?.completion_wakes) ? sessionWorkbench.completion_wakes : [];
+  const items = rawItems
+    .map((item, index): CompletionWakeItemModel | null => {
+      const wake = asRecord(item);
+      if (!wake) return null;
+      const state = normalizeCompletionState(wake.state, wake.status);
+      return {
+        id: String(wake.id || wake.runtime_task_id || `completion-wake-${index}`),
+        kind: String(wake.kind || 'background_task'),
+        label: String(wake.label || wake.kind || wake.runtime_task_id || 'background task'),
+        status: String(wake.status || state),
+        state,
+        summary: String(wake.summary || ''),
+        source: String(wake.source || ''),
+      };
+    })
+    .filter((item): item is CompletionWakeItemModel => Boolean(item));
+
+  return {
+    summary: {
+      total: readCount(summary, 'total') || items.length,
+      pending: readCount(summary, 'pending') || items.filter((item) => item.state === 'pending').length,
+      running: readCount(summary, 'running') || items.filter((item) => item.state === 'running').length,
+      completed: readCount(summary, 'completed') || items.filter((item) => item.state === 'completed').length,
+      failed: readCount(summary, 'failed') || items.filter((item) => item.state === 'failed').length,
+      terminal: readCount(summary, 'terminal') || items.filter((item) => item.state === 'completed' || item.state === 'failed').length,
+      needsParentObservation:
+        readCount(summary, 'needs_parent_observation') || items.filter((item) => item.state === 'completed' || item.state === 'failed').length,
+    },
+    items,
+  };
+}
+
 function messageId(message: AgentChatMessage, fallback: string): string {
   return message.id || fallback;
 }

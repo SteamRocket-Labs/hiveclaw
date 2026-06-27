@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildThreadTimeline } from './timelineModel';
+import { buildCompletionWakeModel, buildThreadTimeline } from './timelineModel';
 import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 import type { SessionIndex } from '../../api/domains/chat';
 
@@ -147,5 +147,56 @@ describe('session workbench timeline model', () => {
     expect(model.inspector.sessionEventCount).toBe(42);
     expect(model.inspector.t0SegmentCount).toBe(2);
     expect(model.inspector.latestCheckpointLabel).toBe('user_turn_stop');
+  });
+
+  it('projects background completion wakes into a compact UI model', () => {
+    const model = buildCompletionWakeModel({
+      completion_wake_summary: {
+        total: 3,
+        pending: 0,
+        running: 1,
+        completed: 1,
+        failed: 1,
+        terminal: 2,
+        needs_parent_observation: 2,
+      },
+      completion_wakes: [
+        {
+          id: 'team_member:member-1',
+          kind: 'team_member',
+          label: 'release critic',
+          status: 'completed',
+          state: 'completed',
+          summary: 'team read model summary',
+          source: 'agent_team_read_model',
+        },
+        {
+          id: 'runtime_task:subagent-1',
+          kind: 'subagent',
+          label: 'critic',
+          status: 'failed',
+          state: 'failed',
+          summary: 'critic failed',
+          source: 'runtime_task',
+        },
+        {
+          id: 'runtime_task:workflow-1',
+          kind: 'workflow',
+          label: 'Release checks',
+          status: 'running',
+          state: 'running',
+          summary: '',
+          source: 'runtime_task',
+        },
+      ],
+    });
+
+    expect(model.summary).toMatchObject({ total: 3, running: 1, completed: 1, failed: 1 });
+    expect(model.items.map((item) => `${item.kind}:${item.label}:${item.state}`)).toEqual([
+      'team_member:release critic:completed',
+      'subagent:critic:failed',
+      'workflow:Release checks:running',
+    ]);
+    expect(model.items[0].source).toBe('agent_team_read_model');
   });
 });

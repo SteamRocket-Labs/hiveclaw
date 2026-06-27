@@ -1,10 +1,11 @@
 import React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { IconDownload, IconGitCommit, IconHierarchy, IconSettings, IconTargetArrow, IconUsersGroup } from '@tabler/icons-react';
+import { IconBellRinging, IconDownload, IconGitCommit, IconHierarchy, IconSettings, IconTargetArrow, IconUsersGroup } from '@tabler/icons-react';
 
 import { ccParityApi, type AgentTeam } from '../../api/domains/ccParity';
 import type { SessionIndex } from '../../api/domains/chat';
+import { buildCompletionWakeModel } from './timelineModel';
 
 function panelStyle(): React.CSSProperties {
   return {
@@ -185,6 +186,7 @@ export default function SessionNativeControls({
   const turn = asObject(sessionWorkbench?.turn);
   const runtimeTasks = Array.isArray(sessionWorkbench?.runtime_tasks) ? sessionWorkbench.runtime_tasks : [];
   const goals = Array.isArray(sessionWorkbench?.goals) ? sessionWorkbench.goals : [];
+  const completionWakeModel = buildCompletionWakeModel(sessionWorkbench);
   const blockingHookCount = hookEvents.filter((event) => asObject(event)?.blocking_supported === true).length;
   const selectedTeamSummary = asObject(selectedTeamWorkbench?.summary);
 
@@ -206,6 +208,49 @@ export default function SessionNativeControls({
         <button type="button" style={buttonStyle()} disabled={!enabled || exportJson.isPending} onClick={() => exportJson.mutate()}>
           {t('sessionWorkbench.exportJson', 'Export JSON')}
         </button>
+      </div>
+
+      <div style={panelStyle()}>
+        <PanelTitle icon={<IconBellRinging size={14} />} title={t('sessionWorkbench.completionWakeInbox', 'Completion wakes')} />
+        <div style={{ display: 'grid', gap: '4px', fontSize: '11px', color: 'var(--text-secondary)' }}>
+          <div>
+            {t('sessionWorkbench.pending', 'pending')}: {completionWakeModel.summary.pending} · {t('sessionWorkbench.running', 'running')}:{' '}
+            {completionWakeModel.summary.running}
+          </div>
+          <div>
+            {t('sessionWorkbench.completed', 'completed')}: {completionWakeModel.summary.completed} · {t('sessionWorkbench.failed', 'failed')}:{' '}
+            {completionWakeModel.summary.failed}
+          </div>
+        </div>
+        {completionWakeModel.items.length === 0 ? (
+          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+            {t('sessionWorkbench.noCompletionWakes', 'No background completions yet')}
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: '6px' }}>
+            {completionWakeModel.items.slice(0, 5).map((wake) => (
+              <div key={wake.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: '6px', display: 'grid', gap: '3px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', fontSize: '11px' }}>
+                  <strong style={{ minWidth: 0, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {wake.label}
+                  </strong>
+                  <span style={{ color: wake.state === 'failed' ? 'rgb(220,38,38)' : 'var(--text-tertiary)' }}>
+                    {t(`sessionWorkbench.${wake.state}`, wake.state)}
+                  </span>
+                </div>
+                <div style={{ color: 'var(--text-tertiary)', fontSize: '10px' }}>
+                  {wake.kind}
+                  {wake.source ? ` · ${wake.source}` : ''}
+                </div>
+                {wake.summary && (
+                  <div style={{ color: 'var(--text-secondary)', fontSize: '11px', lineHeight: 1.4 }}>
+                    {wake.summary}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={panelStyle()}>

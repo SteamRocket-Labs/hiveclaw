@@ -20,7 +20,7 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 上线前最后一轮不是继续加功能，而是把已经存在的多条路径收束成一条 session spine。
 ```
 
-当前最大的风险不是没有机制，而是机制分叉：
+本轮开始前最大的风险不是没有机制，而是机制分叉：
 
 - session command 和 UI control result 分叉。
 - session worker 和 A2A employee delegation 分叉。
@@ -119,16 +119,16 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 4. Agent Team runtime path 本轮已收束到单一 backend/runtime service：
    - API / command / model tool / Plan Mode handoff 现在共用 `agent_team_runtime_service.py`。
    - model-visible `team_create` 已直接持久化，不再只是 handoff。
-   - prompt-facing team context / Workbench projection 仍进入主线 D，以 `AgentTeam` rows 为唯一 source of truth。
+   - prompt-facing team context / Workbench projection 已在主线 D 接入，以 `AgentTeam` rows 为唯一 source of truth。
 
-5. Turn context / prompt assembly 没有 manifest：
+5. Turn context / prompt assembly manifest 已建立：
    - Codex 的工程优点是 typed turn/thread/config/permission/sandbox snapshot。
-   - Hive 现在有碎片，但没有统一 `TurnEnvelope` / `PromptAssemblyManifest`。
+   - Hive 已新增统一 `TurnEnvelope` / `PromptAssemblyManifest` read model，并由 Session Workbench 暴露。
 
-6. Hooks / Skill / MCP 还有完整 session behavior 缺口：
-   - Hooks parser/registry 接近，但 external runner 未 production wired。
-   - Skill progressive disclosure 有，但 CC SkillTool blocking invocation / forked execution / hooks registration 不完整。
-   - MCP call 能力有，但 MCP prompts、instructions delta、auth pseudo-tool、model-visible MCP tool surface 不完整。
+6. Hooks / Skill / MCP 已进入统一 session read model：
+   - Hooks parser/registry + explicit hook state 已进入 `TurnEnvelope`；external runner 未 production wired 时显式 not-live。
+   - Skill progressive disclosure 仍保留，`load_skill` tool events 已进入 `TurnEnvelope`。
+   - MCP call 能力继续走 governed wrapper，MCP tools/prompts/resources 已进入 server read model 和 ExtensionRegistry affordance。
 
 ## 3. 四条主线
 
@@ -336,7 +336,7 @@ cd backend && source .venv/bin/activate && pytest \
 - `executing_actions` 常驻提示词已拆成 To Session Worker 与 To Employee：session 内并行、探索、隔离、独立验证走 `spawn_subagent`；真实数字员工协作才走 A2A `delegate_to_agent` / `send_message_to_agent`。
 - `delegate_to_agent` tool description 已明确为 To Employee / A2A collaboration，不是 session-local worker。
 - background subagent completion wake prompt 已移除内部 `consume_subagent_signals`，改为 parent session mailbox + wake path；`check_subagent` 只保留为 fallback status inspection。
-- Codex-style `multi_agent_mode` 作为 typed TurnEnvelope / Workbench 状态仍归入主线 D；不得另建第二套 coordinator path。
+- Codex-style `multi_agent_mode` 已作为 typed TurnEnvelope / Workbench 状态承载；不得另建第二套 coordinator path。
 
 证据：
 
@@ -481,7 +481,7 @@ cd frontend && npm run test -- \
 - team message backend/runtime 没有 API/tool 第二路径。
 - team context 和 team mailbox 以 Team rows + member sessions 为 source of truth。
 - A2A delegation backend payload 从 task-first 改为 session-first。
-- UI root timeline card、child read-only view、artifact drawer 和 Workbench state 进入主线 D 的 typed TurnEnvelope/Workbench 收口，不再另立 Team/A2A 第二规则。
+- UI root timeline card、child read-only view、artifact drawer 和 Workbench state 由 typed TurnEnvelope/Workbench 收口，不再另立 Team/A2A 第二规则。
 
 ### 主线 D：TurnEnvelope / Workbench / Hooks / Skill / MCP Closure
 

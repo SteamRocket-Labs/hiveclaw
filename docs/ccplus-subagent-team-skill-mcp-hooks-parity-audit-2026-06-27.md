@@ -389,11 +389,11 @@ Hive 现在的问题是两种风格混合但没有分层：
    - 已完成：把 model-visible `team_create` 接到真实持久化 service，而不是返回 `requires_api_persist`。
    - 已完成：增强 `send_agent_session_message`，支持 `team_id + member_name` 和 `member_name="*"`。
    - 已完成：API / command / Plan Mode handoff 共用 Team create service；API/team tool 共用 Team message service。
-   - 已完成 D 第一块：`agent_team_context` / typed TurnEnvelope 查询 `AgentTeam` / `AgentTeamMember`，自动渲染 Team workspace context；teammate mailbox 继续使用同一 mailbox runtime。
+   - 已完成 D 收口：`agent_team_context` / typed TurnEnvelope 查询 `AgentTeam` / `AgentTeamMember`，自动渲染 Team workspace context；teammate mailbox 继续使用同一 mailbox runtime。
    - 已完成：增加 regression tests：LLM tool `team_create` 调用后必须产生 durable Team payload；Team message by-name/broadcast 走 mailbox runtime。
 
 3. Prompt trigger
-   - Subagent 已完成，Agent Team 待主线 C：增加 CC-style subagent/team usage prompt：
+   - Subagent 已完成，Agent Team 已完成主线 C/D runtime/read-model 收口；prompt trigger 继续保持 CC-style worker/team affordance：
      - complex multi-step -> consider worker
      - search uncertain -> explorer
      - verification -> critic

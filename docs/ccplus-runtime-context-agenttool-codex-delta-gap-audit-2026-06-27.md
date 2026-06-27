@@ -291,11 +291,11 @@ frontend/src/api/domains/ccParity.ts
 - Session Workbench 可以创建 team、列 team、进入 member session、关闭 team、渲染 workbench state。
 - `session_control_plane.py` 会把 team members 放入 session graph。
 
-缺口：
+已修复：
 
-- `agent_team_context.py` 当前主要投影 `RuntimeTask` 类型 `subagent`、`workflow`、`delegation` 和 `CoordinationSignal`；它没有把 `AgentTeam` rows 作为 prompt-facing team source of truth。
-- CC Team flow 还包括 `Task list -> AgentTool(team_name, name) -> automatic teammate messages` 的 prompt-facing context 和 UI projection。Hive runtime 已收敛；context/Workbench 进入主线 D。
-- 前端 `/team` slash menu 当前测试明确隐藏 `team_create`，但 Workbench 又暴露 team creation。这需要在主线 D 由 typed TurnEnvelope/Workbench state 决定是否露出，而不是保留后端第二路径。
+- `agent_team_context.py` 已把 `AgentTeam` / `AgentTeamMember` rows 作为 prompt-facing team source of truth，同时保留 RuntimeTask/Signal 作为 member 状态补充。
+- CC Team flow 中的 `Task list -> AgentTool(team_name, name) -> automatic teammate messages` 已对应到 Team runtime service、Team mailbox 和 Workbench/TurnEnvelope projection。
+- 前端 `/team` slash menu 与 Workbench 暴露问题归入统一 Session Workbench state；后端不再保留 tool/API/UI 多条 Team creation runtime path。
 
 ### 3.4 Background Agent
 

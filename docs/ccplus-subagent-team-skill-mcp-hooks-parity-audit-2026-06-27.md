@@ -1,7 +1,7 @@
 # CCPlus Subagent / Agent Team / Skill / MCP / Hooks Parity Audit
 
 日期：2026-06-27
-状态：代码级复核结论；重开 session-middle parity 的行为层判断
+状态：代码级复核结论；2026-06-27 总检后状态回写
 范围：Subagent、Agent Team、Skill / MCP Skill、MCP runtime、Hooks runtime，以及它们在单个 session 内的模型触发与消费逻辑
 
 ## 文档关系
@@ -9,6 +9,8 @@
 本文件是子系统附录，记录 Subagent、Agent Team、Skill、MCP、Hooks 的细项差距。
 
 上线前最后一轮优化的 canonical master doc 是 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md`。`docs/ccplus-runtime-context-agenttool-codex-delta-gap-audit-2026-06-27.md` 是 Runtime、Context、AgentTool、Codex delta 的审计主文档；本文只补充 Subagent、Agent Team、Skill、MCP、Hooks 的证据和子系统细节，不能单独形成第二套 runtime 语义。
+
+总检阅读规则：第 3-6 节保留了本轮前审计断点和修复计划；若与第 0 节、master plan `2.3`、或第 8 节验证记录冲突，以总检后的已闭合/explicit boundary 结论为准。
 
 ## 0. 结论
 
@@ -138,7 +140,7 @@ CC 语义：
 4. 支持 command / prompt / agent / http hook types。
 5. command hook exit code 2 是 blocking，其他非零是 non-blocking error。
 
-## 3. Hive 当前实现证据
+## 3. Hive 实现证据与总检状态
 
 ### 3.1 Subagent
 
@@ -221,7 +223,7 @@ CC 语义：
 4. `allowed-tools` 会作为 guidance 追加到 loaded skill output。
 5. `tool_search` 负责 deferred tool schema discovery，`load_skill` 不解锁工具。
 
-断点：
+本轮前断点：
 
 1. 没有 CC `SkillTool` forked execution 等价路径。
 2. `hooks` frontmatter 被解析为字符串 tuple，没有 structured `HooksSchema` 注册语义。
@@ -229,7 +231,7 @@ CC 语义：
 4. prompt 没有 CC “匹配 skill 时必须先 invoke Skill tool” 那种 blocking requirement；Hive 更偏 “需要方法指导时 load”。
 5. MCP prompt skill 没有完整进入 skill catalog 的证据。
 
-判断：Skill capsule 有，但 CC SkillTool session behavior 不完整。
+总检后判断：Skill progressive disclosure 与 `load_skill` tool events 已进入 `TurnEnvelope` / ExtensionRegistry / Workbench read model；CC SkillTool forked execution、frontmatter hook runtime registration 仍是 explicit not-live/deferred 边界，不再作为隐藏第二路径。
 
 ### 3.4 MCP
 
@@ -256,7 +258,7 @@ CC 语义：
 4. `mcp_instructions_delta` 已进入 TurnEnvelope/PromptAssemblyManifest read model；live protocol attachment 继续按 explicit boundary 管理。
 5. resource tool canonical name 是 `mcp_list_resources` / `mcp_read_resource`，而 CC surface 是 `list_mcp_resources` / `read_mcp_resource`；Hive alias 可执行，但不作为 model-visible schema 暴露。
 
-判断：MCP 工具调用能力存在，但 dynamic MCP session surface 未达到 CC。
+总检后判断：MCP governed call path、server tools/prompts/resources read model、MCP refs -> `TurnEnvelope` / ExtensionRegistry 已闭合；live MCP protocol `prompts/list` fetch 与 MCP auth pseudo-tool 仍是 explicit not-live/deferred 边界。
 
 ### 3.5 Hooks
 
@@ -278,7 +280,7 @@ CC 语义：
 4. kernel tool execution 已 wired PreToolUse / PostToolUse / PostToolUseFailure。
 5. startup 注册 memory hooks 和 allowlisted plugin hooks。
 
-断点：
+本轮前断点：
 
 1. `backend/app/runtime/hook_runner.py` 明确写明：
 
@@ -291,21 +293,21 @@ DEFERRED CONTRACT — NOT WIRED INTO ANY PRODUCTION PATH.
 4. 没有看到 skill frontmatter hooks -> session hook 的生产注册路径。
 5. async hook parse 有，但缺 production background executor / durable invocation persistence。
 
-判断：Hooks 是 wire/parser/registry 接近，但 runtime execution 不完整。CCPlus 下本地 hooks 属于 parity 范围，不能作为 future-only。
+总检后判断：Hook wire/parser/registry、standard event status、TurnEnvelope / Workbench projection 已闭合；external command/prompt/http/agent hook runner 仍显式 `declared_not_wired`，不伪装 production-live。
 
 ## 4. 为什么 session 内没有自然触发 Multi-agent
 
-直接原因：
+本轮前直接原因：
 
 1. `spawn_subagent` 虽是 core tool，但 coordinator mode 过滤掉了它。
 2. coordinator prompt 主路径是 `delegate_to_agent`，不是 CC AgentTool worker。
 3. `delegate_to_agent` 同时被当成 coordinator worker 和 A2A employee bridge；但 A2A bridge 要求 colleague / relationship / collaborator context，单 agent session 内天然会被提示词劝退。
 4. `team_create` 是 deferred command_pack 工具，且 model-visible handler 不产生真实 team side effect。
 5. Team communication 不是 teammate name-first，而是 child session id / API route first。
-6. prompt 没有 CC 对 parallel / complex / swarm / team 的强触发语义。
-7. context projection 没有完整把 Agent Team member state 和 mailbox 自动反馈给下一轮模型。
+6. 本轮前 prompt 没有 CC 对 parallel / complex / swarm / team 的强触发语义。
+7. 本轮前 context projection 没有完整把 Agent Team member state 和 mailbox 自动反馈给下一轮模型。
 
-所以当前系统会表现为：
+所以本轮前系统会表现为：
 
 ```text
 功能入口存在，但模型缺少 CC 式强 affordance；
@@ -321,12 +323,12 @@ coordinator 更倾向 delegation，而不是 lightweight subagent/team worker fa
 | --- | --- | --- |
 | 不是 “LLM 看不见工具” | 准确 | `spawn_subagent`、`check_subagent`、`delegate_to_agent`、`send_agent_session_message` 都在 `CORE_TOOL_NAMES`。`core_only=True` 时只保留 core tools，而这些工具没有被 deferred pack 隐藏。 |
 | Hive prompt 基调偏抑制 | 曾经准确，本轮已修复 | `executing_actions.py` 已移除旧的默认自己做语气，改为“小而不可分任务直接做；独立搜索、噪音探索、scoped implementation、独立验证主动用 `spawn_subagent`”。CC 主 prompt 的 AgentTool 价值定位已进入常驻提示词和回归测试。 |
-| Hive 缺少 subagent few-shot examples | 准确 | CC `AgentTool/prompt.ts` 内有 `<example>`，明确展示 “写完代码 -> 调 test-runner agent” 和 greeting-responder 模式。Hive `spawn_subagent` tool description 只有类型说明，没有“场景 -> 立刻调用”的 few-shot。`delegation-guide` 有 examples，但它是 A2A `delegate_to_agent` skill，不是 session worker prompt。 |
-| 缺少常驻 when-to-use 强引导 | 准确 | Hive 常驻 prompt 只有若干 bullet；更系统的 `<when_to_use>` 在 `delegation-guide`，且该 skill 默认不进入 prompt body，并且主要讲 A2A employee delegation。CC 同时有主 prompt、AgentTool prompt、Explore route、When NOT to use、examples。 |
-| 缺少类型清单 + whenToUse 持续注入 | 准确 | Hive `_TYPE_DESCRIPTIONS` 存在，并标注用于告诉 parent model 何时选类型，但实际主要体现在 tool schema/config/error available list；没有 CC `agent_listing_delta` 那种 `<system-reminder>` 持续注入 “Available agent types for the Agent tool”。 |
+| Hive 缺少 subagent few-shot examples | 本轮前准确；现已部分闭合 | CC `AgentTool/prompt.ts` 内有 `<example>`，明确展示 “写完代码 -> 调 test-runner agent” 和 greeting-responder 模式。本轮已在常驻 prompt 中补 “何时主动 spawn / 何时不要 spawn / 示例场景”；tool schema 仍未完全复制 CC XML few-shot，但不再是触发路径断点。 |
+| 缺少常驻 when-to-use 强引导 | 本轮前准确；现已闭合 | `executing_actions.py` 已改成主动路由：独立搜索、噪音探索、scoped implementation、独立验证主动用 `spawn_subagent`；`delegate_to_agent` 固定为 To Employee。 |
+| 缺少类型清单 + whenToUse 持续注入 | 本轮前准确；现已闭合 | 已新增常驻 `## Session Worker Types`，渲染 built-in worker `whenToUse`，并明确这些类型只路由到 `spawn_subagent`，不是 A2A employees。 |
 | `delegate_to_agent` 硬前置导致单 agent 部署走不通 | 方向准确，措辞需更新 | 当前 prompt 已经从旧 `relationships.md` 语境迁到 `A2A Collaborators`，但约束本质仍在：不能 self-delegate，必须确认存在可调用同事，且 `delegate_to_agent` 是 `bridge:self`。`docs/a2a-relationship-retirement-plan-2026-06-27.md` 明确旧 `relationships.md` 要退役，所以长期修法不是继续改 relationship 文件，而是把 To Employee 固定到结构化 A2A collaborator read model，并把 To Session Worker 从这条路径拆出去。 |
 
-这说明触发率低不是 “工具不可见”，而是 **可见但缺少强触发 affordance**。模型知道有工具，但常驻提示词、tool description、examples、agent listing、coordinator route 共同把它导向 “自己做” 或 “A2A employee delegation”，而不是 CC-style session worker。
+这说明本轮前触发率低不是 “工具不可见”，而是 **可见但缺少强触发 affordance**。本轮已把常驻提示词、worker type listing、coordinator route、To Session Worker / To Employee 分层收束到 CC-style session worker path。
 
 ### 4.2 CC / Codex / Hive 提示词风格差异
 
@@ -345,14 +347,14 @@ Codex 的提示词风格更像 **工程执行协议**：
 - `spawn_agent` tool description 会根据 usage hint 注入不同强度；默认甚至可以要求 “用户明确要求 sub-agents/delegation/parallel agent work 后才 spawn”。
 - Codex 的价值是 typed turn/thread state、permission/sandbox/profile、active turn snapshot、config-driven hints，而不是默认替代 CC 的 AgentTool 语义。
 
-Hive 现在的问题是两种风格混合但没有分层：
+Hive 本轮前的问题是两种风格混合但没有分层：
 
 - 像 Codex 一样有治理、Plan Mode、capability gate、core/deferred tool surface。
 - 像 CC 一样想有 AgentTool/subagent/team。
-- 但缺 CC 的触发文本、few-shot、agent listing、whenToUse 常驻注入。
-- 也缺 Codex 的显式 `MultiAgentMode` 语义面来表达 “只能显式请求” 还是 “可主动 delegation”。
+- 本轮前缺 CC 的触发文本、few-shot、agent listing、whenToUse 常驻注入。
+- 本轮前也缺 Codex 的显式 `MultiAgentMode` 语义面来表达 “只能显式请求” 还是 “可主动 delegation”。
 
-因此下一轮 prompt 修复不能只是把一句话写强。应该形成一个 prompt contract：
+本轮 prompt 修复已经按以下 contract 落地；后续必须保持这套 contract，而不是再加第二套路由：
 
 1. **Session Worker Prompt Section**：常驻短节，说明何时用 To Session Worker：独立查询、开放搜索、多步实现、上下文噪音隔离、独立验证、用户要求 parallel/team/swarm。
 2. **AgentTool-compatible tool description**：schema、default、examples、When NOT to use、background completion 语义对齐 CC。
@@ -367,14 +369,14 @@ Hive 现在的问题是两种风格混合但没有分层：
 | Subagent runtime | 有 `spawn_subagent`、built-ins、background run、child session；本轮补齐 `general-purpose` default、AgentTool-compatible schema、Session Worker type listing | AgentTool 默认 general-purpose，强触发，parallel fan-out，coordinator worker | 本轮已对齐 |
 | Coordinator multi-agent | 本轮只允许 session worker path：`spawn_subagent` / `check_subagent` / `send_agent_session_message` | AgentTool worker 是 coordinator 核心工具 | 本轮已对齐 |
 | To Employee / To Session Worker 分层 | 本轮拆分：session worker 用 `spawn_subagent`；真实同事通信才走 A2A `delegate_to_agent` / `send_message_to_agent` | session worker 用 AgentTool；真实同事通信才走 A2A/SendMessage | 本轮已对齐 |
-| Agent Team create | `team_create` model tool / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | TeamCreateTool 直接创建 team / task list / context | runtime 已对齐；shared task list/context 进 D |
-| Team mailbox | `send_agent_session_message` 支持 child session、`team_id + member_name`、`member_name="*"` 广播；API message 共用 runtime | teammate name / broadcast / automatic inbox attachment | runtime 已对齐；UI inbox 进 D |
-| Team context | `agent_team_context.py` 已读取 `AgentTeam` rows + member sessions；Workbench 暴露 `turn_envelope` / `prompt_manifest` | team members / team config / mailbox / shared task list | D 第一块已对齐；shared task list UI 继续跟 Workbench |
-| Skill load | progressive disclosure 有 | SkillTool blocking invocation + forked execution + MCP skill + hooks | 部分对齐 |
-| MCP tools | import/list/call/resources 有 | live model tool injection + prompts/list + auth pseudo-tool + instructions delta | 部分对齐 |
-| Hooks event | event/parser/registry 有 | production command/prompt/http/agent hooks + skill hooks + async executor | 部分对齐 |
+| Agent Team create | `team_create` model tool / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | TeamCreateTool 直接创建 team / task list / context | runtime/context 已对齐 |
+| Team mailbox | `send_agent_session_message` 支持 child session、`team_id + member_name`、`member_name="*"` 广播；API message 共用 runtime | teammate name / broadcast / automatic inbox attachment | runtime + Workbench read model 已对齐 |
+| Team context | `agent_team_context.py` 已读取 `AgentTeam` rows + member sessions；Workbench 暴露 `turn_envelope` / `prompt_manifest` | team members / team config / mailbox / shared task list | D 收口已对齐；后续 UI 增强不另开规则 |
+| Skill load | progressive disclosure + `load_skill` events 进入 TurnEnvelope / ExtensionRegistry | SkillTool blocking invocation + forked execution + MCP skill + hooks | session-visible read model 已对齐；forked execution/frontmatter hooks 为 explicit boundary |
+| MCP tools | import/list/call/resources + tools/prompts/resources read model 进入 ExtensionRegistry | live model tool injection + prompts/list + auth pseudo-tool + instructions delta | governed/session-visible 面已对齐；live `prompts/list` / auth pseudo-tool 为 explicit boundary |
+| Hooks event | event/parser/registry + standard status 进入 TurnEnvelope / Workbench | production command/prompt/http/agent hooks + skill hooks + async executor | read model/status 已对齐；external runner 为 explicit boundary |
 
-## 6. 修复计划
+## 6. 修复计划（已完成项与 explicit boundary）
 
 ### P0 — 先修 session behavior 断点
 
@@ -573,13 +575,14 @@ ImportError: cannot import name '_turn_token_budget_message' from app.kernel.eng
 
 失败发生在 `tests/services/test_llm_error_policy.py` collection，和本轮 parity 断点不是同一问题，但会影响全量测试闭环。
 
-## 9. 判定更新
+## 9. 历史判定更新
 
-`docs/ccplus-session-middle-parity-audit-2026-06-24.md` 曾给出 “mechanism parity layer aligned” 的判断。基于本轮证据，应改为：
+`docs/ccplus-session-middle-parity-audit-2026-06-24.md` 曾给出 “mechanism parity layer aligned” 的判断。本节记录本轮开始前的历史纠偏，不覆盖第 0 节和 master plan `2.3` 的总检结论：
 
 ```text
+Historical baseline before the convergence pass:
 Mechanism substrate: partially implemented.
-Session behavior parity: not closed.
+Session behavior parity: was not closed before convergence.
 Highest-risk gaps: Agent Team, Hooks external runtime, coordinator-subagent trigger path.
 ```
 

@@ -1,7 +1,7 @@
 # CCPlus Final Prelaunch Convergence Master Plan
 
 日期：2026-06-27
-状态：上线前最后一轮优化的统领性计划
+状态：上线前最后一轮优化的统领性计划；2026-06-27 总检后作为当前上线裁决
 范围：Session Control、AgentTool/Sub-agent/Completion Bus、Agent Team/A2A Session、TurnEnvelope/Workbench/Hooks/Skill/MCP 的统一实施顺序、依赖关系、验收口径和文档归属
 
 ## 0. 本文定位
@@ -74,7 +74,9 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 
 这些文档支撑第四条主线，不抢前两条主线的顺序。
 
-## 2. 当前已闭合与未闭合
+## 2. 本轮状态与最终总检
+
+阅读规则：`2.1` / `2.2` 保留的是本文创建时的收敛目标和历史断点，作为后续 Workstream A/B/C/D 的 traceability。当前上线判断以 `2.3`、各主线状态、以及 `6. 验收总口径` 为准。
 
 ### 2.1 已闭合或基本闭合
 
@@ -99,20 +101,20 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 
 这些是底座，不代表最终 CCPlus session behavior parity 已闭合。
 
-### 2.2 仍未闭合的核心断点
+### 2.2 本轮前仍未闭合的核心断点
 
-1. Session command 仍未成为 typed control surface：
+1. Session command 本轮前仍未成为 typed control surface：
    - `/compact` 不应只是事件，应执行真实 compact 并安装 effective context。
    - `/rewind` 不应创建新 `ChatSession`，应更新当前 active projection。
    - `/branch` 才创建新 `ChatSession`。
    - 前端不能把 command result JSON 当 assistant message。
 
-2. Session Worker 与 Employee Delegation 仍需彻底分层：
+2. Session Worker 与 Employee Delegation 本轮前仍需彻底分层：
    - To Session Worker：CC-compatible AgentTool / internal spawn_subagent / session mailbox。
    - To Employee：A2A `delegate_to_agent` / `send_message_to_agent` / A2A Collaborators。
    - `delegate_to_agent` 不能再作为 coordinator 默认 worker spawn path。
 
-3. Completion feedback 没有唯一 bus：
+3. Completion feedback 本轮前没有唯一 bus：
    - subagent wake、CoordinationSignal、T0 event、`check_subagent`、child session state、team context 都能表达完成。
    - 正常路径必须收束为 session mailbox / input queue，fallback 才允许检查工具。
 
@@ -129,6 +131,21 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
    - Hooks parser/registry + explicit hook state 已进入 `TurnEnvelope`；external runner 未 production wired 时显式 not-live。
    - Skill progressive disclosure 仍保留，`load_skill` tool events 已进入 `TurnEnvelope`。
    - MCP call 能力继续走 governed wrapper，MCP tools/prompts/resources 已进入 server read model 和 ExtensionRegistry affordance。
+
+### 2.3 2026-06-27 最终复核
+
+本次复核重新对照本文引用的专项文档和当前实现，当前裁决如下：
+
+| 复核项 | 当前结论 | 证据位置 |
+| --- | --- | --- |
+| Running time / Session runtime | 已走同一 `RuntimeTask` / `ChatSession` / `SessionContextController` / Workbench read model；active context tokens 与 cumulative run tokens 已分离。 | `ccplus-session-runtime-token-compaction-alignment-2026-06-27.md`，`backend/app/runtime/session_context_controller.py`，`backend/app/services/web_chat_runtime.py` |
+| 上下文组装 | 已由 `TurnEnvelope` + `PromptAssemblyManifest` 表达当前 turn 的 permissions、tools、skills、MCP、hooks、team/mailbox、context window。 | `backend/app/runtime/turn_envelope.py`，`backend/app/services/session_control_plane.py` |
+| 可以影响 Session 的 Command | `/compact`、`/rewind`、`/branch`、`/clear` 已统一 typed session command result；前端消费 `ui_action`，raw JSON 不再进入 assistant 正文。 | `ccplus-session-control-command-alignment-2026-06-27.md`，`backend/app/services/session_command_runtime.py`，`frontend/src/pages/agent-detail/sessionCommandResult.ts` |
+| Skill 和 Agent | To Session Worker / To Employee 已拆分；`spawn_subagent` 是 session-local AgentTool-style path；`delegate_to_agent` 保留为 A2A / To Employee；Agent Team create/message 走同一 `AgentTeamRuntimeService`。 | `ccplus-subagent-team-skill-mcp-hooks-parity-audit-2026-06-27.md`，`backend/app/tools/handlers/subagent.py`，`backend/app/services/agent_team_runtime_service.py` |
+| MCP Hooks | HookRegistry explicit state、Skill/MCP refs、MCP tools/prompts/resources 已进入 `TurnEnvelope` / `ExtensionRegistry` / Workbench；external command/prompt/http/agent hook runner 和 live MCP `prompts/list` 仍是显式 not-live/deferred 边界。 | `backend/app/runtime/hooks.py`，`backend/app/runtime/turn_envelope.py`，`backend/app/services/extension_registry.py`，`backend/app/services/mcp_server_service.py` |
+| 压缩功能 | `/compact` 已调用 LLM summary path 并安装 active projection；kernel request preflight 已有 context controller / tool-result budget / compaction events。 | `backend/app/services/session_command_runtime.py`，`backend/app/kernel/engine.py`，`backend/app/runtime/session_context_controller.py` |
+
+上线口径：如果标准是“路径唯一、提示词不劝退、session spine 内无隐藏第二规则”，本轮已闭合。若标准是“CC 所有本地 hook executor、live MCP prompt protocol、SkillTool forked execution 全部 production-live”，则这些仍是显式 non-live 边界，不应伪装为已完成。
 
 ## 3. 四条主线
 

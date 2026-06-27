@@ -1,8 +1,8 @@
 """Session command execution for CC/Codex parity.
 
 The command layer is a control surface over existing transcript truth. It never
-rewrites prior transcript events; branch/rewind create new ChatSession indexes
-whose transcript prefix points back to copied source evidence.
+rewrites prior transcript events. ``branch`` creates a new ChatSession index;
+``rewind`` updates the active projection on the current session.
 """
 
 from __future__ import annotations

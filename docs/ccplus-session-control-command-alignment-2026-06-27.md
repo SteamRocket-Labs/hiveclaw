@@ -2,7 +2,7 @@
 
 日期：2026-06-27
 
-状态：Workstream A 已按本文测试口径实装。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
+状态：Workstream A 已按本文测试口径实装。当前有效结论以 “0.0 Workstream A 实装证据” 为准；后续历史审计/计划段落保留为 traceability，不再表示当前缺口。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
 
 范围：session 内 slash command 的完整控制面，包括状态改变、只读查询、UI-only 交互、prompt 包装命令，以及 `/btw` 这类 side-question 命令。本文不处理 A2A 产品层协议。
 
@@ -54,9 +54,9 @@ cd frontend && npm run build
 # tsc && vite build completed successfully
 ```
 
-## 0. 裁决
+## 0. 本轮前裁决（历史审计基线）
 
-当前 Hive 的 session command 有四个最高优先级错位：
+本轮前 Hive 的 session command 有四个最高优先级错位：
 
 1. `/compact` 只是追加了一个 `session_compact_command` 事件并触发 hook，没有真正压缩并替换当前上下文。
 2. `/rewind` 当前调用 `create_conversation_branch(... mode="rewind")`，实际创建了新 `ChatSession`，这把 rewind 和 branch 混在了一起。
@@ -198,7 +198,7 @@ parent_session_id + branch metadata 表示 branch lineage。
 - `processSlashCommand.tsx` 收到 `type: "compact"` 后调用 `buildPostCompactMessages(...)`，用 compact 后的消息替换当前消息数组。
 - 它不是“发一条 compact 完成消息”，而是改写当前 session 的有效上下文窗口。
 
-Hive 当前偏差：
+本轮前 Hive 偏差：
 
 - `backend/app/services/session_command_runtime.py` 的 `/compact` 只发 `PRE_COMPACTION` / `POST_COMPACTION` hook，然后追加 `session_compact_command`。
 - 没有调用真实 summary compaction。
@@ -231,7 +231,7 @@ Hive 当前偏差：
 - 代码恢复由 `fileHistoryRewind(..., message.uuid)` 完成，基于 file history snapshot 把文件系统回到目标 user message 前的状态。
 - `MessageSelector` 的文案里会说 `The conversation will be forked.`，但这是 CLI/REPL 内部 conversation id 的新一轮状态，不是 `/branch` 那种复制 transcript 到另一个 session file。
 
-Hive 当前偏差：
+本轮前 Hive 偏差：
 
 - `/rewind` 直接创建新 `ChatSession`。
 - 返回巨大 `branch` payload。
@@ -252,7 +252,7 @@ Hive 当前偏差：
 - 成功后进入新 branch session。
 - 如果是从已 resume 的旧 session branch，branch 仍然创建一个新的 session id，并把 source session 写入 lineage。
 
-Hive 当前状态：
+本轮前 Hive 状态：
 
 - `create_conversation_branch(...)` 这条路本质上应该属于 `/branch`。
 - 这条路不应该被 `/rewind` 复用。
@@ -272,7 +272,7 @@ Hive 当前状态：
 - regenerate session id，并把旧 session 作为 parent。
 - 它是 fresh context boundary，不是删除旧证据。
 
-Hive 当前状态：
+本轮前 Hive 状态：
 
 - 后端 `/clear` 已经创建新 `ChatSession` 并保留 `parent_session_id`，方向接近。
 - 但前端没有把这个返回当作“切换到新 session”的 action，而是显示 raw JSON。
@@ -503,7 +503,7 @@ T0 继续 append-only。`compact`、`rewind`、`clear`、`branch` 都不能物�
 
 这些是 session control events，不是 assistant messages。
 
-## 4. 后端优先修复计划
+## 4. 后端修复计划（已按 0.0 实装；保留为 traceability）
 
 ### 4.1 测试先行
 
@@ -580,7 +580,7 @@ cd backend && source .venv/bin/activate && pytest \
    - UI 点击 stop 和 slash `/interrupt` 都调用同一个 command contract。
    - 结果只展示“已中断当前 turn”，不显示 `RuntimeTask` 原始对象。
 
-## 5. 前端修复计划（后端 contract 完成后）
+## 5. 前端修复计划（已按 0.0 实装；保留为 traceability）
 
 ### 5.1 测试先行
 
@@ -707,7 +707,7 @@ type CommandUiAction =
 8. T0 raw evidence append-only，不做破坏性删除。
 9. 同一 `root_session_id` 下的 branch 可以被 UI 聚合展示；每条 branch 仍有独立 `ChatSession.id`。
 
-## 8. 执行顺序
+## 8. 历史执行顺序
 
 必须按这个顺序做：
 

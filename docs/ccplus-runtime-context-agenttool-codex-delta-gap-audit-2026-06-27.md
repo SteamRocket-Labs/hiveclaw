@@ -2,7 +2,7 @@
 
 日期：2026-06-27  
 范围：CC/FreeCode 语义基线、claude-code-org 交叉校验、Codex 工程增量、Hive 当前后端/前端/runtime 对齐差距。  
-状态：审计与实施计划。本文档不声明差距已经关闭。
+状态：审计文档与总检后状态回写。历史缺口段落保留为本轮前 baseline；当前上线裁决以 master plan 的 `2.3 2026-06-27 最终复核` 和本文 Workstream 更新为准。
 
 ## 文档关系
 
@@ -11,6 +11,8 @@
 上线前最后一轮优化的统领性计划已经提升到 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md`。后续排期、四条主线、执行顺序和验收总口径以该 master plan 为准；本文继续作为 runtime / context / AgentTool / Codex delta 的证据和 P0/P1 差距来源。
 
 同日文档 `docs/ccplus-subagent-team-skill-mcp-hooks-parity-audit-2026-06-27.md` 是 Subagent、Agent Team、Skill、MCP、Hooks 的子系统附录。若专项文档发生冲突，按 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` 的四条主线和执行顺序裁决；任何后续修改必须同步更新对应断点，不能形成第二套结论。
+
+总检阅读规则：本文中未显式标为 “总检后 / 已完成 / 仍待 explicit boundary” 的 “当前 Hive / 缺口 / 下一轮” 表述，均指本轮启动时的审计基线，不再覆盖 master plan 的最终上线裁决。
 
 ## 0. 北极星
 
@@ -29,7 +31,9 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
 
 ## 1. 总结论
 
-当前 Hive **还没有完全达到 CCPlus 的 session-middle multi-agent 对齐要求**。
+本轮启动时 Hive **还没有完全达到 CCPlus 的 session-middle multi-agent 对齐要求**。
+
+总检后更新（2026-06-27）：主线 A/B/C/D 已把 session command、AgentTool/Sub-agent、Agent Team、TurnEnvelope/Workbench、Skill/MCP/Hooks read model 收束到统一 session spine。仍待项只包括显式 non-live/deferred 边界：external command/prompt/http/agent hook runner、live MCP `prompts/list` protocol fetch、MCP auth pseudo-tool、Skill frontmatter hook runtime registration / forked execution、custom subagent definition per-turn delta。
 
 好的一面是底座已经有了。Hive 当前已经具备：
 
@@ -63,9 +67,9 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
 - CC Agent Team 是 model-visible team workspace、teammate session 和 automatic message delivery 的组合；Workstream C 已把 Hive 的 `team_create` model tool、command API、Agent Team API 和 Plan Mode handoff 收束到同一个 Team runtime service，Workstream D 已补 typed TurnEnvelope / Workbench context projection。
 - Codex 的 `TurnContext`、`InputQueue`、`ThreadState`、`ThreadConfigSnapshot`、active turn snapshot、background terminal API 是很强的工程面；Hive 已吸收为 `TurnEnvelope` / `PromptAssemblyManifest` / Session Workbench read model。
 
-实际结论：
+本轮前实际结论：
 
-> 下一轮优化必须是 convergence pass，不是继续加功能。我们需要一个 AgentTool 语义面、一个 session input queue/wake path、一个 Agent Team runtime path、一个 context assembly manifest、一个 workbench state model。
+> 本轮优化必须是 convergence pass，不是继续加功能。我们需要一个 AgentTool 语义面、一个 session input queue/wake path、一个 Agent Team runtime path、一个 context assembly manifest、一个 workbench state model。
 
 ## 2. 源码证据
 
@@ -164,7 +168,7 @@ Hive 应吸收的 Codex 工程点：
 - per-turn permission profile + sandbox snapshot
 - background terminal/process 作为独立 runtime category
 
-## 3. Hive 当前状态
+## 3. 本轮前 Hive 状态与 Workstream 更新
 
 ### 3.1 Runtime Entry
 
@@ -252,7 +256,7 @@ backend/app/services/agent_tools.py
 
 补充确认：Subagent 从不主动触发的主因不是 “LLM 看不见工具”，而是 **可见但缺少 CC-style 触发 affordance**。
 
-Hive 当前 `spawn_subagent`、`check_subagent`、`delegate_to_agent`、`send_agent_session_message` 都属于 core tool surface。问题在 prompt 层：
+本轮前 `spawn_subagent`、`check_subagent`、`delegate_to_agent`、`send_agent_session_message` 都属于 core tool surface。问题在 prompt 层：
 
 - `executing_actions.py` 的默认基调是先自己做，`spawn_subagent` 只是分支选择。
 - `spawn_subagent` tool description 有类型说明，但缺少 CC AgentTool 的 few-shot examples。
@@ -315,7 +319,7 @@ frontend/src/api/domains/ccParity.ts
    - 是 enterprise-governed runtime task。
    - 可以 wake agent，但不能和 subagent completion 混成一个语义。
 
-当前 Hive 在命名和 UI 上有混用风险。下一轮必须强制区分：
+本轮前 Hive 在命名和 UI 上有混用风险。后续修复必须强制区分：
 
 - `background_subagent` 是 inter-agent mailbox event。
 - `background_terminal` 是 process/exec resource。
@@ -356,7 +360,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
   - `SUBAGENT_STOP`
 - Session Workbench 已有 hook config UI。
 
-缺口：
+本轮前缺口：
 
 - 若干 CC events 仍是 disabled/noop 或 observe-only。
 - hooks 可注册、可配置，但还不是完整的 external hook runtime 等价物。
@@ -370,7 +374,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 - Skill catalog 位于 dynamic prompt suffix，不在 frozen prefix。
 - MCP list/import/call/resource tools 存在，并且经过 governance。
 
-缺口：
+本轮前缺口：
 
 - Skill 现在仍然分散在 system catalog、installed package、skill capsule、workflow skill、subagent definitions、MCP-declared tools 等多个相邻面。
 - CC skill progressive disclosure 应该表现为一个 capability capsule loading contract，而不是多个相邻 discovery paths。
@@ -386,7 +390,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 - Hook controls 已存在。
 - Chat runtime events 已包含 child session 和 workflow identifiers。
 
-缺口：
+本轮前缺口：
 
 - UI 现在反映的是多个后端概念，不是一个统一的 session lifecycle surface。
 - 还没有 Codex-like active-turn snapshot，把 pending input、pending mailbox、interrupt/rollback、tool state、permission profile、background terminals、subagents、teams 放在一个稳定位置。
@@ -400,7 +404,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 | Agent definition | `.claude/agents` definitions + built-ins | selected capability roots + turn skills | Agent DB、soul、skills、subagent definitions | 概念存在但分散 | 一个 Agent/Skill/Subagent definition index，带 provenance |
 | User prompt accepted | durable turn before model loop | thread/turn start event | `USER_PROMPT_SUBMIT`、T0/web chat append | 基本对齐 | 保持 |
 | Context assembly | CLAUDE.md + tools + skills + queued attachments | typed `TurnContext` + `WorldState` | frozen prefix + dynamic suffix resolver graph + `TurnEnvelope`/`PromptAssemblyManifest` | 已有单一 read manifest | 保持 |
-| Tool surface | AgentTool/Skill/MCP/Task/Team | dynamic tools + deferred tools | core tools + deferred packs；`spawn_subagent` 已补 AgentTool-compatible schema | AgentTool surface 本轮已对齐；Skill/MCP/Team 待后续 | 继续收敛 Skill/MCP/Team |
+| Tool surface | AgentTool/Skill/MCP/Task/Team | dynamic tools + deferred tools | core tools + deferred packs；`spawn_subagent` 已补 AgentTool-compatible schema；Skill/MCP/Hook refs 已进 TurnEnvelope / ExtensionRegistry | AgentTool/Team/session-visible Skill/MCP/Hook state 本轮已对齐；external hook runner/live MCP prompts 为 explicit boundary | 保持唯一 path，边界显式 |
 | Coordinator spawn | `AgentTool(subagent_type:"worker")` | MultiAgentV2 hint/gating | coordinator 已改用 `spawn_subagent` / `check_subagent`，不再暴露 `delegate_to_agent` worker path | 本轮已对齐 | 保持唯一 path |
 | Send to worker vs employee | Session worker 用 AgentTool；真实同事用 SendMessage/A2A | `InterAgentCommunication` 和 thread mailbox 可分 source | To Session Worker / To Employee 已拆分；A2A gate 不再约束 session worker | 本轮已对齐 | 保持 |
 | Subagent sync | child returns digest | trace/span lineage | `spawn_subagent` sync returns digest；`prompt` / `subagent_type` / default general-purpose 已补 | 本轮已对齐 | 保持 |
@@ -735,7 +739,7 @@ UI 不应该暴露内部碎片化。它应该呈现一个 session lifecycle：
 
 ## 8. 唯一路径决策
 
-为了消除断点和臃肿，下一轮实现必须采用这些唯一性规则：
+为了消除断点和臃肿，本轮实现已经采用这些唯一性规则：
 
 1. **一个 spawn verb。**
    模型可见 worker spawning 采用 CC-compatible AgentTool semantics。内部 service 可以继续叫 `spawn_subagent`，但 prompt/schema/default 必须对齐。
@@ -886,9 +890,9 @@ cd /Users/rocky243/vc-saas/hiveclaw-main/frontend
 npm run build
 ```
 
-## 11. 最终评估
+## 11. 本轮前最终评估
 
-差距大小：**中高，但可控**。
+本轮前差距大小：**中高，但可控**。
 
 为什么不是巨大差距：
 
@@ -898,9 +902,9 @@ npm run build
 
 - CC 的关键行为不是“存在一个 subagent 工具”。
 - 关键是主 Agent 如何自然决定 spawn、async result 如何回到同一个 session、模型如何无需 polling 或 hidden tool 就能看到 completion。
-- 这条闭环目前仍然碎片化。
+- 这条闭环在本轮前仍然碎片化；总检后已收束到 session mailbox / wake / TurnEnvelope / Workbench 这条主线。
 
-下一轮不应该新增产品概念，而应该把现有代码收敛成 CC/Codex-aligned lifecycle：
+本轮收敛后的 CC/Codex-aligned lifecycle 是：
 
 ```text
 User prompt

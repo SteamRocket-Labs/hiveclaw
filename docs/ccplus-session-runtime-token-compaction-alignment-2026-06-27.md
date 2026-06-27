@@ -2,7 +2,7 @@
 
 日期：2026-06-27
 
-状态：Session runtime 底座已实装；A2A 权限继承与 peer-agent 工具面已闭环；A2A Process Graph / 人类只读会话产品化放在下一阶段。
+状态：Session runtime 底座已实装；A2A 权限继承与 peer-agent 工具面已闭环；A2A Process Graph / 人类只读会话产品化放在下一阶段。当前有效结论以 “已落地实装记录” 与 master plan 总检表为准；后续历史裁决/缺口段落保留为实现 traceability。
 
 范围：Session 内 token 计算、context window、tool-result budget、microcompact、autocompact、prompt-too-long reactive compact、compaction trace、Session/T0 记录、A2A 对 Session runtime 的依赖边界。
 
@@ -93,7 +93,7 @@ cd frontend && npm run build
 
 结果：通过。
 
-## 0. 裁决
+## 0. 本轮前裁决（历史审计基线）
 
 当前优先级必须是：
 
@@ -108,7 +108,7 @@ Session Control Spine 暴露并消费已落地的 token / compaction / context r
 
 1. A2A 的长任务、AgentTeam、delegation、subagent continuation 都依赖同一套 Session token 和 compaction 机制。
 2. 如果 Session runtime 对当前 context tokens、累计 run tokens、auto compact scope tokens 的口径不清，A2A 会继续出现“看似 A2A 失败、实际是上下文/压缩/预算先坏掉”的问题。
-3. 当前 Hive 已有 compaction 能力，但还不是 CC / FreeCode 的完整 query-preflight context pipeline，也没有完全吸收 Codex 的 context window accounting。
+3. 本轮前 Hive 已有 compaction 能力，但还不是 CC / FreeCode 的完整 query-preflight context pipeline，也没有完全吸收 Codex 的 context window accounting。
 4. 因此不能绕过 session spine 直接做 A2A 高层产品化。A2A Relationship gate 已经完成后，下一步是让 Session Control、AgentTool/Completion Bus 和 AgentTeam 先成为稳定底座，再进入 A2A Session-first delegation。
 
 目标公式：
@@ -120,7 +120,7 @@ CC / FreeCode context pipeline
 = CCPlus Session Runtime
 ```
 
-## 1. 当前问题
+## 1. 本轮前问题
 
 用户侧看到的典型问题包括：
 
@@ -157,11 +157,11 @@ Codex 只作为工程控制、context window accounting、typed event 和 UX 可
 Hive 的 T0 / Session / enterprise governance 是叠加层，不能破坏 CC 语义。
 ```
 
-## 3. Hive 当前代码事实
+## 3. 本轮前代码事实
 
 ### 3.1 已有能力
 
-当前 Hive 已有这些基础：
+本轮前 Hive 已有这些基础：
 
 - `backend/app/runtime/ccplus_contracts.py`
   - `ContextPolicyV1`
@@ -193,9 +193,9 @@ Hive 的 T0 / Session / enterprise governance 是叠加层，不能破坏 CC 语
   - post-compaction restore
   - compaction event emit
 
-### 3.2 关键缺口
+### 3.2 本轮前关键缺口
 
-当前缺口不是“没有 summary prompt”，而是 Session runtime 管线和 token accounting 尚未统一：
+本轮前缺口不是“没有 summary prompt”，而是 Session runtime 管线和 token accounting 尚未统一：
 
 1. **缺 CC 式每轮 query-preflight context pipeline**
    - 现在 Hive 有初始 compact、PTL reactive compact、mid-loop compact、time-based microcompact。
@@ -203,7 +203,7 @@ Hive 的 T0 / Session / enterprise governance 是叠加层，不能破坏 CC 语
 
 2. **tool-result budget 不是第一道关**
    - CC 在 autocompact 前先做 `applyToolResultBudget`。
-   - Hive 当前更偏 run 中清理和压缩，不够像“下一次请求前的确定性预算修剪”。
+   - 本轮前 Hive 更偏 run 中清理和压缩，不够像“下一次请求前的确定性预算修剪”。
 
 3. **token 口径混杂风险仍存在**
    - `usage_anchor_tokens` 已经不再直接作为 current context size 使用，这是正确方向。
@@ -407,7 +407,7 @@ Runtime budget
 
 ## 7. Summary Prompt 优化方向
 
-Hive 当前 summary prompt 已经强于普通摘要，但仍要按 Codex/CC 经验优化三个点：
+Hive summary prompt 已经强于普通摘要，但仍要按 Codex/CC 经验优化三个点：
 
 1. **Session continuation contract**
    - Summary 第一段必须告诉后续模型：这是压缩后的继续执行上下文，不是普通回顾。
@@ -476,7 +476,7 @@ Session Control Spine
   -> A2A close/consolidation
 ```
 
-## 9. 落地顺序
+## 9. 历史落地顺序
 
 这不是 MVP 拆分，而是一次完整修复的执行顺序。每一步都必须有测试和验收，最终一次性交付完整闭环。
 
@@ -576,7 +576,7 @@ rg -n "AgentTeam|delegate_to_agent|spawn_subagent|parent_session_id|peer_agent_i
   backend/app
 ```
 
-## 12. 最终判断
+## 12. 本轮前最终判断
 
 当前不应该绕过 session spine 先修 A2A 高层产品化。
 

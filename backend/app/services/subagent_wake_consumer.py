@@ -331,9 +331,9 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
         wake_message = (
             f"Your background subagent ({request.from_agent_id}) has finished.\n\n"
             f"Result:\n{request.content}\n\n"
-            "Review this result and either continue the task or close the loop. "
-            "If you have other background workers still reporting in, use "
-            "consume_subagent_signals to collect their results too."
+            "This completion has been appended to the parent session mailbox. "
+            "Review the mailbox result and either continue the task or close the loop. "
+            "Use check_subagent only when you explicitly need fallback status inspection for a run_id."
         )
         runtime_messages = [{"role": "user", "content": wake_message}]
         parent_session_id = _parent_session_id_from_wake_thread(request.thread_id)

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agents.subagent import (
+    SUBAGENT_TYPE_GENERAL_PURPOSE,
     SubagentHandle,
     SubagentResult,
     SubagentSpawnContext,
@@ -91,7 +92,7 @@ async def test_spawn_tool_requires_task():
     out = await handler_mod.spawn_subagent_tool(_tool_request({}))
     data = json.loads(out)
     assert data["ok"] is False
-    assert "task" in data["error"]
+    assert "prompt or task" in data["error"]
 
 
 @pytest.mark.asyncio
@@ -148,6 +149,85 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
     assert captured["spec"].max_tool_rounds == 5
     assert captured["ctx"].parent_session_id == "sess-1"
     assert captured["ctx"].parent_agent_name == "HR"
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_accepts_agenttool_prompt_alias_and_defaults_general_purpose(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["ctx"] = ctx
+        captured["spec"] = spec
+        captured["task"] = task
+        captured["kwargs"] = kwargs
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="completed",
+                content="digest",
+                tokens_used=7,
+            ),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(_tool_request({"prompt": "investigate"}))
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["type"] == SUBAGENT_TYPE_GENERAL_PURPOSE
+    assert captured["task"] == "investigate"
+    assert captured["spec"].type == SUBAGENT_TYPE_GENERAL_PURPOSE
+    assert captured["spec"].name == SUBAGENT_TYPE_GENERAL_PURPOSE
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_canonical_subagent_type_overrides_legacy_type_alias(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["spec"] = spec
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ok"),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(
+        _tool_request({"prompt": "verify this", "type": "explorer", "subagent_type": "critic"})
+    )
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["type"] == "critic"
+    assert captured["spec"].type == "critic"
 
 
 @pytest.mark.asyncio

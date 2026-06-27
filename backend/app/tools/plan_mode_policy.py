@@ -109,7 +109,12 @@ def _is_plan_mode_readonly_subagent_spawn(arguments: dict | None) -> bool:
     args = arguments or {}
     if not isinstance(args, dict):
         return False
-    subagent_type = str(args.get("type") or "explorer").strip() or "explorer"
+    prompt = str(args.get("prompt") or args.get("task") or "").strip()
+    if not prompt:
+        return False
+    subagent_type = str(args.get("subagent_type") or args.get("type") or "general-purpose").strip()
+    if not subagent_type:
+        subagent_type = "general-purpose"
     if subagent_type not in _PLAN_MODE_READONLY_SUBAGENT_TYPES:
         return False
     if str(args.get("definition_name") or "").strip():

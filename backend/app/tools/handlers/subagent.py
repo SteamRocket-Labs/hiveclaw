@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from app.agents.subagent import (
     _TYPE_PRESETS,
-    SUBAGENT_TYPE_EXPLORER,
+    SUBAGENT_TYPE_GENERAL_PURPOSE,
     SubagentSpawnContext,
     SubagentSpec,
     spawn_subagent,
@@ -136,19 +136,53 @@ async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) 
 _SPAWN_PARAMETERS: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "description": {
+            "type": "string",
+            "description": (
+                "Optional short description of why this session-local worker is being spawned. "
+                "Used for trace/read-model context only; the executable instruction belongs in prompt."
+            ),
+        },
+        "prompt": {
+            "type": "string",
+            "description": (
+                "Canonical AgentTool prompt: the self-contained instruction for the session-local worker. "
+                "The worker receives this prompt as its task and returns only a conclusion digest."
+            ),
+        },
+        "subagent_type": {
+            "type": "string",
+            "enum": ["general-purpose", "explorer", "worker", "critic"],
+            "description": (
+                "Canonical AgentTool worker type. Defaults to 'general-purpose'. Use 'explorer' for "
+                "read-only reconnaissance, 'critic' for independent verification, and 'worker' as a legacy "
+                "alias for a general edit-capable worker."
+            ),
+        },
+        "model": {
+            "type": "string",
+            "description": (
+                "Optional model override, resolved by model id, label, or provider model name within the tenant pool."
+            ),
+        },
+        "team_name": {
+            "type": "string",
+            "description": (
+                "Optional future Agent Team routing label. For a single session worker this is recorded as context "
+                "but does not change execution."
+            ),
+        },
         "task": {
             "type": "string",
             "description": (
-                "The self-contained task for the spawned subagent. It runs in isolation with only "
-                "this task as context and returns a conclusion digest — not its intermediate steps."
+                "Compatibility alias for prompt. Prefer prompt for new calls."
             ),
         },
         "type": {
             "type": "string",
-            "enum": ["explorer", "worker", "critic"],
+            "enum": ["general-purpose", "explorer", "worker", "critic"],
             "description": (
-                "Built-in subagent type for inline spawns (ignored when definition_name is set). "
-                "Defaults to 'explorer'."
+                "Compatibility alias for subagent_type. Prefer subagent_type for new calls."
             ),
         },
         "name": {
@@ -183,17 +217,40 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
             ),
         },
     },
-    "required": ["task"],
+    "anyOf": [{"required": ["prompt"]}, {"required": ["task"]}],
 }
+
+
+def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Normalize CC AgentTool fields and legacy Hive aliases into one shape."""
+
+    task = str(arguments.get("prompt") or arguments.get("task") or "").strip()
+    subagent_type = str(
+        arguments.get("subagent_type") or arguments.get("type") or SUBAGENT_TYPE_GENERAL_PURPOSE
+    ).strip()
+    if not subagent_type:
+        subagent_type = SUBAGENT_TYPE_GENERAL_PURPOSE
+    return {
+        **arguments,
+        "task": task,
+        "prompt": task,
+        "type": subagent_type,
+        "subagent_type": subagent_type,
+        "description": str(arguments.get("description") or "").strip(),
+        "model": str(arguments.get("model") or "").strip(),
+        "team_name": str(arguments.get("team_name") or "").strip(),
+    }
 
 
 @tool(
     ToolMeta(
         name="spawn_subagent",
         description=(
-            "Spawn a lightweight subagent to handle one self-contained task in isolation and return a "
-            "conclusion digest. Use this to parallelize work or keep a noisy sub-investigation out of "
-            "your own context. Built-in types: "
+            "To Session Worker: spawn a session-local worker to handle one self-contained task in isolation "
+            "and return a conclusion digest. Use this to parallelize independent work, protect the parent "
+            "context from noisy exploration, or get independent verification before reporting completion. "
+            "This is not A2A delegation and does not require a colleague relationship. Built-in types: "
+            "'general-purpose' — default edit-capable worker for a scoped task; "
             "'explorer' — fast READ-ONLY reconnaissance over files and the web; use for finding files, "
             "searching content, and answering questions about a large body of material. "
             "'worker' — general-purpose agent that can read AND edit workspace files; use to complete "
@@ -202,7 +259,7 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
             "artifacts to check and it returns a PASS/FAIL/PARTIAL verdict with evidence. "
             "Named definitions (via definition_name) override type, tools, model, and prompt from their "
             "stored 定义.md. Subagents cannot delegate or spawn further and run under the same governance "
-            "as you. To hand work to another standalone digital employee, use delegate_to_agent instead. "
+            "as you. To hand work to another standalone digital employee (To Employee), use delegate_to_agent instead. "
             "If the step ORDER itself is the requirement (fixed sequence, mid-run approval gates, "
             "budgeted fan-out), use preview_workflow/start_workflow instead of spawning."
         ),
@@ -215,15 +272,16 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
     )
 )
 async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
-    task = str(request.arguments.get("task") or "").strip()
+    normalized_args = _normalize_spawn_arguments(request.arguments)
+    task = str(normalized_args.get("task") or "").strip()
     if not task:
-        return _json({"ok": False, "error": "task is required"})
+        return _json({"ok": False, "error": "prompt or task is required"})
 
     from app.services.plan_mode_runtime_context import interactive_plan_mode_active
     from app.tools.plan_mode_policy import is_plan_mode_tool_allowed
 
     plan_mode_active = interactive_plan_mode_active()
-    if plan_mode_active and not is_plan_mode_tool_allowed("spawn_subagent", request.arguments):
+    if plan_mode_active and not is_plan_mode_tool_allowed("spawn_subagent", normalized_args):
         return _json(
             {
                 "ok": False,
@@ -247,9 +305,10 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         except ValueError:
             tenant_id = None
 
-    definition_name = str(request.arguments.get("definition_name") or "").strip()
-    raw_rounds = request.arguments.get("max_tool_rounds")
+    definition_name = str(normalized_args.get("definition_name") or "").strip()
+    raw_rounds = normalized_args.get("max_tool_rounds")
     max_tool_rounds = int(raw_rounds) if isinstance(raw_rounds, int) else None
+    model_override = str(normalized_args.get("model") or "").strip()
 
     definition_scope: str | None = None
     if definition_name:
@@ -277,9 +336,13 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                 }
             )
         spec = resolved.spec
+        if model_override:
+            spec.model = model_override
+        if normalized_args.get("description"):
+            spec.description = str(normalized_args["description"])
         definition_scope = resolved.scope
     else:
-        subagent_type = str(request.arguments.get("type") or SUBAGENT_TYPE_EXPLORER).strip()
+        subagent_type = str(normalized_args.get("subagent_type") or SUBAGENT_TYPE_GENERAL_PURPOSE).strip()
         if subagent_type not in _TYPE_PRESETS:
             return _json(
                 {
@@ -289,14 +352,16 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                     ),
                 }
             )
-        name = str(request.arguments.get("name") or subagent_type).strip() or subagent_type
+        name = str(normalized_args.get("name") or subagent_type).strip() or subagent_type
         try:
             name = validate_subagent_name(name)
         except ValueError as exc:
             return _json({"ok": False, "error": str(exc)})
         spec = SubagentSpec(
             name=name,
+            description=str(normalized_args.get("description") or ""),
             type=subagent_type,
+            model=model_override or None,
             max_tool_rounds=max_tool_rounds,
             has_own_memory=not plan_mode_active,
         )
@@ -338,9 +403,9 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         parent_session_id=request.context.session_id,
     )
 
-    ledger_todo_id = str(request.arguments.get("ledger_todo_id") or "").strip() or None
+    ledger_todo_id = str(normalized_args.get("ledger_todo_id") or "").strip() or None
 
-    if bool(request.arguments.get("run_in_background")):
+    if bool(normalized_args.get("run_in_background")):
         # Durable fire-and-forget: record the run so a crash → reconcile → failed
         # (not a forever-"running" poll), then schedule the worker and return now.
         from app.services.subagent_run_service import make_run_completer, start_subagent_run
@@ -375,6 +440,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                 "subagent": spec.name,
                 "type": spec.type,
                 "definition_scope": definition_scope,
+                "team_name": normalized_args.get("team_name") or None,
                 "status": "running",
                 "session_state": "running",
                 "continuation": {
@@ -401,6 +467,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             "subagent": spec.name,
             "type": spec.type,
             "definition_scope": definition_scope,
+            "team_name": normalized_args.get("team_name") or None,
             "status": result.status if result else "failed",
             "content": result.content if result else "",
             "error": result.error if result else "spawn produced no result",

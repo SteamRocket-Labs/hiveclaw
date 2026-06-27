@@ -126,6 +126,23 @@ class TestExecutingActionsContract:
         section = build_executing_actions_section(invocation_scope="task")
         assert "proceed without asking for confirmation" in section
 
+    def test_session_worker_and_employee_paths_are_split(self) -> None:
+        section = build_executing_actions_section()
+        assert "To Session Worker" in section
+        assert "To Employee" in section
+        assert "Use `spawn_subagent`" in section
+        assert "Use `delegate_to_agent`" in section
+        assert "A2A Collaborators context" in section
+        assert "session-local worker" in section
+
+    def test_subagent_prompt_has_when_to_use_not_use_and_examples(self) -> None:
+        section = build_executing_actions_section()
+        assert "When to use `spawn_subagent`" in section
+        assert "When NOT to use `spawn_subagent`" in section
+        assert "Fan out independent read-only searches" in section
+        assert "After non-trivial code changes, use a fresh critic" in section
+        assert "Do not use `delegate_to_agent` for session-local worker fan-out" in section
+
 
 class TestToolsSection:
     def test_has_header(self) -> None:

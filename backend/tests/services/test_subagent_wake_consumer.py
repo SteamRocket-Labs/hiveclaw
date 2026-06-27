@@ -284,6 +284,9 @@ async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(mo
     assert request.session_context.source == "subagent_wake"
     assert request.core_tools_only is True
     assert "found 3 sources" in request.messages[0]["content"]
+    assert "session mailbox" in request.messages[0]["content"]
+    assert "check_subagent" in request.messages[0]["content"]
+    assert "consume_subagent_signals" not in request.messages[0]["content"]
     assert request.model is model
     events = replay_t0_session_events(agent_id=parent_id, session_id=parent_session_id, data_root=tmp_path)
     assert [(event.event_type, event.role) for event in events] == [

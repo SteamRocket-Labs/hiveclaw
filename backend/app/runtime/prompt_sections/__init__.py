@@ -32,6 +32,7 @@ from .memory_navigation import build_memory_navigation_section
 from .scenario import build_scenario_section
 from .relationships import build_relationships_section
 from .skills_catalog import build_skills_catalog_section
+from .subagent_listing import build_subagent_listing_section
 from .system import build_system_section
 from .tasks import build_tasks_section
 from .tone_style import build_tone_style_section
@@ -48,6 +49,7 @@ __all__ = [
     "build_tools_section",
     "build_tone_style_section",
     "build_skills_catalog_section",
+    "build_subagent_listing_section",
     "build_relationships_section",
     # Dynamic suffix
     "build_memory_section",

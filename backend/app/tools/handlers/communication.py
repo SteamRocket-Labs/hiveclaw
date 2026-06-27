@@ -158,13 +158,15 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
     ToolMeta(
         name="delegate_to_agent",
         description=(
-            "Spawn an async task on another digital employee and return immediately with a task handle.\n\n"
+            "To Employee: spawn an async task on another digital employee and return immediately with a task handle. "
+            "This is A2A collaboration with a real governed colleague, not a session-local worker.\n\n"
             "Usage:\n"
             "- Use this for coordinator-style delegation when the worker should continue in the background.\n"
             f"- Brief format: {DELEGATION_BRIEF_CONTRACT}\n"
             "- Provide a precise task with the outcome you expect, any constraints, and the evidence the worker should return.\n"
             "- After delegating, check back later with `check_async_task` or inspect multiple workers with `list_async_tasks`.\n"
-            "- Do NOT use this for quick back-and-forth questions — use `send_message_to_agent` for synchronous collaboration."
+            "- Do NOT use this for quick back-and-forth questions — use `send_message_to_agent` for synchronous collaboration.\n"
+            "- Do NOT use this for session-local worker fan-out, context isolation, or independent verification inside the same session — use `spawn_subagent` for To Session Worker."
         ),
         parameters={
             "type": "object",

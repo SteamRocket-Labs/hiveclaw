@@ -262,6 +262,9 @@ def test_spawn_schema_exposes_run_in_background_and_check_tool_registered():
     from app.tools.handlers.subagent import _SPAWN_PARAMETERS, check_subagent, spawn_subagent_tool  # noqa: F401
 
     assert "run_in_background" in _SPAWN_PARAMETERS["properties"]
+    assert "prompt" in _SPAWN_PARAMETERS["properties"]
+    assert "subagent_type" in _SPAWN_PARAMETERS["properties"]
+    assert "general-purpose" in _SPAWN_PARAMETERS["properties"]["subagent_type"]["enum"]
     # check_subagent is a registered @tool (callable handler).
     assert callable(check_subagent)
 

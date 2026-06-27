@@ -56,10 +56,10 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
 
 最重要的具体问题：
 
-- CC 的模型可见主谓词是 `AgentTool`；Hive 现在把 `spawn_subagent`、`delegate_to_agent`、`team_create`、command API、workbench API、wake signal 拆成了若干相邻但不统一的面。
-- CC 的 async worker completion 会在后续 turn 作为 user-role `<task-notification>` 自动回到主 Agent；Codex 的 inter-agent completion 进入统一 `InputQueue`；Hive 当前则有 durable run state、`CoordinationSignal`、parent T0 event append、`subagent_wake` invocation、`check_subagent`、内部 `consume_subagent_signals` helper。它们都是有用部件，但不是一个 canonical input/wake path。
-- CC coordinator mode 使用 `AgentTool` 作为 worker spawn primitive；Hive coordinator 目前过滤掉 `spawn_subagent`，并引导模型使用 `delegate_to_agent`。
-- `delegate_to_agent` 当前语义是 “send to another digital employee / A2A”，不是 “session 内创建 lightweight worker”。它被 A2A collaborator prompt 和 `bridge:self` gate 包裹，在单员工部署或没有协作关系时天然不会成为 CC-style subagent 触发路径。
+- 审计时发现：CC 的模型可见主谓词是 `AgentTool`；Hive 曾把 `spawn_subagent`、`delegate_to_agent`、`team_create`、command API、workbench API、wake signal 拆成若干相邻但不统一的面。Workstream B 已先收束 `spawn_subagent`/AgentTool 这条面；Team/Skill/MCP/Workbench 继续在后续主线收束。
+- 审计时发现：CC 的 async worker completion 会在后续 turn 作为 user-role `<task-notification>` 自动回到主 Agent；Codex 的 inter-agent completion 进入统一 `InputQueue`；Hive 曾同时暴露 durable run state、`CoordinationSignal`、parent T0 event append、`subagent_wake` invocation、`check_subagent`、内部 helper 等多个表现面。Workstream B 已把 subagent prompt 收束为 parent session mailbox + wake，`check_subagent` 只作 fallback。
+- 审计时发现：CC coordinator mode 使用 `AgentTool` 作为 worker spawn primitive；Hive coordinator 曾过滤掉 `spawn_subagent` 并引导模型使用 `delegate_to_agent`。Workstream B 已修正为 coordinator 只走 To Session Worker path。
+- `delegate_to_agent` 当前语义是 “send to another digital employee / A2A”，不是 “session 内创建 lightweight worker”。Workstream B 已把它从 coordinator worker path 移除，并在 prompt/tool description 中固定为 To Employee。
 - CC Agent Team 是 model-visible team workspace、teammate session 和 automatic message delivery 的组合；Hive 有 API/UI team creation，但 LLM tool `team_create` 只是返回 `requires_api_persist`，真正持久化在 API command route。这是两条语义路径。
 - Codex 的 `TurnContext`、`InputQueue`、`ThreadState`、`ThreadConfigSnapshot`、active turn snapshot、background terminal API 是很强的工程面；Hive 有等价碎片，但还没有所有 runtime source 共同使用的 typed `TurnEnvelope`。
 
@@ -215,22 +215,22 @@ backend/app/services/agent_tools.py
 - `workflow_daemon` 会 drain subagent wake signals，并能唤醒 parent agent。
 - parent wake 会 append `subagent_wake` 的 T0 events。
 
-缺口：
+审计时缺口与 Workstream B 更新：
 
-- Hive tool schema 是 `task`、`type`、`definition_name`、`run_in_background`；CC canonical AgentTool 是 `description`、`prompt`、`subagent_type`、`model`、`run_in_background`，默认 `general-purpose`。
-- Hive built-ins 是 `explorer`、`worker`、`critic`；CC 默认是 `general-purpose`，named definitions 是叠加层。
-- Hive coordinator mode 当前允许 `delegate_to_agent`、async task tools、messaging、files、triggers，但不允许 `spawn_subagent`。这和 CC coordinator 把 `AgentTool` 作为主 worker spawn primitive 冲突。
-- parent wake prompt 里写了“use `consume_subagent_signals`”，但 `consume_subagent_signals` 只是 Python 内部 helper，不是 model-visible tool。这是实际 affordance 断点。
-- completion 可能通过 signal、T0 event、wake message、`check_subagent`、child session state、team context block 多种方式呈现。它们必须收束成一个 input queue / mailbox projection。
+- 已修复：Hive tool schema 从 `task`、`type`、`definition_name`、`run_in_background` 扩展到 CC-compatible `description`、`prompt`、`subagent_type`、`model`、`run_in_background`、`team_name`，默认 `general-purpose`。
+- 已修复：built-ins 新增 `general-purpose`，并保留 `explorer`、`worker`、`critic`。
+- 已修复：Hive coordinator mode 已允许 `spawn_subagent` / `check_subagent`，并移除 `delegate_to_agent` 作为 worker path。
+- 已修复：parent wake prompt 不再引用 `consume_subagent_signals`，改为 parent session mailbox + `check_subagent` fallback。
+- 仍待 C/D 收束：Agent Team mailbox 和 typed TurnEnvelope / InputQueue 需要接入同一完成反馈模型。
 
 ### 3.2.1 `delegate_to_agent` / A2A 与 Session Worker 混层
 
-新增确认的 P0 断点：
+原始 P0 断点与 Workstream B 更新：
 
 - `backend/app/tools/handlers/communication.py` 中 `delegate_to_agent` 的描述是 “another digital employee”，参数是 `agent_name`，并且 `plan_gate_action_kind="bridge:self"`。
 - `backend/app/runtime/prompt_sections/executing_actions.py` 的 Collaboration prompt 要求：不要委托给自己，并通过 `A2A Collaborators` 确认存在同事后再委托。
 - `backend/app/services/a2a_collaboration_policy.py` 明确有 self block、cross-owner group、active member 等 A2A policy。
-- `backend/app/runtime/coordinator.py` 却把 `delegate_to_agent` 当作 coordinator worker 的 primary verb，并过滤掉 `spawn_subagent`。
+- 已修复：`backend/app/runtime/coordinator.py` 不再把 `delegate_to_agent` 当作 coordinator worker 的 primary verb，也不再过滤 `spawn_subagent`。
 
 这说明当前系统把两种不同语义混在了一起：
 
@@ -398,14 +398,14 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 | Agent definition | `.claude/agents` definitions + built-ins | selected capability roots + turn skills | Agent DB、soul、skills、subagent definitions | 概念存在但分散 | 一个 Agent/Skill/Subagent definition index，带 provenance |
 | User prompt accepted | durable turn before model loop | thread/turn start event | `USER_PROMPT_SUBMIT`、T0/web chat append | 基本对齐 | 保持 |
 | Context assembly | CLAUDE.md + tools + skills + queued attachments | typed `TurnContext` + `WorldState` | frozen prefix + dynamic suffix resolver graph | 没有单一 manifest | `TurnEnvelope + PromptAssemblyManifest` |
-| Tool surface | AgentTool/Skill/MCP/Task/Team | dynamic tools + deferred tools | core tools + deferred packs | 名称和默认语义未 CC 对齐 | CC-compatible alias/schema canonical |
-| Coordinator spawn | `AgentTool(subagent_type:"worker")` | MultiAgentV2 hint/gating | coordinator 用 `delegate_to_agent`，过滤 `spawn_subagent` | P0 mismatch | coordinator 可见 canonical AgentTool |
-| Send to worker vs employee | Session worker 用 AgentTool；真实同事用 SendMessage/A2A | `InterAgentCommunication` 和 thread mailbox 可分 source | `delegate_to_agent` 同时承担 worker 和 employee 语义 | A2A gate 阻断单 agent session worker | To Session Worker / To Employee 分层 |
-| Subagent sync | child returns digest | trace/span lineage | `spawn_subagent` sync returns digest | 接近，但 schema 不同 | CC AgentTool-compatible wrapper |
-| Subagent async | later `<task-notification>` user message | mailbox `InterAgentCommunication` + trigger turn | signal + wake + check tool + T0 append | 多路径，prompt 提到内部 helper | 一个 parent session input queue/mailbox |
+| Tool surface | AgentTool/Skill/MCP/Task/Team | dynamic tools + deferred tools | core tools + deferred packs；`spawn_subagent` 已补 AgentTool-compatible schema | AgentTool surface 本轮已对齐；Skill/MCP/Team 待后续 | 继续收敛 Skill/MCP/Team |
+| Coordinator spawn | `AgentTool(subagent_type:"worker")` | MultiAgentV2 hint/gating | coordinator 已改用 `spawn_subagent` / `check_subagent`，不再暴露 `delegate_to_agent` worker path | 本轮已对齐 | 保持唯一 path |
+| Send to worker vs employee | Session worker 用 AgentTool；真实同事用 SendMessage/A2A | `InterAgentCommunication` 和 thread mailbox 可分 source | To Session Worker / To Employee 已拆分；A2A gate 不再约束 session worker | 本轮已对齐 | 保持 |
+| Subagent sync | child returns digest | trace/span lineage | `spawn_subagent` sync returns digest；`prompt` / `subagent_type` / default general-purpose 已补 | 本轮已对齐 | 保持 |
+| Subagent async | later `<task-notification>` user message | mailbox `InterAgentCommunication` + trigger turn | completion 写 parent session mailbox + wake；prompt 不再引用内部 helper；`check_subagent` fallback | 本轮已对齐 | 后续和 Agent Team mailbox 合流 |
 | Agent Team create | TeamCreate creates team/task list | thread graph/workbench | API creates team，LLM tool returns handoff | 两条路径 | tool/API/UI 共用一个 runtime service |
 | Teammate work | AgentTool with `team_name` and `name` | subagent thread lineage | team member sessions/API | 未 model-loop 集成 | teammate spawn/message 进入同一 AgentTool/team mailbox |
-| Completion feedback | automatic notification，无 polling | active/input queue wake | wake daemon + signal + check | 接近但不唯一 | automatic next-turn input，`check` 只作 debug |
+| Completion feedback | automatic notification，无 polling | active/input queue wake | wake daemon + parent session mailbox；`check_subagent` fallback | Subagent 本轮已对齐；Team 待 C | automatic next-turn input，`check` 只作 debug |
 | Hooks | blocking hooks around prompt/tool/stop/subagent | lifecycle events + app-server state | catalog + partial active hooks | 有 noop/observe-only | full hook runtime + workbench trace |
 | Compaction | model-authored context collapse | rollout/history builder | proactive/reactive compaction | 底座基本有 | 进入 TurnEnvelope 和 workbench |
 | Resume/fork | session files / resume | typed thread resume/fork/read/list | ChatSession/session graph/export | partial | typed session/thread APIs with snapshots |
@@ -415,15 +415,16 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 
 ### P0-1：Canonical AgentTool Surface
 
-问题：
+状态（2026-06-27 Workstream B 后）：
 
-- Hive 的 `spawn_subagent` 是一个好 primitive，但还不是 CC-compatible AgentTool surface。
-- Coordinator mode 没有暴露 `spawn_subagent`。
-- 默认类型是 `explorer`，而 CC 省略 type 时默认是 `general-purpose`。
-- `delegate_to_agent` 是 A2A employee delegation，不是 session worker spawn；不能继续让 coordinator 依赖它来模拟 CC AgentTool。
-- prompt affordance 不足：缺少 AgentTool examples、When NOT to use、agent type listing delta、parallel fan-out 强触发。
+- 已完成：`spawn_subagent` 现在是 CC-compatible AgentTool surface，接受 `description`、`prompt`、`subagent_type`、`model`、`run_in_background`、`name`、`team_name`。
+- 已完成：旧字段 `task`、`type`、`definition_name` 保持兼容 alias。
+- 已完成：省略 `subagent_type` 时映射到 `general-purpose`，内部映射当前 edit-capable worker preset。
+- 已完成：Coordinator mode 暴露 `spawn_subagent` / `check_subagent`，不再暴露 `delegate_to_agent` 作为 worker spawn。
+- 已完成：新增常驻 `## Session Worker Types`，渲染 built-in type `whenToUse`；`executing_actions` 加入 When to use / When NOT to use / examples / parallel fan-out。
+- 后续：custom definition delta 和 typed `multi_agent_mode` 进入 TurnEnvelope 归主线 D。
 
-必须修复：
+已落地修复：
 
 - 引入 canonical model-visible AgentTool-compatible tool surface。内部服务可以继续叫 `spawn_subagent`，但模型可见 schema 必须接受：
   - `description`
@@ -439,79 +440,92 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
   - `general-purpose` -> 当前 `worker` 或新增真正的 general-purpose definition
   - `explorer` -> read-only investigate
   - `critic` -> verification
-- Coordinator mode 必须包含这个工具，并使用 CC coordinator 语义。
-- 增加 CC-style prompt contract：
+- Coordinator mode 已包含这个工具，并使用 CC coordinator 语义。
+- 已增加 CC-style prompt contract：
   - 常驻 To Session Worker guidance。
   - `spawn_subagent`/AgentTool few-shot examples。
   - available agent types + whenToUse attachment。
-  - explicit/proactive multi-agent mode 注入 TurnEnvelope。
+  - explicit/proactive multi-agent mode 注入 TurnEnvelope 仍归主线 D。
 
-测试先行：
+证据：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
-pytest tests/tools/test_agent_tool_cc_compat.py -q
-pytest tests/runtime/test_coordinator_agenttool_visibility.py -q
-pytest tests/runtime/test_subagent_prompt_affordance_contract.py -q
+pytest \
+  tests/runtime/test_subagent_listing_section.py \
+  tests/tools/test_agent_tool_cc_compat.py \
+  tests/agents/test_subagent_spawn_tool.py \
+  tests/runtime/test_coordinator.py \
+  tests/runtime/test_coordinator_prompt.py \
+  tests/runtime/test_coordinator_force_async_acceptance.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/tools/test_plan_mode_policy.py \
+  -q
+# 129 passed, 4 warnings
 ```
 
 ### P0-1.5：To Session Worker / To Employee 分层
 
-问题：
+状态（2026-06-27 Workstream B 后）：
 
-- 当前 prompt 和 coordinator 把 “delegate work” 统一推向 `delegate_to_agent`。
-- 但 `delegate_to_agent` 是另一个数字员工的 A2A bridge，有 relationships / collaborator / self block / cross-owner policy。
-- 这会导致单员工部署中 multi-agent session loop 直接失效：模型被提示词劝退，runtime 也可能被 `bridge:self` 或 A2A policy 拦住。
+- 已完成：prompt 和 coordinator 不再把 session 内 worker 推向 `delegate_to_agent`。
+- 已完成：`delegate_to_agent` 明确为 To Employee / A2A bridge；A2A Collaborators 只约束真实数字员工协作。
+- 已完成：单员工部署下 session worker 可以直接走 `spawn_subagent`，不再依赖 colleague existence / A2A policy。
 
 必须修复：
 
-- 形成唯一分层，不再让一个 tool 承担两种语义：
+- 已形成唯一分层，不再让一个 tool 承担两种语义：
   - **To Session Worker**：session 内 subagent / fork / critic / explorer / team member。模型可见为 CC-compatible `AgentTool`，内部可以调用 `spawn_subagent` 和 session mailbox。
   - **To Employee**：真实数字员工之间的 A2A delegation。模型可见为 `delegate_to_agent` / `send_message_to_agent`，必须经过 A2A Collaborators、relationships、capability gate、Plan Mode bridge。
-- `executing_actions.py` 的 Collaboration 文案要改成：
+- `executing_actions.py` 的 Collaboration 文案已改成：
   - session 内并行/探索/验证任务使用 AgentTool / subagent；
   - 只有发给另一个 digital employee 时才读 A2A Collaborators；
   - 不再把 “每个 delegated task” 都绑定到 colleague existence。
-- `runtime/coordinator.py` 的 primary worker verb 从 `delegate_to_agent` 改为 canonical AgentTool surface。
-- `delegate_to_agent` 的 tool description 保留 “another digital employee”，并明确不是 session-internal worker。
-- `check_async_task` / `send_agent_session_message` 只作为 A2A child continuation 或兼容工具；session worker completion 走 mailbox/input queue。
+- `runtime/coordinator.py` 的 primary worker verb 已从 `delegate_to_agent` 改为 canonical AgentTool surface。
+- `delegate_to_agent` 的 tool description 保留 “another digital employee / To Employee”，并明确不是 session-internal worker。
+- `check_async_task` 退出 coordinator worker path；`send_agent_session_message` 保留为 child session follow-up；session worker completion 走 mailbox/wake。
 
-测试先行：
+证据：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
-pytest tests/runtime/test_agenttool_employee_delegation_split.py -q
-pytest tests/runtime/test_coordinator_agenttool_visibility.py -q
-pytest tests/tools/test_delegate_to_agent_a2a_only.py -q
+pytest \
+  tests/tools/test_agent_tool_cc_compat.py \
+  tests/runtime/test_coordinator_force_async_acceptance.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/runtime/test_t2_guidance_surface.py \
+  tests/runtime/test_unified_prompt_contracts.py \
+  -q
 ```
 
 ### P0-2：唯一 Background Completion Path
 
-问题：
+状态（2026-06-27 Workstream B 后）：
 
-- background subagent completion 有多条平行 surface。
-- wake prompt 引用了 `consume_subagent_signals`，但它不是 model-visible tool。
-- parent 可以被 synthetic user message 唤醒，但所有 pending completions 没有统一 queue 和 exactly-once delivery 语义。
+- Subagent background completion 已固定为 durable run terminal state -> parent session mailbox event -> idle parent wake。
+- wake prompt 已移除 `consume_subagent_signals`；该 helper 仍可作为内部 compatibility/read-once primitive，但不是 model-visible wait path。
+- `check_subagent` 已明确为 fallback/debug/status inspection，不作为正常 wait path。
+- 仍待主线 C/D：Agent Team mailbox、A2A session-first completion、typed TurnEnvelope / InputQueue 要并入同一模型。
 
-必须修复：
+已修复 / 仍待：
 
-- 新增或收敛成一个 session-scoped `AgentInputQueue` / mailbox service：
+- Subagent 已收敛到 parent session mailbox。后续 C/D 需要新增或收敛成统一 session-scoped `AgentInputQueue` / mailbox service：
   - `enqueue_inter_agent_message(parent_session_id, message, trigger_turn=true)`
   - `drain_for_turn(session_id, delivery_phase=current|next)`
   - exactly-once consumption
   - T0 event refs
   - RuntimeTask refs
-- Background subagent completion flow 固定为：
+- Background subagent completion flow 已固定为：
   1. child finishes
   2. durable run terminal state written
-  3. completion message enqueued into parent session mailbox
+  3. completion message appended into parent session mailbox
   4. if parent idle, scheduler starts one parent turn
-  5. model sees `<task-notification>` 或 Hive-neutral equivalent as user-role/system-meta input
-  6. message consumed once
+  5. model sees Hive-neutral completion wake context plus mailbox event refs
+  6. wake signal consumed once
 - `check_subagent` 保留为 fallback/debug tool，不作为正常 wait path。
-- 从 prompt 中删除 `consume_subagent_signals`，除非它被明确注册成 governed tool。更推荐不暴露 consume tool，像 CC/Codex 一样自动投递。
+- 已从 prompt 中删除 `consume_subagent_signals`。
 
 测试先行：
 
@@ -726,9 +740,12 @@ backend/app/services/subagent_run_service.py
 backend/app/services/subagent_wake_consumer.py
 backend/app/runtime/coordinator.py
 backend/app/services/agent_tools.py
+backend/app/runtime/prompt_sections/subagent_listing.py
+backend/app/runtime/prompt_sections/executing_actions.py
 backend/tests/tools/test_agent_tool_cc_compat.py
-backend/tests/runtime/test_coordinator_agenttool_visibility.py
-backend/tests/services/test_subagent_completion_mailbox.py
+backend/tests/runtime/test_subagent_listing_section.py
+backend/tests/runtime/test_coordinator_force_async_acceptance.py
+backend/tests/services/test_subagent_wake_consumer.py
 ```
 
 验收标准：
@@ -738,6 +755,11 @@ backend/tests/services/test_subagent_completion_mailbox.py
 - 省略 `subagent_type` 会映射为 `general-purpose`。
 - parent turn prompt 含 session worker when-to-use、few-shot、available agent types / whenToUse。
 - async child completion 会作为 automatic model-visible input 出现在 parent session。
+
+实施记录（2026-06-27）：
+
+- 已完成上述 Pass A；实际证据见 master plan Workstream B 记录。
+- 关键验证：`pytest ... -q` 覆盖 18 个 B/周边测试文件，结果 `248 passed, 4 warnings`。
 - prompt 不再引用非 tool 的 `consume_subagent_signals`。
 
 ### Pass B：Agent Team 收敛

@@ -179,7 +179,7 @@ def test_collect_real_handlers_include_memory_tools():
 
     delegate_schema = next(tool for tool in collected.openai_tools if tool["function"]["name"] == "delegate_to_agent")
     profile_enum = delegate_schema["function"]["parameters"]["properties"]["tool_profile"]["enum"]
-    assert profile_enum == ["worker_safe", "memory_readonly", "review_readonly", "research_readonly"]
+    assert profile_enum == ["peer_agent", "worker_safe", "memory_readonly", "review_readonly", "research_readonly"]
 
 
 def test_collect_real_handlers_do_not_include_removed_research_pack_tools():

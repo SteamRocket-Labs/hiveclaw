@@ -307,11 +307,15 @@ To Employee
 ```bash
 cd backend && source .venv/bin/activate && pytest \
   tests/tools/test_agent_tool_cc_compat.py \
-  tests/runtime/test_coordinator_agenttool_visibility.py \
-  tests/runtime/test_agenttool_employee_delegation_split.py \
-  tests/runtime/test_subagent_prompt_affordance_contract.py \
-  tests/services/test_subagent_completion_mailbox.py \
-  tests/runtime/test_parent_turn_receives_subagent_notification.py \
+  tests/agents/test_subagent_spawn_tool.py \
+  tests/runtime/test_subagent_listing_section.py \
+  tests/runtime/test_coordinator.py \
+  tests/runtime/test_coordinator_prompt.py \
+  tests/runtime/test_coordinator_force_async_acceptance.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/tools/test_plan_mode_policy.py \
+  tests/services/test_subagent_run_service.py \
+  tests/services/test_subagent_wake_consumer.py \
   -q
 ```
 
@@ -322,6 +326,43 @@ cd backend && source .venv/bin/activate && pytest \
 - `delegate_to_agent` 不再承担 session worker 语义。
 - background subagent 完成会自动进入 parent turn。
 - completion 不需要模型轮询。
+
+实施结果（2026-06-27 / Workstream B）：
+
+- 已建立 model-visible AgentTool-compatible `spawn_subagent` surface：`prompt`、`description`、`subagent_type`、`model`、`run_in_background`、`name`、`team_name`；旧 `task` / `type` 只作为兼容 alias。
+- `subagent_type` 默认从旧 `explorer` 改为 `general-purpose`，内部映射到现有 edit-capable worker preset；`explorer` / `worker` / `critic` 继续保留。
+- 新增 `## Session Worker Types` 常驻 prompt section，直接从 built-in `whenToUse` 渲染 `general-purpose` / `explorer` / `worker` / `critic`，进入 agent context；不再只藏在 tool schema。
+- Coordinator mode 已切到 To Session Worker：allowed tools 为 `spawn_subagent` / `check_subagent` / `send_agent_session_message` 等；`delegate_to_agent` / `check_async_task` / `list_async_tasks` / `cancel_async_task` 不再是 coordinator worker path。
+- `executing_actions` 常驻提示词已拆成 To Session Worker 与 To Employee：session 内并行、探索、隔离、独立验证走 `spawn_subagent`；真实数字员工协作才走 A2A `delegate_to_agent` / `send_message_to_agent`。
+- `delegate_to_agent` tool description 已明确为 To Employee / A2A collaboration，不是 session-local worker。
+- background subagent completion wake prompt 已移除内部 `consume_subagent_signals`，改为 parent session mailbox + wake path；`check_subagent` 只保留为 fallback status inspection。
+- Codex-style `multi_agent_mode` 作为 typed TurnEnvelope / Workbench 状态仍归入主线 D；不得另建第二套 coordinator path。
+
+证据：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_subagent_wake_consumer.py \
+  tests/runtime/test_subagent_listing_section.py \
+  tests/tools/test_agent_tool_cc_compat.py \
+  tests/agents/test_subagent_spawn_tool.py \
+  tests/runtime/test_coordinator.py \
+  tests/runtime/test_coordinator_prompt.py \
+  tests/runtime/test_coordinator_force_async_acceptance.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/tools/test_plan_mode_policy.py \
+  tests/runtime/test_t2_guidance_surface.py \
+  tests/runtime/test_unified_prompt_contracts.py \
+  tests/services/test_prompt_contracts.py \
+  tests/services/test_tool_registry.py \
+  tests/services/test_agent_tools_core_surface.py \
+  tests/tools/test_service.py \
+  tests/tools/test_collector.py \
+  tests/services/test_subagent_run_service.py \
+  tests/kernel/test_runtime_guidance_catalog.py \
+  -q
+# 248 passed, 4 warnings
+```
 
 ### 主线 C：Agent Team / A2A Session-first Collaboration
 

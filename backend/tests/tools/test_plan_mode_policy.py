@@ -75,8 +75,8 @@ def test_plan_mode_allows_readonly_subagent_and_workflow_inspection_tools():
     # helpers, but not execution or mutation.
     assert is_plan_mode_tool_allowed("preview_workflow") is True
     assert is_plan_mode_tool_allowed("check_subagent") is True
-    assert is_plan_mode_tool_allowed("spawn_subagent", {"task": "inspect current state"}) is True
-    assert is_plan_mode_tool_allowed("spawn_subagent", {"task": "verify claim", "type": "critic"}) is True
+    assert is_plan_mode_tool_allowed("spawn_subagent", {"prompt": "inspect current state", "type": "explorer"}) is True
+    assert is_plan_mode_tool_allowed("spawn_subagent", {"prompt": "verify claim", "subagent_type": "critic"}) is True
 
 
 def test_plan_mode_blocks_mutating_or_durable_subagent_spawns():
@@ -85,7 +85,9 @@ def test_plan_mode_blocks_mutating_or_durable_subagent_spawns():
     # ledger ownership all create execution/durable side effects and must stay
     # blocked until the plan is approved.
     blocked_payloads = (
+        {"prompt": "default worker now maps to general-purpose"},
         {"task": "edit this", "type": "worker"},
+        {"prompt": "edit this", "subagent_type": "general-purpose"},
         {"task": "inspect later", "run_in_background": True},
         {"task": "use custom helper", "definition_name": "team-scout"},
         {"task": "take todo", "ledger_todo_id": "todo-1"},

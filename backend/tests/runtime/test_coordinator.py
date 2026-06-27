@@ -41,8 +41,10 @@ class TestCoordinatorMode:
         # and final_report_format blocks.
         prompt = get_coordinator_prompt()
         assert "coordinator mode" in prompt.lower()
-        assert "delegate_to_agent" in prompt
+        assert "spawn_subagent" in prompt
+        assert "check_subagent" in prompt
         assert "send_agent_session_message" in prompt
+        assert "delegate_to_agent" not in prompt
         assert "send_message_to_agent" not in prompt
         assert "delegate understanding" in prompt.lower()
         # Coordination-artifact-only use of local file tools is encoded in
@@ -57,14 +59,16 @@ class TestCoordinatorMode:
 
     def test_filter_keeps_only_allowed_tools(self) -> None:
         tools = [
-            {"function": {"name": "delegate_to_agent", "parameters": {}}},
+            {"function": {"name": "spawn_subagent", "parameters": {}}},
+            {"function": {"name": "check_subagent", "parameters": {}}},
             {"function": {"name": "web_search", "parameters": {}}},
             {"function": {"name": "read_file", "parameters": {}}},
             {"function": {"name": "execute_code", "parameters": {}}},
         ]
         filtered = filter_tools_for_coordinator(tools)
         names = {t["function"]["name"] for t in filtered}
-        assert "delegate_to_agent" in names
+        assert "spawn_subagent" in names
+        assert "check_subagent" in names
         assert "read_file" in names
         assert "web_search" not in names
         assert "execute_code" not in names
@@ -73,12 +77,14 @@ class TestCoordinatorMode:
         assert filter_tools_for_coordinator([]) == []
 
     def test_all_allowed_tools_are_reasonable(self) -> None:
-        # Coordinator should have delegation + file access + time + triggers
-        assert "delegate_to_agent" in COORDINATOR_ALLOWED_TOOLS
-        assert "cancel_async_task" in COORDINATOR_ALLOWED_TOOLS
+        # Coordinator should have session worker + file access + time + triggers.
+        assert "spawn_subagent" in COORDINATOR_ALLOWED_TOOLS
+        assert "check_subagent" in COORDINATOR_ALLOWED_TOOLS
+        assert "delegate_to_agent" not in COORDINATOR_ALLOWED_TOOLS
+        assert "cancel_async_task" not in COORDINATOR_ALLOWED_TOOLS
         assert "send_agent_session_message" in COORDINATOR_ALLOWED_TOOLS
         assert "send_message_to_agent" not in COORDINATOR_ALLOWED_TOOLS
-        assert "check_async_task" in COORDINATOR_ALLOWED_TOOLS
+        assert "check_async_task" not in COORDINATOR_ALLOWED_TOOLS
         assert "set_trigger" in COORDINATOR_ALLOWED_TOOLS
         assert "update_trigger" in COORDINATOR_ALLOWED_TOOLS
         assert "cancel_trigger" in COORDINATOR_ALLOWED_TOOLS
@@ -97,5 +103,6 @@ class TestCoordinatorMode:
     def test_coordinator_continuation_tool_is_core_visible(self) -> None:
         from app.services.agent_tools import CORE_TOOL_NAMES
 
-        assert "delegate_to_agent" in CORE_TOOL_NAMES
+        assert "spawn_subagent" in CORE_TOOL_NAMES
+        assert "check_subagent" in CORE_TOOL_NAMES
         assert "send_agent_session_message" in CORE_TOOL_NAMES

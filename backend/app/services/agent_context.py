@@ -311,6 +311,7 @@ async def build_agent_context(
         build_identity_section,
         build_executing_actions_section,
         build_tone_style_section,
+        build_subagent_listing_section,
         build_relationships_section,
     )
 
@@ -433,6 +434,7 @@ async def build_agent_context(
 
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)
+    subagent_listing = build_subagent_listing_section()
     tone_style = build_tone_style_section()
 
     if include_runtime_metadata:
@@ -447,6 +449,7 @@ async def build_agent_context(
     rendered_parts = [
         identity_section,
         operating_contract,
+        subagent_listing,
         tone_style,
     ]
     # Context material (company info, org structure, channels)

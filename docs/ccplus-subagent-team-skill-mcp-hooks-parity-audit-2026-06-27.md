@@ -151,23 +151,23 @@ CC 语义：
 - `backend/app/runtime/prompt_sections/system.py`
 - `backend/app/runtime/prompt_sections/tools.py`
 
-已实现：
+已实现（2026-06-27 Workstream B 后）：
 
-1. `spawn_subagent` 是 core tool，schema 有 `task`、`type`、`name`、`definition_name`、`max_tool_rounds`、`run_in_background`、`ledger_todo_id`。
-2. built-in 类型包括 `explorer`、`worker`、`critic`。
+1. `spawn_subagent` 是 core tool，schema 有 canonical `prompt`、`description`、`subagent_type`、`model`、`team_name`、`name`、`run_in_background`，旧 `task`、`type`、`definition_name`、`max_tool_rounds`、`ledger_todo_id` 保持兼容。
+2. built-in 类型包括 `general-purpose`、`explorer`、`worker`、`critic`，默认省略 `subagent_type` 时为 `general-purpose`。
 3. child worker 复用 `invoke_agent`，继承治理路径。
 4. 子 agent 禁止进一步 spawn / delegation。
-5. background run 返回 `run_id` / `child_session_id`，可用 `check_subagent` 和 `send_agent_session_message`。
+5. background run 返回 `run_id` / `child_session_id`，completion 写 parent session mailbox 并触发 wake；`check_subagent` 只作为 fallback status inspection。
+6. coordinator mode 可见 `spawn_subagent` / `check_subagent` / `send_agent_session_message`；`delegate_to_agent` 不再是 session worker path。
+7. agent context 新增 `## Session Worker Types`，常驻渲染 built-in worker `whenToUse`。
 
-断点：
+剩余断点：
 
-1. coordinator allowed tools 不包含 `spawn_subagent` / `check_subagent`。
-2. coordinator prompt 以 `delegate_to_agent` 为主，不等价于 CC coordinator 用 AgentTool worker 并行 fan-out。
-3. `delegate_to_agent` 的真实语义是另一个 digital employee，而不是当前 session 内 lightweight worker；它还带 A2A collaborator / self block / `bridge:self` gate，所以单 agent 部署下天然不能作为 CC-style subagent 路径。
-4. Hive 没有 CC `general-purpose` default agent listing / `whenToUse` 强触发语义。
-5. 普通 tools prompt 只说复杂任务可用 `spawn_subagent`，没有 CC 那种 “parallel must fan out” 的硬规则。
+1. Agent Team 尚未完全接到同一条 AgentTool/team mailbox runtime（主线 C）。
+2. Codex-style `multi_agent_mode` 还没有进入 typed TurnEnvelope / Workbench 状态（主线 D）。
+3. custom subagent definitions 的 per-turn listing/delta 仍可加强；本轮先完成 built-in type listing。
 
-判断：Subagent runtime 底座接近，但 session trigger / coordinator semantics 未对齐。
+判断：Subagent runtime、session trigger、coordinator worker semantics 本轮已闭合；剩余不再属于 “Subagent 从不触发” 根因，而属于 Agent Team / TurnEnvelope 后续主线。
 
 ### 3.2 Agent Team
 
@@ -371,9 +371,9 @@ Hive 现在的问题是两种风格混合但没有分层：
 
 | 能力 | Hive 当前状态 | CC 要求 | 结论 |
 | --- | --- | --- | --- |
-| Subagent runtime | 有 `spawn_subagent`、built-ins、background run、child session | AgentTool 默认 general-purpose，强触发，parallel fan-out，coordinator worker | 部分对齐 |
-| Coordinator multi-agent | 只允许 `delegate_to_agent` 等 | AgentTool worker 是 coordinator 核心工具 | 未对齐 |
-| To Employee / To Session Worker 分层 | `delegate_to_agent` 被当成 worker spawn，又受 A2A gate 约束 | session worker 用 AgentTool；真实同事通信才走 A2A/SendMessage | 未对齐 |
+| Subagent runtime | 有 `spawn_subagent`、built-ins、background run、child session；本轮补齐 `general-purpose` default、AgentTool-compatible schema、Session Worker type listing | AgentTool 默认 general-purpose，强触发，parallel fan-out，coordinator worker | 本轮已对齐 |
+| Coordinator multi-agent | 本轮只允许 session worker path：`spawn_subagent` / `check_subagent` / `send_agent_session_message` | AgentTool worker 是 coordinator 核心工具 | 本轮已对齐 |
+| To Employee / To Session Worker 分层 | 本轮拆分：session worker 用 `spawn_subagent`；真实同事通信才走 A2A `delegate_to_agent` / `send_message_to_agent` | session worker 用 AgentTool；真实同事通信才走 A2A/SendMessage | 本轮已对齐 |
 | Agent Team create | API 真持久化；model tool 只返回待持久化标记 | TeamCreateTool 直接创建 team / task list / context | 未对齐 |
 | Team mailbox | 有 child session mailbox continuation | teammate name / broadcast / automatic inbox attachment | 部分对齐 |
 | Team context | 只投影 subagent/workflow/delegation tasks + signals | team members / team config / mailbox / shared task list | 未对齐 |
@@ -386,10 +386,10 @@ Hive 现在的问题是两种风格混合但没有分层：
 ### P0 — 先修 session behavior 断点
 
 1. Subagent / coordinator
-   - 把 `spawn_subagent` / `check_subagent` 纳入 coordinator allowed tools，或新增 CC-compatible AgentTool wrapper；不要把 `delegate_to_agent` 当成 AgentTool 等价层。
-   - 明确分层：To Session Worker 走 AgentTool / `spawn_subagent`；To Employee 走 `delegate_to_agent` / A2A Collaborators / relationships。
-   - coordinator prompt 改成 CC-style：复杂任务先拆分，独立任务并行发起 workers，验证任务用 critic。
-   - 增加 regression test：coordinator tool surface 必须包含 subagent worker path，且 `delegate_to_agent` 不作为默认 worker spawn path。
+   - 已完成：把 `spawn_subagent` / `check_subagent` 纳入 coordinator allowed tools，且 `delegate_to_agent` 不再作为 AgentTool 等价层。
+   - 已完成：明确分层：To Session Worker 走 AgentTool / `spawn_subagent`；To Employee 走 A2A `delegate_to_agent` / `send_message_to_agent` / A2A Collaborators。
+   - 已完成：coordinator prompt 改成 CC-style：复杂任务先拆分，独立任务并行发起 workers，验证任务用 critic。
+   - 已完成：增加 regression tests：coordinator tool surface 必须包含 subagent worker path，且 `delegate_to_agent` 不作为默认 worker spawn path。
 
 2. Agent Team
    - 把 model-visible `team_create` 接到真实持久化 service，而不是返回 `requires_api_persist`。
@@ -398,14 +398,40 @@ Hive 现在的问题是两种风格混合但没有分层：
    - 增加 regression test：LLM tool `team_create` 调用后必须产生 `AgentTeam`、member sessions、team event。
 
 3. Prompt trigger
-   - 增加 CC-style subagent/team usage prompt：
+   - Subagent 已完成，Agent Team 待主线 C：增加 CC-style subagent/team usage prompt：
      - complex multi-step -> consider worker
      - search uncertain -> explorer
      - verification -> critic
      - user asks parallel/team/swarm -> must fan out / create team
-   - 增加 `spawn_subagent` few-shot examples：写完非平凡代码后用 critic/test worker；开放搜索超过直接 grep/glob 能力时用 explorer；并行独立问题在同一回合多 worker fan-out。
-   - 增加 session worker type listing attachment：`explorer` / `worker` / `critic` / custom definitions 的 whenToUse 每 turn 可见或按 delta 注入。
-   - 增加 prompt contract tests，避免未来回退成弱提示。
+   - 已完成：增加 `spawn_subagent` few-shot-style examples：写完非平凡代码后用 critic；开放搜索超过直接 grep/glob 能力时用 explorer；并行独立问题在同一回合多 worker fan-out。
+   - 已完成：增加 session worker type listing section：`general-purpose` / `explorer` / `worker` / `critic` 的 whenToUse 常驻可见。
+   - 已完成：增加 prompt contract tests，避免未来回退成弱提示。
+
+Workstream B 证据（2026-06-27）：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_subagent_wake_consumer.py \
+  tests/runtime/test_subagent_listing_section.py \
+  tests/tools/test_agent_tool_cc_compat.py \
+  tests/agents/test_subagent_spawn_tool.py \
+  tests/runtime/test_coordinator.py \
+  tests/runtime/test_coordinator_prompt.py \
+  tests/runtime/test_coordinator_force_async_acceptance.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/tools/test_plan_mode_policy.py \
+  tests/runtime/test_t2_guidance_surface.py \
+  tests/runtime/test_unified_prompt_contracts.py \
+  tests/services/test_prompt_contracts.py \
+  tests/services/test_tool_registry.py \
+  tests/services/test_agent_tools_core_surface.py \
+  tests/tools/test_service.py \
+  tests/tools/test_collector.py \
+  tests/services/test_subagent_run_service.py \
+  tests/kernel/test_runtime_guidance_catalog.py \
+  -q
+# 248 passed, 4 warnings
+```
 
 ### P1 — 补 Skill / MCP dynamic session surface
 
@@ -438,7 +464,6 @@ cd backend
 source .venv/bin/activate
 
 pytest -q \
-  tests/runtime/test_coordinator_cc_agenttool_parity.py \
   tests/tools/test_team_create_tool_persists_team.py \
   tests/services/test_agent_team_context_members.py \
   tests/skills/test_skill_hooks_runtime_registration.py \
@@ -448,13 +473,12 @@ pytest -q \
 
 具体断言：
 
-1. coordinator visible tools 包含 lightweight worker path。
-2. `team_create` model tool 直接创建 durable team 和 member sessions。
-3. parent session 下一轮 prompt 包含 team members、mailbox、member statuses。
-4. `send_team_message(to="critic")` 能解析 teammate name 并写入对应 member mailbox。
-5. skill frontmatter hook 被注册且在对应 event 触发。
-6. MCP `prompts/list` 结果进入 skill / command catalog。
-7. external command hook exit code 2 能 block PreToolUse，并写 invocation span。
+1. `team_create` model tool 直接创建 durable team 和 member sessions。
+2. parent session 下一轮 prompt 包含 team members、mailbox、member statuses。
+3. `send_team_message(to="critic")` 能解析 teammate name 并写入对应 member mailbox。
+4. skill frontmatter hook 被注册且在对应 event 触发。
+5. MCP `prompts/list` 结果进入 skill / command catalog。
+6. external command hook exit code 2 能 block PreToolUse，并写 invocation span。
 
 ## 8. 当前验证记录
 
@@ -482,6 +506,39 @@ cd backend && source .venv/bin/activate && pytest -q \
 ```
 
 重要解释：这些测试证明现有底座可运行，不证明 CC session behavior parity 已闭合。
+
+Workstream B 最新验证（2026-06-27）：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_subagent_wake_consumer.py \
+  tests/runtime/test_subagent_listing_section.py \
+  tests/tools/test_agent_tool_cc_compat.py \
+  tests/agents/test_subagent_spawn_tool.py \
+  tests/runtime/test_coordinator.py \
+  tests/runtime/test_coordinator_prompt.py \
+  tests/runtime/test_coordinator_force_async_acceptance.py \
+  tests/runtime/test_prompt_sections.py \
+  tests/tools/test_plan_mode_policy.py \
+  tests/runtime/test_t2_guidance_surface.py \
+  tests/runtime/test_unified_prompt_contracts.py \
+  tests/services/test_prompt_contracts.py \
+  tests/services/test_tool_registry.py \
+  tests/services/test_agent_tools_core_surface.py \
+  tests/tools/test_service.py \
+  tests/tools/test_collector.py \
+  tests/services/test_subagent_run_service.py \
+  tests/kernel/test_runtime_guidance_catalog.py \
+  -q
+```
+
+结果：
+
+```text
+248 passed, 4 warnings
+```
+
+解释：这组测试证明 Subagent / AgentTool / coordinator / completion wake / prompt affordance 的 B 主线已闭合；Agent Team、Skill、MCP、Hooks 仍按后续主线继续。
 
 另有一次更宽泛的 test collection 曾失败：
 

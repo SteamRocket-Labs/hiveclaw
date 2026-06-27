@@ -52,6 +52,7 @@ ModelResolver = Callable[[str], Awaitable[Any] | Any]
 MemoryDistiller = Callable[[str], "list[tuple[str, str]] | Awaitable[list[tuple[str, str]]]"]
 
 # --- Built-in subagent types ------------------------------------------------
+SUBAGENT_TYPE_GENERAL_PURPOSE = "general-purpose"
 SUBAGENT_TYPE_EXPLORER = "explorer"
 SUBAGENT_TYPE_WORKER = "worker"
 SUBAGENT_TYPE_CRITIC = "critic"
@@ -124,6 +125,7 @@ SubagentStatus = Literal["completed", "failed", "timed_out", "depth_limited"]
 
 # Built-in type → default tool preset. Unknown types get no preset (empty allow-list).
 _TYPE_PRESETS: dict[str, tuple[str, ...]] = {
+    SUBAGENT_TYPE_GENERAL_PURPOSE: _WORKER_ALLOWED_TOOLS,
     SUBAGENT_TYPE_EXPLORER: _EXPLORER_ALLOWED_TOOLS,
     SUBAGENT_TYPE_WORKER: _WORKER_ALLOWED_TOOLS,
     SUBAGENT_TYPE_CRITIC: _CRITIC_ALLOWED_TOOLS,
@@ -232,6 +234,7 @@ PARTIAL is for environmental limitations only (material unavailable, tool missin
 - **PARTIAL**: what was verified, what could not be and why, what the caller should know."""
 
 _TYPE_PROMPTS: dict[str, str] = {
+    SUBAGENT_TYPE_GENERAL_PURPOSE: _WORKER_PROMPT,
     SUBAGENT_TYPE_EXPLORER: _EXPLORER_PROMPT,
     SUBAGENT_TYPE_WORKER: _WORKER_PROMPT,
     SUBAGENT_TYPE_CRITIC: _CRITIC_PROMPT,
@@ -241,6 +244,12 @@ _TYPE_PROMPTS: dict[str, str] = {
 # when to pick this type. Surfaces in the spawn tool, the config API, and the
 # read-only builtin template rows.
 _TYPE_DESCRIPTIONS: dict[str, str] = {
+    SUBAGENT_TYPE_GENERAL_PURPOSE: (
+        "Default general-purpose session-local worker. Use it for one well-scoped task that benefits from "
+        "a separate context, independent tool work, or parallel execution. It can read and edit workspace "
+        "files under the same governance as the parent, returns a concise digest, and must not be used for "
+        "real digital-employee/A2A delegation."
+    ),
     SUBAGENT_TYPE_EXPLORER: (
         "Fast read-only agent specialized for exploring codebases, workspaces, and the web. Use this when "
         "you need to quickly find files by patterns, search content for keywords, or answer questions about "

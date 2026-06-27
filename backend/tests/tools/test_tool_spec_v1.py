@@ -89,23 +89,28 @@ def test_tool_spec_v1_repairs_partial_registry_import_order() -> None:
     tool but before platform handlers were collected. That partial state should
     not make built-in tools look absent.
     """
+    from app.tools.collector import _import_handler_modules
     from app.tools.decorator import clear_registry
 
     clear_registry()
 
-    @tool(
-        ToolMeta(
-            name="local_only_test_tool",
-            description="Temporary local test tool.",
-            parameters={"type": "object", "properties": {}},
-            category="test",
-            display_name="Local Test Tool",
+    try:
+        @tool(
+            ToolMeta(
+                name="local_only_test_tool",
+                description="Temporary local test tool.",
+                parameters={"type": "object", "properties": {}},
+                category="test",
+                display_name="Local Test Tool",
+            )
         )
-    )
-    def _local_only_test_tool(_request):
-        return "ok"
+        def _local_only_test_tool(_request):
+            return "ok"
 
-    registered_before = get_all_registered_tools()
-    assert set(registered_before) == {"local_only_test_tool"}
+        registered_before = get_all_registered_tools()
+        assert set(registered_before) == {"local_only_test_tool"}
 
-    assert tool_spec_v1("read_file") is not None
+        assert tool_spec_v1("read_file") is not None
+    finally:
+        clear_registry()
+        _import_handler_modules(force_reload=True)

@@ -49,6 +49,54 @@ def load_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) -
     return _load_skill(workspace, arguments.get("name", ""))
 
 
+# -- run_skill_tool -----------------------------------------------------------
+
+@tool(ToolMeta(
+    name="run_skill_tool",
+    description=(
+        "Run an executable script packaged inside a loaded skill through the governed sandbox/code execution provider.\n\n"
+        "Usage:\n"
+        "- Use only after loading the relevant skill and reading its instructions.\n"
+        "- `script` must point to a file under that skill's `scripts/` directory, e.g. `scripts/build.py`.\n"
+        "- Supported script runtimes are Python (`.py`), Bash (`.sh`), and Node.js (`.js`).\n"
+        "- This is narrower than `run_command`: it cannot run arbitrary shell commands or files outside the skill package.\n"
+        "- Do not pass credentials or secrets as arguments; sandbox providers receive a sanitized execution environment."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "skill": {
+                "type": "string",
+                "description": "Loaded skill name or folder slug, e.g. 'report' or 'Deployment Review'.",
+            },
+            "script": {
+                "type": "string",
+                "description": "Script path under the skill folder, e.g. 'scripts/build.py'.",
+            },
+            "args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional positional arguments passed directly to the script without shell expansion.",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Max execution time in seconds (default 60, max 120).",
+            },
+        },
+        "required": ["skill", "script"],
+    },
+    category="skills",
+    display_name="Run Skill Tool",
+    icon="\u25b6\ufe0f",
+    governance="sensitive",
+    adapter="workspace_args",
+))
+async def run_skill_tool(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+    from app.services.agent_tool_domains.skill_runtime import run_skill_tool as _run_skill_tool
+
+    return await _run_skill_tool(workspace, arguments)
+
+
 # -- save_skill ---------------------------------------------------------------
 
 @tool(ToolMeta(

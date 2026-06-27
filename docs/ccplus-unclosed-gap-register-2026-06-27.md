@@ -28,6 +28,7 @@
 - 2026-06-27 R-1 Hooks external runner 已关闭：`hook.command` / `hook.prompt` / `hook.http` / `hook.agent` 通过现有 plugin hook registration 唯一路径进入 `GovernedHookRunner`，并可在 live hook catalog 中观察到 `governed_hook_runner`。
 - 2026-06-27 R-2 PromptAssemblyManifest 已关闭：真实 kernel prompt assembly 会写入 runtime manifest，Workbench 优先读取该实际 manifest，read-model manifest 只作为无 active runtime metadata 时的 fallback。
 - 2026-06-27 R-3 MCP live prompts/auth 已关闭：`MCPClient` 支持 `prompts/list` / `prompts/get`，Agent Tool surface 新增 `mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`，协议 resources/prompts/auth status 走同一 MCP server resolution 和 capability gate。
+- 2026-06-27 R-4 SkillTool/frontmatter hooks 已关闭：`run_skill_tool` 进入 core tool surface 并复用 code execution provider；loaded skill frontmatter hooks 会注册到 session-scoped `HookRegistry`，并写入 session metadata 可观察。
 
 ## 1. 已关闭项
 
@@ -160,8 +161,6 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/turn_envelope.
 # All checks passed!
 ```
 
-## 2. 仍未闭环项
-
 ### C-6：MCP live prompts/resources/auth status parity
 
 已做：
@@ -191,26 +190,40 @@ cd backend && source .venv/bin/activate && ruff check app/services/mcp_client.py
 # All checks passed!
 ```
 
-### R-4：SkillTool forked execution 与 skill frontmatter hooks 没有闭环
+### C-7：SkillTool forked execution 与 skill frontmatter hooks
 
 已做：
 
 - `load_skill` / `tool_search` progressive disclosure 存在。
 - skill load events 能进入 Workbench / TurnEnvelope read model。
 - Skill capsule 可以携带 instructions、references、scripts、templates 等。
+- `backend/app/tools/handlers/skills.py` 新增 `run_skill_tool`，它只允许运行已安装 skill 包内 `scripts/` 下的 `.py` / `.sh` / `.js`。
+- `backend/app/services/agent_tool_domains/skill_runtime.py` 通过现有 `execute_agent_command(...)` code execution provider 执行 skill script，不直接 raw subprocess，不走任意 shell command。
+- `backend/app/runtime/skill_hooks.py` 会把 loaded skill frontmatter `hooks` 注册为 session-scoped `HookRegistry` handlers。
+- `backend/app/kernel/engine.py` 在 `load_skill` 成功后调用同一 registration helper，并把注册结果写入 `SessionContext.metadata["skill_hook_registrations"]`。
+- `run_skill_tool` 已加入 `CORE_TOOL_NAMES`、tool category、`CAPABILITY_MAP["agent.skill.execute"]`，没有加入 capability exempt list。
 
-未闭环事实：
+闭环事实：
 
-- 没有 CC `SkillTool` forked execution 等价路径。
-- skill frontmatter hooks 没有生产注册到 session HookRegistry。
-- `load_skill` 只加载上下文，不解锁 executable components；这是正确边界，但不能等同于 CC SkillTool runtime parity。
+- `load_skill` 仍只加载上下文，不偷跑 executable components；执行必须显式调用 `run_skill_tool`。
+- Skill script 执行边界更窄于 `run_command`：只能运行 skill `scripts/` 目录内的文件，且仍走统一 code execution provider / capability gate。
+- Skill frontmatter hooks 不再只是 parser metadata；它们进入真实 `HookRegistry`，按 session_id matcher 限定，不污染其他 session。
+- 该实现没有第二条 hook 或脚本执行路径。
 
-闭环验收：
+验证证据：
 
-1. 决定是否实现 SkillTool forked execution。
-2. 若实现，必须走同一 session worker / tool governance / approval path。
-3. 若不实现，文档中必须标成 explicit not-live/deferred。
-4. skill hooks 必须要么接入 HookRegistry，要么从“已闭合”表述中删除。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py -q
+# 3 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py tests/services/test_skill_loading.py tests/runtime/test_session_skill_lifecycle.py tests/tools/test_core_pack_disjoint.py tests/tools/test_tool_spec_v1.py tests/services/test_capability_gate_policy_surface.py tests/services/test_prompt_contracts.py -q
+# 75 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/runtime/skill_hooks.py app/services/agent_tool_domains/skill_runtime.py app/tools/handlers/skills.py app/services/agent_tools.py app/tools/registry.py app/services/capability_gate.py app/kernel/engine.py tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py tests/tools/test_tool_spec_v1.py
+# All checks passed!
+```
+
+## 2. 仍未闭环项
 
 ### R-5：Sub-agent 机制已有主路径，但触发频率和 custom definitions 仍未验证闭环
 
@@ -340,11 +353,8 @@ cd backend && source .venv/bin/activate && ruff check app/services/mcp_client.py
 
 1. “Session Control 所有命令都已完整闭环。”
 2. “Workspace rewind 已实现。”
-3. “上下文组装已经由 TurnEnvelope 唯一化。”
-4. “Hooks 已对齐 CC external hook runtime。”
-5. “Skill / MCP / Hooks 都已 production-live。”
-6. “Dynamic Workflow 已完成。”
-7. “上线前最后一轮所有断点都已补齐。”
+3. “Dynamic Workflow 已完成。”
+4. “上线前最后一轮所有断点都已补齐。”
 
 允许的准确说法：
 
@@ -354,11 +364,10 @@ Session command typed result、raw JSON suppression、manual compact/rewind next
 
 Conversation-level rewind 已完成；workspace rewind snapshot 仍是 explicit not_supported。
 
-TurnEnvelope / PromptAssemblyManifest 是当前 Workbench/read-model 投影；
-是否成为实际 prompt source of truth 尚未闭合。
+TurnEnvelope / PromptAssemblyManifest 已记录真实 runtime prompt assembly；
+Workbench read model 只在缺 runtime manifest 时 fallback。
 
-Hooks 当前 live path 是 in-process allowlisted handlers；
-external command/prompt/http/agent hook runner 是 explicit deferred/not-live。
+Hooks external runner、MCP live prompts/auth status、SkillTool/frontmatter hooks 已 production-live。
 
 Dynamic Workflow 当前有下层 fixed workflow runtime 和实施计划；
 proposal/runtime/UI 闭环尚未完成。
@@ -366,12 +375,10 @@ proposal/runtime/UI 闭环尚未完成。
 
 ## 5. 建议修复顺序
 
-1. R-1：裁决 Hooks external runner 是本轮实装还是 explicit not-live；按裁决改文档/UI。
-2. R-4：裁决 SkillTool/frontmatter hooks。
-3. R-5 / R-6：补 Sub-agent / Agent Team 的行为级 e2e 验证。
-4. R-7：开始 Dynamic Workflow proposal slice。
-5. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
-6. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
+1. R-5 / R-6：补 Sub-agent / Agent Team 的行为级 e2e 验证。
+2. R-7：开始 Dynamic Workflow proposal slice。
+3. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
+4. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
 
 ## 6. 证据检查命令
 
@@ -390,6 +397,7 @@ sed -n '300,410p' backend/app/services/command_registry.py
 rg -n "propose_dynamic_workflow|preview_workflow|start_workflow|WorkflowDefinition" backend/app backend/tests frontend/src docs/dynamic-workflow-ccplus-implementation-plan-2026-06-27.md
 cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py tests/services/test_session_command_runtime.py -q
 cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py -q
 cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
 cd frontend && npm run build
 ```

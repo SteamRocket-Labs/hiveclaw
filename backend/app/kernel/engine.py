@@ -1209,6 +1209,18 @@ async def _execute_tool_with_hooks(
             _skill = _args_dict.get("skill_name") or _args_dict.get("name", "")
             if _skill:
                 _session.track_skill_loaded(_skill)
+                try:
+                    from app.runtime.skill_hooks import register_loaded_skill_hooks
+
+                    if request.agent_id:
+                        register_loaded_skill_hooks(
+                            _agent_workspace_root(request.agent_id),
+                            _skill,
+                            session_context=_session,
+                            agent_id=request.agent_id,
+                        )
+                except Exception as exc:
+                    logger.debug("[Kernel] skill hook registration failed for %s: %s", _skill, exc)
         elif _write_paths := tool_session_write_paths(tool_name, _args_dict):
             for _path in _write_paths:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None

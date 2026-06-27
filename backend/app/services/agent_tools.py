@@ -218,6 +218,7 @@ CORE_TOOL_NAMES = {
     "fs_write",
     "fs_list",
     "load_skill",
+    "run_skill_tool",
     "save_skill",
     "search_memory",
     "load_memory",

@@ -79,6 +79,7 @@ CAPABILITY_MAP: dict[str, str] = {
     "submit_t3_memory_gate_review": "agent.memory.write",
     "submit_t3_revised_patch": "agent.memory.write",
     "load_skill": "agent.skill.read",
+    "run_skill_tool": "agent.skill.execute",
     "save_skill": "agent.skill.write",
     "pin_skill": "agent.skill.write",
     "tool_search": "agent.tool.discover",

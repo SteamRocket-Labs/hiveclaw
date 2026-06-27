@@ -131,9 +131,9 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
    - Hive 已新增统一 `TurnEnvelope` / `PromptAssemblyManifest` read model，并由 Session Workbench 暴露。
 
 6. Hooks / Skill / MCP 已进入统一 session read model：
-   - Hooks parser/registry + explicit hook state 已进入 `TurnEnvelope`；external runner 未 production wired 时显式 not-live。
-   - Skill progressive disclosure 仍保留，`load_skill` tool events 已进入 `TurnEnvelope`。
-   - MCP call 能力继续走 governed wrapper，MCP tools/prompts/resources 已进入 server read model 和 ExtensionRegistry affordance。
+   - Hooks parser/registry + explicit hook state 已进入 `TurnEnvelope`；external `hook.command` / `hook.prompt` / `hook.http` / `hook.agent` 已通过 `GovernedHookRunner` production path 接入。
+   - Skill progressive disclosure 仍保留；`load_skill` tool events 已进入 `TurnEnvelope`；`run_skill_tool` 和 skill frontmatter hooks 已进入 governed runtime。
+   - MCP call 能力继续走 governed wrapper；live `mcp_list_prompts` / `mcp_get_prompt` / `mcp_auth_status` 与 resources 复用同一 MCP server resolution 和 capability gate。
 
 ### 2.3 2026-06-27 最终复核
 
@@ -145,10 +145,10 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 | 上下文组装 | 已由 `TurnEnvelope` + `PromptAssemblyManifest` 表达当前 turn 的 permissions、tools、skills、MCP、hooks、team/mailbox、context window。 | `backend/app/runtime/turn_envelope.py`，`backend/app/services/session_control_plane.py` |
 | 可以影响 Session 的 Command | `/compact`、`/rewind`、`/branch`、`/clear` 已统一 typed session command result；前端消费 `ui_action`，raw JSON 不再进入 assistant 正文。 | `ccplus-session-control-command-alignment-2026-06-27.md`，`backend/app/services/session_command_runtime.py`，`frontend/src/pages/agent-detail/sessionCommandResult.ts` |
 | Skill 和 Agent | To Session Worker / To Employee 已拆分；`spawn_subagent` 是 session-local AgentTool-style path；`delegate_to_agent` 保留为 A2A / To Employee；Agent Team create/message 走同一 `AgentTeamRuntimeService`。 | `ccplus-subagent-team-skill-mcp-hooks-parity-audit-2026-06-27.md`，`backend/app/tools/handlers/subagent.py`，`backend/app/services/agent_team_runtime_service.py` |
-| MCP Hooks | HookRegistry explicit state、Skill/MCP refs、MCP tools/prompts/resources 已进入 `TurnEnvelope` / `ExtensionRegistry` / Workbench；external command/prompt/http/agent hook runner 和 live MCP `prompts/list` 仍是显式 not-live/deferred 边界。 | `backend/app/runtime/hooks.py`，`backend/app/runtime/turn_envelope.py`，`backend/app/services/extension_registry.py`，`backend/app/services/mcp_server_service.py` |
+| MCP Hooks | HookRegistry explicit state、Skill/MCP refs、MCP tools/prompts/resources 已进入 `TurnEnvelope` / `ExtensionRegistry` / Workbench；external command/prompt/http/agent hook runner、live MCP `prompts/list` / `prompts/get` 和 MCP auth status 已接 production-live governed path。 | `backend/app/runtime/hooks.py`，`backend/app/runtime/hook_runner.py`，`backend/app/services/plugin_hook_service.py`，`backend/app/tools/handlers/mcp.py` |
 | 压缩功能 | `/compact` 已调用 LLM summary path 并安装 active projection；kernel request preflight 已有 context controller / tool-result budget / compaction events。 | `backend/app/services/session_command_runtime.py`，`backend/app/kernel/engine.py`，`backend/app/runtime/session_context_controller.py` |
 
-上线口径：如果标准是“路径唯一、提示词不劝退、session spine 内无隐藏第二规则”，本轮已闭合。若标准是“CC 所有本地 hook executor、live MCP prompt protocol、SkillTool forked execution 全部 production-live”，则这些仍是显式 non-live 边界，不应伪装为已完成。
+上线口径：如果标准是“路径唯一、提示词不劝退、session spine 内无隐藏第二规则”，本轮已闭合。若后续发现新的 CCPlus parity 断点，必须先登记到 gap register，再用红测、实装、文档证据和 commit 关闭。
 
 ## 3. 四条主线
 
@@ -519,7 +519,7 @@ cd frontend && npm run test -- \
 - `TurnEnvelope.hook_state` 现在从 `HookRegistry.describe_event_catalog()` 自动投影每个 CC standard hook 的 explicit status：`supported_active` / `supported_observe_only` / `declared_not_wired` / `unsupported_with_reason`；active run metadata 仍可覆盖具体事件。
 - `build_session_workbench()` 现在从本 session 的 `load_skill` / MCP tool events 自动派生 `skill_catalog_refs`、`mcp_server_refs` 和 `active_tool_names`，不再只依赖调用方预写 metadata。
 - `get_agent_mcp_servers()` 现在返回 server-first 的 `tools`、`prompts`、`resources`，其中工具以 `mcp__server__tool` 形式进入 ExtensionRegistry / manifest affordance。
-- Hooks external runner 仍保持 explicit not-live 状态；本轮不把 deferred `GovernedHookRunner` 偷接进 production。现有 HookRegistry / parser / plugin hook tests 继续作为 wire standard 和 live in-process hook 证据；外部 command/prompt/http/agent hook 在统一状态面标注，而不是形成第二条隐藏路径。
+- Hooks external runner 已通过现有 plugin hook registration 进入 production path：`hook.command` / `hook.prompt` / `hook.http` / `hook.agent` 统一注册为 `HookSpec`，由 `GovernedHookRunner` 消费，并在 live hook catalog 中显示 `governed_hook_runner`。未配置 adapter 时产生可观察 failed hook record，不再伪装为 active success。
 
 依赖文档：
 
@@ -581,22 +581,22 @@ cd frontend && npm run test -- \
 4. Hooks closure：
    - 已完成：每个 CC standard hook event 有状态：`supported_active`、`supported_observe_only`、`declared_not_wired`、`unsupported_with_reason`。
    - 已完成：状态进入 `TurnEnvelope` / Workbench，unsupported 不再 silent noop。
-   - 明确边界：`GovernedHookRunner` 仍不是 production path；command / prompt / http / agent external hooks 未伪装为 active，必须继续走 existing tests 的 deferred contract，直到 code execution provider、outbound policy、durable span、resume-wake 全部接通。
+   - 已完成：external `hook.command` / `hook.prompt` / `hook.http` / `hook.agent` 走 pack manifest -> `PluginHookRegistration` -> `plugin_hook_service` -> shared `HookRegistry` -> `GovernedHookRunner` 唯一路径。
+   - 明确边界：command 执行仍走现有 code execution provider；HTTP hook 走受 policy 约束的 outbound adapter；prompt/agent hook 走注入 adapter。没有 raw shell/import/webhook 第二路径。
 
 5. Skill closure：
-   - Skill matching 时强化 blocking requirement：匹配 skill 的任务先 load/invoke skill，再回答。
-   - Skill frontmatter hooks structured parse + runtime registration。
-   - Skill forked execution 的等价路径需要明确：通过 AgentTool/session worker，还是 SkillTool wrapper。
+   - 已完成：Skill frontmatter hooks structured parse + session-scoped `HookRegistry` runtime registration。
+   - 已完成：Skill forked execution 走 `run_skill_tool`，只允许运行已安装 skill `scripts/` 下文件，并复用 governed code execution provider。
    - 已完成：`load_skill` tool events 进入 TurnEnvelope 的 `skill_catalog_refs` / `active_tool_names`。
+   - 明确边界：`load_skill` 只加载上下文；可执行组件必须显式走 `run_skill_tool`、Workflow、Sub-agent 或受治理的 code execution。
 
 6. MCP closure：
    - 已完成：MCP server read model 返回 `tools` / `prompts` / `resources`，ExtensionRegistry 可把 MCP prompt/resource 映射到 command/skill runtime effects。
    - 已完成：MCP tool events 进入 TurnEnvelope 的 `mcp_server_refs` / `active_tool_names`。
-   - MCP instructions delta live attachment。
-   - MCP needs-auth pseudo-tool 或等价 auth flow。
+   - 已完成：Agent Tool surface 提供 live `mcp_list_prompts` / `mcp_get_prompt` / `mcp_auth_status`，与 `mcp_list_resources` / `mcp_read_resource` 复用同一 server resolution 和 capability gate。
    - 决定 model-visible MCP tool surface：
      - 当前采用 `call_mcp_tool` governed wrapper + `mcp__server__tool` read-model affordance，不新增绕过 governance 的直接调用路径。
-   - resource list/read canonical naming 对齐。
+   - 已完成：protocol resources/prompts/auth status 使用 canonical `mcp_*` names；legacy `list_mcp_resources` / `read_mcp_resource` 仅保留 DB tool introspection alias。
 
 验收测试：
 
@@ -622,14 +622,14 @@ cd backend && source .venv/bin/activate && pytest \
 
 总检补充证据（2026-06-27）：`executing_actions` prompt 已增加 regression test，锁定不再出现旧的默认自己做抑制句式，并要求主动 `spawn_subagent` 路由语气；总检 scope `ruff` -> `All checks passed!`，pytest -> `263 passed, 4 warnings`。
 
-总检上线口径（2026-06-27）：路径唯一化和提示词唯一化已闭合。仍需明确的 non-live 边界包括 external command/prompt/http/agent hook runner、live MCP protocol `prompts/list` fetch、MCP auth pseudo-tool、Skill frontmatter hook runtime registration / forked execution、custom subagent definition per-turn delta。这些边界必须继续显式标注为 not-live / deferred，不允许形成隐藏第二路径；若上线标准是 “session spine 唯一、无隐藏断点、无提示词劝退”，本轮已满足。若上线标准是 “100% CC feature parity including external hooks/live MCP prompt fetch/skill hook execution”，则仍不是 full parity go。
+总检上线口径（2026-06-27）：路径唯一化和提示词唯一化已闭合。external command/prompt/http/agent hook runner、live MCP protocol `prompts/list` / `prompts/get`、MCP auth status、Skill frontmatter hook runtime registration / forked execution、custom subagent definition per-turn delta、Background completion wake 均已接到唯一 production/read-model 路径；若后续发现新的 CCPlus parity 断点，必须按 gap register 重新登记和关闭。
 
 完成标准：
 
 - 每个 turn 都能解释自己加载了什么、隐藏了什么、为什么。
 - Workbench 不靠猜测拼 session state。
 - Team context 读取真实 Team rows，不再只读 RuntimeTask/Signal。
-- Hooks / Skill / MCP 的 session-visible 状态进入同一个 TurnEnvelope manifest；如果外部 runner 未接生产，必须显式标注 deferred/not-wired，不能假装 active。
+- Hooks / Skill / MCP 的 session-visible 状态进入同一个 TurnEnvelope manifest；unsupported 能力必须显式标注，不允许假装 active。
 - Hooks / Skill / MCP 不再只是存在入口，而是进入 session lifecycle read model / ExtensionRegistry / Workbench。
 - Unsupported 能力显式标注，不伪装成已支持。
 

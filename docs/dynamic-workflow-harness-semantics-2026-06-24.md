@@ -3,12 +3,15 @@
 > 状态：docs-only 设计文档。
 >
 > 关系：本文属于 `docs/ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md` 的 Workflow 主线专项，是 `docs/dynamic-workflow-cc-alignment-redesign-2026-06-23.md` 的补充，不替代它。06-23 文档回答“Hive 当前 runtime 和 CC Dynamic Workflow 的差距”；本文专门回答“Dynamic Workflow 的底层语义、几种常见形式如何组合、以及动态 harness 如何沉淀成固定 workflow”。
+>
+> **2026-06-27 裁决更新**：本文保留为 Dynamic Harness 语义补充；当前实施顺序、唯一主线、前端呈现、failure repair 和验收标准以 [`dynamic-workflow-ccplus-implementation-plan-2026-06-27.md`](./dynamic-workflow-ccplus-implementation-plan-2026-06-27.md) 为准。
 
 ## 文档索引关系
 
 本文回答 V2 Workflow 主线中的 `DynamicHarnessWorkflowV1`。
 
 - 上游总纲：[CCPlus Round 2 / V2 Hive Connect Master Plan](./ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md)。它定义 V2 六条主线、Workflow 双轨、实施顺序和验收矩阵。
+- 上线前实施入口：[CCPlus Dynamic Workflow Implementation Plan](./dynamic-workflow-ccplus-implementation-plan-2026-06-27.md)。它把 Dynamic Workflow 的触发、呈现、监控、proposal、prompt、repair、frontend 和实施顺序收成唯一主线。
 - 并列专项：[A2A Workflow Orchestration Design](./a2a-workflow-orchestration-design-2026-06-24.md)。它回答多个完整 Agent 主体之间如何用 process graph、artifact_ref、node session 交接。
 - 上游差距文档：[Dynamic Workflow CC Alignment Redesign](./dynamic-workflow-cc-alignment-redesign-2026-06-23.md)。它回答当前 runtime 与 CC Dynamic Workflow 的差距。
 - 边界分工：本文不定义 A2A cross-owner authorization，不定义完整 Agent 之间的 artifact handoff；这些属于 A2A Relationship 与 A2A Workflow 文档。本文也不改变现有 `WorkflowDefinition -> compiler -> admission -> WorkflowEngine` 的企业安全底座。

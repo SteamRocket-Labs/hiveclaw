@@ -3,6 +3,8 @@
 > 状态：讨论稿 / docs-only。本文只记录调研结论、代码事实、差距判断和目标设计，不包含实现改动。
 >
 > 目标：在保留 Hive 多租户治理、安全审计和确定性 runtime 的前提下，吸收 Claude Code Dynamic Workflows 的核心能力：模型现场生成 workflow、并行 subagent、对抗验证、运行中保存状态、失败可恢复、成功后可固化。
+>
+> **2026-06-27 裁决更新**：本文保留为早期调研证据和差距分析；当前 Dynamic Workflow 的上线前统领计划、唯一启动链路、触发/呈现/监控/失败补救/实施顺序以 [`dynamic-workflow-ccplus-implementation-plan-2026-06-27.md`](./dynamic-workflow-ccplus-implementation-plan-2026-06-27.md) 为准。
 
 ## 1. 结论先行
 

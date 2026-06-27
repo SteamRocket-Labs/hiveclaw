@@ -69,7 +69,8 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 | `docs/SKILLS_AND_PACKS_V2.md` | Skill / pack 现有设计和兼容边界。 |
 | `docs/cc-tooling-alignment-and-plugin-system.md` | CC tool/plugin 对齐背景。 |
 | `docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md` | Session 权限、企业硬规则、Hook 分层。 |
-| `docs/dynamic-workflow-cc-alignment-redesign-2026-06-23.md` | Dynamic Workflow 与 CC alignment，不和 A2A Process Graph 混层。 |
+| `docs/dynamic-workflow-ccplus-implementation-plan-2026-06-27.md` | Dynamic Workflow 上线前统领实施入口：唯一链路 `propose_dynamic_workflow -> preview_workflow -> exact approval -> start_workflow -> journal/repair/promote`，并明确不和 A2A Process Graph 混层。 |
+| `docs/dynamic-workflow-cc-alignment-redesign-2026-06-23.md` | Dynamic Workflow 早期 CC alignment 调研证据，当前实施以 2026-06-27 统领入口为准。 |
 | `docs/workflow-source-capability.md` | Workflow source capability 主文档。 |
 
 这些文档支撑第四条主线，不抢前两条主线的顺序。

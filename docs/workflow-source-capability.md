@@ -5,6 +5,7 @@
 >
 > **方法论**：Hive = CC superset——先对标 CC 基线，再叠 Hive delta，**绝不做减法、不自创范式**。
 >
+> **2026-06-27 裁决更新**：本文仍是 Workflow 确定性 runtime 源能力入口；Dynamic Workflow 的上线前实施入口是 [`dynamic-workflow-ccplus-implementation-plan-2026-06-27.md`](./dynamic-workflow-ccplus-implementation-plan-2026-06-27.md)。Dynamic Workflow 不替换本文 runtime，只在其上新增 proposal/evaluation/selector/UI/repair 层。
 
 ---
 
@@ -69,6 +70,20 @@ WorkflowEngine（唯一 runtime）
   └─ RegisteredWorkflowDefinition   # 固定：平台/组织/agent 持久注册，可复用
         有名字、有版本、有 owner、有权限策略；可被反复调用；可 fork
 ```
+
+### 3.3 Dynamic Workflow 上层（2026-06-27 统一入口）
+
+Dynamic Workflow 不是第二套 runtime，也不是高级 JSON 表单。它是当前 Agent 在当前 session 内设计 harness 的上层能力：
+
+```text
+propose_dynamic_workflow
+  -> preview_workflow
+  -> exact approval
+  -> start_workflow
+  -> WorkflowEngine / journal / repair / promote
+```
+
+具体触发、前端呈现、prompt、failure repair、proposal schema 和实施顺序见 [`dynamic-workflow-ccplus-implementation-plan-2026-06-27.md`](./dynamic-workflow-ccplus-implementation-plan-2026-06-27.md)。A2A Workflow 仍走独立 `A2A Process Graph` 设计，不与本文 `WorkflowDefinition` 混层。
 
 **两种来源共享同一套（绝不分叉）**：
 

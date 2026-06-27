@@ -294,6 +294,134 @@ def test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id():
     assert conversation[1]["content"] == "MODEL-SEEN-BYTES"
 
 
+class _QueuedScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        if isinstance(self._value, list):
+            return self._value[0] if self._value else None
+        return self._value
+
+    def scalars(self):
+        values = self._value if isinstance(self._value, list) else ([] if self._value is None else [self._value])
+        return SimpleNamespace(all=lambda: values)
+
+
+class _QueuedDB:
+    def __init__(self, *values):
+        self.values = list(values)
+
+    async def execute(self, _stmt):
+        return _QueuedScalarResult(self.values.pop(0) if self.values else None)
+
+
+def _history_msg(
+    *,
+    msg_id=None,
+    role: str = "user",
+    content: str = "hello",
+    created_at: datetime | None = None,
+):
+    return SimpleNamespace(
+        id=msg_id or uuid4(),
+        role=role,
+        content=content,
+        created_at=created_at or datetime(2026, 6, 27, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_compact_projection_replaces_prior_history_and_keeps_later_tail():
+    import app.services.web_chat_runtime as runtime
+
+    applied_at = datetime(2026, 6, 27, 12, 5, tzinfo=timezone.utc)
+    session = SimpleNamespace(
+        id=uuid4(),
+        transcript_metadata_json={
+            "active_projection": {
+                "projection_reason": "compact",
+                "applied_at": applied_at.isoformat(),
+                "replacement_messages": [
+                    {"role": "system", "content": "<session_summary>compressed context</session_summary>"},
+                ],
+            }
+        },
+    )
+    history = [
+        _history_msg(role="user", content="old user", created_at=datetime(2026, 6, 27, 12, 1, tzinfo=timezone.utc)),
+        _history_msg(
+            role="assistant",
+            content="old assistant",
+            created_at=datetime(2026, 6, 27, 12, 2, tzinfo=timezone.utc),
+        ),
+        _history_msg(role="user", content="after compact", created_at=datetime(2026, 6, 27, 12, 6, tzinfo=timezone.utc)),
+    ]
+
+    projected = await runtime._apply_active_projection_to_history(_QueuedDB(), session, history)
+    conversation = runtime.conversation_from_history_messages(projected)
+
+    assert conversation == [
+        {"role": "system", "content": "<session_summary>compressed context</session_summary>"},
+        {"role": "user", "content": "after compact"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_active_rewind_projection_truncates_history_to_checkpoint_and_keeps_later_tail():
+    import app.services.web_chat_runtime as runtime
+
+    session_id = uuid4()
+    applied_at = datetime(2026, 6, 27, 12, 5, tzinfo=timezone.utc)
+    checkpoint_event_id = uuid4()
+    kept_message_id = uuid4()
+    dropped_message_id = uuid4()
+    tail_message_id = uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        transcript_metadata_json={
+            "active_projection": {
+                "projection_reason": "rewind",
+                "checkpoint_event_id": str(checkpoint_event_id),
+                "applied_at": applied_at.isoformat(),
+            }
+        },
+    )
+    anchor_event = SimpleNamespace(id=checkpoint_event_id, session_id=session_id, sequence=10)
+    history = [
+        _history_msg(
+            msg_id=kept_message_id,
+            role="user",
+            content="original prompt",
+            created_at=datetime(2026, 6, 27, 12, 1, tzinfo=timezone.utc),
+        ),
+        _history_msg(
+            msg_id=dropped_message_id,
+            role="assistant",
+            content="discarded answer",
+            created_at=datetime(2026, 6, 27, 12, 2, tzinfo=timezone.utc),
+        ),
+        _history_msg(
+            msg_id=tail_message_id,
+            role="user",
+            content="new prompt after rewind",
+            created_at=datetime(2026, 6, 27, 12, 6, tzinfo=timezone.utc),
+        ),
+    ]
+
+    projected = await runtime._apply_active_projection_to_history(
+        _QueuedDB(anchor_event, [kept_message_id]),
+        session,
+        history,
+    )
+    conversation = runtime.conversation_from_history_messages(projected)
+
+    assert conversation == [
+        {"role": "user", "content": "original prompt"},
+        {"role": "user", "content": "new prompt after rewind"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_completed_user_turn_bridges_to_goal_continuation(monkeypatch):
     import app.services.goal_continuation_service as goal_service

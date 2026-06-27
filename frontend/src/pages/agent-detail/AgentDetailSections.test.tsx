@@ -12,6 +12,7 @@ import AgentAwareSection, {
 import AgentChatSection, {
   BranchComposePanel,
   BranchLineagePanel,
+  SessionCommandControlPanel,
   StructuredToolResultBody,
   buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
@@ -681,6 +682,58 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="branch-compose-panel"');
     expect(markup).toContain('Edited request');
     expect(markup).toContain('Create branch');
+  });
+
+  it('renders a session command checkpoint selector as an in-session control panel', () => {
+    const markup = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'checkpoint_selector',
+          title: '选择回溯位置',
+          message: '选择一个 checkpoint 继续。',
+          checkpoints: [
+            {
+              checkpoint_event_id: 'evt-1',
+              sequence: 1,
+              role: 'user',
+              content: '第一次输入',
+            },
+            {
+              checkpoint_event_id: 'evt-2',
+              sequence: 2,
+              role: 'user',
+              content: '第二次输入',
+            },
+          ],
+        }}
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-command-control-panel"');
+    expect(markup).toContain('data-testid="session-checkpoint-row"');
+    expect(markup).toContain('第一次输入');
+    expect(markup).toContain('第二次输入');
+  });
+
+  it('renders compact and rewind command outcomes inside the session instead of toast-only feedback', () => {
+    const markup = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'projection_status',
+          title: '上下文已自动压缩',
+          message: '后续请求将使用压缩后的上下文。',
+          command: 'compact',
+        }}
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-command-control-panel"');
+    expect(markup).toContain('上下文已自动压缩');
+    expect(markup).toContain('后续请求将使用压缩后的上下文');
   });
 
   it('renders AgentStatusSection as a standalone overview module', () => {

@@ -317,12 +317,12 @@ def build_default_command_registry(
         ),
         _command(
             "rewind",
-            "Create a non-destructive branch before a selected user-turn checkpoint.",
+            "Rewind the current session active projection to a selected user-turn checkpoint.",
             category="session",
         ),
         _command(
             "rollback",
-            "Roll back N user turns by creating a non-destructive checkpoint branch.",
+            "Roll back N user turns by updating the current session active projection.",
             category="session",
             input_schema={
                 "type": "object",

@@ -4,7 +4,8 @@
 
 ## 当前真相入口
 
-- `ccplus-unclosed-gap-register-2026-06-27.md` — 上线前未闭环阻断项登记表：记录 `/compact`/`/rewind` next-turn context、前端 command UI action、TurnEnvelope source-of-truth、Hooks/MCP/Skill/Dynamic Workflow 等仍不能宣称闭环的部分。
+- `ccplus-unclosed-gap-register-2026-06-27.md` — 上线前未闭环阻断项登记表：记录已关闭证据（`/compact`/`/rewind` next-turn context、前端 command UI action、command registry active projection 文案）和剩余不能宣称闭环的部分（TurnEnvelope source-of-truth、Hooks/MCP/Skill/Dynamic Workflow 等）。
+- `ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md` — Session checkpoint / rewind / branch 的后续 UI/UX 升级方案：在基础 `SessionCommandControlPanel` 已闭合后，规划 checkpoint timeline rail、active head、rewound tail、branch graph、compact marker、Session Inspector 等体验深化。
 - `ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` — 上线前最后一轮 CCPlus 优化统领入口：把 Session Control Spine、AgentTool/Sub-agent/Completion Bus、Agent Team/A2A Session-first、TurnEnvelope/Workbench/Hooks/Skill/MCP 四条主线统一成一个执行顺序和验收口径；2026-06-27 复核后不再单独作为“全部闭环”证明，未闭环裁决以 gap register 为准。
 - `hive-sota-master-goal.md` — Hive SOTA 总目标、总矩阵和以后每轮循环对照的 canonical 第一入口。
 - `cc-python-evolution-north-star-2026-06-22.md` — Hive 作为 CC Python evolution + Memory/Iter + Codex delta 的北极星，以及单 Session 全面排查总纲。

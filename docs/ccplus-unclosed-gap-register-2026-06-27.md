@@ -2,7 +2,7 @@
 
 日期：2026-06-27
 
-状态：上线前阻断项登记表。本文不是计划完成说明，也不是验收通过说明；它只记录当前 checkout 中仍不能称为闭环的部分。
+状态：上线前阻断项登记表。本文不是计划完成说明；它记录当前 checkout 中仍不能称为闭环的部分，并在缺口关闭时保留证据。
 
 ## 0. 阅读规则
 
@@ -23,98 +23,85 @@
 当前复核快照：
 
 - 复核基线 HEAD：`e3f96ba6 docs: define dynamic workflow implementation plan`
-- 当前工作区存在外部未提交改动：`backend/app/services/web_chat_runtime.py`、`backend/tests/services/test_web_chat_runtime.py`
-- 该外部补丁已开始实现 `/compact` / `/rewind` active projection consumption：新增 `_apply_active_projection_to_history(...)` 并在 `_load_runtime_context()` 中调用；但在补丁提交、测试通过、文档回写前，本项仍按“待验证未闭环”处理。
+- 本文初版 commit：`4201e09e docs: record ccplus unclosed gaps`
+- 2026-06-27 本次复核后，P0-1 `/compact` / `/rewind` next-turn context consumption、P0-2 session command UI action、P0-3 command registry 旧 branch 文案已经关闭。证据见下方“已关闭项”。
 
-## 1. P0 阻断项
+## 1. 已关闭项
 
-### P0-1：`/compact` / `/rewind` next-turn context consumption 仍待验证闭环
+### C-1：`/compact` / `/rewind` next-turn context consumption
 
 已做：
 
 - `backend/app/services/session_command_runtime.py` 会把 `/compact`、`/rewind` 写入 `ChatSession.transcript_metadata_json.active_projection`。
 - `/compact` 会写 `session_compact` 事件，并返回 `ui_action.type = "install_compacted_context"`。
 - `/rewind` 会写 `session_rewind` 事件，并返回 `ui_action.type = "install_active_projection"`。
+- `backend/app/services/web_chat_runtime.py` 新增 `_apply_active_projection_to_history(...)`，并在 `_load_runtime_context()` 返回 history 前消费 active projection。
+- compact projection 用 `replacement_messages` 替换旧上下文，并保留 compact 后的新消息 tail。
+- rewind projection 按 checkpoint 前的 transcript message ids 重建上下文前缀，并保留 rewind 后的新消息 tail。
 
-未闭环事实：
+闭环事实：
 
-- 当前 HEAD 尚未包含 next-turn projection consumption 的已提交闭环。
-- 当前工作区有外部未提交补丁，新增 `_apply_active_projection_to_history(...)` 并让 `_load_runtime_context()` 在返回前应用 projection。
-- 该补丁尚未完成本登记表要求的验收：测试通过、commit、专项文档回写、前端 active projection 展示仍未完成。
-- 因此在正式提交和验证前，不能把 `/compact` / `/rewind` 写成已闭合。
+- 原始 T0 / `ChatMessage` 不被删除，模型上下文走读侧 projection。
+- 下一轮 web chat runtime 会消费 projection，不再只是 metadata。
 
-现有风险：
+验证证据：
 
-- 这是最严重的“假闭环”风险：后端命令显示成功，但模型实际上下文是否改变必须由 runtime test 和 provider request path 证明。
-- `docs/ccplus-session-control-command-alignment-2026-06-27.md` 的 Workstream A “已实装”表述必须降级，不能继续暗示 compact/rewind 已经 effective。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py tests/services/test_session_command_runtime.py -q
+# 90 passed, 4 warnings
 
-闭环验收：
+cd backend && source .venv/bin/activate && ruff check app/services/web_chat_runtime.py tests/services/test_web_chat_runtime.py
+# All checks passed!
+```
 
-1. 先保留/完善 `backend/tests/services/test_web_chat_runtime.py` 中的 failing regression：
-   - compact projection 用 `replacement_messages` 替换旧 history，并保留 projection 之后的新 user tail。
-   - rewind projection 根据 checkpoint event/message refs 截断旧 history，并保留 rewind 之后的新 user tail。
-2. 在 `web_chat_runtime.py` 中保留唯一消费点，例如当前外部补丁里的 `_apply_active_projection_to_history(...)`。
-3. `_load_runtime_context()` 必须在返回前应用 projection，不能让 caller 各自处理。
-4. 测试必须证明下一轮 `conversation_from_history_messages()` 使用的是 projection 后的 history。
-5. 补丁提交后，本文 P0-1 必须从“待验证未闭环”改为“已闭环证据”，并附测试命令。
-
-### P0-2：Session command 前端 `ui_action` 仍是半接入
+### C-2：Session command 前端 `ui_action`
 
 已做：
 
 - `frontend/src/pages/agent-detail/sessionCommandResult.ts` 能识别 typed `ui_action`。
 - `frontend/src/pages/AgentDetail.tsx` 对 typed session command result 不再追加 raw JSON assistant message。
 - `switch_session`、`copy_to_clipboard` 有实际动作。
+- `frontend/src/pages/AgentDetail.tsx` 将 `open_checkpoint_selector`、`install_compacted_context`、`install_active_projection`、`open_context_panel`、`open_usage_panel`、`open_side_question`、`open_export_panel`、`open_permissions_menu` 转成 session 内 control panel。
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx` 新增 `SessionCommandControlPanel`。
+- checkpoint selector 会展示轻量 rail 和 checkpoint rows；点击后回到同一 `/rewind` command path。
 
-未闭环事实：
+闭环事实：
 
-- 以下 action 现在基本只是 `invalidateSessionRuntimeQueries(...)` + toast：
-  - `install_compacted_context`
-  - `install_active_projection`
-  - `open_checkpoint_selector`
-  - `open_context_panel`
-  - `open_usage_panel`
-  - `open_side_question`
-- 没有真实 checkpoint selector、context panel、usage panel、side-question drawer。
-- “安装 compacted context / active projection” 目前没有前端可确认的状态展示。
+- 这些 action 不再是 toast-only。
+- 当前实现是 session 内轻量 control panel；更深的 Workbench 专项 UI 可继续优化，但不再是 P0 阻断。
 
-现有风险：
+验证证据：
 
-- 用户以为 command 触发了 CC/Codex 类 session 控制，但前端只显示提示。
-- `/rewind` 无 checkpoint 时返回 selector action，但 UI 不打开 selector，用户无法完成闭环。
+```bash
+cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
+# 2 files passed, 68 tests passed
 
-闭环验收：
+cd frontend && npm run build
+# tsc && vite build completed successfully
+```
 
-1. `open_checkpoint_selector` 必须打开真实 checkpoint selector，并把选择结果回传同一 `/rewind` command path。
-2. `open_context_panel` / `open_usage_panel` 必须打开真实 Workbench panel，而不是 toast。
-3. `open_side_question` 必须打开或创建 side-question drawer/session。
-4. `install_compacted_context` / `install_active_projection` 至少要刷新并显示当前 active projection 状态；更理想是进入 context panel 的 active projection 区。
-
-### P0-3：文档与 command registry 存在过度完成和旧语义
+### C-3：Command registry 旧 branch 语义
 
 已做：
 
-- 已有 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md`、`docs/ccplus-session-control-command-alignment-2026-06-27.md` 等总文档。
 - `backend/app/services/command_registry.py` 已注册 `/compact`、`/rewind`、`/branch` 等 command。
+- `rewind` 描述已改为 “Rewind the current session active projection to a selected user-turn checkpoint.”
+- `rollback` 描述已改为 “Roll back N user turns by updating the current session active projection.”
 
-未闭环事实：
+闭环事实：
 
-- `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` 里仍有“路径唯一化/已完成 Workstream D”等强表述，容易被误读为上线已闭合。
-- `docs/ccplus-session-control-command-alignment-2026-06-27.md` 把 Workstream A 写成已实装，但没有说明 `/compact` / `/rewind` projection 尚未被下一轮模型上下文消费。
-- `backend/app/services/command_registry.py` 中 `rewind` 描述仍是 “Create a non-destructive branch before a selected user-turn checkpoint.”，这和当前目标语义冲突。
-- `rollback` 描述也仍绑定 “creating a non-destructive checkpoint branch”，需要重新裁决：到底是 legacy alias、隐藏命令，还是要归入 active projection rollback。
+- model/user command index 不再把 rewind/rollback 写成 branch。
 
-闭环验收：
+验证证据：
 
-1. Master plan 顶部必须明确引用本文，说明上线裁决受本 gap register 约束。
-2. Session command 文档必须拆成：
-   - typed result 已完成。
-   - raw JSON suppression 已完成。
-   - next-turn context consumption 未完成。
-   - UI action 未完成。
-3. command registry 描述必须和唯一语义一致，不能继续把 rewind 写成 branch。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
+# 8 passed, 3 warnings
+```
 
-### P0-4：Hooks 没有 CC-level 外部 hook runtime 闭环
+## 2. 仍未闭环项
+
+### R-1：Hooks 没有 CC-level 外部 hook runtime 闭环
 
 已做：
 
@@ -144,9 +131,7 @@
    - 如果本轮不做 external hook，所有文档和 UI 必须标成 not-live，不能说 hooks 已闭合。
 2. skill frontmatter hooks 也必须决定是否接入 HookRegistry；未接入前不得称为 Skill/Hook 闭环。
 
-## 2. P1 高优先级未闭环项
-
-### P1-1：TurnEnvelope / PromptAssemblyManifest 仍主要是 read model，不是实际 prompt assembly source of truth
+### R-2：TurnEnvelope / PromptAssemblyManifest 仍主要是 read model，不是实际 prompt assembly source of truth
 
 已做：
 
@@ -171,7 +156,7 @@
 2. 要么把文档改成 “TurnEnvelope 是 Workbench/read model，不是 prompt source of truth”。
 3. 必须有测试证明 manifest 与实际 provider request 的 system/context/tool surface 一致。
 
-### P1-2：MCP live prompts/resources parity 没有完整闭环
+### R-3：MCP live prompts/resources parity 没有完整闭环
 
 已做：
 
@@ -191,7 +176,7 @@
 2. 如果进入，必须接入 MCP client、cache、authz、ExtensionRegistry、Workbench、prompt manifest。
 3. 如果不进入，所有文档必须写成 persisted read model parity，不得写成 live MCP prompt parity。
 
-### P1-3：SkillTool forked execution 与 skill frontmatter hooks 没有闭环
+### R-4：SkillTool forked execution 与 skill frontmatter hooks 没有闭环
 
 已做：
 
@@ -212,7 +197,7 @@
 3. 若不实现，文档中必须标成 explicit not-live/deferred。
 4. skill hooks 必须要么接入 HookRegistry，要么从“已闭合”表述中删除。
 
-### P1-4：Sub-agent 机制已有主路径，但触发频率和 custom definitions 仍未验证闭环
+### R-5：Sub-agent 机制已有主路径，但触发频率和 custom definitions 仍未验证闭环
 
 已做：
 
@@ -237,7 +222,7 @@
 2. 记录 `spawn_subagent` 调用率、拒用原因、completion wake 是否进入主 session。
 3. custom definitions 若作为 parity 目标，必须进入同一 Session Worker listing，不走第二路径。
 
-### P1-5：Agent Team runtime 已有，但团队完成反馈 / UI / e2e 验证仍不能算全闭环
+### R-6：Agent Team runtime 已有，但团队完成反馈 / UI / e2e 验证仍不能算全闭环
 
 已做：
 
@@ -259,7 +244,7 @@
 2. UI 必须能看到 team、member session、mailbox/completion、artifact refs。
 3. 文档必须把 Agent Team 和 A2A employee delegation 的边界写死，不复用 relationship 旧语义。
 
-### P1-6：Dynamic Workflow 目前是计划文档，不是 proposal runtime 闭环
+### R-7：Dynamic Workflow 目前是计划文档，不是 proposal runtime 闭环
 
 已做：
 
@@ -281,9 +266,9 @@
 3. UI 走 proposal card / preview / exact approval。
 4. `start_workflow` 只接受 preview artifact/hash，不接受口头确认。
 
-## 3. P2 明确边界或待裁决项
+## 3. 明确边界或待裁决项
 
-### P2-1：Workspace rewind snapshot 没有实现
+### B-1：Workspace rewind snapshot 没有实现
 
 已做：
 
@@ -299,7 +284,7 @@
 - 如果上线只承诺 conversation rewind，可以保留 not_supported。
 - 如果要对齐“session rewind 包括工作区状态”，必须单独实现 snapshot contract。
 
-### P2-2：隐藏 session commands 没有完整 UI
+### B-2：隐藏 session commands 没有完整 UI
 
 已做：
 
@@ -316,7 +301,7 @@
 - 不暴露的命令必须标成 internal/hidden，不得在用户文档中当成完成能力宣传。
 - 暴露的命令必须补 UI action 和测试。
 
-### P2-3：Background Agent / long-running completion wake 仍需统一验收口径
+### B-3：Background Agent / long-running completion wake 仍需统一验收口径
 
 已做：
 
@@ -338,10 +323,10 @@
 
 以下说法在上述 gap 关闭前都不能继续写：
 
-1. “Session Control 已完整闭环。”
-2. “/compact 和 /rewind 已真正改变模型上下文。”
+1. “Session Control 所有命令都已完整闭环。”
+2. “Workspace rewind 已实现。”
 3. “上下文组装已经由 TurnEnvelope 唯一化。”
-4. “Hooks 已对齐 CC。”
+4. “Hooks 已对齐 CC external hook runtime。”
 5. “Skill / MCP / Hooks 都已 production-live。”
 6. “Dynamic Workflow 已完成。”
 7. “上线前最后一轮所有断点都已补齐。”
@@ -349,8 +334,10 @@
 允许的准确说法：
 
 ```text
-Session command typed result 和 raw JSON suppression 已完成；
-manual compact/rewind 的 next-turn context consumption 未完成。
+Session command typed result、raw JSON suppression、manual compact/rewind next-turn context consumption、
+以及前端 session command control panel 已完成。
+
+Conversation-level rewind 已完成；workspace rewind snapshot 仍是 explicit not_supported。
 
 TurnEnvelope / PromptAssemblyManifest 是当前 Workbench/read-model 投影；
 是否成为实际 prompt source of truth 尚未闭合。
@@ -364,14 +351,13 @@ proposal/runtime/UI 闭环尚未完成。
 
 ## 5. 建议修复顺序
 
-1. P0-1：补 `/compact` / `/rewind` active projection 的 runtime consumption。
-2. P0-2：补前端 command UI action 的真实 selector/panel/drawer。
-3. P0-3：同步修正文档和 command registry，删除过度完成表述。
-4. P0-4：裁决 Hooks external runner 是本轮实装还是 explicit not-live；按裁决改文档/UI。
-5. P1-1：裁决 TurnEnvelope 是否进入真实 prompt source path。
-6. P1-2 / P1-3：裁决 MCP live prompts 和 SkillTool/frontmatter hooks。
-7. P1-4 / P1-5：补 Sub-agent / Agent Team 的行为级 e2e 验证。
-8. P1-6：开始 Dynamic Workflow proposal slice。
+1. R-1：裁决 Hooks external runner 是本轮实装还是 explicit not-live；按裁决改文档/UI。
+2. R-2：裁决 TurnEnvelope 是否进入真实 prompt source path。
+3. R-3 / R-4：裁决 MCP live prompts 和 SkillTool/frontmatter hooks。
+4. R-5 / R-6：补 Sub-agent / Agent Team 的行为级 e2e 验证。
+5. R-7：开始 Dynamic Workflow proposal slice。
+6. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
+7. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
 
 ## 6. 证据检查命令
 
@@ -388,4 +374,8 @@ sed -n '730,790p' frontend/src/pages/AgentDetail.tsx
 sed -n '1,120p' backend/app/runtime/hook_runner.py
 sed -n '300,410p' backend/app/services/command_registry.py
 rg -n "propose_dynamic_workflow|preview_workflow|start_workflow|WorkflowDefinition" backend/app backend/tests frontend/src docs/dynamic-workflow-ccplus-implementation-plan-2026-06-27.md
+cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py tests/services/test_session_command_runtime.py -q
+cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
+cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
+cd frontend && npm run build
 ```

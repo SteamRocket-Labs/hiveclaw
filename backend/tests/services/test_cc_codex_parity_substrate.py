@@ -44,6 +44,20 @@ def test_command_registry_exposes_index_without_full_schema():
         raise AssertionError("duplicate command registration must fail")
 
 
+def test_rewind_command_registry_describes_active_projection_not_branch():
+    from app.services.command_registry import build_default_command_registry
+
+    registry = build_default_command_registry()
+
+    rewind = registry.get("rewind")
+    rollback = registry.get("rollback")
+
+    assert "active projection" in rewind.description
+    assert "branch" not in rewind.description.lower()
+    assert "active projection" in rollback.description
+    assert "branch" not in rollback.description.lower()
+
+
 def test_session_goal_continuation_rules_are_event_driven_and_budgeted():
     from app.services.session_goal_runtime import GoalStatus, SessionGoal, should_continue_goal
 

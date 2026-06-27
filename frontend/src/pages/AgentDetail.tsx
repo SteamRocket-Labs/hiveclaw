@@ -10,7 +10,12 @@ import AgentApprovalsSection from './agent-detail/AgentApprovalsSection';
 import AgentWorkflowsSection from './agent-detail/AgentWorkflowsSection';
 import AgentActivityLogSection from './agent-detail/AgentActivityLogSection';
 import AgentAwareSection from './agent-detail/AgentAwareSection';
-import AgentChatSection, { type BranchLineageItem, type SessionPermissionMode } from './agent-detail/AgentChatSection';
+import AgentChatSection, {
+    type BranchLineageItem,
+    type SessionCommandCheckpoint,
+    type SessionCommandControlState,
+    type SessionPermissionMode,
+} from './agent-detail/AgentChatSection';
 import AgentEvolutionSection from './agent-detail/AgentEvolutionSection';
 import AgentKnowledgeSection from './agent-detail/AgentKnowledgeSection';
 import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
@@ -607,6 +612,7 @@ function AgentDetailInner() {
             setHistoryMessagesSessionId((current) => (current === sessionId ? current : null));
         }
         setTransportNotice(null);
+        setSessionCommandControl(null);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting || !!activeRunState);
         setSessionPermissionMode(sessionPermissionModeFromSession(sess));
@@ -695,6 +701,26 @@ function AgentDetailInner() {
         });
     };
 
+    const normalizeSessionCommandCheckpoints = (value: unknown): SessionCommandCheckpoint[] => {
+        if (!Array.isArray(value)) return [];
+        return value
+            .filter((item): item is Record<string, unknown> => item != null && typeof item === 'object' && !Array.isArray(item))
+            .map((item) => ({
+                checkpoint_event_id: typeof item.checkpoint_event_id === 'string' ? item.checkpoint_event_id : null,
+                event_id: typeof item.event_id === 'string' ? item.event_id : null,
+                sequence: typeof item.sequence === 'number' || typeof item.sequence === 'string' ? item.sequence : null,
+                turn_index: typeof item.turn_index === 'number' || typeof item.turn_index === 'string' ? item.turn_index : null,
+                role: typeof item.role === 'string' ? item.role : null,
+                content: typeof item.content === 'string' ? item.content : null,
+                created_at: typeof item.created_at === 'string' ? item.created_at : null,
+            }));
+    };
+
+    const openSessionCommandControl = (control: SessionCommandControlState) => {
+        selectDetailTab('chat');
+        setSessionCommandControl(control);
+    };
+
     const handleSessionCommandUiAction = async (response: Awaited<ReturnType<typeof ccParityApi.executeCommand>>) => {
         const uiAction = getSessionCommandUiAction(response);
         if (!uiAction || !id || !activeSession?.id) return false;
@@ -734,6 +760,23 @@ function AgentDetailInner() {
             return true;
         }
 
+        if (uiAction.type === 'open_checkpoint_selector') {
+            const checkpoints = normalizeSessionCommandCheckpoints(uiAction.checkpoints || actionResult?.checkpoints);
+            openSessionCommandControl({
+                type: 'checkpoint_selector',
+                title: message || 'Select checkpoint',
+                message: checkpoints.length > 0
+                    ? 'Select a checkpoint to rewind this session context.'
+                    : 'No checkpoints are available for this session.',
+                command: response.command,
+                checkpoints,
+                payload: actionResult,
+            });
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            return true;
+        }
+
         if (uiAction.type === 'copy_to_clipboard') {
             const content = typeof uiAction.content === 'string' ? uiAction.content : '';
             if (content && navigator.clipboard?.writeText) {
@@ -744,6 +787,13 @@ function AgentDetailInner() {
         }
 
         if (uiAction.type === 'open_export_panel') {
+            openSessionCommandControl({
+                type: 'export_panel',
+                title: message || 'Session export',
+                message: 'Session export is ready.',
+                command: response.command,
+                payload: actionResult,
+            });
             showToast(message, 'success');
             invalidateSessionRuntimeQueries(id, currentSessionId);
             return true;
@@ -751,19 +801,51 @@ function AgentDetailInner() {
 
         if (uiAction.type === 'open_permissions_menu') {
             selectDetailTab('chat');
+            openSessionCommandControl({
+                type: 'permissions_panel',
+                title: message || 'Session permissions',
+                message: 'Use the permission selector in the composer to change this session mode.',
+                command: response.command,
+                payload: actionResult,
+            });
             showToast(message, 'success');
             return true;
         }
 
-        if (
-            uiAction.type === 'install_compacted_context'
-            || uiAction.type === 'install_active_projection'
-            || uiAction.type === 'open_checkpoint_selector'
-            || uiAction.type === 'open_context_panel'
-            || uiAction.type === 'open_usage_panel'
-            || uiAction.type === 'open_side_question'
-            || uiAction.type === 'toast'
-        ) {
+        if (uiAction.type === 'install_compacted_context' || uiAction.type === 'install_active_projection') {
+            openSessionCommandControl({
+                type: 'projection_status',
+                title: message || (uiAction.type === 'install_compacted_context' ? 'Context compacted' : 'Session projection installed'),
+                message: uiAction.type === 'install_compacted_context'
+                    ? 'Future turns in this session will use the compacted context projection.'
+                    : 'Future turns in this session will use the active rewind projection.',
+                command: response.command,
+                level: uiAction.level === 'error' ? 'error' : 'success',
+                payload: actionResult,
+            });
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            return true;
+        }
+
+        if (uiAction.type === 'open_context_panel' || uiAction.type === 'open_usage_panel' || uiAction.type === 'open_side_question') {
+            openSessionCommandControl({
+                type: uiAction.type === 'open_context_panel'
+                    ? 'context_panel'
+                    : uiAction.type === 'open_usage_panel'
+                        ? 'usage_panel'
+                        : 'side_question',
+                title: message || (uiAction.type === 'open_context_panel' ? 'Session context' : uiAction.type === 'open_usage_panel' ? 'Session usage' : 'Side question'),
+                message,
+                command: response.command,
+                payload: actionResult,
+            });
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            return true;
+        }
+
+        if (uiAction.type === 'toast') {
             invalidateSessionRuntimeQueries(id, currentSessionId);
             showToast(message, uiAction.level === 'error' ? 'error' : 'success');
             return true;
@@ -771,6 +853,24 @@ function AgentDetailInner() {
 
         showToast(message, 'success');
         return true;
+    };
+
+    const handleRunSessionCommandFromUi = async (command: string, args: Record<string, unknown> = {}) => {
+        if (!id || !activeSession?.id) return;
+        const currentSessionId = String(activeSession.id);
+        try {
+            const response = await ccParityApi.executeCommand(id, command, {
+                arguments: args,
+                session_id: currentSessionId,
+            });
+            const handled = await handleSessionCommandUiAction(response);
+            if (!handled) {
+                showToast(formatSlashCommandResult(response), 'success');
+                invalidateSessionRuntimeQueries(id, currentSessionId);
+            }
+        } catch (err: any) {
+            showToast(err?.message || t('agent.chat.commands.failed', 'Failed to run command'), 'error');
+        }
     };
 
     const createNewSession = async () => {
@@ -852,6 +952,7 @@ function AgentDetailInner() {
     const [chatInput, setChatInput] = useState('');
     const [planModeRequested, setPlanModeRequested] = useState(false);
     const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>('auto');
+    const [sessionCommandControl, setSessionCommandControl] = useState<SessionCommandControlState | null>(null);
     const handleSetSessionPermissionMode = async (mode: SessionPermissionMode) => {
         const previous = sessionPermissionMode;
         setSessionPermissionMode(mode);
@@ -2260,6 +2361,9 @@ function AgentDetailInner() {
                             onTogglePlanMode={() => setPlanModeRequested((value) => !value)}
                             sessionPermissionMode={sessionPermissionMode}
                             onSetSessionPermissionMode={handleSetSessionPermissionMode}
+                            sessionCommandControl={sessionCommandControl}
+                            onDismissSessionCommandControl={() => setSessionCommandControl(null)}
+                            onRunSessionCommand={handleRunSessionCommandFromUi}
                             onResolveSessionPermission={resolveSessionPermission}
 
                             chatEndRef={chatEndRef}

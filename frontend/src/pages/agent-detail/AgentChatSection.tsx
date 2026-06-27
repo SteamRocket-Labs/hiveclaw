@@ -207,6 +207,35 @@ export interface BranchComposeDraft {
   content: string;
 }
 
+export interface SessionCommandCheckpoint {
+  checkpoint_event_id?: string | null;
+  event_id?: string | null;
+  sequence?: number | string | null;
+  turn_index?: number | string | null;
+  role?: string | null;
+  content?: string | null;
+  created_at?: string | null;
+}
+
+export type SessionCommandControlType =
+  | 'checkpoint_selector'
+  | 'projection_status'
+  | 'context_panel'
+  | 'usage_panel'
+  | 'export_panel'
+  | 'side_question'
+  | 'permissions_panel';
+
+export interface SessionCommandControlState {
+  type: SessionCommandControlType;
+  title: string;
+  message?: string;
+  command?: string;
+  level?: 'success' | 'error' | 'info';
+  checkpoints?: SessionCommandCheckpoint[];
+  payload?: Record<string, unknown> | null;
+}
+
 interface AgentChatSectionProps {
   agentId?: string | null;
   agent: any;
@@ -274,6 +303,9 @@ interface AgentChatSectionProps {
   onTogglePlanMode?: () => void;
   sessionPermissionMode?: SessionPermissionMode;
   onSetSessionPermissionMode?: (mode: SessionPermissionMode) => void | Promise<unknown>;
+  sessionCommandControl?: SessionCommandControlState | null;
+  onDismissSessionCommandControl?: () => void;
+  onRunSessionCommand?: (command: string, args?: Record<string, unknown>) => void | Promise<unknown>;
   onResolveSessionPermission?: (
     request: SessionPermissionRequest,
     action: 'allow_once' | 'allow_session' | 'deny',
@@ -495,6 +527,180 @@ export function BranchComposePanel({
         </button>
       </div>
     </div>
+  );
+}
+
+function commandPanelTypeLabel(type: SessionCommandControlType): string {
+  switch (type) {
+    case 'checkpoint_selector':
+      return 'Rewind';
+    case 'projection_status':
+      return 'Session context';
+    case 'context_panel':
+      return 'Context';
+    case 'usage_panel':
+      return 'Usage';
+    case 'export_panel':
+      return 'Export';
+    case 'side_question':
+      return 'Side question';
+    case 'permissions_panel':
+      return 'Permissions';
+    default:
+      return 'Session';
+  }
+}
+
+function checkpointId(checkpoint: SessionCommandCheckpoint): string {
+  return String(checkpoint.checkpoint_event_id || checkpoint.event_id || '');
+}
+
+function checkpointLabel(checkpoint: SessionCommandCheckpoint, index: number): string {
+  const sequence = checkpoint.sequence ?? checkpoint.turn_index ?? index + 1;
+  const role = checkpoint.role ? `${checkpoint.role}: ` : '';
+  const content = String(checkpoint.content || '').trim();
+  return `${sequence}. ${role}${content || checkpointId(checkpoint) || 'checkpoint'}`;
+}
+
+function payloadSummary(payload?: Record<string, unknown> | null): Array<[string, string]> {
+  if (!payload) return [];
+  return Object.entries(payload)
+    .filter(([key, value]) => key !== 'ui_action' && value != null && typeof value !== 'object')
+    .slice(0, 4)
+    .map(([key, value]) => [key, String(value)]);
+}
+
+export function SessionCommandControlPanel({
+  control,
+  onDismiss,
+  onRunCommand,
+}: {
+  control?: SessionCommandControlState | null;
+  onDismiss: () => void;
+  onRunCommand: (command: string, args?: Record<string, unknown>) => void | Promise<unknown>;
+}) {
+  if (!control) return null;
+  const checkpoints = control.checkpoints || [];
+  const details = payloadSummary(control.payload);
+  return (
+    <section
+      data-testid="session-command-control-panel"
+      style={{
+        border: '1px solid var(--border-subtle)',
+        borderRadius: '8px',
+        background: 'var(--bg-secondary)',
+        marginBottom: '10px',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+          padding: '10px 12px 8px',
+          borderBottom: checkpoints.length > 0 || details.length > 0 ? '1px solid var(--border-subtle)' : 'none',
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0 }}>
+            {commandPanelTypeLabel(control.type)}
+          </div>
+          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px' }}>
+            {control.title}
+          </div>
+          {control.message ? (
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '3px', lineHeight: 1.45 }}>
+              {control.message}
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={onDismiss}
+          style={{
+            width: '24px',
+            height: '24px',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: '6px',
+            background: 'var(--bg-primary)',
+            color: 'var(--text-tertiary)',
+            cursor: 'pointer',
+          }}
+        >
+          ×
+        </button>
+      </div>
+      {checkpoints.length > 0 ? (
+        <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div data-testid="session-checkpoint-rail" style={{ display: 'flex', alignItems: 'center', gap: '5px', overflowX: 'auto', paddingBottom: '2px' }}>
+            {checkpoints.map((checkpoint, index) => {
+              const id = checkpointId(checkpoint);
+              return (
+                <button
+                  key={id || index}
+                  type="button"
+                  title={checkpointLabel(checkpoint, index)}
+                  disabled={!id}
+                  onClick={() => id && onRunCommand('rewind', { checkpoint_event_id: id })}
+                  style={{
+                    flex: '0 0 auto',
+                    width: '10px',
+                    height: '18px',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: '3px',
+                    background: id ? 'var(--bg-primary)' : 'var(--bg-tertiary)',
+                    cursor: id ? 'pointer' : 'not-allowed',
+                  }}
+                />
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {checkpoints.map((checkpoint, index) => {
+              const id = checkpointId(checkpoint);
+              return (
+                <button
+                  key={id || index}
+                  type="button"
+                  data-testid="session-checkpoint-row"
+                  disabled={!id}
+                  onClick={() => id && onRunCommand('rewind', { checkpoint_event_id: id })}
+                  style={{
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: '6px',
+                    background: 'var(--bg-primary)',
+                    color: 'var(--text-secondary)',
+                    padding: '7px 8px',
+                    textAlign: 'left',
+                    cursor: id ? 'pointer' : 'not-allowed',
+                    fontSize: '11px',
+                    lineHeight: 1.4,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {checkpointLabel(checkpoint, index)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      {details.length > 0 ? (
+        <dl style={{ margin: 0, padding: '10px 12px', display: 'grid', gridTemplateColumns: 'minmax(90px, auto) 1fr', gap: '5px 10px', fontSize: '11px' }}>
+          {details.map(([key, value]) => (
+            <React.Fragment key={key}>
+              <dt style={{ color: 'var(--text-tertiary)' }}>{key}</dt>
+              <dd style={{ margin: 0, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      ) : null}
+    </section>
   );
 }
 
@@ -1186,6 +1392,9 @@ export default function AgentChatSection({
   onTogglePlanMode,
   sessionPermissionMode = 'auto',
   onSetSessionPermissionMode,
+  sessionCommandControl = null,
+  onDismissSessionCommandControl,
+  onRunSessionCommand,
   onResolveSessionPermission,
   isStreaming,
   onAbortGeneration,
@@ -2198,6 +2407,11 @@ export default function AgentChatSection({
                   }}
                 />
               )}
+              <SessionCommandControlPanel
+                control={sessionCommandControl}
+                onDismiss={onDismissSessionCommandControl || (() => undefined)}
+                onRunCommand={onRunSessionCommand || (() => undefined)}
+              />
               <BranchComposePanel
                 draft={branchDraft}
                 busy={branchBusy}

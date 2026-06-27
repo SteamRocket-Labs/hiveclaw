@@ -601,6 +601,16 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
     """Convert persisted chat rows back into provider-compatible conversation entries."""
     conversation: list[dict] = []
     for msg in history_messages:
+        if isinstance(msg, dict):
+            role = str(msg.get("role") or "").strip()
+            content = msg.get("content")
+            if role in {"system", "user", "assistant", "tool"} and content is not None:
+                entry = {"role": role, "content": str(content)}
+                if role == "tool" and msg.get("tool_call_id"):
+                    entry["tool_call_id"] = str(msg["tool_call_id"])
+                conversation.append(entry)
+            continue
+
         if msg.role == "tool_call":
             try:
                 tc_data = json.loads(msg.content)
@@ -648,6 +658,146 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
             entry["reasoning_signature"] = msg.thinking_signature
         conversation.append(entry)
     return conversation
+
+
+def _parse_projection_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _created_after_projection(msg: Any, applied_at: datetime | None) -> bool:
+    if applied_at is None:
+        return False
+    created_at = getattr(msg, "created_at", None)
+    if not isinstance(created_at, datetime):
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return created_at > applied_at
+
+
+def _history_tail_after_projection(history_messages: list[Any], applied_at: datetime | None) -> list[Any]:
+    return [msg for msg in history_messages if _created_after_projection(msg, applied_at)]
+
+
+def _normalize_projection_message(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    role = str(raw.get("role") or "").strip()
+    content = raw.get("content")
+    if role not in {"system", "user", "assistant", "tool"} or content is None:
+        return None
+    normalized = {"role": role, "content": str(content)}
+    if role == "tool" and raw.get("tool_call_id"):
+        normalized["tool_call_id"] = str(raw["tool_call_id"])
+    return normalized
+
+
+def _dedupe_history_projection(entries: list[Any]) -> list[Any]:
+    projected: list[Any] = []
+    seen_message_ids: set[str] = set()
+    for entry in entries:
+        entry_id = None if isinstance(entry, dict) else getattr(entry, "id", None)
+        if entry_id is not None:
+            entry_key = str(entry_id)
+            if entry_key in seen_message_ids:
+                continue
+            seen_message_ids.add(entry_key)
+        projected.append(entry)
+    return projected
+
+
+async def _rewind_projected_history(
+    db: AsyncSession,
+    session: ChatSession,
+    projection: dict[str, Any],
+    history_messages: list[Any],
+    *,
+    applied_at: datetime | None,
+) -> list[Any]:
+    raw_checkpoint_id = projection.get("checkpoint_event_id") or projection.get("anchor_event_id")
+    try:
+        checkpoint_event_id = uuid.UUID(str(raw_checkpoint_id))
+    except (TypeError, ValueError):
+        return history_messages
+
+    anchor_result = await db.execute(
+        select(ChatTranscriptEvent).where(
+            ChatTranscriptEvent.id == checkpoint_event_id,
+            ChatTranscriptEvent.session_id == session.id,
+        )
+    )
+    anchor = anchor_result.scalar_one_or_none()
+    if not anchor:
+        return history_messages
+
+    ids_result = await db.execute(
+        select(ChatTranscriptEvent.message_id)
+        .where(
+            ChatTranscriptEvent.session_id == session.id,
+            ChatTranscriptEvent.sequence <= anchor.sequence,
+            ChatTranscriptEvent.listed_surface == "chat",
+            ChatTranscriptEvent.message_id.is_not(None),
+        )
+        .order_by(ChatTranscriptEvent.sequence.asc())
+    )
+    ordered_message_ids = [message_id for message_id in ids_result.scalars().all() if message_id]
+    if not ordered_message_ids:
+        return _history_tail_after_projection(history_messages, applied_at)
+
+    history_by_id = {str(getattr(msg, "id", "")): msg for msg in history_messages if getattr(msg, "id", None)}
+    missing_ids = [message_id for message_id in ordered_message_ids if str(message_id) not in history_by_id]
+    if missing_ids:
+        missing_result = await db.execute(
+            select(ChatMessage).where(ChatMessage.id.in_(missing_ids)).order_by(ChatMessage.created_at.asc())
+        )
+        for msg in missing_result.scalars().all():
+            history_by_id[str(msg.id)] = msg
+
+    prefix = [history_by_id[str(message_id)] for message_id in ordered_message_ids if str(message_id) in history_by_id]
+    tail = _history_tail_after_projection(history_messages, applied_at)
+    return _dedupe_history_projection([*prefix, *tail])
+
+
+async def _apply_active_projection_to_history(
+    db: AsyncSession,
+    session: ChatSession | None,
+    history_messages: list[Any],
+) -> list[Any]:
+    metadata = session.transcript_metadata_json if session is not None else None
+    projection = metadata.get("active_projection") if isinstance(metadata, dict) else None
+    if not isinstance(projection, dict):
+        return history_messages
+
+    applied_at = _parse_projection_datetime(projection.get("applied_at"))
+    projection_reason = str(projection.get("projection_reason") or projection.get("command") or "").strip().lower()
+    if projection_reason == "compact":
+        replacement_messages = [
+            normalized
+            for raw in projection.get("replacement_messages") or []
+            if (normalized := _normalize_projection_message(raw)) is not None
+        ]
+        if not replacement_messages:
+            return history_messages
+        return _dedupe_history_projection([*replacement_messages, *_history_tail_after_projection(history_messages, applied_at)])
+
+    if projection_reason == "rewind":
+        return await _rewind_projected_history(
+            db,
+            session,
+            projection,
+            history_messages,
+            applied_at=applied_at,
+        )
+
+    return history_messages
 
 
 def register_web_chat_run_for_test(run_id: str, *, cancel_event: asyncio.Event) -> None:
@@ -2201,6 +2351,7 @@ async def _load_runtime_context(
             .limit(history_limit)
         )
         history_messages = list(reversed(history_result.scalars().all()))
+        history_messages = await _apply_active_projection_to_history(db, session, history_messages)
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 

@@ -275,6 +275,20 @@ def _apply_terminal_task_update(
         task.completed_at = datetime.now(timezone.utc)
 
 
+def _runtime_prompt_metadata_update(runtime_session_context: Any) -> dict[str, Any]:
+    metadata = getattr(runtime_session_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return {}
+    keys = (
+        "active_tool_names",
+        "context_policy",
+        "deferred_tool_names",
+        "prompt_assembly_manifest",
+        "prompt_sections",
+    )
+    return {key: metadata[key] for key in keys if key in metadata}
+
+
 def _terminal_reason_value_for_web_run(
     *,
     status: str,
@@ -2909,7 +2923,11 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             plan_mode_terminal_error=bool(plan_mode_terminal_error),
             llm_error=is_llm_error_message(assistant_response),
         )
-        metadata_update = {"cancelled_by_user": bool(cancel_event.is_set()), "terminal_reason": terminal_reason}
+        metadata_update = {
+            "cancelled_by_user": bool(cancel_event.is_set()),
+            "terminal_reason": terminal_reason,
+            **_runtime_prompt_metadata_update(runtime_session_context),
+        }
         if plan_mode_terminal_error:
             metadata_update["interactive_pause"] = "plan_mode_missing_terminal_tool"
         if interactive_pause_summary and not str(assistant_response or "").strip():

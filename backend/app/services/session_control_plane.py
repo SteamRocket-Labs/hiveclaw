@@ -103,6 +103,17 @@ def _context_policy_payload(*, active_run: Any, session: ChatSession) -> dict[st
     return policy
 
 
+def _prompt_manifest_payload(*, active_run: Any, session: ChatSession, turn_envelope: dict[str, Any]) -> dict[str, Any]:
+    active_metadata = _active_run_metadata(active_run)
+    session_metadata = _session_metadata(session)
+    runtime_manifest = _mapping(active_metadata.get("prompt_assembly_manifest")) or _mapping(
+        session_metadata.get("prompt_assembly_manifest")
+    )
+    if runtime_manifest:
+        return runtime_manifest
+    return build_prompt_assembly_manifest(turn_envelope)
+
+
 def _session_payload(session: ChatSession) -> dict[str, Any]:
     return {
         "id": str(session.id),
@@ -811,7 +822,11 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     permission_profile = _permission_profile_payload(active_run=active_run_projection, session=session)
     context_policy = _context_policy_payload(active_run=active_run_projection, session=session)
     turn_envelope = build_turn_envelope(agent_id=agent.id, session=session, active_run=active_run_projection)
-    prompt_manifest = build_prompt_assembly_manifest(turn_envelope)
+    prompt_manifest = _prompt_manifest_payload(
+        active_run=active_run_projection,
+        session=session,
+        turn_envelope=turn_envelope,
+    )
     return {
         "schema": "hive.ccplus.session_workbench.v1",
         "agent_id": str(agent.id),

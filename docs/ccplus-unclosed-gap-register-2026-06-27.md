@@ -26,6 +26,7 @@
 - 本文初版 commit：`4201e09e docs: record ccplus unclosed gaps`
 - 2026-06-27 本次复核后，P0-1 `/compact` / `/rewind` next-turn context consumption、P0-2 session command UI action、P0-3 command registry 旧 branch 文案已经关闭。证据见下方“已关闭项”。
 - 2026-06-27 R-1 Hooks external runner 已关闭：`hook.command` / `hook.prompt` / `hook.http` / `hook.agent` 通过现有 plugin hook registration 唯一路径进入 `GovernedHookRunner`，并可在 live hook catalog 中观察到 `governed_hook_runner`。
+- 2026-06-27 R-2 PromptAssemblyManifest 已关闭：真实 kernel prompt assembly 会写入 runtime manifest，Workbench 优先读取该实际 manifest，read-model manifest 只作为无 active runtime metadata 时的 fallback。
 
 ## 1. 已关闭项
 
@@ -130,32 +131,35 @@ cd backend && source .venv/bin/activate && ruff check app/packs/catalog_reader.p
 # All checks passed!
 ```
 
-## 2. 仍未闭环项
-
-### R-2：TurnEnvelope / PromptAssemblyManifest 仍主要是 read model，不是实际 prompt assembly source of truth
+### C-5：TurnEnvelope / PromptAssemblyManifest 真实 prompt assembly 闭环
 
 已做：
 
-- `backend/app/runtime/turn_envelope.py` 能生成 `TurnEnvelope` 和 `PromptAssemblyManifest`。
-- `backend/app/services/session_control_plane.py` 会把它暴露给 Workbench。
-- skill/MCP/team/hook 状态能进入 read model。
+- `backend/app/runtime/turn_envelope.py` 新增 `build_runtime_prompt_assembly_manifest(...)`，输入来自真实 frozen prefix、dynamic suffix、provider system prompt、dynamic notice、tool surface 和 context budget。
+- `backend/app/kernel/engine.py` 在真实 prompt assembly 完成、工具列表解析后，把 `prompt_assembly_manifest`、`prompt_sections`、`active_tool_names`、`deferred_tool_names`、`context_policy` 写入 `SessionContext.metadata`。
+- `backend/app/services/web_chat_runtime.py` 在正常完成时把这些 prompt/context metadata 合并进 `RuntimeTask.metadata_json`。
+- `backend/app/services/session_control_plane.py` 的 Workbench prompt manifest 现在优先读取 active run/session 中的 runtime manifest；只有缺失时才回退到 `build_prompt_assembly_manifest(turn_envelope)` read-model projection。
 
-未闭环事实：
+闭环事实：
 
-- 实际系统 prompt 仍由 `backend/app/runtime/prompt_builder.py` 的 frozen prefix / dynamic suffix 路径组装。
-- `TurnEnvelope` 不是实际 prompt assembly 的唯一输入。
-- `PromptAssemblyManifest` 更像观测投影，不是 runtime source of truth。
+- prompt content 仍由唯一真实路径 `prompt_builder.py` + kernel assembly 生成，没有第二套 prompt builder。
+- manifest 不再覆盖或推测真实 provider request；它记录实际 provider system prompt length、dynamic notice length、tool names、dynamic/frozen sections、budget 和 loaded skills。
+- Workbench 展示的 manifest 与 runtime 写入的 manifest 同源。
 
-现有风险：
+验证证据：
 
-- 文档里“上下文组装唯一化已闭合”的说法过强。
-- Workbench 能展示不等于模型实际收到了同一组信息。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_invoker.py::test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt tests/services/test_session_control_plane.py::test_session_workbench_aggregates_turn_runtime_goal_and_team_state -q
+# 2 passed, 4 warnings
 
-闭环验收：
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_invoker.py tests/services/test_session_control_plane.py tests/services/test_web_chat_runtime.py -q
+# 114 passed, 4 warnings
 
-1. 要么把 TurnEnvelope 提升为 prompt assembly 的输入合同。
-2. 要么把文档改成 “TurnEnvelope 是 Workbench/read model，不是 prompt source of truth”。
-3. 必须有测试证明 manifest 与实际 provider request 的 system/context/tool surface 一致。
+cd backend && source .venv/bin/activate && ruff check app/runtime/turn_envelope.py app/kernel/engine.py app/services/session_control_plane.py app/services/web_chat_runtime.py tests/runtime/test_invoker.py tests/services/test_session_control_plane.py
+# All checks passed!
+```
+
+## 2. 仍未闭环项
 
 ### R-3：MCP live prompts/resources parity 没有完整闭环
 
@@ -353,12 +357,11 @@ proposal/runtime/UI 闭环尚未完成。
 ## 5. 建议修复顺序
 
 1. R-1：裁决 Hooks external runner 是本轮实装还是 explicit not-live；按裁决改文档/UI。
-2. R-2：裁决 TurnEnvelope 是否进入真实 prompt source path。
-3. R-3 / R-4：裁决 MCP live prompts 和 SkillTool/frontmatter hooks。
-4. R-5 / R-6：补 Sub-agent / Agent Team 的行为级 e2e 验证。
-5. R-7：开始 Dynamic Workflow proposal slice。
-6. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
-7. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
+2. R-3 / R-4：裁决 MCP live prompts 和 SkillTool/frontmatter hooks。
+3. R-5 / R-6：补 Sub-agent / Agent Team 的行为级 e2e 验证。
+4. R-7：开始 Dynamic Workflow proposal slice。
+5. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
+6. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
 
 ## 6. 证据检查命令
 

@@ -220,6 +220,16 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
                     "model_window": 128000,
                     "tool_result_inline_limit": 50000,
                 },
+                "prompt_assembly_manifest": {
+                    "schema": "hive.ccplus.prompt_assembly_manifest.v1",
+                    "source_of_truth": "runtime_prompt_assembly",
+                    "turn_id": "turn-1",
+                    "session_id": str(session_id),
+                    "context_budget": {"model_window": 128000},
+                    "dynamic_sections": ["runtime_metadata_context"],
+                    "actual_system_prompt_chars": 123,
+                    "actual_dynamic_notice_chars": 45,
+                },
             },
         }
 
@@ -279,8 +289,10 @@ async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(mon
     assert result["turn_envelope"]["runtime_task_id"] == "run-1"
     assert result["turn_envelope"]["permission_profile"]["approval_policy"] == "granular"
     assert result["prompt_manifest"]["schema"] == "hive.ccplus.prompt_assembly_manifest.v1"
+    assert result["prompt_manifest"]["source_of_truth"] == "runtime_prompt_assembly"
     assert result["prompt_manifest"]["turn_id"] == "turn-1"
     assert result["prompt_manifest"]["context_budget"]["model_window"] == 128000
+    assert result["prompt_manifest"]["actual_system_prompt_chars"] == 123
     assert result["controls"]["can_start_turn"] is False
     assert result["controls"]["can_stop_active_run"] is True
     assert result["controls"]["expected_turn_id"] == "turn-1"

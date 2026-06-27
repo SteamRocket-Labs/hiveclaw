@@ -775,6 +775,10 @@ async def test_invoke_agent_emits_response_complete_only_once(monkeypatch):
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "app.runtime.invoker.build_skill_catalog_section_for_agent",
+        lambda *args, **kwargs: "## Skills\n- load_skill",
+    )
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
     monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
@@ -1054,6 +1058,10 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
     monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
     monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "app.runtime.invoker.build_skill_catalog_section_for_agent",
+        lambda *args, **kwargs: "## Skills\n- load_skill",
+    )
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
     monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
     monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
@@ -1087,6 +1095,89 @@ async def test_invoke_agent_composes_system_prompt_once(monkeypatch):
     assert "memory_provider:recall" not in dynamic_notice.content
     assert 'kind="memory_recall"' not in dynamic_notice.content
     assert "KB_CONTEXT" in dynamic_notice.content
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_writes_prompt_assembly_manifest_from_actual_prompt(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="test-key",
+        base_url=None,
+        max_output_tokens=None,
+        max_input_tokens=128000,
+    )
+    session_context = SessionContext(session_id="session-manifest", source="web", channel="web")
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            ),
+        ]
+    )
+
+    async def fake_build_agent_context(*args, **kwargs):
+        return "BASE_PROMPT"
+
+    async def fake_fetch_relevant_knowledge(*args, **kwargs):
+        return "KB_CONTEXT"
+
+    async def fake_runtime_context(*args, **kwargs):
+        return "RUNTIME_CONTEXT"
+
+    async def fake_empty_context(*args, **kwargs):
+        return ""
+
+    async def fake_compress(messages, **kwargs):
+        return messages
+
+    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.build_agent_runtime_context", fake_runtime_context)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_context", fake_empty_context)
+    monkeypatch.setattr("app.runtime.invoker.fetch_relevant_knowledge", fake_fetch_relevant_knowledge)
+    monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "app.runtime.invoker.build_skill_catalog_section_for_agent",
+        lambda *args, **kwargs: "## Skills\n- load_skill",
+    )
+    monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **kwargs: fake_client)
+    monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *args, **kwargs: 2048)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "检查上下文组装"}],
+            agent_name="Analyst",
+            role_description="Policy analyst",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            memory_context="MEMORY_CONTEXT",
+            session_context=session_context,
+        )
+    )
+
+    assert result.content == "done"
+    manifest = session_context.metadata["prompt_assembly_manifest"]
+    system_prompt = fake_client.calls[0]["messages"][0].content
+    dynamic_notice = fake_client.calls[0]["messages"][-1].content
+
+    assert manifest["schema"] == "hive.ccplus.prompt_assembly_manifest.v1"
+    assert manifest["source_of_truth"] == "runtime_prompt_assembly"
+    assert manifest["session_id"] == "session-manifest"
+    assert manifest["actual_system_prompt_chars"] == len(system_prompt)
+    assert manifest["actual_dynamic_notice_chars"] == len(dynamic_notice)
+    assert manifest["context_budget"]["model_window"] == 128000
+    assert manifest["loaded_skills"] == ["load_skill"]
+    assert "runtime_metadata_context" in manifest["dynamic_sections"]
+    assert "skill_catalog" in manifest["dynamic_sections"]
+    assert "knowledge_context" in manifest["dynamic_sections"]
 
 
 @pytest.mark.asyncio
@@ -1399,7 +1490,8 @@ async def test_invoke_agent_emits_compaction_events(monkeypatch):
     )
 
     assert result.content == "done"
-    assert runtime_events == [
+    compaction_events = [event for event in runtime_events if event.get("type") == "session_compact"]
+    assert compaction_events == [
         {
             "type": "session_compact",
             "summary": "older context compressed",
@@ -1503,7 +1595,8 @@ async def test_invoke_agent_forwards_permission_events(monkeypatch):
     )
 
     assert result.content == "request blocked"
-    assert runtime_events == [
+    permission_events = [event for event in runtime_events if event.get("type") == "permission"]
+    assert permission_events == [
         {
             "type": "permission",
             "tool_name": "write_file",

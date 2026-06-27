@@ -2293,6 +2293,7 @@ class AgentKernel:
 
             # Prompt cache: reuse frozen prefix from session if available
             from app.runtime.prompt_builder import assemble_runtime_prompt, build_dynamic_prompt_suffix
+            from app.runtime.turn_envelope import build_runtime_prompt_assembly_manifest
 
             session_ctx = request.session_context
             budget_profile = session_ctx.metadata.get("context_budget") if session_ctx else None
@@ -2357,6 +2358,7 @@ class AgentKernel:
 
             if _cache_valid and _cached_prefix:
                 # Session has a valid frozen prefix — only rebuild dynamic suffix
+                frozen_prefix_for_manifest = _cached_prefix
                 dynamic_suffix = build_dynamic_prompt_suffix(
                     active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],
                     available_deferred_tools=available_deferred_tools,
@@ -2392,6 +2394,7 @@ class AgentKernel:
                         current_user_name,
                     )
                 )
+                frozen_prefix_for_manifest = prompt_prefix
                 if session_ctx is not None:
                     _store_prompt_prefix_cache(session_ctx, prompt_prefix, _prompt_cache_key)
                     session_ctx._memory_hash = hashlib.sha256(resolved_memory_context.encode("utf-8")).hexdigest()[:16]
@@ -2432,6 +2435,41 @@ class AgentKernel:
             if _is_coordinator:
                 tools_for_llm = filter_tools_for_coordinator(tools_for_llm)
                 logger.info("[Kernel] Coordinator mode active for agent %s", request.agent_id)
+
+            if session_ctx is not None:
+                dynamic_notice = _dynamic_suffix_notice(dynamic_prompt_suffix)
+                hook_added_context = []
+                if "## Hook Additional Context" in _system_prompt_suffix:
+                    hook_added_context.append("user_prompt_submit")
+                prompt_manifest = build_runtime_prompt_assembly_manifest(
+                    turn_id=str(session_ctx.metadata.get("turn_id") or ""),
+                    session_id=str(session_ctx.session_id or request.memory_session_id or ""),
+                    frozen_prefix=frozen_prefix_for_manifest,
+                    dynamic_suffix=dynamic_prompt_suffix,
+                    provider_system_prompt=system_prompt,
+                    provider_dynamic_notice=dynamic_notice.content if dynamic_notice else "",
+                    context_budget=budget_profile,
+                    model_window=_ctx_window,
+                    tools_for_llm=tools_for_llm,
+                    active_tool_groups=session_ctx.active_tool_groups,
+                    available_deferred_tools=available_deferred_tools,
+                    memory_snapshot=resolved_memory_context,
+                    memory_navigation=resolved_memory_navigation_context,
+                    runtime_metadata_context=resolved_runtime_metadata_context,
+                    permissions_context=resolved_permissions_context,
+                    retrieval_context=resolved_retrieval_context,
+                    skill_catalog=request.skill_catalog,
+                    active_skill_names=session_ctx.active_skills,
+                    system_prompt_suffix=_system_prompt_suffix,
+                    system_prompt_suffix_sections=_system_prompt_suffix_sections(),
+                    mcp_server_refs=list(session_ctx.metadata.get("mcp_server_refs") or []),
+                    hook_added_context=hook_added_context,
+                )
+                session_ctx.metadata["prompt_assembly_manifest"] = prompt_manifest
+                session_ctx.metadata["prompt_sections"] = list(prompt_manifest.get("prompt_sections") or [])
+                session_ctx.metadata["active_tool_names"] = list(prompt_manifest.get("active_tool_names") or [])
+                session_ctx.metadata["deferred_tool_names"] = list(prompt_manifest.get("available_deferred_tools") or [])
+                session_ctx.metadata["context_policy"] = dict(prompt_manifest.get("context_budget") or {})
 
             async def _record_compaction_fact(fact: dict[str, Any]) -> None:
                 await _record_span(

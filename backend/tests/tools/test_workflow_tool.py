@@ -230,6 +230,30 @@ async def test_propose_dynamic_workflow_rejects_invalid_lowered_definition():
     assert "lowered_definition" in payload["error"]
 
 
+async def test_preview_workflow_rejects_dynamic_candidate_artifact_mismatch():
+    from app.tools.handlers import workflow as workflow_handlers
+
+    agent_id = uuid.uuid4()
+    proposal = json.loads(await workflow_handlers.propose_dynamic_workflow(agent_id, _dynamic_workflow_proposal()))
+    candidate = proposal["candidates"][0]
+    mutated_definition = json.loads(json.dumps(candidate["lowered_definition"]))
+    mutated_definition["name"] = "repo-audit-mutated"
+
+    result = await workflow_handlers.preview_workflow(
+        agent_id,
+        {
+            "definition": mutated_definition,
+            "args": candidate["preview_args"],
+            "proposal_id": proposal["proposal_id"],
+            "candidate_id": candidate["candidate_id"],
+        },
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert "candidate" in payload["error"]
+
+
 async def test_start_workflow_low_risk_launches(monkeypatch):
     from app.tools.handlers import workflow as workflow_handlers
 
@@ -310,6 +334,36 @@ async def test_start_workflow_persists_dynamic_proposal_binding(monkeypatch):
     assert captured["definition_source"] == "dynamic_workflow"
     assert captured["run_metadata"]["dynamic_workflow"]["proposal_id"] == proposal["proposal_id"]
     assert captured["run_metadata"]["dynamic_workflow"]["candidate_id"] == "fanout-critic"
+
+
+async def test_start_workflow_rejects_dynamic_ids_without_dynamic_preview(monkeypatch):
+    from app.tools.handlers import workflow as workflow_handlers
+
+    async def fake_launch(**_kwargs):
+        raise AssertionError("start_workflow must not launch when dynamic ids were not bound by preview_workflow")
+
+    monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+
+    agent_id = uuid.uuid4()
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(agent_id, {"definition": _low_risk_definition(), "args": {}})
+    )
+    result = await workflow_handlers.start_workflow(
+        _start_request(
+            agent_id,
+            {
+                "definition": _low_risk_definition(),
+                "args": {},
+                "preview_id": preview["preview_id"],
+                "proposal_id": "proposal-1",
+                "candidate_id": "candidate-1",
+            },
+        )
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert "preview_workflow" in payload["error"]
 
 
 async def test_start_workflow_rejects_missing_preview_binding():

@@ -30,10 +30,11 @@
 - 2026-06-27 R-3 MCP live prompts/auth 已关闭：`MCPClient` 支持 `prompts/list` / `prompts/get`，Agent Tool surface 新增 `mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`，协议 resources/prompts/auth status 走同一 MCP server resolution 和 capability gate。
 - 2026-06-27 R-4 SkillTool/frontmatter hooks 已关闭：`run_skill_tool` 进入 core tool surface 并复用 code execution provider；loaded skill frontmatter hooks 会注册到 session-scoped `HookRegistry`，并写入 session metadata 可观察。
 - 2026-06-27 R-5/R-6 Sub-agent / Agent Team 已关闭：custom subagent definitions 进入同一 Session Worker listing；team member terminal RuntimeTask 会投影回 `AgentTeamMember` metadata 和 `AgentTeamEvent`，Workbench/Team close 读同一 team read model。
-- 2026-06-27 R-7 Dynamic Workflow 已关闭：新增 `propose_dynamic_workflow`，proposal candidate 会降低到同一 `WorkflowDefinition`，再走 `preview_workflow` exact artifact/hash 和 `start_workflow`；前端 chat tool card 能展示 proposal/candidates/next action。
+- 2026-06-27 R-7 Dynamic Workflow 已关闭：`propose_dynamic_workflow` candidate 会降低到同一 `WorkflowDefinition`，再走 `preview_workflow` exact proposal/candidate artifact/hash 和 `start_workflow`；运行结束写回 journal outcome evidence/repair plan；repair 复用同一 `resume_run` journal，不整链重跑；promotion suggestion 同时接受 dynamic archive 并携带 quality evidence；前端 chat card 与 Workflows tab 可观察 proposal、leaf evidence、repair action。
 - 2026-06-27 B-1 Workspace rewind snapshot 已关闭：user checkpoint 写入时自动捕获 workspace snapshot；`/rewind mode=workspace|both` 先确认再恢复 workspace。旧 session 无 snapshot 时仍 fail-closed `not_supported`。
 - 2026-06-27 B-2 Hidden session commands 已关闭：Web 用户 schema/execute/manual slash 只接受 user-visible command names；hidden/canonical/internal command 保留 agent/local/internal origin，不再作为用户命令宣传或半接 UI。
 - 2026-06-27 B-3 Background completion wake 已关闭：Sub-agent、Agent Team member、Workflow/long-running RuntimeTask 完成状态统一投影为 `session_workbench.completion_wakes`，并附 `completion_wake_policy` / `completion_wake_summary`。父 session 可通过 session event / parent wake / Workbench / notification 顺序观察，断线或重启后从 RuntimeTask + Team read model 重建。
+- 2026-06-27 B-4 后端全量 residual sweep 已登记：Dynamic Workflow 定向闭环测试全部通过，但 `cd backend && source .venv/bin/activate && pytest tests -q` 仍有 16 个非 Dynamic residual failures（5268 passed, 16 failed, 2 skipped, 4 warnings）。这些失败主要来自既有全局 truth surface drift：stale gateway.py/entrypoint imports、MCP prompt tool coverage、kernel event part contract、subagent preset/test anchor、agent seeder 文案、legacy T2/container candidate contract、migration/backfill 计数等。上线绿灯前必须单独关闭 B-4。
 
 ## 1. 已关闭项
 
@@ -286,7 +287,7 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_section
 # All checks passed!
 ```
 
-### C-10：Dynamic Workflow proposal runtime / UI / prompt 唯一路径
+### C-10：Dynamic Workflow proposal / runtime / repair / promote / UI 唯一路径
 
 已做：
 
@@ -296,16 +297,24 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_section
 - proposal/candidate schema 接收 `goal`、`why_workflow`、`success_criteria`、`budget`、`failure_policy`、`lowered_definition` 和 shared/per-candidate `args`。
 - 每个 candidate 必须降低到现有 `WorkflowDefinition`，并通过 `compile_workflow(...)` + `admit_workflow(...)` + `inspect_workflow_confirmation_needs(...)`。
 - `preview_workflow` 可绑定 `proposal_id` / `candidate_id`；`start_workflow` 会校验 preview binding，并把 dynamic binding 写入 workflow run metadata。
+- `preview_workflow` 会校验 dynamic candidate 的 lowered definition hash 和 args hash；`start_workflow` 禁止把普通 preview 临时标成 dynamic run。
 - `WorkflowRuntimeService.start_run(...)` 接收 `run_metadata`，但仍用同一 RuntimeTask、WorkflowEngine、journal、quota 和 session event 路径。
+- `WorkflowRuntimeService._execute(...)` 在 Dynamic Workflow run 结束时，从 `workflow_steps` / `workflow_leaf_calls` 汇总 `outcome_evidence` 和 `repair_plan`，写回 `RuntimeTask.metadata_json.dynamic_workflow`。
+- `POST /agents/{agent_id}/workflows/runs/{run_id}/repair` 会先验证 agent/tenant 归属、terminal status 和 `repair_plan.repairable`，再通过 `WorkflowRuntimeService.record_dynamic_repair_attempt(...)` 持久化 repair attempt，随后复用 `resume_run(...)` 和同一个 journal 定向补救。
+- `WorkflowRuntimeService.load_run(...)` 和 workflow API detail/list 会返回 dynamic metadata、outcome evidence、repair plan、leaf calls。
+- `collect_promote_suggestions(...)` 同时接受 `ephemeral` 与 `dynamic_workflow` run archive，并在 suggestion payload 中返回 `quality_evidence`。
 - `propose_dynamic_workflow` 已加入 `CORE_TOOL_NAMES`、capability map、Plan Mode readonly allowlist 和 child-worker recursion denylist。
 - 常驻 prompt 已统一为 `propose_dynamic_workflow` -> `preview_workflow` -> `start_workflow`，不再保留“直接 preview/start”第二种启动心智模型。
 - 前端 `toolResultEnvelope.ts` / `AgentChatSection.tsx` 已把 `dynamic_workflow_proposed` 渲染成 proposal card，展示 goal、criteria、candidate、recommended、next action。
+- 前端 `AgentWorkflowsSection.tsx` 在同一 Workflows tab 运行记录中展示 dynamic badge、proposal/candidate、leaf evidence 和 repair action；高级 JSON 仍只是同一 preview/start API 的折叠调试入口。
 
 闭环事实：
 
 - Dynamic Workflow 默认入口不再是手写 JSON；模型可先提出候选，再把选中候选送入现有 preview/start。
 - Workflow 不执行任意 JS/Python；candidate 的 `lowered_definition` 只能是结构化 `WorkflowDefinition`。
 - `start_workflow` 仍不能凭口头确认启动；它必须绑定 fresh `preview_id` 或 exact `definition_hash + args_hash`。
+- leaf 失败不会创建第二套补救系统，也不会默认整链重跑；repair 从同一 run journal resume，已完成 leaf 继续作为缓存证据。
+- dynamic run 的沉淀不再停在 metadata：promotion suggestion 可基于完成次数和 outcome quality evidence 提醒固化。
 - A2A Workflow 没有被塞入 Dynamic Workflow；Dynamic Workflow 仍是当前 session 内的 To Session Worker orchestration。
 
 验证证据：
@@ -319,6 +328,24 @@ cd backend && source .venv/bin/activate && ruff check app/tools/handlers/workflo
 
 cd frontend && npm test -- --run src/pages/agent-detail/toolResultEnvelope.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
 # 2 files passed, 84 tests passed
+
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_dynamic_workflow_proposal.py tests/api/test_workflows.py tests/tools/test_workflow_tool.py tests/services/test_workflow_promote_suggestions.py -q
+# 45 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_dynamic_workflow_proposal.py tests/api/test_workflows.py tests/tools/test_workflow_tool.py tests/services/test_workflow_promote_suggestions.py tests/services/test_llm_error_policy.py tests/services/test_prompt_contracts.py::test_execution_playbook_keeps_skill_capsule_runtime_boundary tests/runtime/test_t2_guidance_surface.py -q
+# 60 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_agent_tools_core_surface.py tests/services/test_tool_registry.py tests/services/test_capability_gate_strict_mapping.py tests/runtime/test_t2_guidance_surface.py -q
+# 37 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/kernel/engine.py app/runtime/dynamic_workflow.py app/tools/handlers/workflow.py app/services/workflow_runtime_service.py app/services/workflow_promote_suggestions.py app/api/workflows.py app/runtime/prompt_sections/executing_actions.py tests/runtime/test_dynamic_workflow_proposal.py tests/api/test_workflows.py tests/services/test_workflow_promote_suggestions.py tests/tools/test_workflow_tool.py tests/services/test_llm_error_policy.py
+# All checks passed!
+
+cd frontend && npm test -- --run src/api/domains/workflows.test.ts src/pages/agent-detail/AgentWorkflowsSection.test.tsx src/pages/agent-detail/toolResultEnvelope.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx
+# 4 files passed, 110 tests passed
+
+cd frontend && npm run build
+# tsc && vite build completed successfully
 ```
 
 ### C-11：Workspace rewind snapshot / restore / confirmation gate
@@ -444,7 +471,13 @@ Workflow/long-running RuntimeTask 不再各自发明完成反馈面。
 
 ## 4. 建议修复顺序
 
-当前无剩余修复顺序。后续若发现新断点，必须先登记为新的 B 项，再按“红测 -> 实装 -> 文档证据 -> commit”关闭。
+Dynamic Workflow 本轮闭环已完成；但后端全量 residual sweep 显示仍不能声明“全仓可上线绿灯”。下一轮建议只处理 B-4，顺序如下：
+
+1. 修复 stale file/model truth surface：`app.models.gateway_message`、`backend/app/api/gateway.py` 引用。
+2. 修复 tool coverage / bridge equivalence drift：`mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`、`run_skill_tool`、`propose_dynamic_workflow` 的 pack/prompt/test contract。
+3. 修复 kernel event part contract 测试与当前 context-window event 输出的冲突。
+4. 修复 subagent preset、agent seeder、T2 container candidate、migration/backfill count 等历史 contract drift。
+5. 重跑 `cd backend && source .venv/bin/activate && pytest tests -q`，只有全量通过后才能把 B-4 标记关闭。
 
 ## 5. 证据检查命令
 

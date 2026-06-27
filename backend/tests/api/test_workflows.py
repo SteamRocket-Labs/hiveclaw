@@ -212,6 +212,41 @@ def _run_task(*, run_id, agent_id, tenant_id, status="completed", name="contract
     )
 
 
+def _dynamic_run_task(*, run_id, agent_id, tenant_id, status="failed"):
+    task = _run_task(
+        run_id=run_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        status=status,
+        name="repo-audit",
+        source="dynamic_workflow",
+    )
+    task.metadata_json["dynamic_workflow"] = {
+        "proposal_id": "proposal-1",
+        "candidate_id": "fanout-critic",
+        "pattern_mix": ["fanout_synthesize", "adversarial_verify"],
+        "success_criteria": ["Each slice cites evidence."],
+        "failure_policy": {"leaf_failure": "record_and_continue", "repair_rounds": 1},
+        "outcome_evidence": {
+            "status": status,
+            "steps_total": 1,
+            "steps_done": 0,
+            "steps_failed": 1,
+            "leaf_total": 2,
+            "leaf_done": 1,
+            "leaf_failed": 1,
+            "promotion_eligible": False,
+        },
+        "repair_plan": {
+            "repairable": True,
+            "strategy": "resume_failed_leaves",
+            "failed_leaf_count": 1,
+            "failed_leaves": [{"step_id": "scan", "leaf_id": "item-1", "error": "timeout"}],
+        },
+    }
+    return task
+
+
 def _patch_load(monkeypatch, loaded_factory):
     async def fake_load(self, rid, *, tenant_id=None):
         return loaded_factory(rid)
@@ -236,6 +271,35 @@ def test_get_run_returns_steps(monkeypatch):
     body = resp.json()
     assert body["status"] == "completed"
     assert body["steps"][0]["step_id"] == "scan"
+
+
+def test_get_run_returns_dynamic_metadata_evidence_and_leaf_calls(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_dynamic_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id),
+            steps=[SimpleNamespace(step_id="scan", status="failed", step_type="fanout_step", error="item-1: timeout")],
+            leaf_calls=[
+                SimpleNamespace(step_id="scan", leaf_id="item-0", status="done", error=None, token_usage={"total": 42}),
+                SimpleNamespace(step_id="scan", leaf_id="item-1", status="failed", error="timeout", token_usage=None),
+            ],
+        ),
+    )
+
+    resp = client.get(f"/agents/{agent_id}/workflows/runs/{run_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["definition_source"] == "dynamic_workflow"
+    assert body["dynamic_workflow"]["proposal_id"] == "proposal-1"
+    assert body["outcome_evidence"]["leaf_failed"] == 1
+    assert body["repair_plan"]["strategy"] == "resume_failed_leaves"
+    assert body["leaf_calls"][1]["leaf_id"] == "item-1"
+    assert body["leaf_calls"][1]["status"] == "failed"
 
 
 def test_get_run_404_when_run_belongs_to_another_agent(monkeypatch):
@@ -315,6 +379,93 @@ def test_cancel_404_for_foreign_run_and_never_kills(monkeypatch):
     resp = client.post(f"/agents/{uuid.uuid4()}/workflows/runs/{run_id}/cancel")
     assert resp.status_code == 404
     assert killed == []  # the kill must NOT happen
+
+
+def test_repair_run_resumes_owned_failed_dynamic_run(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_dynamic_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id),
+            steps=[SimpleNamespace(step_id="scan", status="failed", step_type="fanout_step", error="item-1: timeout")],
+            leaf_calls=[],
+        ),
+    )
+    calls: list[dict] = []
+    attempts: list[dict] = []
+
+    async def fake_resume(self, rid, *, tenant_id=None, leaf_executor=None):
+        calls.append({"run_id": rid, "tenant_id": tenant_id, "leaf_executor": leaf_executor})
+        return WorkflowRunOutcome(status="completed", reason="repaired")
+
+    async def fake_record_attempt(self, rid, *, tenant_id=None):
+        attempts.append({"run_id": rid, "tenant_id": tenant_id})
+
+    monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "resume_run", fake_resume)
+    monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "record_dynamic_repair_attempt", fake_record_attempt)
+    monkeypatch.setattr(workflows_api, "build_resumable_workflow_leaf_executor", lambda: "executor", raising=False)
+
+    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/repair")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "completed"
+    assert calls[0]["run_id"] == run_id
+    assert str(calls[0]["tenant_id"]) == str(user.tenant_id)
+    assert calls[0]["leaf_executor"] == "executor"
+    assert attempts == [{"run_id": run_id, "tenant_id": user.tenant_id}]
+
+
+def test_repair_run_rejects_completed_run(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    _patch_load(
+        monkeypatch,
+        lambda rid: SimpleNamespace(
+            task=_dynamic_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id, status="completed"),
+            steps=[],
+            leaf_calls=[],
+        ),
+    )
+
+    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/repair")
+
+    assert resp.status_code == 409
+
+
+def test_repair_run_rejects_non_repairable_dynamic_plan(monkeypatch):
+    user = _user()
+    client = _client(user, monkeypatch)
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+
+    def loaded_run(_rid):
+        task = _dynamic_run_task(run_id=run_id, agent_id=agent_id, tenant_id=user.tenant_id)
+        task.metadata_json["dynamic_workflow"]["repair_plan"] = {
+            "repairable": False,
+            "strategy": "resume_failed_leaves",
+            "repair_attempts": 1,
+            "repair_rounds": 1,
+        }
+        return SimpleNamespace(task=task, steps=[], leaf_calls=[])
+
+    _patch_load(monkeypatch, loaded_run)
+    calls: list = []
+
+    async def fake_resume(self, rid, *, tenant_id=None, leaf_executor=None):
+        calls.append(rid)
+        return WorkflowRunOutcome(status="completed", reason="should-not-run")
+
+    monkeypatch.setattr(workflows_api.WorkflowRuntimeService, "resume_run", fake_resume)
+
+    resp = client.post(f"/agents/{agent_id}/workflows/runs/{run_id}/repair")
+
+    assert resp.status_code == 409
+    assert calls == []
 
 
 # ── run history list (asset view) ──────────────────────────────────
@@ -463,14 +614,28 @@ def test_promote_suggestions_returns_agent_scoped_payload(monkeypatch):
 
     async def fake_collect(*, tenant_id, agent_id=None, **kwargs):
         calls.append({"tenant_id": tenant_id, "agent_id": agent_id})
-        return [SimpleNamespace(definition_hash="abc", name="contract-batch", run_count=3, sample_run_ids=[sample])]
+        return [
+            SimpleNamespace(
+                definition_hash="abc",
+                name="contract-batch",
+                run_count=3,
+                sample_run_ids=[sample],
+                quality_evidence={"promotion_eligible": True, "leaf_failed": 0},
+            )
+        ]
 
     monkeypatch.setattr(workflows_api, "collect_promote_suggestions", fake_collect, raising=False)
     resp = client.get(f"/agents/{agent_id}/workflows/promote-suggestions")
     assert resp.status_code == 200
     body = resp.json()
     assert body == [
-        {"definition_hash": "abc", "name": "contract-batch", "run_count": 3, "sample_run_ids": [str(sample)]}
+        {
+            "definition_hash": "abc",
+            "name": "contract-batch",
+            "run_count": 3,
+            "sample_run_ids": [str(sample)],
+            "quality_evidence": {"promotion_eligible": True, "leaf_failed": 0},
+        }
     ]
     assert calls[0]["agent_id"] == agent_id
     assert str(calls[0]["tenant_id"]) == str(user.tenant_id)

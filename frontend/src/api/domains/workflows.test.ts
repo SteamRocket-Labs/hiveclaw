@@ -12,6 +12,7 @@ import {
   getWorkflowRun,
   listWorkflowDefinitions,
   previewWorkflow,
+  repairWorkflowRun,
   startWorkflow,
   type WorkflowDefinitionRecord,
 } from './workflows';
@@ -106,7 +107,11 @@ describe('getWorkflowRun', () => {
         run_id: 'r-1',
         status: 'suspended',
         definition_hash: 'h',
-        definition_source: 'ephemeral',
+        definition_source: 'dynamic_workflow',
+        dynamic_workflow: { proposal_id: 'proposal-1', candidate_id: 'fanout-critic' },
+        outcome_evidence: { leaf_total: 2, leaf_done: 1, leaf_failed: 1, promotion_eligible: false },
+        repair_plan: { repairable: true, strategy: 'resume_failed_leaves', failed_leaf_count: 1 },
+        leaf_calls: [{ step_id: 'scan', leaf_id: 'item-1', status: 'failed', error: 'timeout' }],
         steps: [
           { step_id: 'scan', step_type: 'agent_step', status: 'done', error: null },
           { step_id: 'approve', step_type: 'gate_step', status: 'suspended', error: 'awaiting approval' },
@@ -118,6 +123,10 @@ describe('getWorkflowRun', () => {
 
     expect(requestOf().url).toBe('/api/agents/agent-1/workflows/runs/r-1');
     expect(run.status).toBe('suspended');
+    expect(run.dynamic_workflow?.proposal_id).toBe('proposal-1');
+    expect(run.outcome_evidence?.leaf_failed).toBe(1);
+    expect(run.repair_plan?.repairable).toBe(true);
+    expect(run.leaf_calls[0].leaf_id).toBe('item-1');
     expect(run.steps.map((step) => step.status)).toEqual(['done', 'suspended']);
   });
 });
@@ -128,6 +137,15 @@ describe('cancelWorkflowRun', () => {
     const result = await cancelWorkflowRun('agent-1', 'r-1');
     expect(requestOf().url).toBe('/api/agents/agent-1/workflows/runs/r-1/cancel');
     expect(result.status).toBe('killed');
+  });
+});
+
+describe('repairWorkflowRun', () => {
+  it('POSTs the repair endpoint and returns the resumed status', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ run_id: 'r-1', status: 'completed', reason: 'repaired' }));
+    const result = await repairWorkflowRun('agent-1', 'r-1');
+    expect(requestOf().url).toBe('/api/agents/agent-1/workflows/runs/r-1/repair');
+    expect(result.status).toBe('completed');
   });
 });
 

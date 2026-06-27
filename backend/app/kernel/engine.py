@@ -580,6 +580,13 @@ def _build_error_result(
     )
 
 
+def _turn_token_budget_message(*, tokens_used: int, token_budget: int) -> str:
+    return (
+        "[Runtime Limit] This turn stopped because the configured token budget was exhausted "
+        f"({tokens_used}/{token_budget} tokens used)."
+    )
+
+
 _SOURCE_PERMISSION_BLOCK_MESSAGE = (
     "[Permission Check] I cannot provide this answer because the draft referenced a governed connector source "
     "that is not visible to the current user. The response was blocked and an audit event was recorded."

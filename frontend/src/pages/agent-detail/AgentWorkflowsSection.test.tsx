@@ -37,6 +37,23 @@ const runRows: WorkflowRunSummary[] = [
     promoted_definition_id: null,
   },
   {
+    run_id: 'run-dynamic-failed',
+    status: 'failed',
+    name: 'repo-audit',
+    description: 'fanout → critic',
+    definition_source: 'dynamic_workflow',
+    definition_hash: 'h-dynamic',
+    created_at: '2026-06-06T12:00:00Z',
+    completed_at: '2026-06-06T12:05:00Z',
+    steps_total: 1,
+    steps_done: 0,
+    steps_failed: 1,
+    promoted_definition_id: null,
+    dynamic_workflow: { proposal_id: 'proposal-1', candidate_id: 'fanout-critic' },
+    outcome_evidence: { leaf_total: 2, leaf_done: 1, leaf_failed: 1, promotion_eligible: false },
+    repair_plan: { repairable: true, strategy: 'resume_failed_leaves', failed_leaf_count: 1 },
+  },
+  {
     run_id: 'run-promoted',
     status: 'completed',
     name: 'weekly-report',
@@ -100,6 +117,15 @@ describe('AgentWorkflowsSection (asset view)', () => {
     expect(html).toContain('workflow-promote-run-unpromoted'); // promote button testid
     expect(html).toContain('>promoted<'); // 已固化 badge on the promoted run
     expect(html).toContain('stepsProgress:3,3');
+  });
+
+  it('surfaces dynamic workflow evidence and repair action', () => {
+    const html = renderToStaticMarkup(<AgentWorkflowsSection agentId="agent-1" canManage={true} />);
+    expect(html).toContain('repo-audit');
+    expect(html).toContain('dynamicWorkflow');
+    expect(html).toContain('proposal-1');
+    expect(html).toContain('workflow-repair-run-dynamic-failed');
+    expect(html).toContain('leafEvidence:1,2');
   });
 
   it('hides promote actions without manage access', () => {

@@ -93,7 +93,8 @@ Work that should recur or resume later? `set_trigger` is the wake policy. A skil
 context, references, templates, scripts, workflow definitions, and subagent definitions, so when an \
 approach has succeeded repeatedly with stable decision rules and verification, consolidate it with \
 `save_skill` as a reusable capability capsule. Packaging is not execution: Workflow execution still \
-goes through `propose_dynamic_workflow` / `preview_workflow` / `start_workflow`, subagent execution still goes through \
+goes through `preview_workflow` / `start_workflow`; Dynamic Workflow adds `propose_dynamic_workflow` before that \
+same preview/start gate. subagent execution still goes through \
 `spawn_subagent` / `delegate_to_agent`, and scripts still go through approved sandbox/code execution. \
 If a process must never drift, make that fixed order a workflow component and propose the workflow \
 for promotion to the company library (promotion is reviewed, never self-approved). A one-off task \

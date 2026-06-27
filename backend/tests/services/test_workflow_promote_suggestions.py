@@ -26,7 +26,11 @@ async def tenant_id(owner_sessionmaker) -> uuid.UUID:
 
 
 async def _run_contract_review(
-    service: WorkflowRuntimeService, tenant_id: uuid.UUID, agent_id: uuid.UUID | None = None
+    service: WorkflowRuntimeService,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID | None = None,
+    definition_source: str = "ephemeral",
+    run_metadata: dict | None = None,
 ):
     async def leaf(request: LeafRequest) -> LeafOutcome:
         return LeafOutcome(ok=True, output={"text": request.step_id}, tokens_used=1)
@@ -37,6 +41,8 @@ async def _run_contract_review(
         args={"doc_path": "contracts/msa.docx"},
         leaf_executor=leaf,
         agent_id=agent_id,
+        definition_source=definition_source,
+        run_metadata=run_metadata,
     )
 
 
@@ -52,6 +58,35 @@ async def test_three_repeats_produce_a_suggestion(tenant_id, owner_sessionmaker)
     assert len(matching) == 1, "the repeated flow must surface exactly one suggestion"
     assert matching[0].run_count >= 3
     assert len(matching[0].sample_run_ids) >= 3
+    assert matching[0].quality_evidence["promotion_eligible"] is True
+
+
+async def test_dynamic_workflow_repeats_produce_suggestion_with_quality_evidence(tenant_id, owner_sessionmaker):
+    service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    for _ in range(3):
+        handle = await _run_contract_review(
+            service,
+            tenant_id,
+            definition_source="dynamic_workflow",
+            run_metadata={
+                "dynamic_workflow": {
+                    "proposal_id": "proposal-1",
+                    "candidate_id": "fanout-critic",
+                    "success_criteria": ["Every contract slice cites evidence."],
+                    "failure_policy": {"repair_rounds": 1},
+                }
+            },
+        )
+        assert handle.outcome.status == "completed"
+
+    suggestions = await collect_promote_suggestions(tenant_id=tenant_id, session_factory=owner_sessionmaker)
+
+    matching = [s for s in suggestions if s.name == "office-contract-review"]
+    assert len(matching) == 1
+    assert matching[0].run_count >= 3
+    assert matching[0].quality_evidence["promotion_eligible"] is True
+    assert matching[0].quality_evidence["leaf_failed"] == 0
+    assert matching[0].quality_evidence["success_criteria_count"] == 1
 
 
 async def test_below_threshold_stays_silent(tenant_id, owner_sessionmaker):

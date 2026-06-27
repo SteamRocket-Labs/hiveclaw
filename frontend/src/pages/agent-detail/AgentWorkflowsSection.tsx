@@ -14,6 +14,7 @@ import {
   listWorkflowRuns,
   previewWorkflow,
   promoteWorkflowRun,
+  repairWorkflowRun,
   revokeWorkflowDefinition,
   startWorkflow,
   type WorkflowDefinitionRecord,
@@ -212,6 +213,17 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
       queryClient.invalidateQueries({ queryKey: ['workflow-run', agentId] });
       queryClient.invalidateQueries({ queryKey: ['workflow-runs', agentId] });
     },
+  });
+
+  const repairMutation = useMutation({
+    mutationFn: async (runId: string) => repairWorkflowRun(agentId, runId),
+    onSuccess: () => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: ['workflow-run', agentId] });
+      queryClient.invalidateQueries({ queryKey: ['workflow-runs', agentId] });
+      queryClient.invalidateQueries({ queryKey: ['workflow-promote-suggestions', agentId] });
+    },
+    onError: (error: unknown) => setActionError(error instanceof Error ? error.message : String(error)),
   });
 
   const lifecycleMutation = useMutation({
@@ -422,6 +434,9 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {runs.map((run) => {
               const expanded = expandedRunId === run.run_id;
+              const dynamicWorkflow = run.dynamic_workflow ?? null;
+              const outcomeEvidence = run.outcome_evidence ?? dynamicWorkflow?.outcome_evidence ?? null;
+              const repairPlan = run.repair_plan ?? dynamicWorkflow?.repair_plan ?? null;
               return (
                 <div key={run.run_id} data-testid={`workflow-run-row-${run.run_id}`} style={cardStyle}>
                   <div
@@ -441,6 +456,11 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                       <span style={badgeStyle(runStatusTone(run.status))}>
                         {t(RUN_STATUS_KEYS[run.status] ?? run.status)}
                       </span>
+                      {dynamicWorkflow && (
+                        <span style={badgeStyle('muted')}>
+                          {t('workflows.dynamicWorkflow')}
+                        </span>
+                      )}
                       {run.steps_total > 0 && (
                         <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
                           {t('workflows.stepsProgress', { done: run.steps_done, total: run.steps_total })}
@@ -455,6 +475,28 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                       <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: 13 }}>
                         {run.description}
                       </p>
+                    )}
+                    {dynamicWorkflow && (
+                      <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
+                        {dynamicWorkflow.proposal_id && (
+                          <span>
+                            {t('workflows.proposal')} {dynamicWorkflow.proposal_id}
+                          </span>
+                        )}
+                        {dynamicWorkflow.candidate_id && (
+                          <span>
+                            {t('workflows.candidate')} {dynamicWorkflow.candidate_id}
+                          </span>
+                        )}
+                        {outcomeEvidence?.leaf_total !== undefined && (
+                          <span>
+                            {t('workflows.leafEvidence', {
+                              failed: outcomeEvidence.leaf_failed ?? 0,
+                              total: outcomeEvidence.leaf_total ?? 0,
+                            })}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -478,6 +520,16 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                     {run.status === 'running' && (
                       <button type="button" onClick={() => cancelMutation.mutate(run.run_id)}>
                         {t('workflows.cancel')}
+                      </button>
+                    )}
+                    {canManage && repairPlan?.repairable && (
+                      <button
+                        type="button"
+                        data-testid={`workflow-repair-${run.run_id}`}
+                        onClick={() => repairMutation.mutate(run.run_id)}
+                        disabled={repairMutation.isPending}
+                      >
+                        {t('workflows.repair')}
                       </button>
                     )}
                   </div>
@@ -507,6 +559,30 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                             </li>
                           ))}
                         </ul>
+                      )}
+                      {expandedRun && expandedRun.leaf_calls.length > 0 && (
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ marginBottom: 6, color: 'var(--text-secondary)', fontSize: 12 }}>
+                            {t('workflows.leafCalls')}
+                          </div>
+                          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {expandedRun.leaf_calls.map((leaf) => (
+                              <li
+                                key={`${leaf.step_id}:${leaf.leaf_id}`}
+                                style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'baseline' }}
+                              >
+                                <span style={badgeStyle(leaf.status === 'done' ? 'ok' : leaf.status === 'failed' ? 'error' : 'muted')}>
+                                  {leaf.status}
+                                </span>
+                                <span>{leaf.step_id}</span>
+                                <span style={{ color: 'var(--text-tertiary, var(--text-secondary))', fontSize: 12 }}>
+                                  {leaf.leaf_id}
+                                </span>
+                                {leaf.error ? <span style={{ color: 'var(--error)' }}>— {leaf.error}</span> : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       )}
                     </div>
                   )}

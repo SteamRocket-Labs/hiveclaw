@@ -38,7 +38,11 @@ from app.models.user import User
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.services.workflow_definitions import WorkflowDefinitionError, WorkflowDefinitionService
-from app.services.workflow_launch import inspect_workflow_confirmation_needs, start_ephemeral_workflow_for_agent
+from app.services.workflow_launch import (
+    build_resumable_workflow_leaf_executor,
+    inspect_workflow_confirmation_needs,
+    start_ephemeral_workflow_for_agent,
+)
 from app.services.workflow_promote_suggestions import collect_promote_suggestions
 from app.services.workflow_runtime_service import LoadedWorkflowRun, WorkflowRuntimeService
 
@@ -151,6 +155,7 @@ async def _load_owned_run(run_id: uuid.UUID, *, agent) -> LoadedWorkflowRun:
 def _run_summary_payload(summary) -> dict:
     task = summary.task
     metadata = task.metadata_json or {}
+    dynamic = metadata.get("dynamic_workflow") or None
     definition = metadata.get("definition_json") or {}
     counts = summary.step_counts or {}
     return {
@@ -166,6 +171,9 @@ def _run_summary_payload(summary) -> dict:
         "steps_done": counts.get("done", 0),
         "steps_failed": counts.get("failed", 0),
         "promoted_definition_id": str(summary.promoted_definition_id) if summary.promoted_definition_id else None,
+        "dynamic_workflow": dynamic,
+        "outcome_evidence": (dynamic or {}).get("outcome_evidence") if isinstance(dynamic, dict) else None,
+        "repair_plan": (dynamic or {}).get("repair_plan") if isinstance(dynamic, dict) else None,
     }
 
 
@@ -192,11 +200,15 @@ async def get_workflow_run(
     agent, _access = await check_agent_access(db, current_user, agent_id)
     loaded = await _load_owned_run(run_id, agent=agent)
     metadata = loaded.task.metadata_json or {}
+    dynamic = metadata.get("dynamic_workflow") or None
     return {
         "run_id": str(loaded.task.id),
         "status": loaded.task.status,
         "definition_hash": metadata.get("definition_hash"),
         "definition_source": metadata.get("definition_source"),
+        "dynamic_workflow": dynamic,
+        "outcome_evidence": (dynamic or {}).get("outcome_evidence") if isinstance(dynamic, dict) else None,
+        "repair_plan": (dynamic or {}).get("repair_plan") if isinstance(dynamic, dict) else None,
         "steps": [
             {
                 "step_id": step.step_id,
@@ -205,6 +217,16 @@ async def get_workflow_run(
                 "error": step.error,
             }
             for step in loaded.steps
+        ],
+        "leaf_calls": [
+            {
+                "step_id": leaf.step_id,
+                "leaf_id": leaf.leaf_id,
+                "status": leaf.status,
+                "error": leaf.error,
+                "token_usage": leaf.token_usage,
+            }
+            for leaf in getattr(loaded, "leaf_calls", [])
         ],
     }
 
@@ -224,6 +246,47 @@ async def cancel_workflow_run(
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return {"run_id": str(run_id), "status": "killed"}
+
+
+@router.post("/{agent_id}/workflows/runs/{run_id}/repair")
+async def repair_workflow_run(
+    agent_id: uuid.UUID,
+    run_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Repair/retry a failed or suspended run by resuming the same journal.
+
+    This does not start a new workflow. The engine replays completed
+    step/leaf journal rows and only executes missing/failed work.
+    """
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    loaded = await _load_owned_run(run_id, agent=agent)
+    if loaded.task.status not in {"failed", "suspended", "killed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="only failed, suspended, or killed workflow runs can be repaired",
+        )
+    metadata = loaded.task.metadata_json or {}
+    dynamic = metadata.get("dynamic_workflow") if isinstance(metadata, dict) else None
+    repair_plan = (dynamic or {}).get("repair_plan") if isinstance(dynamic, dict) else None
+    if isinstance(repair_plan, dict) and not repair_plan.get("repairable", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="dynamic workflow repair plan is not repairable",
+        )
+
+    service = WorkflowRuntimeService()
+    await service.record_dynamic_repair_attempt(run_id, tenant_id=agent.tenant_id)
+    try:
+        outcome = await service.resume_run(
+            run_id,
+            tenant_id=agent.tenant_id,
+            leaf_executor=build_resumable_workflow_leaf_executor(),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return {"run_id": str(run_id), "status": outcome.status, "reason": outcome.reason}
 
 
 @router.post("/{agent_id}/workflows/runs/{run_id}/promote")
@@ -287,6 +350,7 @@ async def list_promote_suggestions(
             "name": suggestion.name,
             "run_count": suggestion.run_count,
             "sample_run_ids": [str(rid) for rid in suggestion.sample_run_ids],
+            "quality_evidence": getattr(suggestion, "quality_evidence", None),
         }
         for suggestion in suggestions
     ]

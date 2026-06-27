@@ -26,6 +26,39 @@ class PromoteSuggestion:
     name: str
     run_count: int
     sample_run_ids: list[uuid.UUID] = field(default_factory=list)
+    quality_evidence: dict = field(default_factory=dict)
+
+
+_PROMOTABLE_DEFINITION_SOURCES = {"ephemeral", "dynamic_workflow"}
+
+
+def _mapping(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _quality_evidence_for_runs(runs: list[RuntimeTask]) -> dict:
+    dynamic_evidence = []
+    for run in runs:
+        metadata = _mapping(run.metadata_json)
+        dynamic = _mapping(metadata.get("dynamic_workflow"))
+        evidence = _mapping(dynamic.get("outcome_evidence"))
+        if evidence:
+            dynamic_evidence.append(evidence)
+
+    if not dynamic_evidence:
+        return {
+            "promotion_eligible": all(run.status == "completed" for run in runs),
+            "runs_with_outcome_evidence": 0,
+        }
+
+    return {
+        "promotion_eligible": all(bool(evidence.get("promotion_eligible")) for evidence in dynamic_evidence),
+        "runs_with_outcome_evidence": len(dynamic_evidence),
+        "steps_failed": sum(int(evidence.get("steps_failed") or 0) for evidence in dynamic_evidence),
+        "leaf_failed": sum(int(evidence.get("leaf_failed") or 0) for evidence in dynamic_evidence),
+        "leaf_total": sum(int(evidence.get("leaf_total") or 0) for evidence in dynamic_evidence),
+        "success_criteria_count": max(int(evidence.get("success_criteria_count") or 0) for evidence in dynamic_evidence),
+    }
 
 
 async def collect_promote_suggestions(
@@ -70,7 +103,7 @@ async def collect_promote_suggestions(
         metadata = row.metadata_json or {}
         if metadata.get("tenant_id") != str(tenant_id):
             continue  # tenant_id column is nullable/backfilled; mirror filters
-        if metadata.get("definition_source") != "ephemeral":
+        if metadata.get("definition_source") not in _PROMOTABLE_DEFINITION_SOURCES:
             continue
         definition_hash = metadata.get("definition_hash")
         if not definition_hash:
@@ -90,6 +123,7 @@ async def collect_promote_suggestions(
                 name=name,
                 run_count=len(runs),
                 sample_run_ids=[run.id for run in runs[:5]],
+                quality_evidence=_quality_evidence_for_runs(runs),
             )
         )
     return suggestions

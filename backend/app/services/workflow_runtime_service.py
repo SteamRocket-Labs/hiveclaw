@@ -32,6 +32,7 @@ from app.config import get_settings
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
+from app.runtime.dynamic_workflow import build_dynamic_workflow_repair_plan, summarize_dynamic_workflow_outcome
 from app.services.channel_delivery_service import ChannelDeliveryService
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
@@ -68,6 +69,7 @@ class WorkflowRunHandle:
 class LoadedWorkflowRun:
     task: RuntimeTask
     steps: list[WorkflowStep] = field(default_factory=list)
+    leaf_calls: list[Any] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -1049,9 +1051,29 @@ class WorkflowRuntimeService:
                 raise WorkflowRunNotFound(str(run_id))
             task.status = "killed"
 
+    async def record_dynamic_repair_attempt(
+        self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str | None = None
+    ) -> None:
+        """Persist a Dynamic Workflow repair attempt before resuming the run."""
+        async with self._session(tenant_id) as session:
+            task = (
+                await session.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))))
+            ).scalar_one_or_none()
+            if task is None or task.task_type != "workflow":
+                raise WorkflowRunNotFound(str(run_id))
+            metadata = dict(task.metadata_json or {})
+            dynamic = dict(metadata.get("dynamic_workflow") or {})
+            if not dynamic:
+                return
+            dynamic["repair_attempts"] = int(dynamic.get("repair_attempts") or 0) + 1
+            metadata["dynamic_workflow"] = dynamic
+            task.metadata_json = metadata
+
     async def load_run(
         self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str | None = None
     ) -> LoadedWorkflowRun | None:
+        from app.models.workflow import WorkflowLeafCall
+
         async with self._session(tenant_id) as session:
             task = (
                 await session.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(str(run_id))))
@@ -1063,7 +1085,12 @@ class WorkflowRuntimeService:
                 .scalars()
                 .all()
             )
-        return LoadedWorkflowRun(task=task, steps=list(steps))
+            leaf_calls = (
+                (await session.execute(select(WorkflowLeafCall).where(WorkflowLeafCall.run_id == uuid.UUID(str(run_id)))))
+                .scalars()
+                .all()
+            )
+        return LoadedWorkflowRun(task=task, steps=list(steps), leaf_calls=list(leaf_calls))
 
     async def list_runs_for_agent(
         self, agent_id: uuid.UUID, *, tenant_id: uuid.UUID | str | None = None, limit: int = 50
@@ -1432,6 +1459,8 @@ class WorkflowRuntimeService:
         definition_hash: str | None = None
         task_metadata: dict[str, Any] = {}
         async with self._session(tenant_id) as session:
+            from app.models.workflow import WorkflowLeafCall
+
             task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
             if outcome.status == "killed" and task.status == "suspended":
                 # The stop flag the engine saw was an admin force-suspend, not a
@@ -1454,6 +1483,32 @@ class WorkflowRuntimeService:
                 task.metadata_json = metadata
             agent_for_signal = task.parent_agent_id
             task_metadata = dict(task.metadata_json or {})
+            if task_metadata.get("dynamic_workflow"):
+                steps = (
+                    (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id)))
+                    .scalars()
+                    .all()
+                )
+                leaf_calls = (
+                    (await session.execute(select(WorkflowLeafCall).where(WorkflowLeafCall.run_id == run_id)))
+                    .scalars()
+                    .all()
+                )
+                dynamic = dict(task_metadata.get("dynamic_workflow") or {})
+                task_for_summary = task
+                task_for_summary.metadata_json = task_metadata
+                dynamic["outcome_evidence"] = summarize_dynamic_workflow_outcome(
+                    task=task_for_summary,
+                    steps=list(steps),
+                    leaf_calls=list(leaf_calls),
+                )
+                dynamic["repair_plan"] = build_dynamic_workflow_repair_plan(
+                    task=task_for_summary,
+                    steps=list(steps),
+                    leaf_calls=list(leaf_calls),
+                )
+                task_metadata["dynamic_workflow"] = dynamic
+                task.metadata_json = task_metadata
             definition_hash = task_metadata.get("definition_hash")
 
         await self._audit(

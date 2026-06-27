@@ -1,6 +1,6 @@
 # CCPlus Dynamic Workflow Implementation Plan (2026-06-27)
 
-> 状态：上线前 Dynamic Workflow 统领计划。本文合并官方 CC/Anthropic 资料、本地源码核验、Hive 现有 Workflow runtime 事实、前端呈现、失败补救、prompt 策略和落地顺序。
+> 状态：已闭环的上线前 Dynamic Workflow 统领实现文档。本文合并官方 CC/Anthropic 资料、本地源码核验、Hive 现有 Workflow runtime 事实、前端呈现、失败补救、prompt 策略和落地证据。
 >
 > 裁决关系：如本文与 `dynamic-workflow-cc-alignment-redesign-2026-06-23.md`、`dynamic-workflow-harness-semantics-2026-06-24.md` 或 `workflow-source-capability.md` 冲突，以本文为准；三篇旧文保留为调研证据和底层语义补充。
 
@@ -60,7 +60,7 @@ Dynamic Workflow 先做，而且可以开始做。它和 A2A Workflow 必须分�
 
 - Hive 已有下层 runtime：`backend/app/runtime/workflow_definition.py`、`workflow_compiler.py`、`workflow_admission.py`、`workflow_engine.py`、`backend/app/services/workflow_runtime_service.py`、`workflow_definitions.py`、`workflow_trigger.py`、`workflow_promote_suggestions.py`、`backend/app/tools/handlers/workflow.py`。
 - Hive 已有 `preview_workflow/start_workflow`，并且 `start_workflow` 已绑定 `preview_id` 或 `definition_hash + args_hash`。
-- Hive 尚无 `propose_dynamic_workflow`、Dynamic proposal/candidate schema、candidate critic、selector/catalog、proposal-aware UI。
+- Hive 已有 `propose_dynamic_workflow`、Dynamic proposal/candidate validation/lowering、proposal-aware chat card、run metadata、journal outcome evidence、repair endpoint、promotion evidence，以及 Workflows tab 的 dynamic evidence/repair 操作。
 - FreeCode / claude-code-org 本地 checkout 能看到 workflow feature gate 和 `local_workflow` task type，但没有完整 WorkflowTool 实现目录，不能作为实现细节真相源。
 - Codex Rust 没有等价 Dynamic Workflow runtime；Codex 可吸收的是 Plan Mode、policy gate、thread/workbench/progress/verification 等工程控制优势。
 
@@ -280,7 +280,7 @@ Dynamic Workflow 是 “To Session Worker”。A2A 是 “To Employee”。这�
 
 目标：
 
-- 新增 `backend/app/runtime/dynamic_workflow_proposal.py`。
+- 新增 `backend/app/runtime/dynamic_workflow.py`。
 - 定义 `DynamicWorkflowProposal`、`DynamicWorkflowCandidate`、`DynamicWorkflowFailurePolicy`、`DynamicWorkflowApprovalContract`。
 - `lowered_definition` 用现有 `parse_workflow_definition -> compile -> admission` 校验。
 - 不引入第二套 workflow runtime。
@@ -417,7 +417,7 @@ pytest tests/api/test_workflow_definitions.py tests/services/test_workflow_trigg
 第一组实现文件：
 
 ```text
-backend/app/runtime/dynamic_workflow_proposal.py
+backend/app/runtime/dynamic_workflow.py
 backend/app/tools/handlers/workflow.py
 backend/app/services/agent_tools.py
 backend/app/kernel/runtime_guidance_catalog.py
@@ -434,3 +434,10 @@ backend/tests/tools/test_dynamic_workflow_tool.py
   - `cd backend && source .venv/bin/activate && pytest tests/tools/test_workflow_tool.py tests/services/test_agent_tools_core_surface.py tests/services/test_capability_gate_strict_mapping.py::test_t1_core_promoted_tools_have_capability_mappings tests/tools/test_service.py::test_interactive_plan_mode_allows_only_narrow_readonly_subagent_lane tests/runtime/test_t2_guidance_surface.py tests/services/test_tool_registry.py tests/tools/test_core_pack_disjoint.py -q` -> `49 passed, 4 warnings`
   - `cd backend && source .venv/bin/activate && ruff check app/tools/handlers/workflow.py app/services/workflow_launch.py app/services/workflow_runtime_service.py app/services/agent_tools.py app/services/capability_gate.py app/tools/plan_mode_policy.py app/agents/tool_policies.py app/runtime/prompt_sections/executing_actions.py app/runtime/prompt_sections/system.py app/runtime/prompt_sections/tools.py tests/tools/test_workflow_tool.py tests/services/test_agent_tools_core_surface.py tests/services/test_capability_gate_strict_mapping.py tests/tools/test_service.py tests/runtime/test_t2_guidance_surface.py tests/services/test_tool_registry.py tests/tools/test_core_pack_disjoint.py` -> `All checks passed!`
   - `cd frontend && npm test -- --run src/pages/agent-detail/toolResultEnvelope.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx` -> `2 files passed, 84 tests passed`
+- 2026-06-27: D1/D5/D6/D7 closure completed. Dynamic Workflow proposal helpers 已集中到 `backend/app/runtime/dynamic_workflow.py`；`preview_workflow` 会校验 `proposal_id/candidate_id` 的 lowered definition 与 args hash，`start_workflow` 禁止把普通 preview 临时伪装成 dynamic run；runtime completion 会把 `outcome_evidence` 和 `repair_plan` 写回 `RuntimeTask.metadata_json.dynamic_workflow`；API run detail/list 返回 dynamic metadata、outcome evidence、repair plan、leaf calls；`POST /agents/{agent_id}/workflows/runs/{run_id}/repair` 通过同一 journal `resume_run` 定向补救，执行前强制检查 `repair_plan.repairable`，并持久化 `repair_attempts`；promotion suggestion 同时接受 `ephemeral` 和 `dynamic_workflow` archive，并携带 `quality_evidence`；前端 Workflows tab 展示 dynamic badge、proposal/candidate、leaf evidence 和 repair action。证据：
+  - `cd backend && source .venv/bin/activate && pytest tests/runtime/test_dynamic_workflow_proposal.py tests/api/test_workflows.py tests/tools/test_workflow_tool.py tests/services/test_workflow_promote_suggestions.py -q` -> `45 passed, 4 warnings`
+  - `cd backend && source .venv/bin/activate && pytest tests/services/test_agent_tools_core_surface.py tests/services/test_tool_registry.py tests/services/test_capability_gate_strict_mapping.py tests/runtime/test_t2_guidance_surface.py -q` -> `37 passed, 4 warnings`
+  - `cd backend && source .venv/bin/activate && pytest tests/runtime/test_dynamic_workflow_proposal.py tests/api/test_workflows.py tests/tools/test_workflow_tool.py tests/services/test_workflow_promote_suggestions.py tests/services/test_llm_error_policy.py tests/services/test_prompt_contracts.py::test_execution_playbook_keeps_skill_capsule_runtime_boundary tests/runtime/test_t2_guidance_surface.py -q` -> `60 passed, 4 warnings`
+  - `cd backend && source .venv/bin/activate && ruff check app/kernel/engine.py app/runtime/dynamic_workflow.py app/tools/handlers/workflow.py app/services/workflow_runtime_service.py app/services/workflow_promote_suggestions.py app/api/workflows.py app/runtime/prompt_sections/executing_actions.py tests/runtime/test_dynamic_workflow_proposal.py tests/api/test_workflows.py tests/services/test_workflow_promote_suggestions.py tests/tools/test_workflow_tool.py tests/services/test_llm_error_policy.py` -> `All checks passed!`
+  - `cd frontend && npm test -- --run src/api/domains/workflows.test.ts src/pages/agent-detail/AgentWorkflowsSection.test.tsx src/pages/agent-detail/toolResultEnvelope.test.ts src/pages/agent-detail/AgentDetailSections.test.tsx` -> `4 files passed, 110 tests passed`
+  - `cd frontend && npm run build` -> `tsc && vite build` completed successfully

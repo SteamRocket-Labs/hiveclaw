@@ -62,12 +62,65 @@ export interface WorkflowRunStep {
   error: string | null;
 }
 
+export interface DynamicWorkflowRunMeta {
+  proposal_id?: string | null;
+  candidate_id?: string | null;
+  preview_id?: string | null;
+  definition_hash?: string | null;
+  args_hash?: string | null;
+  pattern_mix?: string[];
+  success_criteria?: string[];
+  failure_policy?: Record<string, unknown>;
+  budget?: Record<string, unknown>;
+  repair_attempts?: number;
+  outcome_evidence?: WorkflowOutcomeEvidence;
+  repair_plan?: WorkflowRepairPlan | null;
+}
+
+export interface WorkflowOutcomeEvidence {
+  status?: string | null;
+  steps_total?: number;
+  steps_done?: number;
+  steps_failed?: number;
+  steps_suspended?: number;
+  leaf_total?: number;
+  leaf_done?: number;
+  leaf_failed?: number;
+  promotion_eligible?: boolean;
+  success_criteria_count?: number;
+  [key: string]: unknown;
+}
+
+export interface WorkflowRepairPlan {
+  repairable: boolean;
+  strategy?: string | null;
+  repair_attempts?: number;
+  repair_rounds?: number;
+  failed_leaf_count?: number;
+  failed_step_count?: number;
+  failed_leaves?: Array<Record<string, unknown>>;
+  failed_steps?: Array<Record<string, unknown>>;
+  next_action?: string | null;
+}
+
+export interface WorkflowLeafCall {
+  step_id: string;
+  leaf_id: string;
+  status: WorkflowStepStatus;
+  error: string | null;
+  token_usage?: Record<string, unknown> | null;
+}
+
 export interface WorkflowRun {
   run_id: string;
   status: WorkflowRunStatus;
   definition_hash: string | null;
   definition_source: string | null;
+  dynamic_workflow?: DynamicWorkflowRunMeta | null;
+  outcome_evidence?: WorkflowOutcomeEvidence | null;
+  repair_plan?: WorkflowRepairPlan | null;
   steps: WorkflowRunStep[];
+  leaf_calls: WorkflowLeafCall[];
 }
 
 export interface WorkflowStartResult {
@@ -106,6 +159,9 @@ export interface WorkflowRunSummary {
   steps_done: number;
   steps_failed: number;
   promoted_definition_id: string | null;
+  dynamic_workflow?: DynamicWorkflowRunMeta | null;
+  outcome_evidence?: WorkflowOutcomeEvidence | null;
+  repair_plan?: WorkflowRepairPlan | null;
 }
 
 /** Repeated-run evidence: "this flow ran N times — suggest 固化". */
@@ -114,6 +170,7 @@ export interface WorkflowPromoteSuggestion {
   name: string;
   run_count: number;
   sample_run_ids: string[];
+  quality_evidence?: WorkflowOutcomeEvidence | null;
 }
 
 /** trigger.config.workflow_ref — the creation-time pin (§6.2 / P8). */
@@ -167,6 +224,15 @@ export function getWorkflowRun(agentId: string, runId: string): Promise<Workflow
 
 export function cancelWorkflowRun(agentId: string, runId: string): Promise<{ run_id: string; status: string }> {
   return post<{ run_id: string; status: string }>(`/agents/${agentId}/workflows/runs/${runId}/cancel`);
+}
+
+export function repairWorkflowRun(
+  agentId: string,
+  runId: string,
+): Promise<{ run_id: string; status: WorkflowRunStatus; reason: string | null }> {
+  return post<{ run_id: string; status: WorkflowRunStatus; reason: string | null }>(
+    `/agents/${agentId}/workflows/runs/${runId}/repair`,
+  );
 }
 
 export function listWorkflowRuns(agentId: string, limit = 50): Promise<WorkflowRunSummary[]> {

@@ -12,6 +12,12 @@ import time
 import uuid
 from typing import Any
 
+from app.runtime.dynamic_workflow import (
+    build_dynamic_workflow_run_metadata,
+    dump_json,
+    mapping,
+    validate_dynamic_workflow_proposal,
+)
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
@@ -21,6 +27,7 @@ from app.tools.runtime import ToolExecutionRequest
 
 _PREVIEW_TTL_SECONDS = 60 * 60
 _WORKFLOW_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
+_DYNAMIC_WORKFLOW_PROPOSAL_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _prune_preview_cache(now: float | None = None) -> None:
@@ -42,6 +49,7 @@ def _record_preview(
     confirmation_required: bool,
     proposal_id: str | None = None,
     candidate_id: str | None = None,
+    dynamic_candidate: dict[str, Any] | None = None,
 ) -> str:
     _prune_preview_cache()
     preview_id = str(uuid.uuid4())
@@ -52,6 +60,7 @@ def _record_preview(
         "confirmation_required": confirmation_required,
         "proposal_id": proposal_id,
         "candidate_id": candidate_id,
+        "dynamic_candidate": dynamic_candidate,
         "created_at": time.monotonic(),
     }
     return preview_id
@@ -102,78 +111,51 @@ _DEFINITION_PARAM = {
     ),
 }
 
-_DYNAMIC_PROPOSAL_NEXT_ACTION = (
-    "Call preview_workflow with the selected candidate's lowered_definition and preview_args, "
-    "show that exact preview to the user, then call start_workflow only after explicit approval."
-)
-_FORBIDDEN_DYNAMIC_CANDIDATE_KEYS = {
-    "code",
-    "script",
-    "javascript",
-    "typescript",
-    "python",
-    "shell",
-    "eval",
-    "jinja",
-}
+def _cache_dynamic_workflow_proposal(proposal: dict[str, Any]) -> None:
+    proposal_id = str(proposal.get("proposal_id") or "").strip()
+    if not proposal_id:
+        return
+    _DYNAMIC_WORKFLOW_PROPOSAL_CACHE[proposal_id] = {
+        **proposal,
+        "created_at": time.monotonic(),
+    }
 
 
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _mapping(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _reject_dynamic_code_surface(candidate: dict[str, Any]) -> str | None:
-    forbidden = sorted(_FORBIDDEN_DYNAMIC_CANDIDATE_KEYS & {str(key).lower() for key in candidate})
-    if forbidden:
-        return f"dynamic workflow candidates cannot contain executable code fields: {', '.join(forbidden)}"
+def _load_dynamic_candidate(proposal_id: str | None, candidate_id: str | None) -> dict[str, Any] | None:
+    if not proposal_id or not candidate_id:
+        return None
+    _prune_preview_cache()
+    proposal = _DYNAMIC_WORKFLOW_PROPOSAL_CACHE.get(proposal_id)
+    if not proposal:
+        return None
+    if time.monotonic() - float(proposal.get("created_at", 0.0)) > _PREVIEW_TTL_SECONDS:
+        _DYNAMIC_WORKFLOW_PROPOSAL_CACHE.pop(proposal_id, None)
+        return None
+    for candidate in proposal.get("candidates") or []:
+        if isinstance(candidate, dict) and candidate.get("candidate_id") == candidate_id:
+            return candidate
     return None
 
 
-def _proposal_candidate_id(candidate: dict[str, Any], index: int) -> str:
-    raw = str(candidate.get("candidate_id") or candidate.get("id") or "").strip()
-    return raw or f"candidate-{index + 1}"
-
-
-def _admit_dynamic_candidate(
+def _dynamic_candidate_binding_error(
     *,
-    candidate: dict[str, Any],
-    index: int,
-    proposal_args: dict[str, Any],
-) -> dict[str, Any]:
-    code_error = _reject_dynamic_code_surface(candidate)
-    if code_error:
-        raise WorkflowCompileError(code_error)
-    lowered_definition = candidate.get("lowered_definition")
-    if not isinstance(lowered_definition, dict):
-        raise WorkflowCompileError(f"candidate {_proposal_candidate_id(candidate, index)!r} lowered_definition must be an object")
-    preview_args = _mapping(candidate.get("args")) or proposal_args
-    compiled = compile_workflow(lowered_definition)
-    from app.config import get_settings
-
-    admission = admit_workflow(compiled, args=preview_args, limits=AdmissionLimits.from_settings(get_settings()))
-    confirmation = inspect_workflow_confirmation_needs(compiled, args=preview_args)
-    return {
-        "candidate_id": _proposal_candidate_id(candidate, index),
-        "name": str(candidate.get("name") or compiled.definition.name),
-        "pattern_mix": _string_list(candidate.get("pattern_mix")),
-        "risk_level": str(candidate.get("risk_level") or "medium"),
-        "budget": _mapping(candidate.get("budget")),
-        "failure_policy": _mapping(candidate.get("failure_policy")),
-        "lowered_definition": compiled.definition.canonical_dict(),
-        "preview_args": preview_args,
-        "definition_hash": compiled.definition_hash,
-        "args_hash": compute_definition_hash(preview_args),
-        "confirmation_required": confirmation.requires_confirmation,
-        "confirmation_reasons": confirmation.reasons,
-        "planned_leaf_calls": admission.planned_leaf_calls,
-        "budget_tokens": admission.budget_tokens,
-    }
+    proposal_id: str | None,
+    candidate_id: str | None,
+    dynamic_candidate: dict[str, Any] | None,
+    definition_hash: str,
+    args_hash: str,
+) -> str | None:
+    if not proposal_id and not candidate_id:
+        return None
+    if not proposal_id or not candidate_id:
+        return "Dynamic Workflow preview requires both proposal_id and candidate_id"
+    if not dynamic_candidate:
+        return "Dynamic Workflow candidate was not found or expired; call propose_dynamic_workflow again"
+    if dynamic_candidate.get("definition_hash") != definition_hash:
+        return "Dynamic Workflow candidate lowered_definition differs from the preview_workflow definition"
+    if dynamic_candidate.get("args_hash") != args_hash:
+        return "Dynamic Workflow candidate preview_args differ from the preview_workflow args"
+    return None
 
 
 @tool(
@@ -224,39 +206,10 @@ def _admit_dynamic_candidate(
 )
 async def propose_dynamic_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
     _ = agent_id
-    candidates_input = arguments.get("candidates")
-    if not isinstance(candidates_input, list) or not candidates_input:
-        return json.dumps({"ok": False, "error": "propose_dynamic_workflow requires at least one candidate"}, ensure_ascii=False)
-    proposal_args = _mapping(arguments.get("args"))
-    accepted: list[dict[str, Any]] = []
-    try:
-        for index, raw_candidate in enumerate(candidates_input):
-            if not isinstance(raw_candidate, dict):
-                raise WorkflowCompileError(f"candidate {index + 1} must be an object")
-            accepted.append(
-                _admit_dynamic_candidate(candidate=raw_candidate, index=index, proposal_args=proposal_args)
-            )
-    except (WorkflowCompileError, WorkflowAdmissionError) as exc:
-        return json.dumps({"ok": False, "error": f"invalid lowered_definition: {exc}"}, ensure_ascii=False)
-
-    requested_recommended = str(arguments.get("recommended_candidate_id") or "").strip()
-    candidate_ids = {candidate["candidate_id"] for candidate in accepted}
-    recommended_candidate_id = requested_recommended if requested_recommended in candidate_ids else accepted[0]["candidate_id"]
-    proposal_id = str(arguments.get("proposal_id") or "").strip() or f"dwf-{uuid.uuid4()}"
-    return json.dumps(
-        {
-            "ok": True,
-            "status": "dynamic_workflow_proposed",
-            "proposal_id": proposal_id,
-            "goal": str(arguments.get("goal") or "").strip(),
-            "why_workflow": str(arguments.get("why_workflow") or "").strip(),
-            "success_criteria": _string_list(arguments.get("success_criteria")),
-            "recommended_candidate_id": recommended_candidate_id,
-            "candidates": accepted,
-            "next_action": _DYNAMIC_PROPOSAL_NEXT_ACTION,
-        },
-        ensure_ascii=False,
-    )
+    proposal = validate_dynamic_workflow_proposal(arguments)
+    if proposal.get("ok") is True:
+        _cache_dynamic_workflow_proposal(proposal)
+    return dump_json(proposal)
 
 
 @tool(
@@ -275,6 +228,8 @@ async def propose_dynamic_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
             "properties": {
                 "definition": _DEFINITION_PARAM,
                 "args": {"type": "object", "description": "Arguments matching the definition's args_schema."},
+                "proposal_id": {"type": "string", "description": "Dynamic Workflow proposal_id, if previewing a candidate."},
+                "candidate_id": {"type": "string", "description": "Dynamic Workflow candidate_id, if previewing a candidate."},
             },
             "required": ["definition"],
         },
@@ -290,6 +245,7 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
     args = arguments.get("args") or {}
     proposal_id = str(arguments.get("proposal_id") or "").strip() or None
     candidate_id = str(arguments.get("candidate_id") or "").strip() or None
+    dynamic_candidate = _load_dynamic_candidate(proposal_id, candidate_id)
     try:
         compiled = compile_workflow(definition)
         from app.config import get_settings
@@ -298,6 +254,16 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
         confirmation = inspect_workflow_confirmation_needs(compiled, args=args)
     except (WorkflowCompileError, WorkflowAdmissionError) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    args_hash = compute_definition_hash(args)
+    dynamic_error = _dynamic_candidate_binding_error(
+        proposal_id=proposal_id,
+        candidate_id=candidate_id,
+        dynamic_candidate=dynamic_candidate,
+        definition_hash=compiled.definition_hash,
+        args_hash=args_hash,
+    )
+    if dynamic_error:
+        return json.dumps({"ok": False, "error": dynamic_error}, ensure_ascii=False)
 
     return json.dumps(
         {
@@ -305,15 +271,16 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
             "preview_id": _record_preview(
                 agent_id=agent_id,
                 definition_hash=compiled.definition_hash,
-                args_hash=compute_definition_hash(args),
+                args_hash=args_hash,
                 confirmation_required=confirmation.requires_confirmation,
                 proposal_id=proposal_id,
                 candidate_id=candidate_id,
+                dynamic_candidate=dynamic_candidate,
             ),
             "proposal_id": proposal_id,
             "candidate_id": candidate_id,
             "definition_hash": compiled.definition_hash,
-            "args_hash": compute_definition_hash(args),
+            "args_hash": args_hash,
             "confirmation_required": confirmation.requires_confirmation,
             "confirmation_reasons": confirmation.reasons,
             "planned_leaf_calls": admission.planned_leaf_calls,
@@ -359,6 +326,14 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "string",
                     "description": "Optional work-ledger todo this run serves (observation mirror only).",
                 },
+                "proposal_id": {
+                    "type": "string",
+                    "description": "Dynamic Workflow proposal_id bound by preview_workflow.",
+                },
+                "candidate_id": {
+                    "type": "string",
+                    "description": "Dynamic Workflow candidate_id bound by preview_workflow.",
+                },
             },
             "required": ["definition"],
         },
@@ -392,23 +367,29 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
         preview_record = _WORKFLOW_PREVIEW_CACHE.get(preview_id) if preview_id else None
         preview_proposal_id = str((preview_record or {}).get("proposal_id") or "").strip() or None
         preview_candidate_id = str((preview_record or {}).get("candidate_id") or "").strip() or None
+        if (proposal_id or candidate_id) and not (preview_proposal_id and preview_candidate_id):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "start_workflow dynamic identifiers require preview_workflow with the same proposal_id and candidate_id",
+                },
+                ensure_ascii=False,
+            )
         if proposal_id and preview_proposal_id and proposal_id != preview_proposal_id:
             return json.dumps({"ok": False, "error": "start_workflow proposal_id differs from preview_workflow"}, ensure_ascii=False)
         if candidate_id and preview_candidate_id and candidate_id != preview_candidate_id:
             return json.dumps({"ok": False, "error": "start_workflow candidate_id differs from preview_workflow"}, ensure_ascii=False)
         proposal_id = proposal_id or preview_proposal_id
         candidate_id = candidate_id or preview_candidate_id
-        run_metadata = None
-        if proposal_id or candidate_id:
-            run_metadata = {
-                "dynamic_workflow": {
-                    "proposal_id": proposal_id,
-                    "candidate_id": candidate_id,
-                    "preview_id": preview_id,
-                    "definition_hash": compile_workflow(definition).definition_hash,
-                    "args_hash": compute_definition_hash(args),
-                }
-            }
+        dynamic_candidate = mapping((preview_record or {}).get("dynamic_candidate"))
+        run_metadata = build_dynamic_workflow_run_metadata(
+            proposal_id=proposal_id,
+            candidate_id=candidate_id,
+            preview_id=preview_id,
+            definition_hash=compile_workflow(definition).definition_hash,
+            args_hash=compute_definition_hash(args),
+            candidate=dynamic_candidate,
+        )
         handle = await start_ephemeral_workflow_for_agent(
             agent_id=agent_id,
             definition=definition,

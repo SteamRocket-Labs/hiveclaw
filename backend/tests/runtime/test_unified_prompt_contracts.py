@@ -42,7 +42,8 @@ def test_delegation_tool_descriptions_require_structured_briefs() -> None:
     assert "Goal / Context / Known facts / Constraints / Evidence needed / Output / Stop condition" in (
         async_description
     )
-    assert "check back later with `check_async_task`" in async_description
+    assert "session_id/child_session_id" in async_description
+    assert "use `check_async_task` only as a fallback status inspection" in async_description
     assert "Do not ask the worker to infer missing scope silently" in async_description
 
 

@@ -116,10 +116,10 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
    - subagent wake、CoordinationSignal、T0 event、`check_subagent`、child session state、team context 都能表达完成。
    - 正常路径必须收束为 session mailbox / input queue，fallback 才允许检查工具。
 
-4. Agent Team runtime path 不唯一：
-   - API / Workbench team creation 会持久化。
-   - model-visible `team_create` 仍可能只是 handoff。
-   - prompt-facing team context 还没有以 `AgentTeam` rows 为唯一 source of truth。
+4. Agent Team runtime path 本轮已收束到单一 backend/runtime service：
+   - API / command / model tool / Plan Mode handoff 现在共用 `agent_team_runtime_service.py`。
+   - model-visible `team_create` 已直接持久化，不再只是 handoff。
+   - prompt-facing team context / Workbench projection 仍进入主线 D，以 `AgentTeam` rows 为唯一 source of truth。
 
 5. Turn context / prompt assembly 没有 manifest：
    - Codex 的工程优点是 typed turn/thread/config/permission/sandbox snapshot。
@@ -368,6 +368,17 @@ cd backend && source .venv/bin/activate && pytest \
 
 目标：把团队协作和真实数字员工协作都收进 session-first 模型，但保持二者边界清晰。
 
+状态：已完成 Workstream C backend/runtime implementation pass。
+
+本次闭合点：
+
+- `backend/app/services/agent_team_runtime_service.py` 成为 Team create/message 的唯一 runtime service。
+- `team_create` model tool 不再返回 `requires_api_persist=True` handoff，而是直接创建 durable `AgentTeam`、member `ChatSession`、`AgentTeamEvent` 和 parent session `team_member` event。
+- `/commands/team_create`、`/agents/{agent_id}/agent-teams`、Plan Mode `agent_team` handoff 共用同一 create service。
+- `send_agent_session_message` 支持 `team_id + member_name`，`member_name="*"` 时广播到 active team members；模型不再必须复制 child session UUID。
+- `/agent-teams/{team_id}/members/{member_id}/messages` 和模型工具共用同一 `message_agent_team_members_runtime` mailbox path。
+- `send_message_to_agent` 同步 A2A 返回结构化 `session_id` / `child_session_id` / `reply` payload；`delegate_to_agent` 工具描述改为 session-first continuation，`check_async_task` 只作为 fallback status inspection。
+
 依赖文档：
 
 - `docs/a2a-integrated-implementation-plan-2026-06-27.md`
@@ -444,12 +455,16 @@ A2A Process Graph
 
 ```bash
 cd backend && source .venv/bin/activate && pytest \
-  tests/tools/test_team_create_tool_persists_team.py \
-  tests/api/test_agent_teams.py \
-  tests/services/test_agent_team_context.py \
-  tests/services/test_agent_team_mailbox.py \
-  tests/services/test_a2a_session_first_delegation.py \
-  tests/services/test_a2a_child_session_state.py \
+  tests/services/test_agent_team_runtime_service.py \
+  tests/tools/test_cc_codex_parity_tools.py::test_team_create_tool_persists_through_agent_team_runtime \
+  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_routes_agent_team_by_name_without_child_session \
+  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_appends_child_mailbox_event \
+  tests/api/test_agent_teams_events_api.py \
+  tests/services/test_plan_mode_agent_team_handoff.py \
+  tests/api/test_cc_codex_parity_api.py::test_commands_api_team_create_and_delete_are_durable \
+  tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_creates_control_index_and_member_sessions \
+  tests/services/test_prompt_contracts.py \
+  tests/runtime/test_unified_prompt_contracts.py \
   -q
 ```
 
@@ -462,12 +477,11 @@ cd frontend && npm run test -- \
 
 完成标准：
 
-- Team creation 没有 tool/API/UI 第二路径。
-- team context 和 team mailbox 能进入 parent turn。
-- A2A delegation 从 task-first 改为 session-first。
-- 用户能从 root session 打开 A2A child session。
-- child session 只读。
-- final delivery 和 artifact 在 session 内可见。
+- Team creation backend/runtime 没有 tool/API/Plan Mode 第二路径。
+- team message backend/runtime 没有 API/tool 第二路径。
+- team context 和 team mailbox 以 Team rows + member sessions 为 source of truth。
+- A2A delegation backend payload 从 task-first 改为 session-first。
+- UI root timeline card、child read-only view、artifact drawer 和 Workbench state 进入主线 D 的 typed TurnEnvelope/Workbench 收口，不再另立 Team/A2A 第二规则。
 
 ### 主线 D：TurnEnvelope / Workbench / Hooks / Skill / MCP Closure
 

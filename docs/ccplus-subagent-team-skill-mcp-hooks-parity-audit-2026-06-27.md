@@ -20,7 +20,7 @@
 2. 但这些机制多处停留在 “API / model / handler / catalog / tests 存在” 层，没有完全进入 CC 的 session 内模型行为语义。
 3. 因此不能再用 “机制层已对齐” 作为最终判断；需要把 session behavior parity 重新打开，尤其是 Agent Team 和 Hooks。
 4. Subagent 最接近可用，但被 coordinator tool surface、提示词强度、默认 agent listing / proactive usage 语义卡住。
-5. Agent Team 最大断点是 model-visible `team_create` 不等价于 CC `TeamCreateTool`：它返回 `requires_api_persist`，但不自己持久化 team / member sessions。
+5. Agent Team 的 model-visible `team_create` 断点已在 Workstream C 修复：它现在通过统一 runtime service 直接持久化 team / member sessions；剩余差距是 Team context / Workbench / TurnEnvelope 投影。
 6. Skill / MCP / Hooks 都存在相似问题：有入口，但缺 CC 的触发、动态注入、外部 hook runner、MCP prompt skill、MCP instruction delta 等完整 session 链路。
 7. `delegate_to_agent` 不是 CC `AgentTool` 的等价物。它是 To Employee / A2A delegation，受 A2A Collaborators、relationships、self block 和 `bridge:self` gate 约束；session 内 lightweight worker 必须走 To Session Worker / AgentTool 语义。
 
@@ -177,36 +177,30 @@ CC 语义：
 - `backend/app/api/commands.py`
 - `backend/app/api/agent_teams.py`
 - `backend/app/models/agent_team.py`
+- `backend/app/services/agent_team_runtime_service.py`
 - `backend/app/services/agent_team_context.py`
 - `backend/app/services/agent_session_continuation.py`
 
 已实现：
 
-1. API / command endpoint 可以真实创建 `AgentTeam`、`AgentTeamMember`、member `ChatSession`。
-2. `agent_teams.py` 支持 create / enter / start member run / message member / close。
+1. API / command endpoint / model-visible `team_create` / Plan Mode handoff 现在共用 `agent_team_runtime_service.py` 创建 `AgentTeam`、`AgentTeamMember`、member `ChatSession` 和 `AgentTeamEvent`。
+2. `agent_teams.py` 支持 create / enter / start member run / message member / close；create 和 message 已收敛到统一 runtime service。
 3. team member session 使用 `session_kind="team_member"` 和 `runtime_source="team_member"`。
-4. `send_agent_session_message` 可以对 child session / team member session 追加 mailbox follow-up。
+4. `send_agent_session_message` 可以对 child session / team member session 追加 mailbox follow-up，并支持 `team_id + member_name`；`member_name="*"` 广播到 active team members。
 5. Hook event surface 有 `TEAM_CREATED`、`TEAM_CLOSED`、`TEAMMATE_IDLE`。
 
-断点：
+已闭合断点：
 
-1. model-visible `team_create` handler 只返回：
+1. model-visible `team_create` 不再只返回 `requires_api_persist`，而是直接持久化 Team / member sessions / events。
+2. API command、Agent Team API、Plan Mode handoff、model tool 不再各自复制 Team create 逻辑。
+3. Team message 已支持 name-first / broadcast-first，不要求模型知道 child session UUID。
 
-```json
-{
-  "ok": true,
-  "requires_api_persist": true
-}
-```
+剩余归属：
 
-它不创建 `AgentTeam` / member sessions。这不等价于 CC `TeamCreateTool`。
+1. Team context renderer 和 Session Workbench 的 typed TurnEnvelope 展示进入主线 D，不再作为 Agent Team runtime 第二路径。
+2. 共享 task list / teammate completion notice 的 UI 合流进入 Workbench/TurnEnvelope，而不是再新增 Team 私有规则。
 
-2. `team_create` 在 `command_pack` deferred group 中，不是 coordinator allowed tool。
-3. Team context renderer 只查询 `RuntimeTask.task_type in {"subagent", "workflow", "delegation"}` 和 `CoordinationSignal`，没有直接投影 `AgentTeamMember` / `team_member` tasks。
-4. 没有 CC-style `SendMessage(to=name|"*", message=...)` model tool；当前 continuation 主要按 `child_session_id`。
-5. 没有共享 task list path / teammate name-first communication 语义。
-
-判断：Agent Team 是当前最大 parity 断点。API 层有，但 LLM session 内行为未闭合。
+判断：Agent Team 的 runtime/tool 断点已在 Workstream C 闭合；剩余是 context projection 和 UI/UX 收口。
 
 ### 3.3 Skill
 
@@ -374,9 +368,9 @@ Hive 现在的问题是两种风格混合但没有分层：
 | Subagent runtime | 有 `spawn_subagent`、built-ins、background run、child session；本轮补齐 `general-purpose` default、AgentTool-compatible schema、Session Worker type listing | AgentTool 默认 general-purpose，强触发，parallel fan-out，coordinator worker | 本轮已对齐 |
 | Coordinator multi-agent | 本轮只允许 session worker path：`spawn_subagent` / `check_subagent` / `send_agent_session_message` | AgentTool worker 是 coordinator 核心工具 | 本轮已对齐 |
 | To Employee / To Session Worker 分层 | 本轮拆分：session worker 用 `spawn_subagent`；真实同事通信才走 A2A `delegate_to_agent` / `send_message_to_agent` | session worker 用 AgentTool；真实同事通信才走 A2A/SendMessage | 本轮已对齐 |
-| Agent Team create | API 真持久化；model tool 只返回待持久化标记 | TeamCreateTool 直接创建 team / task list / context | 未对齐 |
-| Team mailbox | 有 child session mailbox continuation | teammate name / broadcast / automatic inbox attachment | 部分对齐 |
-| Team context | 只投影 subagent/workflow/delegation tasks + signals | team members / team config / mailbox / shared task list | 未对齐 |
+| Agent Team create | `team_create` model tool / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | TeamCreateTool 直接创建 team / task list / context | runtime 已对齐；shared task list/context 进 D |
+| Team mailbox | `send_agent_session_message` 支持 child session、`team_id + member_name`、`member_name="*"` 广播；API message 共用 runtime | teammate name / broadcast / automatic inbox attachment | runtime 已对齐；UI inbox 进 D |
+| Team context | runtime source of truth 已统一为 `AgentTeam` rows + member sessions | team members / team config / mailbox / shared task list | 待 D：typed TurnEnvelope/context projection |
 | Skill load | progressive disclosure 有 | SkillTool blocking invocation + forked execution + MCP skill + hooks | 部分对齐 |
 | MCP tools | import/list/call/resources 有 | live model tool injection + prompts/list + auth pseudo-tool + instructions delta | 部分对齐 |
 | Hooks event | event/parser/registry 有 | production command/prompt/http/agent hooks + skill hooks + async executor | 部分对齐 |
@@ -392,10 +386,11 @@ Hive 现在的问题是两种风格混合但没有分层：
    - 已完成：增加 regression tests：coordinator tool surface 必须包含 subagent worker path，且 `delegate_to_agent` 不作为默认 worker spawn path。
 
 2. Agent Team
-   - 把 model-visible `team_create` 接到真实持久化 service，而不是返回 `requires_api_persist`。
-   - 增加 `send_team_message` 或增强 `send_agent_session_message`：支持 `team_id + to=name|"*"`。
-   - `agent_team_context` 查询 `AgentTeam` / `AgentTeamMember` / `team_member RuntimeTask`，自动渲染 team context 和 teammate mailbox。
-   - 增加 regression test：LLM tool `team_create` 调用后必须产生 `AgentTeam`、member sessions、team event。
+   - 已完成：把 model-visible `team_create` 接到真实持久化 service，而不是返回 `requires_api_persist`。
+   - 已完成：增强 `send_agent_session_message`，支持 `team_id + member_name` 和 `member_name="*"`。
+   - 已完成：API / command / Plan Mode handoff 共用 Team create service；API/team tool 共用 Team message service。
+   - 待主线 D：`agent_team_context` / typed TurnEnvelope 查询 `AgentTeam` / `AgentTeamMember` / `team_member RuntimeTask`，自动渲染 team context 和 teammate mailbox。
+   - 已完成：增加 regression tests：LLM tool `team_create` 调用后必须产生 durable Team payload；Team message by-name/broadcast 走 mailbox runtime。
 
 3. Prompt trigger
    - Subagent 已完成，Agent Team 待主线 C：增加 CC-style subagent/team usage prompt：
@@ -464,7 +459,9 @@ cd backend
 source .venv/bin/activate
 
 pytest -q \
-  tests/tools/test_team_create_tool_persists_team.py \
+  tests/services/test_agent_team_runtime_service.py \
+  tests/tools/test_cc_codex_parity_tools.py::test_team_create_tool_persists_through_agent_team_runtime \
+  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_routes_agent_team_by_name_without_child_session \
   tests/services/test_agent_team_context_members.py \
   tests/skills/test_skill_hooks_runtime_registration.py \
   tests/services/test_mcp_prompts_as_skills.py \
@@ -473,9 +470,9 @@ pytest -q \
 
 具体断言：
 
-1. `team_create` model tool 直接创建 durable team 和 member sessions。
+1. 已完成：`team_create` model tool 直接创建 durable team 和 member sessions。
 2. parent session 下一轮 prompt 包含 team members、mailbox、member statuses。
-3. `send_team_message(to="critic")` 能解析 teammate name 并写入对应 member mailbox。
+3. 已完成：`send_agent_session_message(team_id, member_name="critic")` 能解析 teammate name 并写入对应 member mailbox；`member_name="*"` 广播由 service test 覆盖。
 4. skill frontmatter hook 被注册且在对应 event 触发。
 5. MCP `prompts/list` 结果进入 skill / command catalog。
 6. external command hook exit code 2 能 block PreToolUse，并写 invocation span。
@@ -506,6 +503,29 @@ cd backend && source .venv/bin/activate && pytest -q \
 ```
 
 重要解释：这些测试证明现有底座可运行，不证明 CC session behavior parity 已闭合。
+
+Workstream C 最新验证（2026-06-27）：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_agent_team_runtime_service.py \
+  tests/tools/test_cc_codex_parity_tools.py::test_team_create_tool_persists_through_agent_team_runtime \
+  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_routes_agent_team_by_name_without_child_session \
+  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_appends_child_mailbox_event \
+  tests/api/test_agent_teams_events_api.py \
+  tests/services/test_plan_mode_agent_team_handoff.py \
+  tests/api/test_cc_codex_parity_api.py::test_commands_api_team_create_and_delete_are_durable \
+  tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_creates_control_index_and_member_sessions \
+  tests/services/test_prompt_contracts.py \
+  tests/runtime/test_unified_prompt_contracts.py \
+  -q
+```
+
+结果：
+
+```text
+47 passed, 4 warnings
+```
 
 Workstream B 最新验证（2026-06-27）：
 

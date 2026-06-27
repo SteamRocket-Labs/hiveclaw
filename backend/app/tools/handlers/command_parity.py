@@ -18,6 +18,7 @@ from app.runtime.prompts.command_parity import (
     VERIFY_PLAN_DESCRIPTION,
 )
 from app.runtime.hooks import HookEvent, emit_hook
+from app.services.agent_team_runtime_service import create_agent_team_from_tool_request
 from app.services.agent_work_ledger import read_agent_work_ledger_view, upsert_agent_work_ledger_todo
 from app.services.plan_verification_service import verify_plan_artifact
 from app.services.runtime_task_service import get_runtime_task_record, update_runtime_task_record
@@ -304,15 +305,10 @@ async def team_create(request: ToolExecutionRequest) -> str:
     members = request.arguments.get("members")
     if not name or not isinstance(members, list) or not members:
         return _json({"ok": False, "error": "name and non-empty members are required."})
-    return _json(
-        {
-            "ok": True,
-            "requires_api_persist": True,
-            "parent_session_id": _session_id(request),
-            "name": name,
-            "members": members,
-        }
-    )
+    try:
+        return _json(await create_agent_team_from_tool_request(request, name=name, members=members))
+    except Exception as exc:
+        return _json({"ok": False, "error": f"team_create failed: {exc}"})
 
 
 @tool(

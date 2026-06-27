@@ -67,6 +67,51 @@ def test_cc_codex_parity_tools_are_registered():
 
 
 @pytest.mark.asyncio
+async def test_team_create_tool_persists_through_agent_team_runtime(tmp_path, monkeypatch):
+    from app.tools.handlers import command_parity
+
+    calls = []
+
+    async def fake_create(request, *, name, members):
+        calls.append((request, name, members))
+        return {
+            "ok": True,
+            "requires_api_persist": False,
+            "id": "team-1",
+            "name": name,
+            "status": "active",
+            "transcript_truth": "chat_session_t0",
+            "parent_session_id": request.context.session_id,
+            "members": [
+                {
+                    "id": "member-1",
+                    "member_name": members[0]["name"],
+                    "member_role": members[0].get("role") or None,
+                    "chat_session_id": "child-session-1",
+                    "runtime_task_type": "team_member",
+                    "status": "idle",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(command_parity, "create_agent_team_from_tool_request", fake_create, raising=False)
+
+    result = await command_parity.team_create(
+        _request(
+            "team_create",
+            {"name": "research", "members": [{"name": "critic", "role": "Review"}]},
+            tmp_path,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["requires_api_persist"] is False
+    assert payload["members"][0]["member_name"] == "critic"
+    assert calls and calls[0][1] == "research"
+
+
+@pytest.mark.asyncio
 async def test_task_create_tool_writes_work_ledger_without_execution(tmp_path, monkeypatch):
     from app.runtime.hooks import HookEvent
     from app.tools.handlers import command_parity

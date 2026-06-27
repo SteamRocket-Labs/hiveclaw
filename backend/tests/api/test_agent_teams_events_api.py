@@ -277,7 +277,11 @@ async def test_message_team_member_uses_mailbox_continuation_consumer(monkeypatc
     monkeypatch.setattr(teams_api, "_load_team_or_404", fake_load_team_or_404)
     monkeypatch.setattr(teams_api, "_load_team_member_or_404", fake_load_member_or_404, raising=False)
     monkeypatch.setattr(teams_api, "_load_member_session_or_404", fake_load_member_session_or_404, raising=False)
-    monkeypatch.setattr(teams_api, "continue_agent_session_from_mailbox", fake_continue, raising=False)
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fake_continue,
+        raising=False,
+    )
 
     result = await teams_api.message_agent_team_member(
         agent_id=agent_id,

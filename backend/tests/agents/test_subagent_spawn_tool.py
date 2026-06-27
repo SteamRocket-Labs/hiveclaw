@@ -729,6 +729,46 @@ async def test_send_agent_session_message_appends_child_mailbox_event(monkeypatc
     assert captured["parent_session_id"] == str(parent_session_id)
 
 
+@pytest.mark.asyncio
+async def test_send_agent_session_message_routes_agent_team_by_name_without_child_session(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    calls = []
+
+    async def fake_team_message(request):
+        calls.append(request.arguments)
+        return {
+            "ok": True,
+            "team_id": request.arguments["team_id"],
+            "member_name": request.arguments["member_name"],
+            "message_count": 1,
+            "results": [{"member_name": "critic", "status": "queued", "child_session_id": "child-session-1"}],
+        }
+
+    monkeypatch.setattr(handler_mod, "send_agent_team_message_from_tool_request", fake_team_message, raising=False)
+
+    team_id = uuid.uuid4()
+    request = ToolExecutionRequest(
+        tool_name="send_agent_session_message",
+        arguments={"team_id": str(team_id), "member_name": "critic", "message": "check the prompt routing"},
+        context=ToolExecutionContext(
+            agent_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            tenant_id=str(uuid.uuid4()),
+            workspace=Path("/tmp"),
+            session_id=str(uuid.uuid4()),
+        ),
+    )
+
+    out = await handler_mod.send_agent_session_message(request)
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["team_id"] == str(team_id)
+    assert data["results"][0]["member_name"] == "critic"
+    assert calls and calls[0]["member_name"] == "critic"
+
+
 # ── T1.3 (§8.1 #5) — ledger_todo_id exposed on the spawn contract ──
 
 

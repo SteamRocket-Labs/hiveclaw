@@ -43,6 +43,7 @@ from app.services.plan_mode_recommendation_service import (
 )
 from app.services.session_command_runtime import SESSION_COMMAND_NAMES, execute_session_command
 from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
+from app.services.agent_team_runtime_service import create_agent_team_runtime, team_member_specs_from_raw
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
 
 router = APIRouter(prefix="/agents/{agent_id}/commands", tags=["commands"])
@@ -638,108 +639,20 @@ async def _execute_team_command(
         members_in = arguments.get("members")
         if not name or not isinstance(members_in, list) or not members_in:
             raise HTTPException(status_code=400, detail="name and non-empty members are required")
-        team = AgentTeam(
-            id=uuid.uuid4(),
-            tenant_id=getattr(agent, "tenant_id", None),
-            lead_agent_id=agent.id,
-            parent_session_id=session.id,
-            name=name[:160],
-            created_by_user_id=user.id,
-            metadata_json={
-                "source": "command",
-                "command": "team_create",
-                "session_id": str(session.id),
-                "member_runtime_policy": "enterable_chat_session",
-            },
-        )
-        db.add(team)
-        members: list[AgentTeamMember] = []
-        for raw_member in members_in:
-            if not isinstance(raw_member, dict):
-                raise HTTPException(status_code=400, detail="members must be objects")
-            member_name = str(raw_member.get("name") or raw_member.get("member_name") or "").strip()
-            if not member_name:
-                raise HTTPException(status_code=400, detail="member name is required")
-            member_session_id = uuid.uuid4()
-            member_session = ChatSession(
-                id=member_session_id,
-                agent_id=agent.id,
-                tenant_id=getattr(agent, "tenant_id", None),
-                user_id=user.id,
-                title=f"{name} / {member_name}"[:200],
-                source_channel="agent_team",
-                session_kind="team_member",
-                actor_type="agent",
-                runtime_source="team_member",
-                visibility_scope="team",
-                listed_surface="chat",
-                parent_session_id=session.id,
-                root_session_id=getattr(session, "root_session_id", None) or session.id,
-                transcript_metadata_json={
-                    "team_id": str(team.id),
-                    "member_name": member_name,
-                    "member_role": str(raw_member.get("role") or "").strip(),
-                    "source": "team_create_command",
-                },
-            )
-            db.add(member_session)
-            member = AgentTeamMember(
-                id=uuid.uuid4(),
-                team_id=team.id,
-                member_name=member_name[:160],
-                member_role=str(raw_member.get("role") or "").strip() or None,
-                model_id=raw_member.get("model_id"),
-                chat_session_id=member_session_id,
-                tool_policy_json=raw_member.get("tool_policy")
-                if isinstance(raw_member.get("tool_policy"), dict)
-                else None,
-                budget_json=raw_member.get("budget") if isinstance(raw_member.get("budget"), dict) else None,
-                metadata_json={
-                    "runtime_policy": "enterable_chat_session",
-                    "direct_chat_supported": True,
-                },
-            )
-            db.add(member)
-            members.append(member)
-        db.add(
-            AgentTeamEvent(
-                id=uuid.uuid4(),
-                team_id=team.id,
-                event_type="team_created",
-                payload_json={"name": team.name, "member_count": len(members), "source": "command"},
-            )
-        )
-        await emit_hook(
-            HookEvent.TEAM_CREATED,
-            agent_id=agent.id,
-            session_id=str(session.id),
-            source="agent_team",
-            metadata={
-                "tenant_id": str(getattr(agent, "tenant_id", "") or ""),
-                "team_id": str(team.id),
-                "name": team.name,
-            },
-        )
-        await db.flush()
-        for member in members:
-            await _append_command_session_event(
+        try:
+            payload = await create_agent_team_runtime(
                 db=db,
                 agent=agent,
                 user=user,
-                session_id=session.id,
-                event_type="team_member",
-                status="created",
-                message=f"Team member created: {member.member_name}",
-                metadata={
-                    "team_id": str(team.id),
-                    "team_name": team.name,
-                    "child_session_id": str(member.chat_session_id),
-                    "member_id": str(member.id),
-                    "member_name": member.member_name,
-                    "command": command_name,
-                },
+                parent_session=session,
+                name=name,
+                members=team_member_specs_from_raw(members_in),
+                source="command",
+                command=command_name,
             )
-        return {"ok": True, "command": command_name, **_team_payload(team, members)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "command": command_name, **payload}
 
     if command_name == "team_delete":
         team_id = _parse_uuid(arguments.get("team_id"), field="team_id")

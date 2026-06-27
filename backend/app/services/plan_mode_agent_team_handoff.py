@@ -6,8 +6,8 @@ import inspect
 import uuid
 from typing import Any
 
-from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
-from app.models.chat_session import ChatSession
+from app.models.agent_team import AgentTeamEvent, AgentTeamMember
+from app.services.agent_team_runtime_service import create_agent_team_runtime_result, team_member_specs_from_raw
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat_run
 
@@ -138,72 +138,25 @@ async def agent_team_handoff(db: Any, plan: Any) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise AgentTeamHandoffError(f"agent {plan.agent_id} is expired")
 
-    team = AgentTeam(
-        id=uuid.uuid4(),
-        tenant_id=getattr(agent, "tenant_id", None),
-        lead_agent_id=agent.id,
-        parent_session_id=_uuid_or_none(session_id) or session_id,
-        name=str(contract.get("name") or "Plan Agent Team").strip()[:160],
-        created_by_user_id=getattr(user, "id", None),
-        metadata_json={
-            "source": "plan_mode_handoff",
+    create_result = await create_agent_team_runtime_result(
+        db=db,
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        name=str(contract.get("name") or "Plan Agent Team").strip(),
+        members=team_member_specs_from_raw(members),
+        source="plan_mode_handoff",
+        metadata={
             "approved_plan_id": str(plan.id),
             "approved_plan_version": getattr(plan, "plan_version", None),
             "approved_plan_hash": getattr(plan, "plan_hash", None),
             "execution_contract_type": "agent_team",
         },
     )
-    db.add(team)
-    db.add(
-        AgentTeamEvent(
-            team_id=team.id,
-            event_type="team_created",
-            payload_json={"name": team.name, "member_count": len(members), "source": "plan_mode_handoff"},
-        )
-    )
+    team = create_result.team
 
     member_runs: list[dict[str, Any]] = []
-    for raw_member in members:
-        member_session = ChatSession(
-            id=uuid.uuid4(),
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            user_id=getattr(user, "id", None),
-            title=f"{team.name} / {str(raw_member.get('name') or '').strip()}"[:200],
-            source_channel="agent_team",
-            session_kind="team_member",
-            actor_type="agent",
-            runtime_source="team_member",
-            visibility_scope="team",
-            listed_surface="chat",
-            parent_session_id=_uuid_or_none(session_id),
-            root_session_id=getattr(parent_session, "root_session_id", None) or _uuid_or_none(session_id),
-            transcript_metadata_json={
-                "team_id": str(team.id),
-                "member_name": str(raw_member.get("name") or "").strip(),
-                "member_role": str(raw_member.get("role") or "").strip(),
-                "source": "plan_mode_agent_team_handoff",
-                "approved_plan_id": str(plan.id),
-            },
-        )
-        db.add(member_session)
-        member = AgentTeamMember(
-            id=uuid.uuid4(),
-            team_id=team.id,
-            member_name=str(raw_member.get("name") or "").strip()[:160],
-            member_role=str(raw_member.get("role") or "").strip() or None,
-            model_id=_uuid_or_none(raw_member.get("model_id")),
-            chat_session_id=member_session.id,
-            tool_policy_json=raw_member.get("tool_policy") if isinstance(raw_member.get("tool_policy"), dict) else None,
-            budget_json=raw_member.get("budget") if isinstance(raw_member.get("budget"), dict) else None,
-            metadata_json={
-                "source": "plan_mode_handoff",
-                "approved_plan_id": str(plan.id),
-                "runtime_policy": "team_member_session",
-            },
-        )
-        db.add(member)
-        await db.flush()
+    for raw_member, member, member_session in zip(members, create_result.members, create_result.member_sessions):
         try:
             run = await start_web_chat_run(
                 db=db,

@@ -39,6 +39,7 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.agent_session_continuation import continue_agent_session_from_mailbox
+from app.services.agent_team_runtime_service import send_agent_team_message_from_tool_request
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -559,9 +560,10 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
         name="send_agent_session_message",
         description=(
             "Append a follow-up message to an existing child agent session mailbox. Use this for Agent Team "
-            "member sessions or background subagent child_session_id values returned by spawn_subagent. This "
-            "records the continuation in the Session/T0 transcript; active runtimes consume it through the "
-            "session mailbox layer."
+            "member sessions or background subagent child_session_id values returned by spawn_subagent. For "
+            "Agent Team workspaces you may pass team_id plus member_name, with member_name='*' to broadcast, "
+            "so you do not need to copy child session UUIDs. This records the continuation in the Session/T0 "
+            "transcript; active runtimes consume it through the session mailbox layer."
         ),
         parameters={
             "type": "object",
@@ -569,6 +571,14 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
                 "child_session_id": {
                     "type": "string",
                     "description": "The child_session_id returned by spawn_subagent or an Agent Team member session id.",
+                },
+                "team_id": {
+                    "type": "string",
+                    "description": "Agent Team id returned by team_create when addressing a Team member by name.",
+                },
+                "member_name": {
+                    "type": "string",
+                    "description": "Agent Team member name to message, or '*' to broadcast to active members.",
                 },
                 "message": {
                     "type": "string",
@@ -579,7 +589,8 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
                     "description": "Whether the follow-up should interrupt an active child run when a runtime supports it.",
                 },
             },
-            "required": ["child_session_id", "message"],
+            "required": ["message"],
+            "anyOf": [{"required": ["child_session_id"]}, {"required": ["team_id", "member_name"]}],
         },
         category="coordination",
         display_name="Send Agent Session Message",
@@ -592,7 +603,12 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
     child_session_uuid = _uuid_or_none(request.arguments.get("child_session_id"))
     message = str(request.arguments.get("message") or "").strip()
     if child_session_uuid is None:
-        return _json({"ok": False, "error": "child_session_id must be a valid session UUID"})
+        if request.arguments.get("team_id") and request.arguments.get("member_name"):
+            try:
+                return _json(await send_agent_team_message_from_tool_request(request))
+            except Exception as exc:
+                return _json({"ok": False, "error": f"Agent Team message failed: {exc}"})
+        return _json({"ok": False, "error": "child_session_id or team_id/member_name is required"})
     if not message:
         return _json({"ok": False, "error": "message is required"})
 

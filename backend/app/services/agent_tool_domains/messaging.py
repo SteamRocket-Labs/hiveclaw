@@ -1253,7 +1253,23 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 detail={"partner": target.name, "message": message_text[:200], "reply": target_reply[:200]},
             )
 
-            return f"💬 {target.name} replied:\n{target_reply}"
+            return json.dumps(
+                {
+                    "ok": True,
+                    "status": "completed",
+                    "session_id": session_id,
+                    "child_session_id": session_id,
+                    "target_agent": target.name,
+                    "target_agent_id": str(target.id),
+                    "source_agent": source_name,
+                    "source_agent_id": str(from_agent_id),
+                    "reply": target_reply,
+                    "message": f"{target.name} replied.",
+                    "continuation_tool": "send_message_to_agent",
+                },
+                ensure_ascii=False,
+                default=str,
+            )
 
     except Exception as e:
         import traceback

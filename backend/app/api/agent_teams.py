@@ -17,7 +17,11 @@ from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
-from app.services.agent_session_continuation import continue_agent_session_from_mailbox
+from app.services.agent_team_runtime_service import (
+    create_agent_team_runtime,
+    message_agent_team_members_runtime,
+    team_member_specs_from_raw,
+)
 from app.services.chat_transcript import append_session_event
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
 from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat_run
@@ -172,6 +176,16 @@ async def _load_member_session_or_404(db: AsyncSession, *, agent_id: uuid.UUID, 
     return session
 
 
+async def _load_member_parent_session_or_404(
+    db: AsyncSession, *, agent_id: uuid.UUID, session_id: uuid.UUID
+) -> ChatSession:
+    result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Parent session not found")
+    return session
+
+
 async def _load_team_events(db: AsyncSession, *, team_id: uuid.UUID, limit: int = 200) -> list[AgentTeamEvent]:
     result = await db.execute(
         select(AgentTeamEvent)
@@ -259,78 +273,21 @@ async def create_agent_team(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    team = AgentTeam(
-        tenant_id=getattr(agent, "tenant_id", None),
-        lead_agent_id=agent_id,
-        parent_session_id=body.parent_session_id,
-        name=body.name.strip(),
-        created_by_user_id=current_user.id,
-    )
-    db.add(team)
-
-    members_out: list[dict] = []
-    for member_in in body.members:
-        member_session = ChatSession(
-            agent_id=agent_id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            user_id=current_user.id,
-            title=f"{body.name.strip()} / {member_in.name.strip()}",
-            source_channel="agent_team",
-            session_kind="team_member",
-            actor_type="agent",
-            runtime_source="team_member",
-            visibility_scope="team",
-            listed_surface="chat",
-            parent_session_id=body.parent_session_id,
-            root_session_id=body.parent_session_id,
+    parent_session = await _load_member_parent_session_or_404(db, agent_id=agent_id, session_id=body.parent_session_id)
+    try:
+        payload = await create_agent_team_runtime(
+            db=db,
+            agent=agent,
+            user=current_user,
+            parent_session=parent_session,
+            name=body.name.strip(),
+            members=team_member_specs_from_raw([member.model_dump() for member in body.members]),
+            source="agent_teams_api",
         )
-        db.add(member_session)
-        member = AgentTeamMember(
-            team_id=team.id,
-            member_name=member_in.name.strip(),
-            member_role=member_in.role.strip() or None,
-            model_id=member_in.model_id,
-            chat_session_id=member_session.id,
-            tool_policy_json=member_in.tool_policy or None,
-            budget_json=member_in.budget or None,
-        )
-        db.add(member)
-        members_out.append(
-            {
-                "id": str(member.id),
-                "member_name": member.member_name,
-                "member_role": member.member_role,
-                "chat_session_id": str(member.chat_session_id),
-                "runtime_task_id": None,
-                "runtime_task_type": member.runtime_task_type,
-                "status": member.status,
-            }
-        )
-
-    await db.flush()
-    db.add(
-        AgentTeamEvent(
-            team_id=team.id,
-            event_type="team_created",
-            payload_json={"name": team.name, "member_count": len(members_out)},
-        )
-    )
-    await emit_hook(
-        HookEvent.TEAM_CREATED,
-        agent_id=agent_id,
-        session_id=str(body.parent_session_id),
-        source="agent_team",
-        metadata={"tenant_id": str(getattr(agent, "tenant_id", "") or ""), "team_id": str(team.id), "name": team.name},
-    )
-    return {
-        "id": str(team.id),
-        "name": team.name,
-        "status": team.status,
-        "transcript_truth": team.transcript_truth,
-        "lead_agent_id": str(team.lead_agent_id),
-        "parent_session_id": str(team.parent_session_id),
-        "members": members_out,
-    }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload.pop("requires_api_persist", None)
+    return payload
 
 
 @router.get("/{team_id}/events")
@@ -553,41 +510,20 @@ async def message_agent_team_member(
     member = await _load_team_member_or_404(db, team_id=team.id, member_id=member_id)
     session = await _load_member_session_or_404(db, agent_id=agent_id, member=member)
 
-    result = await continue_agent_session_from_mailbox(
+    payload = await message_agent_team_members_runtime(
         db=db,
         agent=agent,
         user=current_user,
-        session=session,
+        team=team,
+        members=[member],
+        member_sessions=[session],
         message=body.message,
         display_content=body.display_content,
         interrupt_requested=body.interrupt,
-        parent_session_id=team.parent_session_id,
-        runtime_task_type="team_member",
+        source="agent_teams_api",
     )
-    status_value = str(result.get("status") or "queued")
-    if status_value in {"queued", "started", "running"}:
-        _stamp_member_run(member, run_id=result.get("run_id"), status=status_value, payload=result)
-        event_type = "member_message_queued"
-    else:
-        member.status = "blocked" if status_value == "rejected" else member.status
-        event_type = "member_message_rejected"
-    db.add(
-        _runtime_event(
-            team,
-            member,
-            event_type=event_type,
-            payload={
-                "status": status_value,
-                "runtime_task_type": "team_member",
-                "run_id": result.get("run_id"),
-                "consumer": result.get("consumer"),
-                "reason": result.get("reason"),
-                "message_preview": body.message[:240],
-            },
-        )
-    )
-    await db.flush()
-    return {**_member_payload(member), **result}
+    result = payload["results"][0] if payload.get("results") else {}
+    return {**_member_payload(member), **result, "team_message": payload}
 
 
 @router.post("/{team_id}/close")

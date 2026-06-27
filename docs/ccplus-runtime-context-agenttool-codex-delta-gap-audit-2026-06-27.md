@@ -60,7 +60,7 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
 - 审计时发现：CC 的 async worker completion 会在后续 turn 作为 user-role `<task-notification>` 自动回到主 Agent；Codex 的 inter-agent completion 进入统一 `InputQueue`；Hive 曾同时暴露 durable run state、`CoordinationSignal`、parent T0 event append、`subagent_wake` invocation、`check_subagent`、内部 helper 等多个表现面。Workstream B 已把 subagent prompt 收束为 parent session mailbox + wake，`check_subagent` 只作 fallback。
 - 审计时发现：CC coordinator mode 使用 `AgentTool` 作为 worker spawn primitive；Hive coordinator 曾过滤掉 `spawn_subagent` 并引导模型使用 `delegate_to_agent`。Workstream B 已修正为 coordinator 只走 To Session Worker path。
 - `delegate_to_agent` 当前语义是 “send to another digital employee / A2A”，不是 “session 内创建 lightweight worker”。Workstream B 已把它从 coordinator worker path 移除，并在 prompt/tool description 中固定为 To Employee。
-- CC Agent Team 是 model-visible team workspace、teammate session 和 automatic message delivery 的组合；Hive 有 API/UI team creation，但 LLM tool `team_create` 只是返回 `requires_api_persist`，真正持久化在 API command route。这是两条语义路径。
+- CC Agent Team 是 model-visible team workspace、teammate session 和 automatic message delivery 的组合；Workstream C 已把 Hive 的 `team_create` model tool、command API、Agent Team API 和 Plan Mode handoff 收束到同一个 Team runtime service。剩余差距转为 typed TurnEnvelope / Workbench context projection。
 - Codex 的 `TurnContext`、`InputQueue`、`ThreadState`、`ThreadConfigSnapshot`、active turn snapshot、background terminal API 是很强的工程面；Hive 有等价碎片，但还没有所有 runtime source 共同使用的 typed `TurnEnvelope`。
 
 实际结论：
@@ -275,6 +275,7 @@ backend/app/tools/handlers/command_parity.py
 backend/app/api/commands.py
 backend/app/api/agent_teams.py
 backend/app/models/agent_team.py
+backend/app/services/agent_team_runtime_service.py
 backend/app/services/agent_team_context.py
 backend/app/services/session_control_plane.py
 frontend/src/pages/session-workbench/SessionNativeControls.tsx
@@ -284,16 +285,17 @@ frontend/src/api/domains/ccParity.ts
 已经做对的部分：
 
 - durable `AgentTeam`、`AgentTeamMember`、`AgentTeamEvent` 已存在。
-- `/agents/{agent_id}/agent-teams` API 会创建 enterable member sessions。
+- `agent_team_runtime_service.py` 现在是 Team create/message 的统一 runtime service。
+- `team_create` model tool、`/commands/team_create`、`/agents/{agent_id}/agent-teams` API、Plan Mode team handoff 都通过同一 create service 创建 enterable member sessions。
+- `send_agent_session_message` 支持 `team_id + member_name` 和 `member_name="*"`，并和 Agent Team API message 共享同一 mailbox continuation service。
 - Session Workbench 可以创建 team、列 team、进入 member session、关闭 team、渲染 workbench state。
 - `session_control_plane.py` 会把 team members 放入 session graph。
 
 缺口：
 
-- model-visible `team_create` tool 在 `command_parity.py` 里只返回 `requires_api_persist`；API command route 才做持久化。这制造了 LLM tool call 与 API/workbench call 两条语义路径。
 - `agent_team_context.py` 当前主要投影 `RuntimeTask` 类型 `subagent`、`workflow`、`delegation` 和 `CoordinationSignal`；它没有把 `AgentTeam` rows 作为 prompt-facing team source of truth。
-- CC Team flow 是 `TeamCreate -> Task list -> AgentTool(team_name, name) -> automatic teammate messages`。Hive 当前有 API/UI team creation，但 model-loop 语义还不是同一条链。
-- 前端 `/team` slash menu 当前测试明确隐藏 `team_create`，但 Workbench 又暴露 team creation。这可以是产品选择，但不是 CC-like unified command/tool surface。
+- CC Team flow 还包括 `Task list -> AgentTool(team_name, name) -> automatic teammate messages` 的 prompt-facing context 和 UI projection。Hive runtime 已收敛；context/Workbench 进入主线 D。
+- 前端 `/team` slash menu 当前测试明确隐藏 `team_create`，但 Workbench 又暴露 team creation。这需要在主线 D 由 typed TurnEnvelope/Workbench state 决定是否露出，而不是保留后端第二路径。
 
 ### 3.4 Background Agent
 
@@ -403,9 +405,9 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 | Send to worker vs employee | Session worker 用 AgentTool；真实同事用 SendMessage/A2A | `InterAgentCommunication` 和 thread mailbox 可分 source | To Session Worker / To Employee 已拆分；A2A gate 不再约束 session worker | 本轮已对齐 | 保持 |
 | Subagent sync | child returns digest | trace/span lineage | `spawn_subagent` sync returns digest；`prompt` / `subagent_type` / default general-purpose 已补 | 本轮已对齐 | 保持 |
 | Subagent async | later `<task-notification>` user message | mailbox `InterAgentCommunication` + trigger turn | completion 写 parent session mailbox + wake；prompt 不再引用内部 helper；`check_subagent` fallback | 本轮已对齐 | 后续和 Agent Team mailbox 合流 |
-| Agent Team create | TeamCreate creates team/task list | thread graph/workbench | API creates team，LLM tool returns handoff | 两条路径 | tool/API/UI 共用一个 runtime service |
-| Teammate work | AgentTool with `team_name` and `name` | subagent thread lineage | team member sessions/API | 未 model-loop 集成 | teammate spawn/message 进入同一 AgentTool/team mailbox |
-| Completion feedback | automatic notification，无 polling | active/input queue wake | wake daemon + parent session mailbox；`check_subagent` fallback | Subagent 本轮已对齐；Team 待 C | automatic next-turn input，`check` 只作 debug |
+| Agent Team create | TeamCreate creates team/task list | thread graph/workbench | `team_create` / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | runtime 已对齐 | D 段补 context/UI |
+| Teammate work | AgentTool with `team_name` and `name` | subagent thread lineage | `send_agent_session_message(team_id, member_name)` / `member_name="*"` 进入 Team mailbox runtime | runtime 已对齐 | D 段补 prompt-facing team context |
+| Completion feedback | automatic notification，无 polling | active/input queue wake | wake daemon + parent session mailbox；`check_subagent` fallback；Team message 已共用 mailbox service | Subagent/Team runtime 已对齐；UI 待 D | automatic next-turn input，`check` 只作 debug |
 | Hooks | blocking hooks around prompt/tool/stop/subagent | lifecycle events + app-server state | catalog + partial active hooks | 有 noop/observe-only | full hook runtime + workbench trace |
 | Compaction | model-authored context collapse | rollout/history builder | proactive/reactive compaction | 底座基本有 | 进入 TurnEnvelope 和 workbench |
 | Resume/fork | session files / resume | typed thread resume/fork/read/list | ChatSession/session graph/export | partial | typed session/thread APIs with snapshots |
@@ -539,32 +541,36 @@ pytest tests/runtime/test_parent_turn_receives_subagent_notification.py -q
 
 ### P0-3：唯一 Agent Team Runtime Path
 
-问题：
+状态：Workstream C backend/runtime 已完成。
 
-- API/workbench team creation 会持久化 team。
-- LLM `team_create` 只是返回 persistence handoff。
-- Prompt-facing team context 没有以 `AgentTeam` rows 为主。
+已修复：
 
-必须修复：
-
-- 抽出一个 `AgentTeamRuntimeService`。
-- 以下入口全部调用同一个 service：
+- 已抽出 `agent_team_runtime_service.py`。
+- 以下入口已调用同一个 create service：
   - `team_create` model tool
-  - `/commands/team_create/execute`
+  - `/commands/team_create`
   - `/agent-teams` API
   - Plan Mode agent-team handoff
-  - Session Workbench create team
-- Prompt-facing team context 以 `AgentTeam` / `AgentTeamMember` 为 source of truth，再附加 runtime tasks/signals 作为 member state。
-- 增加与 CC SendMessage 对齐的 by-name 或 `*` broadcast teammate message 语义。
+- Agent Team API message 和 `send_agent_session_message(team_id, member_name)` 已调用同一个 message service。
+- 已增加与 CC SendMessage 对齐的 by-name / `*` broadcast teammate message 语义。
 
-测试先行：
+仍待主线 D：
+
+- Prompt-facing team context 以 `AgentTeam` / `AgentTeamMember` 为 source of truth，再附加 runtime tasks/signals 作为 member state。
+- Workbench / root timeline / child session read-only display 进入 typed TurnEnvelope。
+
+验证：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
-pytest tests/api/test_agent_teams.py -q
-pytest tests/tools/test_team_create_tool_persists_team.py -q
-pytest tests/services/test_agent_team_context.py -q
+pytest \
+  tests/services/test_agent_team_runtime_service.py \
+  tests/tools/test_cc_codex_parity_tools.py::test_team_create_tool_persists_through_agent_team_runtime \
+  tests/agents/test_subagent_spawn_tool.py::test_send_agent_session_message_routes_agent_team_by_name_without_child_session \
+  tests/api/test_agent_teams_events_api.py \
+  tests/services/test_plan_mode_agent_team_handoff.py \
+  -q
 ```
 
 ### P0-4：TurnEnvelope / PromptAssemblyManifest
@@ -779,9 +785,9 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 
 验收标准：
 
-- `team_create` tool call 通过同一 service 持久化。
-- prompt-facing context 读取真实 teams。
-- team member messages 和 idle/completion notices 进入同一个 mailbox bus。
+- 已完成：`team_create` tool call 通过同一 service 持久化。
+- 已完成：team member messages 通过 name / broadcast 进入同一个 mailbox bus。
+- 待主线 D：prompt-facing context 读取真实 teams，idle/completion notices 进入 typed TurnEnvelope / Workbench state。
 
 ### Pass C：TurnEnvelope / Workbench State
 

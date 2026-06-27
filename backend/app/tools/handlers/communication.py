@@ -113,11 +113,11 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
             "Usage:\n"
             "- Use this for short consults, clarifications, or synchronous collaboration with another agent.\n"
             "- Send a precise request so the colleague can answer in one pass.\n"
-            "- Expect a reply in the current round; use the response immediately.\n"
+            "- Expect a reply in the current round; the result includes reply plus the A2A session_id for continuity.\n"
             "- Do NOT use this for long-running delegated work — use `delegate_to_agent` when the other agent should continue in the background.\n"
-            "- Your relationships.md lists governed A2A collaborators: same-owner agents under '我的数字员工团队' "
-            "and approved A2A Collaboration Group members under 'A2A 协作组'. If the target is governed and "
-            "available, call this tool directly instead of asking the user to manually add an agent relationship."
+            "- The A2A Collaborators context lists governed targets: same-owner agents, public agents, "
+            "and approved A2A Collaboration Group members. If the target is listed and available, call "
+            "this tool directly instead of asking the user to manually add an agent relationship."
         ),
         parameters={
             "type": "object",
@@ -158,13 +158,13 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
     ToolMeta(
         name="delegate_to_agent",
         description=(
-            "To Employee: spawn an async task on another digital employee and return immediately with a task handle. "
+            "To Employee: spawn an async session on another digital employee and return immediately with a session handle. "
             "This is A2A collaboration with a real governed colleague, not a session-local worker.\n\n"
             "Usage:\n"
             "- Use this for coordinator-style delegation when the worker should continue in the background.\n"
             f"- Brief format: {DELEGATION_BRIEF_CONTRACT}\n"
             "- Provide a precise task with the outcome you expect, any constraints, and the evidence the worker should return.\n"
-            "- After delegating, check back later with `check_async_task` or inspect multiple workers with `list_async_tasks`.\n"
+            "- The result includes session_id/child_session_id. Continue through `send_agent_session_message`; use `check_async_task` only as a fallback status inspection.\n"
             "- Do NOT use this for quick back-and-forth questions — use `send_message_to_agent` for synchronous collaboration.\n"
             "- Do NOT use this for session-local worker fan-out, context isolation, or independent verification inside the same session — use `spawn_subagent` for To Session Worker."
         ),

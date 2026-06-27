@@ -806,8 +806,9 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
 
     monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
     monkeypatch.setattr(commands_api, "execute_tool", fail_execute_tool)
-    monkeypatch.setattr(commands_api, "emit_hook", fake_emit_hook)
     monkeypatch.setattr(commands_api, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append_session_event)
 
     create_db = _FilteringExecuteDB({"ChatSession": SimpleNamespace(id=session_id, agent_id=agent_id)})
     created = await commands_api.execute_agent_command(
@@ -1190,6 +1191,18 @@ async def test_agent_teams_api_creates_control_index_and_member_sessions(monkeyp
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
 
     monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
+    async def fake_load_parent_session(*_args, **_kwargs):
+        return SimpleNamespace(id=parent_session_id, root_session_id=parent_session_id)
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    monkeypatch.setattr(teams_api, "_load_member_parent_session_or_404", fake_load_parent_session)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append_session_event)
 
     result = await teams_api.create_agent_team(
         agent_id=agent_id,

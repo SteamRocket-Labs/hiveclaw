@@ -56,12 +56,12 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
 
 最重要的具体问题：
 
-- 审计时发现：CC 的模型可见主谓词是 `AgentTool`；Hive 曾把 `spawn_subagent`、`delegate_to_agent`、`team_create`、command API、workbench API、wake signal 拆成若干相邻但不统一的面。Workstream B 已先收束 `spawn_subagent`/AgentTool 这条面；Team/Skill/MCP/Workbench 继续在后续主线收束。
+- 审计时发现：CC 的模型可见主谓词是 `AgentTool`；Hive 曾把 `spawn_subagent`、`delegate_to_agent`、`team_create`、command API、workbench API、wake signal 拆成若干相邻但不统一的面。Workstream B 已收束 `spawn_subagent`/AgentTool；Workstream C/D 已收束 Team/Skill/MCP/Workbench 的统一 runtime/read-model 面。
 - 审计时发现：CC 的 async worker completion 会在后续 turn 作为 user-role `<task-notification>` 自动回到主 Agent；Codex 的 inter-agent completion 进入统一 `InputQueue`；Hive 曾同时暴露 durable run state、`CoordinationSignal`、parent T0 event append、`subagent_wake` invocation、`check_subagent`、内部 helper 等多个表现面。Workstream B 已把 subagent prompt 收束为 parent session mailbox + wake，`check_subagent` 只作 fallback。
 - 审计时发现：CC coordinator mode 使用 `AgentTool` 作为 worker spawn primitive；Hive coordinator 曾过滤掉 `spawn_subagent` 并引导模型使用 `delegate_to_agent`。Workstream B 已修正为 coordinator 只走 To Session Worker path。
 - `delegate_to_agent` 当前语义是 “send to another digital employee / A2A”，不是 “session 内创建 lightweight worker”。Workstream B 已把它从 coordinator worker path 移除，并在 prompt/tool description 中固定为 To Employee。
-- CC Agent Team 是 model-visible team workspace、teammate session 和 automatic message delivery 的组合；Workstream C 已把 Hive 的 `team_create` model tool、command API、Agent Team API 和 Plan Mode handoff 收束到同一个 Team runtime service。剩余差距转为 typed TurnEnvelope / Workbench context projection。
-- Codex 的 `TurnContext`、`InputQueue`、`ThreadState`、`ThreadConfigSnapshot`、active turn snapshot、background terminal API 是很强的工程面；Hive 有等价碎片，但还没有所有 runtime source 共同使用的 typed `TurnEnvelope`。
+- CC Agent Team 是 model-visible team workspace、teammate session 和 automatic message delivery 的组合；Workstream C 已把 Hive 的 `team_create` model tool、command API、Agent Team API 和 Plan Mode handoff 收束到同一个 Team runtime service，Workstream D 已补 typed TurnEnvelope / Workbench context projection。
+- Codex 的 `TurnContext`、`InputQueue`、`ThreadState`、`ThreadConfigSnapshot`、active turn snapshot、background terminal API 是很强的工程面；Hive 已吸收为 `TurnEnvelope` / `PromptAssemblyManifest` / Session Workbench read model。
 
 实际结论：
 
@@ -187,10 +187,10 @@ backend/app/runtime/session.py
 - prompt 有 frozen prefix + dynamic suffix 分层。
 - skill catalog 和 memory 在 dynamic suffix，保留 prompt-cache 边界。
 
-缺口：
+已修复：
 
-- 没有一个显式的 `TurnEnvelope` / `PromptAssemblyManifest`，记录某个 turn 的所有 input、context section、permission profile、active tool surface、runtime source、output budget。
-- context assembly 是多个 resolver callbacks 和 prompt sections 拼出来的，能跑，但难审计，也难对齐 Codex typed `TurnContext`。
+- 已有显式 `TurnEnvelope` / `PromptAssemblyManifest`，记录某个 turn 的 input、context section、permission profile、active tool surface、runtime source、output budget、hook state、Skill/MCP refs。
+- context assembly 仍由 resolver callbacks 和 prompt sections 生成，但 Workbench 现在有 typed manifest 可审计，不再只靠散落字段判断。
 
 ### 3.2 Agent Tool / Subagent
 
@@ -221,7 +221,7 @@ backend/app/services/agent_tools.py
 - 已修复：built-ins 新增 `general-purpose`，并保留 `explorer`、`worker`、`critic`。
 - 已修复：Hive coordinator mode 已允许 `spawn_subagent` / `check_subagent`，并移除 `delegate_to_agent` 作为 worker path。
 - 已修复：parent wake prompt 不再引用 `consume_subagent_signals`，改为 parent session mailbox + `check_subagent` fallback。
-- 仍待 C/D 收束：Agent Team mailbox 和 typed TurnEnvelope / InputQueue 需要接入同一完成反馈模型。
+- 已完成 C/D 收束：Agent Team mailbox 和 typed TurnEnvelope/Workbench read model 已接入同一 session 模型。
 
 ### 3.2.1 `delegate_to_agent` / A2A 与 Session Worker 混层
 
@@ -399,15 +399,15 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 |---|---|---|---|---|---|
 | Agent definition | `.claude/agents` definitions + built-ins | selected capability roots + turn skills | Agent DB、soul、skills、subagent definitions | 概念存在但分散 | 一个 Agent/Skill/Subagent definition index，带 provenance |
 | User prompt accepted | durable turn before model loop | thread/turn start event | `USER_PROMPT_SUBMIT`、T0/web chat append | 基本对齐 | 保持 |
-| Context assembly | CLAUDE.md + tools + skills + queued attachments | typed `TurnContext` + `WorldState` | frozen prefix + dynamic suffix resolver graph | 没有单一 manifest | `TurnEnvelope + PromptAssemblyManifest` |
+| Context assembly | CLAUDE.md + tools + skills + queued attachments | typed `TurnContext` + `WorldState` | frozen prefix + dynamic suffix resolver graph + `TurnEnvelope`/`PromptAssemblyManifest` | 已有单一 read manifest | 保持 |
 | Tool surface | AgentTool/Skill/MCP/Task/Team | dynamic tools + deferred tools | core tools + deferred packs；`spawn_subagent` 已补 AgentTool-compatible schema | AgentTool surface 本轮已对齐；Skill/MCP/Team 待后续 | 继续收敛 Skill/MCP/Team |
 | Coordinator spawn | `AgentTool(subagent_type:"worker")` | MultiAgentV2 hint/gating | coordinator 已改用 `spawn_subagent` / `check_subagent`，不再暴露 `delegate_to_agent` worker path | 本轮已对齐 | 保持唯一 path |
 | Send to worker vs employee | Session worker 用 AgentTool；真实同事用 SendMessage/A2A | `InterAgentCommunication` 和 thread mailbox 可分 source | To Session Worker / To Employee 已拆分；A2A gate 不再约束 session worker | 本轮已对齐 | 保持 |
 | Subagent sync | child returns digest | trace/span lineage | `spawn_subagent` sync returns digest；`prompt` / `subagent_type` / default general-purpose 已补 | 本轮已对齐 | 保持 |
-| Subagent async | later `<task-notification>` user message | mailbox `InterAgentCommunication` + trigger turn | completion 写 parent session mailbox + wake；prompt 不再引用内部 helper；`check_subagent` fallback | 本轮已对齐 | 后续和 Agent Team mailbox 合流 |
-| Agent Team create | TeamCreate creates team/task list | thread graph/workbench | `team_create` / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | runtime 已对齐 | D 段补 context/UI |
-| Teammate work | AgentTool with `team_name` and `name` | subagent thread lineage | `send_agent_session_message(team_id, member_name)` / `member_name="*"` 进入 Team mailbox runtime | runtime 已对齐 | D 段补 prompt-facing team context |
-| Completion feedback | automatic notification，无 polling | active/input queue wake | wake daemon + parent session mailbox；`check_subagent` fallback；Team message 已共用 mailbox service | Subagent/Team runtime 已对齐；UI 待 D | automatic next-turn input，`check` 只作 debug |
+| Subagent async | later `<task-notification>` user message | mailbox `InterAgentCommunication` + trigger turn | completion 写 parent session mailbox + wake；prompt 不再引用内部 helper；`check_subagent` fallback | 本轮已对齐 | 已和 Agent Team mailbox 在 session read model 合流 |
+| Agent Team create | TeamCreate creates team/task list | thread graph/workbench | `team_create` / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | runtime + context 已对齐 | 保持 |
+| Teammate work | AgentTool with `team_name` and `name` | subagent thread lineage | `send_agent_session_message(team_id, member_name)` / `member_name="*"` 进入 Team mailbox runtime | runtime + prompt-facing context 已对齐 | 保持 |
+| Completion feedback | automatic notification，无 polling | active/input queue wake | wake daemon + parent session mailbox；`check_subagent` fallback；Team message 已共用 mailbox service | Subagent/Team runtime + Workbench read model 已对齐 | automatic next-turn input，`check` 只作 debug |
 | Hooks | blocking hooks around prompt/tool/stop/subagent | lifecycle events + app-server state | catalog + partial active hooks | 有 noop/observe-only | full hook runtime + workbench trace |
 | Compaction | model-authored context collapse | rollout/history builder | proactive/reactive compaction | 底座基本有 | 进入 TurnEnvelope 和 workbench |
 | Resume/fork | session files / resume | typed thread resume/fork/read/list | ChatSession/session graph/export | partial | typed session/thread APIs with snapshots |
@@ -424,7 +424,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 - 已完成：省略 `subagent_type` 时映射到 `general-purpose`，内部映射当前 edit-capable worker preset。
 - 已完成：Coordinator mode 暴露 `spawn_subagent` / `check_subagent`，不再暴露 `delegate_to_agent` 作为 worker spawn。
 - 已完成：新增常驻 `## Session Worker Types`，渲染 built-in type `whenToUse`；`executing_actions` 加入 When to use / When NOT to use / examples / parallel fan-out。
-- 后续：custom definition delta 和 typed `multi_agent_mode` 进入 TurnEnvelope 归主线 D。
+- 已完成：typed `multi_agent_mode` 进入 TurnEnvelope；custom definition delta 保持增强项，不作为路径断点。
 
 已落地修复：
 
@@ -447,7 +447,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
   - 常驻 To Session Worker guidance。
   - `spawn_subagent`/AgentTool few-shot examples。
   - available agent types + whenToUse attachment。
-  - explicit/proactive multi-agent mode 注入 TurnEnvelope 仍归主线 D。
+  - explicit/proactive multi-agent mode 已注入 TurnEnvelope。
 
 证据：
 

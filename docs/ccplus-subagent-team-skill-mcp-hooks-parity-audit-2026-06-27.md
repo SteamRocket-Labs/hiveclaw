@@ -12,19 +12,18 @@
 
 ## 0. 结论
 
-当前 Hive 不是 100% follow CC / FreeCode。
+本轮收口后，Hive 的 Subagent / Agent Team / Skill / MCP / Hooks 已按 CCPlus 目标进入统一 session spine。
 
 更准确的判断是：
 
-1. Hive 已经有 Subagent、Agent Team、Skill、MCP、Hooks 的基础机制和一部分测试覆盖。
-2. 但这些机制多处停留在 “API / model / handler / catalog / tests 存在” 层，没有完全进入 CC 的 session 内模型行为语义。
-3. 因此不能再用 “机制层已对齐” 作为最终判断；需要把 session behavior parity 重新打开，尤其是 Agent Team 和 Hooks。
-4. Subagent 最接近可用，但被 coordinator tool surface、提示词强度、默认 agent listing / proactive usage 语义卡住。
-5. Agent Team 的 model-visible `team_create` 断点已在 Workstream C 修复：它现在通过统一 runtime service 直接持久化 team / member sessions；剩余差距是 Team context / Workbench / TurnEnvelope 投影。
-6. Skill / MCP / Hooks 都存在相似问题：有入口，但缺 CC 的触发、动态注入、外部 hook runner、MCP prompt skill、MCP instruction delta 等完整 session 链路。
-7. `delegate_to_agent` 不是 CC `AgentTool` 的等价物。它是 To Employee / A2A delegation，受 A2A Collaborators、relationships、self block 和 `bridge:self` gate 约束；session 内 lightweight worker 必须走 To Session Worker / AgentTool 语义。
+1. Subagent 不再只是 core tool：coordinator、prompt、tool schema、completion wake、Session Worker type listing 都已走 To Session Worker / `spawn_subagent`。
+2. Agent Team 的 model-visible `team_create` 已通过统一 runtime service 直接持久化 team / member sessions；Team context / Workbench / TurnEnvelope 投影已在 D 段补齐。
+3. Skill / MCP / Hooks 不再只是入口：`load_skill` / MCP tool events、MCP tools/prompts/resources、HookRegistry explicit status 都进入 TurnEnvelope / ExtensionRegistry / Workbench read model。
+4. 明确边界：external command/prompt/http/agent hook runner 和 live MCP protocol `prompts/list` fetch 仍是 explicit not-live / deferred 状态；它们不伪装 active，也不形成第二条隐藏路径。
+5. 提示词触发语气已改为主动路由：小而不可分任务直接做；独立搜索、噪音探索、scoped implementation、独立验证主动用 `spawn_subagent`。
+6. `delegate_to_agent` 不是 CC `AgentTool` 的等价物。它是 To Employee / A2A delegation，受 A2A Collaborators、relationships、self block 和 `bridge:self` gate 约束；session 内 lightweight worker 必须走 To Session Worker / AgentTool 语义。
 
-这解释了为什么真实 session 内很少自然触发 Subagent / Multi-agent：不是模型单纯“不愿意用”，而是工具面、提示词、coordinator 路由和 runtime consumer 没有完全对齐 CC。
+这解释了此前真实 session 内很少自然触发 Subagent / Multi-agent：不是模型单纯“不愿意用”，而是工具面、提示词、coordinator 路由和 runtime consumer 没有完全对齐 CC。本轮已把这些路径收束到单一 session spine。
 
 ## 1. 判定标准
 
@@ -161,13 +160,13 @@ CC 语义：
 6. coordinator mode 可见 `spawn_subagent` / `check_subagent` / `send_agent_session_message`；`delegate_to_agent` 不再是 session worker path。
 7. agent context 新增 `## Session Worker Types`，常驻渲染 built-in worker `whenToUse`。
 
-剩余断点：
+已收口状态：
 
-1. Agent Team 尚未完全接到同一条 AgentTool/team mailbox runtime（主线 C）。
-2. Codex-style `multi_agent_mode` 还没有进入 typed TurnEnvelope / Workbench 状态（主线 D）。
-3. custom subagent definitions 的 per-turn listing/delta 仍可加强；本轮先完成 built-in type listing。
+1. Agent Team 已接到同一条 Team runtime / mailbox service。
+2. Codex-style `multi_agent_mode` 已进入 typed TurnEnvelope / Workbench 状态。
+3. custom subagent definitions 的 per-turn listing/delta 仍可加强，但 built-in type listing、schema、completion wake 和 coordinator routing 已闭合。
 
-判断：Subagent runtime、session trigger、coordinator worker semantics 本轮已闭合；剩余不再属于 “Subagent 从不触发” 根因，而属于 Agent Team / TurnEnvelope 后续主线。
+判断：Subagent runtime、session trigger、coordinator worker semantics 已闭合；custom definition delta 是增强项，不是触发路径断点。
 
 ### 3.2 Agent Team
 
@@ -197,10 +196,10 @@ CC 语义：
 
 剩余归属：
 
-1. Team context renderer 和 Session Workbench 的 typed TurnEnvelope 展示已完成 D 第一块：`agent_team_context.py` 读取 `AgentTeam` rows，Workbench 暴露 `turn_envelope` / `prompt_manifest`。
+1. Team context renderer 和 Session Workbench 的 typed TurnEnvelope 展示已完成 D 收口：`agent_team_context.py` 读取 `AgentTeam` rows，Workbench 暴露 `turn_envelope` / `prompt_manifest`。
 2. 共享 task list / teammate completion notice 的 UI 合流进入 Workbench/TurnEnvelope，而不是再新增 Team 私有规则。
 
-判断：Agent Team 的 runtime/tool 断点已在 Workstream C 闭合；剩余是 context projection 和 UI/UX 收口。
+判断：Agent Team 的 runtime/tool 断点已在 Workstream C 闭合；context projection 和 Workbench read model 已在 Workstream D 收口。
 
 ### 3.3 Skill
 
@@ -249,12 +248,12 @@ CC 语义：
 3. `call_mcp_tool` 会解析 DB 中已 import 的 `Tool` row，打开 `MCPClient` 调用 remote server。
 4. `list_mcp_tools` / `inspect_mcp_tool` 保留了旧名 alias，但 OpenAI schema 只暴露 canonical name。
 
-断点：
+当前边界：
 
-1. 没有 CC-style live AppState tool injection：MCP tool 不是直接以 `mcp__server__tool` 作为 model tool 注入。
-2. 没看到 `prompts/list` 实际 MCP client 路径，因此 MCP prompt -> Skill/Command 未闭合。
+1. 当前不新增绕过 governance 的 live AppState direct injection；MCP 调用继续走 `call_mcp_tool` governed wrapper，同时 read model 暴露 `mcp__server__tool` affordance。
+2. live MCP protocol `prompts/list` fetch 仍是 explicit not-live boundary；当前闭合的是 persisted server config/read-model prompt refs -> ExtensionRegistry command/skill effects。
 3. 没有 MCP auth pseudo-tool 等价行为；当前更多是 `import_mcp_server(..., reauthorize=true)`。
-4. `mcp_instructions_delta` 在 runtime guidance catalog 里被描述为 future / visibility delta，而不是 live attachment。
+4. `mcp_instructions_delta` 已进入 TurnEnvelope/PromptAssemblyManifest read model；live protocol attachment 继续按 explicit boundary 管理。
 5. resource tool canonical name 是 `mcp_list_resources` / `mcp_read_resource`，而 CC surface 是 `list_mcp_resources` / `read_mcp_resource`；Hive alias 可执行，但不作为 model-visible schema 暴露。
 
 判断：MCP 工具调用能力存在，但 dynamic MCP session surface 未达到 CC。
@@ -321,7 +320,7 @@ coordinator 更倾向 delegation，而不是 lightweight subagent/team worker fa
 | 调查结论 | 复核判断 | 证据与修正 |
 | --- | --- | --- |
 | 不是 “LLM 看不见工具” | 准确 | `spawn_subagent`、`check_subagent`、`delegate_to_agent`、`send_agent_session_message` 都在 `CORE_TOOL_NAMES`。`core_only=True` 时只保留 core tools，而这些工具没有被 deferred pack 隐藏。 |
-| Hive prompt 基调偏抑制 | 准确 | `executing_actions.py` 先说 “Default to doing the work yourself”，再把 `spawn_subagent` 放在 “self-contained chunk benefits from isolation or parallelism” 的分支里。CC 主 prompt 则直接说明 AgentTool 的价值：并行独立查询、保护主上下文窗口。 |
+| Hive prompt 基调偏抑制 | 曾经准确，本轮已修复 | `executing_actions.py` 已移除旧的默认自己做语气，改为“小而不可分任务直接做；独立搜索、噪音探索、scoped implementation、独立验证主动用 `spawn_subagent`”。CC 主 prompt 的 AgentTool 价值定位已进入常驻提示词和回归测试。 |
 | Hive 缺少 subagent few-shot examples | 准确 | CC `AgentTool/prompt.ts` 内有 `<example>`，明确展示 “写完代码 -> 调 test-runner agent” 和 greeting-responder 模式。Hive `spawn_subagent` tool description 只有类型说明，没有“场景 -> 立刻调用”的 few-shot。`delegation-guide` 有 examples，但它是 A2A `delegate_to_agent` skill，不是 session worker prompt。 |
 | 缺少常驻 when-to-use 强引导 | 准确 | Hive 常驻 prompt 只有若干 bullet；更系统的 `<when_to_use>` 在 `delegation-guide`，且该 skill 默认不进入 prompt body，并且主要讲 A2A employee delegation。CC 同时有主 prompt、AgentTool prompt、Explore route、When NOT to use、examples。 |
 | 缺少类型清单 + whenToUse 持续注入 | 准确 | Hive `_TYPE_DESCRIPTIONS` 存在，并标注用于告诉 parent model 何时选类型，但实际主要体现在 tool schema/config/error available list；没有 CC `agent_listing_delta` 那种 `<system-reminder>` 持续注入 “Available agent types for the Agent tool”。 |

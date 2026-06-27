@@ -334,6 +334,7 @@ cd backend && source .venv/bin/activate && pytest \
 - 新增 `## Session Worker Types` 常驻 prompt section，直接从 built-in `whenToUse` 渲染 `general-purpose` / `explorer` / `worker` / `critic`，进入 agent context；不再只藏在 tool schema。
 - Coordinator mode 已切到 To Session Worker：allowed tools 为 `spawn_subagent` / `check_subagent` / `send_agent_session_message` 等；`delegate_to_agent` / `check_async_task` / `list_async_tasks` / `cancel_async_task` 不再是 coordinator worker path。
 - `executing_actions` 常驻提示词已拆成 To Session Worker 与 To Employee：session 内并行、探索、隔离、独立验证走 `spawn_subagent`；真实数字员工协作才走 A2A `delegate_to_agent` / `send_message_to_agent`。
+- `executing_actions` 已移除旧的默认自己做抑制语气；当前规则是小而不可分任务直接做，独立搜索、噪音探索、scoped implementation、独立验证主动走 `spawn_subagent`。
 - `delegate_to_agent` tool description 已明确为 To Employee / A2A collaboration，不是 session-local worker。
 - background subagent completion wake prompt 已移除内部 `consume_subagent_signals`，改为 parent session mailbox + wake path；`check_subagent` 只保留为 fallback status inspection。
 - Codex-style `multi_agent_mode` 已作为 typed TurnEnvelope / Workbench 状态承载；不得另建第二套 coordinator path。
@@ -597,6 +598,10 @@ cd backend && source .venv/bin/activate && pytest \
 本轮证据（2026-06-27）：`ruff check app/runtime/turn_envelope.py app/services/session_control_plane.py app/services/mcp_server_service.py tests/runtime/test_turn_envelope_prompt_manifest.py tests/services/test_session_control_plane.py tests/services/test_mcp_server_service.py` -> `All checks passed!`；上述 pytest scope -> `105 passed, 4 warnings`。
 
 最终跨主线收口证据（2026-06-27）：`ruff check app/runtime/turn_envelope.py app/services/session_control_plane.py app/services/mcp_server_service.py app/services/agent_team_runtime_service.py app/tools/handlers/subagent.py app/tools/handlers/command_parity.py app/api/commands.py app/api/agent_teams.py tests/runtime/test_turn_envelope_prompt_manifest.py tests/services/test_session_control_plane.py tests/services/test_mcp_server_service.py tests/services/test_agent_team_runtime_service.py tests/tools/test_cc_codex_parity_tools.py tests/agents/test_subagent_spawn_tool.py` -> `All checks passed!`；跨 A/B/C/D pytest scope -> `200 passed, 4 warnings`。
+
+总检补充证据（2026-06-27）：`executing_actions` prompt 已增加 regression test，锁定不再出现旧的默认自己做抑制句式，并要求主动 `spawn_subagent` 路由语气；总检 scope `ruff` -> `All checks passed!`，pytest -> `263 passed, 4 warnings`。
+
+总检上线口径（2026-06-27）：路径唯一化和提示词唯一化已闭合。仍需明确的 non-live 边界包括 external command/prompt/http/agent hook runner、live MCP protocol `prompts/list` fetch、MCP auth pseudo-tool、Skill frontmatter hook runtime registration / forked execution、custom subagent definition per-turn delta。这些边界必须继续显式标注为 not-live / deferred，不允许形成隐藏第二路径；若上线标准是 “session spine 唯一、无隐藏断点、无提示词劝退”，本轮已满足。若上线标准是 “100% CC feature parity including external hooks/live MCP prompt fetch/skill hook execution”，则仍不是 full parity go。
 
 完成标准：
 

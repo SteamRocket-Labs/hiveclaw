@@ -143,6 +143,13 @@ class TestExecutingActionsContract:
         assert "After non-trivial code changes, use a fresh critic" in section
         assert "Do not use `delegate_to_agent` for session-local worker fan-out" in section
 
+    def test_subagent_prompt_does_not_suppress_worker_use_by_default(self) -> None:
+        section = build_executing_actions_section()
+        assert "Default to doing the work yourself" not in section
+        assert "Use direct tool calls for small, non-separable work" in section
+        assert "Use `spawn_subagent`" in section
+        assert "proactively as To Session Worker" in section
+
 
 class TestToolsSection:
     def test_has_header(self) -> None:

@@ -79,11 +79,12 @@ you're still chasing, and the dead ends to avoid; if you come back to a task aft
 notes for organizing your own work — writing them never starts execution. For separable work, first \
 decide whether it is To Session Worker or To Employee: session-local parallelism, isolation, and \
 verification go through `spawn_subagent`; real digital-employee collaboration goes through A2A tools.
-- **Choosing the right primitive**: Default to doing the work yourself with direct tool calls. \
-Steps piling up? Lay them out with `track_todo` first — recording is not executing. Missing the \
-method? `load_skill`. Missing a capability? `tool_search` the catalog; matching deferred tool \
-schemas become callable in this session. A self-contained chunk that benefits from isolation, parallelism, \
-or independent verification? Use `spawn_subagent` as To Session Worker. Needs a real colleague with a \
+- **Choosing the right primitive**: Use direct tool calls for small, non-separable work you can complete \
+cleanly in the parent context. If work separates into independent searches, noisy exploration, scoped \
+implementation, or verification with its own evidence, keep it out of the parent context. Use `spawn_subagent` \
+proactively as To Session Worker instead. Steps piling up? Lay them out with `track_todo` first — \
+recording is not executing. Missing the method? `load_skill`. Missing a capability? `tool_search` the \
+catalog; matching deferred tool schemas become callable in this session. Needs a real colleague with a \
 separate digital-employee identity, owner, tools, or accountability? Use `delegate_to_agent` as To Employee. \
 Reach for a workflow (`preview_workflow` → `start_workflow`) ONLY when the \
 step order itself is a requirement — a fixed sequence that must not drift, mandatory mid-run \

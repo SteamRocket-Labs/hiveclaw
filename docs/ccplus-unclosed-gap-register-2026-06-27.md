@@ -31,6 +31,7 @@
 - 2026-06-27 R-4 SkillTool/frontmatter hooks 已关闭：`run_skill_tool` 进入 core tool surface 并复用 code execution provider；loaded skill frontmatter hooks 会注册到 session-scoped `HookRegistry`，并写入 session metadata 可观察。
 - 2026-06-27 R-5/R-6 Sub-agent / Agent Team 已关闭：custom subagent definitions 进入同一 Session Worker listing；team member terminal RuntimeTask 会投影回 `AgentTeamMember` metadata 和 `AgentTeamEvent`，Workbench/Team close 读同一 team read model。
 - 2026-06-27 R-7 Dynamic Workflow 已关闭：新增 `propose_dynamic_workflow`，proposal candidate 会降低到同一 `WorkflowDefinition`，再走 `preview_workflow` exact artifact/hash 和 `start_workflow`；前端 chat tool card 能展示 proposal/candidates/next action。
+- 2026-06-27 B-1 Workspace rewind snapshot 已关闭：user checkpoint 写入时自动捕获 workspace snapshot；`/rewind mode=workspace|both` 先确认再恢复 workspace。旧 session 无 snapshot 时仍 fail-closed `not_supported`。
 
 ## 1. 已关闭项
 
@@ -318,23 +319,38 @@ cd frontend && npm test -- --run src/pages/agent-detail/toolResultEnvelope.test.
 # 2 files passed, 84 tests passed
 ```
 
-## 2. 仍未闭环或待裁决项
-
-### B-1：Workspace rewind snapshot 没有实现
+### C-11：Workspace rewind snapshot / restore / confirmation gate
 
 已做：
 
-- `/rewind` 支持 `mode = conversation | workspace | both` 的参数形态。
+- `backend/app/services/session_workspace_snapshot.py` 新增 session workspace snapshot primitive，只捕获并恢复 `AGENT_DATA_DIR/<agent_id>/workspace`，不覆盖 memory、soul、skills、logs 或其它 governed agent state。
+- `backend/app/services/web_chat_runtime.py` 在每次 `user_message` checkpoint 写入后调用 `capture_session_workspace_snapshot(...)`，把 snapshot index 写入 `ChatSession.transcript_metadata_json.workspace_snapshots`。
+- `/rewind mode=workspace|both` 先查 checkpoint 对应 snapshot；无 snapshot 时返回显式 `not_supported`，不伪造成功。
+- `/rewind mode=workspace|both` 必须带 `confirm_workspace_restore=true` 才会执行恢复；未确认时返回 `workspace_restore_requires_confirmation` 和 `ui_action.type = "open_permissions_menu"`。
+- `mode=workspace` 只恢复 workspace 并写 `session_workspace_rewind`；`mode=both` 同时恢复 workspace、安装 active projection 并写 `session_rewind_with_workspace`。
+- `frontend/src/pages/AgentDetail.tsx` 已识别 `install_workspace_snapshot` 和 `install_active_projection_with_workspace`，在 session control panel 中展示恢复结果，不把 payload 当 assistant JSON。
 
-未闭环事实：
+闭环事实：
 
-- workspace/both 目前在缺 snapshot 时返回 `not_supported`。
-- 没有真实 workspace file snapshot / restore / diff / permission gate。
+- Workspace rewind 不再只是 metadata 或 `not_supported`；新 checkpoint 有真实 snapshot/restore 路径。
+- 旧 session 或缺 snapshot 的 checkpoint 仍然 fail-closed `not_supported`，这是兼容边界，不是伪完成。
+- 恢复范围被硬限定在 agent `workspace/`，不会回滚 T0、memory、soul、skills 或治理侧文件。
+- 文件删除类副作用有显式确认 gate；未确认不会触发 restore helper。
 
-裁决：
+验证证据：
 
-- 如果上线只承诺 conversation rewind，可以保留 not_supported。
-- 如果要对齐“session rewind 包括工作区状态”，必须单独实现 snapshot contract。
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_session_workspace_snapshot.py tests/services/test_session_command_runtime.py tests/services/test_web_chat_runtime.py::test_start_web_chat_run_creates_runtime_task_and_user_message tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_user_message_when_run_is_active -q
+# 30 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/services/session_workspace_snapshot.py app/services/session_command_runtime.py app/services/web_chat_runtime.py tests/services/test_session_workspace_snapshot.py tests/services/test_session_command_runtime.py tests/services/test_web_chat_runtime.py
+# All checks passed!
+
+cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts
+# 2 files passed, 70 tests passed
+```
+
+## 2. 仍未闭环或待裁决项
 
 ### B-2：隐藏 session commands 没有完整 UI
 
@@ -376,8 +392,7 @@ cd frontend && npm test -- --run src/pages/agent-detail/toolResultEnvelope.test.
 以下说法在上述 gap 关闭前都不能继续写：
 
 1. “Session Control 所有命令都已完整闭环。”
-2. “Workspace rewind 已实现。”
-3. “上线前最后一轮所有断点都已补齐。”
+2. “上线前最后一轮所有断点都已补齐。”
 
 允许的准确说法：
 
@@ -385,7 +400,7 @@ cd frontend && npm test -- --run src/pages/agent-detail/toolResultEnvelope.test.
 Session command typed result、raw JSON suppression、manual compact/rewind next-turn context consumption、
 以及前端 session command control panel 已完成。
 
-Conversation-level rewind 已完成；workspace rewind snapshot 仍是 explicit not_supported。
+Workspace rewind snapshot 已对新 checkpoint 闭环；旧 session 或无 snapshot checkpoint 仍 fail-closed not_supported。
 
 TurnEnvelope / PromptAssemblyManifest 已记录真实 runtime prompt assembly；
 Workbench read model 只在缺 runtime manifest 时 fallback。
@@ -393,13 +408,13 @@ Workbench read model 只在缺 runtime manifest 时 fallback。
 Hooks external runner、MCP live prompts/auth status、SkillTool/frontmatter hooks 已 production-live。
 
 Dynamic Workflow proposal/runtime/UI 已接入唯一 `propose_dynamic_workflow` -> `preview_workflow` -> `start_workflow` 路径；
-remaining launch blockers 仍是 workspace rewind snapshot、hidden command 裁决和 background completion wake 统一验收。
+remaining launch blockers 仍是 hidden command 裁决和 background completion wake 统一验收。
 ```
 
 ## 4. 建议修复顺序
 
-1. B-1：若上线承诺 workspace rewind，则实现 workspace snapshot；否则继续标记 not_supported。
-2. B-2 / B-3：收敛隐藏 commands UI 和 Background Agent completion wake 验收口径。
+1. B-2：收敛隐藏 session commands，逐个裁决 user-visible / internal-only，并补齐需要暴露的 UI action。
+2. B-3：收敛 Background Agent / long-running completion wake 到同一 session mailbox / wake / Workbench state 验收口径。
 
 ## 5. 证据检查命令
 
@@ -416,7 +431,9 @@ sed -n '730,790p' frontend/src/pages/AgentDetail.tsx
 sed -n '1,120p' backend/app/runtime/hook_runner.py
 sed -n '300,410p' backend/app/services/command_registry.py
 rg -n "propose_dynamic_workflow|preview_workflow|start_workflow|WorkflowDefinition" backend/app backend/tests frontend/src docs/dynamic-workflow-ccplus-implementation-plan-2026-06-27.md
+rg -n "workspace_snapshots|install_workspace_snapshot|session_workspace_rewind|workspace_restore_requires_confirmation|restore_session_workspace_snapshot" backend frontend docs
 cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py tests/services/test_session_command_runtime.py -q
+cd backend && source .venv/bin/activate && pytest tests/services/test_session_workspace_snapshot.py tests/services/test_session_command_runtime.py tests/services/test_web_chat_runtime.py::test_start_web_chat_run_creates_runtime_task_and_user_message tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_user_message_when_run_is_active -q
 cd backend && source .venv/bin/activate && pytest tests/services/test_cc_codex_parity_substrate.py tests/api/test_cc_codex_parity_api.py::test_commands_api_lists_compact_index_and_schema -q
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_skill_frontmatter_hooks.py tests/services/test_skill_tool_runtime.py -q
 cd backend && source .venv/bin/activate && pytest tests/runtime/test_subagent_listing_section.py tests/services/test_agent_team_runtime_service.py tests/api/test_agent_teams_events_api.py -q

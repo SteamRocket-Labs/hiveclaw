@@ -736,6 +736,31 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('后续请求将使用压缩后的上下文');
   });
 
+  it('renders workspace rewind restore outcomes inside the session control panel', () => {
+    const markup = renderToStaticMarkup(
+      <SessionCommandControlPanel
+        control={{
+          type: 'projection_status',
+          title: 'Workspace restored',
+          message: 'Workspace files were restored from the selected checkpoint.',
+          command: 'rewind',
+          payload: {
+            action: 'workspace_rewind_applied',
+            restored_count: 1,
+            deleted_count: 1,
+          },
+        }}
+        onDismiss={vi.fn()}
+        onRunCommand={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-command-control-panel"');
+    expect(markup).toContain('Workspace restored');
+    expect(markup).toContain('workspace_rewind_applied');
+    expect(markup).toContain('restored_count');
+  });
+
   it('renders AgentStatusSection as a standalone overview module', () => {
     const markup = renderToStaticMarkup(
       <AgentStatusSection

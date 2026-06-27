@@ -2,7 +2,7 @@
 
 日期：2026-06-27
 
-状态：Workstream A 的 typed result / raw JSON suppression、manual `/compact` / `/rewind` next-turn context consumption、前端 session command control panel 已按本文测试口径实装。Workspace rewind snapshot、隐藏/兼容命令 UI 深化等剩余边界以 `docs/ccplus-unclosed-gap-register-2026-06-27.md` 为准。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
+状态：Workstream A 的 typed result / raw JSON suppression、manual `/compact` / `/rewind` next-turn context consumption、workspace rewind snapshot、前端 session command control panel 已按本文测试口径实装。隐藏/兼容命令 UI 深化等剩余边界以 `docs/ccplus-unclosed-gap-register-2026-06-27.md` 为准。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
 
 范围：session 内 slash command 的完整控制面，包括状态改变、只读查询、UI-only 交互、prompt 包装命令，以及 `/btw` 这类 side-question 命令。本文不处理 A2A 产品层协议。
 
@@ -10,16 +10,20 @@
 
 ## 0.0 Workstream A 实装证据
 
-复核修正：本节最初只证明 command result shape、metadata/event 写入和 raw JSON suppression。2026-06-27 后续实现已把 `/compact` / `/rewind` active projection 接入 `web_chat_runtime._load_runtime_context()`，并把前端 `ui_action` 接入 session command control panel；证据见 `docs/ccplus-unclosed-gap-register-2026-06-27.md#1-已关闭项`。
+复核修正：本节最初只证明 command result shape、metadata/event 写入和 raw JSON suppression。2026-06-27 后续实现已把 `/compact` / `/rewind` active projection 接入 `web_chat_runtime._load_runtime_context()`，把 workspace rewind snapshot 接入 user checkpoint capture / restore path，并把前端 `ui_action` 接入 session command control panel；证据见 `docs/ccplus-unclosed-gap-register-2026-06-27.md#1-已关闭项`。
 
 实装入口：
 
 - `backend/app/services/session_command_runtime.py`
   - 所有 session command result 统一返回 `ok` / `command` / `action` / `session_id` / `ui_action` / `control_event` / `debug_payload`。
   - `/compact` 调用 LLM session summary path，写 `session_compact`，并把 `active_projection.projection_reason = "compact"` 写入 `ChatSession.transcript_metadata_json`；如果没有 messages 或 summary model 不可用，返回 `ok=false action=not_supported`，不伪造成功。
-  - `/rewind` 不再调用 `create_conversation_branch(...)`；无 checkpoint 时返回 `open_checkpoint_selector`，有 checkpoint 时写 `session_rewind` 并更新 active projection；workspace snapshot 不存在时返回显式 `not_supported`。
+  - `/rewind` 不再调用 `create_conversation_branch(...)`；无 checkpoint 时返回 `open_checkpoint_selector`，有 checkpoint 时写 `session_rewind` 并更新 active projection；`mode=workspace|both` 会查找 checkpoint workspace snapshot，缺失时返回显式 `not_supported`，存在时必须确认后恢复。
   - `/clear` 创建新 `ChatSession.id` 并返回 `ui_action.type = "switch_session"`。
   - `/branch` 是用户命令的唯一 branch path，调用 `create_conversation_branch(... mode="branch")` 并写 `session_branch`。
+- `backend/app/services/session_workspace_snapshot.py`
+  - 捕获和恢复范围硬限定为 `AGENT_DATA_DIR/<agent_id>/workspace`。
+  - 每个 user checkpoint snapshot 写入 `ChatSession.transcript_metadata_json.workspace_snapshots`。
+  - incomplete snapshot fail-closed，不恢复 memory、soul、skills、logs 或治理状态。
 - `backend/app/services/conversation_branch_service.py`
   - 新增 `branch` mode；`fork` 保留为 legacy/internal compatibility，但 `/branch` 用户命令不再走 `fork` mode。
 - `frontend/src/pages/agent-detail/sessionCommandResult.ts`
@@ -35,6 +39,11 @@ cd backend && source .venv/bin/activate && pytest \
   tests/services/test_session_control_plane.py \
   -q
 # 27 passed, 3 warnings
+```
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_session_workspace_snapshot.py tests/services/test_session_command_runtime.py tests/services/test_web_chat_runtime.py::test_start_web_chat_run_creates_runtime_task_and_user_message tests/services/test_web_chat_runtime.py::test_start_web_chat_run_queues_user_message_when_run_is_active -q
+# 30 passed, 3 warnings
 ```
 
 ```bash
@@ -132,7 +141,7 @@ parent_session_id + branch metadata 表示 branch lineage。
 | `/context` | `context` | diagnostic | 已暴露 | 打开 context 面板，不渲染 JSON |
 | `/usage` | `usage` | diagnostic | 已暴露 | 打开 usage/cost 面板，不渲染 JSON |
 | `/resume` | `resume` | session control | 已暴露 | 应打开 resume picker 或执行 session switch；当前只返回诊断 JSON |
-| `/rewind` | `rewind` | session control | 已暴露 | 应打开 checkpoint selector；当前错误地创建新 session branch |
+| `/rewind` | `rewind` | session control | 已暴露 | 已打开 checkpoint selector；conversation/both 更新 active projection，workspace/both 走 snapshot restore confirmation gate |
 | `/branch` | `branch` | session control | 已暴露 | 保留用户命令名 `/branch`；存储层创建新 `ChatSession.id` |
 | `/clear` | `clear` | session control | 已暴露 | 创建干净 session 后前端必须切过去；当前只返回 JSON |
 | `/compact` | `compact` | session control | 已暴露 | 必须执行真实 compact pipeline；当前只写 hook/event |
@@ -407,10 +416,11 @@ Codex 对 Hive 的价值是工程形态，不是覆盖 CC 语义：
 
 限制：
 
-- 如果没有 workspace/file snapshot，只能执行 `conversation`。
-- `workspace` / `both` 必须先有可恢复的文件快照元数据；没有则返回 `not_supported`，不能假装成功。
+- 如果没有 workspace/file snapshot，只能执行 `conversation`；`workspace` / `both` 会返回 `not_supported`，不能假装成功。
+- `workspace` / `both` 必须先有可恢复的文件快照元数据，并且必须显式确认 `confirm_workspace_restore=true` 后才会恢复文件。
 - 任何涉及删除文件的回滚都要走删除强确认策略，因为它本质上会让文件回到“不存在”的快照状态。
 - 对一个已经完成、后来被 resume 的旧 session 执行 `/rewind`，仍然是在该已 resume 的当前 session line 上写 `session_rewind` marker；除非用户显式 `/branch`，否则不新建 branch。
+- Hive 当前 snapshot 范围只包括 agent `workspace/`，不包括 T0、memory、soul、skills、logs 或其它 governed agent state。
 
 前端语义：
 
@@ -500,6 +510,8 @@ T0 继续 append-only。`compact`、`rewind`、`clear`、`branch` 都不能物�
 | --- | --- |
 | `session_compact` | 真实上下文压缩完成 |
 | `session_rewind` | 当前 session active projection 回溯 |
+| `session_workspace_rewind` | 当前 session workspace snapshot 恢复 |
+| `session_rewind_with_workspace` | active projection 和 workspace snapshot 同时恢复 |
 | `session_clear` | 新上下文边界 |
 | `session_branch` | 新分支创建 |
 
@@ -559,7 +571,7 @@ cd backend && source .venv/bin/activate && pytest \
    - append `session_rewind` marker。
    - 更新 `ChatSession.transcript_metadata_json.active_projection`。
    - 支持 `mode = conversation | workspace | both`。
-   - workspace mode 接入 session file snapshot service；没有 snapshot 时返回明确 `not_supported`。
+   - workspace mode 接入 session workspace snapshot service；没有 snapshot 时返回明确 `not_supported`，有 snapshot 时必须显式确认后恢复。
 
 4. `/branch` 保持 create branch，不再增加第二个用户命令别名。
    - `SESSION_COMMAND_NAMES` 保持 `branch` 作为唯一用户命令名。
@@ -703,11 +715,12 @@ type CommandUiAction =
 2. `/compact` 不再输出 `Command compact completed` + JSON。
 3. `/rewind` 不创建新 `ChatSession`。
 4. `/rewind` 后当前 timeline 回到指定 checkpoint。
-5. `/branch` 才创建新 session。
-6. `/clear` 切到新上下文，旧 session 仍可从历史打开。
-7. 所有 command control raw payload 默认折叠，不进入 assistant 正文。
-8. T0 raw evidence append-only，不做破坏性删除。
-9. 同一 `root_session_id` 下的 branch 可以被 UI 聚合展示；每条 branch 仍有独立 `ChatSession.id`。
+5. `/rewind mode=workspace|both` 对新 checkpoint 可恢复 workspace snapshot；旧 checkpoint 缺 snapshot 时 fail-closed `not_supported`。
+6. `/branch` 才创建新 session。
+7. `/clear` 切到新上下文，旧 session 仍可从历史打开。
+8. 所有 command control raw payload 默认折叠，不进入 assistant 正文。
+9. T0 raw evidence append-only，不做破坏性删除。
+10. 同一 `root_session_id` 下的 branch 可以被 UI 聚合展示；每条 branch 仍有独立 `ChatSession.id`。
 
 ## 8. 历史执行顺序
 
@@ -715,7 +728,7 @@ type CommandUiAction =
 
 1. 后端测试：锁定 `/compact`、`/rewind`、`/branch`、`/clear` 语义。
 2. 后端实现：session command runtime 分离 control action。
-3. 后端实现 workspace/file snapshot primitive；至少要让 `workspace` rewind 明确 supported / not_supported。
+3. 后端实现 workspace/file snapshot primitive；新 checkpoint 支持 workspace restore，旧 checkpoint 缺 snapshot 时明确 `not_supported`。
 4. 前端测试：锁定 UI 不裸露 JSON、session 切换和 selector。
 5. 前端实现：command result dispatcher + checkpoint selector。
 6. 端到端验证：手动跑 `/compact`、`/rewind` 三模式、`/branch`、`/clear`。

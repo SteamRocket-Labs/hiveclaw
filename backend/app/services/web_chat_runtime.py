@@ -543,6 +543,7 @@ async def _queue_mid_run_user_message(
             **supplied_metadata,
         },
     )
+    _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
     if getattr(user_event, "event_id", None):
         await mark_latest_pending_clarification_answered(
             db=db,
@@ -861,6 +862,22 @@ def _is_active_web_chat_unique_violation(exc: IntegrityError) -> bool:
     return _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME in str(exc)
 
 
+def _capture_user_checkpoint_workspace_snapshot(*, agent_id: uuid.UUID, session: ChatSession, user_event: Any) -> None:
+    checkpoint_event_id = getattr(user_event, "event_id", None) or getattr(user_event, "id", None)
+    if not checkpoint_event_id:
+        return
+    try:
+        from app.services.session_workspace_snapshot import capture_session_workspace_snapshot
+
+        capture_session_workspace_snapshot(
+            agent_id=agent_id,
+            session=session,
+            checkpoint_event_id=checkpoint_event_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - snapshot failure must not block the user turn.
+        logger.warning("[WebChatRun] workspace snapshot capture failed for session {}: {}", session.id, exc)
+
+
 async def get_active_web_chat_run(
     *,
     db: AsyncSession,
@@ -1047,6 +1064,7 @@ async def start_web_chat_run(
                     **supplied_metadata,
                 },
             )
+            _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
             if getattr(user_event, "event_id", None):
                 await mark_latest_pending_clarification_answered(
                     db=db,
@@ -1152,6 +1170,7 @@ async def _queue_saved_mid_run_user_message(
                 "attachments": attachments or [],
             },
         )
+        _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
         if getattr(user_event, "event_id", None):
             await mark_latest_pending_clarification_answered(
                 db=db,
@@ -1278,6 +1297,7 @@ async def start_channel_chat_run_from_saved_turn(
                 **(extra_metadata or {}),
             },
         )
+        _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
         if getattr(user_event, "event_id", None):
             await mark_latest_pending_clarification_answered(
                 db=db,

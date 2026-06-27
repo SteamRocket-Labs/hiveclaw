@@ -27,6 +27,7 @@ from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_transcript import append_session_event
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.memory_service import _generate_session_summary, _wrap_compressed_summary
+from app.services.session_workspace_snapshot import restore_session_workspace_snapshot
 from app.services.web_chat_runtime import cancel_web_chat_run, get_active_web_chat_run, steer_active_web_chat_turn
 
 SESSION_COMMAND_NAMES = frozenset(
@@ -833,24 +834,90 @@ async def execute_session_command(
         rewind_mode = str(arguments.get("mode") or "conversation").strip().lower()
         if rewind_mode not in {"conversation", "workspace", "both"}:
             raise HTTPException(status_code=400, detail="mode must be conversation, workspace, or both")
-        if rewind_mode in {"workspace", "both"}:
-            return _typed_result(
-                command=command_name,
-                action="not_supported",
-                session_id=session.id,
-                ok=False,
-                ui_action={
-                    "type": "toast",
-                    "level": "warning",
-                    "message": "Workspace rewind is not available because this session has no workspace snapshot.",
-                },
-                debug_payload={"missing": "workspace_snapshot", "requested_mode": rewind_mode},
-                truth_source=truth_source,
-                checkpoint_count=len(checkpoints),
-            )
-
         target_checkpoint, turn_index = _select_user_checkpoint(events, arguments=arguments)
         checkpoint = _checkpoint_payload(target_checkpoint, turn_index=turn_index)
+        workspace_restore_payload: dict[str, Any] | None = None
+        if rewind_mode in {"workspace", "both"}:
+            session_metadata = getattr(session, "transcript_metadata_json", None)
+            snapshot_index = session_metadata.get("workspace_snapshots") if isinstance(session_metadata, dict) else None
+            if not isinstance(snapshot_index, dict) or checkpoint["checkpoint_event_id"] not in snapshot_index:
+                return _typed_result(
+                    command=command_name,
+                    action="not_supported",
+                    session_id=session.id,
+                    ok=False,
+                    ui_action={
+                        "type": "toast",
+                        "level": "warning",
+                        "message": "Workspace rewind is not available because this session has no workspace snapshot.",
+                    },
+                    debug_payload={"missing": "workspace_snapshot", "requested_mode": rewind_mode},
+                    truth_source=truth_source,
+                    checkpoint_count=len(checkpoints),
+                )
+            if not arguments.get("confirm_workspace_restore"):
+                return _typed_result(
+                    command=command_name,
+                    action="workspace_restore_requires_confirmation",
+                    session_id=session.id,
+                    ok=False,
+                    ui_action={
+                        "type": "open_permissions_menu",
+                        "level": "warning",
+                        "message": "Workspace rewind will restore files from the selected checkpoint. Confirm before applying.",
+                    },
+                    debug_payload={"requested_mode": rewind_mode, "checkpoint_event_id": checkpoint["checkpoint_event_id"]},
+                    truth_source=truth_source,
+                    checkpoint=checkpoint,
+                )
+            restore = restore_session_workspace_snapshot(
+                agent_id=agent.id,
+                session=session,
+                checkpoint_event_id=checkpoint["checkpoint_event_id"],
+            )
+            if not restore.ok:
+                return _typed_result(
+                    command=command_name,
+                    action="workspace_restore_failed",
+                    session_id=session.id,
+                    ok=False,
+                    ui_action={
+                        "type": "toast",
+                        "level": "error",
+                        "message": restore.error or "Workspace rewind failed.",
+                    },
+                    debug_payload={"requested_mode": rewind_mode, **restore.to_payload()},
+                    truth_source=truth_source,
+                    checkpoint=checkpoint,
+                )
+            workspace_restore_payload = restore.to_payload()
+
+        if rewind_mode == "workspace":
+            control_event = await _append_control_event(
+                db=db,
+                agent=agent,
+                session=session,
+                user=user,
+                event_type="session_workspace_rewind",
+                content=f"Restored workspace snapshot at checkpoint {checkpoint['checkpoint_event_id']}",
+                metadata={"command": command_name, "mode": rewind_mode, "workspace_restore": workspace_restore_payload},
+            )
+            await db.flush()
+            return _typed_result(
+                command=command_name,
+                action="workspace_rewind_applied",
+                session_id=session.id,
+                ui_action={
+                    "type": "install_workspace_snapshot",
+                    "session_id": str(session.id),
+                    "message": "Workspace snapshot restored for this session.",
+                },
+                control_event=control_event,
+                truth_source=truth_source,
+                checkpoint=checkpoint,
+                workspace_restore=workspace_restore_payload,
+            )
+
         projection = {
             "projection_reason": "rewind",
             "checkpoint_event_id": checkpoint["checkpoint_event_id"],
@@ -868,9 +935,9 @@ async def execute_session_command(
             agent=agent,
             session=session,
             user=user,
-            event_type="session_rewind",
+            event_type="session_rewind" if workspace_restore_payload is None else "session_rewind_with_workspace",
             content=f"Rewound active projection to checkpoint {checkpoint['checkpoint_event_id']}",
-            metadata={"command": command_name, **projection},
+            metadata={"command": command_name, **projection, "workspace_restore": workspace_restore_payload},
         )
         await db.flush()
         return _typed_result(
@@ -878,14 +945,20 @@ async def execute_session_command(
             action="rewind_applied",
             session_id=session.id,
             ui_action={
-                "type": "install_active_projection",
+                "type": "install_active_projection" if workspace_restore_payload is None else "install_active_projection_with_workspace",
                 "session_id": str(session.id),
                 "projection_reason": "rewind",
                 "checkpoint_event_id": checkpoint["checkpoint_event_id"],
+                **(
+                    {"message": "Session projection and workspace snapshot restored."}
+                    if workspace_restore_payload is not None
+                    else {}
+                ),
             },
             control_event=control_event,
             truth_source=truth_source,
             checkpoint=checkpoint,
+            workspace_restore=workspace_restore_payload,
             rollback={
                 "strategy": "active_projection_rewind",
                 "num_turns": _positive_int(arguments.get("num_turns"), default=1, field="num_turns")

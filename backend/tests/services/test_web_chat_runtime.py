@@ -1778,6 +1778,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     )
     db = _FakeDB(active_run=None)
     scheduled = []
+    snapshots = []
 
     def fake_create_task(coro):
         scheduled.append(coro)
@@ -1791,6 +1792,15 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
 
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    def fake_capture_session_workspace_snapshot(**kwargs):
+        snapshots.append(kwargs)
+        return {"checkpoint_event_id": str(kwargs["checkpoint_event_id"])}
+
+    monkeypatch.setattr(
+        "app.services.session_workspace_snapshot.capture_session_workspace_snapshot",
+        fake_capture_session_workspace_snapshot,
+    )
 
     result = await runtime.start_web_chat_run(
         db=db,
@@ -1816,6 +1826,9 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert task.metadata_json["runtime_task_id"] == task.id.hex
     assert task.metadata_json["request_id"] == str(task.id)
     assert task.metadata_json["trace_id"] == task.trace_id
+    assert snapshots
+    assert snapshots[0]["agent_id"] == agent_id
+    assert snapshots[0]["session"] is session
     assert db.commits == 1
     assert scheduled
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)

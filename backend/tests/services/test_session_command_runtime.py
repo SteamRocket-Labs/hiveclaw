@@ -526,6 +526,97 @@ async def test_rewind_workspace_mode_is_explicitly_not_supported_without_snapsho
 
 
 @pytest.mark.asyncio
+async def test_rewind_workspace_mode_requires_explicit_restore_confirmation(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    session.transcript_metadata_json = {
+        "workspace_snapshots": {
+            str(first.id): {"checkpoint_event_id": str(first.id), "manifest_path": "runtime_artifacts/snap/manifest.json"}
+        }
+    }
+    db = _DB(session, [first])
+
+    def fail_restore(**_kwargs):
+        raise AssertionError("workspace restore must wait for explicit confirmation")
+
+    monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", fail_restore)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=session.id,
+        arguments={"checkpoint_event_id": str(first.id), "mode": "workspace"},
+    )
+
+    assert result["ok"] is False
+    assert result["action"] == "workspace_restore_requires_confirmation"
+    assert result["ui_action"]["type"] == "open_permissions_menu"
+    assert result["debug_payload"]["requested_mode"] == "workspace"
+
+
+@pytest.mark.asyncio
+async def test_rewind_workspace_mode_restores_snapshot_when_confirmed(monkeypatch):
+    import app.services.session_command_runtime as runtime
+    from app.services.session_workspace_snapshot import WorkspaceRestoreResult
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    session.transcript_metadata_json = {
+        "workspace_snapshots": {
+            str(first.id): {"checkpoint_event_id": str(first.id), "manifest_path": "runtime_artifacts/snap/manifest.json"}
+        }
+    }
+    db = _DB(session, [first])
+    appended = []
+
+    def fake_restore_session_workspace_snapshot(**kwargs):
+        assert kwargs["checkpoint_event_id"] == str(first.id)
+        return WorkspaceRestoreResult(
+            ok=True,
+            checkpoint_event_id=str(first.id),
+            workspace_rel_path="workspace",
+            restored_files=["report.md"],
+            deleted_files=["draft.md"],
+            unchanged_files=[],
+            error=None,
+        )
+
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=9)
+
+    monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", fake_restore_session_workspace_snapshot)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=session.id,
+        arguments={"checkpoint_event_id": str(first.id), "mode": "workspace", "confirm_workspace_restore": True},
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "workspace_rewind_applied"
+    assert result["ui_action"]["type"] == "install_workspace_snapshot"
+    assert result["workspace_restore"]["restored_files"] == ["report.md"]
+    assert result["workspace_restore"]["deleted_files"] == ["draft.md"]
+    assert appended[0]["event_type"] == "session_workspace_rewind"
+    assert db.flushes == 1
+
+
+@pytest.mark.asyncio
 async def test_compact_command_installs_compacted_projection_and_session_compact_event(monkeypatch):
     import app.services.session_command_runtime as runtime
 

@@ -813,13 +813,21 @@ function AgentDetailInner() {
             return true;
         }
 
-        if (uiAction.type === 'install_compacted_context' || uiAction.type === 'install_active_projection') {
+        if (
+            uiAction.type === 'install_compacted_context'
+            || uiAction.type === 'install_active_projection'
+            || uiAction.type === 'install_workspace_snapshot'
+            || uiAction.type === 'install_active_projection_with_workspace'
+        ) {
+            const workspaceRestore = uiAction.type === 'install_workspace_snapshot' || uiAction.type === 'install_active_projection_with_workspace';
             openSessionCommandControl({
                 type: 'projection_status',
-                title: message || (uiAction.type === 'install_compacted_context' ? 'Context compacted' : 'Session projection installed'),
+                title: message || (uiAction.type === 'install_compacted_context' ? 'Context compacted' : workspaceRestore ? 'Workspace restored' : 'Session projection installed'),
                 message: uiAction.type === 'install_compacted_context'
                     ? 'Future turns in this session will use the compacted context projection.'
-                    : 'Future turns in this session will use the active rewind projection.',
+                    : workspaceRestore
+                        ? 'Workspace files were restored from the selected checkpoint.'
+                        : 'Future turns in this session will use the active rewind projection.',
                 command: response.command,
                 level: uiAction.level === 'error' ? 'error' : 'success',
                 payload: actionResult,

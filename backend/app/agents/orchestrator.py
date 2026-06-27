@@ -708,9 +708,6 @@ async def _resolve_resumable_target_runtime(child_agent_id: uuid.UUID) -> tuple[
             return None
         if target.status in ("expired", "stopped", "archived"):
             return None
-        if getattr(target, "agent_type", "native") == "openclaw":
-            return None
-
         target_model = None
         if target.primary_model_id:
             model_r = await db.execute(

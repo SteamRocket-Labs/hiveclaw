@@ -138,7 +138,7 @@ async def create_ws_ticket(
 ) -> dict[str, Any]:
     """Create a short-lived single-use ticket for the local runner WebSocket."""
 
-    _require_scope(context, "local_agent:connect", "gateway:poll")
+    _require_scope(context, "local_agent:connect")
     raw_ticket = _generate_ws_ticket()
     row = LocalAgentChannelWsTicket(
         tenant_id=context.tenant_id,
@@ -530,7 +530,7 @@ async def mark_channel_ready(
 ) -> dict[str, Any]:
     """Mark a local bridge connection as online for the Local Agent Channel."""
 
-    _require_scope(context, "local_agent:connect", "gateway:poll")
+    _require_scope(context, "local_agent:connect")
     channel = await _get_active_channel(db, context=context)
     if channel is None:
         channel = LocalAgentChannel(
@@ -556,7 +556,7 @@ async def mark_channel_ready(
 async def mark_channel_seen(db: AsyncSession, *, context: BridgeAuthContext) -> None:
     """Refresh runner presence while the channel WebSocket remains alive."""
 
-    _require_scope(context, "local_agent:connect", "gateway:poll")
+    _require_scope(context, "local_agent:connect")
     channel = await _get_active_channel(db, context=context)
     if channel is None:
         return
@@ -726,7 +726,7 @@ async def poll_pending_channel_messages(
 ) -> list[dict[str, Any]]:
     """Fetch and mark pending Hive -> local channel messages."""
 
-    _require_scope(context, "local_agent:receive", "gateway:poll")
+    _require_scope(context, "local_agent:receive")
     result = await db.execute(
         select(LocalAgentChannelMessage)
         .where(
@@ -754,7 +754,7 @@ async def ack_channel_message(
     context: BridgeAuthContext,
     message_id: uuid.UUID,
 ) -> dict[str, Any]:
-    _require_scope(context, "local_agent:receive", "gateway:poll")
+    _require_scope(context, "local_agent:receive")
     result = await db.execute(
         select(LocalAgentChannelMessage).where(
             LocalAgentChannelMessage.id == message_id,
@@ -781,7 +781,7 @@ async def record_channel_event(
     event_type: str,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    _require_scope(context, "local_agent:send", "gateway:report")
+    _require_scope(context, "local_agent:send")
     session_result = await db.execute(
         select(LocalAgentChannelSession).where(
             LocalAgentChannelSession.id == session_id,
@@ -838,7 +838,7 @@ async def record_channel_result(
     artifacts: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    _require_scope(context, "local_agent:report", "gateway:report")
+    _require_scope(context, "local_agent:report")
     session_result = await db.execute(
         select(LocalAgentChannelSession).where(
             LocalAgentChannelSession.id == session_id,

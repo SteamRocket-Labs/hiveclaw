@@ -96,13 +96,12 @@ class UrlImportIn(BaseModel):
 
 
 def classify_portability(content: str) -> int:
-    """Classify skill portability: 1=pure prompt, 2=CLI/API, 3=OpenClaw native."""
-    openclaw_markers = [
+    """Classify skill portability: 1=pure prompt, 2=CLI/API, 3=local runtime native."""
+    local_runtime_markers = [
         "bash pty:",
         "process action:",
         "Clawdbot",
         "exec tool",
-        "openclaw.json",
         "imessage tool",
         "slack tool",
     ]
@@ -119,7 +118,7 @@ def classify_portability(content: str) -> int:
         "curl ",
     ]
     lower = content.lower()
-    for kw in openclaw_markers:
+    for kw in local_runtime_markers:
         if kw.lower() in lower:
             return 3
     for kw in cli_markers:

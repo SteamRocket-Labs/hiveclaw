@@ -17,22 +17,6 @@ export interface LocalBridgeConnection {
   revoked_at?: string | null;
 }
 
-export interface LocalBridgeWorkRequest {
-  id: string;
-  agent_id: string;
-  tenant_id?: string | null;
-  sender_user_id?: string | null;
-  conversation_id?: string | null;
-  content: string;
-  status: string;
-  result?: string | null;
-  attachments: Array<Record<string, unknown>>;
-  metadata: Record<string, unknown>;
-  created_at?: string | null;
-  delivered_at?: string | null;
-  completed_at?: string | null;
-}
-
 export interface LocalBridgeInstallGuide {
   product_name: string;
   skill_repo_url: string;
@@ -123,24 +107,12 @@ export const localBridgeApi = {
     get<{ connections: LocalBridgeConnection[] }>('/local-bridge/connections'),
   getInstallGuide: () =>
     get<LocalBridgeInstallGuide>('/local-bridge/install-guide'),
-  listWorkRequests: (agentId: string) =>
-    get<{ work_requests: LocalBridgeWorkRequest[] }>(`/agents/${agentId}/local-bridge/work-requests`),
-  getWorkRequest: (agentId: string, messageId: string) =>
-    get<LocalBridgeWorkRequest>(`/agents/${agentId}/local-bridge/work-requests/${messageId}`),
   approvePairing: (userCode: string) =>
     post<{ status: string }>(`/local-bridge/pairings/${encodeURIComponent(userCode)}/approve`),
   rejectPairing: (userCode: string) =>
     post<{ status: string }>(`/local-bridge/pairings/${encodeURIComponent(userCode)}/reject`),
   revokeConnection: (connectionId: string) =>
     del<{ status: string }>(`/local-bridge/connections/${connectionId}`),
-  createWorkRequest: (agentId: string, content: string, metadata: Record<string, unknown> = {}) =>
-    post<{ status: string; message_id: string; conversation_id?: string | null }>(
-      `/agents/${agentId}/local-bridge/work-requests`,
-      {
-        content,
-        metadata,
-      },
-    ),
   getDefaultChannelSession: () =>
     post<LocalAgentChannelSession>('/local-agents/sessions/default'),
   getAgentDefaultChannelSession: (agentId: string) =>

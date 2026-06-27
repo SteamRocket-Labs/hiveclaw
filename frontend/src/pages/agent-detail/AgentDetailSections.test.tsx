@@ -25,9 +25,8 @@ import AgentSkillsSection from './AgentSkillsSection';
 import AgentStatusSection from './AgentStatusSection';
 import AgentWorkspaceSection from './AgentWorkspaceSection';
 import CopyMessageButton from './CopyMessageButton';
-import OpenClawSettings from '../OpenClawSettings';
 import PlanCard, { confirmAndHandoffPlan } from './PlanCard';
-import RelationshipEditor from './RelationshipEditor';
+import AgentA2ASection from './AgentA2ASection';
 import ToolsManager from './ToolsManager';
 import {
   AGENT_DETAIL_TABS,
@@ -78,41 +77,6 @@ vi.mock('@tanstack/react-query', () => ({
       return { data: undefined, isLoading: false, isError: false, error: null };
     }
     const key = String(queryKey[0]);
-    if (key === 'relationships') {
-      return {
-        data: [
-          {
-            id: 'rel-1',
-            member_id: 'member-1',
-            relation: 'collaborator',
-            relation_label: 'Collaborator',
-            description: 'Works with the agent daily.',
-            member: {
-              name: 'Alice',
-              title: 'Engineer',
-              department_path: 'Engineering',
-            },
-          },
-        ],
-      };
-    }
-    if (key === 'agent-relationships') {
-      return {
-        data: [
-          {
-            id: 'arel-1',
-            target_agent_id: 'agent-2',
-            relation: 'peer',
-            relation_label: 'Peer',
-            description: 'Peer reviewer.',
-            target_agent: {
-              name: 'Reviewer Bot',
-              role_description: 'Quality reviewer',
-            },
-          },
-        ],
-      };
-    }
     if (key === 'agents') {
       return {
         data: [
@@ -141,10 +105,19 @@ vi.mock('@tanstack/react-query', () => ({
               policy_reason: 'same_owner',
             },
           ],
+          public_agents: [
+            {
+              id: 'agent-5',
+              name: 'Public Bot',
+              role_description: 'Visible to everyone in the tenant',
+              status: 'running',
+              relation: 'public',
+            },
+          ],
           collaboration_groups: [
             {
-              id: 'group-1',
-              name: 'Launch room',
+              group_id: 'group-1',
+              group_name: 'Launch room',
               status: 'active',
               members: [
                 {
@@ -262,7 +235,7 @@ vi.mock('@tanstack/react-query', () => ({
               device_name: 'Codex Desktop',
               client_kind: 'codex',
               status: 'active',
-              scopes: ['gateway:poll', 'gateway:report', 'files:upload'],
+              scopes: ['local_agent:receive', 'local_agent:report', 'files:upload'],
               last_seen_at: new Date().toISOString(),
               created_at: new Date().toISOString(),
               revoked_at: null,
@@ -575,13 +548,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('loading');
   });
 
-  it('renders RelationshipEditor from governed A2A collaborators instead of all tenant agents', () => {
-    const markup = renderToStaticMarkup(<RelationshipEditor agentId="agent-1" />);
+  it('renders AgentA2ASection from governed A2A collaborators instead of all tenant agents', () => {
+    const markup = renderToStaticMarkup(<AgentA2ASection agentId="agent-1" />);
 
-    expect(markup).toContain('owner');
-    expect(markup).toContain('bindEmployee');
-    expect(markup).toContain('sameOwnerAgents');
+    expect(markup).toContain('Same-owner agents');
     expect(markup).toContain('Same Owner Bot');
+    expect(markup).toContain('Public agents');
+    expect(markup).toContain('Public Bot');
     expect(markup).toContain('Launch room');
     expect(markup).toContain('Partner Bot');
     expect(markup).not.toContain('Reviewer Bot');
@@ -788,7 +761,6 @@ describe('AgentDetail extracted sections', () => {
   it('renders AgentActivityLogSection as a standalone activity module', () => {
     const markup = renderToStaticMarkup(
       <AgentActivityLogSection
-        agentType="native"
         activityLogs={[
           {
             id: 'log-1',
@@ -1251,7 +1223,6 @@ describe('AgentDetail extracted sections', () => {
         agent={{
           id: 'agent-1',
           agent_type: 'native',
-          execution_mode: 'coordinator',
           primary_model_id: 'model-1',
           fallback_model_id: '',
           // max_tokens_per_day: 10000,
@@ -1300,8 +1271,8 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('modelConfig');
-    expect(markup).toContain('Execution Mode');
-    expect(markup).toContain('Coordinator');
+    expect(markup).not.toContain('Execution Mode');
+    expect(markup).not.toContain('Coordinator');
     expect(markup).toContain('Patrol &amp; Agent Circle');
     expect(markup).toContain('Enable patrol');
     expect(markup).toContain('Patrol interval');
@@ -1357,7 +1328,6 @@ describe('AgentDetail extracted sections', () => {
 
   it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
     expect(isLocalAgentRuntimeType({ agent_type: 'local_agent' })).toBe(true);
-    expect(isLocalAgentRuntimeType({ agent_type: 'openclaw' })).toBe(true);
     expect(isLocalAgentRuntimeType({ agent_type: 'native' })).toBe(false);
     expect(getVisibleAgentDetailTabs({ agent_type: 'local_agent' })).toEqual(['chat', 'workspace']);
     expect(Array.from(AGENT_DETAIL_TABS)).toEqual(expect.arrayContaining(['chat', 'workspace']));
@@ -1426,21 +1396,6 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Access Permissions');
     expect(markup).not.toContain('Default Access Level');
     expect(markup).not.toMatch(/name="perm_scope"/);
-    expect(markup).not.toContain('Delete Agent');
-  });
-
-  it('does not render OpenClaw access permissions or Agent deletion inside detail settings', () => {
-    const markup = renderToStaticMarkup(
-      <OpenClawSettings
-        agent={{ id: 'agent-1', name: 'OpenClaw Agent', agent_type: 'openclaw', has_api_key: false }}
-        agentId="agent-1"
-        isAdmin
-      />,
-    );
-
-    expect(markup).not.toContain('Access Permissions');
-    expect(markup).not.toContain('Default Access Level');
-    expect(markup).not.toMatch(/name="perm_scope_oc"/);
     expect(markup).not.toContain('Delete Agent');
   });
 

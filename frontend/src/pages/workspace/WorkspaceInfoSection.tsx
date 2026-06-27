@@ -49,7 +49,7 @@ export default function WorkspaceInfoSection({
           className="form-input"
           value={companyIntro}
           onChange={(event) => onCompanyIntroChange(event.target.value)}
-          placeholder={`# Company Name\nHiveClaw\n\n# About\nOpenClaw\uD83E\uDD9E For Teams\nOpen Source \u00B7 Multi-OpenClaw Collaboration\n\nOpenClaw empowers individuals.\nHiveClaw scales it to frontier organizations.`}
+          placeholder={`# Company Name\nHiveClaw\n\n# About\nAI agents for teams\nOpen Source · Multi-agent collaboration\n\nHive helps individuals and teams operate digital employees at company scale.`}
           style={{
             minHeight: '200px',
             resize: 'vertical',

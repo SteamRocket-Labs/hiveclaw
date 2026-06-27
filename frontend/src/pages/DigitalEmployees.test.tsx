@@ -70,12 +70,12 @@ describe('DigitalEmployees page', () => {
     expect(markup).toContain('Owned by me');
     expect(markup).toContain('Company shared');
     expect(markup).toContain('Recommended');
-    expect(markup).toContain('Coordinator');
+    expect(markup).not.toContain('Coordinator');
     expect(markup).toContain('Local runtime');
     expect(markup).toContain('href="/agents/agent-1#chat"');
     expect(markup).toContain('href="/agents/agent-1#knowledge"');
     expect(markup).toContain('href="/agents/agent-1#workflows"');
-    expect(markup).toContain('href="/agents/agent-1#relationships"');
+    expect(markup).toContain('href="/agents/agent-1#a2a"');
     expect(markup).toContain('href="/agents/agent-2#workspace"');
     expect(markup).not.toContain('href="/local-agents"');
   });

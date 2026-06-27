@@ -6,7 +6,6 @@ Data flows: DB → markdown files → agent reads via tools.
 Files written:
 - enterprise_info_{tenant_id}/company_profile.md  ← company name, intro, culture
 - enterprise_info_{tenant_id}/org_structure.md    ← departments + members
-- {agent_id}/relationships.md                     ← explicit human/agent relationships
 
 Optimization: content is compared before writing. If the file already has the
 same content, the write is skipped to avoid unnecessary I/O and prompt cache
@@ -24,7 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.agent import Agent
 from app.models.audit import EnterpriseInfo
-from app.services.relationships_file import write_relationships_file
 
 logger = logging.getLogger(__name__)
 
@@ -137,32 +135,26 @@ async def sync_org_structure(db: AsyncSession, tenant_id: uuid.UUID) -> None:
         logger.info(f"[workspace-sync] Wrote org_structure.md for tenant {tenant_id}")
 
 
-# ─── Agent Relationships ────────────────────────────────
+# ─── Agent A2A Projection ────────────────────────────────
 
 async def sync_agent_relationships(db: AsyncSession, agent_id: uuid.UUID) -> None:
-    """Write agent's explicit relationships to workspace relationships.md."""
-    agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
-    agent = agent_result.scalar_one_or_none()
-    if not agent or not agent.tenant_id:
-        return
-    written = await write_relationships_file(db=db, agent_id=agent_id, include_owner=True)
-    if written:
-        logger.info(f"[workspace-sync] Wrote relationships.md for agent {agent.name}")
+    """No-op compatibility shim.
+
+    A2A collaborators are no longer materialized to workspace files. Runtime
+    prompt context and UI projections read the canonical DB policy directly.
+    """
+
+    return None
 
 
 # ─── Full Sync ──────────────────────────────────────────
 
 async def sync_all_for_tenant(db: AsyncSession, tenant_id: uuid.UUID) -> int:
-    """Full sync: company profile + org + all agent relationships."""
+    """Full sync: company profile + org."""
     await sync_company_profile(db, tenant_id)
     await sync_org_structure(db, tenant_id)
 
-    # Sync relationships for all agents in this tenant
     result = await db.execute(
         select(Agent).where(Agent.tenant_id == tenant_id)
     )
-    agents = result.scalars().all()
-    for agent in agents:
-        await sync_agent_relationships(db, agent.id)
-
-    return len(agents)
+    return len(result.scalars().all())

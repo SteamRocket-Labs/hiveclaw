@@ -8,8 +8,11 @@
 
 本文是 A2A 的**协作授权与可见性基底**，回答“哪个 Agent 可以和哪个 Agent 协作、为什么可以、谁批准、哪些关系可以进入 prompt/runtime/UI”。
 
+- 总计划：[A2A Integrated Implementation Plan](./a2a-integrated-implementation-plan-2026-06-27.md)。它把 Relationship / Session / Process Graph 三层串成统一实施顺序和验收口径。
 - 上游总纲：[CCPlus Round 2 / V2 Hive Connect Master Plan](./ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md)。它定义 V2 七条主线，并把本文纳入 A2A / 权限控制 / Session evidence 的共同基底。
+- 下游 Session 文档：[A2A Session Substrate Design](./a2a-session-substrate-design-2026-06-24.md)。它定义已经被授权协作的 Agent 如何进入 child session、human read-only、continuation 和 session evidence。
 - 下游编排文档：[A2A Workflow Orchestration Design](./a2a-workflow-orchestration-design-2026-06-24.md)。它回答“已经被授权协作的多个完整 Agent，如何用 workflow 交接、等待、复核、继续执行”。
+- 本文职责：定义 A2A Layer 1，也就是 same-owner implicit allow、cross-owner active collaboration group required、approval/revocation、`relationships.md` 安全投影和前端关系视图。
 - 依赖方向：A2A Workflow 的每条 cross-agent edge 都必须先通过本文定义的 same-owner / active collaboration group policy；Workflow 不能绕过本文的 owner、group、approval、revocation 规则。
 - 边界分工：本文不定义 A -> B -> C 的执行顺序、artifact schema、handoff envelope 或 node completion；这些属于 A2A Workflow 文档。A2A Workflow 文档不重新定义谁可协作；它只能消费本文的授权结果。
 - 读文档顺序：判断“能不能协作”先读本文；判断“怎么编排协作”再读 A2A Workflow 文档。

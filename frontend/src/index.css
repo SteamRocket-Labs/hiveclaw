@@ -1935,13 +1935,13 @@ select:focus {
   letter-spacing: -0.02em;
 }
 
-/* OpenClaw agent — dashed border to indicate external/connected */
-.agent-avatar.openclaw {
+/* Local agent — dashed border to indicate external runtime */
+.agent-avatar.local-runtime {
   border: 1.5px dashed var(--text-tertiary);
   background: transparent;
 }
 
-/* OpenClaw link icon — top-right of avatar */
+/* Local agent link icon — top-right of avatar */
 .agent-avatar-link {
   position: absolute;
   top: -3px;

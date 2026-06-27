@@ -1,7 +1,7 @@
 """Build rich system prompt context for agents.
 
-Loads soul, layered memory context, skills summary, and relationships from the agent's
-workspace files and composes a comprehensive system prompt.
+Loads soul, layered memory context, skills summary, and live A2A collaborators
+and composes a comprehensive system prompt.
 """
 
 import re
@@ -225,6 +225,24 @@ async def _build_runtime_metadata_sections(
     return parts
 
 
+async def _build_a2a_collaborators_context(agent_id: uuid.UUID, *, budget_chars: int = 6000) -> str:
+    """Build live A2A collaborator prompt context from DB policy state."""
+
+    try:
+        from app.database import tenant_scoped_session
+        from app.runtime.prompt_sections import build_a2a_collaborators_section
+        from app.services.a2a_collaboration_policy import build_a2a_collaboration_read_model
+        from app.services.tenant_resolver import resolve_tenant_for_agent
+
+        tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(tenant_id) as db:
+            read_model = await build_a2a_collaboration_read_model(db, agent_id)
+        return build_a2a_collaborators_section(read_model, max_chars=budget_chars)
+    except Exception as exc:
+        logger.debug("Failed to build A2A collaborator context for agent {}: {}", agent_id, exc)
+        return ""
+
+
 async def build_agent_runtime_context(
     agent_id: uuid.UUID,
     *,
@@ -268,10 +286,10 @@ async def build_agent_context(
 ) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
-    Reads from workspace files:
+    Reads from workspace files and live governance state:
     - soul.md → personality
     - skills/ → skill names + summaries
-    - relationships.md → relationship descriptions
+    - A2A collaborator read model → same-owner/public/group callable agents
 
     NOTE: canonical memory files are NOT loaded here. They flow through the
     4-layer retrieval pipeline (MemoryRetriever), which reads canonical T3
@@ -283,7 +301,7 @@ async def build_agent_context(
 
     # --- Soul ---
     soul_budget = budget_profile.soul_budget_chars if budget_profile else 16000
-    relationships_budget = budget_profile.relationships_budget_chars if budget_profile else 2000
+    a2a_budget = budget_profile.relationships_budget_chars if budget_profile else 6000
     company_info_budget = budget_profile.company_info_budget_chars if budget_profile else 5000
     org_structure_budget = budget_profile.org_structure_budget_chars if budget_profile else 2000
     soul = _read_file_safe(tool_ws / "soul.md", soul_budget) or _read_file_safe(data_ws / "soul.md", soul_budget)
@@ -301,18 +319,12 @@ async def build_agent_context(
     # threads it through the dynamic suffix (CC parity, prompt-cache stable). This
     # path stays for backward-compatible callers that still want it inline.
 
-    # --- Relationships ---
-    relationships = _read_file_safe(data_ws / "relationships.md", relationships_budget)
-    relationships = _strip_primary_heading(relationships)
-    relationships = _sanitize_prompt_context(relationships, source_name="relationships.md")
-
     # --- Compose system prompt using modular sections ---
     from app.runtime.prompt_sections import (
         build_identity_section,
         build_executing_actions_section,
-        build_tone_style_section,
         build_subagent_listing_section,
-        build_relationships_section,
+        build_tone_style_section,
     )
 
     identity_section = build_identity_section(
@@ -426,11 +438,7 @@ async def build_agent_context(
     skills_section = (
         build_skill_catalog_section_for_agent(agent_id, budget_profile=budget_profile) if include_skill_catalog else ""
     )
-    relationships_section = build_relationships_section(
-        relationships_text=relationships,
-        org_structure_text="",  # org_structure already added to context_parts above
-        company_info_text="",  # company_info already added to context_parts above
-    )
+    a2a_section = await _build_a2a_collaborators_context(agent_id, budget_chars=a2a_budget)
 
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)
@@ -458,8 +466,8 @@ async def build_agent_context(
     # Skills catalog
     if skills_section:
         rendered_parts.append(skills_section)
-    # Relationships
-    if relationships_section:
-        rendered_parts.append(relationships_section)
+    # A2A collaborators
+    if a2a_section:
+        rendered_parts.append(a2a_section)
 
     return "\n\n".join(part.strip() for part in rendered_parts if part and part.strip())

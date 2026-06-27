@@ -49,16 +49,12 @@ const workspaceNavItems: SidebarNavItem[] = [
   { to: '/local-agents', labelKey: 'nav.bridge', fallback: 'Bridge', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
 ];
 
-const isLocalAgentRuntimeType = (agent: any): boolean => agent?.agent_type === 'local_agent' || agent?.agent_type === 'openclaw';
+const isLocalAgentRuntimeType = (agent: any): boolean => agent?.agent_type === 'local_agent';
 const isLocalAgentType = (agent: any): boolean => agent?.agent_type === 'local_agent';
 
 const getAgentBadgeStatus = (agent: any): string | null => {
   if (agent.status === 'error') return 'error';
   if (agent.status === 'creating') return 'creating';
-  if (agent.agent_type === 'openclaw' && agent.status === 'running' && agent.openclaw_last_seen) {
-    const elapsed = Date.now() - new Date(agent.openclaw_last_seen).getTime();
-    if (elapsed > 60 * 60 * 1000) return 'disconnected';
-  }
   return null;
 };
 
@@ -466,14 +462,10 @@ export default function AppSidebar({
                     }}
                   >
                     <span className="sidebar-item-icon" style={{ position: 'relative' }}>
-                      <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' openclaw' : ''}`}>{avatarChar}</span>
+                      <span className={`agent-avatar${isLocalAgentRuntimeType(agent) ? ' local-runtime' : ''}`}>{avatarChar}</span>
                       {isLocalAgentRuntimeType(agent) && (
                         <span className="agent-avatar-link" style={{ display: 'flex' }}>
-                          {isLocalAgentType(agent) ? (
-                            <IconDeviceDesktop size={10} stroke={2.5} />
-                          ) : (
-                            <IconArrowUpRight size={10} stroke={2.5} />
-                          )}
+                          <IconDeviceDesktop size={10} stroke={2.5} />
                         </span>
                       )}
                       {badge && <span className={`agent-avatar-badge ${badge}`} />}

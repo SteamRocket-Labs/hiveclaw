@@ -628,51 +628,6 @@ export default function AgentSettingsSection({
       </div>
 
       <div className="card" style={{ marginBottom: '12px' }}>
-        <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {t('agent.settings.executionMode.title', 'Execution Mode')}
-        </h4>
-        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
-          {t('agent.settings.executionMode.description', 'Choose whether this agent runs as a normal worker or as a coordinator that primarily delegates to other agents.')}
-        </p>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '10px 14px',
-            background: 'var(--bg-elevated)',
-            borderRadius: '8px',
-            border: '1px solid var(--border-subtle)',
-          }}
-        >
-          <div>
-            <div style={{ fontWeight: 500, fontSize: '13px' }}>
-              {t('agent.settings.executionMode.current', 'Current Mode')}
-            </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-              {(agent?.execution_mode || 'standard') === 'coordinator'
-                ? t('agent.settings.executionMode.coordinatorDesc', 'Delegates and synthesizes work across worker agents')
-                : t('agent.settings.executionMode.standardDesc', 'Uses the normal single-agent runtime')}
-            </div>
-          </div>
-          <select
-            className="input"
-            disabled={!canManage}
-            value={agent?.execution_mode || 'standard'}
-            onChange={async (e) => {
-              if (!canManage) return;
-              await agentApi.update(agentId, { execution_mode: e.target.value as 'standard' | 'coordinator' });
-              queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
-            }}
-            style={{ width: '220px', fontSize: '12px', opacity: canManage ? 1 : 0.6 }}
-          >
-            <option value="standard">{t('agent.settings.executionMode.standard', 'Standard')}</option>
-            <option value="coordinator">{t('agent.settings.executionMode.coordinator', 'Coordinator')}</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: '12px' }}>
         <h4 style={{ marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>{t('agent.settings.patrol.title', 'Patrol & Agent Circle')}</h4>
         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
           {t('agent.settings.patrol.description', 'Configure the user-facing patrol trigger and Agent Circle permissions. Internal maintenance stays platform-managed.')}

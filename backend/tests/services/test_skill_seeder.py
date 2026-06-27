@@ -31,6 +31,12 @@ def test_pack_skill_seeder_exposes_one_office_entrypoint():
     assert "pitch-deck-generator" not in folders
 
 
+def test_removed_research_skill_is_retired_from_builtin_cleanup():
+    from app.skills.retired import RETIRED_BUILTIN_SKILL_FOLDERS
+
+    assert "deep-research" in RETIRED_BUILTIN_SKILL_FOLDERS
+
+
 def test_remove_retired_builtin_skill_dirs_continues_after_permission_error(tmp_path, monkeypatch):
     from app.services import skill_seeder
 

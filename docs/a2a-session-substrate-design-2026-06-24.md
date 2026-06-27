@@ -1,8 +1,18 @@
 # A2A Session Substrate Design
 
 日期：2026-06-24
-状态：设计文档，先定语义，不做实现
+状态：A2A Session 产品与语义主文档，持续更新
 范围：A2A delegation、A2A direct chat、subagent/team session、trigger/heartbeat、Web/local channel、RuntimeTask/session 边界
+
+## 文档索引关系
+
+本文是 A2A 三层计划中的 **Layer 2 - Session / Evidence** 专项文档。
+
+- 总计划：[A2A Integrated Implementation Plan](./a2a-integrated-implementation-plan-2026-06-27.md)。
+- 上游依赖：[A2A Relationship Group Collaboration Plan](./a2a-relationship-group-collaboration-plan-2026-06-20.md)，先决定哪些 Agent 可以协作。
+- 下游编排：[A2A Workflow Orchestration Design](./a2a-workflow-orchestration-design-2026-06-24.md)，在 session-first 底座稳定后定义 Process Graph。
+- 本文职责：定义 A2A child session、human read-only、continuation、runtime/session 边界、session timeline artifact。
+- 依赖方向：任何 `delegate_to_agent` / `send_message_to_agent` session 能力都必须先消费上游 relationship gate；任何 Process Graph node 都必须落到本文定义的 session evidence。
 
 ## 0. 结论
 
@@ -32,6 +42,62 @@ Session
   parent/root: optional session lineage
   governance: participant visibility, tool profile, memory scope, approval state
 ```
+
+## 0.1 2026-06-27 产品闭环补充
+
+这份文档是 A2A 产品的 Session 主文档。后续 A2A 相关改动必须先回到这里确认产品语义，再分别落到 relationship/group、workflow/process graph、runtime/tool contract 和 UI。
+
+### 0.1.1 A2A 产品定义
+
+A2A 不是单 Agent 内部的 subagent，也不是一次性的后台 RuntimeTask。
+
+Hive 里的 A2A 指的是：一个完整 Agent 向另一个完整 Agent 发起协作、委派、追问或交付，并把这个过程沉淀为可恢复、可审计、可预览的人类只读 Session。
+
+因此产品上必须同时满足：
+
+- **完整 Agent 主体**：双方都有自己的 owner、workspace、memory、tool profile、permission profile 和 runtime。
+- **Session-first**：用户看到的是 Agent-Agent 协作会话，不是裸 `task_id`、`RuntimeTask` 或 tool JSON。
+- **人类只读**：人类可以打开、观察、预览 artifact、查看状态和审计链路；不能直接插话篡改 Agent-Agent conversation。需要人类输入时，由当前主 Agent 在 root session 里明确请求。
+- **可继续**：如果 child session 没有 terminal，parent agent 可以向同一个 child session 继续追问或补充，不应该每次新建一次性任务。
+- **可交付**：worker 的 final answer、文件、报告、artifact_ref 必须回到 session timeline，用户能在 session 内点击预览。
+- **可治理**：same-owner implicit allow；cross-owner 必须通过 active collaboration group；tool/permission/profile 仍按各自 Agent 的治理规则执行。
+
+### 0.1.2 和 Session runtime/token/compaction 的关系
+
+Runtime token limit、session compaction、context pruning 是 Session runtime 问题；A2A 是跨 Agent 协作产品问题。二者共用 Session/T0 substrate，但不能互相混淆。
+
+正确判断方式：
+
+- 如果错误是 `[Runtime Limit]`、context 太长、压缩没触发、压缩质量差，先看 Session runtime/token/compaction。
+- 如果错误是目标 Agent 找不到、A2A 权限不对、child session 无法继续、handoff artifact 断裂、用户只能看到 task handle，先看 A2A relationship/session/process graph。
+- A2A 不能靠“调大 token 上限”解决；token/compaction 也不能靠“重开 A2A 任务”解决。
+
+### 0.1.3 当前产品验收口径
+
+一次 A2A 协作被认为产品闭环，至少要满足：
+
+1. Root session 里出现 A2A delegation/direct chat card，展示目标 Agent、状态、latest update、打开入口。
+2. 打开后进入 child Agent-Agent session detail，而不是跳到 RuntimeTask JSON。
+3. Child session transcript 包含 parent brief、worker progress、tool evidence summary、clarification、final answer。
+4. 文件或报告交付以 artifact/file card 出现在 child session 和 root session 引用里，可点击预览。
+5. 如果 worker 需要补充信息，状态进入 `waiting_for_parent`，由 parent/root session 生成明确问题。
+6. 如果 wait timeout，状态仍是 `waiting_for_worker` 或 `blocked`，不能默认把整个 A2A session 判成 failed。
+7. `task_id`/`run_id` 只作为执行句柄保留；对用户和模型的主句柄必须是 `session_id`。
+8. 人类不能直接写入 A2A child session；所有干预都通过 root session 或明确的 session control action。
+
+### 0.1.4 需要避免的回归
+
+- 不要把 `delegate_to_agent` 重新设计成只返回 `task_id` 的 poll API。
+- 不要让 `check_async_task` 成为模型默认工作流；正常节奏应该是 wake-first / session-first，检查工具只是 fallback。
+- 不要把 A2A child session 写成普通 Web chat；它是人类只读的 Agent-Agent session。
+- 不要把 A2A Workflow 和 Dynamic Workflow 混为一谈。Workflow 语境下的 A2A 只启动跨完整 Agent 的 Process Graph，不启动单 Agent 内部的 Dynamic Workflow harness。
+- 不要把 cross-owner 可见性当成 cross-owner 可协作权限。
+
+### 0.1.5 文档分工
+
+- 本文：A2A Session substrate、child session、runtime/session 边界、产品验收口径。
+- `docs/a2a-relationship-group-collaboration-plan-2026-06-20.md`：谁能和谁协作、same-owner/cross-owner/group approval。
+- `docs/a2a-workflow-orchestration-design-2026-06-24.md`：多个完整 Agent 如何通过 Process Graph、handoff envelope、artifact_ref 编排。
 
 ## 1. 当前代码事实
 

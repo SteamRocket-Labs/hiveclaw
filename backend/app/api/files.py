@@ -104,7 +104,6 @@ _ROOT_MANAGED_FILE_MESSAGES = {
         "soul.md is governed by Dream/Soul promotion; direct file API writes are refused. "
         "Dream must produce soul.md.next and the promotion gate performs the audited commit."
     ),
-    "relationships.md": "relationships.md is generated from the Relationships control plane; update relationships through the Relationships UI/API.",
     "HEARTBEAT.md": "HEARTBEAT.md is a platform template; heartbeat protocol updates must ship through system templates.",
     "DREAM.md": "DREAM.md is a platform template; dream protocol updates must ship through system templates.",
     "state.json": "state.json is a retired legacy runtime snapshot; runtime state belongs under runtime_artifacts/.",

@@ -52,10 +52,9 @@ import {
     type TranscriptReplayState,
 } from './agent-detail/chatRuntime';
 import { buildPlanModeScopeKey, nextPlanModeRequestedForScope } from './agent-detail/planModeComposer';
-import RelationshipEditor from './agent-detail/RelationshipEditor';
+import AgentA2ASection from './agent-detail/AgentA2ASection';
 import ToolsManager from './agent-detail/ToolsManager';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
-import OpenClawSettings from './OpenClawSettings';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { activityApi } from '../api/domains/activity';
 import { enterpriseApi } from '../api/domains/enterprise';
@@ -81,7 +80,7 @@ import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
 // stay standalone capability modules that Knowledge only deep-links to.
 // C3 (docs/subagent-source-capability.md §12.8): subagents joins as the
 // fourth capability module — the employee's craft-clone work methods.
-export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'relationships', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents', 'a2a', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
 
 export function isSessionWorkbenchRoute(activeTab: string, search: string): boolean {
@@ -160,7 +159,7 @@ export function buildAgentDetailTabNavigation(
 export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
     { tabs: ['status', 'chat'] },
     { tabs: ['aware', 'knowledge', 'evolution', 'tools', 'skills', 'subagents'] },
-    { tabs: ['workspace', 'workflows', 'office', 'relationships', 'activityLog', 'approvals'] },
+    { tabs: ['workspace', 'workflows', 'office', 'a2a', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
 ];
 
@@ -172,7 +171,7 @@ const AGENT_TAB_LABELS: Record<AgentDetailTab, string> = {
     tools: 'Tools',
     skills: 'Skills',
     subagents: 'Sub-agents',
-    relationships: 'Relationships',
+    a2a: 'A2A',
     workspace: 'Workspace',
     workflows: 'Workflows',
     office: 'Office',
@@ -222,7 +221,7 @@ export const AGENT_WORKBENCH_AREAS: Array<{
         labelKey: 'agent.workbench.team',
         fallback: 'A2A / Team',
         primaryTab: 'subagents',
-        tabs: ['subagents', 'relationships'],
+        tabs: ['subagents', 'a2a'],
     },
     {
         id: 'documents',
@@ -245,15 +244,12 @@ function isAgentDetailTabVisible(agent: any, tab: AgentDetailTab): boolean {
     if (agent?.agent_type === 'local_agent') {
         return ['chat', 'workspace'].includes(tab);
     }
-    if (agent?.agent_type === 'openclaw') {
-        return ['status', 'relationships', 'chat', 'activityLog', 'settings'].includes(tab);
-    }
     return true;
 }
 
 export function isLocalAgentRuntimeType(agent: any): boolean {
     const agentType = typeof agent === 'string' ? agent : agent?.agent_type;
-    return agentType === 'local_agent' || agentType === 'openclaw';
+    return agentType === 'local_agent';
 }
 
 export function getVisibleAgentDetailTabs(agent: any): AgentDetailTab[] {
@@ -1924,15 +1920,11 @@ function AgentDetailInner() {
         return <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>{message}</div>;
     }
 
-    // Compute display status (including OpenClaw disconnected detection)
+    // Compute display status
     const computeStatusKey = () => {
         if (agent.status === 'error') return 'error';
         if (agent.status === 'creating') return 'creating';
         if (agent.status === 'stopped') return 'stopped';
-        if ((agent as any).agent_type === 'openclaw' && agent.status === 'running' && (agent as any).openclaw_last_seen) {
-            const elapsed = Date.now() - new Date((agent as any).openclaw_last_seen).getTime();
-            if (elapsed > 60 * 60 * 1000) return 'disconnected';
-        }
         return agent.status === 'running' ? 'running' : 'idle';
     };
     const statusKey = computeStatusKey();
@@ -2064,13 +2056,6 @@ function AgentDetailInner() {
                                         background: 'var(--success-subtle, rgba(34, 197, 94, 0.12))',
                                         color: 'var(--success)', fontWeight: 600,
                                     }}>{t('nav.localBadge', 'Local')}</span>
-                                )}
-                                {(agent as any).agent_type === 'openclaw' && (
-                                    <span style={{
-                                        fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
-                                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600,
-                                        letterSpacing: '0.5px',
-                                    }}>OpenClaw · Lab</span>
                                 )}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
@@ -2209,11 +2194,9 @@ function AgentDetailInner() {
                     activeTab === 'subagents' && <AgentSubagentsSection agentId={id!} canManage={canManage} />
                 }
 
-                {/* ── Relationships Tab ── */}
+                {/* ── A2A Tab ── */}
                 {
-                    activeTab === 'relationships' && (
-                        <RelationshipEditor agentId={id!} agent={agent} readOnly={(agent as any)?.access_level === 'use'} />
-                    )
+                    activeTab === 'a2a' && <AgentA2ASection agentId={id!} />
                 }
 
                 {/* ── Workspace Tab ── */}
@@ -2347,7 +2330,6 @@ function AgentDetailInner() {
                 {
                     activeTab === 'activityLog' && (
                         <AgentActivityLogSection
-                            agentType={(agent as any)?.agent_type}
                             activityLogs={activityLogs}
                             toolFailureSummary={toolFailureSummary}
                             logFilter={logFilter}
@@ -2366,12 +2348,7 @@ function AgentDetailInner() {
 
                 {/* ── Settings Tab ── */}
                 {
-                    activeTab === 'settings' && (agent as any)?.agent_type === 'openclaw' && (
-                        <OpenClawSettings agent={agent} agentId={id!} isAdmin={isAdmin} />
-                    )
-                }
-                {
-                    activeTab === 'settings' && (agent as any)?.agent_type !== 'openclaw' && (
+                    activeTab === 'settings' && (
                         <AgentSettingsSection
                             agentId={id!}
                             agent={agent}

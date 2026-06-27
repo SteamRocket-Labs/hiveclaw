@@ -91,3 +91,33 @@ def test_agent_runtime_surface_removes_legacy_role_and_message_cleanup_paths():
     assert '"super_admin"' not in agents_api_source
     assert "sender_agent_id = NULL" not in agents_api_source
     assert 'role="tool_result"' not in trigger_source
+
+
+def test_openclaw_gateway_surface_is_retired_from_backend_contract():
+    project_root = Path(__file__).resolve().parents[3]
+    schemas_source = (project_root / "backend/app/schemas/schemas.py").read_text(encoding="utf-8")
+    agents_api_source = (project_root / "backend/app/api/agents.py").read_text(encoding="utf-8")
+    agent_model_source = (project_root / "backend/app/models/agent.py").read_text(encoding="utf-8")
+    main_source = (project_root / "backend/app/main.py").read_text(encoding="utf-8")
+    local_bridge_source = (project_root / "backend/app/api/local_bridge.py").read_text(encoding="utf-8")
+    local_bridge_service_source = (project_root / "backend/app/services/local_bridge_service.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert not (project_root / "backend/app/api/gateway.py").exists()
+    assert not (project_root / "backend/app/models/gateway_message.py").exists()
+    assert "gateway_router" not in main_source
+    assert "app.api.gateway" not in main_source
+    assert "GatewayMessage" not in schemas_source
+    assert "GatewayPollResponse" not in schemas_source
+    assert "GatewayReportRequest" not in schemas_source
+    assert "GatewaySendMessageRequest" not in schemas_source
+    assert "openclaw_last_seen" not in schemas_source
+    assert "openclaw_last_seen" not in agent_model_source
+    assert "api_key_hash" not in agent_model_source
+    assert "openclaw" not in agent_model_source.lower()
+    assert "@router.post(\"/{agent_id}/api-key\")" not in agents_api_source
+    assert "@router.get(\"/{agent_id}/gateway-messages\")" not in agents_api_source
+    assert "GatewayMessage" not in local_bridge_source
+    assert "local-bridge/work-requests" not in local_bridge_source
+    assert "create_local_bridge_work_request" not in local_bridge_service_source

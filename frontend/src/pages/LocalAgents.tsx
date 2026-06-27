@@ -134,7 +134,8 @@ export const DEFAULT_HIVE_CONNECT_INSTALL_GUIDE: LocalBridgeInstallGuide = {
     '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
     '5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。',
     '6. 执行 hive-connect daemon status，确认后台服务正在运行。',
-    '7. 可选：执行 hive-connect status 验证 Hive 连接状态。',
+    '7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。',
+    '8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。',
   ],
 };
 
@@ -151,7 +152,8 @@ export const buildSetupInstruction = (guide: LocalBridgeInstallGuide = DEFAULT_H
         '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
         `5. 执行 ${guide.run_command}，安装并启动后台常驻服务。`,
         `6. 执行 ${guide.binary_name} daemon status，确认后台服务正在运行。`,
-        `7. 可选：执行 ${guide.status_command} 验证 Hive 连接状态。`,
+        `7. 可选：执行 ${guide.status_command}，确认本机仍保留 Hive 登录绑定（这不代表在线）。`,
+        '8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。',
       ];
   return instructions.join('\n');
 };

@@ -56,7 +56,7 @@ async def test_exchange_pairing_reads_approved_pairing_with_audited_bypass_then_
         device_name="Codex",
         client_kind="codex",
         device_fingerprint="fp",
-        scopes=["gateway:poll"],
+        scopes=["local_agent:receive"],
         status="approved",
         expires_at=service.utcnow() + service.timedelta(minutes=5),
         claimed_at=None,

@@ -3,12 +3,10 @@ from __future__ import annotations
 from uuid import uuid4
 
 
-def test_gateway_agent_pair_ids_are_canonical_and_legacy_ids_are_parseable():
+def test_agent_pair_ids_are_canonical():
     from app.session_identifiers import (
         build_agent_pair_session_id,
-        build_legacy_gateway_conversation_ids,
         canonicalize_agent_pair_ids,
-        parse_legacy_gateway_conversation_id,
     )
 
     a = uuid4()
@@ -16,10 +14,6 @@ def test_gateway_agent_pair_ids_are_canonical_and_legacy_ids_are_parseable():
 
     assert canonicalize_agent_pair_ids(a, b) == canonicalize_agent_pair_ids(b, a)
     assert build_agent_pair_session_id(a, b) == build_agent_pair_session_id(b, a)
-
-    legacy_ab, legacy_ba = build_legacy_gateway_conversation_ids(a, b)
-    assert parse_legacy_gateway_conversation_id(legacy_ab) == (str(a), str(b))
-    assert parse_legacy_gateway_conversation_id(legacy_ba) == (str(b), str(a))
 
 
 def test_feishu_lookup_ids_prefer_user_id_and_keep_open_id_legacy_alias():

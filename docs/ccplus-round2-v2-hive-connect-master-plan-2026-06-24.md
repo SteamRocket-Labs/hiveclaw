@@ -349,7 +349,9 @@ SessionWorkbench
 |---|---|---|
 | V2 总目标、七条主线、执行顺序 | 本文 | 统一边界、契约、依赖和验收 |
 | 公司权限、Relationship、Project link、Hive Connect local runtime | `ccplus-round2-v2-company-control-plane-a2a-permission-design-2026-06-24.md` | 权限/A2A/Hive Connect 专项 |
+| A2A 三层总体实施计划 | `a2a-integrated-implementation-plan-2026-06-27.md` | Relationship -> Session -> Process Graph 的统一顺序、依赖、测试和验收 |
 | A2A 能不能协作 | `a2a-relationship-group-collaboration-plan-2026-06-20.md` | same-owner / cross-owner group / approval / revocation |
+| A2A 协作如何进入 Session | `a2a-session-substrate-design-2026-06-24.md` | child session、human read-only、continuation、runtime/session 边界 |
 | 多 Agent 如何编排协作 | `a2a-workflow-orchestration-design-2026-06-24.md` | A2A Process Graph、artifact_ref、handoff envelope |
 | Dynamic Workflow 怎么演进 | `dynamic-workflow-harness-semantics-2026-06-24.md` | Dynamic Harness、pattern algebra、fixed workflow promotion |
 | Memory 与 Skill 进化边界 | `memory-system-flow-map-2026-06-17.md`、`agent-memory-md-first-spec.md`、`t3-to-soul-skill-redesign-2026-06-19.md` | T0/T2/T3/soul、Memory Gate、Skill candidate lane |

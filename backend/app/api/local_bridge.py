@@ -9,11 +9,9 @@ Legacy agent-bound approval routes remain for existing links.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
@@ -21,7 +19,6 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.api.upload import WORKSPACE_ROOT, save_upload_for_agent
 from app.models.audit import ChatMessage
-from app.models.gateway_message import GatewayMessage
 from app.models.user import User
 from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, create_or_bind_chat_session
 from app.services import local_bridge_service as bridge_service
@@ -41,11 +38,6 @@ class PairingExchangeRequest(BaseModel):
     device_code: str = Field(min_length=16)
 
 
-class WorkRequestIn(BaseModel):
-    content: str = Field(min_length=1)
-    metadata: dict = Field(default_factory=dict)
-
-
 class LocalBridgeInstallGuideOut(BaseModel):
     product_name: str
     skill_repo_url: str
@@ -59,44 +51,6 @@ class LocalBridgeInstallGuideOut(BaseModel):
     run_command: str
     user_prompt: str
     instructions: list[str]
-
-
-class LocalBridgeWorkRequestOut(BaseModel):
-    id: uuid.UUID
-    agent_id: uuid.UUID
-    tenant_id: uuid.UUID | None = None
-    sender_user_id: uuid.UUID | None = None
-    conversation_id: str | None = None
-    content: str
-    status: str
-    result: str | None = None
-    attachments: list[dict] = Field(default_factory=list)
-    metadata: dict = Field(default_factory=dict)
-    created_at: datetime | None = None
-    delivered_at: datetime | None = None
-    completed_at: datetime | None = None
-
-
-class LocalBridgeWorkRequestListOut(BaseModel):
-    work_requests: list[LocalBridgeWorkRequestOut]
-
-
-def _serialize_work_request(message: GatewayMessage) -> LocalBridgeWorkRequestOut:
-    return LocalBridgeWorkRequestOut(
-        id=message.id,
-        agent_id=message.agent_id,
-        tenant_id=message.tenant_id,
-        sender_user_id=message.sender_user_id,
-        conversation_id=message.conversation_id,
-        content=message.content,
-        status=message.status,
-        result=message.result,
-        attachments=list(getattr(message, "attachments_json", None) or []),
-        metadata=dict(getattr(message, "metadata_json", None) or {}),
-        created_at=message.created_at,
-        delivered_at=message.delivered_at,
-        completed_at=message.completed_at,
-    )
 
 
 async def get_bridge_auth_context(
@@ -389,103 +343,6 @@ async def revoke_agent_bridge_connection(
     if access_level != "manage":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access required")
     return await bridge_service.revoke_connection(db, agent_id=agent_id, connection_id=connection_id)
-
-
-@router.get("/agents/{agent_id}/local-bridge/work-requests", response_model=LocalBridgeWorkRequestListOut)
-async def list_local_bridge_work_requests(
-    agent_id: uuid.UUID,
-    limit: int = Query(default=20, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    stmt = (
-        select(GatewayMessage)
-        .where(
-            GatewayMessage.agent_id == agent.id,
-            GatewayMessage.sender_user_id == current_user.id,
-            GatewayMessage.metadata_json["kind"].as_string() == "work_request",
-        )
-        .order_by(GatewayMessage.created_at.desc())
-        .limit(limit)
-    )
-    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
-    if tenant_id is not None:
-        stmt = stmt.where(GatewayMessage.tenant_id == tenant_id)
-    result = await db.execute(stmt)
-    return LocalBridgeWorkRequestListOut(
-        work_requests=[_serialize_work_request(message) for message in result.scalars().all()]
-    )
-
-
-@router.get("/agents/{agent_id}/local-bridge/work-requests/{message_id}", response_model=LocalBridgeWorkRequestOut)
-async def get_local_bridge_work_request(
-    agent_id: uuid.UUID,
-    message_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    stmt = select(GatewayMessage).where(
-        GatewayMessage.id == message_id,
-        GatewayMessage.agent_id == agent.id,
-        GatewayMessage.sender_user_id == current_user.id,
-        GatewayMessage.metadata_json["kind"].as_string() == "work_request",
-    )
-    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
-    if tenant_id is not None:
-        stmt = stmt.where(GatewayMessage.tenant_id == tenant_id)
-    result = await db.execute(stmt)
-    message = result.scalar_one_or_none()
-    if message is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local bridge work request not found")
-    return _serialize_work_request(message)
-
-
-@router.post("/agents/{agent_id}/local-bridge/work-requests", status_code=201)
-async def create_local_bridge_work_request(
-    agent_id: uuid.UUID,
-    body: WorkRequestIn,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
-    tenant_id = getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None)
-    session = await create_or_bind_chat_session(
-        db=db,
-        tenant_id=tenant_id,
-        agent_id=agent.id,
-        user_id=current_user.id,
-        runtime_source="local_bridge_work_request",
-        actor_type="local_agent_bridge",
-        external_conversation_id=f"local_bridge:{agent.id}:{current_user.id}",
-        source_channel="local_bridge",
-        title_seed="Local Agent Bridge",
-        session_kind="local_agent_bridge",
-        visibility_scope="direct_user",
-        listed_surface="chat",
-    )
-    session.last_message_at = datetime.now(timezone.utc)
-    db.add(
-        ChatMessage(
-            agent_id=agent.id,
-            tenant_id=tenant_id,
-            user_id=current_user.id,
-            role="user",
-            content=body.content,
-            conversation_id=str(session.id),
-        )
-    )
-    await db.flush()
-    return await bridge_service.enqueue_work_request(
-        db,
-        agent_id=agent.id,
-        tenant_id=tenant_id,
-        sender_user_id=current_user.id,
-        content=body.content,
-        metadata=body.metadata,
-        conversation_id=str(session.id),
-    )
 
 
 __all__: tuple[str, ...] = (

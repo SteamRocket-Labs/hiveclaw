@@ -233,15 +233,15 @@ describe('WorkspaceFeatureHub', () => {
     expect(markup).toContain('href="/enterprise/approvals"');
   });
 
-  it('renders A2A and Team as a real front-end surface over relationships, subagents, and local channel entry points', () => {
+  it('renders A2A and Team as a real front-end surface over A2A collaborators, subagents, and local channel entry points', () => {
     const markup = renderToStaticMarkup(<WorkspaceFeatureHub kind="team" />);
 
     expect(markup).toContain('A2A / Team');
     expect(markup).toContain('Research Lead');
     expect(markup).toContain('Session-local team');
-    expect(markup).toContain('Org delegation');
+    expect(markup).toContain('A2A collaborators');
     expect(markup).toContain('Local Agent Channel');
-    expect(markup).toContain('href="/agents/agent-1#relationships"');
+    expect(markup).toContain('href="/agents/agent-1#a2a"');
     expect(markup).toContain('href="/agents/agent-1#subagents"');
     expect(markup).toContain('href="/enterprise/subagents"');
     expect(markup).toContain('href="/local-agents"');

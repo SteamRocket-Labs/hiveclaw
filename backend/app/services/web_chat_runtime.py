@@ -22,7 +22,6 @@ from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
-from app.models.gateway_message import GatewayMessage
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
@@ -2336,43 +2335,6 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                     break
             else:
                 conversation.append({"role": "user", "content": prompt})
-
-        if getattr(agent, "agent_type", None) == "openclaw":
-            async with tenant_scoped_session(agent.tenant_id) as db:
-                db.add(
-                    GatewayMessage(
-                        agent_id=agent.id,
-                        tenant_id=agent.tenant_id,
-                        sender_user_id=user.id,
-                        conversation_id=session_id,
-                        content=prompt,
-                        status="pending",
-                    )
-                )
-                await db.commit()
-            assistant_response = "Message forwarded to OpenClaw agent. Waiting for response..."
-            finalized = await _finalize_web_chat_run_with_assistant(
-                run_uuid=run_uuid,
-                agent_id=agent.id,
-                user_id=user.id,
-                session_id=session_id,
-                content=assistant_response,
-                thinking=None,
-                status="completed",
-                result_summary=assistant_response[:500],
-            )
-            if finalized:
-                await _emit_terminal_turn_hook(
-                    agent_id=agent.id,
-                    session_id=session_id,
-                    run_uuid=run_uuid,
-                    runtime_metadata=metadata,
-                    status="completed",
-                    reason="invoke_complete",
-                    source="web",
-                )
-                await broadcast_web_chat_event(agent.id, session_id, build_done_event(assistant_response))
-            return
 
         runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
         runtime_session_context.source = str(metadata.get("source") or runtime_session_context.source or "web")

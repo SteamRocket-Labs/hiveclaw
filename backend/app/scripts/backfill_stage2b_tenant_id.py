@@ -85,7 +85,6 @@ _STANDARD_TABLES = (
     "channel_configs",
     "chat_messages",
     "chat_sessions",
-    "gateway_messages",
     "pending_reply_contexts",
     "tasks",
 )

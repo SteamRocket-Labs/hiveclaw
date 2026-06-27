@@ -309,7 +309,7 @@ async def test_record_channel_result_writes_assistant_message_for_actor_chat_ses
     context = SimpleNamespace(
         tenant_id=tenant_id,
         user_id=host_owner_id,
-        scopes=("local_agent:report", "gateway:report"),
+        scopes=("local_agent:report",),
     )
 
     result = await service.record_channel_result(

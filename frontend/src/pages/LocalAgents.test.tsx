@@ -56,7 +56,8 @@ vi.mock('../api/domains/localBridge', () => ({
         '4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。',
         '5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。',
         '6. 执行 hive-connect daemon status，确认后台服务正在运行。',
-        '7. 可选：执行 hive-connect status 验证 Hive 连接状态。',
+        '7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。',
+        '8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。',
       ],
     }),
     approvePairing: vi.fn(),
@@ -201,7 +202,10 @@ describe('LocalAgents page', () => {
     expect(markup).toContain('hive-connect login');
     expect(markup).toContain('hive-connect daemon install --config ~/.hive-connect/config.toml --force');
     expect(markup).toContain('hive-connect daemon status');
+    expect(markup).toContain('hive-connect status，确认本机仍保留 Hive 登录绑定');
+    expect(markup).toContain('回到 Hive 页面查看本地 Agent 在线标记');
     expect(markup).toContain('The local agent is offline. Keep Hive Connect installed; it will reconnect automatically');
+    expect(markup).not.toContain('验证 Hive 连接状态');
     expect(markup).not.toContain('执行 hive-connect run，保持本地 Agent 在线');
     expect(markup).not.toContain('runner');
     expect(markup).not.toContain('poll fallback');
@@ -253,8 +257,10 @@ describe('LocalAgents page', () => {
     } as any);
 
     expect(guide).toContain('hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。');
-    expect(guide).toContain('可选：执行 hive-connect status 验证 Hive 连接状态。');
+    expect(guide).toContain('可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。');
+    expect(guide).toContain('回到 Hive 页面查看本地 Agent 在线标记');
     expect(guide.indexOf('hive-connect daemon install')).toBeLessThan(guide.indexOf('hive-connect status'));
+    expect(guide).not.toContain('验证 Hive 连接状态');
     expect(guide).not.toContain('runner');
     expect(guide).not.toContain('poll fallback');
   });

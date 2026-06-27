@@ -10,7 +10,7 @@ FROZEN PREFIX (session-stable):
   § Using Your Tools — tool preferences (tools.py)
   § Tone and Style — output format, language (tone_style.py, includes output efficiency)
   § Skills Catalog — progressive disclosure index (skills_catalog.py)
-  § Relationships — colleagues, org structure (relationships.py)
+  § A2A Collaborators — governed callable agents (a2a_collaborators.py)
 
 DYNAMIC SUFFIX (per-round):
   § Memory — 4-layer pyramid + current query-scoped memory context (memory.py)
@@ -23,6 +23,7 @@ DYNAMIC SUFFIX (per-round):
 """
 
 from .active_tool_groups import build_active_tool_groups_section
+from .a2a_collaborators import build_a2a_collaborators_section
 from .environment import build_environment_section
 from .executing_actions import build_executing_actions_section
 from .identity import build_identity_section
@@ -30,7 +31,6 @@ from .knowledge import build_knowledge_section
 from .memory import build_memory_section
 from .memory_navigation import build_memory_navigation_section
 from .scenario import build_scenario_section
-from .relationships import build_relationships_section
 from .skills_catalog import build_skills_catalog_section
 from .subagent_listing import build_subagent_listing_section
 from .system import build_system_section
@@ -50,7 +50,7 @@ __all__ = [
     "build_tone_style_section",
     "build_skills_catalog_section",
     "build_subagent_listing_section",
-    "build_relationships_section",
+    "build_a2a_collaborators_section",
     # Dynamic suffix
     "build_memory_section",
     "build_memory_navigation_section",

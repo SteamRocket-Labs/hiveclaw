@@ -4,6 +4,8 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-06-27T16:40Z [sid:76692e24]; branch:main; 20 files (orphan-trail.md, main.py, __init__.py, +17); last commit: 08a026a4 Propagate permission profiles through delegation an
+- 2026-06-27T14:26Z [sid:bb60cd5d]; branch:main; 4 files (a2a-relationship-group-collaboration-plan-2026-06-20.md, a2a-session-substrate-design-2026-06-24.md, a2a-workflow-orchestration-design-2026-06-24.md, +1); last commit: 08a026a4 Propagate permission profiles through delegation an
 - 2026-06-26T15:57Z [sid:ba922815]; branch:main; 34 files (orphan-trail.md, desktop_agents.py, local_agent_channel.py, +31); last commit: a005a6fe Refactor memory and workflow runtime boundaries
 - 2026-06-16T13:00Z [sid:f211fca9]; branch:main; 1 files (hive-sota-master-goal.md); last commit: 82c60ac7 Clarify load_skill as capability-capsule guidance
 - 2026-06-15T13:28Z [sid:04d5cd7f]; branch:main; 7 files (.sota-audit-workflow.js, test_eval_ci_service.py, test_connector_acl.py, +4); last commit: ff5160fa Record workflow subagent activity in session trail
@@ -102,5 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-06-03T13:53Z [sid:8a0e09ba]; branch:main; 1 files (orphan-trail.md); last commit: 2eee9e8 refactor(plan-mode): 切口① 拆 chat/Feishu 的 regex 任务 au
 - 2026-06-03T13:32Z [sid:3f97d3a5]; branch:main; 3 files (orphan-trail.md, feishu.py, web_chat_runtime.py); last commit: 97bac1c fix(subagent): 源能力加固 — fail-closed/path 边界/治理接线/记忆闭环
 - 2026-06-03T13:15Z [sid:8a0e09ba]; branch:main; 17 files (orphan-trail.md, coordination.py, subagent.py, +14); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr
-- 2026-06-03T12:44Z [sid:3f97d3a5]; branch:main; 1 files (orphan-trail.md); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr
-- 2026-06-03T12:43Z [sid:8a0e09ba]; branch:main; 1 files (orphan-trail.md); last commit: 90f325e feat(subagent): 切口⑥ tenant 记忆.md + 阉割版进化（governed wr

@@ -128,7 +128,7 @@ const hubCopy: Record<HubKind, HubCopy> = {
   team: {
     title: 'A2A / Team',
     eyebrow: 'Delegation and collaboration',
-    subtitle: 'Session-local team work, subagent definitions, peer relationships, and local-runtime agents stay visible without mixing their ownership boundaries.',
+    subtitle: 'Session-local team work, subagent definitions, governed A2A collaborators, and local-runtime agents stay visible without mixing their ownership boundaries.',
     icon: <IconRoute size={20} stroke={1.7} />,
   },
 };
@@ -921,9 +921,9 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
               <strong>{t('featureHub.sessionLocalTeam', 'Session-local team')}</strong>
               <p>{t('featureHub.sessionLocalTeamDesc', 'Team windows belong to the active conversation timeline and are reconciled back into the main session.')}</p>
             </Link>
-            <Link to={primaryAgent ? `/agents/${primaryAgent.id}#relationships` : '/agents'} className="workbench-data-card">
-              <strong>{t('featureHub.orgDelegation', 'Org delegation')}</strong>
-              <p>{t('featureHub.orgDelegationDesc', 'Peer relationships and A2A collaboration stay explicit at employee level when ownership crosses boundaries.')}</p>
+            <Link to={primaryAgent ? `/agents/${primaryAgent.id}#a2a` : '/agents'} className="workbench-data-card">
+              <strong>{t('featureHub.orgDelegation', 'A2A collaborators')}</strong>
+              <p>{t('featureHub.orgDelegationDesc', 'Same-owner agents, public agents, and approved A2A groups stay explicit at employee level.')}</p>
             </Link>
             <Link to="/local-agents" className="workbench-data-card">
               <strong>{t('featureHub.localAgentChannel', 'Local Agent Channel')}</strong>
@@ -933,13 +933,13 @@ export default function WorkspaceFeatureHub({ kind, initialAutomationCreateOpen 
           <div className="workbench-aggregate-list" style={{ marginTop: 16 }}>
             {agents.slice(0, 12).map((agent: Agent) => (
               <div key={agent.id} className="workbench-aggregate-row">
-                <span className={`employee-status ${agent.execution_mode || 'standard'}`}>{agent.execution_mode || 'standard'}</span>
+                <span className={`employee-status ${agent.status || 'idle'}`}>{agent.status || 'idle'}</span>
                 <span>
                   <strong>{agent.name}</strong>
                   <small>{agent.role_description || t('employees.noRole', 'No role description yet')}</small>
                 </span>
                 <span className="feature-inline-actions">
-                  <Link to={`/agents/${agent.id}#relationships`}>{t('featureHub.relationships', 'Relationships')}</Link>
+                  <Link to={`/agents/${agent.id}#a2a`}>{t('featureHub.a2a', 'A2A')}</Link>
                   <Link to={`/agents/${agent.id}#subagents`}>{t('featureHub.subagents', 'Subagents')}</Link>
                 </span>
               </div>

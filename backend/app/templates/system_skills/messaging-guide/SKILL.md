@@ -134,7 +134,7 @@ send_web_message(
 )
 ```
 
-Key rule: `send_web_message` requires a **registered Hive platform username**. Get it from `relationships.md` or prior context — don't guess.
+Key rule: `send_web_message` requires a **registered Hive platform username**. Get it from prior context or the user — don't guess.
 
 ### C — Deliver a generated file
 

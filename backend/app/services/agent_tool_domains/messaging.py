@@ -206,14 +206,6 @@ async def _resolve_target_agent_runtime(
         if not policy.allowed:
             return source_agent, target, None, f"❌ {policy.message}"
 
-        if getattr(target, "agent_type", "native") == "openclaw":
-            return (
-                source_agent,
-                target,
-                None,
-                (f"⚠️ {target.name} is an OpenClaw agent and does not support async runtime delegation."),
-            )
-
         target_model = None
         if target.primary_model_id:
             model_r = await db.execute(
@@ -987,7 +979,6 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
         from app.services.agent_pair_session import (
             find_or_create_agent_pair_session,
             get_or_create_agent_participant_id,
-            session_conversation_id,
         )
 
         # RLS 阶段1: agents/llm_models are policy-bearing — scope to the source
@@ -1027,58 +1018,6 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             policy = await resolve_a2a_collaboration_policy(db, source_agent, target, action="message")
             if not policy.allowed:
                 return f"❌ {policy.message}"
-
-            # ── OpenClaw target: queue message for gateway poll ──
-            if getattr(target, "agent_type", "native") == "openclaw":
-                from app.models.gateway_message import GatewayMessage as GMsg
-
-                owner_id = source_agent.creator_id if source_agent else target.creator_id
-                source_participant_id = await get_or_create_agent_participant_id(
-                    db,
-                    agent_id=from_agent_id,
-                    display_name=source_name,
-                    avatar_url=getattr(source_agent, "avatar_url", None),
-                )
-                chat_session = await find_or_create_agent_pair_session(
-                    db,
-                    source_agent_id=from_agent_id,
-                    target_agent_id=target.id,
-                    owner_user_id=owner_id,
-                    source_agent_name=source_name,
-                    target_agent_name=target.name,
-                    source_participant_id=source_participant_id,
-                )
-                session_id = session_conversation_id(chat_session)
-                chat_session.last_message_at = datetime.now(timezone.utc)
-                gw_msg = GMsg(
-                    agent_id=target.id,
-                    sender_agent_id=from_agent_id,
-                    sender_user_id=owner_id,
-                    content=f"[From {source_name}] {message_text}",
-                    status="pending",
-                    conversation_id=session_id,
-                )
-                db.add(gw_msg)
-                # RLS 阶段2b: chat_messages is USING-only — stamp tenant_id so
-                # the row isn't globally visible under the non-owner role.
-                db.add(
-                    ChatMessage(
-                        agent_id=chat_session.agent_id,
-                        tenant_id=tid,
-                        user_id=owner_id,
-                        role="user",
-                        content=message_text,
-                        conversation_id=session_id,
-                        participant_id=source_participant_id,
-                    )
-                )
-                await db.commit()
-                online = (
-                    target.openclaw_last_seen
-                    and (datetime.now(timezone.utc) - target.openclaw_last_seen).total_seconds() < 300
-                )
-                status_hint = "online" if online else "offline (message will be delivered on next heartbeat)"
-                return f"✅ Message sent to {target.name} (OpenClaw agent, currently {status_hint}). The message has been queued and will be delivered when the agent polls for updates."
 
             owner_id = source_agent.creator_id if source_agent else from_agent_id
             src_participant_id = await get_or_create_agent_participant_id(

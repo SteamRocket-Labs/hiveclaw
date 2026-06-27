@@ -25,7 +25,7 @@ WORKSPACE_ROOT = Path(_settings.AGENT_DATA_DIR)
 
 # Single source of truth for HEARTBEAT.md: app/templates/HEARTBEAT.md
 _HEARTBEAT_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "HEARTBEAT.md"
-_PLATFORM_ROOT_FILES = {"soul.md", "HEARTBEAT.md", "relationships.md", "tasks.json", "DREAM.md"}
+_PLATFORM_ROOT_FILES = {"soul.md", "HEARTBEAT.md", "tasks.json", "DREAM.md"}
 _PLATFORM_ROOT_DIRS = {
     "workspace",
     "skills",

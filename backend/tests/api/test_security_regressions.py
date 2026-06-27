@@ -94,11 +94,17 @@ def test_api_routes_do_not_register_duplicate_path_method_pairs():
     assert duplicates == []
 
 
-def test_gateway_internal_api_key_routes_are_not_public():
+def test_legacy_openclaw_gateway_routes_are_removed():
     from app.main import app
 
     paths = {route.path for route in app.routes}
 
+    assert not any(path.startswith("/api/gateway") for path in paths)
+    assert not any(path.startswith("/api/v1/gateway") for path in paths)
+    assert "/api/agents/{agent_id}/api-key" not in paths
+    assert "/api/v1/agents/{agent_id}/api-key" not in paths
+    assert "/api/agents/{agent_id}/gateway-messages" not in paths
+    assert "/api/v1/agents/{agent_id}/gateway-messages" not in paths
     assert "/api/gateway/agents/{agent_id}/api-key" not in paths
     assert "/api/v1/gateway/agents/{agent_id}/api-key" not in paths
     assert "/api/gateway/generate-key/{agent_id}" not in paths

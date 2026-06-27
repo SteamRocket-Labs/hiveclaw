@@ -9,7 +9,6 @@ from sqlalchemy.orm import selectinload
 
 from app.database import async_session, enter_rls_bypass
 from app.models.agent import Agent, AgentPermission
-from app.models.org import AgentAgentRelationship
 from app.models.skill import Skill
 from app.models.tool import Tool
 from app.models.user import User
@@ -252,49 +251,6 @@ async def seed_default_agents():
                     tool_id=tool.id,
                     enabled=True,
                 )
-
-        # ── Mutual relationships ──
-        db.add(
-            AgentAgentRelationship(
-                agent_id=morty.id,
-                tenant_id=morty.tenant_id,
-                target_agent_id=meeseeks.id,
-                relation="collaborator",
-                description="Expert task executor who breaks down complex tasks into structured plans and executes them systematically. Delegate multi-step tasks to him.",
-            )
-        )
-        db.add(
-            AgentAgentRelationship(
-                agent_id=meeseeks.id,
-                tenant_id=meeseeks.tenant_id,
-                target_agent_id=morty.id,
-                relation="collaborator",
-                description="Research expert with strong learning ability. Ask him for information retrieval, web research, data analysis, and knowledge synthesis.",
-            )
-        )
-
-        # ── Write relationships.md for each ──
-        morty_dir = Path(settings.AGENT_DATA_DIR) / str(morty.id)
-        meeseeks_dir = Path(settings.AGENT_DATA_DIR) / str(meeseeks.id)
-
-        (morty_dir / "relationships.md").write_text(
-            "# 关系网络\n\n"
-            "## 我的数字员工团队\n\n"
-            "### Meeseeks — Expert task executor\n"
-            "- 协作边界：同 owner，可直接通过 A2A 会话协作。\n"
-            "- 专长：breaks down complex tasks into structured plans and executes them systematically.\n"
-            "- 建议用法：delegate multi-step tasks to him with `delegate_to_agent`.\n",
-            encoding="utf-8",
-        )
-        (meeseeks_dir / "relationships.md").write_text(
-            "# 关系网络\n\n"
-            "## 我的数字员工团队\n\n"
-            "### Morty — Research expert\n"
-            "- 协作边界：同 owner，可直接通过 A2A 会话协作。\n"
-            "- 专长：information retrieval, web research, data analysis, and knowledge synthesis.\n"
-            "- 建议用法：ask him for research support with `send_message_to_agent` or `delegate_to_agent`.\n",
-            encoding="utf-8",
-        )
 
         # Plant the persistent marker so we never re-seed after user deletion
         db.add(SystemSetting(key="default_agents_seeded", value={"seeded": True}))

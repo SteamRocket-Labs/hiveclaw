@@ -23,14 +23,14 @@ function formatAgentStatus(status: Agent['status'] | string | undefined) {
 }
 
 function isLocalAgentRuntime(agent: Agent): boolean {
-  return agent.agent_type === 'local_agent' || agent.agent_type === 'openclaw';
+  return agent.agent_type === 'local_agent';
 }
 
 export default function DigitalEmployees() {
   const { t } = useTranslation();
   const user = useAuthStore((state) => state.user);
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<'all' | 'mine' | 'shared' | 'recommended' | 'running' | 'needs_attention' | 'coordinator' | 'local'>('all');
+  const [filter, setFilter] = useState<'all' | 'mine' | 'shared' | 'recommended' | 'running' | 'needs_attention' | 'local'>('all');
   const { data: agents = [], isLoading } = useQuery({
     queryKey: ['agents'],
     queryFn: () => agentApi.list(),
@@ -50,7 +50,6 @@ export default function DigitalEmployees() {
         (filter === 'recommended' && agent.status === 'running' && Boolean(agent.last_active_at)) ||
         (filter === 'running' && agent.status === 'running') ||
         (filter === 'needs_attention' && ['creating', 'error', 'stopped'].includes(agent.status)) ||
-        (filter === 'coordinator' && agent.execution_mode === 'coordinator') ||
         (filter === 'local' && isLocalAgentRuntime(agent));
       return matchesQuery && matchesFilter;
     });
@@ -60,7 +59,6 @@ export default function DigitalEmployees() {
   const attentionCount = agents.filter((agent: Agent) => ['creating', 'error', 'stopped'].includes(agent.status)).length;
   const mineCount = agents.filter((agent: Agent) => agent.creator_id === user?.id).length;
   const sharedCount = agents.filter((agent: Agent) => agent.creator_id !== user?.id).length;
-  const coordinatorCount = agents.filter((agent: Agent) => agent.execution_mode === 'coordinator').length;
   const localCount = agents.filter((agent: Agent) => isLocalAgentRuntime(agent)).length;
 
   return (
@@ -97,10 +95,6 @@ export default function DigitalEmployees() {
           <strong>{runningCount}</strong>
         </div>
         <div className="workbench-metric">
-          <span>{t('employees.metrics.coordinator', 'Coordinator')}</span>
-          <strong>{coordinatorCount}</strong>
-        </div>
-        <div className="workbench-metric">
           <span>{t('employees.metrics.attention', 'Needs attention')}</span>
           <strong>{attentionCount}</strong>
         </div>
@@ -124,7 +118,6 @@ export default function DigitalEmployees() {
               ['recommended', t('employees.filters.recommended', 'Recommended')],
               ['running', t('employees.filters.running', 'Running')],
               ['needs_attention', t('employees.filters.attention', 'Needs attention')],
-              ['coordinator', t('employees.filters.coordinator', 'Coordinator')],
               ['local', t('employees.filters.local', 'Local runtime')],
             ].map(([value, label]) => (
               <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value as typeof filter)}>
@@ -155,7 +148,6 @@ export default function DigitalEmployees() {
                     <div className="employee-chip-row">
                       <span>{agent.creator_id === user?.id ? t('employees.chips.mine', 'Owned by me') : t('employees.chips.shared', 'Company shared')}</span>
                       {agent.status === 'running' && agent.last_active_at && <span>{t('employees.chips.recommended', 'Recommended')}</span>}
-                      {agent.execution_mode === 'coordinator' && <span>{t('employees.chips.coordinator', 'Coordinator')}</span>}
                       {isLocalAgentRuntime(agent) && <span>{t('employees.chips.local', 'Local runtime')}</span>}
                     </div>
                   </div>
@@ -174,7 +166,7 @@ export default function DigitalEmployees() {
                   <IconRefresh size={15} stroke={1.7} />
                   {t('employees.actions.workflows', 'Workflows')}
                 </Link>
-                <Link to={`/agents/${agent.id}#relationships`}>
+                <Link to={`/agents/${agent.id}#a2a`}>
                   <IconRoute size={15} stroke={1.7} />
                   {t('employees.actions.team', 'Team')}
                 </Link>

@@ -98,11 +98,6 @@ class Settings(BaseSettings):
     ONLYOFFICE_JWT_SECRET: str = ""
     ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS: int = 300
 
-    # Docker (for Agent containers)
-    DOCKER_NETWORK: str = "hive_network"
-    OPENCLAW_IMAGE: str = "openclaw:local"
-    OPENCLAW_GATEWAY_PORT: int = 18789
-
     # Feishu OAuth
     FEISHU_APP_ID: str = ""
     FEISHU_APP_SECRET: str = ""

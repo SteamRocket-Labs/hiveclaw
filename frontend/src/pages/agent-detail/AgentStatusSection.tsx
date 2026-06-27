@@ -79,56 +79,44 @@ export default function AgentStatusSection({
             </div>
           )}
         </div>
-        {agent?.agent_type !== 'openclaw' && (
+        <div className="card">
+          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
+          <div style={{ fontSize: '22px', fontWeight: 600 }}>{(agent.llm_calls_today || 0).toLocaleString()}</div>
+          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+            {t('agent.status.max')}: {(agent.max_llm_calls_per_day || 100).toLocaleString()}
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
+          <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_total || 0)}</div>
+        </div>
+        {metrics && (
           <>
             <div className="card">
-              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.llmCallsToday')}</div>
-              <div style={{ fontSize: '22px', fontWeight: 600 }}>{(agent.llm_calls_today || 0).toLocaleString()}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                {t('agent.status.max')}: {(agent.max_llm_calls_per_day || 100).toLocaleString()}
+              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
+              <div style={{ fontSize: '22px', fontWeight: 600 }}>
+                {metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}
               </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{metrics.tasks?.completion_rate || 0}%</div>
             </div>
             <div className="card">
-              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.totalToken')}</div>
-              <div style={{ fontSize: '22px', fontWeight: 600 }}>{formatTokens(agent.tokens_used_total || 0)}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
+              <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>
+                {metrics.approvals?.pending || 0}
+              </div>
             </div>
-            {metrics && (
-              <>
-                <div className="card">
-                  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>✅ {t('agent.tasks.done')}</div>
-                  <div style={{ fontSize: '22px', fontWeight: 600 }}>
-                    {metrics.tasks?.done || 0}/{metrics.tasks?.total || 0}
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{metrics.tasks?.completion_rate || 0}%</div>
-                </div>
-                <div className="card">
-                  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.status.pending')}</div>
-                  <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>
-                    {metrics.approvals?.pending || 0}
-                  </div>
-                </div>
-                <div className="card" style={{ position: 'relative' }}>
-                  <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                    {t('agent.status.24hActions')}
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                      <circle cx="8" cy="8" r="6.5" />
-                      <path d="M8 7v4M8 5.5v0" />
-                    </svg>
-                    <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
-                  </div>
-                  <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
-                </div>
-              </>
-            )}
+            <div className="card" style={{ position: 'relative' }}>
+              <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                {t('agent.status.24hActions')}
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <circle cx="8" cy="8" r="6.5" />
+                  <path d="M8 7v4M8 5.5v0" />
+                </svg>
+                <span className="metric-tooltip">{t('agent.status.24hActionsTooltip')}</span>
+              </div>
+              <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
+            </div>
           </>
-        )}
-        {agent?.agent_type === 'openclaw' && (
-          <div className="card">
-            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>{t('agent.openclaw.lastSeen')}</div>
-            <div style={{ fontSize: '16px', fontWeight: 500 }}>
-              {agent.openclaw_last_seen ? new Date(agent.openclaw_last_seen).toLocaleString() : t('agent.openclaw.notConnected')}
-            </div>
-          </div>
         )}
       </div>
 
@@ -162,44 +150,19 @@ export default function AgentStatusSection({
             </div>
           </div>
         </div>
-        {agent?.agent_type !== 'openclaw' ? (
-          <div className="card">
-            <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
-                <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
-              </div>
+        <div className="card">
+          <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.modelConfig.title')}</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+              <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.model')}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{modelLabel}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+              <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.modelConfig.provider')}</span>
+              <span style={{ textTransform: 'capitalize' }}>{modelProvider}</span>
             </div>
           </div>
-        ) : (
-          <div className="card">
-            <h3 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '12px' }}>{t('agent.openclaw.connection')}</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.type')}</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', fontWeight: 600 }}>
-                    OpenClaw
-                  </span>
-                  Lab
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.lastSeen')}</span>
-                <span>{agent.openclaw_last_seen ? new Date(agent.openclaw_last_seen).toLocaleString() : t('agent.openclaw.never')}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
-                <span style={{ color: 'var(--text-tertiary)' }}>{t('agent.openclaw.model')}</span>
-                <span style={{ color: 'var(--text-secondary)' }}>{t('agent.openclaw.managedBy')}</span>
-              </div>
-            </div>
-          </div>
-        )}
+        </div>
       </div>
 
       {capabilityInstalls.length > 0 && (
@@ -343,11 +306,9 @@ export default function AgentStatusSection({
         <button className="btn btn-secondary" onClick={() => onSelectTab('chat')}>
           {t('agent.actions.chat')}
         </button>
-        {agent?.agent_type !== 'openclaw' && (
-          <button className="btn btn-secondary" onClick={() => onSelectTab('aware')}>
-            {t('agent.tabs.aware')}
-          </button>
-        )}
+        <button className="btn btn-secondary" onClick={() => onSelectTab('aware')}>
+          {t('agent.tabs.aware')}
+        </button>
         <button className="btn btn-secondary" onClick={() => onSelectTab('settings')}>
           {t('agent.tabs.settings')}
         </button>

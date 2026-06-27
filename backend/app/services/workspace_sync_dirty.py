@@ -1,7 +1,7 @@
 """Dirty-flag tracking for workspace sync.
 
 Replaces blind periodic polling: producers (API endpoints that mutate
-org/relationships data) call mark_tenant_dirty() / mark_agent_dirty().
+org/A2A data) call mark_tenant_dirty() / mark_agent_dirty().
 The consumer (workspace sync loop) only re-syncs what changed.
 
 Multi-instance: marks are broadcast over Redis pub/sub so every backend
@@ -56,7 +56,7 @@ def mark_tenant_dirty(tenant_id: uuid.UUID | None, *, broadcast: bool = True) ->
 
 
 def mark_agent_dirty(agent_id: uuid.UUID | None, *, broadcast: bool = True) -> None:
-    """Mark a single agent's relationships.md as needing re-sync."""
+    """Mark a single agent's workspace projection/cache as needing refresh."""
     if agent_id is None:
         return
     _dirty_agents.add(agent_id)

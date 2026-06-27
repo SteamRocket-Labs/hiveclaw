@@ -1,22 +1,17 @@
-"""Agent lifecycle manager — Docker container management for OpenClaw Gateway instances."""
+"""Agent lifecycle manager for Hive digital employees."""
 
-import json
-import os
 import shutil
 import uuid
 from datetime import datetime, timezone
 from html import escape as _xml_escape
 from pathlib import Path
 
-import docker
-from docker.errors import DockerException, NotFound
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.agent import Agent
-from app.models.llm import LLMModel
 
 settings = get_settings()
 
@@ -245,24 +240,16 @@ def _render_agent_soul_from_blueprint(
 
 
 class AgentManager:
-    """Manage OpenClaw Gateway Docker containers for digital employees."""
+    """Manage filesystem lifecycle for Hive digital employees."""
 
     def __init__(self):
-        try:
-            self.docker_client = docker.from_env()
-        except DockerException:
-            logger.info("Docker not available — OpenClaw containers will not be managed")
-            self.docker_client = None
+        self.docker_client = None
 
     def _agent_dir(self, agent_id: uuid.UUID) -> Path:
         return Path(settings.AGENT_DATA_DIR) / str(agent_id)
 
     def _template_dir(self) -> Path:
         return Path(settings.AGENT_TEMPLATE_DIR)
-
-    @staticmethod
-    def _uses_openclaw_container(agent: Agent) -> bool:
-        return getattr(agent, "agent_type", "native") == "openclaw"
 
     async def initialize_agent_files(
         self,
@@ -342,29 +329,6 @@ class AgentManager:
 
         _bootstrap_evolution_files(agent_dir)
 
-        # Ensure relationships.md exists — format aligned with workspace_sync.py
-        rel_path = agent_dir / "relationships.md"
-        if not rel_path.exists():
-            rel_lines = ["# 关系", ""]
-            try:
-                other_agents = await db.execute(
-                    select(Agent.name, Agent.role_description).where(
-                        Agent.tenant_id == agent.tenant_id,
-                        Agent.id != agent.id,
-                    )
-                )
-                peers = other_agents.all()
-                if peers:
-                    rel_lines.append("## 同事")
-                    for name, role in peers:
-                        rel_lines.append(f"- **{name}**: {role or '无描述'}")
-                    rel_lines.append("")
-                else:
-                    rel_lines.append("_暂无关系信息。_")
-            except Exception:
-                rel_lines.append("_暂无关系信息。_")
-            rel_path.write_text("\n".join(rel_lines), encoding="utf-8")
-
         # Push default builtin skills (web-research, workspace-guide, etc.) into this agent's workspace
         await self._push_default_skills_to_agent(db, agent.id, agent_dir)
 
@@ -398,182 +362,31 @@ class AgentManager:
         except Exception as exc:
             logger.warning(f"[AgentManager] Legacy flat skill cleanup failed for {agent_id}: {exc}")
 
-    async def _resolve_fallback_model_string(self, agent: Agent) -> str:
-        """Resolve a model string from the tenant's first available LLM — no hardcoded provider."""
-        try:
-            from app.database import tenant_scoped_session
-            from app.models.llm import LLMModel as LLMModelDB
-
-            async with tenant_scoped_session(agent.tenant_id) as db:
-                result = await db.execute(
-                    select(LLMModelDB)
-                    .where(
-                        LLMModelDB.tenant_id == agent.tenant_id,
-                        LLMModelDB.enabled.is_(True),
-                    )
-                    .limit(1)
-                )
-                fallback = result.scalar_one_or_none()
-                if fallback:
-                    return f"{fallback.provider}/{fallback.model}"
-        except Exception as exc:
-            logger.debug("[AgentManager] Fallback model lookup failed: %s", exc)
-        # Last resort: env var with no built-in default — admin must configure
-        return os.environ.get("FALLBACK_MODEL", "")
-
-    def _generate_openclaw_config(self, agent: Agent, model: LLMModel | None) -> dict:
-        """Generate openclaw.json config for the agent container."""
-        config = {
-            "agent": {
-                "model": f"{model.provider}/{model.model}" if model else "",
-            },
-            "agents": {
-                "defaults": {
-                    "workspace": "/home/node/.openclaw/workspace",
-                },
-            },
-        }
-
-        if model and model.api_key_encrypted:
-            config["env"] = {
-                f"{model.provider.upper()}_API_KEY": model.api_key,
-            }
-
-        return config
-
     async def start_container(self, db: AsyncSession, agent: Agent) -> str | None:
-        """Start an OpenClaw Gateway Docker container for the agent.
+        """Mark the platform-managed agent workspace ready.
 
-        Returns container_id or None if Docker not available.
+        The historical Docker-backed remote runtime has been retired; web chat
+        now executes through the durable Hive runtime and local agents connect
+        through Hive Connect.
         """
-        if not self._uses_openclaw_container(agent):
-            logger.info("Agent %s is native; skipping OpenClaw container start", agent.name)
-            agent.status = "idle"
-            agent.last_active_at = datetime.now(timezone.utc)
-            return None
-
-        if not self.docker_client:
-            logger.info("Docker not available, skipping container start")
-            agent.status = "idle"
-            agent.last_active_at = datetime.now(timezone.utc)
-            return None
-
-        agent_dir = self._agent_dir(agent.id)
-
-        # Get model config
-        model = None
-        if agent.primary_model_id:
-            result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            model = result.scalar_one_or_none()
-
-        # Resolve model — if agent has no primary model, look up tenant's first available
-        if not model:
-            fallback_str = await self._resolve_fallback_model_string(agent)
-            if fallback_str:
-                logger.info(
-                    "[AgentManager] Agent %s has no primary model — using tenant fallback: %s", agent.id, fallback_str
-                )
-
-        # Generate OpenClaw config
-        config = self._generate_openclaw_config(agent, model)
-        if not config["agent"]["model"] and not model:
-            # Inject the resolved fallback directly
-            fallback_str = await self._resolve_fallback_model_string(agent)
-            config["agent"]["model"] = fallback_str
-        config_dir = agent_dir / ".openclaw"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / "openclaw.json").write_text(json.dumps(config, indent=2))
-
-        # Create workspace symlink
-        workspace_dir = config_dir / "workspace"
-        if not workspace_dir.exists():
-            workspace_dir.symlink_to(agent_dir / "workspace")
-
-        # Assign a unique port
-        container_port = 18789 + hash(str(agent.id)) % 10000
-
-        try:
-            container = self.docker_client.containers.run(
-                settings.OPENCLAW_IMAGE,
-                detach=True,
-                name=f"hive-agent-{str(agent.id)[:8]}",
-                network=settings.DOCKER_NETWORK,
-                ports={f"{settings.OPENCLAW_GATEWAY_PORT}/tcp": container_port},
-                volumes={
-                    str(agent_dir): {"bind": "/home/node/.openclaw", "mode": "rw"},
-                },
-                environment={
-                    "OPENCLAW_GATEWAY_TOKEN": str(uuid.uuid4()),
-                },
-                restart_policy={"Name": "unless-stopped"},
-                labels={
-                    "hive.agent_id": str(agent.id),
-                    "hive.agent_name": agent.name,
-                },
-            )
-
-            agent.container_id = container.id
-            agent.container_port = container_port
-            agent.status = "running"
-            agent.last_active_at = datetime.now(timezone.utc)
-
-            logger.info(f"Started container {container.id[:12]} for agent {agent.name} on port {container_port}")
-            return container.id
-
-        except DockerException as e:
-            logger.error(f"Failed to start container for agent {agent.name}: {e}")
-            agent.status = "error"
-            return None
+        agent.container_id = None
+        agent.container_port = None
+        agent.status = "idle"
+        agent.last_active_at = datetime.now(timezone.utc)
+        return None
 
     async def stop_container(self, agent: Agent) -> bool:
-        """Stop the agent's Docker container."""
-        if not self._uses_openclaw_container(agent):
-            logger.info("Agent %s is native; no OpenClaw container to stop", agent.name)
-            return True
-
-        if not self.docker_client or not agent.container_id:
-            agent.status = "stopped"
-            return True
-
-        try:
-            container = self.docker_client.containers.get(agent.container_id)
-            container.stop(timeout=10)
-            agent.status = "stopped"
-            logger.info(f"Stopped container {agent.container_id[:12]} for agent {agent.name}")
-            return True
-        except NotFound:
-            agent.status = "stopped"
-            agent.container_id = None
-            return True
-        except DockerException as e:
-            logger.error(f"Failed to stop container: {e}")
-            return False
+        """Stop runtime bookkeeping for an agent."""
+        agent.status = "stopped"
+        agent.container_id = None
+        agent.container_port = None
+        return True
 
     async def remove_container(self, agent: Agent) -> bool:
-        """Stop and remove the agent's Docker container."""
-        if not self._uses_openclaw_container(agent):
-            logger.info("Agent %s is native; no OpenClaw container to remove", agent.name)
-            return True
-
-        if not self.docker_client or not agent.container_id:
-            return True
-
-        try:
-            container = self.docker_client.containers.get(agent.container_id)
-            container.stop(timeout=10)
-            container.remove()
-            agent.container_id = None
-            agent.container_port = None
-            logger.info(f"Removed container for agent {agent.name}")
-            return True
-        except NotFound:
-            agent.container_id = None
-            return True
-        except DockerException as e:
-            logger.error(f"Failed to remove container: {e}")
-            return False
+        """Clear retired container bookkeeping for an agent."""
+        agent.container_id = None
+        agent.container_port = None
+        return True
 
     async def archive_agent_files(self, agent_id: uuid.UUID) -> None:
         """Archive (move) agent files to a backup location."""
@@ -587,22 +400,8 @@ class AgentManager:
             logger.info(f"Archived agent files to {dest}")
 
     def get_container_status(self, agent: Agent) -> dict:
-        """Get real-time container status."""
-        if not self.docker_client or not agent.container_id:
-            return {"running": False, "status": agent.status}
-
-        try:
-            container = self.docker_client.containers.get(agent.container_id)
-            return {
-                "running": container.status == "running",
-                "status": container.status,
-                "ports": container.ports,
-                "created": container.attrs.get("Created", ""),
-            }
-        except NotFound:
-            return {"running": False, "status": "not_found"}
-        except DockerException:
-            return {"running": False, "status": "error"}
+        """Return runtime status without the retired container backend."""
+        return {"running": False, "status": agent.status}
 
 
 agent_manager = AgentManager()

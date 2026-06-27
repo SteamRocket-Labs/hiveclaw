@@ -27,7 +27,7 @@ def test_aes_ecb_padded_size_matches_pkcs7_ciphertext_size(size: int, expected: 
     assert len(aes_ecb_encrypt(b"a" * size, b"0" * 16)) == expected
 
 
-def test_auth_headers_match_openclaw_weixin_uin_shape() -> None:
+def test_auth_headers_match_ilink_uin_shape() -> None:
     from app.services.wechat_ilink_client import ILinkClient
 
     headers = ILinkClient()._auth_headers("bot-token")

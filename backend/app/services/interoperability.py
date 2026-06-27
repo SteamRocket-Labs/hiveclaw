@@ -38,12 +38,6 @@ def build_a2a_agent_card(agent: object, *, base_url: str | None = None) -> dict[
         "authentication": {
             "schemes": [
                 {
-                    "type": "apiKey",
-                    "in": "header",
-                    "name": "X-Api-Key",
-                    "for": "openclaw_gateway",
-                },
-                {
                     "type": "bearer",
                     "in": "header",
                     "name": "Authorization",
@@ -63,34 +57,27 @@ def build_a2a_agent_card(agent: object, *, base_url: str | None = None) -> dict[
             "json_rpc_tasks": {"status": "not_exposed"},
             "collaboration_groups": {
                 "status": "internal",
-                "policy": "same_owner_or_active_a2a_collaboration_group",
+                "policy": "same_owner_or_public_or_active_a2a_collaboration_group",
             },
         },
         "endpoints": {
             "card": card_url,
-            "gateway_poll": f"{base}/api/v1/gateway/poll" if base else "",
-            "gateway_report": f"{base}/api/v1/gateway/report" if base else "",
-            "gateway_send_message": f"{base}/api/v1/gateway/send-message" if base else "",
             "messages_inbox": f"{base}/api/v1/messages/inbox" if base else "",
-            "a2a_collaborators": f"{base}/api/v1/agents/{agent_id}/relationships/a2a-collaborators"
+            "a2a_collaborators": f"{base}/api/v1/agents/{agent_id}/a2a/collaborators"
             if base and agent_id
             else "",
+            "local_agent_channel": f"{base}/api/v1/local-agents/sessions" if base else "",
         },
         "skills": [
-            {
-                "id": "hive.gateway.poll",
-                "name": "Gateway polling",
-                "description": "OpenClaw agents poll pending messages with X-Api-Key authentication.",
-            },
-            {
-                "id": "hive.gateway.report",
-                "name": "Gateway result reporting",
-                "description": "Agents report completed work back to Hive's durable transcript.",
-            },
             {
                 "id": "hive.agent.messages",
                 "name": "Agent-to-agent messages",
                 "description": "Hive persists agent-to-agent messages in tenant-scoped ChatSession/ChatMessage rows.",
+            },
+            {
+                "id": "hive.local_agent.channel",
+                "name": "Hive Connect local agent channel",
+                "description": "Hive Connect local agents use authenticated user-level channel sessions.",
             },
         ],
         "hive": {
@@ -143,11 +130,11 @@ def build_interoperability_profile(*, base_url: str | None = None) -> dict[str, 
                 "status": "partial",
                 "agent_card_endpoint": "/api/v1/agents/{agent_id}/a2a-card",
                 "agent_to_agent_messages": "session_backed_internal_runtime",
-                "collaboration_policy": "same_owner_or_active_a2a_collaboration_group",
-                "collaborator_projection_endpoint": "/api/v1/agents/{agent_id}/relationships/a2a-collaborators",
+                "collaboration_policy": "same_owner_or_public_or_active_a2a_collaboration_group",
+                "collaborator_projection_endpoint": "/api/v1/agents/{agent_id}/a2a/collaborators",
                 "json_rpc_tasks": {
                     "status": "not_exposed",
-                    "reason": "Hive currently exposes durable internal agent messaging and OpenClaw gateway endpoints, not the public A2A task JSON-RPC surface.",
+                    "reason": "Hive currently exposes durable internal agent messaging, not the public A2A task JSON-RPC surface.",
                 },
             },
             "oauth_delegation": {

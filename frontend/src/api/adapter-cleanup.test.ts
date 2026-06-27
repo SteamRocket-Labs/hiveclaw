@@ -292,31 +292,21 @@ describe('request cleanup adapters', () => {
     expect(del).toHaveBeenCalledWith('/tools/agent-tool/tool-123');
   });
 
-  it('routes relationship management through relationshipsApi', async () => {
+  it('routes A2A collaborator projection through a2aApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
       return {
         ...actual,
         get: vi.fn(),
-        put: vi.fn(),
-        del: vi.fn(),
       };
     });
-    const { relationshipsApi } = await import('./domains/relationships');
-    const { get, put, del } = await import('./core/request');
-    vi.mocked(get).mockResolvedValue([]);
-    vi.mocked(put).mockResolvedValue(undefined);
-    vi.mocked(del).mockResolvedValue(undefined);
+    const { a2aApi } = await import('./domains/a2a');
+    const { get } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue({ same_owner_agents: [], public_agents: [], collaboration_groups: [] });
 
-    await relationshipsApi.listHuman('agent-1');
-    await relationshipsApi.saveHuman('agent-1', [{ member_id: 'member-1', relation: 'collaborator', description: '' }]);
-    await relationshipsApi.removeHuman('agent-1', 'rel-1');
+    await a2aApi.listCollaborators('agent-1');
 
-    expect(get).toHaveBeenCalledWith('/agents/agent-1/relationships/');
-    expect(put).toHaveBeenCalledWith('/agents/agent-1/relationships/', {
-      relationships: [{ member_id: 'member-1', relation: 'collaborator', description: '' }],
-    });
-    expect(del).toHaveBeenCalledWith('/agents/agent-1/relationships/rel-1');
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/a2a/collaborators');
   });
 
   it('routes agent permission updates through agentApi with backend payload shape', async () => {
@@ -344,7 +334,7 @@ describe('request cleanup adapters', () => {
     });
   });
 
-  it('routes execution mode updates through agentApi patch()', async () => {
+  it('routes agent timezone updates through agentApi patch()', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
       return {
@@ -354,11 +344,11 @@ describe('request cleanup adapters', () => {
     });
     const { agentApi } = await import('./domains/agents');
     const { patch } = await import('./core/request');
-    vi.mocked(patch).mockResolvedValue({ id: 'agent-1', execution_mode: 'coordinator' } as any);
+    vi.mocked(patch).mockResolvedValue({ id: 'agent-1', timezone: 'Asia/Shanghai' } as any);
 
-    await agentApi.update('agent-1', { execution_mode: 'coordinator' });
+    await agentApi.update('agent-1', { timezone: 'Asia/Shanghai' });
 
-    expect(patch).toHaveBeenCalledWith('/agents/agent-1', { execution_mode: 'coordinator' });
+    expect(patch).toHaveBeenCalledWith('/agents/agent-1', { timezone: 'Asia/Shanghai' });
   });
 
   it('routes capability install reads through agentApi', async () => {

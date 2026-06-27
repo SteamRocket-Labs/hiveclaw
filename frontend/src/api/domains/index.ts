@@ -17,7 +17,7 @@ export { scheduleApi } from './schedules';
 export { triggerApi } from './triggers';
 export { autonomyApi } from './autonomy';
 export { planApi } from './plans';
-export { relationshipsApi } from './relationships';
+export { a2aApi } from './a2a';
 export { usersApi } from './users';
 export { plazaApi } from './plaza';
 export { memoryApi } from './memory';

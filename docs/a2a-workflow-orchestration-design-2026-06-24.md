@@ -8,8 +8,10 @@
 
 本文是 A2A 的**跨完整 Agent 编排层**，建立在 [A2A Relationship Group Collaboration Plan](./a2a-relationship-group-collaboration-plan-2026-06-20.md) 之上。
 
+- 总计划：[A2A Integrated Implementation Plan](./a2a-integrated-implementation-plan-2026-06-27.md)。它定义 Relationship -> Session -> Process Graph 的实施顺序和验收口径。
 - 上游总纲：[CCPlus Round 2 / V2 Hive Connect Master Plan](./ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md)。它定义 V2 六条主线、`A2AWorkflowProcessGraphV1` 契约、实施顺序和验收矩阵。
 - 上游授权文档：[A2A Relationship Group Collaboration Plan](./a2a-relationship-group-collaboration-plan-2026-06-20.md)。它定义 same-owner implicit allow、cross-owner active collaboration group required、approval/revocation、`relationships.md` 投影和前端关系视图。
+- 上游 Session 文档：[A2A Session Substrate Design](./a2a-session-substrate-design-2026-06-24.md)。它定义每个 graph node / delegation / direct chat 如何落到可恢复、可审计、可预览的 Session evidence。
 - 本文职责：定义 A2A Process Graph、handoff envelope、artifact_ref、node session、edge gate、resume/retry、workflow UI 和可复用模板。
 - 强约束：任何 A2A Workflow participant、node target、edge handoff 都不能只因为同 tenant 可见而可执行；它必须消费上游 relationship/collaboration policy 的 allowed 结果。cross-owner edge 必须绑定 active group/capability scope 或进入 gate/suspended。
 - 边界分工：如果问题是“谁可以被列为协作对象、能否调用 `send_message_to_agent` / `delegate_to_agent`”，回到 Relationship Group 文档；如果问题是“这些已授权 Agent 如何按顺序/条件/并行交接 artifact 并沉淀流程”，留在本文。

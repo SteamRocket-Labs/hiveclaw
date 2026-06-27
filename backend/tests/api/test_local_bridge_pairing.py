@@ -61,7 +61,7 @@ def test_pairing_init_returns_device_flow_payload(monkeypatch) -> None:
             "device_name": "Rocky's MacBook",
             "client_kind": "codex",
             "device_fingerprint": "fp-1",
-            "scopes": ["gateway:poll", "files:upload"],
+            "scopes": ["local_agent:receive", "files:upload"],
         },
     )
 
@@ -120,8 +120,13 @@ def test_install_guide_exposes_hive_connect_only() -> None:
     assert body["login_command"] == "hive-connect login"
     assert body["instructions"][6] == "5. 执行 hive-connect daemon install --config ~/.hive-connect/config.toml --force，安装并启动后台常驻服务。"
     assert body["instructions"][7] == "6. 执行 hive-connect daemon status，确认后台服务正在运行。"
-    assert body["instructions"][8] == "7. 可选：执行 hive-connect status 验证 Hive 连接状态。"
+    assert body["instructions"][8] == "7. 可选：执行 hive-connect status，确认本机仍保留 Hive 登录绑定（这不代表在线）。"
+    assert (
+        body["instructions"][9]
+        == "8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。"
+    )
     serialized = str(body)
+    assert "验证 Hive 连接状态" not in serialized
     assert "runner" not in serialized.lower()
     assert "poll fallback" not in serialized.lower()
     assert "--hive-url" not in serialized
@@ -234,7 +239,7 @@ def test_bridge_status_uses_bearer_context_from_dependency(monkeypatch) -> None:
         tenant_id=tenant_id,
         agent_id=None,
         user_id=user_id,
-        scopes=("gateway:poll", "files:upload"),
+        scopes=("local_agent:receive", "files:upload"),
         client_kind="generic_mcp_stdio",
         device_name="Workstation",
     )
@@ -265,7 +270,7 @@ def test_bridge_status_uses_bearer_context_from_dependency(monkeypatch) -> None:
         "user_id": str(user_id),
         "client_kind": "generic_mcp_stdio",
         "device_name": "Workstation",
-        "scopes": ["gateway:poll", "files:upload"],
+        "scopes": ["local_agent:receive", "files:upload"],
         "presence_status": "offline",
         "presence_last_seen_at": "2026-06-25T07:00:08+00:00",
     }

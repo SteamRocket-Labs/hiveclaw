@@ -12,7 +12,6 @@ export interface AgentCreateParams {
   agent_class?: string;
   primary_model_id?: string;
   security_zone?: string;
-  execution_mode?: 'standard' | 'coordinator';
 }
 
 export interface AgentUpdateParams {
@@ -26,7 +25,6 @@ export interface AgentUpdateParams {
   context_window_size?: number;
   timezone?: string;
   security_zone?: string;
-  execution_mode?: 'standard' | 'coordinator';
 }
 
 export interface AgentPermissions {
@@ -103,6 +101,4 @@ export const agentApi = {
   getApprovals: (id: string) => get<unknown[]>(`/agents/${id}/approvals`),
   resolveApproval: (agentId: string, approvalId: string, data: { action: string }) =>
     post<unknown>(`/agents/${agentId}/approvals/${approvalId}/resolve`, data),
-  generateApiKey: (id: string) => post<{ api_key: string }>(`/agents/${id}/api-key`),
-  getGatewayMessages: (id: string) => get<unknown[]>(`/agents/${id}/gateway-messages`),
 };

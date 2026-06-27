@@ -1246,7 +1246,7 @@ def _fingerprint_prompt(prompt_prefix: str) -> str:
 
 
 _FROZEN_PROMPT_CACHE_VERSION = "frozen-v3"  # P1-1a: removed user_name + context_window_tokens
-_FROZEN_PROMPT_FILE_PATHS = ("soul.md", "relationships.md")
+_FROZEN_PROMPT_FILE_PATHS = ("soul.md",)
 _FROZEN_PROMPT_DIRS = ("skills",)
 _PROMPT_CACHE_KEY_FIELD = "prompt_cache_key"
 

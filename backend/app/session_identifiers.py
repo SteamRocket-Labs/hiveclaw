@@ -23,32 +23,6 @@ def build_agent_pair_session_id(
     return uuid.uuid5(_AGENT_PAIR_NAMESPACE, f"{first}_{second}")
 
 
-def build_legacy_gateway_conversation_ids(
-    source_agent_id: uuid.UUID | str,
-    target_agent_id: uuid.UUID | str,
-) -> tuple[str, str]:
-    source = str(source_agent_id)
-    target = str(target_agent_id)
-    return (
-        f"gw_agent_{source}_{target}",
-        f"gw_agent_{target}_{source}",
-    )
-
-
-def parse_legacy_gateway_conversation_id(conversation_id: str | None) -> tuple[str, str] | None:
-    if not conversation_id or not conversation_id.startswith("gw_agent_"):
-        return None
-
-    raw_pair = conversation_id.removeprefix("gw_agent_")
-    try:
-        source_raw, target_raw = raw_pair.split("_", 1)
-        uuid.UUID(source_raw)
-        uuid.UUID(target_raw)
-    except (ValueError, AttributeError, TypeError):
-        return None
-    return source_raw, target_raw
-
-
 def build_feishu_p2p_conv_id(provider_user_id: str | None = None, provider_open_id: str | None = None) -> str | None:
     stable_id = (provider_user_id or "").strip() or (provider_open_id or "").strip()
     if not stable_id:

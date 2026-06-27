@@ -356,7 +356,7 @@ async def websocket_chat(
 
     # Verify access and load agent + model
     agent_name = ""
-    agent_type = ""  # Track agent type for OpenClaw routing
+    agent_type = ""
     welcome_message = ""
     llm_model = None
     fallback_llm_model = None

@@ -144,7 +144,6 @@ class AgentOut(BaseModel):
     security_zone: str = "standard"
     execution_mode: AgentExecutionMode = "standard"
     smart_model_routing: SmartModelRoutingConfig | None = None
-    openclaw_last_seen: datetime | None = None
     created_at: datetime
     last_active_at: datetime | None = None
     deleted_at: datetime | None = None
@@ -507,54 +506,3 @@ class HealthResponse(BaseModel):
     version: str
     components: dict[str, Any] = Field(default_factory=dict)
 
-
-# ─── Gateway (OpenClaw) ─────────────────────────────────
-
-
-class GatewayHistoryItem(BaseModel):
-    role: str  # "user" or "assistant"
-    content: str
-    sender_name: str | None = None
-    created_at: datetime
-
-
-class GatewayRelationshipItem(BaseModel):
-    name: str
-    type: str  # "human" or "agent"
-    role: str | None = None  # e.g. "collaborator", "supervisor"
-    description: str | None = None
-    channels: list[str] = []  # e.g. ["feishu"], ["agent"]
-
-
-class GatewayMessageOut(BaseModel):
-    id: uuid.UUID
-    conversation_id: str | None = None
-    sender_agent_name: str | None = None
-    sender_user_name: str | None = None
-    sender_user_id: str | None = None
-    content: str
-    attachments: list[dict] = []
-    metadata: dict = {}
-    created_at: datetime
-    history: list[GatewayHistoryItem] = []
-
-
-class GatewayPollResponse(BaseModel):
-    messages: list[GatewayMessageOut] = []
-    relationships: list[GatewayRelationshipItem] = []
-
-
-class GatewayReportRequest(BaseModel):
-    message_id: uuid.UUID
-    result: str = Field(min_length=1)
-    attachments: list[dict] = []
-    metadata: dict = {}
-
-
-class GatewaySendMessageRequest(BaseModel):
-    target: str  # Name of target person or agent
-    content: str = Field(min_length=1)
-    channel: str | None = None  # Optional: "feishu", "agent", etc. Auto-detected if omitted.
-    client_message_id: str | None = None
-    attachments: list[dict] = []
-    metadata: dict = {}

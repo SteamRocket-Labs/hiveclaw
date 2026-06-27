@@ -12,6 +12,7 @@ RETIRED_BUILTIN_SKILL_FOLDERS = frozenset(
         "competitive-analysis",
         "meeting-notes",
         "content-research-writer",
+        "deep-research",
         "topic-deep-dive",
         "industry-research",
         "source-ledger-audit",

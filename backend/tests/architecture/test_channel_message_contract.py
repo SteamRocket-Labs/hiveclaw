@@ -31,28 +31,27 @@ def test_channel_message_contract_is_centralized() -> None:
     assert 'llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"' not in feishu_source
 
 
-def test_gateway_session_identifier_contract_is_centralized() -> None:
-    gateway_source = (APP_ROOT / "api" / "gateway.py").read_text(encoding="utf-8")
+def test_gateway_session_identifier_contract_is_retired() -> None:
+    session_identifier_source = (APP_ROOT / "session_identifiers.py").read_text(encoding="utf-8")
     service_source = (APP_ROOT / "services" / "agent_pair_session.py").read_text(encoding="utf-8")
 
+    assert not (APP_ROOT / "api" / "gateway.py").exists()
     assert "from app.session_identifiers import" in service_source
     assert "build_agent_pair_session_id" in service_source
-    assert "build_legacy_gateway_conversation_ids" in service_source
-    assert "from app.services.agent_pair_session import" in gateway_source
-    assert 'f"gw_agent_' not in gateway_source
-    assert "uuid5(" not in gateway_source
+    assert "build_legacy_gateway_conversation_ids" not in service_source
+    assert "parse_legacy_gateway_conversation_id" not in session_identifier_source
+    assert 'f"gw_agent_' not in session_identifier_source
 
 
 def test_agent_pair_session_creation_uses_shared_service() -> None:
     service_source = (APP_ROOT / "services" / "agent_pair_session.py").read_text(encoding="utf-8")
-    gateway_source = (APP_ROOT / "api" / "gateway.py").read_text(encoding="utf-8")
     messaging_source = (APP_ROOT / "services" / "agent_tool_domains" / "messaging.py").read_text(encoding="utf-8")
 
     assert "def find_or_create_agent_pair_session(" in service_source
     assert "def get_or_create_agent_participant_id(" in service_source
     assert "def session_conversation_id(" in service_source
 
-    for source in (gateway_source, messaging_source):
+    for source in (messaging_source,):
         assert "find_or_create_agent_pair_session" in source
         assert "get_or_create_agent_participant_id" in source
         assert "session_agent_id = min(" not in source

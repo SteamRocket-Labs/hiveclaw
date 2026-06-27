@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 
-def test_build_a2a_agent_card_exposes_identity_auth_and_existing_endpoints() -> None:
+def test_build_a2a_agent_card_exposes_identity_auth_without_legacy_gateway() -> None:
     from app.services.interoperability import build_a2a_agent_card
 
     agent_id = uuid4()
@@ -30,9 +30,10 @@ def test_build_a2a_agent_card_exposes_identity_auth_and_existing_endpoints() -> 
     assert card["protocol"] == "a2a"
     assert card["name"] == "Research Analyst"
     assert card["url"] == f"https://hive.example/api/v1/agents/{agent_id}/a2a-card"
-    assert card["endpoints"]["gateway_poll"] == "https://hive.example/api/v1/gateway/poll"
-    assert card["endpoints"]["gateway_report"] == "https://hive.example/api/v1/gateway/report"
-    assert card["authentication"]["schemes"][0]["name"] == "X-Api-Key"
+    assert "gateway_poll" not in card["endpoints"]
+    assert "gateway_report" not in card["endpoints"]
+    assert "gateway_send_message" not in card["endpoints"]
+    assert all(scheme.get("name") != "X-Api-Key" for scheme in card["authentication"]["schemes"])
     assert card["authentication"]["oauth_delegation"]["status"] == "not_exposed"
     assert card["capabilities"]["agent_to_agent_messages"] is True
     assert card["hive"]["agent_id"] == str(agent_id)
@@ -55,3 +56,4 @@ def test_build_interoperability_profile_is_machine_readable_and_honest() -> None
     assert profile["standards"]["a2a"]["json_rpc_tasks"]["status"] == "not_exposed"
     assert profile["standards"]["oauth_delegation"]["status"] == "not_exposed"
     assert "unsupported" not in profile["standards"]["a2a"]["json_rpc_tasks"]
+    assert "gateway" not in str(profile).lower()

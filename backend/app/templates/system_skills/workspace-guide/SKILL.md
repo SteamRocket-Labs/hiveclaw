@@ -49,7 +49,6 @@ and built upon.
 ```
 soul.md              — Your permanent identity (read-only, updated by dream)
 HEARTBEAT.md         — Heartbeat curation protocol
-relationships.md     — Your colleague list
 tasks.json           — Read-only DB Task snapshot; use Work Ledger for cognitive todos
 
 memory/

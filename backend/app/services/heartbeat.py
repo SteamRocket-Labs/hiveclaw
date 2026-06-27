@@ -1984,7 +1984,7 @@ async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:
 
 
 async def _sync_one_agent(agent_id: uuid.UUID) -> None:
-    """Re-render relationships.md for a single agent."""
+    """Refresh per-agent workspace projections after relationship-like changes."""
     from app.services.workspace_sync import sync_agent_relationships
 
     try:
@@ -1992,7 +1992,7 @@ async def _sync_one_agent(agent_id: uuid.UUID) -> None:
         async with tenant_scoped_session(tid) as sync_db:
             await sync_agent_relationships(sync_db, agent_id)
     except Exception as sync_err:
-        logger.warning(f"Agent relationships sync failed for {agent_id}: {sync_err}")
+        logger.warning(f"Agent workspace projection sync failed for {agent_id}: {sync_err}")
 
 
 async def _workspace_dirty_tick() -> None:

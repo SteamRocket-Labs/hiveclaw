@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent
-from app.models.gateway_message import GatewayMessage
 from app.models.local_agent_channel import LocalAgentChannel
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 
@@ -28,9 +27,6 @@ DEFAULT_SCOPES = (
     "local_agent:send",
     "local_agent:report",
     "presence:write",
-    "gateway:poll",
-    "gateway:report",
-    "gateway:send-message",
     "files:upload",
 )
 HIVE_CONNECT_PRODUCT_NAME = "Hive Connect"
@@ -73,7 +69,8 @@ def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]
             "4. 浏览器打开 Hive 后登录；Hive 会自动完成本地 Agent 认证，不需要复制任何一次性码。",
             f"5. 执行 {run}，安装并启动后台常驻服务。",
             f"6. 执行 {daemon_status}，确认后台服务正在运行。",
-            f"7. 可选：执行 {status} 验证 Hive 连接状态。",
+            f"7. 可选：执行 {status}，确认本机仍保留 Hive 登录绑定（这不代表在线）。",
+            "8. 回到 Hive 页面查看本地 Agent 在线标记；如果离线，重新执行第 5-6 步，不要重复 login。",
         ],
     }
 
@@ -539,27 +536,3 @@ async def revoke_connection(
     await db.commit()
     return {"status": "revoked", "connection_id": str(connection.id)}
 
-
-async def enqueue_work_request(
-    db: AsyncSession,
-    *,
-    agent_id: uuid.UUID,
-    tenant_id: uuid.UUID | None,
-    sender_user_id: uuid.UUID,
-    content: str,
-    metadata: dict[str, Any] | None = None,
-    conversation_id: str | None = None,
-) -> dict[str, Any]:
-    message = GatewayMessage(
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        sender_user_id=sender_user_id,
-        conversation_id=conversation_id,
-        content=content,
-        status="pending",
-        metadata_json={"kind": "work_request", **(metadata or {})},
-    )
-    db.add(message)
-    await db.flush()
-    await db.commit()
-    return {"status": "pending", "message_id": str(message.id), "conversation_id": conversation_id}

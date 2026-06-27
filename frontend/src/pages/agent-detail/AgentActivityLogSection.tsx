@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import type { ToolFailureSummary } from '../../api/domains/activity';
 
 type AgentActivityLogSectionProps = {
-  agentType?: string;
   activityLogs: any[];
   toolFailureSummary?: ToolFailureSummary;
   logFilter: string;
@@ -13,7 +12,6 @@ type AgentActivityLogSectionProps = {
 };
 
 export default function AgentActivityLogSection({
-  agentType,
   activityLogs,
   toolFailureSummary,
   logFilter,
@@ -141,17 +139,13 @@ export default function AgentActivityLogSection({
 
       <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
         {filterButton('user', `👤 ${t('agent.activityLog.userActions', 'User Actions')}`)}
-        {agentType !== 'openclaw' && (
+        {filterButton('backend', `⚙️ ${t('agent.activityLog.backendServices', 'Backend Services')}`)}
+        {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
           <>
-            {filterButton('backend', `⚙️ ${t('agent.activityLog.backendServices', 'Backend Services')}`)}
-            {(logFilter === 'backend' || logFilter === 'heartbeat' || logFilter === 'schedule' || logFilter === 'messages') && (
-              <>
-                <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>│</span>
-                {filterButton('heartbeat', `💓 ${t('agent.mind.heartbeatTitle')}`)}
-                {filterButton('schedule', `⏰ ${t('agent.activityLog.scheduleCron')}`, true)}
-                {filterButton('messages', `📨 ${t('agent.activityLog.messages')}`, true)}
-              </>
-            )}
+            <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>│</span>
+            {filterButton('heartbeat', `💓 ${t('agent.mind.heartbeatTitle')}`)}
+            {filterButton('schedule', `⏰ ${t('agent.activityLog.scheduleCron')}`, true)}
+            {filterButton('messages', `📨 ${t('agent.activityLog.messages')}`, true)}
           </>
         )}
       </div>

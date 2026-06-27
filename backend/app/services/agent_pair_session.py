@@ -5,16 +5,13 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
-from app.models.gateway_message import GatewayMessage
 from app.models.participant import Participant
 from app.session_identifiers import (
     build_agent_pair_session_id,
-    build_legacy_gateway_conversation_ids,
     canonicalize_agent_pair_ids,
 )
 
@@ -111,22 +108,4 @@ async def find_or_create_agent_pair_session(
         if flush:
             await flush()
 
-    conv_id = session_conversation_id(session)
-    legacy_conv_ids = build_legacy_gateway_conversation_ids(source_uuid, target_uuid)
-    chat_values = {"conversation_id": conv_id, "agent_id": session.agent_id}
-    gateway_values = {"conversation_id": conv_id}
-    if tenant_uuid:
-        chat_values["tenant_id"] = tenant_uuid
-        gateway_values["tenant_id"] = tenant_uuid
-
-    await db.execute(
-        update(ChatMessage)
-        .where(ChatMessage.conversation_id.in_(legacy_conv_ids))
-        .values(**chat_values)
-    )
-    await db.execute(
-        update(GatewayMessage)
-        .where(GatewayMessage.conversation_id.in_(legacy_conv_ids))
-        .values(**gateway_values)
-    )
     return session

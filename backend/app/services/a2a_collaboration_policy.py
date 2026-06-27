@@ -17,11 +17,10 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app.models.agent import Agent
+from app.models.agent import Agent, AgentPermission
 from app.models.agent_collaboration import AgentCollaborationGroup, AgentCollaborationGroupMember
 
 ACTIVE_AGENT_STATUSES = {"running", "idle", "creating"}
-BLOCKED_AGENT_STATUSES = {"expired", "stopped", "archived", "error"}
 ACTIVE_GROUP_STATUS = "active"
 ACTIVE_MEMBER_STATUS = "active"
 
@@ -54,6 +53,10 @@ def _is_expired(expires_at: datetime | None) -> bool:
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     return expires_at <= current
+
+
+def _agent_status(agent: Any | None) -> str:
+    return str(getattr(agent, "status", "") or "").strip().lower()
 
 
 async def _find_active_collaboration_edge(
@@ -105,6 +108,29 @@ async def _find_active_collaboration_edge(
     return best
 
 
+async def _is_public_agent(db: AsyncSession | None, target_agent: Any) -> bool:
+    """Return whether the target is currently company-callable within its tenant.
+
+    Hive does not have a separate `is_public` agent column. The live public
+    signal is the same permission surface used by normal access checks:
+    `AgentPermission(scope_type="company")`.
+    """
+
+    if db is None:
+        return False
+    result = await db.execute(
+        select(AgentPermission.id).where(
+            AgentPermission.agent_id == getattr(target_agent, "id", None),
+            AgentPermission.scope_type == "company",
+            or_(
+                AgentPermission.tenant_id == getattr(target_agent, "tenant_id", None),
+                AgentPermission.tenant_id.is_(None),
+            ),
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def resolve_a2a_collaboration_policy(
     db: AsyncSession | None,
     source_agent: Any | None,
@@ -122,11 +148,13 @@ async def resolve_a2a_collaboration_policy(
         return A2ACollaborationPolicyResult(False, "self", "An agent cannot send A2A work to itself.")
     if getattr(source_agent, "tenant_id", None) != getattr(target_agent, "tenant_id", None):
         return A2ACollaborationPolicyResult(False, "cross_tenant", "Cross-tenant A2A is not exposed.")
-    if str(getattr(target_agent, "status", "") or "") in BLOCKED_AGENT_STATUSES:
+    target_status = _agent_status(target_agent)
+    if target_status not in ACTIVE_AGENT_STATUSES:
+        status_label = target_status or "unknown"
         return A2ACollaborationPolicyResult(
             False,
             "target_unavailable",
-            f"{getattr(target_agent, 'name', 'Target agent')} is unavailable for A2A.",
+            f"{getattr(target_agent, 'name', 'Target agent')} is currently {status_label} and unavailable for A2A.",
         )
 
     source_owner = resolve_agent_owner_id(source_agent)
@@ -136,6 +164,13 @@ async def resolve_a2a_collaboration_policy(
             True,
             "same_owner",
             "Allowed: same-owner agents can collaborate without an explicit A2A Collaboration Group.",
+        )
+
+    if await _is_public_agent(db, target_agent):
+        return A2ACollaborationPolicyResult(
+            True,
+            "public_agent",
+            "Allowed: public/company-visible agents can receive A2A work within the same tenant.",
         )
 
     edge = await _find_active_collaboration_edge(db, source_agent, target_agent)
@@ -201,6 +236,38 @@ async def list_same_owner_agents(db: AsyncSession, source_agent: Agent) -> list[
     return list(result.scalars().all())
 
 
+async def list_public_agents(db: AsyncSession, source_agent: Agent) -> list[Agent]:
+    """List same-tenant public agents that are not already covered by same-owner."""
+
+    owner_id = resolve_agent_owner_id(source_agent)
+    same_owner_filter = False
+    if owner_id is not None:
+        same_owner_filter = or_(
+            Agent.owner_user_id == owner_id,
+            and_(Agent.owner_user_id.is_(None), Agent.creator_id == owner_id),
+        )
+
+    public_filters = [
+        Agent.id != source_agent.id,
+        Agent.tenant_id == source_agent.tenant_id,
+        Agent.deleted_at.is_(None),
+        Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
+        AgentPermission.scope_type == "company",
+        or_(AgentPermission.tenant_id == source_agent.tenant_id, AgentPermission.tenant_id.is_(None)),
+    ]
+    if same_owner_filter is not False:
+        public_filters.append(~same_owner_filter)
+
+    result = await db.execute(
+        select(Agent)
+        .join(AgentPermission, AgentPermission.agent_id == Agent.id)
+        .where(*public_filters)
+        .distinct()
+        .order_by(Agent.name.asc())
+    )
+    return list(result.scalars().all())
+
+
 async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_agent: Agent) -> list[SimpleNamespace]:
     source_memberships = await db.execute(
         select(AgentCollaborationGroup, AgentCollaborationGroupMember)
@@ -225,6 +292,7 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
                 AgentCollaborationGroupMember.status == ACTIVE_MEMBER_STATUS,
                 Agent.id != source_agent.id,
                 Agent.deleted_at.is_(None),
+                Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
             )
             .order_by(Agent.name.asc())
         )
@@ -255,12 +323,14 @@ async def list_active_collaboration_groups_for_agent(db: AsyncSession, source_ag
 async def build_a2a_collaboration_read_model(db: AsyncSession, agent_id: uuid.UUID) -> dict[str, Any]:
     source_agent = await db.get(Agent, agent_id)
     if source_agent is None:
-        return {"same_owner_agents": [], "collaboration_groups": []}
+        return {"same_owner_agents": [], "public_agents": [], "collaboration_groups": []}
 
     same_owner_agents = await list_same_owner_agents(db, source_agent)
+    public_agents = await list_public_agents(db, source_agent)
     collaboration_groups = await list_active_collaboration_groups_for_agent(db, source_agent)
     return {
         "same_owner_agents": [serialize_agent_for_a2a(agent, relation="same_owner") for agent in same_owner_agents],
+        "public_agents": [serialize_agent_for_a2a(agent, relation="public") for agent in public_agents],
         "collaboration_groups": [
             {
                 "group_id": str(group.group_id),

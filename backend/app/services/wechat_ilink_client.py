@@ -221,7 +221,7 @@ class ILinkClient:
 
     def _auth_headers(self, bot_token: str) -> dict[str, str]:
         """Build authentication headers for authorized API calls."""
-        # Match openclaw-weixin: random uint32 decimal string encoded as base64.
+        # Match the iLink bot client shape: random uint32 decimal string encoded as base64.
         uin = base64.b64encode(str(secrets.randbits(32)).encode("utf-8")).decode("ascii")
         return {
             "Authorization": f"Bearer {bot_token}",
@@ -662,7 +662,7 @@ class ILinkClient:
         headers = self._auth_headers(bot_token)
         client_id = f"hiveclaw-{secrets.token_hex(8)}"
 
-        # openclaw-weixin sends base64(hex_string), not base64(raw 16 bytes).
+        # iLink expects base64(hex_string), not base64(raw 16 bytes).
         aes_key_b64 = base64.b64encode(upload.aes_key_hex.encode("ascii")).decode()
 
         media_ref = {

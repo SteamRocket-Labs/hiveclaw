@@ -72,7 +72,7 @@ export default function WorkspaceSkillsSection() {
           ? 'Tier 1 (Pure Prompt)'
           : result.tier === 2
             ? 'Tier 2 (CLI/API)'
-            : 'Tier 3 (OpenClaw Native)';
+            : 'Tier 3 (Local Runtime Native)';
       showToast(`Installed "${result.name}" — ${tierLabel}, ${result.file_count} files`);
       setRefreshKey((value) => value + 1);
       setSearchResults((current) => current.filter((row) => row.slug !== slug));
@@ -115,7 +115,7 @@ export default function WorkspaceSkillsSection() {
     const styles: Record<number, { bg: string; color: string; label: string }> = {
       1: { bg: 'rgba(52,199,89,0.12)', color: 'var(--success, #34c759)', label: 'Tier 1 · Pure Prompt' },
       2: { bg: 'rgba(255,159,10,0.12)', color: 'var(--warning, #ff9f0a)', label: 'Tier 2 · CLI/API' },
-      3: { bg: 'rgba(255,59,48,0.12)', color: 'var(--error, #ff3b30)', label: 'Tier 3 · OpenClaw Native' },
+      3: { bg: 'rgba(255,59,48,0.12)', color: 'var(--error, #ff3b30)', label: 'Tier 3 · Local Runtime Native' },
     };
     const style = styles[tier] || styles[1];
     return (

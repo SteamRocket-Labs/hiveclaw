@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.api.activity import router as activity_router
+from app.api.a2a import router as a2a_router
 from app.api.admin import router as admin_router
 from app.api.advanced import router as advanced_router
 from app.api.agents import router as agents_router
@@ -32,7 +33,6 @@ from app.api.feishu import router as feishu_router
 from app.api.files import enterprise_kb_router
 from app.api.files import router as files_router
 from app.api.files import upload_router as files_upload_router
-from app.api.gateway import router as gateway_router
 from app.api.guard_policies import router as guard_policies_router
 from app.api.hooks import router as hooks_router
 from app.api.interoperability import router as interoperability_router
@@ -58,7 +58,6 @@ from app.api.plugins import router as plugins_router
 from app.api.organization import router as org_router
 from app.api.plans import router as plans_router
 from app.api.plaza import router as plaza_router
-from app.api.relationships import router as relationships_router
 from app.api.agent_teams import router as agent_teams_router
 from app.api.advanced_plan import router as advanced_plan_router
 from app.api.role_templates import router as role_templates_router
@@ -575,7 +574,7 @@ _api_routers = [
     eval_ci_router,
     advanced_router,
     upload_router,
-    relationships_router,
+    a2a_router,
     activity_router,
     messages_router,
     tenants_router,
@@ -594,7 +593,6 @@ _api_routers = [
     email_channel_router,
     atlassian_router,
     notification_router,
-    gateway_router,
     config_history_router,
     custom_api_connectors_router,
     feature_flags_router,

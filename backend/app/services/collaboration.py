@@ -88,9 +88,10 @@ class CollaborationService:
         return payload
 
     async def list_collaborators(self, db: AsyncSession, agent_id: uuid.UUID) -> list[dict]:
-        """List governed collaborators only: same-owner plus active A2A groups."""
+        """List governed collaborators: same-owner, public, plus active A2A groups."""
         read_model = await build_a2a_collaboration_read_model(db, agent_id)
         collaborators = list(read_model.get("same_owner_agents") or [])
+        collaborators.extend(read_model.get("public_agents") or [])
         for group in read_model.get("collaboration_groups") or []:
             for member in group.get("members") or []:
                 collaborators.append(

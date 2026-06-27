@@ -114,11 +114,11 @@ If you delegated to several agents:
 
 ### Available A2A Collaborators
 
-Your `relationships.md` file lists governed A2A collaborators. Same-owner
-agents appear under `我的数字员工团队` and can be delegated to directly. Approved
-cross-owner agents appear under `A2A 协作组` because their A2A Collaboration
-Group membership is active. Read it before delegating to confirm the agent
-exists, what they specialize in, and whether the relationship is governed.
+The session's A2A Collaborators context lists governed callable agents.
+Same-owner agents and public agents can be delegated to directly. Approved
+cross-owner agents appear through active A2A Collaboration Group membership.
+Check that context before delegating to confirm the agent exists, what they
+specialize in, and whether the relationship is governed.
 
 </workflows>
 

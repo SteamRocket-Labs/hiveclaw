@@ -596,6 +596,8 @@ cd backend && source .venv/bin/activate && pytest \
 
 本轮证据（2026-06-27）：`ruff check app/runtime/turn_envelope.py app/services/session_control_plane.py app/services/mcp_server_service.py tests/runtime/test_turn_envelope_prompt_manifest.py tests/services/test_session_control_plane.py tests/services/test_mcp_server_service.py` -> `All checks passed!`；上述 pytest scope -> `105 passed, 4 warnings`。
 
+最终跨主线收口证据（2026-06-27）：`ruff check app/runtime/turn_envelope.py app/services/session_control_plane.py app/services/mcp_server_service.py app/services/agent_team_runtime_service.py app/tools/handlers/subagent.py app/tools/handlers/command_parity.py app/api/commands.py app/api/agent_teams.py tests/runtime/test_turn_envelope_prompt_manifest.py tests/services/test_session_control_plane.py tests/services/test_mcp_server_service.py tests/services/test_agent_team_runtime_service.py tests/tools/test_cc_codex_parity_tools.py tests/agents/test_subagent_spawn_tool.py` -> `All checks passed!`；跨 A/B/C/D pytest scope -> `200 passed, 4 warnings`。
+
 完成标准：
 
 - 每个 turn 都能解释自己加载了什么、隐藏了什么、为什么。

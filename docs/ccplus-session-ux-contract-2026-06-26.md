@@ -4,8 +4,11 @@
 
 状态：Session Workbench 的产品契约与当前实装记录。本文档定义方向、验收标准、当前代码入口和验证证据。
 
+文档关系：上线前最后一轮总计划见 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md`。本文是该 master plan 中 Session Control Spine、Workbench State、A2A/Team card、artifact inspector 和 raw JSON 折叠策略的 UX contract，不单独决定 runtime 实施顺序。
+
 关联文档：
 
+- `ccplus-session-control-command-alignment-2026-06-27.md` 负责 `/compact`、`/clear`、`/rewind`、`/branch` 的 session control command UX 与语义契约，尤其禁止把 control payload 渲染成 assistant JSON。
 - `ccplus-session-native-closure-gap-ledger-2026-06-25.md` 负责完整 session-native runtime 闭环总账。
 - `ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md` 负责权限模式、企业硬规则和 Hook 分层契约。
 - `frontend-session-workbench-cc-codex-parity-gap-2026-06-23.md` 负责更大的前端 Session Workbench 重构方向。

@@ -6,6 +6,10 @@
 
 范围：Session 内 token 计算、context window、tool-result budget、microcompact、autocompact、prompt-too-long reactive compact、compaction trace、Session/T0 记录、A2A 对 Session runtime 的依赖边界。
 
+关联命令契约：`ccplus-session-control-command-alignment-2026-06-27.md` 定义 `/compact`、`/clear`、`/rewind`、`/branch` 的 CC / Codex / Hive 语义对齐。本文的 token / compaction 底座必须通过该 command contract 暴露给用户，不能再以 raw JSON assistant message 的方式呈现。
+
+文档关系：本文是 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` 主线 A（Session Control Spine）的 runtime/token 底座证据。本文早期关于“当前不应该先修 A2A”的裁决，更新解释为：不要绕过 session spine 直接做 A2A 高层产品化；A2A Relationship gate 第一阶段已经完成，后续 A2A Session-first work 应按 master plan 排在 Session Control、AgentTool/Completion Bus、Agent Team Runtime 之后。
+
 ## 已落地实装记录
 
 本轮已完成 Session runtime 底座，并修复 A2A 对 Session runtime 的权限继承：
@@ -94,9 +98,10 @@ cd frontend && npm run build
 当前优先级必须是：
 
 ```text
-先完成 Session runtime token / compaction / context recording 的统一
-再修 A2A canonical session
-最后做 A2A / AgentTeam / Sub-agent 的产品体验收口
+Session Control Spine 暴露并消费已落地的 token / compaction / context recording
+  -> AgentTool / Sub-agent / Completion Bus
+  -> Agent Team Runtime
+  -> A2A Session-first Delegation
 ```
 
 原因：
@@ -104,7 +109,7 @@ cd frontend && npm run build
 1. A2A 的长任务、AgentTeam、delegation、subagent continuation 都依赖同一套 Session token 和 compaction 机制。
 2. 如果 Session runtime 对当前 context tokens、累计 run tokens、auto compact scope tokens 的口径不清，A2A 会继续出现“看似 A2A 失败、实际是上下文/压缩/预算先坏掉”的问题。
 3. 当前 Hive 已有 compaction 能力，但还不是 CC / FreeCode 的完整 query-preflight context pipeline，也没有完全吸收 Codex 的 context window accounting。
-4. 因此不能继续在 A2A 层打补丁。先把 Session runtime 作为底座一次性收敛。
+4. 因此不能绕过 session spine 直接做 A2A 高层产品化。A2A Relationship gate 已经完成后，下一步是让 Session Control、AgentTool/Completion Bus 和 AgentTeam 先成为稳定底座，再进入 A2A Session-first delegation。
 
 目标公式：
 
@@ -425,7 +430,7 @@ Prompt 不是第一问题，但在 context pipeline 统一后需要同步收口�
 
 ## 8. A2A 的第二阶段边界
 
-A2A 暂不先修实现，但需要明确它依赖 Session runtime。
+A2A Relationship gate 已完成第一阶段。A2A 第二阶段不是回到旧 relationship，也不是先做 Process Graph，而是在 Session Control Spine、AgentTool / Completion Bus、Agent Team Runtime 稳定后进入 Session-first delegation。
 
 ### 8.1 三类能力必须分开
 
@@ -450,7 +455,7 @@ Agent A 发起
 
 人类不能在 Agent-Agent session 中随意插话。人类可以查看、停止、审计、导出。
 
-### 8.3 A2A 为什么不能先修
+### 8.3 A2A 为什么不能绕过 session spine 先修
 
 A2A 长对话天然会放大：
 
@@ -460,12 +465,13 @@ A2A 长对话天然会放大：
 - runtime limit 误判问题
 - Session/T0 truth 不一致问题
 
-所以 A2A 第二阶段应在 Session runtime 收敛后做：
+所以 A2A 第二阶段应按上线前 master plan 排在 session spine 和 completion bus 之后：
 
 ```text
-Session runtime stable
-  -> AgentTeam / delegation / pair session 统一
-  -> A2A canonical session
+Session Control Spine
+  -> AgentTool / Sub-agent / Completion Bus
+  -> Agent Team Runtime
+  -> A2A Session-first Delegation
   -> A2A UI/read-only observer
   -> A2A close/consolidation
 ```
@@ -572,15 +578,16 @@ rg -n "AgentTeam|delegate_to_agent|spawn_subagent|parent_session_id|peer_agent_i
 
 ## 12. 最终判断
 
-当前不应该先修 A2A。
+当前不应该绕过 session spine 先修 A2A 高层产品化。
 
 正确路径是：
 
 ```text
-Session token / compaction / context window truth
-  -> Session Workbench visibility
-  -> Summary prompt refinement
-  -> A2A canonical session
+Session Control Spine
+  -> AgentTool / Sub-agent / Completion Bus
+  -> Agent Team Runtime
+  -> A2A Session-first Delegation
+  -> TurnEnvelope / Workbench / Hooks / Skill / MCP
 ```
 
-只有 Session runtime 底座稳定后，A2A 才能作为 Agent-Agent long-running collaboration 正常运转。否则 A2A 每一次长任务都会继续暴露同一类 token、压缩、上下文记录问题。
+只有 session identity、projection、completion bus 和 Workbench state 稳定后，A2A 才能作为 Agent-Agent long-running collaboration 正常运转。否则 A2A 每一次长任务都会继续暴露同一类 token、压缩、上下文记录、child completion 和 UI control 问题。

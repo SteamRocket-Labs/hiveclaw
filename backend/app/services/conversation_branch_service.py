@@ -17,6 +17,7 @@ from app.services.chat_transcript import append_session_event
 
 ConversationBranchMode = Literal[
     "fork",
+    "branch",
     "edit",
     "insert_before",
     "insert_after",
@@ -27,7 +28,7 @@ ConversationBranchMode = Literal[
 ]
 
 _CONTENT_REQUIRED_MODES = {"edit", "insert_before", "insert_after", "reply", "side_question"}
-_VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "regenerate", "rewind"}
+_VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "branch", "regenerate", "rewind"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +75,7 @@ def _event_t0_role(event: ChatTranscriptEvent, role: str | None) -> str | None:
 
 
 def _prefix_includes_anchor(mode: str) -> bool:
-    return mode in {"fork", "insert_after", "reply", "side_question"}
+    return mode in {"fork", "branch", "insert_after", "reply", "side_question"}
 
 
 def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> str:
@@ -83,6 +84,7 @@ def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> 
     source_title = (getattr(source_session, "title", None) or "Conversation").strip()
     suffix = {
         "fork": "fork",
+        "branch": "branch",
         "edit": "edit",
         "insert_before": "insert",
         "insert_after": "insert",
@@ -311,7 +313,7 @@ async def create_conversation_branch(
             user=user,
         ),
         created_at=now,
-        last_message_at=now if mode_text != "fork" else getattr(source_session, "last_message_at", None),
+        last_message_at=now if mode_text not in {"fork", "branch"} else getattr(source_session, "last_message_at", None),
     )
     db.add(branch_session)
     if hasattr(db, "flush"):

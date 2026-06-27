@@ -63,10 +63,15 @@ import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
 import { chatApi, type ConversationBranchMode, type SessionRun } from '../api/domains/chat';
-import { ccParityApi, type ExecuteCommandResult } from '../api/domains/ccParity';
+import { ccParityApi } from '../api/domains/ccParity';
 import { uploadFileWithProgress } from '../api/core/upload-progress';
 import { useAuthStore } from '../stores';
 import { parseSlashCommandInput } from './agent-detail/slashCommand';
+import {
+    commandResultRecord,
+    formatSlashCommandResult,
+    getSessionCommandUiAction,
+} from './agent-detail/sessionCommandResult';
 import LocalAgents from './LocalAgents';
 import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
 
@@ -256,27 +261,6 @@ export function getVisibleAgentDetailTabs(agent: any): AgentDetailTab[] {
         return ['chat', 'workspace'];
     }
     return AGENT_DETAIL_TABS.filter((tab) => isAgentDetailTabVisible(agent, tab));
-}
-
-function formatSlashCommandResult(response: ExecuteCommandResult): string {
-    const { result } = response;
-    if (typeof result === 'string') return result.trim() || `Command ${response.command} completed.`;
-    if (result && typeof result === 'object' && !Array.isArray(result)) {
-        const record = result as Record<string, unknown>;
-        if (typeof record.message === 'string' && record.message.trim()) {
-            return record.message.trim();
-        }
-    }
-
-    const serialized = result == null ? '' : JSON.stringify(result, null, 2);
-    if (!serialized.trim()) return `Command ${response.command} completed.`;
-    return `Command ${response.command} completed.\n\n\`\`\`json\n${serialized}\n\`\`\``;
-}
-
-function commandResultRecord(response: ExecuteCommandResult): Record<string, unknown> | null {
-    const { result } = response;
-    if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
-    return result as Record<string, unknown>;
 }
 
 function AgentDetailInner() {
@@ -713,6 +697,84 @@ function AgentDetailInner() {
             source_channel: 'web',
             listed_surface: 'chat',
         });
+    };
+
+    const handleSessionCommandUiAction = async (response: Awaited<ReturnType<typeof ccParityApi.executeCommand>>) => {
+        const uiAction = getSessionCommandUiAction(response);
+        if (!uiAction || !id || !activeSession?.id) return false;
+        const actionResult = commandResultRecord(response);
+        const currentSessionId = String(activeSession.id);
+        const message = typeof uiAction.message === 'string' && uiAction.message.trim()
+            ? uiAction.message.trim()
+            : formatSlashCommandResult(response);
+
+        if (uiAction.type === 'switch_session') {
+            const targetSession = actionResult?.session && typeof actionResult.session === 'object'
+                ? actionResult.session as any
+                : null;
+            const targetSessionId = String(uiAction.session_id || targetSession?.id || '');
+            if (targetSessionId) {
+                if (targetSession) {
+                    setSessions(prev => {
+                        if (prev.some((session: any) => String(session.id) === targetSessionId)) return prev;
+                        return [targetSession, ...prev];
+                    });
+                    setAllSessions(prev => {
+                        if (prev.some((session: any) => String(session.id) === targetSessionId)) return prev;
+                        return [targetSession, ...prev];
+                    });
+                    await selectSession(targetSession);
+                } else {
+                    await selectBranchSession(targetSessionId);
+                }
+                await fetchMySessions(true, id);
+                await fetchBranchLineage(id, targetSessionId);
+            }
+            showToast(message, 'success');
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            if (targetSessionId && targetSessionId !== currentSessionId) {
+                invalidateSessionRuntimeQueries(id, targetSessionId);
+            }
+            return true;
+        }
+
+        if (uiAction.type === 'copy_to_clipboard') {
+            const content = typeof uiAction.content === 'string' ? uiAction.content : '';
+            if (content && navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(content);
+            }
+            showToast(message, 'success');
+            return true;
+        }
+
+        if (uiAction.type === 'open_export_panel') {
+            showToast(message, 'success');
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            return true;
+        }
+
+        if (uiAction.type === 'open_permissions_menu') {
+            selectDetailTab('chat');
+            showToast(message, 'success');
+            return true;
+        }
+
+        if (
+            uiAction.type === 'install_compacted_context'
+            || uiAction.type === 'install_active_projection'
+            || uiAction.type === 'open_checkpoint_selector'
+            || uiAction.type === 'open_context_panel'
+            || uiAction.type === 'open_usage_panel'
+            || uiAction.type === 'open_side_question'
+            || uiAction.type === 'toast'
+        ) {
+            invalidateSessionRuntimeQueries(id, currentSessionId);
+            showToast(message, uiAction.level === 'error' ? 'error' : 'success');
+            return true;
+        }
+
+        showToast(message, 'success');
+        return true;
     };
 
     const createNewSession = async () => {
@@ -1408,6 +1470,10 @@ function AgentDetailInner() {
                         session_id: String(activeSession.id),
                     });
                     const actionResult = commandResultRecord(response);
+                    if (getSessionCommandUiAction(response)) {
+                        await handleSessionCommandUiAction(response);
+                        return;
+                    }
                     if (actionResult?.action === 'chat_prompt') {
                         const content = typeof actionResult.content === 'string' ? actionResult.content : userMsg;
                         const displayContent = typeof actionResult.display_content === 'string' ? actionResult.display_content : userMsg;

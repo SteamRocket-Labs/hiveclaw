@@ -2,11 +2,57 @@
 
 日期：2026-06-27
 
-状态：已完成 CC / FreeCode、Hive 后端、Hive 前端三方源码复核；下一步按本文测试口径实装。
+状态：Workstream A 已按本文测试口径实装。后续 AgentTool / Completion Bus / Agent Team / A2A Session-first work 必须复用同一 typed session command result，不得新增第二条 slash-command 控制路径。
 
 范围：session 内 slash command 的完整控制面，包括状态改变、只读查询、UI-only 交互、prompt 包装命令，以及 `/btw` 这类 side-question 命令。本文不处理 A2A 产品层协议。
 
 文档关系：本文是 `docs/ccplus-final-prelaunch-convergence-master-plan-2026-06-27.md` 主线 A（Session Control Spine）的专项 contract。上线前最后一轮的总顺序、与 AgentTool / Agent Team / A2A / TurnEnvelope 的依赖关系，以该 master plan 为准。
+
+## 0.0 Workstream A 实装证据
+
+实装入口：
+
+- `backend/app/services/session_command_runtime.py`
+  - 所有 session command result 统一返回 `ok` / `command` / `action` / `session_id` / `ui_action` / `control_event` / `debug_payload`。
+  - `/compact` 调用 LLM session summary path，写 `session_compact`，并把 `active_projection.projection_reason = "compact"` 写入 `ChatSession.transcript_metadata_json`；如果没有 messages 或 summary model 不可用，返回 `ok=false action=not_supported`，不伪造成功。
+  - `/rewind` 不再调用 `create_conversation_branch(...)`；无 checkpoint 时返回 `open_checkpoint_selector`，有 checkpoint 时写 `session_rewind` 并更新 active projection；workspace snapshot 不存在时返回显式 `not_supported`。
+  - `/clear` 创建新 `ChatSession.id` 并返回 `ui_action.type = "switch_session"`。
+  - `/branch` 是用户命令的唯一 branch path，调用 `create_conversation_branch(... mode="branch")` 并写 `session_branch`。
+- `backend/app/services/conversation_branch_service.py`
+  - 新增 `branch` mode；`fork` 保留为 legacy/internal compatibility，但 `/branch` 用户命令不再走 `fork` mode。
+- `frontend/src/pages/agent-detail/sessionCommandResult.ts`
+  - 前端统一识别 typed `ui_action`，typed session control result 默认不再格式化为 assistant JSON。
+- `frontend/src/pages/AgentDetail.tsx`
+  - slash command 执行后先消费 `ui_action`：`switch_session` 切 session，其它 control action 走 toast / panel / clipboard，不追加 raw assistant JSON。
+
+验证命令：
+
+```bash
+cd backend && source .venv/bin/activate && pytest \
+  tests/services/test_session_command_runtime.py \
+  tests/services/test_session_control_plane.py \
+  -q
+# 27 passed, 3 warnings
+```
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/services/test_conversation_branch_service.py -q
+# 5 passed
+```
+
+```bash
+cd frontend && npm run test -- \
+  src/pages/agent-detail/AgentDetailSections.test.tsx \
+  src/pages/agent-detail/chatRuntime.test.ts \
+  src/api/domains/ccParity.test.ts \
+  src/pages/agent-detail/sessionCommandResult.test.ts
+# 4 files passed, 116 tests passed
+```
+
+```bash
+cd frontend && npm run build
+# tsc && vite build completed successfully
+```
 
 ## 0. 裁决
 

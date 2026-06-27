@@ -33,7 +33,18 @@ export interface ListCommandsOptions {
 export interface ExecuteCommandResult {
   ok: boolean;
   command: string;
-  result: unknown;
+  result:
+    | unknown
+    | {
+      ok?: boolean;
+      command?: string;
+      action?: string;
+      session_id?: string;
+      ui_action?: Record<string, unknown>;
+      control_event?: Record<string, unknown> | null;
+      debug_payload?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
 }
 
 export interface StartGoalInput {

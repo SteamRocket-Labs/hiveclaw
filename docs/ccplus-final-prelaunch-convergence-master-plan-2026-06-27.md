@@ -136,6 +136,8 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 
 ### 主线 A：Session Control Spine
 
+状态：已完成 Workstream A implementation pass。证据见 `docs/ccplus-session-control-command-alignment-2026-06-27.md` 的 “0.0 Workstream A 实装证据”。
+
 目标：先把 session 的身份、上下文窗口、active projection、command result、UI action 收成一条稳定 spine。
 
 依赖文档：

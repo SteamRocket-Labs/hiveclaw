@@ -323,6 +323,47 @@ async def test_session_export_uses_t0_jsonl_truth_and_db_as_read_model(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_clear_command_returns_typed_switch_session_control_result(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    source = _session(agent.id, user.id)
+    db = _DB(source)
+    appended = []
+
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=7)
+
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="clear",
+        session_id=source.id,
+        arguments={"title": "Fresh context"},
+    )
+
+    assert result["ok"] is True
+    assert result["command"] == "clear"
+    assert result["action"] == "session_created"
+    assert result["session_id"] == result["session"]["id"]
+    assert result["source_session_id"] == str(source.id)
+    assert result["ui_action"] == {
+        "type": "switch_session",
+        "session_id": result["session"]["id"],
+        "reason": "clear",
+    }
+    assert result["control_event"]["event_type"] == "session_clear"
+    assert appended[0]["event_type"] == "session_clear"
+    assert db.added and isinstance(db.added[0], ChatSession)
+
+
+@pytest.mark.asyncio
 async def test_branch_command_is_non_destructive_session_fork(monkeypatch):
     import app.services.session_command_runtime as runtime
 
@@ -334,6 +375,7 @@ async def test_branch_command_is_non_destructive_session_fork(monkeypatch):
     branch.root_session_id = source.id
     db = _DB(source)
     captured = []
+    appended = []
 
     async def fake_create_conversation_branch(**kwargs):
         captured.append(kwargs)
@@ -342,7 +384,12 @@ async def test_branch_command_is_non_destructive_session_fork(monkeypatch):
             branch={"anchor_event_id": str(kwargs["anchor_event_id"]), "branch_mode": kwargs["mode"]},
         )
 
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=8)
+
     monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
     result = await runtime.execute_session_command(
         db=db,
@@ -355,8 +402,190 @@ async def test_branch_command_is_non_destructive_session_fork(monkeypatch):
     )
 
     assert result["session"]["parent_session_id"] == str(source.id)
+    assert result["action"] == "branch_created"
+    assert result["ui_action"]["type"] == "switch_session"
+    assert result["ui_action"]["reason"] == "branch"
+    assert result["control_event"]["event_type"] == "session_branch"
     assert result["branch"]["command"] == "branch"
-    assert [item["mode"] for item in captured] == ["fork"]
+    assert [item["mode"] for item in captured] == ["branch"]
+    assert appended[0]["event_type"] == "session_branch"
+
+
+@pytest.mark.asyncio
+async def test_rewind_without_checkpoint_opens_selector_and_does_not_create_session(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    second = _event(session, "user_message", sequence=3, content="second", role="user")
+    db = _DB(session, [first, second])
+
+    async def fail_create_conversation_branch(**_kwargs):
+        raise AssertionError("rewind must not create a branch session")
+
+    monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=session.id,
+        arguments={},
+    )
+
+    assert result["ok"] is True
+    assert result["command"] == "rewind"
+    assert result["action"] == "open_checkpoint_selector"
+    assert result["session_id"] == str(session.id)
+    assert "session" not in result
+    assert result["ui_action"]["type"] == "open_checkpoint_selector"
+    assert [item["checkpoint_event_id"] for item in result["ui_action"]["checkpoints"]] == [
+        str(first.id),
+        str(second.id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rewind_with_checkpoint_updates_active_projection_without_new_session(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    second = _event(session, "user_message", sequence=3, content="second", role="user")
+    db = _DB(session, [first, second])
+    appended = []
+
+    async def fail_create_conversation_branch(**_kwargs):
+        raise AssertionError("rewind must not create a branch session")
+
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=9)
+
+    monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=session.id,
+        arguments={"checkpoint_event_id": str(first.id), "mode": "conversation"},
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "rewind_applied"
+    assert result["session_id"] == str(session.id)
+    assert result["checkpoint"]["checkpoint_event_id"] == str(first.id)
+    assert result["ui_action"] == {
+        "type": "install_active_projection",
+        "session_id": str(session.id),
+        "projection_reason": "rewind",
+        "checkpoint_event_id": str(first.id),
+    }
+    assert result["control_event"]["event_type"] == "session_rewind"
+    assert appended[0]["event_type"] == "session_rewind"
+    assert session.transcript_metadata_json["active_projection"]["projection_reason"] == "rewind"
+    assert session.transcript_metadata_json["active_projection"]["checkpoint_event_id"] == str(first.id)
+    assert db.added == []
+    assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_rewind_workspace_mode_is_explicitly_not_supported_without_snapshot():
+    from app.services.session_command_runtime import execute_session_command
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    db = _DB(session, [first])
+
+    result = await execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=session.id,
+        arguments={"checkpoint_event_id": str(first.id), "mode": "workspace"},
+    )
+
+    assert result["ok"] is False
+    assert result["action"] == "not_supported"
+    assert result["ui_action"]["type"] == "toast"
+    assert result["debug_payload"]["missing"] == "workspace_snapshot"
+
+
+@pytest.mark.asyncio
+async def test_compact_command_installs_compacted_projection_and_session_compact_event(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    events = [
+        _event(session, "user_message", sequence=1, content="Please build the report", role="user"),
+        _event(session, "assistant_message", sequence=2, content="Report drafted", role="assistant"),
+    ]
+    db = _DB(session, events)
+    appended = []
+    hooks = []
+
+    async def fake_generate_session_summary(messages, tenant_id, **kwargs):
+        assert tenant_id == agent.tenant_id
+        assert [message["role"] for message in messages] == ["user", "assistant"]
+        assert kwargs["agent_id"] == agent.id
+        assert kwargs["user_id"] == user.id
+        return "Compact summary from LLM."
+
+    def fake_wrap_compressed_summary(summary):
+        return {"role": "system", "content": f"[Previous conversation summary]\n{summary}"}
+
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=10)
+
+    async def fake_emit_hook(*args, **kwargs):
+        hooks.append((args, kwargs))
+
+    monkeypatch.setattr(runtime, "_generate_session_summary", fake_generate_session_summary)
+    monkeypatch.setattr(runtime, "_wrap_compressed_summary", fake_wrap_compressed_summary)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime, "emit_hook", fake_emit_hook)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="compact",
+        session_id=session.id,
+        arguments={"keep_recent": 1, "reason": "manual cleanup"},
+    )
+
+    assert result["ok"] is True
+    assert result["command"] == "compact"
+    assert result["action"] == "compacted_context_installed"
+    assert result["session_id"] == str(session.id)
+    assert result["ui_action"]["type"] == "install_compacted_context"
+    assert result["ui_action"]["session_id"] == str(session.id)
+    assert result["control_event"]["event_type"] == "session_compact"
+    assert appended[0]["event_type"] == "session_compact"
+    assert appended[0]["content"] == "Compact summary from LLM."
+    assert session.transcript_metadata_json["active_projection"]["projection_reason"] == "compact"
+    assert session.transcript_metadata_json["active_projection"]["summary"] == "Compact summary from LLM."
+    assert session.transcript_metadata_json["active_projection"]["replacement_messages"][0]["role"] == "system"
+    assert db.flushes == 1
+    assert len(hooks) == 2
 
 
 @pytest.mark.asyncio
@@ -652,23 +881,15 @@ async def test_rewind_defaults_to_last_user_checkpoint_and_drops_that_turn(monke
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
     user = SimpleNamespace(id=uuid4(), role="member")
     source = _session(agent.id, user.id)
-    branch = _session(agent.id, user.id, title="Rewind")
-    branch.parent_session_id = source.id
-    branch.root_session_id = source.id
     first_user = _event(source, "user_message", sequence=1, content="first", role="user")
     assistant = _event(source, "assistant_message", sequence=2, content="answer", role="assistant")
     second_user = _event(source, "user_message", sequence=3, content="second", role="user")
     db = _DB(source, [first_user, assistant, second_user])
-    captured = {}
 
-    async def fake_create_conversation_branch(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(
-            session=branch,
-            branch={"anchor_event_id": str(kwargs["anchor_event_id"]), "branch_mode": kwargs["mode"]},
-        )
+    async def fail_create_conversation_branch(**_kwargs):
+        raise AssertionError("rewind must not create a branch session")
 
-    monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
+    monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
 
     result = await runtime.execute_session_command(
         db=db,
@@ -680,10 +901,10 @@ async def test_rewind_defaults_to_last_user_checkpoint_and_drops_that_turn(monke
         arguments={},
     )
 
-    assert captured["mode"] == "rewind"
-    assert captured["anchor_event_id"] == second_user.id
-    assert result["checkpoint"]["checkpoint_event_id"] == str(second_user.id)
-    assert result["branch"]["command"] == "rewind"
+    assert result["action"] == "open_checkpoint_selector"
+    assert result["session_id"] == str(source.id)
+    assert [item["checkpoint_event_id"] for item in result["checkpoints"]] == [str(first_user.id), str(second_user.id)]
+    assert result["ui_action"]["checkpoints"][-1]["checkpoint_event_id"] == str(second_user.id)
 
 
 @pytest.mark.asyncio
@@ -693,23 +914,21 @@ async def test_rollback_num_turns_selects_nth_latest_user_checkpoint(monkeypatch
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
     user = SimpleNamespace(id=uuid4(), role="member")
     source = _session(agent.id, user.id)
-    branch = _session(agent.id, user.id, title="Rollback")
-    branch.parent_session_id = source.id
-    branch.root_session_id = source.id
     first_user = _event(source, "user_message", sequence=1, content="first", role="user")
     assistant = _event(source, "assistant_message", sequence=2, content="answer", role="assistant")
     second_user = _event(source, "user_message", sequence=3, content="second", role="user")
     db = _DB(source, [first_user, assistant, second_user])
-    captured = {}
+    appended = []
 
-    async def fake_create_conversation_branch(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(
-            session=branch,
-            branch={"anchor_event_id": str(kwargs["anchor_event_id"]), "branch_mode": kwargs["mode"]},
-        )
+    async def fail_create_conversation_branch(**_kwargs):
+        raise AssertionError("rollback must use active projection, not branch creation")
 
-    monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
+    async def fake_append_session_event(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=12)
+
+    monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
     result = await runtime.execute_session_command(
         db=db,
@@ -721,10 +940,11 @@ async def test_rollback_num_turns_selects_nth_latest_user_checkpoint(monkeypatch
         arguments={"num_turns": 2},
     )
 
-    assert captured["mode"] == "rewind"
-    assert captured["anchor_event_id"] == first_user.id
+    assert result["action"] == "rewind_applied"
+    assert result["session_id"] == str(source.id)
     assert result["checkpoint"]["checkpoint_event_id"] == str(first_user.id)
-    assert result["branch"]["command"] == "rollback"
+    assert result["control_event"]["event_type"] == "session_rewind"
+    assert appended[0]["metadata"]["command"] == "rollback"
     assert result["rollback"]["num_turns"] == 2
 
 
@@ -754,7 +974,7 @@ async def test_clear_creates_new_context_boundary_without_deleting_source():
 
 
 @pytest.mark.asyncio
-async def test_compact_command_emits_compaction_hooks_and_appends_transcript_event(monkeypatch):
+async def test_compact_command_refuses_to_fake_success_without_messages(monkeypatch):
     import app.services.session_command_runtime as runtime
 
     agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
@@ -782,5 +1002,7 @@ async def test_compact_command_emits_compaction_hooks_and_appends_transcript_eve
         arguments={"reason": "pressure"},
     )
 
-    assert result["hook_events"] == ["pre_compaction", "post_compaction"]
-    assert [item[0] for item in emitted] == ["pre_compaction", "post_compaction"]
+    assert result["ok"] is False
+    assert result["action"] == "not_supported"
+    assert result["debug_payload"]["missing"] == "session_messages"
+    assert emitted == []

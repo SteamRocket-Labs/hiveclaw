@@ -506,6 +506,74 @@ def _tool_call_payloads(events: list[Any]) -> list[dict[str, Any]]:
     return tool_calls
 
 
+def _tool_args(metadata: dict[str, Any]) -> dict[str, Any]:
+    for key in ("args", "arguments", "tool_args"):
+        raw = metadata.get(key)
+        if isinstance(raw, dict):
+            return dict(raw)
+    return {}
+
+
+def _append_unique(values: list[Any], item: Any) -> None:
+    if item and item not in values:
+        values.append(item)
+
+
+def _mcp_server_ref(tool_name: str, args: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    for key in ("server", "server_id", "mcp_server", "mcp_server_id"):
+        value = args.get(key) or metadata.get(key)
+        if value:
+            return f"mcp_server:{value}"
+    if tool_name.startswith("mcp__"):
+        parts = tool_name.split("__", 2)
+        if len(parts) >= 3 and parts[1]:
+            return f"mcp_server:{parts[1]}"
+    return None
+
+
+def _runtime_refs_from_tool_events(events: list[Any]) -> dict[str, list[str]]:
+    refs: dict[str, list[str]] = {
+        "active_tool_names": [],
+        "skill_catalog_refs": [],
+        "mcp_server_refs": [],
+    }
+    for event in events:
+        payload = _event_payload(event)
+        metadata = _event_metadata_from_payload(payload)
+        event_type = str(payload.get("event_type") or "")
+        role = str(payload.get("role") or "")
+        tool_name = str(metadata.get("tool_name") or metadata.get("name") or "").strip()
+        if not (event_type in {"tool_call", "tool_result"} or role == "tool_call" or tool_name):
+            continue
+        if tool_name:
+            _append_unique(refs["active_tool_names"], tool_name)
+
+        args = _tool_args(metadata)
+        if tool_name == "load_skill":
+            skill_name = args.get("name") or args.get("skill_name") or metadata.get("skill_name")
+            if skill_name:
+                _append_unique(refs["skill_catalog_refs"], f"skill:{skill_name}")
+        if tool_name in {"call_mcp_tool", "mcp_list_resources", "mcp_read_resource"} or tool_name.startswith("mcp__"):
+            _append_unique(refs["mcp_server_refs"], _mcp_server_ref(tool_name, args, metadata))
+    return refs
+
+
+def _active_run_with_event_refs(active_run: Any, events: list[Any]) -> Any:
+    if not isinstance(active_run, dict):
+        return active_run
+    enriched = dict(active_run)
+    metadata = _mapping(enriched.get("metadata") or enriched.get("metadata_json"))
+    refs = _runtime_refs_from_tool_events(events)
+    for key, additions in refs.items():
+        merged = list(metadata.get(key) or [])
+        for item in additions:
+            _append_unique(merged, item)
+        if merged:
+            metadata[key] = merged
+    enriched["metadata"] = metadata
+    return enriched
+
+
 def _hook_payloads(events: list[Any]) -> list[dict[str, Any]]:
     hooks: list[dict[str, Any]] = []
     for event in events:
@@ -724,11 +792,12 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
     checkpoints = _checkpoint_payloads(events)
     latest_event = _event_payload(events[-1]) if events else None
     active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
+    active_run_projection = _active_run_with_event_refs(active_run, events)
     session_index = await read_session_index(db, agent_id=agent.id, session_id=session.id)
     runtime_tasks = await _list_runtime_tasks(db, agent_id=agent.id, session_id=session.id)
     goals = await _list_goals(db, agent_id=agent.id, session_id=session.id)
     teams = await _list_teams(db, agent_id=agent.id, session_id=session.id)
-    turn_state = _build_active_turn_state(session=session, active_run=active_run, events=events)
+    turn_state = _build_active_turn_state(session=session, active_run=active_run_projection, events=events)
     active_turn = _active_turn_payload(turn_state=turn_state)
     agent_session = _agent_session_payload(session=session, runtime_tasks=runtime_tasks, turn_state=turn_state)
     session_graph = _session_graph_payload(session=session, runtime_tasks=runtime_tasks, teams=teams)
@@ -739,9 +808,9 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
         tenant_id=getattr(session, "tenant_id", None),
     )
     branches = await _list_branches(db, agent_id=agent.id, session_id=session.id)
-    permission_profile = _permission_profile_payload(active_run=active_run, session=session)
-    context_policy = _context_policy_payload(active_run=active_run, session=session)
-    turn_envelope = build_turn_envelope(agent_id=agent.id, session=session, active_run=active_run)
+    permission_profile = _permission_profile_payload(active_run=active_run_projection, session=session)
+    context_policy = _context_policy_payload(active_run=active_run_projection, session=session)
+    turn_envelope = build_turn_envelope(agent_id=agent.id, session=session, active_run=active_run_projection)
     prompt_manifest = build_prompt_assembly_manifest(turn_envelope)
     return {
         "schema": "hive.ccplus.session_workbench.v1",
@@ -769,15 +838,15 @@ async def build_session_workbench(db: AsyncSession, *, agent: Agent, session: Ch
             "checkpoints": checkpoints,
         },
         "controls": {
-            "can_start_turn": active_run is None,
-            "can_stop_active_run": active_run is not None,
+            "can_start_turn": active_run_projection is None,
+            "can_stop_active_run": active_run_projection is not None,
             "can_export_json": True,
             "can_branch": bool(checkpoints),
-            "can_start_goal": active_run is None,
+            "can_start_goal": active_run_projection is None,
             "can_create_agent_team": True,
             "expected_turn_id": active_turn.get("expected_turn_id") if active_turn else None,
         },
-        "active_run": active_run,
+        "active_run": active_run_projection,
         "runtime_tasks": [_runtime_task_payload(task) for task in runtime_tasks],
         "goals": [_goal_payload(goal) for goal in goals],
         "teams": teams,

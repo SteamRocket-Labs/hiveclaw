@@ -40,6 +40,38 @@ MCP_TOOL_MODES = {"auto", "approval", "deny"}
 SKILL_INSTALL_KINDS = {"platform_skill", "clawhub_skill", "external_skill_url"}
 
 
+def _strings(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _mcp_wire_server_key(row) -> str:
+    raw = str(getattr(row, "server_key", None) or getattr(row, "name", None) or "server")
+    key = "".join(ch.lower() if ch.isalnum() else "_" for ch in raw).strip("_")
+    return key or "server"
+
+
+def _mcp_wire_tool_name(row, tool_name: str) -> str:
+    clean = str(tool_name or "").strip()
+    if not clean:
+        return ""
+    if clean.startswith("mcp__"):
+        return clean
+    return f"mcp__{_mcp_wire_server_key(row)}__{clean}"
+
+
+def _mcp_config_list(row, key: str) -> list[str]:
+    config = getattr(row, "config_json", None)
+    if not isinstance(config, dict):
+        return []
+    return _strings(config.get(key))
+
+
 def _validate_tool_mode(value: str, *, field_name: str = "mode") -> str:
     mode = (value or "auto").strip().lower()
     if mode not in MCP_TOOL_MODES:
@@ -118,7 +150,9 @@ async def get_agent_mcp_servers(db: AsyncSession, agent_id: uuid.UUID) -> list[d
         select(
             MCPServer.id,
             MCPServer.name,
+            MCPServer.server_key,
             MCPServer.status,
+            MCPServer.config_json,
             AgentMCPServerAssignment.enabled,
             AgentMCPServerAssignment.default_tool_mode,
             AgentMCPServerAssignment.always_load,
@@ -137,6 +171,18 @@ async def get_agent_mcp_servers(db: AsyncSession, agent_id: uuid.UUID) -> list[d
         .group_by(MCPServerTool.mcp_server_id)
     )
     tool_counts = {row[0]: row[1] for row in tool_count_result.all()}
+    tool_rows_result = await db.execute(
+        select(MCPServerTool.mcp_server_id, MCPServerTool.mcp_tool_name)
+        .where(MCPServerTool.mcp_server_id.in_([row.id for row in rows]))
+        .order_by(MCPServerTool.mcp_tool_name.asc())
+    )
+    rows_by_id = {row.id: row for row in rows}
+    tools_by_server: dict[uuid.UUID, list[str]] = {}
+    for server_id, tool_name in tool_rows_result.all():
+        row = rows_by_id.get(server_id)
+        wire_name = _mcp_wire_tool_name(row, str(tool_name or "")) if row is not None else str(tool_name or "")
+        if wire_name:
+            tools_by_server.setdefault(server_id, []).append(wire_name)
 
     return [
         {
@@ -145,6 +191,9 @@ async def get_agent_mcp_servers(db: AsyncSession, agent_id: uuid.UUID) -> list[d
             "status": row.status,
             "enabled": bool(row.enabled),
             "tool_count": tool_counts.get(row.id, 0),
+            "tools": tools_by_server.get(row.id, []),
+            "prompts": _mcp_config_list(row, "prompts"),
+            "resources": _mcp_config_list(row, "resources"),
             "default_tool_mode": row.default_tool_mode,
             "always_load": bool(getattr(row, "always_load", False)),
         }

@@ -11,6 +11,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+_HOOK_LIFECYCLE_STATUS = {
+    "active": "supported_active",
+    "active_observe": "supported_observe_only",
+    "disabled_noop": "unsupported_with_reason",
+}
+
 
 def _metadata(active_run: dict[str, Any] | None) -> dict[str, Any]:
     meta = (active_run or {}).get("metadata")
@@ -39,6 +45,34 @@ def _model_payload(meta: dict[str, Any]) -> dict[str, Any]:
     provider = _str_or_none(meta.get("provider"))
     model_name = _str_or_none(meta.get("model_name") or meta.get("model"))
     return {key: value for key, value in {"provider": provider, "model": model_name}.items() if value}
+
+
+def _default_hook_state() -> dict[str, str]:
+    """Project the canonical HookRegistry catalog into TurnEnvelope statuses."""
+    try:
+        from app.runtime.hooks import HookEvent, HookRegistry, wire_name_for_hook_event
+    except Exception:
+        return {}
+
+    state: dict[str, str] = {}
+    for item in HookRegistry().describe_event_catalog():
+        event = _str_or_none(item.get("event"))
+        if not event:
+            continue
+        try:
+            event_key = wire_name_for_hook_event(HookEvent(event))
+        except (TypeError, ValueError):
+            event_key = event
+        lifecycle = str(item.get("lifecycle_state") or "").strip()
+        status = _HOOK_LIFECYCLE_STATUS.get(lifecycle, "declared_not_wired")
+        state[event_key] = status
+    return state
+
+
+def _hook_state(meta: dict[str, Any]) -> dict[str, Any]:
+    state: dict[str, Any] = _default_hook_state()
+    state.update(_dict(meta.get("hook_state")))
+    return state
 
 
 def build_turn_envelope(
@@ -76,7 +110,7 @@ def build_turn_envelope(
         "memory_refs": _list(meta.get("memory_refs")),
         "team_mailbox_refs": _list(meta.get("team_mailbox_refs")),
         "a2a_collaborator_refs": _list(meta.get("a2a_collaborator_refs")),
-        "hook_state": _dict(meta.get("hook_state")),
+        "hook_state": _hook_state(meta),
         "prompt_sections": prompt_sections,
         "output_cap": meta.get("output_cap"),
         "trace": {

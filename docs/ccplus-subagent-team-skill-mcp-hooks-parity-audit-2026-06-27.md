@@ -431,24 +431,27 @@ cd backend && source .venv/bin/activate && pytest \
 ### P1 — 补 Skill / MCP dynamic session surface
 
 1. Skill
+   - 已完成：`load_skill` session tool events 进入 `TurnEnvelope.skill_catalog_refs` / `active_tool_names`。
    - parser 支持 structured hook frontmatter。
    - load / invoke skill 时注册 session-scoped hooks。
    - 支持 `context=fork` / `agent` / `model` / `effort` 的等价执行语义，或明确落到 `spawn_subagent`。
    - 强化 skill prompt：匹配 skill 时优先 load / invoke。
 
 2. MCP
-   - 实现 `prompts/list` -> command / skill catalog。
+   - 已完成：`get_agent_mcp_servers()` read model 暴露 `tools` / `prompts` / `resources`，ExtensionRegistry 可把 prompt/resource 映射进 command/skill effects。
+   - 已完成：MCP tool events 进入 `TurnEnvelope.mcp_server_refs` / `active_tool_names`。
+   - 当前产品路径：保留 governed `call_mcp_tool` wrapper，同时在 read model 暴露 `mcp__server__tool` affordance；不新增绕过 governance 的第二调用路径。
+   - live MCP protocol `prompts/list` fetch 仍未作为生产 import path 接入；当前只消费已持久化的 server config/read-model prompt refs。
    - 实现 `mcp_instructions_delta` live attachment。
-   - 决定是否把 imported MCP tools 直接暴露为 `mcp__server__tool`，还是保留 `call_mcp_tool` wrapper 但提供等价 model affordance。
    - 补 OAuth / needs-auth pseudo-tool 等价 flow。
 
 ### P2 — 补完整 Hooks runtime
 
-1. 将 `GovernedHookRunner` 接入 production startup / admin config。
-2. 支持 command / prompt / http / agent hook types，但所有 execution 必须经过现有 code execution provider、outbound policy 和 governance。
-3. async hook 要有 background executor、timeout、resume/wake、invocation span 记录。
-4. skill hooks 注册进 session HookRegistry。
-5. 增加 e2e tests：PreToolUse command hook blocks；PostToolUse rewrites output；UserPromptSubmit adds context；Skill hook loads and fires。
+1. 已完成：`TurnEnvelope.hook_state` 从 `HookRegistry.describe_event_catalog()` 投影每个 standard hook 的 explicit status。
+2. 已完成：Workbench 可以同时读取 `hook_state` 与 timeline hook events；silent disabled/noop 不再是默认解释。
+3. 明确边界：`GovernedHookRunner` 仍不是 production startup / admin config 路径；现有 tests 继续防止它被误接入。
+4. 后续若接入 external command / prompt / http / agent hook types，所有 execution 必须经过现有 code execution provider、outbound policy、governance、durable invocation span、timeout、resume/wake。
+5. skill hooks 注册进 session HookRegistry 仍未生产闭合；不能在文档或 UI 中伪装为 active。
 
 ## 7. 需要新增的测试
 
@@ -488,6 +491,9 @@ cd backend && source .venv/bin/activate && pytest -q \
   tests/services/test_subagent_run_service.py \
   tests/runtime/test_hooks.py \
   tests/runtime/test_hook_wire_standard.py \
+  tests/runtime/test_governed_hook_runner.py \
+  tests/services/test_extension_registry.py \
+  tests/services/test_mcp_server_service.py \
   tests/runtime/test_unified_prompt_contracts.py \
   tests/api/test_cc_codex_parity_api.py::test_commands_api_team_create_and_delete_are_durable \
   tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_creates_control_index_and_member_sessions \
@@ -558,7 +564,7 @@ cd backend && source .venv/bin/activate && pytest \
 248 passed, 4 warnings
 ```
 
-解释：这组测试证明 Subagent / AgentTool / coordinator / completion wake / prompt affordance 的 B 主线已闭合；Agent Team、Skill、MCP、Hooks 仍按后续主线继续。
+解释：这组测试证明 Subagent / AgentTool / coordinator / completion wake / prompt affordance 的 B 主线已闭合；后续 C/D 已把 Agent Team、Skill、MCP、Hooks 收束进统一 Team runtime、TurnEnvelope、ExtensionRegistry 和 Workbench read model。外部 hook runner 与 live MCP `prompts/list` protocol fetch 仍按 explicit deferred/not-live 状态呈现，不再作为隐藏第二路径。
 
 另有一次更宽泛的 test collection 曾失败：
 

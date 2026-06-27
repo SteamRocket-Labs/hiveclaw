@@ -509,11 +509,11 @@ pytest \
 - Subagent background completion 已固定为 durable run terminal state -> parent session mailbox event -> idle parent wake。
 - wake prompt 已移除 `consume_subagent_signals`；该 helper 仍可作为内部 compatibility/read-once primitive，但不是 model-visible wait path。
 - `check_subagent` 已明确为 fallback/debug/status inspection，不作为正常 wait path。
-- 仍待主线 C/D：Agent Team mailbox、A2A session-first completion、typed TurnEnvelope / InputQueue 要并入同一模型。
+- Workstream C/D 已完成：Agent Team mailbox 与 typed TurnEnvelope/Workbench read model 已并入同一 session 模型；A2A session-first completion 继续由 A2A collaborator read model 负责，不再复用 subagent/team 文件语义。
 
-已修复 / 仍待：
+已修复：
 
-- Subagent 已收敛到 parent session mailbox。后续 C/D 需要新增或收敛成统一 session-scoped `AgentInputQueue` / mailbox service：
+- Subagent 已收敛到 parent session mailbox。后续若抽象 `AgentInputQueue`，必须包在同一 session-scoped mailbox service 内，而不是新增第二路径：
   - `enqueue_inter_agent_message(parent_session_id, message, trigger_turn=true)`
   - `drain_for_turn(session_id, delivery_phase=current|next)`
   - exactly-once consumption
@@ -554,10 +554,10 @@ pytest tests/runtime/test_parent_turn_receives_subagent_notification.py -q
 - Agent Team API message 和 `send_agent_session_message(team_id, member_name)` 已调用同一个 message service。
 - 已增加与 CC SendMessage 对齐的 by-name / `*` broadcast teammate message 语义。
 
-仍待主线 D：
+Workstream D 已补齐：
 
 - Prompt-facing team context 以 `AgentTeam` / `AgentTeamMember` 为 source of truth，再附加 runtime tasks/signals 作为 member state。
-- Workbench / root timeline / child session read-only display 进入 typed TurnEnvelope。
+- Workbench 通过 typed TurnEnvelope / prompt manifest 暴露 Team / Skill / MCP / Hook 状态；root timeline 与 child read-only display 继续归 Session Workbench 读模型。
 
 验证：
 
@@ -575,7 +575,7 @@ pytest \
 
 ### P0-4：TurnEnvelope / PromptAssemblyManifest
 
-状态：Workstream D 第一块已完成。
+状态：Workstream D manifest/status/read-model pass 已完成。
 
 已修复：
 
@@ -601,11 +601,15 @@ pytest \
 - 同时生成 `PromptAssemblyManifest`：frozen sections、dynamic sections、context budget、loaded skills、MCP instructions delta、hook-added context。
 - `build_session_workbench()` 已暴露 `turn_envelope` / `prompt_manifest` redacted read model。
 - `agent_team_context.py` 已把 `AgentTeam` / `AgentTeamMember` rows 投影进 prompt-facing `## Agent Team Workspace`。
+- `TurnEnvelope.hook_state` 已从 `HookRegistry.describe_event_catalog()` 自动投影 standard hook status；metadata 可以覆盖具体事件。
+- `build_session_workbench()` 已从 session tool events 派生 `load_skill` / MCP call refs，写入 envelope metadata 投影。
+- `get_agent_mcp_servers()` 已返回 `tools` / `prompts` / `resources`，让 ExtensionRegistry 能看到 MCP prompt/resource/call affordance。
 
 仍待：
 
 - invocation/prompt assembly 阶段把完整 prompt section metadata 写入 active run metadata，而不是只由已有 metadata 派生。
-- Hook/Skill/MCP live load/call 事件继续补充进入 envelope metadata。
+- external command / prompt / http / agent hook runner 仍是 explicit deferred contract，不是 live production path。
+- MCP live `prompts/list` protocol fetch 仍未成为生产 import path；当前 server read model 先消费已持久化在 server config/read model 里的 prompt/resource refs。
 
 验证：
 
@@ -618,10 +622,16 @@ pytest \
   tests/kernel/test_turn_state_acceptance.py \
   tests/services/test_agent_team_context.py \
   tests/services/test_session_graph_projection.py \
+  tests/runtime/test_hooks.py \
+  tests/runtime/test_hook_wire_standard.py \
+  tests/runtime/test_governed_hook_runner.py \
+  tests/services/test_extension_registry.py \
+  tests/services/test_mcp_server_service.py \
+  tests/api/test_extension_registry_api.py \
   -q
 ```
 
-结果：`23 passed, 4 warnings`。
+结果：本轮最终收口验证 `ruff` -> `All checks passed!`；上述 pytest scope -> `105 passed, 4 warnings`。
 
 ## 6. P1 差距
 
@@ -664,12 +674,10 @@ frontend/src/pages/session-workbench/*
 
 目标：
 
-- 每个 standard CC hook event 都必须有明确状态：
-  - active blocking implementation
-  - active observe-only implementation with reason
-  - documented unsupported boundary
-- standard CC event 不允许 silent disabled/noop。
-- Workbench 能按 turn 展示 hook firings。
+- 已完成：每个 standard CC hook event 都有明确 `TurnEnvelope.hook_state` 状态。
+- 已完成：active / observe-only / unsupported 不再 silent disabled/noop。
+- 已完成：Workbench 能从 `hook_state` 和 timeline hook events 解释当前 turn 的 hook 面。
+- 明确边界：external command / prompt / http / agent hook execution 仍未生产接入，状态必须继续显式 deferred/not-wired。
 
 ### P1-3：Skill/MCP Capsule Convergence
 
@@ -677,7 +685,8 @@ frontend/src/pages/session-workbench/*
 
 - Skill package、workflow skill、subagent definitions、MCP declared tools、scripts、templates、hooks 都属于一个 capability capsule contract。
 - Loading skill 只通过 governed surfaces 改变 context/tool availability。
-- tool/search/load events 进入 `TurnEnvelope`。
+- 已完成：`load_skill` / MCP tool events 进入 `TurnEnvelope` 的 `active_tool_names`、`skill_catalog_refs`、`mcp_server_refs`。
+- 已完成：MCP server read model 投影 `tools`、`prompts`、`resources`，供 ExtensionRegistry / manifest 消费。
 
 ## 7. UI / UX 目标
 
@@ -797,7 +806,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 
 - 已完成：`team_create` tool call 通过同一 service 持久化。
 - 已完成：team member messages 通过 name / broadcast 进入同一个 mailbox bus。
-- 待主线 D：prompt-facing context 读取真实 teams，idle/completion notices 进入 typed TurnEnvelope / Workbench state。
+- 已完成：prompt-facing context 读取真实 teams；typed TurnEnvelope / Workbench state 承载 Team / Skill / MCP / Hook 状态。
 
 ### Pass C：TurnEnvelope / Workbench State
 
@@ -818,7 +827,7 @@ frontend/src/pages/session-workbench/*
 - 已完成：每个 workbench active turn 暴露 redacted `turn_envelope` / `prompt_manifest`。
 - 已完成：Workbench active-turn snapshot 包含 permissions、sandbox、runtime task refs、context policy，并可从 envelope 承载 tools、skills、MCP、hooks。
 - 已完成：Team context 读取真实 Team rows。
-- 待补：prompt assembly 写入更完整的 tool/skill/MCP/hook metadata。
+- 已补：Workbench 从 session tool events 派生 Skill/MCP refs；prompt assembly 阶段仍可继续写入更细 token/section metadata，但这不再是第二路径断点。
 
 ### Pass D：Hooks / Skill / MCP Closure
 
@@ -836,8 +845,9 @@ backend/app/api/hooks.py
 
 验收标准：
 
-- 每个 standard hook 都有 active/observe/unsupported 明确状态。
-- Skill/MCP load/call surfaces 都进入 `TurnEnvelope`。
+- 已完成：每个 standard hook 都有 active/observe/unsupported 明确状态，并进入 `TurnEnvelope.hook_state`。
+- 已完成：Skill/MCP load/call surfaces 都进入 `TurnEnvelope`。
+- 已完成：MCP server read model 暴露 `tools` / `prompts` / `resources`，不再只暴露 count。
 - 注意：`GovernedHookRunner` 当前仍是 deferred external runner，有现有 tests 防止被误接入 production；在没有完整 governance/storage/wake 验证前，状态必须保持 declared_not_wired。
 
 ## 10. 验证命令

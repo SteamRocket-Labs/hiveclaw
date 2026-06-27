@@ -4,6 +4,28 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 
+def test_turn_envelope_projects_default_hook_catalog_statuses():
+    from app.runtime.turn_envelope import build_turn_envelope
+
+    agent_id = uuid4()
+    session = SimpleNamespace(id=uuid4(), source_channel="web", session_kind="human_chat")
+
+    envelope = build_turn_envelope(agent_id=agent_id, session=session, active_run={"metadata": {}})
+
+    hook_state = envelope["hook_state"]
+    assert hook_state["PreToolUse"] == "supported_active"
+    assert hook_state["UserPromptSubmit"] == "supported_active"
+    assert hook_state["Stop"] == "supported_active"
+    assert hook_state["PostToolUse"] == "supported_observe_only"
+    assert hook_state["Setup"] == "unsupported_with_reason"
+    assert set(hook_state.values()) <= {
+        "supported_active",
+        "supported_observe_only",
+        "declared_not_wired",
+        "unsupported_with_reason",
+    }
+
+
 def test_build_turn_envelope_and_prompt_manifest_from_active_run_metadata():
     from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
 

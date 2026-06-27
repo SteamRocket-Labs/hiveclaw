@@ -122,11 +122,13 @@ async def test_get_agent_mcp_servers_shape_and_tool_mode():
         enabled=True,
         default_tool_mode="auto",
         always_load=True,
+        config_json={},
     )
     db = _SpyDB(
         [
             _Result(rows=[row]),  # server+assignment join
             _Result(rows=[(server.id, 18)]),  # tool counts
+            _Result(rows=[]),  # tool refs
         ]
     )
 
@@ -139,11 +141,43 @@ async def test_get_agent_mcp_servers_shape_and_tool_mode():
             "status": "connected",
             "enabled": True,
             "tool_count": 18,
+            "tools": [],
+            "prompts": [],
+            "resources": [],
             "default_tool_mode": "auto",
             "always_load": True,
         }
     ]
     assert not (_NO_PACK_KEYS & result[0].keys())
+
+
+@pytest.mark.asyncio
+async def test_get_agent_mcp_servers_projects_tools_prompts_and_resources():
+    agent_id = uuid4()
+    server = _server(status="connected")
+    row = SimpleNamespace(
+        id=server.id,
+        name="Docs",
+        status="connected",
+        enabled=True,
+        default_tool_mode="approval",
+        always_load=False,
+        config_json={"prompts": ["review"], "resources": ["skill://docs/research"]},
+    )
+    db = _SpyDB(
+        [
+            _Result(rows=[row]),
+            _Result(rows=[(server.id, 1)]),
+            _Result(rows=[(server.id, "search")]),
+        ]
+    )
+
+    result = await mcp_server_service.get_agent_mcp_servers(db, agent_id)
+
+    assert result[0]["tools"] == ["mcp__docs__search"]
+    assert result[0]["prompts"] == ["review"]
+    assert result[0]["resources"] == ["skill://docs/research"]
+    assert result[0]["default_tool_mode"] == "approval"
 
 
 @pytest.mark.asyncio

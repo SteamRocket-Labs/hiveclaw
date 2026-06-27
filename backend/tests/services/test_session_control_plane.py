@@ -87,6 +87,44 @@ def test_compaction_payloads_ignore_context_window_decision_events():
     assert payloads[0]["event_type"] == "session_compact"
 
 
+def test_active_run_event_refs_project_skill_and_mcp_calls_into_turn_envelope():
+    import app.services.session_control_plane as service
+
+    now = datetime(2026, 6, 24, tzinfo=timezone.utc)
+    events = [
+        SimpleNamespace(
+            id=uuid4(),
+            event_id=uuid4(),
+            sequence=1,
+            event_type="tool_call",
+            actor_type="assistant",
+            role="tool_call",
+            content="",
+            metadata_json={"tool_name": "load_skill", "args": {"name": "Incident Response"}},
+            created_at=now,
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            event_id=uuid4(),
+            sequence=2,
+            event_type="tool_call",
+            actor_type="assistant",
+            role="tool_call",
+            content="",
+            metadata_json={"tool_name": "call_mcp_tool", "args": {"server": "docs", "tool_name": "search"}},
+            created_at=now,
+        ),
+    ]
+    active_run = {"id": "run-1", "metadata": {"skill_catalog_refs": ["skill:existing"]}}
+
+    enriched = service._active_run_with_event_refs(active_run, events)
+
+    assert enriched["metadata"]["skill_catalog_refs"] == ["skill:existing", "skill:Incident Response"]
+    assert enriched["metadata"]["mcp_server_refs"] == ["mcp_server:docs"]
+    assert enriched["metadata"]["active_tool_names"] == ["load_skill", "call_mcp_tool"]
+    assert active_run["metadata"] == {"skill_catalog_refs": ["skill:existing"]}
+
+
 @pytest.mark.asyncio
 async def test_session_workbench_aggregates_turn_runtime_goal_and_team_state(monkeypatch):
     import app.services.session_control_plane as service

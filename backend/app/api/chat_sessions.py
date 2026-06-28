@@ -40,6 +40,7 @@ from app.services.web_chat_runtime import (
     broadcast_web_chat_event,
     cancel_web_chat_run,
     get_active_web_chat_run,
+    start_channel_chat_run_from_saved_turn,
     start_web_chat_run,
     steer_active_web_chat_turn,
 )
@@ -493,6 +494,54 @@ def _session_permission_exception_message(exc: Exception) -> str:
             return str(message) if message else json.dumps(detail, ensure_ascii=False, sort_keys=True)
         return str(detail)
     return str(exc) or exc.__class__.__name__
+
+
+def _session_permission_origin_channel(session: ChatSession, pending_frame: PendingToolFrameV1) -> str:
+    return str(pending_frame.origin_channel or getattr(session, "source_channel", None) or "web").strip() or "web"
+
+
+async def _start_session_permission_continuation_run(
+    *,
+    db: Any,
+    agent: Any,
+    user: User,
+    session: ChatSession,
+    content: str,
+    extra_metadata: dict[str, Any],
+    pending_frame: PendingToolFrameV1,
+) -> dict[str, Any]:
+    active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
+    if active_run:
+        return active_run
+
+    source_channel = _session_permission_origin_channel(session, pending_frame)
+    metadata = {
+        **extra_metadata,
+        "origin_channel": pending_frame.origin_channel or source_channel,
+        "channel": source_channel,
+        "delivery_target_json": getattr(session, "delivery_target_json", None),
+    }
+    if source_channel != "web":
+        return await start_channel_chat_run_from_saved_turn(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            content=content,
+            source_channel=source_channel,
+            display_content="",
+            extra_metadata=metadata,
+        )
+    return await start_web_chat_run(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content=content,
+        display_content="",
+        append_user_message=False,
+        extra_metadata=metadata,
+    )
 
 
 def _permission_request_allows_session_scope(request_payload: dict[str, Any]) -> bool:
@@ -1327,39 +1376,33 @@ async def resolve_session_permission(
             source="session_permission_resolve",
             metadata=resolution_metadata,
         )
-        active_run = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
-        if active_run:
-            run_payload = active_run
-        else:
-            try:
-                run_payload = await start_web_chat_run(
-                    db=db,
-                    agent=agent,
-                    user=current_user,
-                    session=session,
-                    content=(
-                        f"The user denied the session permission request for tool {tool_name or 'unknown_tool'}. "
-                        "Do not retry the denied tool in this continuation. Explain the denial and offer a safe "
-                        "alternative path that stays within the current permissions."
-                    ),
-                    display_content="",
-                    append_user_message=False,
-                    extra_metadata={
-                        **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
-                        "source": "session_permission_denied_resume",
-                        "latest_user_prompt_overrides_history": True,
-                        "resumed_from_permission_request_id": str(permission_request_id),
-                        "denied_tool_name": tool_name,
-                        "denied_tool_call_id": tool_call_id,
-                        "resumed_turn_id": pending_frame.turn_id,
-                        "resumed_runtime_task_id": pending_frame.runtime_task_id,
-                        "origin_channel": pending_frame.origin_channel,
-                        "round_state": dict(pending_frame.round_state or {}),
-                        "t0_refs": list(pending_frame.t0_refs or ()),
-                    },
-                )
-            except ActiveWebChatRunExists as exc:
-                run_payload = {"status": "queued", **exc.run}
+        try:
+            run_payload = await _start_session_permission_continuation_run(
+                db=db,
+                agent=agent,
+                user=current_user,
+                session=session,
+                content=(
+                    f"The user denied the session permission request for tool {tool_name or 'unknown_tool'}. "
+                    "Do not retry the denied tool in this continuation. Explain the denial and offer a safe "
+                    "alternative path that stays within the current permissions."
+                ),
+                pending_frame=pending_frame,
+                extra_metadata={
+                    **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
+                    "source": "session_permission_denied_resume",
+                    "latest_user_prompt_overrides_history": True,
+                    "resumed_from_permission_request_id": str(permission_request_id),
+                    "denied_tool_name": tool_name,
+                    "denied_tool_call_id": tool_call_id,
+                    "resumed_turn_id": pending_frame.turn_id,
+                    "resumed_runtime_task_id": pending_frame.runtime_task_id,
+                    "round_state": dict(pending_frame.round_state or {}),
+                    "t0_refs": list(pending_frame.t0_refs or ()),
+                },
+            )
+        except ActiveWebChatRunExists as exc:
+            run_payload = {"status": "queued", **exc.run}
         await broadcast_web_chat_event(
             agent_id,
             session_id,
@@ -1430,33 +1473,26 @@ async def resolve_session_permission(
             },
         )
 
-        active_run = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
-        if active_run:
-            run_payload = active_run
-        else:
-            try:
-                run_payload = await start_web_chat_run(
-                    db=db,
-                    agent=agent,
-                    user=current_user,
-                    session=session,
-                    content="Continue after the approved session permission tool result.",
-                    display_content="",
-                    append_user_message=False,
-                    extra_metadata={
-                        **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
-                        "source": "session_permission_resume",
-                        "resumed_from_permission_request_id": str(permission_request_id),
-                        "resumed_turn_id": pending_frame.turn_id,
-                        "resumed_runtime_task_id": pending_frame.runtime_task_id,
-                        "origin_channel": pending_frame.origin_channel,
-                        "channel": pending_frame.origin_channel or getattr(session, "source_channel", None) or "web",
-                        "round_state": dict(pending_frame.round_state or {}),
-                        "t0_refs": list(pending_frame.t0_refs or ()),
-                    },
-                )
-            except ActiveWebChatRunExists as exc:
-                run_payload = {"status": "queued", **exc.run}
+        try:
+            run_payload = await _start_session_permission_continuation_run(
+                db=db,
+                agent=agent,
+                user=current_user,
+                session=session,
+                content="Continue after the approved session permission tool result.",
+                pending_frame=pending_frame,
+                extra_metadata={
+                    **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
+                    "source": "session_permission_resume",
+                    "resumed_from_permission_request_id": str(permission_request_id),
+                    "resumed_turn_id": pending_frame.turn_id,
+                    "resumed_runtime_task_id": pending_frame.runtime_task_id,
+                    "round_state": dict(pending_frame.round_state or {}),
+                    "t0_refs": list(pending_frame.t0_refs or ()),
+                },
+            )
+        except ActiveWebChatRunExists as exc:
+            run_payload = {"status": "queued", **exc.run}
     except Exception as exc:
         error_message = _session_permission_exception_message(exc)
         error_type = exc.__class__.__name__

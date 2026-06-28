@@ -17,7 +17,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.runtime.recovery_manifest import build_recovery_manifest, load_recovery_manifest, persist_recovery_manifest
+from app.runtime.recovery_manifest import (
+    build_recovery_manifest,
+    hydrate_session_context_from_recovery_manifest,
+    load_recovery_manifest,
+    persist_recovery_manifest,
+)
 from app.runtime.session import SessionContext
 
 
@@ -134,6 +139,62 @@ def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
     assert manifest.mcp_assignments == [{"server": "docs", "tool": "search"}]
     assert manifest.truth_evidence_refs == ["truth://policy/email-confirmation"]
     assert manifest.truth_evidence == [{"evidence_id": "truth://policy/email-confirmation"}]
+
+
+def test_recovery_manifest_hydrates_session_context_runtime_state(tmp_path) -> None:
+    agent_id = "agent-1"
+    manifest_path = tmp_path / agent_id / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "recent_reads": ["workspace/report.md"],
+                "recent_writes": ["workspace/output.md"],
+                "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
+                "active_skills": ["research"],
+                "active_tool_groups": ["web_pack"],
+                "recent_external_refs": ["https://example.com"],
+                "pending_items": ["finish D10 hydrate"],
+                "discovered_tools": ["exa_search"],
+                "pending_tool_frames": [{"tool_name": "write_file", "tool_call_id": "call-1", "status": "running"}],
+                "permission_checkpoints": [{"permission_request_id": "perm-1", "decision": "allow_once"}],
+                "hook_lifecycle_records": [{"event": "PRE_TOOL_USE", "status": "ok"}],
+                "compaction_lifecycle_records": [{"phase": "post", "status": "ok"}],
+                "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
+                "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
+                "truth_evidence_refs": ["truth://policy/email-confirmation"],
+                "truth_evidence": [{"evidence_id": "truth://policy/email-confirmation"}],
+                "pending_skill_handoffs": [{"skill_slug": "research", "execution_tool": "spawn_subagent"}],
+                "continuation_records": [{"source": "session_permission_resume", "origin_channel": "feishu"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    manifest = load_recovery_manifest(agent_id, data_root=tmp_path)
+    session = SessionContext(session_id="session-1", metadata={"pending_tool_frames": [{"tool_call_id": "old"}]})
+
+    hydrate_session_context_from_recovery_manifest(session, manifest)
+
+    assert session.recent_files == ["workspace/report.md"]
+    assert session.recent_writes == ["workspace/output.md"]
+    assert session.recent_tool_outcomes == [{"tool": "web_search", "summary": "found source"}]
+    assert session.active_skills == ["research"]
+    assert session.active_tool_groups == [{"name": "web_pack", "summary": "", "tools": []}]
+    assert session.recent_external_refs == ["https://example.com"]
+    assert session.pending_items == ["finish D10 hydrate"]
+    assert session.discovered_tools == ["exa_search"]
+    assert session.metadata["pending_tool_frames"] == [
+        {"tool_call_id": "old"},
+        {"tool_name": "write_file", "tool_call_id": "call-1", "status": "running"},
+    ]
+    assert session.metadata["permission_profile"]["allowed_tools"] == ["write_file"]
+    assert session.metadata["truth_evidence_refs"] == ["truth://policy/email-confirmation"]
+    assert session.metadata["pending_skill_handoffs"] == [
+        {"skill_slug": "research", "execution_tool": "spawn_subagent"}
+    ]
+    assert session.metadata["recovered_from_manifest"] is True
 
 
 def test_persist_recovery_manifest_deletes_stale_empty_checkpoint(tmp_path) -> None:

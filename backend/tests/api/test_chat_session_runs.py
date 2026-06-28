@@ -457,9 +457,12 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     async def fake_get_active_web_chat_run(**_kwargs):
         return None
 
-    async def fake_start_web_chat_run(**kwargs):
+    async def fake_start_web_chat_run(**_kwargs):
+        raise AssertionError("origin_channel=feishu must use channel-native continuation")
+
+    async def fake_start_channel_chat_run_from_saved_turn(**kwargs):
         started_runs.append(kwargs)
-        return {"run_id": run_id.hex, "status": "running"}
+        return {"run_id": run_id.hex, "status": "running", "channel": kwargs["source_channel"]}
 
     monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
     monkeypatch.setattr(chat_sessions_api, "emit_hook", fake_emit_hook)
@@ -467,6 +470,7 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
     monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(chat_sessions_api, "start_channel_chat_run_from_saved_turn", fake_start_channel_chat_run_from_saved_turn)
     client = _client(monkeypatch, db=db, user=user, agent=agent)
 
     response = client.post(
@@ -476,19 +480,20 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
 
     assert response.status_code == 200
     assert response.json()["status"] == "denied"
-    assert response.json()["run"] == {"run_id": run_id.hex, "status": "running"}
+    assert response.json()["run"] == {"run_id": run_id.hex, "status": "running", "channel": "feishu"}
     assert appended_events[-1]["metadata"]["source_event_id"] == str(event.id)
     assert emitted_hooks[-1][1]["tool_name"] == "write_file"
-    assert started_runs[0]["append_user_message"] is False
+    assert started_runs[0]["source_channel"] == "feishu"
     assert started_runs[0]["extra_metadata"]["source"] == "session_permission_denied_resume"
     assert started_runs[0]["extra_metadata"]["origin_channel"] == "feishu"
+    assert started_runs[0]["extra_metadata"]["channel"] == "feishu"
     assert started_runs[0]["extra_metadata"]["resumed_runtime_task_id"] == "runtime-im"
     assert started_runs[0]["extra_metadata"]["resumed_turn_id"] == "turn-im"
     assert started_runs[0]["extra_metadata"]["round_state"] == {"round": 2}
     assert started_runs[0]["extra_metadata"]["t0_refs"] == ["t0://sessions/session-native/events/9"]
     assert started_runs[0]["extra_metadata"]["resumed_from_permission_request_id"] == str(permission_request_id)
     assert broadcasts[-1][2]["status"] == "denied"
-    assert broadcasts[-1][2]["run"] == {"run_id": run_id.hex, "status": "running"}
+    assert broadcasts[-1][2]["run"] == {"run_id": run_id.hex, "status": "running", "channel": "feishu"}
 
 
 def test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id(monkeypatch):
@@ -576,9 +581,12 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     async def fake_get_active_web_chat_run(**_kwargs):
         return None
 
-    async def fake_start_web_chat_run(**kwargs):
+    async def fake_start_web_chat_run(**_kwargs):
+        raise AssertionError("origin_channel=feishu must use channel-native continuation")
+
+    async def fake_start_channel_chat_run_from_saved_turn(**kwargs):
         started_runs.append(kwargs)
-        return {"run_id": run_id.hex, "status": "running"}
+        return {"run_id": run_id.hex, "status": "running", "channel": kwargs["source_channel"]}
 
     import app.services.agent_tools as agent_tools_service
 
@@ -588,6 +596,7 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     monkeypatch.setattr(chat_sessions_api, "_persist_tool_call", fake_persist_tool_call)
     monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
     monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(chat_sessions_api, "start_channel_chat_run_from_saved_turn", fake_start_channel_chat_run_from_saved_turn)
     monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
     client = _client(monkeypatch, db=db, user=user, agent=agent, raise_server_exceptions=False)
 
@@ -608,7 +617,7 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     assert captured_execute["kwargs"]["tool_call_id"] == "tool-call-checkpoint"
     assert captured_execute["kwargs"]["origin_channel"] == "feishu"
     assert persisted_calls[-1]["data"]["tool_call_id"] == "tool-call-checkpoint"
-    assert started_runs[0]["append_user_message"] is False
+    assert started_runs[0]["source_channel"] == "feishu"
     assert started_runs[0]["extra_metadata"]["source"] == "session_permission_resume"
     assert started_runs[0]["extra_metadata"]["origin_channel"] == "feishu"
     assert started_runs[0]["extra_metadata"]["channel"] == "feishu"
@@ -617,6 +626,102 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     assert started_runs[0]["extra_metadata"]["round_state"] == {"round": 2}
     assert started_runs[0]["extra_metadata"]["t0_refs"] == ["t0://sessions/session-native/events/9"]
     assert broadcasts[-1][2]["permission_checkpoint"]["pending_frame"]["tool_call_id"] == "tool-call-checkpoint"
+
+
+def test_resolve_session_permission_allow_uses_channel_native_continuation_for_im(monkeypatch):
+    import app.services.agent_tools as agent_tools_service
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=user_id, tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        source_channel="feishu",
+        delivery_target_json={"channel": "feishu", "receive_id": "chat-1"},
+        transcript_metadata_json={"permission_mode": "default"},
+    )
+    pending_frame = {
+        "tool_call_id": "tool-call-feishu",
+        "tool_name": "write_file",
+        "tool_args": {"path": "workspace/a.md", "content": "ok"},
+        "origin_channel": "feishu",
+        "turn_id": "turn-feishu",
+        "runtime_task_id": "run-feishu",
+    }
+    permission_request = {
+        "permission_request_id": str(permission_request_id),
+        "tool_name": "write_file",
+        "tool_args": {"path": "workspace/a.md", "content": "ok"},
+        "tool_call_id": "tool-call-feishu",
+        "permission_mode": "default",
+        "pending_tool_frame": pending_frame,
+    }
+    event = SimpleNamespace(
+        id=uuid4(),
+        event_type="permission",
+        payload_json={"permission_request": permission_request},
+        metadata_json={"permission_request": permission_request},
+        run_id=uuid4(),
+    )
+    db = _FilteringPermissionDB([event])
+    channel_runs = []
+
+    async def fake_execute_session_permission_tool(*_args, **_kwargs):
+        return "tool ok"
+
+    async def fake_get_run_session_and_agent(**_kwargs):
+        return session, agent, "use"
+
+    async def fake_start_web_chat_run(**_kwargs):
+        raise AssertionError("IM permission continuation must not use web-only start path")
+
+    async def fake_start_channel_chat_run_from_saved_turn(**kwargs):
+        channel_runs.append(kwargs)
+        return {"run_id": "channel-run-1", "status": "running", "channel": kwargs["source_channel"]}
+
+    async def fake_get_active_web_chat_run(**_kwargs):
+        return None
+
+    async def fake_persist_tool_call(**_kwargs):
+        return None
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    async def fake_append_session_event(**_kwargs):
+        return None
+
+    monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
+    monkeypatch.setattr(
+        chat_sessions_api,
+        "start_channel_chat_run_from_saved_turn",
+        fake_start_channel_chat_run_from_saved_turn,
+        raising=False,
+    )
+    monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
+    monkeypatch.setattr(chat_sessions_api, "_persist_tool_call", fake_persist_tool_call)
+    monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve",
+        json={"action": "allow_once"},
+    )
+
+    assert response.status_code == 200
+    assert channel_runs
+    assert channel_runs[0]["source_channel"] == "feishu"
+    assert channel_runs[0]["session"] is session
+    assert channel_runs[0]["extra_metadata"]["source"] == "session_permission_resume"
+    assert channel_runs[0]["extra_metadata"]["origin_channel"] == "feishu"
 
 
 def test_resolve_session_permission_rejects_duplicate_resolution_before_reexecution(monkeypatch):

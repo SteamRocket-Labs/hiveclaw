@@ -64,6 +64,7 @@ def build_skill_execution_plan(skill: ParsedSkill) -> SkillExecutionPlan:
             "description": f"Skill fork worker for {skill_name}",
             "subagent_type": "general-purpose",
             "isolation": "all",
+            "run_in_background": True,
             "skill": skill_name,
             "skill_source": skill.relative_path,
             "permission_profile": profile_payload,
@@ -138,7 +139,10 @@ def apply_skill_execution_plans_to_metadata(metadata: dict[str, Any]) -> dict[st
                 "skill_slug": skill_slug,
                 "source": str(raw_plan.get("source") or ""),
                 "execution_tool": "spawn_subagent",
-                "tool_arguments": dict(raw_plan.get("tool_arguments") or {}),
+                "tool_arguments": {
+                    "run_in_background": True,
+                    **dict(raw_plan.get("tool_arguments") or {}),
+                },
                 "permission_profile": dict(profile) if isinstance(profile, dict) else {},
             }
 

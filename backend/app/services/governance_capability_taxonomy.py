@@ -8,7 +8,9 @@ capability belongs to and whether it may be presented as an extension toggle.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
+import re
 
 from app.runtime.ccplus_contracts import GovernanceCapabilityDescriptorV1
 from app.services.coding_pack_manifest import CODING_PACK_NAME, CODING_PACK_SOURCE, CODING_PACK_TOOLS
@@ -19,6 +21,16 @@ class GovernanceCapabilityLayer(str, Enum):
     PLATFORM_ADDON = "platform_addon"
     EXTERNAL_EXTENSION = "external_extension"
     ENTERPRISE_POLICY_ONLY = "enterprise_policy_only"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeL2CapabilitySpec:
+    name: str
+    summary: str
+    source: str
+    activation_mode: str
+    tools: tuple[str, ...]
+    infer_from_tools: bool = True
 
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset(
@@ -80,6 +92,147 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "record_finding",
         "read_ledger",
     }
+)
+
+
+RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
+    RuntimeL2CapabilitySpec(
+        name="web_pack",
+        summary=(
+            "Advanced web search and read/extract tooling: AnySearch MCP provides vertical search/discovery "
+            "for finance, social media, academic, legal, health, business, security, code, and related data, "
+            "plus known-URL Markdown extraction as a read step; Exa provides AI-native search with search types "
+            "and category verticals; Tavily provides real-time agent/RAG search with topic, freshness, answer, "
+            "and raw-content options; Firecrawl/XCrawl handle page extraction when web_fetch is insufficient."
+        ),
+        source="system",
+        activation_mode=(
+            "Discover schemas through tool_search; start with CORE web_search/web_fetch, escalate to provider "
+            "search when results are insufficient, and use extract tools only after selecting a known URL."
+        ),
+        tools=(
+            "anysearch_get_sub_domains",
+            "anysearch_search",
+            "anysearch_batch_search",
+            "anysearch_extract",
+            "exa_search",
+            "tavily_search",
+            "firecrawl_fetch",
+            "xcrawl_scrape",
+        ),
+    ),
+    RuntimeL2CapabilitySpec(
+        name="feishu_pack",
+        summary="Feishu messaging, docs, wiki, sheets, Base, approvals, tasks, and calendar tools.",
+        source="channel",
+        activation_mode="Discover schemas through tool_search; load the Feishu skill only when method guidance is needed.",
+        tools=(
+            "send_feishu_message",
+            "feishu_user_search",
+            "feishu_wiki_list",
+            "feishu_doc_read",
+            "feishu_url_resolve",
+            "feishu_url_read",
+            "feishu_drive_file_read",
+            "feishu_doc_create",
+            "feishu_doc_append",
+            "feishu_doc_share",
+            "feishu_doc_delete",
+            "feishu_sheet_info",
+            "feishu_sheet_read",
+            "feishu_base_app_create",
+            "feishu_base_field_list",
+            "feishu_base_field_create",
+            "feishu_base_table_list",
+            "feishu_base_record_list",
+            "feishu_base_record_upload_attachment",
+            "feishu_base_record_upsert",
+            "feishu_base_record_delete",
+            "feishu_approval_create",
+            "feishu_approval_definition",
+            "feishu_approval_query",
+            "feishu_approval_get",
+            "feishu_task_comment",
+            "feishu_task_complete",
+            "feishu_task_create",
+            "feishu_task_list",
+            "feishu_calendar_list",
+            "feishu_calendar_create",
+            "feishu_calendar_update",
+            "feishu_calendar_delete",
+        ),
+    ),
+    RuntimeL2CapabilitySpec(
+        name="plaza_pack",
+        summary="Shared plaza feed tools for reading posts, publishing posts, and comments in the public collaboration feed.",
+        source="system",
+        activation_mode="Activate on demand for shared public collaboration feed workflows.",
+        tools=(
+            "plaza_get_new_posts",
+            "plaza_create_post",
+            "plaza_add_comment",
+        ),
+    ),
+    RuntimeL2CapabilitySpec(
+        name="email_pack",
+        summary="Email sending, reading, and replying through SMTP/IMAP connections.",
+        source="system",
+        activation_mode="Discover schemas through tool_search; load the email guide skill only when method guidance is needed.",
+        tools=("send_email", "read_emails", "reply_email"),
+    ),
+    RuntimeL2CapabilitySpec(
+        name="mcp_admin_pack",
+        summary="MCP resource discovery, server import, tool inspection, tool calls, and resource reading.",
+        source="mcp",
+        activation_mode="Enable explicitly only for platform extension or external capability installation workflows.",
+        tools=(
+            "discover_resources",
+            "import_mcp_server",
+            "list_mcp_tools",
+            "inspect_mcp_tool",
+            "call_mcp_tool",
+            "mcp_list_resources",
+            "mcp_read_resource",
+        ),
+    ),
+    RuntimeL2CapabilitySpec(
+        name="command_pack",
+        summary=(
+            "CC/Codex-style command-layer tools for session task bookkeeping, runtime task output/stop, "
+            "bounded goals, enterable teams, and advanced planning handoff."
+        ),
+        source="system",
+        activation_mode=(
+            "Discover schemas through tool_search when a user asks for slash-command-like Task, Team, Goal, "
+            "or Advanced Plan behavior; TaskCreate/TaskUpdate are Work Ledger bookkeeping and never start execution."
+        ),
+        tools=(
+            "task_create",
+            "task_update",
+            "task_list",
+            "task_get",
+            "task_output",
+            "task_stop",
+            "goal_start",
+            "team_create",
+            "advanced_plan",
+            "verify_plan",
+        ),
+        infer_from_tools=False,
+    ),
+)
+
+
+_ADMIN_PACK_QUERY_KEYWORDS = (
+    "mcp",
+    "server",
+    "servers",
+    "resource",
+    "resources",
+    "import",
+    "oauth",
+    "smithery",
+    "modelscope",
 )
 
 
@@ -239,17 +392,17 @@ def _runtime_group_layer(source: str) -> GovernanceCapabilityLayer:
     return GovernanceCapabilityLayer.PLATFORM_ADDON
 
 
-def _descriptor_from_runtime_group(group) -> GovernanceCapabilityDescriptorV1:
-    layer = _runtime_group_layer(str(group.source))
+def _descriptor_from_runtime_l2_capability(spec: RuntimeL2CapabilitySpec) -> GovernanceCapabilityDescriptorV1:
+    layer = _runtime_group_layer(str(spec.source))
     return GovernanceCapabilityDescriptorV1(
-        name=group.name,
+        name=spec.name,
         layer=layer.value,
-        tools=tuple(tool for tool in group.tools if tool not in CORE_TOOL_NAMES),
+        tools=tuple(tool for tool in spec.tools if tool not in CORE_TOOL_NAMES),
         default_enabled=False,
         l2_visible=True,
         enterprise_toggleable=True,
-        source=str(group.source),
-        notes=group.summary,
+        source=str(spec.source),
+        notes=spec.summary,
     )
 
 
@@ -265,12 +418,47 @@ _CODING_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     requires_local_bridge=True,
 )
 
-def _runtime_group_descriptors() -> tuple[GovernanceCapabilityDescriptorV1, ...]:
-    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
+def _normalize_tool_query(value: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", value.strip().lower())
 
+
+def _matches_runtime_query(query: str, candidate: str) -> bool:
+    normalized = query.strip().lower()
+    if not normalized:
+        return True
+    candidate_lower = candidate.lower()
+    if normalized in candidate_lower:
+        return True
+    compact_query = _normalize_tool_query(normalized)
+    return bool(compact_query and compact_query in _normalize_tool_query(candidate_lower))
+
+
+def _query_targets_admin_pack(query: str) -> bool:
+    normalized = query.strip().lower()
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in _ADMIN_PACK_QUERY_KEYWORDS)
+
+
+def iter_runtime_l2_capability_specs(query: str = "") -> tuple[RuntimeL2CapabilitySpec, ...]:
+    """Return taxonomy-owned runtime L2 capability specs."""
+    normalized = query.strip().lower()
+    if not normalized:
+        return RUNTIME_L2_CAPABILITY_SPECS
+    return tuple(
+        spec
+        for spec in RUNTIME_L2_CAPABILITY_SPECS
+        if (spec.source != "mcp" or _query_targets_admin_pack(normalized))
+        if _matches_runtime_query(normalized, spec.name)
+        or _matches_runtime_query(normalized, spec.summary)
+        or any(_matches_runtime_query(normalized, tool) for tool in spec.tools)
+    )
+
+
+def _runtime_l2_descriptors(query: str = "") -> tuple[GovernanceCapabilityDescriptorV1, ...]:
     return tuple(
         descriptor
-        for descriptor in (_descriptor_from_runtime_group(group) for group in RUNTIME_TOOL_GROUPS)
+        for descriptor in (_descriptor_from_runtime_l2_capability(spec) for spec in iter_runtime_l2_capability_specs(query))
         if descriptor.tools
     )
 
@@ -280,32 +468,26 @@ def iter_runtime_l2_capabilities() -> tuple[GovernanceCapabilityDescriptorV1, ..
 
     Local bridge descriptors such as the coding pack are product taxonomy rows,
     not cloud runtime discovery rows. Discovery and pack policy should use this
-    facade instead of importing ``RUNTIME_TOOL_GROUPS`` directly.
+    facade instead of importing compatibility projections directly.
     """
-    return _runtime_group_descriptors()
+    return _runtime_l2_descriptors()
 
 
 def iter_runtime_l2_capabilities_for_query(query: str = "") -> tuple[GovernanceCapabilityDescriptorV1, ...]:
-    from app.tools.runtime_tool_groups import iter_runtime_tool_groups
-
-    return tuple(
-        descriptor
-        for descriptor in (_descriptor_from_runtime_group(group) for group in iter_runtime_tool_groups(query))
-        if descriptor.tools
-    )
+    return _runtime_l2_descriptors(query)
 
 
 def _descriptors_by_name() -> dict[str, GovernanceCapabilityDescriptorV1]:
     return {
         _CORE_DESCRIPTOR.name: _CORE_DESCRIPTOR,
-        **{descriptor.name: descriptor for descriptor in _runtime_group_descriptors()},
+        **{descriptor.name: descriptor for descriptor in _runtime_l2_descriptors()},
         _CODING_DESCRIPTOR.name: _CODING_DESCRIPTOR,
     }
 
 
 def _descriptors_by_tool() -> dict[str, GovernanceCapabilityDescriptorV1]:
     descriptors_by_tool = {tool_name: _CORE_DESCRIPTOR for tool_name in CORE_TOOL_NAMES}
-    for descriptor in (*_runtime_group_descriptors(), _CODING_DESCRIPTOR):
+    for descriptor in (*_runtime_l2_descriptors(), _CODING_DESCRIPTOR):
         for tool_name in descriptor.tools:
             descriptors_by_tool.setdefault(tool_name, descriptor)
     return descriptors_by_tool

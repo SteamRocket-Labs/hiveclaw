@@ -303,6 +303,129 @@ def load_recovery_manifest(
     return None
 
 
+def _append_unique_strings(target: list[str], values: list[str], *, limit: int | None = None) -> None:
+    seen = set(target)
+    for value in values:
+        item = str(value or "").strip()
+        if not item or item in seen:
+            continue
+        target.append(item)
+        seen.add(item)
+    if limit is not None and len(target) > limit:
+        del target[: len(target) - limit]
+
+
+def _stable_dict_key(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _append_unique_dicts(target: list[dict[str, Any]], values: list[dict[str, Any]], *, limit: int | None = None) -> None:
+    seen = {_stable_dict_key(item) for item in target if isinstance(item, dict)}
+    for value in values:
+        if not isinstance(value, dict) or not value:
+            continue
+        item = dict(value)
+        key = _stable_dict_key(item)
+        if key in seen:
+            continue
+        target.append(item)
+        seen.add(key)
+    if limit is not None and len(target) > limit:
+        del target[: len(target) - limit]
+
+
+def _merge_metadata_dict_list(metadata: dict[str, Any], key: str, values: list[dict[str, Any]]) -> None:
+    existing = metadata.get(key)
+    target = [dict(item) for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    if isinstance(existing, dict):
+        target.insert(0, dict(existing))
+    _append_unique_dicts(target, values)
+    if target:
+        metadata[key] = target
+
+
+def _merge_metadata_string_list(metadata: dict[str, Any], key: str, values: list[str]) -> None:
+    existing = metadata.get(key)
+    target = [str(item) for item in existing if str(item).strip()] if isinstance(existing, list) else []
+    if isinstance(existing, str) and existing.strip():
+        target.append(existing.strip())
+    _append_unique_strings(target, values)
+    if target:
+        metadata[key] = target
+
+
+def hydrate_session_context_from_recovery_manifest(session_context: Any, manifest: RecoveryManifest | None) -> bool:
+    """Restore machine-readable runtime state from a persisted RecoveryManifest.
+
+    The prompt renderer still includes ``to_restoration_text()`` for model-visible
+    continuity, but this function revives the runtime object fields that govern
+    tool discovery, permission profile, pending frames, MCP assignments, Truth
+    evidence, and skill handoffs. It is intentionally idempotent so a resumed
+    session can call it on every prompt assembly without duplicating state.
+    """
+    if session_context is None or manifest is None or manifest.is_empty():
+        return False
+
+    _append_unique_strings(getattr(session_context, "recent_files", []), manifest.recent_reads, limit=10)
+    _append_unique_strings(getattr(session_context, "recent_writes", []), manifest.recent_writes, limit=10)
+    _append_unique_dicts(getattr(session_context, "recent_tool_outcomes", []), manifest.recent_tool_outcomes, limit=10)
+    _append_unique_strings(getattr(session_context, "recent_external_refs", []), manifest.recent_external_refs, limit=5)
+    _append_unique_strings(getattr(session_context, "pending_items", []), manifest.pending_items, limit=10)
+
+    file_snapshots = getattr(session_context, "file_snapshots", None)
+    if isinstance(file_snapshots, dict):
+        file_snapshots.update(dict(manifest.file_snapshots or {}))
+
+    for skill_name in manifest.active_skills:
+        if skill_name not in getattr(session_context, "active_skills", []):
+            try:
+                session_context.track_skill_loaded(skill_name)
+            except Exception:
+                getattr(session_context, "active_skills", []).append(skill_name)
+
+    active_tool_groups = getattr(session_context, "active_tool_groups", [])
+    existing_groups = {
+        str(item.get("name") or "").strip()
+        for item in active_tool_groups
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    for group_name in manifest.active_tool_groups:
+        if group_name and group_name not in existing_groups:
+            active_tool_groups.append({"name": group_name, "summary": "", "tools": []})
+            existing_groups.add(group_name)
+
+    try:
+        session_context.track_discovered_tools(tuple(manifest.discovered_tools))
+    except Exception:
+        _append_unique_strings(getattr(session_context, "discovered_tools", []), manifest.discovered_tools)
+
+    metadata = getattr(session_context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return True
+
+    metadata["discovered_tools"] = list(getattr(session_context, "discovered_tools", []))
+    for key, values in (
+        ("pending_tool_frames", manifest.pending_tool_frames),
+        ("permission_checkpoints", manifest.permission_checkpoints),
+        ("hook_lifecycle_records", manifest.hook_lifecycle_records),
+        ("compaction_lifecycle_records", manifest.compaction_lifecycle_records),
+        ("mcp_assignments", manifest.mcp_assignments),
+        ("truth_evidence", manifest.truth_evidence),
+        ("pending_skill_handoffs", manifest.pending_skill_handoffs),
+        ("executed_skill_handoffs", manifest.executed_skill_handoffs),
+        ("continuation_records", manifest.continuation_records),
+    ):
+        _merge_metadata_dict_list(metadata, key, values)
+    _merge_metadata_string_list(metadata, "truth_evidence_refs", manifest.truth_evidence_refs)
+    _merge_metadata_string_list(metadata, "evidence_refs", manifest.truth_evidence_refs)
+    if manifest.permission_profile:
+        metadata["permission_profile"] = dict(manifest.permission_profile)
+    if manifest.pending_tool_frames:
+        metadata["recovered_pending_tool_frames"] = [dict(item) for item in manifest.pending_tool_frames]
+    metadata["recovered_from_manifest"] = True
+    return True
+
+
 def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
     """Build a RecoveryManifest from the current SessionContext state."""
     if session_context is None:

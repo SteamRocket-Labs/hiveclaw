@@ -2,9 +2,40 @@
 
 日期：2026-06-28
 
-状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。2026-06-28 Current HEAD 最终闭环追修已完成本轮新增断点：D1 taxonomy 入口继续收口到 session/extension surfaces，D4 Skill fork 改为同一次 `load_skill` 工具调用内执行，D5 permission allow continuation 保留 IM/origin channel，D7 Truth evidence 进入 kernel canonical span metadata，D10 persisted recovery manifest 进入正常 prompt assembly。当前文档不得再写“taxonomy 是唯一真相源”；准确表述是“taxonomy 单一入口 / facade”，因为底层仍允许 collector/runtime group 作为派生输入。
+状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。2026-06-28 Current HEAD 最终闭环追修已完成本轮新增断点：D1 taxonomy 入口继续收口到 session/extension surfaces，D4 Skill fork 改为同一次 `load_skill` 工具调用内执行，D5 permission allow continuation 保留 IM/origin channel，D7 Truth evidence 进入 kernel canonical span metadata，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 CC 追加反馈追修已进一步闭合：D1 runtime L2 spec 真源迁入 taxonomy，`runtime_tool_groups.py` 退为兼容投影；D10 persisted manifest 机械 hydrate 回 `SessionContext`；D5 IM permission continuation 走 channel-native durable run；D4 Skill fork 默认 background child-session contract。
 
 配套架构文档：`docs/ccplus-governance-layer-architecture-2026-06-28.md`
+
+## 0.6 2026-06-28 CC 追加反馈最终追修证据
+
+基线：`git HEAD = 45173dd3`。本节吸收 CC 最新反馈中成立的四个断点：D10 读回侧、D1 单源、D5 IM 回灌、D4 child-session contract。
+
+| 断点 | 修复状态 | 关键代码路径 | 证据 |
+| --- | --- | --- | --- |
+| D10 RecoveryManifest 读回 hydrate | 已实装。新增 `hydrate_session_context_from_recovery_manifest()`，读取 persisted manifest 后不只渲染 `to_restoration_text()`，还把 recent reads/writes、active skills/tool groups、discovered tools、permission profile、pending tool frames、MCP assignments、Truth evidence、pending skill handoffs、continuation records 机械回填到 `SessionContext` 和 metadata。`_build_runtime_attachment_sections()` 读取 manifest 后立即 hydrate 当前 session runtime object。 | `backend/app/runtime/recovery_manifest.py`、`backend/app/kernel/engine.py`、`backend/tests/runtime/test_recovery_manifest_persistence.py` | 红线：`test_recovery_manifest_hydrates_session_context_runtime_state` 旧实现 ImportError；修复后纳入目标集。目标集：`cd backend && .venv/bin/python -m pytest tests/runtime/test_recovery_manifest_persistence.py::test_recovery_manifest_hydrates_session_context_runtime_state tests/services/test_agent_tools_core_surface.py::test_runtime_tool_groups_are_compat_projection_of_taxonomy tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_uses_channel_native_continuation_for_im tests/api/test_chat_session_runs.py::test_resolve_session_permission_finds_session_native_permission_event tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id tests/kernel/test_engine.py::test_load_skill_frontmatter_fork_executes_in_same_tool_call -q` -> `6 passed, 4 warnings in 0.31s`。 |
+| D1 taxonomy 真源 | 已实装。runtime L2 capability specs 迁入 `governance_capability_taxonomy.py` 的 `RUNTIME_L2_CAPABILITY_SPECS`；`runtime_tool_groups.py` 不再持有硬编码 truth，只从 taxonomy specs 投影历史 `RuntimeToolGroupSpec` / `RUNTIME_TOOL_GROUPS` 兼容 API。taxonomy 源码不再 import 或读取 `app.tools.runtime_tool_groups`。 | `backend/app/services/governance_capability_taxonomy.py`、`backend/app/tools/runtime_tool_groups.py`、`backend/tests/services/test_agent_tools_core_surface.py` | 红线：`test_runtime_tool_groups_are_compat_projection_of_taxonomy` 固定 taxonomy 不依赖 `runtime_tool_groups`，且 runtime group projection 与 taxonomy descriptors 一致。相关回归：`cd backend && .venv/bin/python -m pytest tests/runtime/test_recovery_manifest_persistence.py tests/services/test_agent_tools_core_surface.py tests/services/test_pack_policy_service.py tests/api/test_chat_session_runs.py -k "recovery_manifest or runtime_tool_groups_are_compat or taxonomy or pack_policy or permission" -q` -> `30 passed, 20 deselected, 4 warnings in 0.51s`。 |
+| D5 IM permission continuation | 已实装。新增 `_start_session_permission_continuation_run()`；Web session 继续走 `start_web_chat_run()`，非 Web `origin_channel` / `source_channel` 走 `start_channel_chat_run_from_saved_turn()`，并保留 `delivery_target_json`、origin channel、turn/runtime/T0 metadata。allow 和 deny 共用该 launcher。 | `backend/app/api/chat_sessions.py`、`backend/tests/api/test_chat_session_runs.py` | 红线：`test_resolve_session_permission_allow_uses_channel_native_continuation_for_im` 旧实现会触发 web-only path；修复后 channel run 被调用。相关 permission 集合纳入 `30 passed, 20 deselected, 4 warnings`。 |
+| D4 Skill fork child-session contract | 已实装。Skill `context: fork` 的 execution plan 默认带 `run_in_background=True`；旧 session 中已经存在的 pending handoff 也在 kernel 执行前补上 `run_in_background`，从而进入 `spawn_subagent_tool()` 的 durable child-session / RuntimeTask path，而不是只返回同步 fake child result。 | `backend/app/services/skill_execution_adapter.py`、`backend/app/kernel/engine.py`、`backend/tests/kernel/test_engine.py` | 红线：`test_load_skill_frontmatter_fork_executes_in_same_tool_call` 与 `test_execute_tool_with_hooks_executes_pending_skill_fork_handoff` 均断言 handoff args 带 `run_in_background=True`。相关回归：`cd backend && .venv/bin/python -m pytest tests/kernel/test_engine.py -k "load_skill_frontmatter or pending_skill_fork or runtime_attachment_sections" tests/agents/test_subagent_spawn_tool.py tests/services/test_subagent_run_service.py -q` -> `4 passed, 103 deselected, 4 warnings in 1.37s`。 |
+
+最终验证：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/python -m pytest tests/runtime/test_recovery_manifest_persistence.py::test_recovery_manifest_hydrates_session_context_runtime_state tests/services/test_agent_tools_core_surface.py::test_runtime_tool_groups_are_compat_projection_of_taxonomy tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_uses_channel_native_continuation_for_im tests/api/test_chat_session_runs.py::test_resolve_session_permission_finds_session_native_permission_event tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id tests/kernel/test_engine.py::test_load_skill_frontmatter_fork_executes_in_same_tool_call -q
+# 6 passed, 4 warnings in 0.31s
+
+.venv/bin/python -m pytest tests/runtime/test_recovery_manifest_persistence.py tests/services/test_agent_tools_core_surface.py tests/services/test_pack_policy_service.py tests/api/test_chat_session_runs.py -k "recovery_manifest or runtime_tool_groups_are_compat or taxonomy or pack_policy or permission" -q
+# 30 passed, 20 deselected, 4 warnings in 0.51s
+
+.venv/bin/python -m pytest tests/kernel/test_engine.py -k "load_skill_frontmatter or pending_skill_fork or runtime_attachment_sections" tests/agents/test_subagent_spawn_tool.py tests/services/test_subagent_run_service.py -q
+# 4 passed, 103 deselected, 4 warnings in 1.37s
+
+.venv/bin/python -m pytest tests -q
+# 5368 passed, 2 skipped, 4 warnings in 94.94s
+
+.venv/bin/ruff check app/ tests/
+# All checks passed!
+```
 
 ## 0.5 2026-06-28 最终闭环追修证据
 

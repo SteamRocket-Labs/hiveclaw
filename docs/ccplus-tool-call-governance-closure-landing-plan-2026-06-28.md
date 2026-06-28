@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。2026-06-28 最终追修继续补齐三审后仍可复现的源代码断点：D1 session/extension surfaces 不再直读 `RUNTIME_TOOL_GROUPS`，D4 Skill fork 改为同一次 `load_skill` 调用内执行，D5 allow continuation 保留 IM/origin channel，D7 Truth evidence 从 `ToolRuntimeService` 进入 kernel span metadata sink，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 追加补齐 sub-agent 子执行体恢复：background `spawn_subagent` 把 `subagent_run_id` / `child_session_id` 传入子 invocation，子工具调用开始前写入 `child_pending_tool_frame`，重启扫描对 replay-safe 只读子帧恢复，对 mutating 子帧 fail closed 到 `needs_reconciliation`。
+状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。2026-06-28 最终追修继续补齐三审后仍可复现的源代码断点：D1 session/extension surfaces 不再直读 `RUNTIME_TOOL_GROUPS`，D4 Skill fork 改为同一次 `load_skill` 调用内执行，D5 allow continuation 保留 IM/origin channel，D7 Truth evidence 从 `ToolRuntimeService` 进入 kernel span metadata sink，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 追加补齐 sub-agent 子执行体恢复：background `spawn_subagent` 把 `subagent_run_id` / `child_session_id` 传入子 invocation，子工具调用开始前写入 `child_pending_tool_frame`，重启扫描对 replay-safe 只读子帧恢复，对 mutating 子帧 fail closed 到 `needs_reconciliation`。2026-06-28 CC 追加反馈最终追修：D10 persisted manifest 机械 hydrate 回 `SessionContext`；D1 runtime L2 specs 真源迁入 taxonomy，`runtime_tool_groups.py` 退为兼容投影；D5 IM permission continuation 改走 channel-native durable run；D4 Skill fork 默认进入 background child-session contract。
 
 2026-06-28 自查追加闭合：
 
@@ -52,14 +52,15 @@
 - `3f822aa1` `ccplus: persist recovery checkpoints before tool execution`：补齐 D10 真实 killed-process `invoke_agent` recovery harness 的生产 checkpoint 机制。
 - `fe92bdf1` `ccplus: close residual tool governance gaps`：补齐 D1/D4/D5/D7/D10 最后一轮源代码断点，并更新本账本。
 - 本轮提交 `ccplus: recover subagent child tool frames`：补齐 sub-agent 子执行体 pending tool frame checkpoint、replay-safe 恢复和 mutating reconciliation，并更新本账本。
+- 本轮提交 `ccplus: close final governance parity gaps`：补齐 D10 manifest hydrate、D1 taxonomy truth source、D5 channel-native permission continuation、D4 Skill fork background child-session contract，并更新本账本。
 
-账本口径：从 `b1b5f85a ccplus: add capability governance surface` 之后到本轮 sub-agent 子执行体恢复提交，本文件记录 23 个后续追修 / 文档校正提交。后续新增代码闭环提交必须继续追加到这里，避免代码与宣称口径脱节。
+账本口径：从 `b1b5f85a ccplus: add capability governance surface` 之后到本轮最终 parity gap 追修提交，本文件记录 24 个后续追修 / 文档校正提交。后续新增代码闭环提交必须继续追加到这里，避免代码与宣称口径脱节。
 
 最终回归：
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5365 passed, 2 skipped, 4 warnings in 95.04s
+# 5368 passed, 2 skipped, 4 warnings in 94.94s
 
 cd backend && source .venv/bin/activate && ruff check app/ tests/
 # All checks passed!
@@ -75,11 +76,11 @@ cd frontend && npm run build
 
 | 断点 | 当前闭环 | 证据 |
 | --- | --- | --- |
-| D1 taxonomy 入口 | `runtime.invoker._infer_active_tool_groups()` 与 `api.agents.get_agent_extension_registry()` 均改走 governance taxonomy facade；extension registry 测试 fixture 也改为 patch taxonomy descriptor，不再依赖 runtime group side table。 | `cd backend && .venv/bin/python -m pytest tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups tests/api/test_extension_registry_api.py::test_get_agent_extensions_returns_extension_registry_projection -q` 纳入最终回归；全量后端 `5365 passed`。 |
-| D4 Skill fork | `load_skill` 成功后先注册 session skill hooks / execution plans，再消费 pending fork handoff；`spawn_subagent` 通过同一个 governed `_execute_tool_with_hooks()` 在同一次 tool call 内执行。 | `test_load_skill_frontmatter_fork_executes_in_same_tool_call` 纳入目标集，目标集 `6 passed, 4 warnings`。 |
-| D5 permission allow channel | permission allow continuation 的 `resolution_channel`、`origin_channel`、`channel` 使用 pending frame / session source，不再硬编码 web；原始 tool frame 元数据继续带回 replay。 | `test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id` 纳入目标集，permission/truth/tool runtime 相关回归 `33 passed, 15 deselected, 4 warnings`。 |
+| D1 taxonomy 入口 | `runtime.invoker._infer_active_tool_groups()` 与 `api.agents.get_agent_extension_registry()` 均改走 governance taxonomy facade；runtime L2 specs 现在由 taxonomy 持有，`runtime_tool_groups.py` 只是兼容投影，不再是第二 truth source。 | `test_runtime_tool_groups_are_compat_projection_of_taxonomy` 纳入目标集；相关回归 `30 passed, 20 deselected, 4 warnings`；全量后端 `5368 passed`。 |
+| D4 Skill fork | `load_skill` 成功后先注册 session skill hooks / execution plans，再消费 pending fork handoff；`spawn_subagent` 通过同一个 governed `_execute_tool_with_hooks()` 在同一次 tool call 内执行，并默认 `run_in_background=True` 进入 durable child-session / RuntimeTask path。 | `test_load_skill_frontmatter_fork_executes_in_same_tool_call` 和 `test_execute_tool_with_hooks_executes_pending_skill_fork_handoff` 纳入相关回归；skill/subagent 集合 `4 passed, 103 deselected, 4 warnings`。 |
+| D5 permission allow channel | permission allow/deny continuation 的 `resolution_channel`、`origin_channel`、`channel` 使用 pending frame / session source；Web 继续走 web run，IM/source_channel 非 Web 走 `start_channel_chat_run_from_saved_turn()` 并携带 delivery target metadata。 | `test_resolve_session_permission_allow_uses_channel_native_continuation_for_im` 纳入目标集；permission/taxonomy/recovery 相关回归 `30 passed, 20 deselected, 4 warnings`。 |
 | D7 Truth evidence span | `ToolRuntimeService.execute(trace_metadata_sink=...)` 把 Truth evidence refs/payload 和 preflight block 写入 sink；kernel tool span metadata 合并 sink 后进入 canonical InvocationSpan 抽取面。 | `test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink`、`test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span` 纳入目标集，目标集 `6 passed, 4 warnings`。 |
-| D10 prompt recovery | `_build_runtime_attachment_sections()` 从 `runtime_artifacts/recovery_manifest.json` 读 persisted manifest 并加入 `### Recovery Manifest`，正常 prompt assembly 与 cached dynamic suffix 都能恢复 pending frame / permission / evidence。 | `test_runtime_attachment_sections_include_persisted_recovery_manifest` 纳入目标集，kernel/trace/taxonomy 相关回归 `10 passed, 78 deselected, 4 warnings`。 |
+| D10 prompt recovery | `_build_runtime_attachment_sections()` 从 `runtime_artifacts/recovery_manifest.json` 读 persisted manifest，并调用 `hydrate_session_context_from_recovery_manifest()` 机械恢复 `SessionContext` runtime state；prompt text 仍作为模型可见恢复块保留。 | `test_recovery_manifest_hydrates_session_context_runtime_state` 纳入目标集；目标集 `6 passed, 4 warnings`，全量后端 `5368 passed`。 |
 | D11 sub-agent 子执行体恢复 | `start_subagent_run()` 生成的 `run_id` / `child_session_id` 现在进入 `SubagentSpawnContext` 和 child `SessionContext`；`on_tool_call` 通过 `record_subagent_child_tool_frame()` 在子工具执行前持久化 `child_pending_tool_frame`，终态清理 stale pending frame；`resume_persisted_subagent_runs()` 对 replay-safe 只读子帧恢复同一 child session，对 `write_file` 等 mutating 子帧标记 `needs_reconciliation` 并投影到 child session。 | `cd backend && .venv/bin/python -m pytest tests/services/test_subagent_run_service.py tests/agents/test_subagent.py::test_spawn_threads_child_recovery_identity_into_session_context tests/agents/test_subagent.py::test_spawn_builds_governed_request tests/tools/test_agent_tool_cc_compat.py::test_spawn_subagent_permission_profile_allowed_tools_are_scoped -q` -> `20 passed, 4 warnings`。 |
 
 关联文档：

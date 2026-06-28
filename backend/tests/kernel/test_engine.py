@@ -1245,6 +1245,7 @@ async def test_execute_tool_with_hooks_executes_pending_skill_fork_handoff(monke
     assert [call["tool_name"] for call in calls] == ["load_skill", "spawn_subagent"]
     assert calls[1]["tool_call_id"] == "call-load-skill:skill:research"
     assert calls[1]["args"]["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    assert calls[1]["args"]["run_in_background"] is True
     assert calls[1]["args"]["skill_source"] == "skills/research/SKILL.md"
     assert "Skill fork worker `Research` executed through `spawn_subagent`." in result
     assert "child-1" in result
@@ -1325,6 +1326,7 @@ async def test_load_skill_frontmatter_fork_executes_in_same_tool_call(tmp_path: 
     assert [call["tool_name"] for call in calls] == ["load_skill", "spawn_subagent"]
     assert calls[1]["tool_call_id"] == "call-load-skill:skill:research"
     assert calls[1]["args"]["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    assert calls[1]["args"]["run_in_background"] is True
     assert "child-research" in result
     assert "pending_skill_handoffs" not in session.metadata
     assert session.metadata["executed_skill_handoffs"][0]["skill_slug"] == "research"

@@ -198,6 +198,25 @@ def test_governance_capability_taxonomy_is_single_source_for_core_and_l2():
     assert not (CORE_TOOL_NAMES & l2_tools)
 
 
+def test_runtime_tool_groups_are_compat_projection_of_taxonomy():
+    import app.services.governance_capability_taxonomy as taxonomy
+    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
+
+    taxonomy_source = inspect.getsource(taxonomy)
+    assert "app.tools.runtime_tool_groups" not in taxonomy_source
+    assert "RUNTIME_TOOL_GROUPS" not in taxonomy_source
+
+    l2_by_name = {descriptor.name: descriptor for descriptor in taxonomy.iter_runtime_l2_capabilities()}
+    runtime_by_name = {group.name: group for group in RUNTIME_TOOL_GROUPS}
+
+    assert runtime_by_name.keys() == l2_by_name.keys()
+    for name, descriptor in l2_by_name.items():
+        group = runtime_by_name[name]
+        assert group.tools == descriptor.tools
+        assert group.source == descriptor.source
+        assert group.summary == descriptor.notes
+
+
 def test_coding_capability_is_l2_local_bridge_only():
     from app.services.coding_pack_manifest import CODING_PACK_TOOLS
     from app.services.governance_capability_taxonomy import (

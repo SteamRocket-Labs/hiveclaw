@@ -426,11 +426,12 @@ def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | Non
 
     sections: list[str] = []
     try:
-        from app.runtime.recovery_manifest import load_recovery_manifest
+        from app.runtime.recovery_manifest import hydrate_session_context_from_recovery_manifest, load_recovery_manifest
 
         workspace = _agent_workspace_root(agent_id)
         manifest = load_recovery_manifest(agent_id, data_root=workspace.parent)
         if manifest is not None:
+            hydrate_session_context_from_recovery_manifest(session_context, manifest)
             manifest_text = manifest.to_restoration_text()
             if manifest_text:
                 sections.append(f"### Recovery Manifest\n{manifest_text}")
@@ -1653,6 +1654,7 @@ async def _execute_pending_skill_fork_handoffs(
             continue
         skill_name = str(handoff.get("skill") or skill_slug)
         tool_args = dict(handoff.get("tool_arguments") or {})
+        tool_args.setdefault("run_in_background", True)
         permission_profile = handoff.get("permission_profile")
         if isinstance(permission_profile, dict) and "permission_profile" not in tool_args:
             tool_args["permission_profile"] = dict(permission_profile)

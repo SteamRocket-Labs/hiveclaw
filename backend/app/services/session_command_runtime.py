@@ -990,6 +990,7 @@ async def execute_session_command(
             agent_id=agent.id,
             session_id=str(session.id),
             source="command",
+            messages=messages,
             metadata={"tenant_id": str(getattr(agent, "tenant_id", "") or ""), "reason": reason},
         )
         tenant_id = getattr(agent, "tenant_id", getattr(session, "tenant_id", None))

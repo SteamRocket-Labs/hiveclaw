@@ -1020,6 +1020,69 @@ async def _compress_messages_with_trace(
     return compressed
 
 
+async def _compress_messages_with_lifecycle_hooks(
+    compressor: MaybeCompressMessages,
+    messages: list[dict],
+    *,
+    agent_id: Any = None,
+    session_id: Any = None,
+    trigger: str,
+    metadata: dict[str, Any] | None = None,
+    post_hook_async: bool = False,
+    trace_context: Any = None,
+    tools: list[dict] | None = None,
+    parallel_tool_calls: bool = False,
+    instructions: str = "",
+    **kwargs: Any,
+) -> list[dict]:
+    from app.runtime.hooks import HookEvent
+
+    hook_metadata = dict(metadata or {})
+    hook_metadata["trigger"] = trigger
+    hook_metadata.setdefault("phase", instructions or trigger)
+    await _emit_runtime_hook(
+        HookEvent.PRE_COMPACTION,
+        agent_id=agent_id,
+        session_id=session_id,
+        messages=messages,
+        metadata=hook_metadata,
+    )
+    compressed = await _maybe_await(
+        _compress_messages_with_trace(
+            compressor,
+            messages,
+            trace_context=trace_context,
+            tools=tools,
+            parallel_tool_calls=parallel_tool_calls,
+            instructions=instructions,
+            **kwargs,
+        )
+    )
+    if compressed != messages:
+        compact_summary = compressed[0].get("content", "") if compressed else ""
+        post_metadata = {
+            **hook_metadata,
+            "summary": str(compact_summary)[:3000],
+            "before_msgs": len(messages),
+            "after_msgs": len(compressed),
+        }
+        if post_hook_async:
+            _schedule_runtime_hook(
+                HookEvent.POST_COMPACTION,
+                agent_id=agent_id,
+                session_id=session_id,
+                metadata=post_metadata,
+            )
+        else:
+            await _emit_runtime_hook(
+                HookEvent.POST_COMPACTION,
+                agent_id=agent_id,
+                session_id=session_id,
+                metadata=post_metadata,
+            )
+    return compressed
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -2957,15 +3020,20 @@ class AgentKernel:
                 async def _compress_for_preflight(
                     messages_as_dicts: list[dict[str, Any]], **kwargs: Any
                 ) -> list[dict[str, Any]]:
-                    return await _maybe_await(
-                        _compress_messages_with_trace(
-                            self._deps.maybe_compress_messages,
-                            messages_as_dicts,
-                            trace_context=compaction_trace_context,
-                            tools=tools_for_llm,
-                            instructions="request_preflight_context_compaction",
-                            **kwargs,
-                        )
+                    return await _compress_messages_with_lifecycle_hooks(
+                        self._deps.maybe_compress_messages,
+                        messages_as_dicts,
+                        trace_context=compaction_trace_context,
+                        tools=tools_for_llm,
+                        instructions="request_preflight_context_compaction",
+                        agent_id=request.agent_id,
+                        session_id=request.memory_session_id,
+                        trigger="request_preflight",
+                        metadata={
+                            "phase": "request_preflight_context_compaction",
+                            "agent_name": request.agent_name,
+                        },
+                        **kwargs,
                     )
 
                 prepared = await prepare_session_context_for_request(
@@ -3055,22 +3123,26 @@ class AgentKernel:
                 except (TypeError, ValueError):
                     context_usage_anchor_tokens = 0
 
-            messages = await _maybe_await(
-                _compress_messages_with_trace(
-                    self._deps.maybe_compress_messages,
-                    request.messages,
-                    trace_context=compaction_trace_context,
-                    tools=tools_for_llm,
-                    instructions="initial_context_compaction",
-                    model_provider=request.model.provider,
-                    model_name=request.model.model,
-                    max_input_tokens_override=getattr(request.model, "max_input_tokens", None),
-                    tenant_id=runtime_config.tenant_id,
-                    on_compaction=_emit_compaction_event,
-                    usage_anchor_tokens=context_usage_anchor_tokens,
-                    agent_id=request.agent_id,
-                    user_id=request.user_id,
-                )
+            messages = await _compress_messages_with_lifecycle_hooks(
+                self._deps.maybe_compress_messages,
+                request.messages,
+                trace_context=compaction_trace_context,
+                tools=tools_for_llm,
+                instructions="initial_context_compaction",
+                agent_id=request.agent_id,
+                session_id=request.memory_session_id,
+                trigger="initial",
+                metadata={
+                    "phase": "initial_context_compaction",
+                    "agent_name": request.agent_name,
+                },
+                model_provider=request.model.provider,
+                model_name=request.model.model,
+                max_input_tokens_override=getattr(request.model, "max_input_tokens", None),
+                tenant_id=runtime_config.tenant_id,
+                on_compaction=_emit_compaction_event,
+                usage_anchor_tokens=context_usage_anchor_tokens,
+                user_id=request.user_id,
             )
 
             api_messages = [LLMMessage(role="system", content=system_prompt)]
@@ -3314,23 +3386,29 @@ class AgentKernel:
                                     )
                                     conv_dicts = _llm_messages_to_dicts(api_messages[1:])
                                     _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
-                                    compressed = await _maybe_await(
-                                        _compress_messages_with_trace(
-                                            self._deps.maybe_compress_messages,
-                                            conv_dicts,
-                                            trace_context=compaction_trace_context,
-                                            tools=tools_for_llm,
-                                            instructions="prompt_too_long_full_compress_first",
-                                            model_provider=active_model.provider,
-                                            model_name=active_model.model,
-                                            max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
-                                            tenant_id=runtime_config.tenant_id,
-                                            compress_threshold=0.5,
-                                            on_compaction=_emit_compaction_event,
-                                            usage_anchor_tokens=context_usage_anchor_tokens,
-                                            agent_id=request.agent_id,
-                                            user_id=request.user_id,
-                                        )
+                                    compressed = await _compress_messages_with_lifecycle_hooks(
+                                        self._deps.maybe_compress_messages,
+                                        conv_dicts,
+                                        trace_context=compaction_trace_context,
+                                        tools=tools_for_llm,
+                                        instructions="prompt_too_long_full_compress_first",
+                                        agent_id=request.agent_id,
+                                        session_id=request.memory_session_id,
+                                        trigger="prompt_too_long",
+                                        metadata={
+                                            "phase": "prompt_too_long_full_compress_first",
+                                            "attempt": ptl_retries,
+                                            "strategy": "full_compress_first",
+                                            "agent_name": request.agent_name,
+                                        },
+                                        model_provider=active_model.provider,
+                                        model_name=active_model.model,
+                                        max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
+                                        tenant_id=runtime_config.tenant_id,
+                                        compress_threshold=0.5,
+                                        on_compaction=_emit_compaction_event,
+                                        usage_anchor_tokens=context_usage_anchor_tokens,
+                                        user_id=request.user_id,
                                     )
                                     _after_chars = sum(len(d.get("content", "") or "") for d in compressed)
                                     if _after_chars < _before_chars * 0.8:
@@ -3477,25 +3555,31 @@ class AgentKernel:
                                         )
                                         conv_dicts = _llm_messages_to_dicts(api_messages[1:])
                                         _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
-                                        compressed = await _maybe_await(
-                                            _compress_messages_with_trace(
-                                                self._deps.maybe_compress_messages,
-                                                conv_dicts,
-                                                trace_context=compaction_trace_context,
-                                                tools=tools_for_llm,
-                                                instructions="prompt_too_long_full_compress_fallback",
-                                                model_provider=active_model.provider,
-                                                model_name=active_model.model,
-                                                max_input_tokens_override=getattr(
-                                                    active_model, "max_input_tokens", None
-                                                ),
-                                                tenant_id=runtime_config.tenant_id,
-                                                compress_threshold=0.5,
-                                                on_compaction=_emit_compaction_event,
-                                                usage_anchor_tokens=context_usage_anchor_tokens,
-                                                agent_id=request.agent_id,
-                                                user_id=request.user_id,
-                                            )
+                                        compressed = await _compress_messages_with_lifecycle_hooks(
+                                            self._deps.maybe_compress_messages,
+                                            conv_dicts,
+                                            trace_context=compaction_trace_context,
+                                            tools=tools_for_llm,
+                                            instructions="prompt_too_long_full_compress_fallback",
+                                            agent_id=request.agent_id,
+                                            session_id=request.memory_session_id,
+                                            trigger="prompt_too_long",
+                                            metadata={
+                                                "phase": "prompt_too_long_full_compress_fallback",
+                                                "attempt": ptl_retries,
+                                                "strategy": "full_compress_fallback",
+                                                "agent_name": request.agent_name,
+                                            },
+                                            model_provider=active_model.provider,
+                                            model_name=active_model.model,
+                                            max_input_tokens_override=getattr(
+                                                active_model, "max_input_tokens", None
+                                            ),
+                                            tenant_id=runtime_config.tenant_id,
+                                            compress_threshold=0.5,
+                                            on_compaction=_emit_compaction_event,
+                                            usage_anchor_tokens=context_usage_anchor_tokens,
+                                            user_id=request.user_id,
                                         )
                                         _after_chars = sum(len(d.get("content", "") or "") for d in compressed)
                                         if _after_chars < _before_chars * 0.8:
@@ -4484,40 +4568,32 @@ class AgentKernel:
                         # already reserves space for the prompt via compute_history_limit.
                         conv_dicts = _llm_messages_to_dicts(api_messages[1:])
 
-                        # ── PRE_COMPACTION hook: extract before compression ──
-                        from app.runtime.hooks import HookEvent as _HE
-
-                        await _emit_runtime_hook(
-                            _HE.PRE_COMPACTION,
+                        compressed = await _compress_messages_with_lifecycle_hooks(
+                            self._deps.maybe_compress_messages,
+                            conv_dicts,
+                            trace_context=compaction_trace_context,
+                            tools=tools_for_llm,
+                            instructions="mid_loop_context_compaction",
                             agent_id=request.agent_id,
                             session_id=request.memory_session_id,
-                            messages=conv_dicts,
+                            trigger="auto",
                             metadata={
-                                "trigger": "auto",
+                                "phase": "mid_loop_context_compaction",
                                 "round": round_i + 1,
                                 "agent_name": request.agent_name,
                                 "important_files": list(getattr(request.session_context, "recent_files", []) or []),
                                 "pending_work": list(getattr(request.session_context, "pending_items", []) or []),
                                 "last_successful_step": "".join(streamed_chunks)[-300:],
                             },
-                        )
-                        compressed = await _maybe_await(
-                            _compress_messages_with_trace(
-                                self._deps.maybe_compress_messages,
-                                conv_dicts,
-                                trace_context=compaction_trace_context,
-                                tools=tools_for_llm,
-                                instructions="mid_loop_context_compaction",
-                                model_provider=active_model.provider,
-                                model_name=active_model.model,
-                                max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
-                                tenant_id=runtime_config.tenant_id,
-                                compress_threshold=_MIDLOOP_COMPACT_THRESHOLD,
-                                on_compaction=_emit_compaction_event,
-                                usage_anchor_tokens=context_usage_anchor_tokens,
-                                agent_id=request.agent_id,
-                                user_id=request.user_id,
-                            )
+                            post_hook_async=True,
+                            model_provider=active_model.provider,
+                            model_name=active_model.model,
+                            max_input_tokens_override=getattr(active_model, "max_input_tokens", None),
+                            tenant_id=runtime_config.tenant_id,
+                            compress_threshold=_MIDLOOP_COMPACT_THRESHOLD,
+                            on_compaction=_emit_compaction_event,
+                            usage_anchor_tokens=context_usage_anchor_tokens,
+                            user_id=request.user_id,
                         )
                         if len(compressed) < len(conv_dicts):
                             # Post-compaction restoration: re-inject identity + work ledger
@@ -4553,20 +4629,6 @@ class AgentKernel:
                                     "after_msgs": len(api_messages),
                                     "round": round_i + 1,
                                     "restored": bool(_restored),
-                                },
-                            )
-
-                            # ── POST_COMPACTION hook: summary available ──
-                            _compact_summary = compressed[0].get("content", "") if compressed else ""
-                            _schedule_runtime_hook(
-                                _HE.POST_COMPACTION,
-                                agent_id=request.agent_id,
-                                session_id=request.memory_session_id,
-                                metadata={
-                                    "trigger": "auto",
-                                    "summary": _compact_summary[:3000],
-                                    "before_msgs": len(conv_dicts) + 1,
-                                    "after_msgs": len(api_messages),
                                 },
                             )
                             # Persist compacted state so recovery doesn't lose progress

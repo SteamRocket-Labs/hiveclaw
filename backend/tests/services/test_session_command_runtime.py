@@ -677,6 +677,12 @@ async def test_compact_command_installs_compacted_projection_and_session_compact
     assert session.transcript_metadata_json["active_projection"]["replacement_messages"][0]["role"] == "system"
     assert db.flushes == 1
     assert len(hooks) == 2
+    assert hooks[0][0][0] == runtime.HookEvent.PRE_COMPACTION
+    assert hooks[0][1]["messages"] == [
+        {"role": "user", "content": "Please build the report"},
+        {"role": "assistant", "content": "Report drafted"},
+    ]
+    assert hooks[1][0][0] == runtime.HookEvent.POST_COMPACTION
 
 
 @pytest.mark.asyncio

@@ -680,6 +680,46 @@ def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path,
     assert "Permission Profile" in restored
 
 
+@pytest.mark.asyncio
+async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeypatch):
+    from app.kernel.engine import _compress_messages_with_lifecycle_hooks
+    from app.runtime.hooks import HookEvent
+
+    hook_calls = []
+
+    async def fake_emit_hook(event, **kwargs):
+        hook_calls.append((event, kwargs))
+
+    async def fake_compressor(messages, **_kwargs):
+        return [{"role": "system", "content": "compressed summary"}, messages[-1]]
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+    compressed = await _compress_messages_with_lifecycle_hooks(
+        fake_compressor,
+        messages,
+        agent_id="agent-1",
+        session_id="session-1",
+        trigger="initial",
+        metadata={"phase": "initial_context_compaction"},
+    )
+
+    assert compressed[0]["content"] == "compressed summary"
+    assert hook_calls[0][0] == HookEvent.PRE_COMPACTION
+    assert hook_calls[0][1]["messages"] == messages
+    assert hook_calls[0][1]["metadata"]["trigger"] == "initial"
+    assert hook_calls[0][1]["metadata"]["phase"] == "initial_context_compaction"
+    assert hook_calls[1][0] == HookEvent.POST_COMPACTION
+    assert hook_calls[1][1]["metadata"]["trigger"] == "initial"
+    assert hook_calls[1][1]["metadata"]["summary"] == "compressed summary"
+    assert hook_calls[1][1]["metadata"]["before_msgs"] == 2
+    assert hook_calls[1][1]["metadata"]["after_msgs"] == 2
+
+
 def test_runtime_attachment_sections_report_tool_refresh_and_external_file_changes(tmp_path, monkeypatch):
     from app.kernel.engine import (
         _build_runtime_attachment_sections,

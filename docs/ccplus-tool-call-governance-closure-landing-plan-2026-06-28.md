@@ -641,6 +641,21 @@ source .venv/bin/activate
 pytest tests/services/test_agent_tools_core_surface.py tests/tools/test_tool_contract.py tests/services/test_mcp_tool_discovery.py -q
 ```
 
+实施证据（2026-06-28）：
+
+- Red：新增 taxonomy 红线后，`pytest tests/services/test_agent_tools_core_surface.py -q` 失败于 `ModuleNotFoundError: No module named 'app.services.governance_capability_taxonomy'`。
+- Red：新增 API 红线后，`pytest tests/api/test_tools_api_surface.py -q` 失败于缺少 `governance_taxonomy` 字段，并且 `read_file` 这类 `agent_base` 工具仍可进入 agent-level assignment 创建路径。
+- Green：已新增 `backend/app/services/governance_capability_taxonomy.py`，将 `CORE_TOOL_NAMES` 从 `agent_tools.py` literal 迁移为 taxonomy 单源；`agent_tools.py` 只导入 taxonomy；工具 API 序列化返回 `governance_taxonomy`；agent-level toggle 对 `agent_base` 返回 `agent_base_capability_not_toggleable`。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_surface.py tests/tools/test_tool_contract.py tests/services/test_mcp_tool_discovery.py -q
+```
+
+- 验证结果：`49 passed, 4 warnings in 1.65s`。
+
 ### Phase 2：Web / Office / provider boundary 拆分
 
 目标：

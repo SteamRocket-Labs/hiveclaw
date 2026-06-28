@@ -22,6 +22,7 @@ from app.models.user import User
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token_status
 from app.services.email_service import test_connection as test_email_connection
+from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, is_agent_base_tool
 from app.services.mcp_client import MCPClient
 from app.services.tool_config_service import (
     encrypt_tool_config_secrets,
@@ -339,6 +340,18 @@ async def _probe_feishu_cardkit_status(
 
 
 def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | None = None) -> dict:
+    taxonomy = capability_descriptor_for_tool(str(tool.name))
+    governance_taxonomy = None
+    if taxonomy is not None:
+        governance_taxonomy = {
+            "name": taxonomy.name,
+            "layer": taxonomy.layer,
+            "l2_visible": taxonomy.l2_visible,
+            "enterprise_toggleable": taxonomy.enterprise_toggleable,
+            "default_enabled": taxonomy.default_enabled,
+            "requires_local_bridge": taxonomy.requires_local_bridge,
+            "source": taxonomy.source,
+        }
     return {
         "id": str(tool.id),
         "name": tool.name,
@@ -358,6 +371,7 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
         "enabled": tool.enabled if enabled is None else enabled,
         "is_default": tool.is_default,
         "tenant_id": str(tool.tenant_id) if tool.tenant_id else None,
+        "governance_taxonomy": governance_taxonomy,
     }
 
 
@@ -815,13 +829,24 @@ async def update_agent_tools(
         tool_id = uuid.UUID(update_item.tool_id)
         assignment = await _get_agent_tool(db, agent_id, tool_id)
         if assignment:
-            if not await _get_visible_agent_tool(db, agent, assignment.tool_id):
+            tool = await _get_visible_agent_tool(db, agent, assignment.tool_id)
+            if not tool:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+            if is_agent_base_tool(str(tool.name)):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="agent_base_capability_not_toggleable",
+                )
             assignment.enabled = update_item.enabled
             continue
         tool = await _get_visible_agent_tool(db, agent, tool_id)
         if not tool:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
+        if is_agent_base_tool(str(tool.name)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="agent_base_capability_not_toggleable",
+            )
         await ensure_agent_tool_assignment(
             db,
             agent_id=agent_id,

@@ -28,6 +28,7 @@ from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.config import get_settings
 from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
+from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
 from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
@@ -202,75 +203,6 @@ def _get_tool_runtime_service() -> ToolRuntimeService:
     )
     return _TOOL_RUNTIME_SERVICE
 
-
-# Minimal-by-default kernel tools. Everything else should be introduced
-# explicitly via skills, channel capabilities, or MCP-linked expansion.
-CORE_TOOL_NAMES = {
-    "execute_code",
-    "run_command",
-    "list_files",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "glob_search",
-    "grep_search",
-    "fs_read",
-    "fs_write",
-    "fs_list",
-    "load_skill",
-    "run_skill_tool",
-    "save_skill",
-    "search_memory",
-    "load_memory",
-    "save_memory",
-    "update_memory",
-    "retire_memory",
-    "submit_t3_consolidation_pitch",
-    "submit_t3_memory_gate_review",
-    "submit_t3_revised_patch",
-    "set_trigger",
-    "update_trigger",
-    "cancel_trigger",
-    "list_triggers",
-    "send_message_to_agent",
-    "send_agent_session_message",
-    "delegate_to_agent",
-    "check_async_task",
-    "cancel_async_task",
-    "list_async_tasks",
-    "get_current_time",
-    "exit_plan_mode",
-    # CC-align Phase B: clarification is a turn-1 capability so the agent can SEE
-    # and call it (plan mode + normal chat); subagents exclude it (no user channel).
-    "ask_user_question",
-    # CC EnterPlanMode parity: requesting Plan Mode is a turn-1 capability so the
-    # agent can SEE and call it in normal live chat *before* Plan Mode is active —
-    # the user approves before entry. Subagents exclude it (no user to approve).
-    "request_plan_mode",
-    "send_channel_message",
-    "send_channel_file",
-    "tool_search",
-    "web_fetch",
-    # web_search is CORE because it is the basic search path
-    # (AnySearch API when configured, SearXNG fallback otherwise). Provider-backed advanced
-    # search/crawl tools stay deferred in web_pack and are loaded through tool_search.
-    "web_search",
-    # Source capabilities (T1.1, execution-mode-spectrum §4.6): subagent and
-    # workflow are runtime primitives — their schemas must be turn-1 visible,
-    # never gated behind a skill-activated pack. Call-time governance
-    # (capability gate / plan gate / approval) remains the execution boundary.
-    "spawn_subagent",
-    "check_subagent",
-    "propose_dynamic_workflow",
-    "preview_workflow",
-    "start_workflow",
-    # Work ledger (T1.2): working memory is an agent thinking tool — it must
-    # not depend on DB Tool.is_default/assignment rows to exist. The
-    # should_enable_work_ledger gate keeps governing reminder frequency only.
-    "track_todo",
-    "record_finding",
-    "read_ledger",
-}
 
 # Core tools that should always be available to agents regardless of
 # DB configuration.

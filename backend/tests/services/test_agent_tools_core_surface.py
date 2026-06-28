@@ -20,6 +20,7 @@ from __future__ import annotations
 SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "propose_dynamic_workflow", "preview_workflow", "start_workflow"}
 WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
 ADVANCED_WEB_TOOLS = {"exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"}
+CODING_PLUGIN_TOOLS = {"lsp_symbol_search", "worktree_create", "notebook_edit", "browser_ui_open"}
 
 
 # ── Red test #1 — turn-1 visibility ─────────────────────────────────
@@ -152,3 +153,41 @@ def test_web_search_core_but_advanced_web_tools_deferred():
     assert ADVANCED_WEB_TOOLS <= set(web_pack.tools)
     assert "web_search" not in set(web_pack.tools)
     assert not (ADVANCED_WEB_TOOLS & CORE_TOOL_NAMES)
+
+
+def test_governance_capability_taxonomy_is_single_source_for_core_and_l2():
+    from app.services.agent_tools import CORE_TOOL_NAMES
+    from app.services.governance_capability_taxonomy import (
+        GovernanceCapabilityLayer,
+        capability_descriptor_for_tool,
+        iter_l2_capabilities,
+    )
+
+    for tool_name in CORE_TOOL_NAMES:
+        descriptor = capability_descriptor_for_tool(tool_name)
+        assert descriptor is not None, tool_name
+        assert descriptor.layer == GovernanceCapabilityLayer.AGENT_BASE.value, tool_name
+        assert descriptor.l2_visible is False, tool_name
+        assert descriptor.enterprise_toggleable is False, tool_name
+
+    l2_tools = {tool for descriptor in iter_l2_capabilities() for tool in descriptor.tools}
+    assert ADVANCED_WEB_TOOLS <= l2_tools
+    assert "send_feishu_message" in l2_tools
+    assert "call_mcp_tool" in l2_tools
+    assert not (CORE_TOOL_NAMES & l2_tools)
+
+
+def test_coding_capability_is_l2_local_bridge_only():
+    from app.services.governance_capability_taxonomy import (
+        GovernanceCapabilityLayer,
+        capability_descriptor_for_name,
+    )
+
+    descriptor = capability_descriptor_for_name("coding")
+
+    assert descriptor is not None
+    assert descriptor.layer == GovernanceCapabilityLayer.EXTERNAL_EXTENSION.value
+    assert descriptor.l2_visible is True
+    assert descriptor.enterprise_toggleable is True
+    assert descriptor.requires_local_bridge is True
+    assert CODING_PLUGIN_TOOLS <= set(descriptor.tools)

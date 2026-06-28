@@ -106,6 +106,23 @@ def test_tools_router_is_registered_in_app_surface():
     assert tools_api_path.exists()
 
 
+def test_serialize_tool_includes_governance_taxonomy_metadata():
+    import app.api.tools as tools_api
+
+    read_file = _make_builtin_tool(name="read_file", category="file", is_default=True)
+    exa_search = _make_builtin_tool(name="exa_search", category="web_pack", is_default=False)
+
+    core_payload = tools_api._serialize_tool(read_file)
+    extension_payload = tools_api._serialize_tool(exa_search)
+
+    assert core_payload["governance_taxonomy"]["layer"] == "agent_base"
+    assert core_payload["governance_taxonomy"]["l2_visible"] is False
+    assert core_payload["governance_taxonomy"]["enterprise_toggleable"] is False
+    assert extension_payload["governance_taxonomy"]["layer"] == "platform_addon"
+    assert extension_payload["governance_taxonomy"]["l2_visible"] is True
+    assert extension_payload["governance_taxonomy"]["enterprise_toggleable"] is True
+
+
 @pytest.mark.asyncio
 async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_tools(monkeypatch):
     import app.api.tools as tools_api
@@ -260,6 +277,47 @@ async def test_update_agent_tools_creates_missing_system_assignment(monkeypatch)
         "source": "system",
     }
     assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_update_agent_tools_rejects_agent_base_tool_toggle(monkeypatch):
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tool_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    core_tool = _make_builtin_tool(name="read_file", category="file", is_default=True)
+    core_tool.id = tool_id
+    db = _FakeDB(
+        [
+            _ScalarResult(None),  # _get_agent_tool
+            _ScalarResult(core_tool),  # _get_visible_agent_tool
+        ]
+    )
+
+    async def fake_require_manage_access(db_session, user, target_agent_id):
+        assert db_session is db
+        assert user is current_user
+        assert target_agent_id == agent_id
+        return agent
+
+    monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+
+    with pytest.raises(HTTPException) as exc:
+        await tools_api.update_agent_tools(
+            agent_id=agent_id,
+            data=tools_api.AgentToolsUpdateIn(
+                tools=[tools_api.AgentToolToggleIn(tool_id=str(tool_id), enabled=False)]
+            ),
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "agent_base_capability_not_toggleable"
+    assert db.committed is False
 
 
 @pytest.mark.asyncio

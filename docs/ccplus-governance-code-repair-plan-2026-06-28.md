@@ -2,9 +2,37 @@
 
 日期：2026-06-28
 
-状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。
+状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。2026-06-28 Current HEAD 最终闭环追修启动：旧“整体闭合”措辞降级为“主体链路已成型、仍有 D0/D1/D3/D7/D9/D10 及 Skill fork 语义残口待落地”，本节作为后续代码实装和证据回填的唯一检查清单。
 
 配套架构文档：`docs/ccplus-governance-layer-architecture-2026-06-28.md`
+
+## 0.4 2026-06-28 Current HEAD 最终闭环追修计划
+
+基线：`git HEAD = 5706f40d`。本节吸收 `docs/ccplus-closure-landing-plan-independent-reaudit-2026-06-28.md` 的有效结论，并按当前 HEAD 校正已经过期的 D4/D5/D6 判断。
+
+当前不能再宣称“100% 已闭合”的原因不是主链不存在，而是以下 runtime 语义仍未完全落地：
+
+| 断点 | 当前事实 | 必须落地的闭环 | 验收证据 |
+| --- | --- | --- | --- |
+| D0 typed tool lifecycle | `ToolCallLifecycleV1` / `ToolExecutionFrameV1` 仍只有契约定义和测试实例，生产执行链没有实例化消费 | 在 `ToolRuntimeService` 主路径、approved/direct 路径、`execute_with_context()` 中创建 lifecycle/frame ledger；生命周期必须覆盖 created / validated / governed / preflight / executing / completed / failed / blocked，并写入 runtime context metadata、hook metadata、activity/trace metadata | focused tests 断言 registry 执行前后有 lifecycle/frame；`rg` 证明生产代码引用不再只有定义 |
+| D1 taxonomy 单源 | `CAPABILITY_MAP` 已迁入 taxonomy，但 pack policy 和 discovery 仍直接读 `RUNTIME_TOOL_GROUPS` / static group 推断；L2 discovery policy DB 异常时 fail-open | `governance_capability_taxonomy.py` 成为 pack-policy/discovery 的入口；`pack_policy_service` 只调用 taxonomy facade；L2 discovery 在 policy resolution 异常时 fail-closed，不再暴露可能 disabled 的 extension | `test_pack_policy_service` / `test_agent_tools_core_surface` 增加 taxonomy facade 红线；DB 异常下 `discoverable_tool_names_for_query()` 不返回 L2 |
+| D3 phantom office browser | `office_browser` descriptor 声明了 `onlyoffice_browser_session` / `onlyoffice_signed_callback`，但无 handler/registry/API；云端当前不具备 Browser UI local bridge | 删除 phantom descriptor；Office runtime 工具继续保持 `agent_base`，Browser UI/ONLYOFFICE WYSIWYG 后续归入 local/coding/browser bridge plugin，未安装前不出现在 L2 taxonomy | `rg onlyoffice_browser_session onlyoffice_signed_callback backend/app frontend/src` 仅无匹配或只在测试里验证 absence |
+| D4 Skill fork 语义 | 当前已把 `permission_profile.allowed_tools` 接进 `spawn_subagent` schema 和子 agent tool surface；但 `context: fork/agent` 仍是 pending handoff，让模型自行调用 `spawn_subagent`，不是平台生成 child session/runtime task 的可审计动作 | 明确 Skill fork 只有两种合法状态：自动执行 plan 时必须通过 `ToolRuntimeService.execute("spawn_subagent", ...)` 生成真实 child session/run trace；若只做 progressive disclosure，则文档/metadata 不得声称“已生成 child session”。本轮优先补平台自动 handoff 执行入口和测试，不保留提示词伪执行 | Skill fork focused test 断言 `spawn_subagent` 经公共 runtime 被调用，`permission_profile`、`skill_source`、`t0_refs` 保留；子 agent `allowed_tool_names` 继续硬过滤 |
+| D5 validate/governance 当前校正 | 当前已有 `app.tools.validation.validate_tool_arguments()`，主路径、approved/direct、`execute_with_context()` 均在 hook 改参后校验和 L2 gate；approved/direct 仍按“审批结果即治理结果”跳过完整 L1/L3/preflight | 文档中不再把 D5 列为“无 validateInput”；保留 approved/direct 语义说明，禁止把它描述成完整同路径治理 | 现有 validation tests 保留；新增文档证据即可 |
+| D6 pending frame 当前校正 | `turn_id/runtime_task_id/round_state/t0_refs` 已进入 `PendingToolFrameV1`，permission resolve 也会带回执行入口 | 不再把 D6 列为当前 blocker；后续 E2E recovery 矩阵覆盖同 frame resume | permission focused tests 保留；E2E 覆盖 resume metadata |
+| D7 Truth evidence canonical trace | Truth evidence 已进 `ActionPreflightResult` / DecisionTrace，但 `InvocationSpan` 没有一等 evidence 字段；`record_invocation_span()` 不显式写 truth refs | `InvocationSpan` 增加 `evidence_refs` / `truth_evidence_json` 或等价 canonical JSONB 字段；工具 preflight 与 runtime trace 写入同一 evidence refs，方便 operator 查询 | migration + model + service tests；preflight tool call 后 span metadata/字段可查 evidence |
+| D9 recovery manifest | compaction hook 生命周期已基本闭合；manifest 仍缺 MCP assignments / truth refs，恢复后不能完整证明工具面和 evidence 不丢 | `RecoveryManifest` 增加 `mcp_assignments`、`truth_evidence_refs`、`truth_evidence`；build/load/render 全路径支持；compaction/restart/fork tests 覆盖 | `test_recovery_manifest_*` 增加字段往返与 restoration text 断言 |
+| D10 killed-process E2E | 当前 `tests/e2e/test_tool_call_recovery_closure.py` 只有 recovery manifest 序列化和 request-preflight compaction 事件测试，不是 kill/crash/fork/workflow 矩阵 | 新增真实恢复矩阵测试：session permission pending frame recovery、compaction manifest recovery、subagent/fork recovery shape、denial crash continuation shape。无法在 unit runner 中真 kill ASGI 时，必须通过持久化 transcript/runtime artifacts 重建路径进行高保真模拟，测试名不得伪称 OS-level kill | E2E 文件数量和场景增加；每个场景断言 T0 refs / RuntimeTask 或 run id / transcript metadata / permission profile / discovered tools / MCP/truth refs |
+
+落地顺序：
+
+1. 先收敛 taxonomy / L2 / phantom descriptor，避免能力面继续泄漏。
+2. 再把 typed lifecycle/frame 接入工具执行主链，给后续证据写入提供稳定载体。
+3. 然后补 Truth evidence 到 InvocationSpan 和 RecoveryManifest。
+4. 再处理 Skill fork 自动 handoff 执行语义。
+5. 最后补 E2E recovery 矩阵并回填全部证据。
+
+每完成一个部分，必须更新本节对应行的“验收证据”为实际命令结果，并单独提交。
 
 ## 目标
 

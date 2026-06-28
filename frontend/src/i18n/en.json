@@ -627,6 +627,8 @@
       "chat": "Chat",
       "activityLog": "Activity Log",
       "activityLogTooltip": "Complete history of actions, messages, and system events",
+      "governance": "Governance",
+      "governanceTooltip": "Company capability policies for this employee",
       "approvals": "Approvals",
       "approvalsTooltip": "Actions waiting for your review before they can proceed",
       "settings": "Settings"
@@ -1211,6 +1213,18 @@
       "documentMissingTitle": "Office document not found",
       "documentMissingMessage": "Create it first, then open it again.",
       "emptyState": "Open or create an Office document to start editing."
+    },
+    "governance": {
+      "title": "Governance",
+      "description": "Company capability policies are L1 hard rules. They are evaluated before session permission prompts.",
+      "capability": "Capability",
+      "tools": "Tools",
+      "policy": "Policy",
+      "empty": "No capability definitions available.",
+      "auto": "Auto",
+      "approval": "Require approval",
+      "deny": "Deny",
+      "saveFailed": "Failed to save capability policy"
     },
     "activityLog": {
       "title": "Activity Log",

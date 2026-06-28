@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 _FRONTMATTER_DELIM = "---"
 _VALID_ISOLATION = ("none", "all")
+_VALID_MEMORY_SCOPES = ("user", "project", "local")
 _SAFE_SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 # Definition scopes (§12.4): one resolution chain, agent-level wins on name
@@ -98,6 +99,20 @@ def _coerce_tool_list(front: dict, field_name: str) -> tuple[str, ...]:
     return tuple(tools)
 
 
+def _coerce_memory_scope(front: dict) -> str | None:
+    value = front.get("memory")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("memory must be a string or null")
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw not in _VALID_MEMORY_SCOPES:
+        raise ValueError(f"memory must be one of {_VALID_MEMORY_SCOPES}, got {raw!r}")
+    return raw
+
+
 def _coerce_optional_positive_int(front: dict, field_name: str) -> int | None:
     value = front.get(field_name)
     if value is None:
@@ -156,6 +171,7 @@ def parse_subagent_definition(text: str) -> SubagentSpec:
         model=_coerce_optional_string(front, "model"),
         max_tool_rounds=_coerce_optional_positive_int(front, "max_tool_rounds"),
         isolation=_coerce_isolation(front.get("isolation")),
+        memory_scope=_coerce_memory_scope(front),
         system_prompt=body.strip(),
     )
 
@@ -180,6 +196,7 @@ def render_subagent_definition(spec: SubagentSpec) -> str:
         "model": spec.model,
         "max_tool_rounds": spec.max_tool_rounds,
         "isolation": spec.isolation,
+        "memory": spec.memory_scope,
     }
     yaml_block = yaml.safe_dump(front, allow_unicode=True, sort_keys=False).strip()
     return f"{_FRONTMATTER_DELIM}\n{yaml_block}\n{_FRONTMATTER_DELIM}\n\n{spec.system_prompt}\n"
@@ -306,6 +323,7 @@ def _definition_row(spec: SubagentSpec, scope: str) -> dict:
         "type": spec.type,
         "model": spec.model,
         "isolation": spec.isolation,
+        "memory": spec.memory_scope,
         "max_tool_rounds": spec.max_tool_rounds,
         "allowed_tools": list(spec.allowed_tools),
         "excluded_tools": list(spec.excluded_tools),

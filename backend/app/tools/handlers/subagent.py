@@ -17,7 +17,7 @@ import json
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
 from app.agents.subagent import (
     PUBLIC_BUILTIN_SUBAGENT_TYPES,
@@ -40,7 +40,10 @@ from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.agent_session_continuation import continue_agent_session_from_mailbox
-from app.services.agent_team_runtime_service import send_agent_team_message_from_tool_request
+from app.services.agent_team_runtime_service import (
+    send_agent_team_message_from_tool_request,
+    spawn_agent_team_member_from_tool_request,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
@@ -183,6 +186,26 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
             "type": "string",
             "description": "Optional short name for the subagent (e.g. 'market-scout'). Defaults to the type name.",
         },
+        "team_name": {
+            "type": "string",
+            "description": (
+                "CC AgentTool teammate branch: when team_name and name are both set, spawn an addressable "
+                "Agent Team teammate instead of a one-shot worker. Call team_create first to create the team."
+            ),
+        },
+        "mode": {
+            "type": "string",
+            "description": "Optional teammate permission/planning mode. Used only with team_name + name teammate spawn.",
+        },
+        "isolation": {
+            "type": "string",
+            "enum": ["none", "all"],
+            "description": (
+                "Fork mode. 'none' starts a fresh AgentTool worker with only your prompt. 'all' forks the current "
+                "session context into the child. If subagent_type/type/definition_name is omitted on a foreground "
+                "spawn, 'all' is used; background agents stay fresh unless isolation='all' is explicit."
+            ),
+        },
         "definition_name": {
             "type": "string",
             "description": (
@@ -219,12 +242,19 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     """Normalize CC AgentTool fields and legacy Hive aliases into one shape."""
 
     task = str(arguments.get("prompt") or arguments.get("task") or "").strip()
+    explicit_type = any(str(arguments.get(key) or "").strip() for key in ("subagent_type", "type", "definition_name"))
+    team_name = str(arguments.get("team_name") or "").strip()
     subagent_type = str(
         arguments.get("subagent_type") or arguments.get("type") or SUBAGENT_TYPE_GENERAL_PURPOSE
     ).strip()
     if not subagent_type:
         subagent_type = SUBAGENT_TYPE_GENERAL_PURPOSE
     subagent_type = canonical_subagent_type(subagent_type, default=SUBAGENT_TYPE_GENERAL_PURPOSE)
+    raw_isolation = str(arguments.get("isolation") or "").strip()
+    if raw_isolation not in {"none", "all"}:
+        raw_isolation = ""
+    background = bool(arguments.get("run_in_background"))
+    isolation = raw_isolation or ("all" if not explicit_type and not team_name and not background else "none")
     return {
         **arguments,
         "task": task,
@@ -233,17 +263,69 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         "subagent_type": subagent_type,
         "description": str(arguments.get("description") or "").strip(),
         "model": str(arguments.get("model") or "").strip(),
-        "team_name": str(arguments.get("team_name") or "").strip(),
+        "team_name": team_name,
+        "mode": str(arguments.get("mode") or "").strip(),
+        "isolation": isolation,
+        "_explicit_subagent_type": explicit_type,
     }
+
+
+async def _load_parent_messages_for_fork(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    session_id: str | None,
+    limit: int = 120,
+) -> list[dict[str, Any]]:
+    if tenant_id is None or not session_id:
+        return []
+    try:
+        session_uuid = uuid.UUID(str(session_id))
+    except ValueError:
+        return []
+
+    from app.models.audit import ChatMessage
+    from app.services.web_chat_runtime import _apply_active_projection_to_history, conversation_from_history_messages
+
+    async with tenant_scoped_session(tenant_id) as db:
+        session = (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == session_uuid,
+                    ChatSession.agent_id == agent_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if session is None:
+            return []
+        rows = list(
+            (
+                await db.execute(
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.agent_id == agent_id,
+                        ChatMessage.conversation_id == str(session_uuid),
+                    )
+                    .order_by(desc(ChatMessage.created_at))
+                    .limit(max(1, limit))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        rows.reverse()
+        projected = await _apply_active_projection_to_history(db, session, rows)
+        return conversation_from_history_messages(projected)
 
 
 @tool(
     ToolMeta(
         name="spawn_subagent",
         description=(
-            "To Session Worker: spawn a session-local worker to handle one self-contained task in isolation "
-            "and return a conclusion digest. Use this to parallelize independent work, protect the parent "
-            "context from noisy exploration, or get independent verification before reporting completion. "
+            "AgentTool-compatible To Session Worker: spawn a session-local worker, fork the current session "
+            "context, launch a background agent, or spawn an Agent Team teammate via team_name + name. "
+            "Use this to parallelize independent work, protect the parent context from noisy exploration, "
+            "or get independent verification before reporting completion. "
             "This is not A2A delegation and does not require a colleague relationship. Built-in types: "
             "'general-purpose' — default edit-capable worker for a scoped task; "
             "'explorer' — fast READ-ONLY reconnaissance over files and the web; use for finding files, "
@@ -253,6 +335,9 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
             "Named definitions (via definition_name) override type, tools, model, and prompt from their "
             "stored 定义.md. Subagents cannot delegate or spawn further and run under the same governance "
             "as you. To hand work to another standalone digital employee (To Employee), use delegate_to_agent instead. "
+            "For Agent Team: first call team_create to create the Team container, then call this tool with "
+            "team_name and name to spawn a teammate; use send_agent_session_message with to/member_name to talk "
+            "inside the Team. "
             "If the step ORDER itself is the requirement (fixed sequence, mid-run approval gates, "
             "budgeted fan-out), use propose_dynamic_workflow/preview_workflow/start_workflow instead of spawning."
         ),
@@ -284,6 +369,25 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
                 ),
             }
         )
+
+    team_name = str(normalized_args.get("team_name") or "").strip()
+    member_name = str(normalized_args.get("name") or "").strip()
+    if team_name and member_name:
+        try:
+            return _json(
+                await spawn_agent_team_member_from_tool_request(
+                    request,
+                    team_name=team_name,
+                    member_name=member_name,
+                    prompt=task,
+                    description=str(normalized_args.get("description") or ""),
+                    subagent_type=str(normalized_args.get("subagent_type") or SUBAGENT_TYPE_GENERAL_PURPOSE),
+                    model=str(normalized_args.get("model") or ""),
+                    mode=str(normalized_args.get("mode") or ""),
+                )
+            )
+        except Exception as exc:
+            return _json({"ok": False, "error": f"teammate spawn failed: {exc}"})
 
     agent_id = request.context.agent_id
     model, fallback_model, agent = await _resolve_parent_runtime(agent_id)
@@ -333,6 +437,8 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             spec.model = model_override
         if normalized_args.get("description"):
             spec.description = str(normalized_args["description"])
+        if str(normalized_args.get("isolation") or "").strip() in {"none", "all"}:
+            spec.isolation = str(normalized_args["isolation"])  # type: ignore[assignment]
         definition_scope = resolved.scope
     else:
         subagent_type = str(normalized_args.get("subagent_type") or SUBAGENT_TYPE_GENERAL_PURPOSE).strip()
@@ -357,6 +463,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             type=subagent_type,
             model=model_override or None,
             max_tool_rounds=max_tool_rounds,
+            isolation=str(normalized_args.get("isolation") or "none"),  # type: ignore[arg-type]
             has_own_memory=not plan_mode_active,
         )
 
@@ -365,6 +472,10 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     # specs, unchanged) share the tenant store.
     if plan_mode_active:
         memory_store = None
+    elif spec.memory_scope in {"project", "local"}:
+        memory_store = memory_store_for_agent(agent_id)
+    elif spec.memory_scope == "user":
+        memory_store = memory_store_for_tenant(tenant_id) if tenant_id is not None else None
     elif definition_scope == SCOPE_AGENT:
         memory_store = memory_store_for_agent(agent_id)
     else:
@@ -395,6 +506,13 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         memory_store=memory_store,
         memory_distiller=memory_distiller,
         parent_session_id=request.context.session_id,
+        parent_messages=await _load_parent_messages_for_fork(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=request.context.session_id,
+        )
+        if spec.isolation == "all"
+        else [],
     )
 
     ledger_todo_id = str(normalized_args.get("ledger_todo_id") or "").strip() or None
@@ -554,7 +672,8 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
         description=(
             "Append a follow-up message to an existing child agent session mailbox. Use this for Agent Team "
             "member sessions or background subagent child_session_id values returned by spawn_subagent. For "
-            "Agent Team workspaces you may pass team_id plus member_name, with member_name='*' to broadcast, "
+            "Agent Team workspaces you may pass to/member_name plus team_name, or team_id plus member_name, "
+            "with to/member_name='*' to broadcast, "
             "so you do not need to copy child session UUIDs. This records the continuation in the Session/T0 "
             "transcript; active runtimes consume it through the session mailbox layer."
         ),
@@ -568,6 +687,14 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
                 "team_id": {
                     "type": "string",
                     "description": "Agent Team id returned by team_create when addressing a Team member by name.",
+                },
+                "team_name": {
+                    "type": "string",
+                    "description": "Agent Team name. Use this with to/member_name when you do not want to copy the team UUID.",
+                },
+                "to": {
+                    "type": "string",
+                    "description": "CC SendMessage-style teammate name, or '*' to broadcast to active members.",
                 },
                 "member_name": {
                     "type": "string",
@@ -583,7 +710,12 @@ async def check_subagent(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
             },
             "required": ["message"],
-            "anyOf": [{"required": ["child_session_id"]}, {"required": ["team_id", "member_name"]}],
+            "anyOf": [
+                {"required": ["child_session_id"]},
+                {"required": ["team_id", "member_name"]},
+                {"required": ["team_name", "to"]},
+                {"required": ["to"]},
+            ],
         },
         category="coordination",
         display_name="Send Agent Session Message",
@@ -596,7 +728,7 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
     child_session_uuid = _uuid_or_none(request.arguments.get("child_session_id"))
     message = str(request.arguments.get("message") or "").strip()
     if child_session_uuid is None:
-        if request.arguments.get("team_id") and request.arguments.get("member_name"):
+        if request.arguments.get("team_id") or request.arguments.get("team_name") or request.arguments.get("to"):
             try:
                 return _json(await send_agent_team_message_from_tool_request(request))
             except Exception as exc:

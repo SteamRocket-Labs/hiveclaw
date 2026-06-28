@@ -148,14 +148,12 @@ describe('ccParityApi', () => {
     await ccParityApi.createTeam('agent-1', {
       parent_session_id: 'session-1',
       name: 'research',
-      members: [{ name: 'critic', role: 'Review' }],
     });
 
     expect(requestOf().url).toBe('/api/agents/agent-1/agent-teams');
     expect(JSON.parse(String(requestOf().init.body))).toEqual({
       parent_session_id: 'session-1',
       name: 'research',
-      members: [{ name: 'critic', role: 'Review' }],
     });
   });
 

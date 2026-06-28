@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import inspect
-import uuid
 from typing import Any
 
-from app.models.agent_team import AgentTeamEvent, AgentTeamMember
-from app.services.agent_team_runtime_service import create_agent_team_runtime_result, team_member_specs_from_raw
+from app.services.agent_team_runtime_service import (
+    TeamMemberCreateSpec,
+    create_agent_team_runtime_result,
+    spawn_agent_team_member_runtime,
+)
 from app.services.plan_mode_core import build_plan_execution_instruction
-from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat_run
 
 AGENT_TEAM_TARGET = "agent_team"
 
@@ -48,20 +49,6 @@ async def _load_session(db: Any, session_id: Any) -> Any | None:
     return (await db.execute(select(ChatSession).where(ChatSession.id == session_id))).scalar_one_or_none()
 
 
-def _uuid_or_none(value: Any) -> uuid.UUID | None:
-    if value is None:
-        return None
-    if isinstance(value, uuid.UUID):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return uuid.UUID(text)
-    except ValueError:
-        return None
-
-
 def _execution_contract(plan: Any) -> dict[str, Any]:
     plan_json = getattr(plan, "plan_json", None)
     if not isinstance(plan_json, dict):
@@ -90,20 +77,6 @@ def _plan_prompt(plan: Any, *, member: dict[str, Any]) -> str:
         original_request=str(getattr(plan, "original_request", "") or ""),
         source="live",
     )
-
-
-def _stamp_member_runtime(member: AgentTeamMember, run: dict[str, Any], *, status: str) -> None:
-    run_id = run.get("run_id") or run.get("id")
-    run_uuid = _uuid_or_none(run_id)
-    if run_uuid is not None:
-        member.runtime_task_id = run_uuid
-    member.status = "running" if status in {"running", "queued"} else status
-    metadata = dict(member.metadata_json or {})
-    metadata["last_runtime_status"] = status
-    metadata["last_runtime_payload"] = run
-    if run_id:
-        metadata["last_runtime_task_id"] = str(run_id)
-    member.metadata_json = metadata
 
 
 async def agent_team_handoff(db: Any, plan: Any) -> dict[str, Any]:
@@ -144,66 +117,56 @@ async def agent_team_handoff(db: Any, plan: Any) -> dict[str, Any]:
         user=user,
         parent_session=parent_session,
         name=str(contract.get("name") or "Plan Agent Team").strip(),
-        members=team_member_specs_from_raw(members),
+        members=[],
         source="plan_mode_handoff",
         metadata={
             "approved_plan_id": str(plan.id),
             "approved_plan_version": getattr(plan, "plan_version", None),
             "approved_plan_hash": getattr(plan, "plan_hash", None),
             "execution_contract_type": "agent_team",
+            "team_create_semantics": "container_only",
         },
     )
     team = create_result.team
 
     member_runs: list[dict[str, Any]] = []
-    for raw_member, member, member_session in zip(members, create_result.members, create_result.member_sessions):
-        try:
-            run = await start_web_chat_run(
-                db=db,
-                agent=agent,
-                user=user,
-                session=member_session,
-                content=_plan_prompt(plan, member=raw_member),
-                display_content=str(raw_member.get("display_content") or ""),
-                runtime_task_type="team_member",
-                extra_metadata={
-                    "source": "plan_mode_agent_team_handoff",
-                    "team_id": str(team.id),
-                    "member_id": str(member.id),
-                    "member_name": member.member_name,
+    for raw_member in members:
+        spawn_result = await spawn_agent_team_member_runtime(
+            db=db,
+            agent=agent,
+            user=user,
+            parent_session=parent_session,
+            team=team,
+            spec=TeamMemberCreateSpec(
+                name=str(raw_member.get("name") or "").strip(),
+                role=str(raw_member.get("role") or raw_member.get("member_role") or "").strip(),
+                model_id=raw_member.get("model_id"),
+                tool_policy=raw_member.get("tool_policy") if isinstance(raw_member.get("tool_policy"), dict) else None,
+                budget=raw_member.get("budget") if isinstance(raw_member.get("budget"), dict) else None,
+                prompt=str(raw_member.get("prompt") or "").strip() or None,
+                display_content=str(raw_member.get("display_content") or "").strip() or None,
+                metadata={
                     "approved_plan_id": str(plan.id),
                     "approved_plan_version": getattr(plan, "plan_version", None),
                     "approved_plan_hash": getattr(plan, "plan_hash", None),
-                    "execution_contract": contract,
+                    "execution_contract_type": "agent_team",
                 },
-            )
-            status = str(run.get("status") or "running")
-            event_type = "member_run_started"
-        except ActiveWebChatRunExists as exc:
-            run = {"status": "queued", **exc.run}
-            status = "queued"
-            event_type = "member_message_queued"
-        _stamp_member_runtime(member, run, status=status)
-        db.add(
-            AgentTeamEvent(
-                team_id=team.id,
-                sender_member_id=member.id,
-                event_type=event_type,
-                payload_json={
-                    "status": status,
-                    "run_id": run.get("run_id"),
-                    "runtime_task_type": "team_member",
-                    "source": "plan_mode_handoff",
-                },
-            )
+            ),
+            prompt=_plan_prompt(plan, member=raw_member),
+            source="plan_mode_agent_team_handoff",
+            mode="plan_confirmed",
         )
+        run_payload = spawn_result.get("run") if isinstance(spawn_result.get("run"), dict) else {}
+        run_results = run_payload.get("results") if isinstance(run_payload.get("results"), list) else []
+        first_run = run_results[0] if run_results and isinstance(run_results[0], dict) else {}
+        member_payload = spawn_result.get("member") if isinstance(spawn_result.get("member"), dict) else {}
         member_runs.append(
             {
-                "member_id": str(member.id),
-                "member_name": member.member_name,
-                "chat_session_id": str(member.chat_session_id),
-                "run_id": run.get("run_id"),
-                "status": status,
+                "member_id": str(member_payload.get("id") or ""),
+                "member_name": str(spawn_result.get("member_name") or member_payload.get("member_name") or ""),
+                "chat_session_id": str(spawn_result.get("child_session_id") or ""),
+                "run_id": first_run.get("run_id"),
+                "status": str(first_run.get("status") or spawn_result.get("status") or "queued"),
             }
         )
 

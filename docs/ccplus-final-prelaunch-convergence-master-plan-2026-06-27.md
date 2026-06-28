@@ -348,7 +348,7 @@ cd backend && source .venv/bin/activate && pytest \
 
 实施结果（2026-06-27 / Workstream B）：
 
-- 已建立 model-visible AgentTool-compatible `spawn_subagent` surface：`prompt`、`description`、`subagent_type`、`model`、`run_in_background`、`name`；旧 `task` / `type` 只作为兼容 alias。Agent Team 不通过 `spawn_subagent.team_name` 启动，统一走 `team_create` / Team runtime。
+- 已建立 model-visible AgentTool-compatible `spawn_subagent` surface：`prompt`、`description`、`subagent_type`、`model`、`run_in_background`、`name`、`team_name`、`mode`、`isolation`；旧 `task` / `type` 只作为兼容 alias。Agent Team teammate spawn 对齐 CC：先 `team_create` 建 Team 容器，再用 `spawn_subagent(team_name + name)` 进入同一个 teammate runtime。
 - `subagent_type` 默认从旧 `explorer` 改为 `general-purpose`，内部映射到 edit-capable worker preset；公开 built-ins 为 `general-purpose` / `explorer` / `critic`，历史 `worker` 值仅作为兼容 alias 归一到 `general-purpose`。
 - 新增 `## Session Worker Types` 常驻 prompt section，直接从 built-in `whenToUse` 渲染 `general-purpose` / `explorer` / `critic`，进入 agent context；不再只藏在 tool schema，也不再把 `worker` 作为第二个等价选项暴露。
 - Coordinator mode 已切到 To Session Worker：allowed tools 为 `spawn_subagent` / `check_subagent` / `send_agent_session_message` 等；`delegate_to_agent` / `check_async_task` / `list_async_tasks` / `cancel_async_task` 不再是 coordinator worker path。
@@ -358,6 +358,14 @@ cd backend && source .venv/bin/activate && pytest \
 - background subagent completion wake prompt 已移除内部 `consume_subagent_signals`，改为 parent session mailbox + wake path；`check_subagent` 只保留为 fallback status inspection。
 - Background completion wake 已统一到 `session_workbench.completion_wakes`：Sub-agent、Agent Team member、Workflow/long-running RuntimeTask 从 `RuntimeTask + AgentTeamMember.metadata_json + session timeline` 重建同一个 completion inbox，并暴露 `completion_wake_policy` / `completion_wake_summary` 给前端。
 - Codex-style `multi_agent_mode` 已作为 typed TurnEnvelope / Workbench 状态承载；不得另建第二套 coordinator path。
+
+追加收口（2026-06-28 / AgentTool full-mode alignment）：
+
+- `TeamCreate` 的唯一语义是创建 Team container / lead context / task-list shell；`team_create` model tool、command API、REST `/agent-teams` 和 Plan Mode handoff 都不得用 `members` 直接创建 teammate session。
+- teammate creation 的唯一语义是 AgentTool teammate branch：`spawn_subagent` 带 `team_name + name` 调用 `spawn_agent_team_member_runtime`，创建 member session、记录 `member_spawned`，并通过 Team mailbox 投递初始 prompt。
+- `SendMessage` 的唯一队内通信语义是 `send_agent_session_message(team_name/to)` 或 `team_id/member_name`，最终共用 `message_agent_team_members_runtime`。
+- `run_in_background` 与 `isolation` 正交：background agent 不默认 fork；显式 `isolation=all` 才 fork 父上下文。
+- `worker` 不再是第二个 built-in type；它只作为 legacy alias 归一到 `general-purpose`，内部 preset/prompt/description 也不再保留 `worker` key。
 
 证据：
 
@@ -383,6 +391,16 @@ cd backend && source .venv/bin/activate && pytest \
   tests/kernel/test_runtime_guidance_catalog.py \
   -q
 # 248 passed, 4 warnings
+```
+
+追加证据（2026-06-28）：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/tools/test_agent_tool_cc_compat.py tests/services/test_agent_team_runtime_service.py tests/services/test_plan_mode_agent_team_handoff.py tests/services/test_plan_mode_registry.py tests/tools/test_exit_plan_mode_tool.py tests/tools/test_cc_codex_parity_tools.py tests/api/test_cc_codex_parity_api.py tests/api/test_agent_teams_events_api.py tests/services/test_cc_codex_parity_substrate.py tests/runtime/test_unified_prompt_contracts.py tests/services/test_prompt_contracts.py tests/tools/test_plan_mode_policy.py tests/agents/test_subagent_definition.py tests/agents/test_subagent_spawn_tool.py tests/services/test_subagent_run_service.py -q
+# 177 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_accepted_prompt_first.py tests/tools/test_agent_tool_cc_compat.py tests/agents/test_subagent_fork.py tests/agents/test_subagent.py tests/agents/test_subagent_scope_resolution.py -q
+# 60 passed, 4 warnings
 ```
 
 ### 主线 C：Agent Team / A2A Session-first Collaboration

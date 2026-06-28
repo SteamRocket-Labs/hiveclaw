@@ -20,7 +20,6 @@ from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_team_runtime_service import (
     create_agent_team_runtime,
     message_agent_team_members_runtime,
-    team_member_specs_from_raw,
 )
 from app.services.chat_transcript import append_session_event
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
@@ -40,7 +39,7 @@ class CreateAgentTeamMemberIn(BaseModel):
 class CreateAgentTeamIn(BaseModel):
     parent_session_id: uuid.UUID
     name: str = Field(min_length=1)
-    members: list[CreateAgentTeamMemberIn] = Field(min_length=1)
+    members: list[CreateAgentTeamMemberIn] = Field(default_factory=list)
 
 
 class CreateAgentTeamEventIn(BaseModel):
@@ -274,6 +273,11 @@ async def create_agent_team(
 ) -> dict:
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     parent_session = await _load_member_parent_session_or_404(db, agent_id=agent_id, session_id=body.parent_session_id)
+    if body.members:
+        raise HTTPException(
+            status_code=400,
+            detail="TeamCreate creates the Team container only; spawn teammates with AgentTool team_name + name",
+        )
     try:
         payload = await create_agent_team_runtime(
             db=db,
@@ -281,8 +285,9 @@ async def create_agent_team(
             user=current_user,
             parent_session=parent_session,
             name=body.name.strip(),
-            members=team_member_specs_from_raw([member.model_dump() for member in body.members]),
+            members=[],
             source="agent_teams_api",
+            metadata={"team_create_semantics": "container_only"},
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

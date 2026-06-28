@@ -55,9 +55,10 @@ def test_command_parity_tools_explain_command_layer_semantics() -> None:
     assert "current session goal" in goal_start.meta.description
     assert "resume/continuation" in goal_start.meta.description
     assert "does not complete the goal automatically" in goal_start.meta.description
-    assert "enterable Team workspace" in team_create.meta.description
-    assert "separate session context per member" in team_create.meta.description
-    assert "integrate results back into the parent session" in team_create.meta.description
+    assert "Team container" in team_create.meta.description
+    assert "does not spawn teammates" in team_create.meta.description
+    assert "spawn_subagent" in team_create.meta.description
+    assert "team_name" in team_create.meta.description
     assert "planning-only" in advanced_plan.meta.description
     assert "does not execute" in advanced_plan.meta.description
     assert "evidence check" in verify_plan.meta.description

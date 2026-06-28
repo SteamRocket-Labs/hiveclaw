@@ -1,9 +1,9 @@
 """Unified Agent Team runtime operations.
 
-Agent Team is a session-local, enterable workspace: one durable team row,
-one child ChatSession per member, and team events/index rows that point back
-to the parent session. It is deliberately separate from A2A employee
-delegation and from lightweight session workers spawned with ``spawn_subagent``.
+Agent Team is the CC AgentTool teammate branch expressed in Hive session
+runtime terms: ``team_create`` creates a session-local team container and
+``spawn_subagent(team_name + name)`` creates/starts addressable teammate child
+sessions. It is deliberately separate from A2A employee delegation.
 """
 
 from __future__ import annotations
@@ -73,6 +73,21 @@ def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
     }
 
 
+def _unique_member_name(requested: str, existing: list[AgentTeamMember]) -> str:
+    base = str(requested or "").strip()
+    if not base:
+        raise ValueError("Team member name is required")
+    used = {str(member.member_name or "").strip().lower() for member in existing}
+    if base.lower() not in used:
+        return base
+    idx = 2
+    while True:
+        candidate = f"{base}-{idx}"
+        if candidate.lower() not in used:
+            return candidate
+        idx += 1
+
+
 def team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_api_persist: bool = False) -> dict[str, Any]:
     return {
         "requires_api_persist": requires_api_persist,
@@ -128,6 +143,70 @@ async def _append_team_member_parent_event(
     )
 
 
+def _build_team_member_records(
+    *,
+    agent: Any,
+    user: Any,
+    parent_session: Any,
+    team: AgentTeam,
+    spec: TeamMemberCreateSpec,
+    source: str,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[AgentTeamMember, ChatSession]:
+    member_name = str(spec.name or "").strip()
+    if not member_name:
+        raise ValueError("Team member name is required")
+    parent_session_id = _uuid_or_none(getattr(parent_session, "id", None))
+    if parent_session_id is None:
+        raise ValueError("A valid parent session is required")
+
+    root_session_id = _uuid_or_none(getattr(parent_session, "root_session_id", None)) or parent_session_id
+    member_session_id = uuid.uuid4()
+    member_role = str(spec.role or "").strip()
+    member_metadata = {
+        "runtime_policy": "enterable_chat_session",
+        "direct_chat_supported": True,
+        "source": source,
+        **(metadata or {}),
+        **(spec.metadata or {}),
+    }
+    member_session = ChatSession(
+        id=member_session_id,
+        agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", None),
+        user_id=getattr(user, "id", None),
+        title=f"{team.name} / {member_name}"[:200],
+        source_channel="agent_team",
+        session_kind="team_member",
+        actor_type="agent",
+        runtime_source="team_member",
+        visibility_scope="team",
+        listed_surface="chat",
+        parent_session_id=parent_session_id,
+        root_session_id=root_session_id,
+        transcript_metadata_json={
+            "team_id": str(team.id),
+            "member_name": member_name,
+            "member_role": member_role,
+            "source": source,
+            **(metadata or {}),
+            **(spec.metadata or {}),
+        },
+    )
+    member = AgentTeamMember(
+        id=uuid.uuid4(),
+        team_id=team.id,
+        member_name=member_name[:160],
+        member_role=member_role or None,
+        model_id=_uuid_or_none(spec.model_id),
+        chat_session_id=member_session_id,
+        tool_policy_json=spec.tool_policy if isinstance(spec.tool_policy, dict) else None,
+        budget_json=spec.budget if isinstance(spec.budget, dict) else None,
+        metadata_json=member_metadata,
+    )
+    return member, member_session
+
+
 async def create_agent_team_runtime_result(
     *,
     db: Any,
@@ -145,12 +224,14 @@ async def create_agent_team_runtime_result(
     team_name = str(name or "").strip()
     if not team_name:
         raise ValueError("Team name is required")
-    if not members:
-        raise ValueError("At least one team member is required")
 
     parent_session_id = _uuid_or_none(getattr(parent_session, "id", None))
     if parent_session_id is None:
         raise ValueError("A valid parent session is required")
+    if members:
+        raise ValueError(
+            "TeamCreate creates the Team container only; spawn teammates with spawn_subagent team_name + name"
+        )
 
     team = AgentTeam(
         id=uuid.uuid4(),
@@ -171,58 +252,6 @@ async def create_agent_team_runtime_result(
 
     created_members: list[AgentTeamMember] = []
     member_sessions: list[ChatSession] = []
-    root_session_id = _uuid_or_none(getattr(parent_session, "root_session_id", None)) or parent_session_id
-    for spec in members:
-        member_name = str(spec.name or "").strip()
-        if not member_name:
-            raise ValueError("Team member name is required")
-        member_session_id = uuid.uuid4()
-        member_role = str(spec.role or "").strip()
-        member_metadata = {
-            "runtime_policy": "enterable_chat_session",
-            "direct_chat_supported": True,
-            "source": source,
-            **(metadata or {}),
-            **(spec.metadata or {}),
-        }
-        member_session = ChatSession(
-            id=member_session_id,
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            user_id=getattr(user, "id", None),
-            title=f"{team.name} / {member_name}"[:200],
-            source_channel="agent_team",
-            session_kind="team_member",
-            actor_type="agent",
-            runtime_source="team_member",
-            visibility_scope="team",
-            listed_surface="chat",
-            parent_session_id=parent_session_id,
-            root_session_id=root_session_id,
-            transcript_metadata_json={
-                "team_id": str(team.id),
-                "member_name": member_name,
-                "member_role": member_role,
-                "source": source,
-                **(metadata or {}),
-                **(spec.metadata or {}),
-            },
-        )
-        db.add(member_session)
-        member = AgentTeamMember(
-            id=uuid.uuid4(),
-            team_id=team.id,
-            member_name=member_name[:160],
-            member_role=member_role or None,
-            model_id=_uuid_or_none(spec.model_id),
-            chat_session_id=member_session_id,
-            tool_policy_json=spec.tool_policy if isinstance(spec.tool_policy, dict) else None,
-            budget_json=spec.budget if isinstance(spec.budget, dict) else None,
-            metadata_json=member_metadata,
-        )
-        db.add(member)
-        created_members.append(member)
-        member_sessions.append(member_session)
 
     db.add(
         AgentTeamEvent(
@@ -274,29 +303,99 @@ async def create_agent_team_runtime(**kwargs: Any) -> dict[str, Any]:
     return result.payload
 
 
-def team_member_specs_from_raw(raw_members: Any) -> list[TeamMemberCreateSpec]:
-    if not isinstance(raw_members, list):
-        return []
-    specs: list[TeamMemberCreateSpec] = []
-    for raw in raw_members:
-        if not isinstance(raw, dict):
-            raise ValueError("Team members must be objects")
-        name = str(raw.get("name") or raw.get("member_name") or "").strip()
-        if not name:
-            raise ValueError("Team member name is required")
-        specs.append(
-            TeamMemberCreateSpec(
-                name=name,
-                role=str(raw.get("role") or raw.get("member_role") or "").strip(),
-                model_id=raw.get("model_id"),
-                tool_policy=raw.get("tool_policy") if isinstance(raw.get("tool_policy"), dict) else None,
-                budget=raw.get("budget") if isinstance(raw.get("budget"), dict) else None,
-                prompt=str(raw.get("prompt") or "").strip() or None,
-                display_content=str(raw.get("display_content") or "").strip() or None,
-                metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else None,
-            )
+async def spawn_agent_team_member_runtime(
+    *,
+    db: Any,
+    agent: Any,
+    user: Any,
+    parent_session: Any,
+    team: AgentTeam,
+    spec: TeamMemberCreateSpec,
+    prompt: str,
+    source: str,
+    mode: str = "",
+) -> dict[str, Any]:
+    """Create and start one teammate from the AgentTool ``team_name + name`` branch."""
+
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        raise ValueError("prompt is required for teammate spawn")
+
+    existing_members: list[AgentTeamMember] = []
+    if hasattr(db, "execute"):
+        existing_result = await db.execute(
+            select(AgentTeamMember).where(AgentTeamMember.team_id == team.id).order_by(AgentTeamMember.created_at.asc())
         )
-    return specs
+        existing_members = list(existing_result.scalars().all())
+    unique_name = _unique_member_name(spec.name, existing_members)
+    member_spec = TeamMemberCreateSpec(
+        name=unique_name,
+        role=spec.role,
+        model_id=spec.model_id,
+        tool_policy=spec.tool_policy,
+        budget=spec.budget,
+        prompt=spec.prompt,
+        display_content=spec.display_content,
+        metadata={**(spec.metadata or {}), "agent_tool_branch": "teammate_spawn", "mode": mode},
+    )
+    member, member_session = _build_team_member_records(
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        team=team,
+        spec=member_spec,
+        source=source,
+    )
+    db.add(member_session)
+    db.add(member)
+    db.add(
+        AgentTeamEvent(
+            id=uuid.uuid4(),
+            team_id=team.id,
+            receiver_member_id=member.id,
+            event_type="member_spawned",
+            payload_json={
+                "member_name": member.member_name,
+                "member_role": member.member_role,
+                "source": source,
+                "mode": mode,
+            },
+        )
+    )
+    await db.flush()
+    await _append_team_member_parent_event(
+        db=db,
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        team=team,
+        member=member,
+        source=source,
+        command="spawn_subagent",
+    )
+    run_payload = await message_agent_team_members_runtime(
+        db=db,
+        agent=agent,
+        user=user,
+        team=team,
+        members=[member],
+        member_sessions=[member_session],
+        message=prompt_text,
+        display_content=spec.display_content or prompt_text,
+        interrupt_requested=False,
+        source=source,
+    )
+    return {
+        "ok": bool(run_payload.get("ok")),
+        "status": "teammate_spawned",
+        "team_id": str(team.id),
+        "team_name": team.name,
+        "member": _team_member_payload(member),
+        "member_name": member.member_name,
+        "child_session_id": str(member.chat_session_id),
+        "prompt": prompt_text,
+        "run": run_payload,
+    }
 
 
 def _stamp_member_runtime(member: AgentTeamMember, run: dict[str, Any], *, status: str) -> None:
@@ -484,7 +583,14 @@ async def message_agent_team_members_runtime(
     }
 
 
-async def create_agent_team_from_tool_request(request: Any, *, name: str, members: list[dict[str, Any]]) -> dict[str, Any]:
+async def create_agent_team_from_tool_request(
+    request: Any,
+    *,
+    name: str,
+    members: list[dict[str, Any]] | None = None,
+    description: str = "",
+    agent_type: str = "",
+) -> dict[str, Any]:
     session_id = _uuid_or_none(getattr(request.context, "session_id", None))
     if session_id is None:
         raise ValueError("team_create requires the current session_id")
@@ -514,26 +620,112 @@ async def create_agent_team_from_tool_request(request: Any, *, name: str, member
         ).scalar_one_or_none()
         if parent_session is None:
             raise ValueError("Parent session not found")
+        if members:
+            raise ValueError(
+                "team_create creates the Team container only; spawn teammates with spawn_subagent team_name + name"
+            )
         return await create_agent_team_runtime(
             db=db,
             agent=agent,
             user=user,
             parent_session=parent_session,
             name=name,
-            members=team_member_specs_from_raw(members),
+            members=[],
             source="team_create_tool",
             command="team_create",
+            metadata={
+                "description": str(description or "").strip(),
+                "lead_agent_type": str(agent_type or "").strip(),
+                "team_create_semantics": "container_only",
+            },
+        )
+
+
+async def spawn_agent_team_member_from_tool_request(
+    request: Any,
+    *,
+    team_name: str,
+    member_name: str,
+    prompt: str,
+    description: str = "",
+    subagent_type: str = "",
+    model: str = "",
+    mode: str = "",
+) -> dict[str, Any]:
+    session_id = _uuid_or_none(getattr(request.context, "session_id", None))
+    if session_id is None:
+        raise ValueError("AgentTool teammate spawn requires the current session_id")
+    team_name = str(team_name or "").strip()
+    member_name = str(member_name or "").strip()
+    if not team_name:
+        raise ValueError("team_name is required for teammate spawn")
+    if not member_name:
+        raise ValueError("name is required for teammate spawn")
+
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason=f"agent team teammate spawn runtime resolution for agent {request.context.agent_id}"),
+    ):
+        agent = (await db.execute(select(Agent).where(Agent.id == request.context.agent_id))).scalar_one_or_none()
+        if agent is None:
+            raise ValueError("Agent not found")
+        tenant_id = getattr(agent, "tenant_id", None)
+
+    async with tenant_scoped_session(tenant_id) as db:
+        user = (await db.execute(select(User).where(User.id == request.context.user_id))).scalar_one_or_none()
+        parent_session = (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == session_id,
+                    ChatSession.agent_id == request.context.agent_id,
+                )
+            )
+        ).scalar_one_or_none()
+        team = (
+            await db.execute(
+                select(AgentTeam).where(
+                    AgentTeam.lead_agent_id == request.context.agent_id,
+                    AgentTeam.parent_session_id == session_id,
+                    AgentTeam.name == team_name,
+                    AgentTeam.status == "active",
+                )
+            )
+        ).scalar_one_or_none()
+        if user is None:
+            raise ValueError("User not found")
+        if parent_session is None:
+            raise ValueError("Parent session not found")
+        if team is None:
+            raise ValueError(f"Team {team_name!r} not found in the current session; call team_create first")
+        return await spawn_agent_team_member_runtime(
+            db=db,
+            agent=agent,
+            user=user,
+            parent_session=parent_session,
+            team=team,
+            spec=TeamMemberCreateSpec(
+                name=member_name,
+                role=str(description or "").strip(),
+                metadata={
+                    "agent_type": str(subagent_type or "").strip(),
+                    "model": str(model or "").strip(),
+                },
+            ),
+            prompt=prompt,
+            source="agent_tool_teammate_spawn",
+            mode=mode,
         )
 
 
 async def send_agent_team_message_from_tool_request(request: Any) -> dict[str, Any]:
     team_id = _uuid_or_none(getattr(request, "arguments", {}).get("team_id"))
-    member_name = str(getattr(request, "arguments", {}).get("member_name") or "").strip()
+    team_name = str(getattr(request, "arguments", {}).get("team_name") or "").strip()
+    member_name = str(
+        getattr(request, "arguments", {}).get("member_name") or getattr(request, "arguments", {}).get("to") or ""
+    ).strip()
     message = str(getattr(request, "arguments", {}).get("message") or "").strip()
-    if team_id is None:
-        raise ValueError("team_id must be a valid UUID")
     if not member_name:
-        raise ValueError("member_name is required; use '*' to broadcast")
+        raise ValueError("member_name/to is required; use '*' to broadcast")
     if not message:
         raise ValueError("message is required")
 
@@ -543,14 +735,18 @@ async def send_agent_team_message_from_tool_request(request: Any) -> dict[str, A
     async with tenant_scoped_session(tenant_id) as db:
         agent = (await db.execute(select(Agent).where(Agent.id == request.context.agent_id))).scalar_one_or_none()
         user = (await db.execute(select(User).where(User.id == request.context.user_id))).scalar_one_or_none()
-        team = (
-            await db.execute(
-                select(AgentTeam).where(
-                    AgentTeam.id == team_id,
-                    AgentTeam.lead_agent_id == request.context.agent_id,
-                )
-            )
-        ).scalar_one_or_none()
+        team_stmt = select(AgentTeam).where(AgentTeam.lead_agent_id == request.context.agent_id)
+        if team_id is not None:
+            team_stmt = team_stmt.where(AgentTeam.id == team_id)
+        else:
+            session_id = _uuid_or_none(getattr(request.context, "session_id", None))
+            team_stmt = team_stmt.where(AgentTeam.status == "active")
+            if session_id is not None:
+                team_stmt = team_stmt.where(AgentTeam.parent_session_id == session_id)
+            if team_name:
+                team_stmt = team_stmt.where(AgentTeam.name == team_name)
+            team_stmt = team_stmt.order_by(AgentTeam.created_at.desc()).limit(1)
+        team = (await db.execute(team_stmt)).scalar_one_or_none()
         if agent is None or user is None:
             raise ValueError("Agent Team continuation principal could not be loaded")
         if team is None:

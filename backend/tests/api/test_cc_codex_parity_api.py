@@ -824,10 +824,9 @@ async def test_commands_api_schedule_once_persists_disabled_draft_without_tool_r
 
 
 @pytest.mark.asyncio
-async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
+async def test_commands_api_team_create_creates_container_only_and_delete_is_durable(monkeypatch):
     import app.api.commands as commands_api
     from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
-    from app.models.chat_session import ChatSession
 
     agent_id = uuid4()
     session_id = uuid4()
@@ -864,7 +863,7 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
         agent_id=agent_id,
         command_name="team",
         body=commands_api.ExecuteCommandIn(
-            arguments={"name": "research", "members": [{"name": "critic", "role": "Review"}]},
+            arguments={"team_name": "research", "description": "Review implementation options."},
             session_id=str(session_id),
         ),
         current_user=current_user,
@@ -873,22 +872,12 @@ async def test_commands_api_team_create_and_delete_are_durable(monkeypatch):
 
     assert created["result"]["requires_api_persist"] is False
     assert created["result"]["status"] == "active"
-    assert {type(item).__name__ for item in create_db.added} >= {
-        "AgentTeam",
-        "AgentTeamMember",
-        "AgentTeamEvent",
-        "ChatSession",
-    }
+    assert created["result"]["members"] == []
+    assert {type(item).__name__ for item in create_db.added} == {"AgentTeam", "AgentTeamEvent"}
     team = next(item for item in create_db.added if isinstance(item, AgentTeam))
-    member = next(item for item in create_db.added if isinstance(item, AgentTeamMember))
-    member_session = next(item for item in create_db.added if isinstance(item, ChatSession))
     assert team.parent_session_id == session_id
-    assert member.team_id == team.id
-    assert member.chat_session_id == member_session.id
     assert emitted[0][0] == "team_created"
-    assert recorded_events[-1]["event_type"] == "team_member"
-    assert recorded_events[-1]["metadata"]["team_id"] == str(team.id)
-    assert recorded_events[-1]["metadata"]["child_session_id"] == str(member_session.id)
+    assert recorded_events == []
 
     existing_team = AgentTeam(
         id=team_id,
@@ -1226,7 +1215,7 @@ async def test_goals_api_continues_session_goal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_teams_api_creates_control_index_and_member_sessions(monkeypatch):
+async def test_agent_teams_api_creates_container_only(monkeypatch):
     import app.api.agent_teams as teams_api
 
     agent_id = uuid4()
@@ -1258,7 +1247,6 @@ async def test_agent_teams_api_creates_control_index_and_member_sessions(monkeyp
         body=teams_api.CreateAgentTeamIn(
             parent_session_id=parent_session_id,
             name="research",
-            members=[teams_api.CreateAgentTeamMemberIn(name="critic", role="Review")],
         ),
         current_user=current_user,
         db=db,
@@ -1267,15 +1255,9 @@ async def test_agent_teams_api_creates_control_index_and_member_sessions(monkeyp
     assert result["name"] == "research"
     assert result["status"] == "active"
     assert result["transcript_truth"] == "chat_session_t0"
-    assert result["members"][0]["member_name"] == "critic"
-    assert result["members"][0]["runtime_task_type"] == "team_member"
+    assert result["members"] == []
     assert db.flushes == 1
-    assert {type(item).__name__ for item in db.added} == {
-        "AgentTeam",
-        "AgentTeamMember",
-        "AgentTeamEvent",
-        "ChatSession",
-    }
+    assert {type(item).__name__ for item in db.added} == {"AgentTeam", "AgentTeamEvent"}
 
 
 @pytest.mark.asyncio

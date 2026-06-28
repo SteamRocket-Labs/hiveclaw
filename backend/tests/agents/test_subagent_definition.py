@@ -31,6 +31,7 @@ allowed_tools:
   - web_search
   - read_file
 max_tool_rounds: 6
+memory: project
 ---
 
 You are a market research explorer. Investigate and report.
@@ -41,6 +42,7 @@ You are a market research explorer. Investigate and report.
     assert spec.type == "explorer"
     assert spec.allowed_tools == ("web_search", "read_file")
     assert spec.max_tool_rounds == 6
+    assert spec.memory_scope == "project"
     assert "market research explorer" in spec.system_prompt
 
 
@@ -67,6 +69,7 @@ def test_parse_requires_description():
         ("---\nname: bad\ndescription: d\ntype: explorer\nmax_tool_rounds: nope\n---\nbody", "max_tool_rounds"),
         ("---\nname: bad\ndescription: d\ntype: explorer\nmax_tool_rounds: 0\n---\nbody", "max_tool_rounds"),
         ("---\nname: bad\ndescription: d\ntype: explorer\nisolation: session\n---\nbody", "isolation"),
+        ("---\nname: bad\ndescription: d\ntype: explorer\nmemory: org\n---\nbody", "memory"),
     ],
 )
 def test_parse_rejects_invalid_frontmatter_contract_fields(definition, message):
@@ -81,6 +84,7 @@ def test_render_round_trips():
         type=SUBAGENT_TYPE_CRITIC,
         allowed_tools=("read_file", "grep_search"),
         max_tool_rounds=4,
+        memory_scope="local",
         system_prompt="Review the diff. Only verify, never modify.",
     )
     reparsed = parse_subagent_definition(render_subagent_definition(spec))
@@ -89,6 +93,7 @@ def test_render_round_trips():
     assert reparsed.type == spec.type
     assert reparsed.allowed_tools == spec.allowed_tools
     assert reparsed.max_tool_rounds == spec.max_tool_rounds
+    assert reparsed.memory_scope == "local"
     assert reparsed.system_prompt == spec.system_prompt
 
 
@@ -176,6 +181,7 @@ async def test_spawn_from_persistent_definition_uses_stored_contract(tmp_path):
             type="critic",
             allowed_tools=("read_file",),
             max_tool_rounds=3,
+            memory_scope="user",
             system_prompt="Use the stored critic contract.",
         )
     )

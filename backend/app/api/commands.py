@@ -43,7 +43,7 @@ from app.services.plan_mode_recommendation_service import (
 )
 from app.services.session_command_runtime import SESSION_COMMAND_NAMES, execute_session_command
 from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
-from app.services.agent_team_runtime_service import create_agent_team_runtime, team_member_specs_from_raw
+from app.services.agent_team_runtime_service import create_agent_team_runtime
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
 
 router = APIRouter(prefix="/agents/{agent_id}/commands", tags=["commands"])
@@ -635,10 +635,15 @@ async def _execute_team_command(
 ) -> dict[str, Any]:
     if command_name == "team_create":
         session = await _load_chat_session(db, agent_id=agent.id, session_id=session_id)
-        name = str(arguments.get("name") or "").strip()
+        name = str(arguments.get("team_name") or arguments.get("name") or "").strip()
         members_in = arguments.get("members")
-        if not name or not isinstance(members_in, list) or not members_in:
-            raise HTTPException(status_code=400, detail="name and non-empty members are required")
+        if not name:
+            raise HTTPException(status_code=400, detail="team_name or name is required")
+        if isinstance(members_in, list) and members_in:
+            raise HTTPException(
+                status_code=400,
+                detail="team_create creates the Team container only; spawn teammates with spawn_subagent team_name + name",
+            )
         try:
             payload = await create_agent_team_runtime(
                 db=db,
@@ -646,9 +651,13 @@ async def _execute_team_command(
                 user=user,
                 parent_session=session,
                 name=name,
-                members=team_member_specs_from_raw(members_in),
+                members=[],
                 source="command",
                 command=command_name,
+                metadata={
+                    "description": str(arguments.get("description") or "").strip(),
+                    "team_create_semantics": "container_only",
+                },
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

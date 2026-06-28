@@ -290,10 +290,17 @@ async def goal_start(request: ToolExecutionRequest) -> str:
         parameters={
             "type": "object",
             "properties": {
+                "team_name": {"type": "string"},
                 "name": {"type": "string"},
-                "members": {"type": "array", "items": {"type": "object"}},
+                "description": {"type": "string"},
+                "agent_type": {"type": "string"},
+                "members": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Legacy compatibility only. CC path spawns teammates via spawn_subagent(team_name + name).",
+                },
             },
-            "required": ["name", "members"],
+            "anyOf": [{"required": ["team_name"]}, {"required": ["name"]}],
         },
         category="command_team",
         display_name="Team Create",
@@ -301,12 +308,19 @@ async def goal_start(request: ToolExecutionRequest) -> str:
     )
 )
 async def team_create(request: ToolExecutionRequest) -> str:
-    name = str(request.arguments.get("name") or "").strip()
-    members = request.arguments.get("members")
-    if not name or not isinstance(members, list) or not members:
-        return _json({"ok": False, "error": "name and non-empty members are required."})
+    name = str(request.arguments.get("team_name") or request.arguments.get("name") or "").strip()
+    if not name:
+        return _json({"ok": False, "error": "team_name is required."})
     try:
-        return _json(await create_agent_team_from_tool_request(request, name=name, members=members))
+        return _json(
+            await create_agent_team_from_tool_request(
+                request,
+                name=name,
+                members=None,
+                description=str(request.arguments.get("description") or "").strip(),
+                agent_type=str(request.arguments.get("agent_type") or "").strip(),
+            )
+        )
     except Exception as exc:
         return _json({"ok": False, "error": f"team_create failed: {exc}"})
 

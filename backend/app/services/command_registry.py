@@ -401,7 +401,7 @@ def build_default_command_registry(
         _command("compact", "Run manual compaction with pre/post compaction hooks.", category="session"),
         _command(
             "team_create",
-            "Create an enterable teammate workspace under the current session.",
+            "Create a CC-style Team container under the current session. Spawn teammates with spawn_subagent team_name + name.",
             category="team",
             execution_mode="runtime",
             permission_mode="write",
@@ -409,10 +409,12 @@ def build_default_command_registry(
             input_schema={
                 "type": "object",
                 "properties": {
+                    "team_name": {"type": "string"},
                     "name": {"type": "string"},
-                    "members": {"type": "array", "items": {"type": "object"}},
+                    "description": {"type": "string"},
+                    "agent_type": {"type": "string"},
                 },
-                "required": ["name", "members"],
+                "anyOf": [{"required": ["team_name"]}, {"required": ["name"]}],
             },
         ),
         _command(

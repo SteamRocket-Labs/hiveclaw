@@ -120,6 +120,12 @@ def _is_plan_mode_readonly_subagent_spawn(arguments: dict | None) -> bool:
         return False
     if str(args.get("definition_name") or "").strip():
         return False
+    if str(args.get("team_name") or "").strip():
+        return False
+    if str(args.get("mode") or "").strip():
+        return False
+    if str(args.get("isolation") or "").strip() == "all":
+        return False
     if str(args.get("ledger_todo_id") or "").strip():
         return False
     if _truthy(args.get("run_in_background")):

@@ -22,11 +22,10 @@ GOAL_START_DESCRIPTION = (
 )
 
 TEAM_CREATE_DESCRIPTION = (
-    "Create an enterable Team workspace under the current session. Each member gets "
-    "a separate session context per member so the user can switch into that worker "
-    "window, converse independently, then integrate results back into the parent "
-    "session. The durable Team is created through the agent-teams API so member "
-    "sessions remain permission-governed."
+    "Create a CC-style Agent Team container under the current session. This does not "
+    "spawn teammates. After the Team container exists, use spawn_subagent with "
+    "team_name plus name to spawn addressable teammates, then use "
+    "send_agent_session_message with to/member_name to communicate inside the Team."
 )
 
 ADVANCED_PLAN_DESCRIPTION = (

@@ -94,8 +94,8 @@ _EXPLORER_ALLOWED_TOOLS: tuple[str, ...] = (
     "xcrawl_scrape",
 )
 
-# Worker preset: limited execution — read + write files + basics (still denied the
-# base side-effect/spawn tools). Workers do the editing the explorer cannot.
+# General-purpose preset: limited execution — read + write files + basics (still
+# denied the base side-effect/spawn tools). It does the editing the explorer cannot.
 _WORKER_ALLOWED_TOOLS: tuple[str, ...] = (
     "list_files",
     "read_file",
@@ -140,13 +140,13 @@ _SAFE_T0_SESSION_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 #: level (a compressed parent digest) was a self-invented intermediate the LLM
 #: spawn tool never exposed — removed; legacy ``brief`` definitions coerce to ``all``.
 ForkLevel = Literal["none", "all"]
+AgentMemoryScope = Literal["user", "project", "local"]
 SubagentStatus = Literal["completed", "failed", "timed_out", "depth_limited"]
 
 # Built-in type → default tool preset. Unknown types get no preset (empty allow-list).
 _TYPE_PRESETS: dict[str, tuple[str, ...]] = {
     SUBAGENT_TYPE_GENERAL_PURPOSE: _WORKER_ALLOWED_TOOLS,
     SUBAGENT_TYPE_EXPLORER: _EXPLORER_ALLOWED_TOOLS,
-    SUBAGENT_TYPE_WORKER: _WORKER_ALLOWED_TOOLS,
     SUBAGENT_TYPE_CRITIC: _CRITIC_ALLOWED_TOOLS,
 }
 
@@ -255,7 +255,6 @@ PARTIAL is for environmental limitations only (material unavailable, tool missin
 _TYPE_PROMPTS: dict[str, str] = {
     SUBAGENT_TYPE_GENERAL_PURPOSE: _WORKER_PROMPT,
     SUBAGENT_TYPE_EXPLORER: _EXPLORER_PROMPT,
-    SUBAGENT_TYPE_WORKER: _WORKER_PROMPT,
     SUBAGENT_TYPE_CRITIC: _CRITIC_PROMPT,
 }
 
@@ -275,12 +274,6 @@ _TYPE_DESCRIPTIONS: dict[str, str] = {
         'a large body of material. When calling this agent, specify the desired thoroughness level: "quick" '
         'for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive '
         "analysis across multiple locations and naming conventions."
-    ),
-    SUBAGENT_TYPE_WORKER: (
-        "General-purpose agent for researching complex questions, searching for code, and executing "
-        "multi-step tasks. It can read and edit workspace files. Use it to complete one well-scoped task "
-        "end to end and report back, or when you are searching for a keyword or file and are not confident "
-        "you will find the right match in the first few tries."
     ),
     SUBAGENT_TYPE_CRITIC: (
         "Use this agent to verify that work is correct before reporting completion. Pass the ORIGINAL task "
@@ -318,6 +311,7 @@ class SubagentSpec:
     model: str | None = None  # named-model override; resolved through ctx.model_resolver
     max_tool_rounds: int | None = None
     isolation: ForkLevel = "none"  # default fork level for this type
+    memory_scope: AgentMemoryScope | None = None
     has_own_memory: bool = True
     parent_knowledge: Literal["readonly", "none"] = "readonly"
     soul: bool = False  # no digital-employee identity layer (soul/T3/dream)

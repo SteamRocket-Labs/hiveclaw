@@ -43,9 +43,9 @@ Coverage map for the 9 entries (Reconciliation §7 row-00):
     [7] plan-mode session h/o . continue_current_session_handoff dispatches the
                                 continuation THROUGH start_web_chat_run (entry
                                 [1]); asserted by proving the delegation.
-    [8] plan-mode team h/o .... start_agent_team_from_plan member runs dispatch
-                                THROUGH start_web_chat_run (entry [1]); covered by
-                                the same delegation guarantee as [7].
+    [8] plan-mode team h/o .... creates Team container, then delegates teammate
+                                dispatch to spawn_agent_team_member_runtime, which
+                                reaches the mailbox continuation gate (entry [3]).
     [9] team-member start ..... api.agent_teams.start_agent_team_member_run ->
                                 start_web_chat_run (entry [1]); covered by [1].
 
@@ -55,9 +55,9 @@ Coverage map for the 9 entries (Reconciliation §7 row-00):
   dispatch, and (b) the delegating entries route their kernel dispatch through
   exactly those gates (no private invoke_agent path). The one entry that needs a
   heavy integration harness to exercise end-to-end (plan-mode team handoff, [8],
-  which builds team/member rows in a real DB) is documented as covered-by-[1]
+  which builds team/member rows in a real DB) is documented as covered-by-[3]
   rather than independently asserted here; see ``test_plan_mode_team_handoff_
-  accepted_prompt_first_is_deferred_to_web_chat_gate`` for the explicit note.
+  delegates_to_agenttool_teammate_runtime`` for the explicit note.
 
 Every assertion fails if the underlying append-before-kernel ordering were
 reverted (e.g. if ``start_web_chat_run`` scheduled the run task before committing
@@ -572,21 +572,14 @@ async def test_plan_mode_session_handoff_dispatches_through_web_chat_gate_accept
     assert result["runtime_task_id"] == "run-plan-1"
 
 
-def test_plan_mode_team_handoff_accepted_prompt_first_is_deferred_to_web_chat_gate():
-    """[8] plan-mode TEAM handoff — coverage note (not independently asserted).
+def test_plan_mode_team_handoff_delegates_to_agenttool_teammate_runtime():
+    """[8] plan-mode TEAM handoff delegates teammate dispatch to AgentTool runtime.
 
-    ``start_agent_team_from_plan`` builds team + member rows in a real DB and then
-    dispatches each member's first run THROUGH ``start_web_chat_run`` (gate [1]),
-    inheriting the same commit-before-dispatch ordering proven by entry [1]. A
-    faithful end-to-end ordering assertion for this entry needs a heavy DB harness
-    (team/member/session materialisation, unique-index handling) that belongs to
-    an integration test, not a unit test — so it is deliberately covered-by-[1]
-    rather than re-asserted with a fake here.
-
-    This test pins the structural fact that makes the inheritance true: the team
-    handoff's ONLY kernel-dispatch path is ``start_web_chat_run`` (no private
-    ``invoke_agent`` import). If someone added a direct kernel call to the team
-    handoff (bypassing the accepted-prompt-first gate), this guard fails.
+    Plan handoff may create the Team container, but teammate creation/dispatch must
+    go through ``spawn_agent_team_member_runtime``. That keeps confirmed plans on the
+    same TeamCreate -> AgentTool teammate spawn -> mailbox path as normal session use.
+    The handoff itself must not import a private kernel dispatcher or a separate
+    ``start_web_chat_run`` lane.
     """
     import ast
     from pathlib import Path
@@ -600,7 +593,6 @@ def test_plan_mode_team_handoff_accepted_prompt_first_is_deferred_to_web_chat_ga
             for alias in node.names:
                 imported_names.add(alias.asname or alias.name)
 
-    # Kernel dispatch is delegated to the proven gate ...
-    assert "start_web_chat_run" in imported_names
-    # ... and the team handoff never reaches the kernel directly.
+    assert "spawn_agent_team_member_runtime" in imported_names
+    assert "start_web_chat_run" not in imported_names
     assert "invoke_agent" not in imported_names

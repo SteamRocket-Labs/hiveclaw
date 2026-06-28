@@ -95,7 +95,7 @@ export interface CreateAgentTeamMemberInput {
 export interface CreateAgentTeamInput {
   parent_session_id: string;
   name: string;
-  members: CreateAgentTeamMemberInput[];
+  members?: CreateAgentTeamMemberInput[];
 }
 
 export interface AgentTeamMember {

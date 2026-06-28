@@ -72,8 +72,8 @@ async def test_team_create_tool_persists_through_agent_team_runtime(tmp_path, mo
 
     calls = []
 
-    async def fake_create(request, *, name, members):
-        calls.append((request, name, members))
+    async def fake_create(request, *, name, members=None, description="", agent_type=""):
+        calls.append((request, name, members, description, agent_type))
         return {
             "ok": True,
             "requires_api_persist": False,
@@ -82,16 +82,7 @@ async def test_team_create_tool_persists_through_agent_team_runtime(tmp_path, mo
             "status": "active",
             "transcript_truth": "chat_session_t0",
             "parent_session_id": request.context.session_id,
-            "members": [
-                {
-                    "id": "member-1",
-                    "member_name": members[0]["name"],
-                    "member_role": members[0].get("role") or None,
-                    "chat_session_id": "child-session-1",
-                    "runtime_task_type": "team_member",
-                    "status": "idle",
-                }
-            ],
+            "members": [],
         }
 
     monkeypatch.setattr(command_parity, "create_agent_team_from_tool_request", fake_create, raising=False)
@@ -99,7 +90,7 @@ async def test_team_create_tool_persists_through_agent_team_runtime(tmp_path, mo
     result = await command_parity.team_create(
         _request(
             "team_create",
-            {"name": "research", "members": [{"name": "critic", "role": "Review"}]},
+            {"team_name": "research", "description": "Research swarm"},
             tmp_path,
         )
     )
@@ -107,8 +98,9 @@ async def test_team_create_tool_persists_through_agent_team_runtime(tmp_path, mo
     payload = json.loads(result)
     assert payload["ok"] is True
     assert payload["requires_api_persist"] is False
-    assert payload["members"][0]["member_name"] == "critic"
+    assert payload["members"] == []
     assert calls and calls[0][1] == "research"
+    assert calls[0][3] == "Research swarm"
 
 
 @pytest.mark.asyncio

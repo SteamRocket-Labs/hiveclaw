@@ -234,7 +234,7 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/skill_hooks.py
 已做：
 
 - `spawn_subagent` 是 core tool。
-- tool schema 已兼容 CC AgentTool 的 `description`、`prompt`、`subagent_type`、`model`、`name`、`run_in_background`；Agent Team 入口不挂在 `spawn_subagent.team_name` 上，统一走 `team_create` / Team runtime。
+- tool schema 已兼容 CC AgentTool 的 `description`、`prompt`、`subagent_type`、`model`、`name`、`run_in_background`、`team_name`、`mode`、`isolation`；TeamCreate 只建 Team container，Agent Team teammate spawn 唯一走 `spawn_subagent(team_name + name)`，队内通信走 `send_agent_session_message(to/member_name)` / Team mailbox。
 - coordinator 已改为 To Session Worker 使用 `spawn_subagent`，不再把 `delegate_to_agent` 当 session worker。
 - built-in Session Worker type listing 已进入 prompt section。
 - `backend/app/runtime/prompt_sections/subagent_listing.py` 现在接收当前 `agent_id` / `tenant_id`，并把 agent-scope / tenant-scope custom definitions 以 `definition_name` 方式渲染到同一 `spawn_subagent` 路径。
@@ -246,6 +246,7 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/skill_hooks.py
 - custom definitions 不再是 API/tool error 时的补救列表；它们是每轮 agent context 的 Session Worker routing signal。
 - builtin/custom worker 都走同一个 `spawn_subagent` tool；没有 `.claude/agents` 兼容第二路径。
 - 背景 completion 仍走 durable RuntimeTask + coordination/mailbox；`check_subagent` 是 fallback status inspection，不是 busy-poll 主路径。
+- `worker` 不再作为公开 built-in 或内部 preset/prompt/description key 存在；旧输入仅作为 alias canonicalize 到 `general-purpose`。
 
 验证证据：
 

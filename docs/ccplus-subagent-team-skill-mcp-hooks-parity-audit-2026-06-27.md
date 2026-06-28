@@ -154,7 +154,7 @@ CC 语义：
 
 已实现（2026-06-27 Workstream B 后）：
 
-1. `spawn_subagent` 是 core tool，schema 有 canonical `prompt`、`description`、`subagent_type`、`model`、`name`、`run_in_background`，旧 `task`、`type`、`definition_name`、`max_tool_rounds`、`ledger_todo_id` 保持兼容；Agent Team 入口不挂在 `spawn_subagent.team_name` 上。
+1. `spawn_subagent` 是 core tool，schema 有 canonical `prompt`、`description`、`subagent_type`、`model`、`name`、`run_in_background`、`team_name`、`mode`、`isolation`，旧 `task`、`type`、`definition_name`、`max_tool_rounds`、`ledger_todo_id` 保持兼容；Agent Team teammate spawn 按 CC 走 `team_name + name` 分支。
 2. 公开 built-in 类型包括 `general-purpose`、`explorer`、`critic`，默认省略 `subagent_type` 时为 `general-purpose`；历史 `worker` 值仅作为兼容 alias 归一到 `general-purpose`。
 3. child worker 复用 `invoke_agent`，继承治理路径。
 4. 子 agent 禁止进一步 spawn / delegation。
@@ -369,8 +369,8 @@ Hive 本轮前的问题是两种风格混合但没有分层：
 | Subagent runtime | 有 `spawn_subagent`、built-ins、background run、child session；本轮补齐 `general-purpose` default、AgentTool-compatible schema、Session Worker type listing | AgentTool 默认 general-purpose，强触发，parallel fan-out，coordinator worker | 本轮已对齐 |
 | Coordinator multi-agent | 本轮只允许 session worker path：`spawn_subagent` / `check_subagent` / `send_agent_session_message` | AgentTool worker 是 coordinator 核心工具 | 本轮已对齐 |
 | To Employee / To Session Worker 分层 | 本轮拆分：session worker 用 `spawn_subagent`；真实同事通信才走 A2A `delegate_to_agent` / `send_message_to_agent` | session worker 用 AgentTool；真实同事通信才走 A2A/SendMessage | 本轮已对齐 |
-| Agent Team create | `team_create` model tool / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | TeamCreateTool 直接创建 team / task list / context | runtime/context 已对齐 |
-| Team mailbox | `send_agent_session_message` 支持 child session、`team_id + member_name`、`member_name="*"` 广播；API message 共用 runtime | teammate name / broadcast / automatic inbox attachment | runtime + Workbench read model 已对齐 |
+| Agent Team create | `team_create` model tool / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py`，且只创建 Team container | TeamCreateTool 直接创建 team / task list / context | runtime/context 已对齐 |
+| Team teammate spawn/mailbox | `spawn_subagent(team_name + name)` 创建 teammate session；`send_agent_session_message` 支持 child session、`team_name + to`、`team_id + member_name`、`member_name="*"` 广播；API message 共用 runtime | AgentTool teammate spawn / teammate name / broadcast / automatic inbox attachment | runtime + Workbench read model 已对齐 |
 | Team context | `agent_team_context.py` 已读取 `AgentTeam` rows + member sessions；Workbench 暴露 `turn_envelope` / `prompt_manifest` | team members / team config / mailbox / shared task list | D 收口已对齐；后续 UI 增强不另开规则 |
 | Skill load | progressive disclosure + `load_skill` events 进入 TurnEnvelope / ExtensionRegistry | SkillTool blocking invocation + forked execution + MCP skill + hooks | session-visible read model 已对齐；forked execution/frontmatter hooks 为 explicit boundary |
 | MCP tools | import/list/call/resources + tools/prompts/resources read model 进入 ExtensionRegistry | live model tool injection + prompts/list + auth pseudo-tool + instructions delta | governed/session-visible 面已对齐；live `prompts/list` / auth pseudo-tool 为 explicit boundary |
@@ -565,7 +565,7 @@ cd backend && source .venv/bin/activate && pytest \
 248 passed, 4 warnings
 ```
 
-解释：这组测试证明 Subagent / AgentTool / coordinator / completion wake / prompt affordance 的 B 主线已闭合；后续 C/D 已把 Agent Team、Skill、MCP、Hooks 收束进统一 Team runtime、TurnEnvelope、ExtensionRegistry 和 Workbench read model。外部 hook runner 与 live MCP `prompts/list` protocol fetch 仍按 explicit deferred/not-live 状态呈现，不再作为隐藏第二路径。
+解释：这组测试证明 Subagent / AgentTool / coordinator / completion wake / prompt affordance 的 B 主线已闭合；后续 C/D 已把 Agent Team、Skill、MCP、Hooks 收束进统一 Team runtime、TurnEnvelope、ExtensionRegistry 和 Workbench read model。2026-06-28 追加收口后，TeamCreate 不再内联创建 members，teammate spawn 唯一走 `spawn_subagent(team_name + name)`；外部 hook runner 与 live MCP `prompts/list` protocol fetch 仍按 explicit deferred/not-live 状态呈现，不再作为隐藏第二路径。
 
 另有一次更宽泛的 test collection 曾失败：
 

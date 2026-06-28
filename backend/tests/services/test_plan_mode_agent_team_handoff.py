@@ -57,31 +57,44 @@ async def test_agent_team_handoff_creates_member_sessions_and_starts_runtime(mon
     agent = SimpleNamespace(id=plan.agent_id, tenant_id=uuid4(), name="Lead")
     user = SimpleNamespace(id=plan.requested_by_user_id)
     parent_session = SimpleNamespace(id=plan.session_id, root_session_id=plan.session_id)
-    start_calls = []
+    mailbox_calls = []
 
     monkeypatch.setattr(mod, "_load_agent", lambda _db, _id: agent)
     monkeypatch.setattr(mod, "_load_user", lambda _db, _id: user)
     monkeypatch.setattr(mod, "_load_session", lambda _db, _id: parent_session)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _agent: False)
 
-    async def fake_start(**kwargs):
-        start_calls.append(kwargs)
-        return {"run_id": "00112233445566778899aabbccddeeff", "status": "running"}
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
 
-    monkeypatch.setattr(mod, "start_web_chat_run", fake_start)
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        mailbox_calls.append(kwargs)
+        return {"run_id": "00112233445566778899aabbccddeeff", "status": "queued", "consumer": "mailbox"}
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fake_continue_agent_session_from_mailbox,
+    )
 
     result = await mod.agent_team_handoff(db=db, plan=plan)
 
     assert result["team_id"]
     assert result["member_runs"][0]["member_name"] == "critic"
-    assert result["member_runs"][0]["status"] == "running"
+    assert result["member_runs"][0]["status"] == "queued"
     assert any(isinstance(item, AgentTeam) for item in db.added)
     assert any(isinstance(item, AgentTeamMember) for item in db.added)
     assert any(isinstance(item, ChatSession) and item.session_kind == "team_member" for item in db.added)
-    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "member_run_started" for item in db.added)
-    assert start_calls[0]["runtime_task_type"] == "team_member"
-    assert start_calls[0]["extra_metadata"]["approved_plan_id"] == str(plan.id)
-    assert start_calls[0]["extra_metadata"]["team_id"] == result["team_id"]
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "member_spawned" for item in db.added)
+    assert any(isinstance(item, AgentTeamEvent) and item.event_type == "member_message_queued" for item in db.added)
+    assert not any(isinstance(item, AgentTeamEvent) and item.event_type == "member_run_started" for item in db.added)
+    assert mailbox_calls[0]["runtime_task_type"] == "team_member"
+    assert mailbox_calls[0]["parent_session_id"] == plan.session_id
+    assert mailbox_calls[0]["message"] == "Review hook and session parity gaps."
 
 
 @pytest.mark.asyncio

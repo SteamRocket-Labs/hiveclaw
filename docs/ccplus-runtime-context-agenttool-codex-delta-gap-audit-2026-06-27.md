@@ -87,7 +87,7 @@ Hive 的目标不是做一个泛泛的 multi-agent 产品。我们的目标一�
   - 输入支持 `description`、`prompt`、`subagent_type`、`model`、`run_in_background`，以及 team 场景的 `name` / `team_name`。
   - 如果省略 `subagent_type` 且 fork 未开启，默认是 `general-purpose`。
   - Team spawn 不是独立的另一套 runtime。`AgentTool` 带 `team_name` + `name` 时进入 teammate spawn。
-  - Hive 映射时不把 `team_name` 暴露成 `spawn_subagent` 第二启动路径；Team 创建统一进入 `team_create` / Team runtime。
+  - Hive 映射必须保留这条 CC 语义：`team_create` 只创建 Team container；`spawn_subagent(team_name + name)` 是唯一 teammate spawn；`send_agent_session_message(to/member_name)` 是唯一队内通信。
 - `src/tools/AgentTool/prompt.ts`
   - Agent tool prompt 教模型什么时候 fork/spawn、怎么给 fresh worker 写 prompt。
   - 明确说明 background/fork 结果会在后续 turn 作为独立 user-role message 回来。
@@ -222,7 +222,7 @@ backend/app/services/agent_tools.py
 
 审计时缺口与 Workstream B 更新：
 
-- 已修复：Hive tool schema 从 `task`、`type`、`definition_name`、`run_in_background` 扩展到 CC-compatible `description`、`prompt`、`subagent_type`、`model`、`run_in_background`，默认 `general-purpose`；Agent Team 不通过 `spawn_subagent.team_name` 暴露第二路径。
+- 已修复：Hive tool schema 从 `task`、`type`、`definition_name`、`run_in_background` 扩展到 CC-compatible `description`、`prompt`、`subagent_type`、`model`、`run_in_background`、`name`、`team_name`、`mode`、`isolation`，默认 `general-purpose`；Agent Team teammate spawn 通过 `spawn_subagent(team_name + name)` 进入同一 teammate runtime。
 - 已修复：公开 built-ins 新增 `general-purpose`，并保留 `explorer`、`critic`；历史 `worker` 值仅作为兼容 alias 归一到 `general-purpose`。
 - 已修复：Hive coordinator mode 已允许 `spawn_subagent` / `check_subagent`，并移除 `delegate_to_agent` 作为 worker path。
 - 已修复：parent wake prompt 不再引用 `consume_subagent_signals`，改为 parent session mailbox + `check_subagent` fallback。
@@ -299,8 +299,8 @@ frontend/src/api/domains/ccParity.ts
 已修复：
 
 - `agent_team_context.py` 已把 `AgentTeam` / `AgentTeamMember` rows 作为 prompt-facing team source of truth，同时保留 RuntimeTask/Signal 作为 member 状态补充。
-- CC Team flow 中的 teammate semantics 已对应到 `team_create`、Team runtime service、Team mailbox 和 Workbench/TurnEnvelope projection；不再把 `spawn_subagent.team_name` 描述为 Hive Team 启动入口。
-- 前端 `/team` slash menu 与 Workbench 暴露问题归入统一 Session Workbench state；后端不再保留 tool/API/UI 多条 Team creation runtime path。
+- CC Team flow 中的 teammate semantics 已对应到 `team_create`、`spawn_subagent(team_name + name)`、Team runtime service、Team mailbox 和 Workbench/TurnEnvelope projection；`spawn_subagent.team_name` 是 teammate spawn 分支，不是另一个 TeamCreate 分支。
+- 前端 `/team` slash menu 与 Workbench 暴露问题归入统一 Session Workbench state；后端 `team_create` / command API / REST `/agent-teams` / Plan Mode handoff 都只创建 Team container，不再保留 inline `members` 创建 teammate session 的第二路径。
 
 ### 3.4 Background Agent
 
@@ -410,8 +410,8 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 | Send to worker vs employee | Session worker 用 AgentTool；真实同事用 SendMessage/A2A | `InterAgentCommunication` 和 thread mailbox 可分 source | To Session Worker / To Employee 已拆分；A2A gate 不再约束 session worker | 本轮已对齐 | 保持 |
 | Subagent sync | child returns digest | trace/span lineage | `spawn_subagent` sync returns digest；`prompt` / `subagent_type` / default general-purpose 已补 | 本轮已对齐 | 保持 |
 | Subagent async | later `<task-notification>` user message | mailbox `InterAgentCommunication` + trigger turn | completion 写 parent session mailbox + wake；prompt 不再引用内部 helper；`check_subagent` fallback | 本轮已对齐 | 已和 Agent Team mailbox 在 session read model 合流 |
-| Agent Team create | TeamCreate creates team/task list | thread graph/workbench | `team_create` / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py` | runtime + context 已对齐 | 保持 |
-| Teammate work | AgentTool with `team_name` and `name` | subagent thread lineage | `send_agent_session_message(team_id, member_name)` / `member_name="*"` 进入 Team mailbox runtime | runtime + prompt-facing context 已对齐 | 保持 |
+| Agent Team create | TeamCreate creates team/task list | thread graph/workbench | `team_create` / command API / Agent Team API / Plan Mode handoff 共用 `agent_team_runtime_service.py`，且只创建 Team container | runtime + context 已对齐 | 保持 |
+| Teammate work | AgentTool with `team_name` and `name` | subagent thread lineage | `spawn_subagent(team_name + name)` 创建 teammate session；`send_agent_session_message(team_name/to)` 或 `team_id/member_name` 进入 Team mailbox runtime | runtime + prompt-facing context 已对齐 | 保持 |
 | Completion feedback | automatic notification，无 polling | active/input queue wake | wake daemon + parent session mailbox；`check_subagent` fallback；Team message 已共用 mailbox service | Subagent/Team runtime + Workbench read model 已对齐 | automatic next-turn input，`check` 只作 debug |
 | Hooks | blocking hooks around prompt/tool/stop/subagent | lifecycle events + app-server state | catalog + partial active hooks | 有 noop/observe-only | full hook runtime + workbench trace |
 | Compaction | model-authored context collapse | rollout/history builder | proactive/reactive compaction | 底座基本有 | 进入 TurnEnvelope 和 workbench |
@@ -424,7 +424,7 @@ frontend/src/pages/session-workbench/SessionNativeControls.tsx
 
 状态（2026-06-27 Workstream B 后）：
 
-- 已完成：`spawn_subagent` 现在是 CC-compatible AgentTool surface，接受 `description`、`prompt`、`subagent_type`、`model`、`run_in_background`、`name`；Agent Team 入口单独走 `team_create` / Team runtime。
+- 已完成：`spawn_subagent` 现在是 CC-compatible AgentTool surface，接受 `description`、`prompt`、`subagent_type`、`model`、`run_in_background`、`name`、`team_name`、`mode`、`isolation`；Agent Team teammate spawn 走 `spawn_subagent(team_name + name)`，TeamCreate 本身只建 container。
 - 已完成：旧字段 `task`、`type`、`definition_name` 保持兼容 alias。
 - 已完成：省略 `subagent_type` 时映射到 `general-purpose`，内部映射当前 edit-capable worker preset。
 - 已完成：Coordinator mode 暴露 `spawn_subagent` / `check_subagent`，不再暴露 `delegate_to_agent` 作为 worker spawn。

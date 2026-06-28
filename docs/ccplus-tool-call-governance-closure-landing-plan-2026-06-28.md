@@ -807,6 +807,20 @@ pytest tests/services/test_memory_service.py tests/tools/test_governance.py test
 - `tests/services/test_truth_search_preflight_integration.py`
 - `tests/runtime/test_truth_search_citation_contract.py`
 
+实施证据（2026-06-28）：
+
+- Red：新增 Truth Search 服务红线后，`pytest tests/services/test_truth_search_service.py tests/tools/test_service.py::test_tool_runtime_service_preflight_asks_before_external_visible_tool -q` 失败于 `ModuleNotFoundError: No module named 'app.services.truth_search_service'` 和 `ToolRuntimeService.__init__() got an unexpected keyword argument 'truth_search_service'`，证明 Truth Search 还不是治理层可注入 evidence provider。
+- Green：新增 `backend/app/services/truth_search_service.py`，输出 `TruthEvidencePackV1`，包含 query、source_refs、citations、ACL scope、digest、provider、tenant/company/user 边界和 trace refs；`ActionPreflightInput/Result` 增加 `truth_evidence` / `evidence_refs`；`ToolRuntimeService` 在 preflight 前调用 Truth Search，并把 evidence refs 写入 checkpoint metadata、decision trace、activity log 和 preflight block。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_action_preflight.py tests/services/test_truth_search_service.py tests/tools/test_service.py tests/tools/test_tool_runtime_preflight.py -q
+```
+
+- 验证结果：`33 passed, 3 warnings in 1.37s`。
+
 ### Phase 6：MCP transport / prompt catalog / Local Bridge
 
 目标：

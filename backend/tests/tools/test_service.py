@@ -462,6 +462,7 @@ def _extract_tool_error_payload(result: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_preflight_asks_before_external_visible_tool():
+    from app.runtime.ccplus_contracts import TruthEvidencePackV1
     from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -476,6 +477,19 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     traces = DecisionTraceStore()
 
+    class _FakeTruthSearch:
+        async def search(self, *_args, **_kwargs):
+            return [
+                TruthEvidencePackV1(
+                    evidence_id="truth://policy/email-confirmation",
+                    query="send external message via send_feishu_message",
+                    source_refs=("knowledge://policy/email",),
+                    citations=("policy/email",),
+                    tenant_id="tenant-1",
+                    trace_refs=("trace://truth/email-confirmation",),
+                )
+            ]
+
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
         governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
@@ -486,6 +500,7 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=None,
         decision_trace_store=traces,
+        truth_search_service=_FakeTruthSearch(),
     )
 
     result = await service.execute(
@@ -510,6 +525,7 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     assert decisions[0].tool_name == "send_feishu_message"
     assert decisions[0].preflight["decision"] == "ask"
     assert decisions[0].preflight["checkpoint_id"]
+    assert decisions[0].preflight["evidence_refs"] == "truth://policy/email-confirmation"
 
 
 @pytest.mark.asyncio

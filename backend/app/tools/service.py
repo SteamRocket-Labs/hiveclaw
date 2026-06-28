@@ -245,6 +245,7 @@ class ToolRuntimeService:
     decision_trace_store: Any | None = None
     coordination_runtime: CoordinationRuntime | None = None
     coordination_gateway: CoordinationGateway | None = None
+    truth_search_service: Any | None = None
     preflight_enabled: bool = True
     # Confirmation gate. The gate is read-only and stateless; the session factory
     # opens a short-lived async session for the by-id plan lookup. Both are DI
@@ -267,6 +268,10 @@ class ToolRuntimeService:
             self.coordination_runtime = coordination_runtime
         if self.coordination_gateway is None:
             self.coordination_gateway = InProcessCoordinationGateway(self.coordination_runtime)
+        if self.truth_search_service is None:
+            from app.services.truth_search_service import TruthSearchService
+
+            self.truth_search_service = TruthSearchService()
         if self.plan_mode_gate is None:
             self.plan_mode_gate = get_plan_mode_gate()
         if self.plan_mode_session_factory is None:
@@ -694,7 +699,25 @@ class ToolRuntimeService:
         if not self.preflight_enabled or self.preflight_service is None:
             return None
 
-        preflight_input = _build_tool_preflight_input(tool_name, arguments, runtime_context=runtime_context)
+        truth_evidence = ()
+        if self.truth_search_service is not None:
+            truth_evidence = tuple(
+                await _maybe_await(
+                    self.truth_search_service.search(
+                        f"{tool_name} {_json.dumps(arguments, ensure_ascii=False, default=str)}",
+                        tenant_id=runtime_context.tenant_id,
+                        agent_id=runtime_context.agent_id,
+                        current_user_id=runtime_context.user_id,
+                    )
+                )
+                or ()
+            )
+        preflight_input = _build_tool_preflight_input(
+            tool_name,
+            arguments,
+            runtime_context=runtime_context,
+            truth_evidence=truth_evidence,
+        )
         preflight = self.preflight_service.evaluate(preflight_input)
         if preflight.decision == PreflightDecision.DO:
             if preflight.requires_audit:
@@ -714,6 +737,7 @@ class ToolRuntimeService:
                         "tool_name": tool_name,
                         "agent_id": str(runtime_context.agent_id),
                         "decision": preflight.decision.value,
+                        "evidence_refs": list(preflight.evidence_refs),
                     },
                 )
             checkpoint_id = checkpoint.id
@@ -767,6 +791,7 @@ class ToolRuntimeService:
                     "requires_checkpoint": preflight.requires_checkpoint,
                     "requires_audit": preflight.requires_audit,
                     "escalation_target": preflight.escalation_target,
+                    "evidence_refs": preflight.evidence_refs,
                 },
             )
         )
@@ -777,6 +802,7 @@ def _build_tool_preflight_input(
     arguments: dict,
     *,
     runtime_context: ToolExecutionContext | None = None,
+    truth_evidence: tuple[Any, ...] = (),
 ) -> ActionPreflightInput:
     args_text = _json.dumps(arguments, ensure_ascii=False, default=str)
     privacy = PrivacyLayer().classify_and_mask(args_text)
@@ -801,6 +827,7 @@ def _build_tool_preflight_input(
             sensitivity=sensitivity,
             company_boundary_conflict=company_conflict,
             explicit_user_authorized=explicit_user_authorized,
+            truth_evidence=truth_evidence,
         )
 
     return ActionPreflightInput(
@@ -813,6 +840,7 @@ def _build_tool_preflight_input(
         charter_zone=CharterZone.FULL_AUTHORITY,
         sensitivity=sensitivity,
         company_boundary_conflict=company_conflict,
+        truth_evidence=truth_evidence,
     )
 
 
@@ -831,4 +859,6 @@ def _render_preflight_block(
         suffix += f" checkpoint={checkpoint_id}"
     if decision_ref:
         suffix += f" decision={decision_ref}"
+    if preflight.evidence_refs:
+        suffix += " evidence=" + ",".join(preflight.evidence_refs)
     return f"[Preflight:{preflight.decision.value}] {tool_name} was not executed. reasons={reason_text}{suffix}"

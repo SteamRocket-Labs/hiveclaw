@@ -841,6 +841,22 @@ source .venv/bin/activate
 pytest tests/tools/test_mcp_call_tool.py tests/services/test_mcp_tool_discovery.py tests/tools/test_bridge_equivalence.py -q
 ```
 
+实施证据（2026-06-28）：
+
+- Red：新增 MCP transport 红线后，`pytest tests/services/test_mcp_authz.py tests/tools/test_mcp_call_tool.py::test_call_mcp_tool_rejects_local_only_transport_before_client tests/tools/test_mcp_call_tool.py::test_mcp_get_prompt_uses_live_prompts_get tests/tools/test_mcp_call_tool.py::test_mcp_get_prompt_import_as_skill_runs_skill_guard -q` 失败于 `DID NOT RAISE <class 'ValueError'>`、缺少 `assert_mcp_cloud_transport_allowed`、显式/动态 MCP 执行入口仍实例化 `MCPClient`、`mcp_get_prompt` 返回裸 prompt、`import_as_skill` 没有经过 SkillGuard，证明 cloud core 与 local transport / prompt trust gate 之间存在断点。
+- Green：新增 `assert_mcp_cloud_transport_allowed()` 作为 `mcp_authz.py` 单源，`MCPClient`、`call_mcp_tool`、动态 `_execute_mcp_tool`、`_resolve_agent_mcp_server`、direct import、server-first import 均接入同一 transport gate；cloud core 只允许 HTTP/SSE，`stdio` / WebSocket / SDK / local IPC 统一返回 `authz_policy_violation`，并指向 Local Bridge / Coding Plugin。
+- Green：新增 `backend/app/services/mcp_prompt_trust.py`，`mcp_get_prompt` 默认把 live MCP prompt 包成 `trust="external_context_only"` 外部上下文；只有显式 `import_as_skill=true` 时才会通过 `install_active_skill_package()` 和 SkillGuard 安装为 active Skill，危险 prompt 被 `skill_guard_blocked` 拒绝且不落盘。
+- Green：新增 service 级导入红线，`import_and_register()` 与 `import_mcp_for_agent_and_register()` 在 DB 查询/Tool row 创建前拒绝 local-only transport，避免后续 stale transcript 或旧 Tool row 绕过。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_mcp_authz.py tests/tools/test_mcp_call_tool.py tests/services/test_mcp_server_service.py tests/api/test_mcp_servers_api.py tests/services/test_mcp_tool_discovery.py tests/tools/test_bridge_equivalence.py -q
+```
+
+- 验证结果：`82 passed, 4 warnings in 1.76s`。
+
 ### Phase 7：Coding plugin
 
 目标：

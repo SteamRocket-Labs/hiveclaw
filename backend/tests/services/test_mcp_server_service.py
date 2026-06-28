@@ -112,6 +112,31 @@ async def test_list_tenant_servers_empty_returns_empty():
 
 
 @pytest.mark.asyncio
+async def test_import_and_register_rejects_local_only_transport_before_db_query():
+    db = _SpyDB([])
+
+    with pytest.raises(ValueError, match="local bridge"):
+        await mcp_server_service.import_and_register(
+            db,
+            uuid4(),
+            mcp_url="https://mcp.example/mcp",
+            server_name="Local Shell",
+            config={"transport": "stdio"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_import_rejects_local_only_transport_before_agent_lookup():
+    with pytest.raises(ValueError, match="local bridge"):
+        await mcp_server_service.import_mcp_for_agent_and_register(
+            uuid4(),
+            mcp_url="https://mcp.example/mcp",
+            server_name="Local Shell",
+            config={"transport": "stdio"},
+        )
+
+
+@pytest.mark.asyncio
 async def test_get_agent_mcp_servers_shape_and_tool_mode():
     agent_id = uuid4()
     server = _server(status="connected")

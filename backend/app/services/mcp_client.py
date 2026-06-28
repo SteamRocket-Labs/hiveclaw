@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 
-from app.services.mcp_authz import split_mcp_server_url_and_api_key
+from app.services.mcp_authz import assert_mcp_cloud_transport_allowed, split_mcp_server_url_and_api_key
 from app.tools.result_envelope import render_tool_error
 
 
@@ -25,6 +25,7 @@ class MCPClient:
     """
 
     def __init__(self, server_url: str, api_key: str | None = None):
+        assert_mcp_cloud_transport_allowed(server_url)
         self.server_url, self.api_key = split_mcp_server_url_and_api_key(server_url, explicit_api_key=api_key)
 
         # Transport state

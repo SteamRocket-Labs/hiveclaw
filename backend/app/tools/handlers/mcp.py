@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
+from app.config import get_settings
 from app.runtime.prompts.mcp import (
     CALL_MCP_TOOL_DESCRIPTION,
     IMPORT_MCP_SERVER_DESCRIPTION,
@@ -17,6 +19,20 @@ from app.runtime.prompts.mcp import (
 )
 from app.tools.decorator import ToolMeta, tool
 from app.tools.result_envelope import render_tool_error
+
+
+def _render_mcp_authz_error(tool_name: str, exc: Exception) -> str:
+    return render_tool_error(
+        tool_name=tool_name,
+        error_class="authz_policy_violation",
+        message=str(exc),
+        provider="mcp",
+        retryable=False,
+        actionable_hint=(
+            "Use an HTTP/SSE MCP endpoint in cloud core, or enable the Local Bridge / coding plugin "
+            "for stdio, WebSocket, SDK, or local IPC transports."
+        ),
+    )
 
 
 # -- list_mcp_tools (DB introspection; old name list_mcp_resources kept as alias) ---
@@ -256,8 +272,12 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
 )
 async def import_mcp_server(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tool_domains.web_mcp import _import_mcp_server
+    from app.services.mcp_authz import MCPAuthzError
 
-    return await _import_mcp_server(agent_id, arguments)
+    try:
+        return await _import_mcp_server(agent_id, arguments)
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("import_mcp_server", exc)
 
 
 # -- call_mcp_tool ------------------------------------------------------------
@@ -297,6 +317,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
 
     from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
+    from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed
     from app.services.mcp_client import MCPClient
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
@@ -379,11 +400,15 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
 
         server_url = row.mcp_server_url
         api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
+        transport = (row.config or {}).get("transport") if isinstance(row.config, dict) else None
         remote_name = row.mcp_tool_name or row.name
 
     try:
+        assert_mcp_cloud_transport_allowed(server_url=server_url, transport=transport)
         client = MCPClient(server_url, api_key=api_key)
         return await client.call_tool(remote_name, tool_args)
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error("call_mcp_tool", exc)
     except Exception as exc:
         return render_tool_error(
             tool_name="call_mcp_tool",
@@ -418,6 +443,7 @@ async def _resolve_agent_mcp_server(
 
     from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
+    from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed
     from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
@@ -481,6 +507,11 @@ async def _resolve_agent_mcp_server(
             actionable_hint=f"Pass server=one of: {', '.join(sorted(by_server))}.",
         )
     url, row, name = chosen
+    transport = (row.config or {}).get("transport") if isinstance(row.config, dict) else None
+    try:
+        assert_mcp_cloud_transport_allowed(server_url=url, transport=transport)
+    except MCPAuthzError as exc:
+        return _render_mcp_authz_error(tool_name, exc)
     api_key = (row.config or {}).get("api_key") if isinstance(row.config, dict) else None
     return url, api_key, name
 
@@ -662,6 +693,18 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
                     "type": "string",
                     "description": "MCP server name (optional when only one server is imported).",
                 },
+                "import_as_skill": {
+                    "type": "boolean",
+                    "description": "When true, install the prompt as an active Skill only after SkillGuard accepts it.",
+                },
+                "skill_name": {
+                    "type": "string",
+                    "description": "Optional target skill folder name when import_as_skill is true.",
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "Replace an existing prompt-derived skill with the same target folder.",
+                },
             },
             "required": ["prompt_name"],
         },
@@ -677,6 +720,7 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
 )
 async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.mcp_client import MCPClient
+    from app.services.mcp_prompt_trust import install_mcp_prompt_as_skill, render_mcp_prompt_context
 
     prompt_name = str(arguments.get("prompt_name") or arguments.get("name") or "").strip()
     if not prompt_name:
@@ -701,9 +745,45 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
     resolved = await _resolve_agent_mcp_server(agent_id, arguments.get("server"), tool_name="mcp_get_prompt")
     if isinstance(resolved, str):
         return resolved
-    server_url, api_key = resolved[:2]
+    server_url, api_key, server_name = resolved
     try:
-        return await MCPClient(server_url, api_key=api_key).get_prompt(prompt_name, prompt_arguments)
+        prompt_text = await MCPClient(server_url, api_key=api_key).get_prompt(prompt_name, prompt_arguments)
+        if str(prompt_text).lstrip().startswith("<tool_error"):
+            return prompt_text
+        if bool(arguments.get("import_as_skill")):
+            try:
+                installed = install_mcp_prompt_as_skill(
+                    workspace=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
+                    agent_id=agent_id,
+                    server_name=server_name,
+                    prompt_name=prompt_name,
+                    prompt_text=prompt_text,
+                    overwrite=bool(arguments.get("overwrite", False)),
+                    folder_name=str(arguments.get("skill_name") or "").strip() or None,
+                )
+            except ValueError as exc:
+                error_class = "skill_guard_blocked" if "SkillGuard" in str(exc) else "bad_arguments"
+                return render_tool_error(
+                    tool_name="mcp_get_prompt",
+                    error_class=error_class,
+                    message=str(exc),
+                    provider="mcp",
+                    retryable=False,
+                    actionable_hint=(
+                        "Review the MCP prompt content, remove blocked patterns, and retry. "
+                        "MCP prompts cannot become active Skills without passing SkillGuard."
+                    ),
+                )
+            return "\n".join(
+                [
+                    "## MCP Prompt Skill Installed",
+                    f"- server: {server_name}",
+                    f"- prompt: {prompt_name}",
+                    f"- skill: {installed['folder_name']}",
+                    f"- skill_guard: {installed.get('skill_guard', {}).get('risk_level', 'unknown')}",
+                ]
+            )
+        return render_mcp_prompt_context(server_name=server_name, prompt_name=prompt_name, prompt_text=prompt_text)
     except Exception as exc:
         return render_tool_error(
             tool_name="mcp_get_prompt",

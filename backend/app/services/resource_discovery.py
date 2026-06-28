@@ -654,9 +654,11 @@ async def import_mcp_direct(
     MCP servers that provide their own public endpoint.
     """
     from app.services.mcp_client import MCPClient
+    from app.services.mcp_authz import assert_mcp_cloud_transport_allowed
 
     # Resolve agent's tenant_id for tool scoping
     agent_tenant_id = await _resolve_agent_tenant_id(agent_id)
+    assert_mcp_cloud_transport_allowed(server_url=mcp_url)
 
     # Build URL with apiKey if provided
     full_url = mcp_url

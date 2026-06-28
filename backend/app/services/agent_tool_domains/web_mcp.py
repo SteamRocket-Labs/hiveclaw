@@ -1776,7 +1776,11 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
     try:
         from app.models.agent import Agent
         from app.models.tool import AgentTool, Tool
-        from app.services.mcp_authz import MCPAuthzError, assert_no_mcp_token_passthrough
+        from app.services.mcp_authz import (
+            MCPAuthzError,
+            assert_mcp_cloud_transport_allowed,
+            assert_no_mcp_token_passthrough,
+        )
         from app.services.mcp_client import MCPClient
         from app.services.mcp_naming import build_mcp_tool_name, is_mcp_tool_name
         from app.services.mcp_server_service import resolve_agent_mcp_tool_mode, resolve_mcp_oauth_bearer
@@ -1871,6 +1875,23 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                 actionable_hint=(
                     "Do not pass user/OAuth tokens through MCP tool config. "
                     "Use a server-scoped credential or tenant-managed connector authorization."
+                ),
+            )
+        try:
+            assert_mcp_cloud_transport_allowed(
+                server_url=tool.mcp_server_url,
+                transport=merged_config.get("transport") if isinstance(merged_config, dict) else None,
+            )
+        except MCPAuthzError as exc:
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="authz_policy_violation",
+                message=str(exc),
+                provider="mcp",
+                retryable=False,
+                actionable_hint=(
+                    "Use HTTP/SSE MCP in cloud core. Route stdio, WebSocket, SDK, or local IPC MCP servers "
+                    "through the Local Bridge / coding plugin."
                 ),
             )
         # Server-resolved OAuth bearer overrides any config key (it is NOT agent

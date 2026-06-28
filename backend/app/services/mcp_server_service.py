@@ -33,6 +33,7 @@ from app.services.mcp_backfill import (
 )
 from app.services.mcp_backfill_service import backfill_tenant_mcp_servers
 from app.services import mcp_oauth
+from app.services.mcp_authz import assert_mcp_cloud_transport_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -768,6 +769,10 @@ async def import_and_register(
     """
     from app.services.resource_discovery import import_mcp_direct, import_mcp_from_smithery
 
+    requested_transport = (config or {}).get("transport") if isinstance(config, dict) else None
+    if mcp_url or requested_transport:
+        assert_mcp_cloud_transport_allowed(server_url=mcp_url, transport=requested_transport)
+
     agents_result = await db.execute(
         select(Agent.id).where(Agent.tenant_id == tenant_id).order_by(Agent.created_at.asc())
     )
@@ -834,6 +839,9 @@ async def import_mcp_for_agent_and_register(
     from app.services.resource_discovery import import_mcp_direct, import_mcp_from_smithery
 
     config = dict(config or {})
+    requested_transport = config.get("transport")
+    if mcp_url or requested_transport:
+        assert_mcp_cloud_transport_allowed(server_url=mcp_url, transport=requested_transport)
     # Bootstrap the agent's tenant from the policied ``agents`` table by PK.
     # Audit-bypass (DD-A): reading an agent's own tenant fail-closes under
     # enforced RLS otherwise (chicken-and-egg). Reads the whole agent row, so we

@@ -21,10 +21,42 @@ PASSTHROUGH_TOKEN_KEYS = {
     "user_token",
 }
 API_KEY_QUERY_KEYS = {"apikey", "api_key"}
+LOCAL_ONLY_TRANSPORTS = {"stdio", "ws", "websocket", "wss", "sdk", "ipc", "local"}
+CLOUD_CORE_TRANSPORTS = {"http", "https", "sse", "streamable", "streamable_http", "http_sse"}
 
 
 class MCPAuthzError(ValueError):
     """Raised when MCP auth material violates Hive's authz policy."""
+
+
+def _normalize_transport(value: object) -> str:
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def assert_mcp_cloud_transport_allowed(server_url: str | None = None, transport: object = None) -> None:
+    """Fail closed for MCP transports that require local runtime ownership.
+
+    Hive cloud core can connect to HTTP/SSE MCP endpoints. Local-resource
+    transports (stdio/WebSocket SDK/local IPC) must enter through the Local
+    Bridge or the optional coding plugin, not through the cloud MCP client.
+    """
+    explicit_transport = _normalize_transport(transport)
+    parsed = urlparse((server_url or "").strip())
+    scheme_transport = _normalize_transport(parsed.scheme)
+
+    candidates = [candidate for candidate in (explicit_transport, scheme_transport) if candidate]
+    for candidate in candidates:
+        if candidate in LOCAL_ONLY_TRANSPORTS:
+            raise MCPAuthzError(
+                "MCP local transport "
+                f"{candidate!r} requires the local bridge / coding plugin; "
+                "cloud core only supports streamable_http and sse MCP endpoints."
+            )
+        if candidate not in CLOUD_CORE_TRANSPORTS:
+            raise MCPAuthzError(
+                f"MCP transport {candidate!r} is not supported by cloud core; "
+                "use streamable_http/sse or route local transports through the coding plugin."
+            )
 
 
 def split_mcp_server_url_and_api_key(server_url: str, explicit_api_key: str | None = None) -> tuple[str, str | None]:
@@ -36,6 +68,7 @@ def split_mcp_server_url_and_api_key(server_url: str, explicit_api_key: str | No
     explicitly forbidden.
     """
     parsed = urlparse((server_url or "").strip())
+    assert_mcp_cloud_transport_allowed(server_url)
     if parsed.username or parsed.password:
         raise MCPAuthzError("MCP server URL userinfo is forbidden; store credentials separately.")
 

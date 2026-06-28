@@ -352,6 +352,26 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
             "requires_local_bridge": taxonomy.requires_local_bridge,
             "source": taxonomy.source,
         }
+    elif tool.type == "mcp":
+        governance_taxonomy = {
+            "name": tool.mcp_server_name or "mcp_server",
+            "layer": "external_extension",
+            "l2_visible": True,
+            "enterprise_toggleable": True,
+            "default_enabled": False,
+            "requires_local_bridge": False,
+            "source": "mcp",
+        }
+    elif tool.type == "custom_api" or str(tool.name).startswith("custom_api__"):
+        governance_taxonomy = {
+            "name": "custom_api_connector",
+            "layer": "external_extension",
+            "l2_visible": True,
+            "enterprise_toggleable": True,
+            "default_enabled": False,
+            "requires_local_bridge": False,
+            "source": "custom_api",
+        }
     return {
         "id": str(tool.id),
         "name": tool.name,

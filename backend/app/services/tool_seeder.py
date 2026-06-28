@@ -39,7 +39,7 @@ async def seed_builtin_tools():
     async with (
         async_session() as db,
         enter_rls_bypass(
-            db, reason="startup builtin-tool seeding: upsert global tools + auto-assign to all agents"
+            db, reason="startup builtin-tool seeding: upsert platform tools + auto-assign to all agents"
         ) as bdb,
     ):
         db = bdb

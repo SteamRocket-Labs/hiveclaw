@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ToolConfigSecretListField,
   countToolConfigListValues,
+  isExtensionOrAddonTool,
   normalizeToolConfigListValue,
 } from './WorkspaceToolsSection';
 
@@ -20,6 +21,32 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('WorkspaceToolsSection AnySearch key pool helpers', () => {
+  it('treats only L2 extensions and dynamic connectors as toggleable tools', () => {
+    expect(isExtensionOrAddonTool({
+      type: 'builtin',
+      name: 'web_search',
+      governance_taxonomy: {
+        layer: 'agent_base',
+        l2_visible: false,
+        enterprise_toggleable: false,
+      },
+    })).toBe(false);
+    expect(isExtensionOrAddonTool({
+      type: 'builtin',
+      name: 'exa_search',
+      governance_taxonomy: {
+        layer: 'platform_addon',
+        l2_visible: true,
+        enterprise_toggleable: true,
+      },
+    })).toBe(true);
+    expect(isExtensionOrAddonTool({
+      type: 'mcp',
+      name: 'mcp_vendor_search',
+      governance_taxonomy: null,
+    })).toBe(true);
+  });
+
   it('normalizes comma and newline separated tool config lists', () => {
     expect(normalizeToolConfigListValue('key-a\nkey-b,key-c\n\n key-d ')).toEqual([
       'key-a',

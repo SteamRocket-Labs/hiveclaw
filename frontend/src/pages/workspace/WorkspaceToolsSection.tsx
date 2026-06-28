@@ -38,6 +38,40 @@ type ToolConfigField = {
   [key: string]: unknown;
 };
 
+type ToolGovernanceTaxonomy = {
+  l2_visible?: boolean;
+  enterprise_toggleable?: boolean;
+  layer?: string;
+  source?: string;
+};
+
+type WorkspaceToolRow = {
+  id: string;
+  name?: string;
+  display_name?: string;
+  description?: string;
+  type?: string;
+  category?: string;
+  enabled?: boolean;
+  is_default?: boolean;
+  config?: Record<string, unknown>;
+  config_schema?: { fields?: any[] };
+  mcp_server_name?: string | null;
+  mcp_server_url?: string | null;
+  governance_taxonomy?: ToolGovernanceTaxonomy | null;
+};
+
+export function isExtensionOrAddonTool(tool: Pick<WorkspaceToolRow, 'type' | 'name' | 'governance_taxonomy'>): boolean {
+  const taxonomy = tool.governance_taxonomy;
+  if (taxonomy?.l2_visible === true && taxonomy?.enterprise_toggleable === true) {
+    return true;
+  }
+  if (taxonomy?.layer === 'agent_base') {
+    return false;
+  }
+  return tool.type === 'mcp' || tool.type === 'custom_api' || String(tool.name || '').startsWith('custom_api__');
+}
+
 export function normalizeToolConfigListValue(value: unknown, options: { preserveEmpty?: boolean } = {}): string[] {
   let parts: string[];
   if (Array.isArray(value)) {
@@ -162,7 +196,7 @@ export default function WorkspaceToolsSection({
     agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
   };
 
-  const [allTools, setAllTools] = useState<any[]>([]);
+  const [allTools, setAllTools] = useState<WorkspaceToolRow[]>([]);
   const [showAddMCP, setShowAddMCP] = useState(false);
   const [mcpForm, setMcpForm] = useState({ server_url: '', server_name: '' });
   const [mcpRawInput, setMcpRawInput] = useState('');
@@ -241,7 +275,7 @@ export default function WorkspaceToolsSection({
 
   const loadAllTools = async () => {
     const data = await toolsApi.listCatalog(selectedTenantId || undefined);
-    setAllTools(data);
+    setAllTools(data as WorkspaceToolRow[]);
   };
 
   const loadAgentInstalledTools = async () => {
@@ -262,7 +296,7 @@ export default function WorkspaceToolsSection({
     <div>
       <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' }}>
         {([
-          ['global', t('enterprise.tools.globalTools', 'Global Tools')],
+          ['global', t('enterprise.tools.extensionsAddons', 'Extensions & Add-ons')],
           ['mcp-servers', t('agent.extensions.mcpServers', 'MCP Servers')],
           ['custom-api', t('enterprise.tools.customApis', 'Custom APIs')],
           ['plugins', t('agent.extensions.plugins', 'Plugins')],
@@ -361,7 +395,7 @@ export default function WorkspaceToolsSection({
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading', 'Loading...')}</div>
           ) : mcpServers.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
-              {t('enterprise.tools.noMcpServers', 'No MCP servers yet. Add one from Global Tools.')}
+              {t('enterprise.tools.noMcpServers', 'No MCP servers yet. Add one from Extensions & Add-ons.')}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -668,7 +702,7 @@ export default function WorkspaceToolsSection({
       {toolsView === 'global' ? (
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3>{t('enterprise.tools.title', 'Global Tools')}</h3>
+            <h3>{t('enterprise.tools.extensionsAddons', 'Extensions & Add-ons')}</h3>
             <button className="btn btn-primary" onClick={() => setShowAddMCP(true)}>
               + {t('enterprise.tools.addMcpServer', 'Add MCP Server')}
             </button>
@@ -852,16 +886,17 @@ export default function WorkspaceToolsSection({
           ) : null}
 
           {(() => {
-            const grouped = allTools.reduce((acc: Record<string, any[]>, tool: any) => {
+            const extensionTools = allTools.filter(isExtensionOrAddonTool);
+            const grouped = extensionTools.reduce((acc: Record<string, WorkspaceToolRow[]>, tool) => {
               const category = tool.category || 'general';
               (acc[category] = acc[category] || []).push(tool);
               return acc;
-            }, {} as Record<string, any[]>);
+            }, {} as Record<string, WorkspaceToolRow[]>);
 
-            if (allTools.length === 0) {
+            if (extensionTools.length === 0) {
               return (
                 <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
-                  {t('enterprise.tools.emptyState', 'No global tools configured')}
+                  {t('enterprise.tools.emptyExtensionsState', 'No extensions or add-ons configured')}
                 </div>
               );
             }
@@ -882,7 +917,7 @@ export default function WorkspaceToolsSection({
                             onClick={() => {
                               setConfigCategory(category);
                               setEditingConfig({});
-                              const firstToolWithConfig = categoryTools.find((tool) => tool.config_schema?.fields?.length > 0);
+                              const firstToolWithConfig = categoryTools.find((tool) => (tool.config_schema?.fields?.length ?? 0) > 0);
                               if (firstToolWithConfig?.config) {
                                 setEditingConfig({ ...firstToolWithConfig.config });
                               }
@@ -906,13 +941,14 @@ export default function WorkspaceToolsSection({
                             (mcpByServer[server] = mcpByServer[server] || []).push(tool);
                           }
 
-                          const renderToolRow = (tool: any) => {
-                            const hasOwnConfig = tool.config_schema?.fields?.length > 0 && !hasCategoryConfig;
+                          const renderToolRow = (tool: WorkspaceToolRow) => {
+                            const hasOwnConfig = (tool.config_schema?.fields?.length ?? 0) > 0 && !hasCategoryConfig;
                             const isEditing = editingToolId === tool.id;
                             // Strip "ServerName: " prefix for MCP tools shown inside a server group
-                            const shortName = tool.type === 'mcp' && tool.mcp_server_name && tool.display_name.startsWith(tool.mcp_server_name + ': ')
-                              ? tool.display_name.slice(tool.mcp_server_name.length + 2)
-                              : tool.display_name;
+                            const displayName = tool.display_name || tool.name || tool.id;
+                            const shortName = tool.type === 'mcp' && tool.mcp_server_name && displayName.startsWith(tool.mcp_server_name + ': ')
+                              ? displayName.slice(tool.mcp_server_name.length + 2)
+                              : displayName;
 
                             return (
                               <div key={tool.id} className="card" style={{ padding: '0', overflow: 'hidden' }}>
@@ -924,7 +960,7 @@ export default function WorkspaceToolsSection({
                                         <span style={{ fontWeight: 500, fontSize: '13px' }}>{shortName}</span>
                                         {tool.type !== 'mcp' ? (
                                           <span style={{ fontSize: '10px', background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', borderRadius: '4px', padding: '1px 5px' }}>
-                                            Built-in
+                                            {t('enterprise.tools.addOn', 'Add-on')}
                                           </span>
                                         ) : null}
                                         {tool.is_default ? (
@@ -947,7 +983,7 @@ export default function WorkspaceToolsSection({
                                             setEditingToolId(null);
                                           } else {
                                             setEditingToolId(tool.id);
-                                            setEditingConfig({ ...tool.config });
+                                            setEditingConfig({ ...(tool.config || {}) });
                                           }
                                         }}
                                       >
@@ -962,7 +998,7 @@ export default function WorkspaceToolsSection({
                                         onClick={async () => {
                                           const confirmed = await requestAppConfirm({
                                             title: t('common.delete', 'Delete'),
-                                            message: `${t('common.delete', 'Delete')} ${tool.display_name}?`,
+                                            message: `${t('common.delete', 'Delete')} ${displayName}?`,
                                             confirmLabel: t('common.delete', 'Delete'),
                                             danger: true,
                                           });
@@ -979,15 +1015,19 @@ export default function WorkspaceToolsSection({
                                     <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }}>
                                       <input
                                         type="checkbox"
-                                        checked={tool.enabled}
+                                        checked={tool.enabled !== false}
                                         onChange={async (event) => {
-                                          await toolsApi.updateGlobalTool(tool.id, { enabled: event.target.checked });
-                                          loadAllTools();
+                                          try {
+                                            await toolsApi.updateGlobalTool(tool.id, { enabled: event.target.checked });
+                                            loadAllTools();
+                                          } catch (error: any) {
+                                            showAppToast(error?.message || t('enterprise.tools.updateFailed', 'Update failed'), 'error');
+                                          }
                                         }}
                                         style={{ opacity: 0, width: 0, height: 0 }}
                                       />
-                                      <span style={{ position: 'absolute', inset: 0, background: tool.enabled ? '#22c55e' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
-                                        <span style={{ position: 'absolute', left: tool.enabled ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                      <span style={{ position: 'absolute', inset: 0, background: tool.enabled !== false ? '#22c55e' : 'var(--bg-tertiary)', borderRadius: '11px', transition: 'background 0.2s' }}>
+                                        <span style={{ position: 'absolute', left: tool.enabled !== false ? '20px' : '2px', top: '2px', width: '18px', height: '18px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
                                       </span>
                                     </label>
                                   </div>
@@ -996,7 +1036,7 @@ export default function WorkspaceToolsSection({
                                 {isEditing && hasOwnConfig ? (
                                   <div style={{ borderTop: '1px solid var(--border-color)', padding: '16px', background: 'var(--bg-secondary)' }}>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                      {(tool.config_schema.fields || []).map((field: any) => {
+                                      {(tool.config_schema?.fields || []).map((field: any) => {
                                         if (field.depends_on) {
                                           const visible = Object.entries(field.depends_on).every(([key, values]: [string, any]) =>
                                             values.includes(editingConfig[key]),
@@ -1174,7 +1214,7 @@ export default function WorkspaceToolsSection({
                     <button
                       className="btn btn-primary"
                       onClick={async () => {
-                        const categoryTools = allTools.filter((tool) => (tool.category || 'general') === configCategory && tool.config_schema?.fields?.length > 0);
+                        const categoryTools = allTools.filter((tool) => isExtensionOrAddonTool(tool) && (tool.category || 'general') === configCategory && (tool.config_schema?.fields?.length ?? 0) > 0);
                         for (const tool of categoryTools) {
                           await toolsApi.updateGlobalTool(tool.id, { config: editingConfig });
                         }

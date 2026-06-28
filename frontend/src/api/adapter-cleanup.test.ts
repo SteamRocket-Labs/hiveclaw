@@ -514,7 +514,7 @@ describe('request cleanup adapters', () => {
     expect(deleted).toEqual({ fallback_tenant_id: 'tenant-2', needs_company_setup: false });
   });
 
-  it('routes global tools management through toolsApi', async () => {
+  it('routes platform tool management through toolsApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
       return {

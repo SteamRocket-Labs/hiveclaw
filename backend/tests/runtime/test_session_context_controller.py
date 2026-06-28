@@ -140,4 +140,9 @@ async def test_prepare_session_context_compresses_when_cc_threshold_reached() ->
         "context_window_status",
         "compaction_started",
         "compaction_completed",
+        "compaction_lifecycle",
     ]
+    lifecycle = decisions[-1]["compaction_lifecycle"]
+    assert lifecycle["trigger"] == "request_preflight"
+    assert lifecycle["before_message_count"] == 3
+    assert lifecycle["after_message_count"] == 2

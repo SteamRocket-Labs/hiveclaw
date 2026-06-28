@@ -7,6 +7,7 @@ SessionContext runtime tracking fields.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,14 @@ class RecoveryManifest:
     # Blocked patterns from evolution (do-not-retry list)
     blocked_patterns: list[str] = field(default_factory=list)
 
+    # Tool-call closure state that must survive compact/restart/fork.
+    discovered_tools: list[str] = field(default_factory=list)
+    pending_tool_frames: list[dict[str, Any]] = field(default_factory=list)
+    permission_checkpoints: list[dict[str, Any]] = field(default_factory=list)
+    hook_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
+    compaction_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
+    permission_profile: dict[str, Any] = field(default_factory=dict)
+
     def is_empty(self) -> bool:
         return not any(
             [
@@ -55,8 +64,34 @@ class RecoveryManifest:
                 self.recent_external_refs,
                 self.pending_items,
                 self.blocked_patterns,
+                self.discovered_tools,
+                self.pending_tool_frames,
+                self.permission_checkpoints,
+                self.hook_lifecycle_records,
+                self.compaction_lifecycle_records,
+                self.permission_profile,
             ]
         )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "recent_reads": self.recent_reads,
+            "recent_writes": self.recent_writes,
+            "file_snapshots": self.file_snapshots,
+            "recent_tool_outcomes": self.recent_tool_outcomes,
+            "active_skills": self.active_skills,
+            "active_tool_groups": self.active_tool_groups,
+            "recent_external_refs": self.recent_external_refs,
+            "pending_items": self.pending_items,
+            "blocked_patterns": self.blocked_patterns,
+            "discovered_tools": self.discovered_tools,
+            "pending_tool_frames": self.pending_tool_frames,
+            "permission_checkpoints": self.permission_checkpoints,
+            "hook_lifecycle_records": self.hook_lifecycle_records,
+            "compaction_lifecycle_records": self.compaction_lifecycle_records,
+            "permission_profile": self.permission_profile,
+        }
 
     def to_restoration_text(self, *, budget_chars: int = 20000) -> str:
         """Render manifest as structured text for prompt injection."""
@@ -71,6 +106,10 @@ class RecoveryManifest:
             if total + len(block) < budget_chars:
                 sections.append(block)
                 total += len(block)
+
+        def _add_dicts(title: str, items: list[dict[str, Any]]) -> None:
+            rendered = [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in items if item]
+            _add(title, rendered)
 
         def _format_file_item(path: str) -> str:
             snapshot = self.file_snapshots.get(path, {})
@@ -92,10 +131,28 @@ class RecoveryManifest:
         _add("External References", self.recent_external_refs[-5:])
         _add("Pending Work", self.pending_items[-5:])
         _add("Blocked Patterns (DO NOT retry)", self.blocked_patterns[-5:])
+        _add("Discovered Tools", self.discovered_tools)
+        _add_dicts("Pending Tool Frames", self.pending_tool_frames[-5:])
+        _add_dicts("Permission Checkpoints", self.permission_checkpoints[-5:])
+        _add_dicts("Hook Lifecycle Records", self.hook_lifecycle_records[-10:])
+        _add_dicts("Compaction Lifecycle Records", self.compaction_lifecycle_records[-5:])
+        if self.permission_profile:
+            _add("Permission Profile", [json.dumps(self.permission_profile, ensure_ascii=False, sort_keys=True)])
 
         if not sections:
             return ""
         return "\n\n".join(sections)
+
+
+def _metadata_dict_list(metadata: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            result.append(dict(value))
+        elif isinstance(value, list):
+            result.extend(dict(item) for item in value if isinstance(item, dict))
+    return result
 
 
 def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
@@ -108,6 +165,12 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         if isinstance(p, dict):
             tool_group_names.append(p.get("name", "?"))
 
+    metadata = getattr(session_context, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    permission_profile = metadata.get("permission_profile")
+
     return RecoveryManifest(
         session_id=getattr(session_context, "session_id", None),
         recent_reads=list(getattr(session_context, "recent_files", [])),
@@ -118,6 +181,12 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         active_tool_groups=tool_group_names,
         recent_external_refs=list(getattr(session_context, "recent_external_refs", [])),
         pending_items=list(getattr(session_context, "pending_items", [])),
+        discovered_tools=list(getattr(session_context, "discovered_tools", [])),
+        pending_tool_frames=_metadata_dict_list(metadata, "pending_tool_frame", "pending_tool_frames"),
+        permission_checkpoints=_metadata_dict_list(metadata, "permission_checkpoint", "permission_checkpoints"),
+        hook_lifecycle_records=_metadata_dict_list(metadata, "hook_lifecycle_records"),
+        compaction_lifecycle_records=_metadata_dict_list(metadata, "compaction_lifecycle_records"),
+        permission_profile=dict(permission_profile) if isinstance(permission_profile, dict) else {},
     )
 
 

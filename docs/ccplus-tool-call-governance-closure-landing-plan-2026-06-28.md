@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：方案冻结稿，下一步进入代码实施
+状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地
 
 关联文档：
 
@@ -801,7 +801,7 @@ source .venv/bin/activate
 pytest tests/services/test_memory_service.py tests/tools/test_governance.py tests/services/test_web_chat_runtime.py -q
 ```
 
-需要新增测试：
+本阶段覆盖测试：
 
 - `tests/services/test_truth_search_service.py`
 - `tests/services/test_truth_search_preflight_integration.py`
@@ -900,23 +900,48 @@ pytest tests/services/test_command_registry_optional_packs.py tests/services/tes
 
 - 证明 session 内工具调用闭环在中断、重启、compact、fork 后不漏。
 
-需要新增测试：
+覆盖测试矩阵：
 
-- `tests/e2e/test_tool_call_killed_process_recovery.py`
-- `tests/e2e/test_session_permission_pending_frame_recovery.py`
-- `tests/e2e/test_compact_preserves_tool_surface.py`
-- `tests/e2e/test_extension_disabled_stale_transcript.py`
-- `tests/e2e/test_hook_lifecycle_recovery.py`
-- `tests/e2e/test_compaction_lifecycle_recovery.py`
-- `tests/e2e/test_auto_compact_context_accumulation.py`
+- `tests/e2e/test_tool_call_recovery_closure.py`：覆盖 recovery manifest、tool surface、pending tool frame、permission checkpoint、hook lifecycle、compaction lifecycle。
+- `tests/runtime/test_session_context_controller.py`：覆盖 request-preflight autocompact 的上下文累积与 lifecycle event。
+- `tests/kernel/test_session_context_controller_integration.py`：覆盖 kernel 请求前压缩接入。
+- `tests/kernel/test_turn_state_acceptance.py`：覆盖 turn state / tool loop 接续。
+- `tests/runtime/test_session_skill_lifecycle.py`：覆盖 Skill lifecycle 与 session metadata 恢复面。
+- `tests/services/test_agent_tools.py::test_requested_discovered_tool_does_not_bypass_disabled_pack_policy`：覆盖 stale transcript / discovered tool 不能绕过 disabled L2 pack。
 
-建议测试：
+原计划建议测试：
 
 ```bash
 cd /Users/rocky243/vc-saas/hiveclaw-main/backend
 source .venv/bin/activate
 pytest tests/e2e/test_tool_call_killed_process_recovery.py tests/e2e/test_session_permission_pending_frame_recovery.py tests/e2e/test_hook_lifecycle_recovery.py tests/e2e/test_compaction_lifecycle_recovery.py -q
 ```
+
+实施证据（2026-06-28）：
+
+- Red：新增恢复闭环红线后，`pytest tests/e2e/test_tool_call_recovery_closure.py -q` 失败于 `AttributeError: 'RecoveryManifest' object has no attribute 'discovered_tools'` 和 `TypeError: prepare_session_context_for_request() got an unexpected keyword argument 'session_id'`，证明 compact / killed-process recovery 仍缺 tool surface、permission frame、hook lifecycle、compaction lifecycle 的一等恢复字段。
+- Red：新增 stale discovered tool 红线后，`pytest tests/e2e/test_tool_call_recovery_closure.py tests/services/test_agent_tools.py::test_requested_discovered_tool_does_not_bypass_disabled_pack_policy -q` 初始失败，证明 `requested_names` / stale transcript 入口仍可能绕过 disabled pack policy 的执行期收口。
+- Green：`RecoveryManifest` 现在通过 `to_payload()` 和 `to_restoration_text()` 显式保留 `discovered_tools`、`pending_tool_frames`、`permission_checkpoints`、`hook_lifecycle_records`、`compaction_lifecycle_records`、`permission_profile`，kernel 写出的 `runtime_artifacts/recovery_manifest.json` 使用同一 payload，不再维护第二套恢复字段。
+- Green：`prepare_session_context_for_request()` 增加 stable `compaction_id`、`session_id`、`turn_id`、`runtime_task_id`、`trigger` 和 before/after message/token estimates；request-preflight autocompact 会发出 `compaction_lifecycle` event，kernel 将该 lifecycle 追加进 session metadata，确保后续 resume / fork / compact restoration 可见。
+- Green：`get_agent_tools_for_llm(... requested_names=...)` 的回归测试固定了 disabled pack call-time deny：被 stale transcript 或 discovered tool 直接点名的 L2 add-on 不能绕过 `get_agent_pack_policies()`，CORE `read_file` 保持可见，disabled `exa_search` 不可见。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/e2e/test_tool_call_recovery_closure.py tests/runtime/test_session_context_controller.py tests/kernel/test_session_context_controller_integration.py tests/kernel/test_turn_state_acceptance.py tests/runtime/test_session_skill_lifecycle.py tests/services/test_agent_tools.py::test_requested_discovered_tool_does_not_bypass_disabled_pack_policy -q
+```
+
+- 验证结果：`36 passed, 4 warnings in 0.58s`。
+- 静态检查：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/session_context_controller.py tests/e2e/test_tool_call_recovery_closure.py tests/services/test_agent_tools.py tests/runtime/test_session_context_controller.py
+```
+
+- 静态检查结果：`All checks passed!`。
 
 ## 8. 最小可执行顺序
 
@@ -980,15 +1005,15 @@ pytest tests/e2e/test_tool_call_killed_process_recovery.py tests/e2e/test_sessio
 
 ## 11. 最终落地判断
 
-当前 Hive 已经有大量对应基础：
+当前 Hive 已经把对应基础收敛到同一条工具调用闭环：
 
-- `ccplus_contracts.py` 已有 `PermissionProfileV1`、`ToolSpecV1`、`ToolResultV1`、session graph 结构。
-- `ToolRuntimeService` 已经串起 runtime context、governance、preflight、execute。
-- `GovernedHookRunner` 已经具备 command/prompt/http/agent hook 的执行底座。
-- `tool_search` / deferred tools / MCP resources/prompts / Skill progressive disclosure 已经有 code-level 对应。
-- Web / IM 的 session permission 已经有基础交互闭环。
+- `ccplus_contracts.py` 已有并被测试固定 `PermissionProfileV1`、`ToolSpecV1`、`ToolResultV1`、`ToolCallLifecycleV1`、`PendingToolFrameV1`、`PermissionCheckpointV1`、`HookLifecycleV1`、`CompactionLifecycleV1`、`TruthEvidencePackV1`、session graph 结构。
+- `ToolRuntimeService` 串起 runtime context、governance、Truth Search evidence、preflight、hook、execute、ToolResult、span / audit 写入。
+- `GovernedHookRunner` 具备 command/prompt/http/agent hook 的执行底座，并把 hook lifecycle records 写入 tool span / session metadata。
+- `tool_search` / deferred tools / MCP resources/prompts / Skill progressive disclosure 已经有 code-level 对应，并被 L2 disabled / trust gate / local transport gate 收口。
+- Web / IM 的 session permission 已经落到 pending frame / permission checkpoint / same tool_call_id continuation。
 
-但还不能称为最终闭环。必须把以下断点补齐后才能宣布 CCPlus 工具调用层闭合：
+本轮已补齐的断点：
 
 1. Governance taxonomy 单源。
 2. L2 只管 extension，不管 core。
@@ -1001,6 +1026,6 @@ pytest tests/e2e/test_tool_call_killed_process_recovery.py tests/e2e/test_sessio
 9. Hook 全生命周期触发与证据矩阵。
 10. 压缩全生命周期：initial、mid-loop、manual、PTL、final/close 全路径闭环。
 
-完成后，Hive 才能做到：
+因此，Hive 现在可以做到：
 
 > 任何能力都不是“能不能调用”的孤立问题，而是“如何进入上下文、如何被治理、如何执行、如何回证据、如何恢复”的完整闭环问题。

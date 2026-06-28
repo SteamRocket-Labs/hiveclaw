@@ -9,11 +9,12 @@ and event sinks.
 from __future__ import annotations
 
 import inspect
+import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from app.runtime.ccplus_contracts import ContextPolicyV1
+from app.runtime.ccplus_contracts import CompactionLifecycleV1, ContextPolicyV1
 from app.services.llm_client import LLMMessage
 
 CC_AUTOCOMPACT_BUFFER_TOKENS = 13_000
@@ -255,6 +256,10 @@ async def prepare_session_context_for_request(
     estimate_tokens: Callable[[list[LLMMessage]], int],
     compress_messages: Callable[..., Awaitable[list[dict[str, Any]]] | list[dict[str, Any]]],
     cumulative_run_tokens: int = 0,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    runtime_task_id: str | None = None,
+    compaction_trigger: str = "request_preflight",
     on_decision: Callable[[dict[str, Any]], Any] | None = None,
     compress_kwargs: dict[str, Any] | None = None,
     tool_result_exempt_names: set[str] | None = None,
@@ -299,6 +304,10 @@ async def prepare_session_context_for_request(
             tool_result_budget=budget_pass if budget_pass.changed else None,
             compressed=False,
         )
+
+    compaction_id = f"compact-{uuid.uuid4().hex}"
+    before_message_count = len(working)
+    before_token_estimate = token_status.active_context_tokens
 
     await _emit_decision(
         on_decision,
@@ -345,7 +354,39 @@ async def prepare_session_context_for_request(
                 "reason": "cc_autocompact_threshold",
             },
         )
+        lifecycle = CompactionLifecycleV1(
+            compaction_id=compaction_id,
+            session_id=session_id or "unknown",
+            trigger=compaction_trigger,
+            turn_id=turn_id or None,
+            runtime_task_id=runtime_task_id or None,
+            before_message_count=before_message_count,
+            after_message_count=len(working),
+            before_token_estimate=before_token_estimate,
+            after_token_estimate=token_status.active_context_tokens,
+            status="completed",
+        )
+        await _emit_decision(
+            on_decision,
+            decisions,
+            {
+                "event_type": "compaction_lifecycle",
+                "compaction_lifecycle": asdict(lifecycle),
+            },
+        )
     else:
+        lifecycle = CompactionLifecycleV1(
+            compaction_id=compaction_id,
+            session_id=session_id or "unknown",
+            trigger=compaction_trigger,
+            turn_id=turn_id or None,
+            runtime_task_id=runtime_task_id or None,
+            before_message_count=before_message_count,
+            after_message_count=len(working),
+            before_token_estimate=before_token_estimate,
+            after_token_estimate=token_status.active_context_tokens,
+            status="skipped",
+        )
         await _emit_decision(
             on_decision,
             decisions,
@@ -353,6 +394,14 @@ async def prepare_session_context_for_request(
                 **token_status.to_event(),
                 "event_type": "compaction_skipped",
                 "reason": "compressor_returned_unmodified_history",
+            },
+        )
+        await _emit_decision(
+            on_decision,
+            decisions,
+            {
+                "event_type": "compaction_lifecycle",
+                "compaction_lifecycle": asdict(lifecycle),
             },
         )
 

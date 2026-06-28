@@ -2861,22 +2861,7 @@ class AgentKernel:
                                     _mfile = _root / "runtime_artifacts" / "recovery_manifest.json"
                                     _mfile.parent.mkdir(parents=True, exist_ok=True)
                                     _mfile.write_text(
-                                        _json.dumps(
-                                            {
-                                                "session_id": manifest.session_id,
-                                                "recent_reads": manifest.recent_reads,
-                                                "recent_writes": manifest.recent_writes,
-                                                "file_snapshots": manifest.file_snapshots,
-                                                "recent_tool_outcomes": manifest.recent_tool_outcomes,
-                                                "active_skills": manifest.active_skills,
-                                                "active_tool_groups": manifest.active_tool_groups,
-                                                "recent_external_refs": manifest.recent_external_refs,
-                                                "pending_items": manifest.pending_items,
-                                                "blocked_patterns": manifest.blocked_patterns,
-                                            },
-                                            ensure_ascii=False,
-                                            indent=2,
-                                        ),
+                                        _json.dumps(manifest.to_payload(), ensure_ascii=False, indent=2),
                                         encoding="utf-8",
                                     )
                                     (_root / "workspace" / "recovery_manifest.json").unlink(missing_ok=True)
@@ -2888,12 +2873,22 @@ class AgentKernel:
 
             async def _emit_context_decision_event(data: dict[str, Any]) -> None:
                 event_type = str(data.get("event_type") or "context_window_status")
+                if (
+                    event_type == "compaction_lifecycle"
+                    and request.session_context is not None
+                    and isinstance(getattr(request.session_context, "metadata", None), dict)
+                    and isinstance(data.get("compaction_lifecycle"), dict)
+                ):
+                    request.session_context.metadata.setdefault("compaction_lifecycle_records", []).append(
+                        dict(data["compaction_lifecycle"])
+                    )
                 title_by_type = {
                     "context_window_status": "Context Window",
                     "tool_result_budget_pass": "Tool Result Budget",
                     "compaction_skipped": "Compaction Skipped",
                     "compaction_started": "Compaction Started",
                     "compaction_completed": "Compaction Completed",
+                    "compaction_lifecycle": "Compaction Lifecycle",
                 }
                 await _emit_event(
                     {
@@ -2959,6 +2954,15 @@ class AgentKernel:
                     estimate_tokens=_estimate_context_tokens,
                     compress_messages=_compress_for_preflight,
                     cumulative_run_tokens=context_usage_anchor_tokens,
+                    session_id=getattr(request.session_context, "session_id", None)
+                    if request.session_context
+                    else None,
+                    turn_id=str(getattr(request.session_context, "metadata", {}).get("turn_id") or "")
+                    if request.session_context
+                    else None,
+                    runtime_task_id=str(getattr(request.session_context, "metadata", {}).get("runtime_task_id") or "")
+                    if request.session_context
+                    else None,
                     on_decision=_emit_context_decision_event,
                     compress_kwargs={
                         "model_provider": active_model.provider,

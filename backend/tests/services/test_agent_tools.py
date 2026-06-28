@@ -289,6 +289,60 @@ async def test_get_agent_tools_for_llm_requested_skill_tool_can_expand_non_defau
 
 
 @pytest.mark.asyncio
+async def test_requested_discovered_tool_does_not_bypass_disabled_pack_policy(monkeypatch):
+    from app.services import agent_tools as agent_tools_module
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    exa_tool = _make_tool(
+        name="exa_search",
+        category="search",
+        is_default=False,
+    )
+    default_core_tool = _make_tool(
+        name="read_file",
+        category="filesystem",
+        is_default=True,
+    )
+
+    def fake_async_session():
+        return _FakeSession(
+            [
+                _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
+                _ListResult([default_core_tool, exa_tool]),
+                _ListResult([]),
+            ]
+        )
+
+    async def no_feishu_channel(_agent_id):
+        return False
+
+    async def no_feishu_cli_access():
+        return False
+
+    async def disabled_web_pack(*_args, **_kwargs):
+        return {"web_pack": False}
+
+    async def no_mcp_gating(*_args, **_kwargs):
+        return None
+
+    _patch_fake_tenant_session(monkeypatch, fake_async_session, tenant_id=tenant_id)
+    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu", no_feishu_channel)
+    monkeypatch.setattr(agent_tools_module, "_agent_has_feishu_cli_access", no_feishu_cli_access)
+    monkeypatch.setattr(agent_tools_module, "get_agent_pack_policies", disabled_web_pack)
+    monkeypatch.setattr(agent_tools_module, "_resolve_agent_mcp_gating", no_mcp_gating)
+
+    tools = await agent_tools_module.get_agent_tools_for_llm(
+        agent_id,
+        requested_names=["exa_search"],
+    )
+    names = {tool["function"]["name"] for tool in tools}
+
+    assert "read_file" in names
+    assert "exa_search" not in names
+
+
+@pytest.mark.asyncio
 async def test_get_agent_tools_for_llm_hides_hr_only_assignment_from_regular_agent(monkeypatch):
     from app.services import agent_tools as agent_tools_module
 

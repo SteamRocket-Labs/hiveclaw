@@ -1107,6 +1107,87 @@ async def test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span():
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_with_hooks_executes_pending_skill_fork_handoff(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    session = SessionContext(
+        session_id="session-skill-fork",
+        metadata={
+            "pending_skill_handoffs": [
+                {
+                    "skill": "Research",
+                    "skill_slug": "research",
+                    "source": "skills/research/SKILL.md",
+                    "execution_tool": "spawn_subagent",
+                    "tool_arguments": {
+                        "prompt": "Use the loaded skill `Research`.",
+                        "description": "Skill fork worker for Research",
+                        "skill": "Research",
+                        "skill_source": "skills/research/SKILL.md",
+                        "permission_profile": {
+                            "mode": "auto",
+                            "allowed_tools": ["web_search", "read_file"],
+                        },
+                    },
+                    "permission_profile": {
+                        "mode": "auto",
+                        "allowed_tools": ["web_search", "read_file"],
+                    },
+                }
+            ]
+        },
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "load research"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="session-skill-fork",
+    )
+    calls: list[dict[str, object]] = []
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, tool_call_id=None):
+        calls.append({"tool_name": _tool_name, "args": dict(_tool_args), "tool_call_id": tool_call_id})
+        if _tool_name == "load_skill":
+            return "Loaded Research"
+        if _tool_name == "spawn_subagent":
+            return '{"ok": true, "child_session_id": "child-1"}'
+        raise AssertionError(f"unexpected tool {_tool_name}")
+
+    async def emit_event(_event):
+        return None
+
+    result, effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        tool_name="load_skill",
+        tool_args={"name": "Research"},
+        tool_call_id="call-load-skill",
+        emit_event=emit_event,
+    )
+
+    assert executed is True
+    assert effective_args == {"name": "Research"}
+    assert [call["tool_name"] for call in calls] == ["load_skill", "spawn_subagent"]
+    assert calls[1]["tool_call_id"] == "call-load-skill:skill:research"
+    assert calls[1]["args"]["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    assert calls[1]["args"]["skill_source"] == "skills/research/SKILL.md"
+    assert "Skill fork worker `Research` executed through `spawn_subagent`." in result
+    assert "child-1" in result
+    assert "pending_skill_handoffs" not in session.metadata
+    assert session.metadata["executed_skill_handoffs"][0]["skill_slug"] == "research"
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_handles_tool_round_and_collects_parts():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig

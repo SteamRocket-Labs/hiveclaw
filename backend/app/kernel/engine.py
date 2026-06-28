@@ -1317,6 +1317,18 @@ async def _execute_tool_with_hooks(
 
             reset_trusted_plan_mode_user_declined(token)
     result_str = _normalize_tool_result_for_llm(result)
+    if tool_name == "load_skill" and request.session_context is not None:
+        result_str = await _execute_pending_skill_fork_handoffs(
+            result_str,
+            execute_tool=execute_tool,
+            request=request,
+            runtime_config=runtime_config,
+            parent_tool_call_id=tool_call_id,
+            emit_event=emit_event,
+            tools_for_llm=tools_for_llm,
+            api_messages=api_messages,
+            record_span=record_span,
+        )
     code_execution_evidence = None
     if isinstance(result, ToolContentEnvelope):
         envelope_metadata = getattr(result, "metadata", {}) or {}
@@ -1463,6 +1475,81 @@ async def _execute_tool_with_hooks(
         if _captured_side_effects:
             side_effect_sink.update(_captured_side_effects)
     return result_str, effective_args, True
+
+
+async def _execute_pending_skill_fork_handoffs(
+    result_str: str,
+    *,
+    execute_tool: ExecuteTool,
+    request: InvocationRequest,
+    runtime_config: RuntimeConfig | None,
+    parent_tool_call_id: str | None,
+    emit_event: Callable[[dict], Awaitable[None]],
+    tools_for_llm: list[dict] | None,
+    api_messages: list | None,
+    record_span: Callable[..., Awaitable[dict[str, Any] | None]] | None,
+) -> str:
+    """Execute Skill fork handoffs through the normal governed tool path."""
+    session = request.session_context
+    if session is None:
+        return result_str
+    try:
+        from app.services.skill_execution_adapter import (
+            pending_skill_handoffs_for_execution,
+            record_skill_handoff_execution,
+        )
+
+        handoffs = pending_skill_handoffs_for_execution(session.metadata)
+    except Exception as exc:  # noqa: BLE001 - preserve the original load_skill result if planning fails
+        logger.warning("[Kernel] skill handoff planning failed: %s", exc)
+        return result_str
+    if not handoffs:
+        return result_str
+
+    sections: list[str] = []
+    for handoff in handoffs:
+        if str(handoff.get("execution_tool") or "") != "spawn_subagent":
+            continue
+        skill_slug = str(handoff.get("skill_slug") or handoff.get("skill") or "").strip()
+        if not skill_slug:
+            continue
+        skill_name = str(handoff.get("skill") or skill_slug)
+        tool_args = dict(handoff.get("tool_arguments") or {})
+        permission_profile = handoff.get("permission_profile")
+        if isinstance(permission_profile, dict) and "permission_profile" not in tool_args:
+            tool_args["permission_profile"] = dict(permission_profile)
+        source = str(handoff.get("source") or "")
+        if skill_name:
+            tool_args.setdefault("skill", skill_name)
+        if source:
+            tool_args.setdefault("skill_source", source)
+
+        handoff_tool_call_id = f"{parent_tool_call_id or 'load_skill'}:skill:{skill_slug}"
+        handoff_result, _handoff_args, handoff_executed = await _execute_tool_with_hooks(
+            execute_tool=execute_tool,
+            request=request,
+            runtime_config=runtime_config,
+            tool_name="spawn_subagent",
+            tool_args=tool_args,
+            tool_call_id=handoff_tool_call_id,
+            emit_event=emit_event,
+            tools_for_llm=tools_for_llm,
+            api_messages=api_messages,
+            record_span=record_span,
+            side_effect_sink=None,
+        )
+        record_skill_handoff_execution(
+            session.metadata,
+            handoff,
+            tool_call_id=handoff_tool_call_id,
+            result=handoff_result,
+        )
+        status = "executed" if handoff_executed else "did not execute"
+        sections.append(f"Skill fork worker `{skill_name}` {status} through `spawn_subagent`.\n{handoff_result}")
+
+    if not sections:
+        return result_str
+    return result_str + "\n\n---\n" + "\n\n---\n".join(sections)
 
 
 def _fingerprint_prompt(prompt_prefix: str) -> str:

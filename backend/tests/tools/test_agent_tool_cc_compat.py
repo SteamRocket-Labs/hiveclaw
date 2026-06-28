@@ -52,6 +52,7 @@ def test_spawn_subagent_schema_exposes_agenttool_compatible_fields() -> None:
     assert "worker" not in properties["subagent_type"]["enum"]
     assert "worker" not in properties["type"]["enum"]
     assert properties["isolation"]["enum"] == ["none", "all"]
+    assert properties["permission_profile"]["properties"]["allowed_tools"]["items"]["type"] == "string"
     assert {"required": ["prompt"]} in _SPAWN_PARAMETERS["anyOf"]
     assert {"required": ["task"]} in _SPAWN_PARAMETERS["anyOf"]
 
@@ -91,6 +92,19 @@ def test_worker_alias_is_not_a_second_builtin_type() -> None:
     allowed, _excluded = resolve_subagent_tools(SubagentSpec(name="legacy-worker", type="worker"))
     assert "write_file" in allowed
     assert "edit_file" in allowed
+
+
+def test_spawn_subagent_permission_profile_allowed_tools_are_scoped() -> None:
+    from app.tools.handlers.subagent import _permission_profile_allowed_tools
+
+    assert _permission_profile_allowed_tools(
+        {
+            "permission_profile": {
+                "allowed_tools": ["web_search", "read_file", "web_search", ""],
+            }
+        }
+    ) == ("web_search", "read_file")
+    assert _permission_profile_allowed_tools({"permission_profile": {"allowed_tools": "web_search"}}) == ()
 
 
 @pytest.mark.asyncio

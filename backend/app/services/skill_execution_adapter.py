@@ -149,3 +149,64 @@ def apply_skill_execution_plans_to_metadata(metadata: dict[str, Any]) -> dict[st
     if handoffs_by_slug:
         metadata["pending_skill_handoffs"] = list(handoffs_by_slug.values())
     return metadata
+
+
+def pending_skill_handoffs_for_execution(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return not-yet-executed fork handoffs after normalizing skill plans."""
+    apply_skill_execution_plans_to_metadata(metadata)
+    handoffs = metadata.get("pending_skill_handoffs")
+    if not isinstance(handoffs, list):
+        return []
+    executed = {
+        str(item.get("skill_slug") or item.get("skill") or "").strip()
+        for item in metadata.get("executed_skill_handoffs", [])
+        if isinstance(item, dict)
+    }
+    return [
+        dict(item)
+        for item in handoffs
+        if isinstance(item, dict)
+        and str(item.get("execution_tool") or "") == "spawn_subagent"
+        and str(item.get("skill_slug") or item.get("skill") or "").strip()
+        and str(item.get("skill_slug") or item.get("skill") or "").strip() not in executed
+    ]
+
+
+def record_skill_handoff_execution(
+    metadata: dict[str, Any],
+    handoff: dict[str, Any],
+    *,
+    tool_call_id: str | None,
+    result: Any,
+) -> None:
+    """Move one handoff from pending to executed with an auditable result digest."""
+    skill_slug = str(handoff.get("skill_slug") or handoff.get("skill") or "").strip()
+    if not skill_slug:
+        return
+    executed = [dict(item) for item in metadata.get("executed_skill_handoffs", []) if isinstance(item, dict)]
+    executed = [
+        item
+        for item in executed
+        if str(item.get("skill_slug") or item.get("skill") or "").strip() != skill_slug
+    ]
+    executed.append(
+        {
+            "skill": str(handoff.get("skill") or skill_slug),
+            "skill_slug": skill_slug,
+            "source": str(handoff.get("source") or ""),
+            "execution_tool": "spawn_subagent",
+            "tool_call_id": tool_call_id,
+            "result": str(result)[:2000],
+        }
+    )
+    metadata["executed_skill_handoffs"] = executed
+    pending = [
+        dict(item)
+        for item in metadata.get("pending_skill_handoffs", [])
+        if isinstance(item, dict)
+        and str(item.get("skill_slug") or item.get("skill") or "").strip() != skill_slug
+    ]
+    if pending:
+        metadata["pending_skill_handoffs"] = pending
+    else:
+        metadata.pop("pending_skill_handoffs", None)

@@ -240,14 +240,14 @@ def test_post_generation_permission_check_blocks_protected_snippet_without_sourc
 
 
 @pytest.mark.asyncio
-async def test_knowledge_injection_applies_connector_acl_mirror(monkeypatch) -> None:
-    from app.services import knowledge_inject
+async def test_truth_search_prompt_context_applies_connector_acl_mirror(monkeypatch) -> None:
+    from app.services.truth_search_service import TruthSearchService
 
     tenant_id = uuid4()
     user_id = uuid4()
     agent_id = uuid4()
 
-    monkeypatch.setattr(knowledge_inject.viking_client, "is_configured", lambda: True)
+    monkeypatch.setattr("app.services.truth_search_service.viking_client.is_configured", lambda: True)
 
     async def fake_find(*_args, **_kwargs):
         return [
@@ -263,14 +263,16 @@ async def test_knowledge_injection_applies_connector_acl_mirror(monkeypatch) -> 
             },
         ]
 
-    monkeypatch.setattr(knowledge_inject.viking_client, "find", fake_find)
+    monkeypatch.setattr("app.services.truth_search_service.viking_client.find", fake_find)
 
-    block = await knowledge_inject.fetch_relevant_knowledge(
+    service = TruthSearchService()
+    packs = await service.search(
         "payroll",
         tenant_id=tenant_id,
         agent_id=agent_id,
         current_user_id=user_id,
     )
+    block = service.render_prompt_context(packs)
 
     assert "visible content" in block
     assert "hidden payroll content" not in block

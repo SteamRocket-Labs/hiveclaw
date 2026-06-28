@@ -58,7 +58,6 @@ from app.services.agent_tools import (
     get_combined_openai_tools,
 )
 from app.services.feature_flags import is_enabled as is_feature_enabled
-from app.services.knowledge_inject import fetch_relevant_knowledge
 from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
 from app.services.invocation_trace import persist_invocation_span
 from app.services.memory_service import (
@@ -468,6 +467,38 @@ def _last_user_query(messages: list[dict]) -> str:
         if message.get("role") == "user" and isinstance(content, str) and content.strip():
             return content.strip()
     return ""
+
+
+async def fetch_relevant_knowledge(
+    query: str,
+    tenant_id: uuid.UUID | None = None,
+    *,
+    agent_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+    source_collector: list[dict[str, Any]] | None = None,
+    max_tokens: int = 500,
+    max_chars: int | None = None,
+    limit: int = 3,
+) -> str:
+    """Prompt-context seam over TruthSearchService.
+
+    Kept local to the invoker so older tests can patch retrieval without
+    reintroducing the retired OpenViking prompt-injection module.
+    """
+    from app.services.truth_search_service import TruthSearchService
+
+    service = TruthSearchService()
+    char_budget = max_chars if max_chars and max_chars > 0 else max_tokens * 3
+    evidence = await service.search(
+        query,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        current_user_id=current_user_id,
+        limit=limit,
+        source_collector=source_collector,
+        max_chars=char_budget,
+    )
+    return service.render_prompt_context(evidence, max_chars=char_budget)
 
 
 def _resolve_context_budget(request: AgentInvocationRequest) -> ContextBudget:
@@ -892,6 +923,8 @@ async def _execute_tool_with_request(
         execute_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
     if "tool_call_id" in inspect.signature(execute_tool).parameters:
         execute_kwargs["tool_call_id"] = tool_call_id
+    if "emit_runtime_hooks" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["emit_runtime_hooks"] = False
     return await execute_tool(
         tool_name,
         args,

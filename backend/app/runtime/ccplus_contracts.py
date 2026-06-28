@@ -321,6 +321,7 @@ class TruthEvidencePackV1:
     query: str
     source_refs: tuple[str, ...]
     citations: tuple[str, ...] = ()
+    snippets: tuple[str, ...] = ()
     acl_scope: str = "tenant"
     digest: str | None = None
     provider: str = "knowledge_core"

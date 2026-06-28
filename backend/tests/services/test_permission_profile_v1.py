@@ -191,10 +191,12 @@ async def test_permission_profile_legacy_escalate_default_asks_session_locally()
             agent_id=uuid.uuid4(),
             user_id=uuid.uuid4(),
             tenant_id=str(uuid.uuid4()),
-                tool_name="write_file",  # maps to workspace.file.write, no policy → escalate
-                arguments={"path": "workspace/notes.md", "content": "x"},
-                permission_profile=PermissionProfileV1(mode="default", default_decision="escalate"),
-            ),
+            session_id="session-1",
+            tool_call_id="call_missing_policy",
+            tool_name="write_file",  # maps to workspace.file.write, no policy → escalate
+            arguments={"path": "workspace/notes.md", "content": "x"},
+            permission_profile=PermissionProfileV1(mode="default", default_decision="escalate"),
+        ),
         _governance_deps(
             check_capability_fn=_live_no_policy_check_capability(),
             approval_calls=approval_calls,
@@ -209,6 +211,12 @@ async def test_permission_profile_legacy_escalate_default_asks_session_locally()
     assert approval_calls == []
     assert audit_calls == []
     assert events and events[-1]["status"] == "session_permission_required"
+    pending_frame = events[-1]["permission_request"]["pending_tool_frame"]
+    assert pending_frame["permission_request_id"] == events[-1]["permission_request_id"]
+    assert pending_frame["tool_call_id"] == "call_missing_policy"
+    assert pending_frame["tool_name"] == "write_file"
+    assert pending_frame["session_id"] == "session-1"
+    assert pending_frame["permission_profile"]["mode"] == "default"
 
 
 @pytest.mark.asyncio

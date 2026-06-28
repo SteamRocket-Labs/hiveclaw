@@ -711,6 +711,22 @@ source .venv/bin/activate
 pytest tests/services/test_permission_profile_v1.py tests/services/test_web_chat_runtime.py tests/tools/test_governance.py -q
 ```
 
+实施证据（2026-06-28）：
+
+- Red：新增 L3 pending-frame 红线后，`pytest tests/services/test_permission_profile_v1.py -q` 失败于 `ToolGovernanceContext.__init__() got an unexpected keyword argument 'tool_call_id'`，证明治理上下文没有携带模型原始 tool call id。
+- Red：新增 session resolve 红线后，`pytest tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id -q` 失败于 `KeyError: 'permission_checkpoint'`，证明用户 allow 后没有持久化 `PermissionCheckpointV1`。
+- Green：已在 `run_tool_governance()` 的 session permission request 中写入 `pending_tool_frame`；kernel / invoker / `ToolRuntimeService` / `execute_tool()` 统一透传原始 `tool_call_id`；`resolve_session_permission()` 现在从 request payload 恢复 `PendingToolFrameV1`，写入 `PermissionCheckpointV1`，并用同一个 `tool_call_id` 执行、持久化和广播结果。
+- Green：`ToolRuntimeService` 的治理 resolver 调用改为签名感知透传，真实 resolver 接收 `tool_call_id`，不支持该参数的测试替身不会形成新断点。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_permission_profile_v1.py tests/api/test_chat_session_runs.py tests/services/test_cc_permission_modes.py tests/tools/test_service.py tests/tools/test_governance.py tests/kernel/test_ccplus_runtime_contracts.py -q
+```
+
+- 验证结果：`89 passed, 4 warnings in 1.67s`。
+
 ### Phase 4：SkillTool / Hook parity
 
 目标：

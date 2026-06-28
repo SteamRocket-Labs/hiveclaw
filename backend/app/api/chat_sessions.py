@@ -3,6 +3,7 @@
 import json
 import logging
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone as tz
 from typing import Any, Literal, Optional
 
@@ -22,7 +23,13 @@ from app.models.chat_session import ChatSession
 from app.models.agent import Agent
 from app.models.runtime_task import RuntimeTask
 from app.models.user import User
-from app.runtime.ccplus_contracts import DEFAULT_CCPLUS_WRITABLE_ROOTS, normalize_permission_mode
+from app.runtime.ccplus_contracts import (
+    DEFAULT_CCPLUS_WRITABLE_ROOTS,
+    PendingToolFrameV1,
+    PermissionCheckpointV1,
+    build_permission_profile,
+    normalize_permission_mode,
+)
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_artifact_delivery import artifact_part_from_model
 from app.services.chat_message_parts import build_session_native_event, serialize_chat_message, split_inline_tools
@@ -127,6 +134,16 @@ def _json_object(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _json_ready(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple, set)):
+        return ()
+    return tuple(str(item) for item in value if str(item).strip())
+
+
 def _permission_request_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     request_payload = payload.get("permission_request")
     if isinstance(request_payload, dict):
@@ -181,6 +198,7 @@ def _permission_request_from_payload(payload: dict[str, Any]) -> dict[str, Any] 
                 "confirmation_kind",
                 "allow_session_allowed",
                 "destructive",
+                "pending_tool_frame",
                 "created_at",
                 "expires_at",
             }
@@ -197,6 +215,78 @@ def _permission_request_payload_from_event(event: ChatTranscriptEvent) -> tuple[
     if not tool_payload and metadata:
         tool_payload = metadata
     return request_payload, tool_payload if isinstance(tool_payload, dict) else {}
+
+
+def _pending_tool_frame_from_payload(
+    request_payload: dict[str, Any],
+    tool_payload: dict[str, Any],
+    *,
+    session_id: str,
+) -> PendingToolFrameV1:
+    pending_payload = request_payload.get("pending_tool_frame")
+    if not isinstance(pending_payload, dict):
+        pending_payload = {}
+    arguments = pending_payload.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = request_payload.get("arguments") if isinstance(request_payload.get("arguments"), dict) else {}
+    profile_payload = pending_payload.get("permission_profile")
+    permission_request_id = str(
+        pending_payload.get("permission_request_id") or request_payload.get("permission_request_id") or ""
+    )
+    return PendingToolFrameV1(
+        permission_request_id=permission_request_id,
+        session_id=str(pending_payload.get("session_id") or request_payload.get("session_id") or session_id),
+        turn_id=str(pending_payload.get("turn_id")) if pending_payload.get("turn_id") else None,
+        runtime_task_id=str(
+            pending_payload.get("runtime_task_id")
+            or request_payload.get("runtime_task_id")
+            or tool_payload.get("runtime_task_id")
+            or ""
+        )
+        or None,
+        tool_call_id=str(
+            pending_payload.get("tool_call_id")
+            or request_payload.get("tool_call_id")
+            or tool_payload.get("tool_call_id")
+            or ""
+        ),
+        tool_name=str(pending_payload.get("tool_name") or request_payload.get("tool_name") or ""),
+        arguments=dict(arguments),
+        origin_channel=str(pending_payload.get("origin_channel")) if pending_payload.get("origin_channel") else None,
+        permission_profile=build_permission_profile(profile_payload if isinstance(profile_payload, dict) else None),
+        round_state=dict(pending_payload.get("round_state") or {})
+        if isinstance(pending_payload.get("round_state"), dict)
+        else {},
+        knowledge_refs=_string_tuple(pending_payload.get("knowledge_refs")),
+        hook_refs=_string_tuple(pending_payload.get("hook_refs")),
+        t0_refs=_string_tuple(pending_payload.get("t0_refs")),
+        created_at=str(pending_payload.get("created_at")) if pending_payload.get("created_at") else None,
+        expires_at=str(pending_payload.get("expires_at")) if pending_payload.get("expires_at") else None,
+        status=str(pending_payload.get("status") or "pending"),
+    )
+
+
+def _permission_checkpoint_payload(
+    *,
+    permission_request_id: str,
+    decision: str,
+    pending_frame: PendingToolFrameV1,
+    resolver_user_id: str | None,
+    resolution_channel: str,
+    continuation_runtime_task_id: str | None = None,
+    denial_tool_result_ref: str | None = None,
+) -> dict[str, Any]:
+    checkpoint = PermissionCheckpointV1(
+        permission_request_id=permission_request_id,
+        decision=decision,
+        pending_frame=pending_frame,
+        resolver_user_id=resolver_user_id,
+        resolved_at=datetime.now(tz.utc).isoformat(),
+        resolution_channel=resolution_channel,
+        continuation_runtime_task_id=continuation_runtime_task_id,
+        denial_tool_result_ref=denial_tool_result_ref,
+    )
+    return _json_ready(asdict(checkpoint))
 
 
 def _session_permission_exception_message(exc: Exception) -> str:
@@ -951,13 +1041,23 @@ async def resolve_session_permission(
     if pending_event is None or request_payload is None or tool_payload is None:
         raise HTTPException(status_code=404, detail="Pending session permission request not found")
 
+    pending_frame = _pending_tool_frame_from_payload(request_payload, tool_payload, session_id=str(session_id))
+    tool_call_id = pending_frame.tool_call_id or str(tool_payload.get("tool_call_id") or "")
+    permission_checkpoint = _permission_checkpoint_payload(
+        permission_request_id=str(permission_request_id),
+        decision=body.action,
+        pending_frame=pending_frame,
+        resolver_user_id=str(current_user.id),
+        resolution_channel="web",
+    )
     resolution_metadata = {
         "permission_request_id": str(permission_request_id),
         "permission_request": request_payload,
+        "permission_checkpoint": permission_checkpoint,
         "decision": body.action,
         "feedback": body.feedback,
         "tool_name": request_payload.get("tool_name"),
-        "tool_call_id": tool_payload.get("tool_call_id"),
+        "tool_call_id": tool_call_id,
         "source_event_id": str(pending_event.id),
     }
     tool_name = str(request_payload.get("tool_name") or "")
@@ -1030,6 +1130,7 @@ async def resolve_session_permission(
                 "allowed_tools": [tool_name],
                 "writable_roots": list(DEFAULT_CCPLUS_WRITABLE_ROOTS),
             },
+            tool_call_id=tool_call_id or None,
         )
         persisted_tool_event = await _persist_tool_call(
             agent_id=agent_id,
@@ -1040,7 +1141,7 @@ async def resolve_session_permission(
                 "args": arguments,
                 "status": "done",
                 "result": str(tool_result),
-                "tool_call_id": tool_payload.get("tool_call_id"),
+                "tool_call_id": tool_call_id,
                 "run_id": str(pending_event.run_id) if pending_event.run_id else None,
                 "runtime_task_id": str(pending_event.run_id) if pending_event.run_id else None,
                 "visibility": "expanded",
@@ -1057,7 +1158,7 @@ async def resolve_session_permission(
                 "args": arguments,
                 "status": "done",
                 "result": str(tool_result),
-                "tool_call_id": tool_payload.get("tool_call_id"),
+                "tool_call_id": tool_call_id,
                 "transcript_event_id": str(persisted_tool_event.event_id) if persisted_tool_event else None,
                 "sequence": persisted_tool_event.sequence if persisted_tool_event else None,
                 "metadata": persisted_tool_event.transcript_event.metadata_json if persisted_tool_event else {},
@@ -1096,7 +1197,7 @@ async def resolve_session_permission(
             "error": error_message,
             "error_type": error_type,
             "tool_name": tool_name,
-            "tool_call_id": tool_payload.get("tool_call_id"),
+            "tool_call_id": tool_call_id,
             "capability": request_payload.get("capability"),
             "reason": error_message,
             "message": f"Permission request could not be completed: {error_message}",

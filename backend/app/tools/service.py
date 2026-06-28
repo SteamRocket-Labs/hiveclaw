@@ -285,6 +285,7 @@ class ToolRuntimeService:
         *,
         agent_id: uuid.UUID,
         user_id: uuid.UUID,
+        tool_call_id: str | None = None,
         event_callback: EventCallback | None = None,
         delegation_token: Any | None = None,
         session_id: str | None = None,
@@ -314,12 +315,21 @@ class ToolRuntimeService:
             permission_profile=permission_profile,
         )
         arguments = _inject_runtime_context_arguments(tool_name, arguments, runtime_context)
-        governance_context = await self.governance_resolver.build_context(
-            runtime_context=runtime_context,
-            tool_name=tool_name,
-            arguments=arguments,
-            delegation_token=delegation_token,
-        )
+        governance_kwargs: dict[str, Any] = {
+            "runtime_context": runtime_context,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "delegation_token": delegation_token,
+        }
+        try:
+            params = inspect.signature(self.governance_resolver.build_context).parameters
+            accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+        except (TypeError, ValueError):
+            params = {}
+            accepts_kwargs = False
+        if tool_call_id is not None and (accepts_kwargs or "tool_call_id" in params):
+            governance_kwargs["tool_call_id"] = tool_call_id
+        governance_context = await self.governance_resolver.build_context(**governance_kwargs)
         governance_dependencies = self.governance_resolver.build_dependencies()
         governance_block = await _maybe_await(
             self.governance_runner(

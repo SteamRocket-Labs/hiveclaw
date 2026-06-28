@@ -857,6 +857,7 @@ async def execute_tool(
     arguments: dict,
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
+    tool_call_id: str | None = None,
     event_callback: ToolEventCallback | None = None,
     delegation_token: Any | None = None,
     session_id: str | None = None,
@@ -869,6 +870,7 @@ async def execute_tool(
         arguments,
         agent_id=agent_id,
         user_id=user_id,
+        tool_call_id=tool_call_id,
         event_callback=event_callback,
         delegation_token=delegation_token,
         session_id=session_id,
@@ -885,6 +887,7 @@ async def execute_session_permission_tool(
     user_id: uuid.UUID,
     session_id: str,
     permission_profile: Any,
+    tool_call_id: str | None = None,
 ) -> str | ToolContentEnvelope:
     """Replay a session-approved tool through the public governed runtime boundary."""
     return await execute_tool(
@@ -892,6 +895,7 @@ async def execute_session_permission_tool(
         arguments,
         agent_id=agent_id,
         user_id=user_id,
+        tool_call_id=tool_call_id,
         session_id=session_id,
         permission_profile=permission_profile,
     )

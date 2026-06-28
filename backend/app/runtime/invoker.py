@@ -845,6 +845,8 @@ async def _execute_tool_with_request(
     args: dict,
     request: AgentInvocationRequest,
     emit_event: Callable[[dict], Any],
+    *,
+    tool_call_id: str | None = None,
 ) -> str | ToolContentEnvelope:
     if request.tool_executor:
         executor_kwargs: dict[str, Any] = {}
@@ -866,6 +868,8 @@ async def _execute_tool_with_request(
             executor_kwargs["plan_mode_unattended_available"] = _plan_mode_unattended_available(request.session_context)
         if accepts_kwargs or "permission_profile" in executor_params:
             executor_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
+        if accepts_kwargs or "tool_call_id" in executor_params:
+            executor_kwargs["tool_call_id"] = tool_call_id
         return await _maybe_await(request.tool_executor(tool_name, args, **executor_kwargs))
 
     execute_kwargs: dict[str, Any] = {
@@ -886,6 +890,8 @@ async def _execute_tool_with_request(
         execute_kwargs["plan_mode_unattended_available"] = _plan_mode_unattended_available(request.session_context)
     if "permission_profile" in inspect.signature(execute_tool).parameters:
         execute_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
+    if "tool_call_id" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["tool_call_id"] = tool_call_id
     return await execute_tool(
         tool_name,
         args,
@@ -984,8 +990,16 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         args: dict,
         request: InvocationRequest,
         emit_event: Callable[[dict], Any],
+        *,
+        tool_call_id: str | None = None,
     ) -> str | ToolContentEnvelope:
-        return await _execute_tool_with_request(tool_name, args, request, emit_event)  # type: ignore[arg-type]
+        return await _execute_tool_with_request(
+            tool_name,
+            args,
+            request,
+            emit_event,
+            tool_call_id=tool_call_id,
+        )  # type: ignore[arg-type]
 
     return AgentKernel(
         KernelDependencies(

@@ -9,14 +9,16 @@ import logging
 import re
 import uuid
 from collections.abc import Iterator, Set
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
-from app.runtime.ccplus_contracts import PermissionMode, normalize_permission_mode
-
-if TYPE_CHECKING:
-    from app.runtime.ccplus_contracts import PermissionProfileV1
+from app.runtime.ccplus_contracts import (
+    PendingToolFrameV1,
+    PermissionMode,
+    PermissionProfileV1,
+    normalize_permission_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +175,7 @@ class ToolGovernanceContext:
     tool_name: str
     arguments: dict[str, Any]
     session_id: str | None = None
+    tool_call_id: str | None = None
     # P1-W3-3: when this invocation is a child delegation, the parent's
     # token narrows the child's capability set and carries an expiry.
     # `None` means "not a delegated invocation" (web chat, trigger, etc.).
@@ -490,8 +493,27 @@ async def _emit_session_no_policy_result(
         f"Reason: {request_reason or 'no enterprise capability policy is configured for this tool'}. "
         "Ask the current session user for approval before retrying this tool; do not create a backend approval request."
     )
+    permission_request_id = str(uuid.uuid4())
+    profile = context.permission_profile or PermissionProfileV1()
+    pending_frame = PendingToolFrameV1(
+        permission_request_id=permission_request_id,
+        session_id=str(context.session_id or ""),
+        turn_id=None,
+        runtime_task_id=None,
+        tool_call_id=str(context.tool_call_id or ""),
+        tool_name=context.tool_name,
+        arguments=dict(context.arguments or {}),
+        origin_channel=None,
+        permission_profile=profile,
+        round_state={},
+        knowledge_refs=(),
+        hook_refs=(),
+        t0_refs=(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+    )
     permission_request = {
-        "permission_request_id": str(uuid.uuid4()),
+        "permission_request_id": permission_request_id,
         "session_id": context.session_id,
         "tool_name": context.tool_name,
         "tool_display_name": context.tool_name,
@@ -499,8 +521,9 @@ async def _emit_session_no_policy_result(
         "capability": request_capability,
         "permission_mode": mode.value,
         "decision_reason": request_reason or "no enterprise capability policy is configured for this tool",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+        "created_at": pending_frame.created_at,
+        "expires_at": pending_frame.expires_at,
+        "pending_tool_frame": asdict(pending_frame),
         **risk_metadata,
     }
     hook_decision = await _apply_permission_request_hook(

@@ -223,7 +223,7 @@ ResolveToolExpansion = Callable[
 MaybeCompressMessages = Callable[..., Awaitable[list[dict]] | list[dict]]
 CreateClient = Callable[[Any], Any]
 ExecuteTool = Callable[
-    [str, dict, InvocationRequest, Callable[[dict], Awaitable[None]]],
+    ...,
     Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope,
 ]
 PersistMemory = Callable[..., Awaitable[None] | None]
@@ -678,14 +678,27 @@ async def _execute_tool_call_with_cancel(
     effective_args: dict[str, Any],
     request: InvocationRequest,
     emit_event: Callable[[dict], Awaitable[None]],
+    *,
+    tool_call_id: str | None = None,
 ) -> Any:
+    def _call_execute_tool() -> Any:
+        try:
+            params = inspect.signature(execute_tool).parameters
+            accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
+        except (TypeError, ValueError):
+            params = {}
+            accepts_kwargs = False
+        if tool_call_id is not None and (accepts_kwargs or "tool_call_id" in params):
+            return execute_tool(tool_name, effective_args, request, emit_event, tool_call_id=tool_call_id)
+        return execute_tool(tool_name, effective_args, request, emit_event)
+
     cancel_event = request.cancel_event
     if cancel_event is None:
-        return await _maybe_await(execute_tool(tool_name, effective_args, request, emit_event))
+        return await _maybe_await(_call_execute_tool())
     if cancel_event.is_set():
         raise _KernelCancelledError
 
-    value = execute_tool(tool_name, effective_args, request, emit_event)
+    value = _call_execute_tool()
     if not inspect.isawaitable(value):
         return value
 
@@ -1002,6 +1015,7 @@ async def _execute_tool_with_hooks(
     runtime_config: RuntimeConfig | None = None,
     tool_name: str,
     tool_args: dict[str, Any],
+    tool_call_id: str | None = None,
     emit_event: Callable[[dict], Awaitable[None]],
     tools_for_llm: list[dict] | None = None,
     api_messages: list | None = None,
@@ -1068,6 +1082,7 @@ async def _execute_tool_with_hooks(
                 effective_args,
                 request,
                 emit_event,
+                tool_call_id=tool_call_id,
             )
         except _KernelCancelledError:
             if record_span:
@@ -3895,6 +3910,7 @@ class AgentKernel:
                                         runtime_config=runtime_config,
                                         tool_name=t_name,
                                         tool_args=t_args,
+                                        tool_call_id=parsed_tool_calls[index][0]["id"],
                                         emit_event=_emit_event,
                                         tools_for_llm=tools_for_llm,
                                         api_messages=api_messages,
@@ -4075,6 +4091,7 @@ class AgentKernel:
                                     runtime_config=runtime_config,
                                     tool_name=tool_name,
                                     tool_args=args,
+                                    tool_call_id=tc["id"],
                                     emit_event=_emit_event,
                                     tools_for_llm=tools_for_llm,
                                     api_messages=api_messages,

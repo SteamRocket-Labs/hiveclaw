@@ -439,6 +439,114 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     assert broadcasts[-1][2]["status"] == "denied"
 
 
+def test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    arguments = {"path": "workspace/plan.md", "content": "# Plan"}
+    pending_frame = {
+        "permission_request_id": str(permission_request_id),
+        "session_id": str(session_id),
+        "tool_call_id": "tool-call-checkpoint",
+        "tool_name": "write_file",
+        "arguments": arguments,
+        "permission_profile": {
+            "mode": "default",
+            "allowed_tools": [],
+            "writable_roots": ["workspace/"],
+        },
+        "created_at": "2026-06-28T00:00:00+00:00",
+        "expires_at": "2026-06-28T00:30:00+00:00",
+        "status": "pending",
+    }
+    permission_request = {
+        "permission_request_id": str(permission_request_id),
+        "tool_name": "write_file",
+        "arguments": arguments,
+        "capability": "workspace.file.write",
+        "permission_mode": "default",
+        "pending_tool_frame": pending_frame,
+    }
+    event = SimpleNamespace(
+        id=uuid4(),
+        run_id=run_id,
+        event_type="permission",
+        content=json.dumps(
+            {
+                "type": "permission",
+                "status": "session_permission_required",
+                "permission_request_id": str(permission_request_id),
+                "permission_request": permission_request,
+                "tool_name": "write_file",
+            }
+        ),
+        metadata_json={
+            "runtime_event_type": "permission",
+            "permission_request_id": str(permission_request_id),
+            "permission_request": permission_request,
+        },
+    )
+    db = _FilteringPermissionDB([event])
+    appended_events = []
+    broadcasts = []
+    persisted_calls = []
+    captured_execute = {}
+
+    async def fake_get_run_session_and_agent(**_kwargs):
+        return session, agent, "use"
+
+    async def fake_append_session_event(**kwargs):
+        appended_events.append(kwargs)
+
+    async def fake_broadcast(*args):
+        broadcasts.append(args)
+
+    async def fake_execute_session_permission_tool(*args, **kwargs):
+        captured_execute["args"] = args
+        captured_execute["kwargs"] = kwargs
+        return "write complete"
+
+    async def fake_persist_tool_call(**kwargs):
+        persisted_calls.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=101, transcript_event=SimpleNamespace(metadata_json={}))
+
+    async def fake_get_active_web_chat_run(**_kwargs):
+        return {"run_id": run_id.hex, "status": "running"}
+
+    import app.services.agent_tools as agent_tools_service
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(chat_sessions_api, "_persist_tool_call", fake_persist_tool_call)
+    monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
+    monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
+    client = _client(monkeypatch, db=db, user=user, agent=agent, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve",
+        json={"action": "allow_once"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "allowed"
+    decision_metadata = appended_events[0]["metadata"]
+    checkpoint = decision_metadata["permission_checkpoint"]
+    assert checkpoint["permission_request_id"] == str(permission_request_id)
+    assert checkpoint["decision"] == "allow_once"
+    assert checkpoint["pending_frame"]["tool_call_id"] == "tool-call-checkpoint"
+    assert checkpoint["pending_frame"]["permission_profile"]["mode"] == "default"
+    assert decision_metadata["tool_call_id"] == "tool-call-checkpoint"
+    assert captured_execute["kwargs"]["tool_call_id"] == "tool-call-checkpoint"
+    assert persisted_calls[-1]["data"]["tool_call_id"] == "tool-call-checkpoint"
+    assert broadcasts[-1][2]["permission_checkpoint"]["pending_frame"]["tool_call_id"] == "tool-call-checkpoint"
+
+
 def test_resolve_session_permission_rejects_allow_session_for_destructive_request(monkeypatch):
     agent_id = uuid4()
     user_id = uuid4()

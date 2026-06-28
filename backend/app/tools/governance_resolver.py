@@ -28,6 +28,7 @@ class ToolGovernanceResolver:
         runtime_context: ToolExecutionContext,
         tool_name: str,
         arguments: dict,
+        tool_call_id: str | None = None,
         delegation_token: Any | None = None,
     ) -> ToolGovernanceContext:
         return ToolGovernanceContext(
@@ -37,6 +38,7 @@ class ToolGovernanceResolver:
             tool_name=tool_name,
             arguments=arguments,
             session_id=runtime_context.session_id,
+            tool_call_id=tool_call_id,
             delegation_token=delegation_token,
             permission_profile=runtime_context.permission_profile,
         )

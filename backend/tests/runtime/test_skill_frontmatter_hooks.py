@@ -28,6 +28,33 @@ def _write_skill(workspace: Path, *, slug: str = "review") -> None:
     )
 
 
+def _write_fork_skill(workspace: Path, *, slug: str = "research") -> None:
+    skill_dir = workspace / "skills" / slug
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: Research",
+                "description: Research with a scoped worker.",
+                "allowed-tools:",
+                "  - web_search",
+                "  - read_file",
+                "metadata:",
+                "  hive:",
+                "    context: fork",
+                "    agent: researcher",
+                "    hooks:",
+                "      - user_prompt_submit",
+                "---",
+                "# Research",
+                "Use a worker when the task needs isolated exploration.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.asyncio
 async def test_loaded_skill_frontmatter_hooks_register_session_scoped_handlers(tmp_path: Path) -> None:
     from app.runtime.hooks import HookContext, HookEvent, HookRegistry
@@ -69,3 +96,31 @@ async def test_loaded_skill_frontmatter_hooks_register_session_scoped_handlers(t
         HookContext(event=HookEvent.USER_PROMPT_SUBMIT, session_id="session-2", prompt="check it")
     )
     assert other_session is None
+
+
+def test_loaded_skill_frontmatter_records_execution_plan_and_permission_profile(tmp_path: Path) -> None:
+    from app.runtime.session import SessionContext
+    from app.runtime.skill_hooks import register_loaded_skill_hooks
+
+    workspace = tmp_path / "agent"
+    _write_fork_skill(workspace)
+    session = SessionContext(session_id="session-1", metadata={"tenant_id": "tenant-1"})
+
+    registered = register_loaded_skill_hooks(
+        workspace,
+        "research",
+        session_context=session,
+        agent_id="agent-1",
+    )
+
+    assert registered
+    plans = session.metadata["skill_execution_plans"]
+    assert len(plans) == 1
+    plan = plans[0]
+    assert plan["skill"] == "Research"
+    assert plan["execution_mode"] == "fork"
+    assert plan["execution_tool"] == "spawn_subagent"
+    assert plan["agent_type"] == "researcher"
+    assert plan["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    assert plan["permission_profile"]["mode"] == "auto"
+    assert plan["tool_arguments"]["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]

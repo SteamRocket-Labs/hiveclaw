@@ -752,6 +752,20 @@ source .venv/bin/activate
 pytest tests/services/test_skill_tool_runtime.py tests/runtime/test_skill_frontmatter_hooks.py tests/runtime/test_governed_hook_runner.py tests/runtime/test_hook_wire_standard.py tests/runtime/test_hooks_cc_parity.py -q
 ```
 
+实施证据（2026-06-28，4A Skill frontmatter 执行计划）：
+
+- Red：新增 Skill frontmatter 红线后，`pytest tests/runtime/test_skill_frontmatter_hooks.py::test_loaded_skill_frontmatter_records_execution_plan_and_permission_profile -q` 失败于 `KeyError: 'skill_execution_plans'`，证明加载 Skill 只注册 hook/context，没有把 `allowed-tools` / `context: fork` 变成可恢复的执行 profile。
+- Green：新增 `backend/app/services/skill_execution_adapter.py`，将 `allowed-tools` 转为 `PermissionProfileV1.allowed_tools`，将 `context: fork` / `agent` 转为 `spawn_subagent` 执行计划；`register_loaded_skill_hooks()` 在 session metadata 写入 `skill_execution_plans`，仍不自动执行，后续调用必须走 governed tool runtime。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/runtime/test_skill_frontmatter_hooks.py -q
+```
+
+- 验证结果：`2 passed, 4 warnings in 0.11s`。
+
 ### Phase 5：Truth Search 服务化并接入 preflight
 
 目标：

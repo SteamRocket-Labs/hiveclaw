@@ -7,6 +7,7 @@ from typing import Any
 
 from app.runtime.hooks import HookContext, HookEvent, HookRegistry, HookResult, hook_registry
 from app.runtime.session import SessionContext
+from app.services.skill_execution_adapter import skill_execution_plan_payload
 from app.skills.loader import WorkspaceSkillLoader
 from app.skills.registry import SkillRegistry
 from app.skills.types import ParsedSkill
@@ -52,6 +53,16 @@ def _append_session_registrations(session_context: SessionContext, registrations
     session_context.metadata["skill_hook_registrations"] = list(by_key.values())
 
 
+def _append_session_execution_plan(session_context: SessionContext, parsed: ParsedSkill) -> None:
+    existing = session_context.metadata.get("skill_execution_plans")
+    if not isinstance(existing, list):
+        existing = []
+    plan = skill_execution_plan_payload(parsed)
+    by_key = {str(item.get("skill_slug") or item.get("skill")): dict(item) for item in existing if isinstance(item, dict)}
+    by_key[str(plan["skill_slug"])] = plan
+    session_context.metadata["skill_execution_plans"] = list(by_key.values())
+
+
 def register_loaded_skill_hooks(
     workspace: Path,
     skill_name: str,
@@ -72,7 +83,10 @@ def register_loaded_skill_hooks(
         return []
 
     parsed = _resolve_skill(workspace, skill_name)
-    if parsed is None or not parsed.metadata.hooks:
+    if parsed is None:
+        return []
+    _append_session_execution_plan(session_context, parsed)
+    if not parsed.metadata.hooks:
         return []
 
     target_registry = registry or hook_registry

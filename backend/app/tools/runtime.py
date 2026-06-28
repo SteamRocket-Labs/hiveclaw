@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -30,6 +30,8 @@ class ToolExecutionContext:
     runtime_task_id: str | None = None
     round_state: dict[str, Any] | None = None
     t0_refs: tuple[str, ...] = ()
+    tool_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
+    tool_execution_frames: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -102,6 +102,15 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
     assert ensured == [True]
     assert registry.calls[0].tool_name == "write_file"
     assert logged and logged[0][0][0] == context.agent_id
+    states = [record["lifecycle_state"] for record in context.tool_lifecycle_records]
+    assert states == ["created", "validated", "governed", "preflight", "executing", "completed"]
+    tool_call_ids = {record["tool_call_id"] for record in context.tool_lifecycle_records}
+    assert len(tool_call_ids) == 1
+    assert context.tool_execution_frames[0]["status"] == "executing"
+    assert context.tool_execution_frames[-1]["status"] == "completed"
+    assert context.tool_execution_frames[-1]["tool_call_id"] in tool_call_ids
+    assert logged[0][1]["detail"]["tool_call_lifecycle"]["tool_call_id"] in tool_call_ids
+    assert logged[0][1]["detail"]["tool_execution_frame"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -583,6 +592,13 @@ async def test_tool_runtime_service_execute_direct_uses_direct_fallback():
     assert runtime_resolver.calls == [(context.agent_id, context.agent_id, None)]
     assert captured["tool_name"] == "execute_code"
     assert captured["context"] == context
+    assert [record["lifecycle_state"] for record in context.tool_lifecycle_records] == [
+        "created",
+        "validated",
+        "executing",
+        "completed",
+    ]
+    assert context.tool_execution_frames[-1]["status"] == "completed"
 
 
 @pytest.mark.asyncio
@@ -629,6 +645,14 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
     assert logged[0][1]["detail"]["approved"] is True
     assert logged[0][1]["detail"]["approved_by_user_id"] == str(approved_by)
     assert logged[0][1]["detail"]["approval_id"] == str(approval_id)
+    assert [record["lifecycle_state"] for record in context.tool_lifecycle_records] == [
+        "created",
+        "validated",
+        "executing",
+        "completed",
+    ]
+    assert logged[0][1]["detail"]["tool_call_lifecycle"]["lifecycle_state"] == "completed"
+    assert logged[0][1]["detail"]["tool_execution_frame"]["status"] == "completed"
 
 
 @pytest.mark.asyncio

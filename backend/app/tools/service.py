@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json as _json
 import logging
@@ -26,9 +27,10 @@ from app.services.action_preflight import (
     PreflightDecision,
 )
 from app.services.decision_trace import TenantScopedSqlDecisionTraceStore
+from app.runtime.ccplus_contracts import ToolCallLifecycleV1, ToolExecutionFrameV1
 from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.privacy_layer import PrivacyLayer
-from app.services.governance_capability_taxonomy import is_l2_tool
+from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, is_l2_tool
 from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled, policy_pack_names_for_tool
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
 from app.tools.plan_gate_registry import hard_gated_action_kind
@@ -259,6 +261,106 @@ def _validate_tool_arguments_block(tool_name: str, arguments: Any) -> str | None
     )
 
 
+def _runtime_hash(value: Any) -> str:
+    payload = _json.dumps(_json_safe_runtime_value(value), ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _new_runtime_tool_call_id() -> str:
+    return f"runtime:{uuid.uuid4()}"
+
+
+def _record_tool_lifecycle(
+    runtime_context: ToolExecutionContext,
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    state: str,
+    original_arguments: dict,
+    effective_arguments: dict,
+    governance_decisions: tuple[str, ...] = (),
+    permission_request_id: str | None = None,
+    truth_evidence_refs: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    descriptor = capability_descriptor_for_tool(tool_name)
+    lifecycle = ToolCallLifecycleV1(
+        session_id=str(runtime_context.session_id or ""),
+        turn_id=runtime_context.turn_id,
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        lifecycle_state=state,
+        original_arguments=dict(original_arguments or {}),
+        effective_arguments=dict(effective_arguments or {}),
+        schema_ref=f"tool_schema:{tool_name}:parameters",
+        capability=descriptor.name if descriptor else None,
+        taxonomy_layer=descriptor.layer if descriptor else None,
+        governance_decisions=governance_decisions,
+        permission_request_id=permission_request_id,
+        truth_evidence_refs=truth_evidence_refs,
+        t0_refs=tuple(str(ref) for ref in (runtime_context.t0_refs or ()) if str(ref).strip()),
+    )
+    payload = _json_safe_runtime_value(asdict(lifecycle))
+    runtime_context.tool_lifecycle_records.append(payload)
+    return payload
+
+
+def _record_tool_execution_frame(
+    runtime_context: ToolExecutionContext,
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    executor: str,
+    arguments: dict,
+    status: str,
+    result: Any | None = None,
+    started_at: str | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    frame = ToolExecutionFrameV1(
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        executor=executor,
+        input_hash=_runtime_hash(arguments or {}),
+        output_hash=_runtime_hash(result) if result is not None else None,
+        provider="tool_runtime_service",
+        started_at=started_at or now,
+        completed_at=now if status in {"completed", "failed", "blocked"} else None,
+        status=status,
+        t0_refs=tuple(str(ref) for ref in (runtime_context.t0_refs or ()) if str(ref).strip()),
+    )
+    payload = _json_safe_runtime_value(asdict(frame))
+    runtime_context.tool_execution_frames.append(payload)
+    return payload
+
+
+def _latest_context_record(runtime_context: ToolExecutionContext, attr: str) -> dict[str, Any] | None:
+    records = getattr(runtime_context, attr, None)
+    if isinstance(records, list) and records and isinstance(records[-1], dict):
+        return records[-1]
+    return None
+
+
+def _tool_trace_metadata(
+    runtime_context: ToolExecutionContext,
+    *,
+    tool_call_id: str | None,
+    source: str,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "tenant_id": runtime_context.tenant_id,
+        "user_id": str(runtime_context.user_id),
+        "tool_call_id": tool_call_id,
+        "entrypoint": source,
+    }
+    lifecycle = _latest_context_record(runtime_context, "tool_lifecycle_records")
+    if lifecycle:
+        metadata["tool_call_lifecycle"] = lifecycle
+    frame = _latest_context_record(runtime_context, "tool_execution_frames")
+    if frame:
+        metadata["tool_execution_frame"] = frame
+    return metadata
+
+
 @dataclass(slots=True)
 class ToolRuntimeService:
     runtime_resolver: Any
@@ -404,24 +506,69 @@ class ToolRuntimeService:
             round_state=round_state,
             t0_refs=t0_refs,
         )
+        effective_tool_call_id = tool_call_id or _new_runtime_tool_call_id()
+        original_arguments = dict(arguments or {})
+        _record_tool_lifecycle(
+            runtime_context,
+            tool_call_id=effective_tool_call_id,
+            tool_name=tool_name,
+            state="created",
+            original_arguments=original_arguments,
+            effective_arguments=dict(arguments or {}),
+        )
         arguments = _inject_runtime_context_arguments(tool_name, arguments, runtime_context)
         if emit_runtime_hooks:
             hook_result = await self._emit_pre_tool_hook(
                 tool_name,
                 arguments,
                 runtime_context,
-                tool_call_id=tool_call_id,
+                tool_call_id=effective_tool_call_id,
                 source="tool_runtime_service",
             )
             if hook_result and hook_result.block:
+                _record_tool_lifecycle(
+                    runtime_context,
+                    tool_call_id=effective_tool_call_id,
+                    tool_name=tool_name,
+                    state="blocked",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("pre_tool_hook_block",),
+                )
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
                 arguments = hook_result.modified_args
         validation_block = _validate_tool_arguments_block(tool_name, arguments)
         if validation_block:
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="blocked",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("validate_input_block",),
+            )
             return validation_block
+        _record_tool_lifecycle(
+            runtime_context,
+            tool_call_id=effective_tool_call_id,
+            tool_name=tool_name,
+            state="validated",
+            original_arguments=original_arguments,
+            effective_arguments=dict(arguments or {}),
+        )
         l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
         if l2_policy_block:
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="blocked",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("l2_policy_block",),
+            )
             return l2_policy_block
         governance_kwargs: dict[str, Any] = {
             "runtime_context": runtime_context,
@@ -435,8 +582,8 @@ class ToolRuntimeService:
         except (TypeError, ValueError):
             params = {}
             accepts_kwargs = False
-        if tool_call_id is not None and (accepts_kwargs or "tool_call_id" in params):
-            governance_kwargs["tool_call_id"] = tool_call_id
+        if effective_tool_call_id is not None and (accepts_kwargs or "tool_call_id" in params):
+            governance_kwargs["tool_call_id"] = effective_tool_call_id
         governance_context = await self.governance_resolver.build_context(**governance_kwargs)
         governance_dependencies = self.governance_resolver.build_dependencies()
         governance_block = await _maybe_await(
@@ -447,14 +594,56 @@ class ToolRuntimeService:
             )
         )
         if governance_block:
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="blocked",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("governance_block",),
+            )
             return governance_block
+        _record_tool_lifecycle(
+            runtime_context,
+            tool_call_id=effective_tool_call_id,
+            tool_name=tool_name,
+            state="governed",
+            original_arguments=original_arguments,
+            effective_arguments=dict(arguments or {}),
+        )
 
         preflight_block = await self._preflight_tool_execution(tool_name, arguments, runtime_context)
         if preflight_block:
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="blocked",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("preflight_block",),
+            )
             return preflight_block
+        _record_tool_lifecycle(
+            runtime_context,
+            tool_call_id=effective_tool_call_id,
+            tool_name=tool_name,
+            state="preflight",
+            original_arguments=original_arguments,
+            effective_arguments=dict(arguments or {}),
+        )
 
         timeout_seconds = TOOL_TIMEOUTS.get(tool_name, 30.0)
         try:
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="executing",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+            )
             result = await asyncio.wait_for(
                 self.execute_with_context(tool_name, arguments, runtime_context),
                 timeout=timeout_seconds,
@@ -482,6 +671,12 @@ class ToolRuntimeService:
                                 for k, v in arguments.items()
                             },
                             "result": result_text[:300],
+                            "tool_call_lifecycle": _latest_context_record(
+                                runtime_context, "tool_lifecycle_records"
+                            ),
+                            "tool_execution_frame": _latest_context_record(
+                                runtime_context, "tool_execution_frames"
+                            ),
                         },
                     )
                 )
@@ -496,17 +691,34 @@ class ToolRuntimeService:
                         )
                     )
             if emit_runtime_hooks:
+                _record_tool_lifecycle(
+                    runtime_context,
+                    tool_call_id=effective_tool_call_id,
+                    tool_name=tool_name,
+                    state="completed",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                )
                 post_hook_result = await self._emit_post_tool_hook(
                     tool_name,
                     arguments,
                     result_text,
                     runtime_context,
-                    tool_call_id=tool_call_id,
+                    tool_call_id=effective_tool_call_id,
                     source="tool_runtime_service",
                 )
                 if post_hook_result and post_hook_result.output_rewrite is not None:
                     rewrite = post_hook_result.output_rewrite
                     return rewrite if isinstance(rewrite, str) else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
+            elif not emit_runtime_hooks:
+                _record_tool_lifecycle(
+                    runtime_context,
+                    tool_call_id=effective_tool_call_id,
+                    tool_name=tool_name,
+                    state="completed",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                )
             return result
         except asyncio.TimeoutError:
             rendered = render_tool_error(
@@ -517,13 +729,31 @@ class ToolRuntimeService:
                 retryable=True,
                 actionable_hint="Try a simpler request, smaller input, or a more targeted operation.",
             )
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="failed",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("timeout",),
+            )
+            _record_tool_execution_frame(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                executor=self.backend.name if self.backend else "unknown",
+                arguments=arguments,
+                status="failed",
+                result={"error": "timeout", "message": rendered[:500]},
+            )
             if emit_runtime_hooks:
                 await self._emit_tool_failure_hook(
                     tool_name,
                     arguments,
                     rendered,
                     runtime_context,
-                    tool_call_id=tool_call_id,
+                    tool_call_id=effective_tool_call_id,
                     source="tool_runtime_service",
                 )
             if self.activity_logger:
@@ -552,13 +782,31 @@ class ToolRuntimeService:
                 retryable=False,
                 actionable_hint="Check tool arguments and try again with simpler or better-scoped input.",
             )
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="failed",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("tool_execution_error",),
+            )
+            _record_tool_execution_frame(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                executor=self.backend.name if self.backend else "unknown",
+                arguments=arguments,
+                status="failed",
+                result={"error": type(exc).__name__, "message": str(exc)[:500]},
+            )
             if emit_runtime_hooks:
                 await self._emit_tool_failure_hook(
                     tool_name,
                     arguments,
                     rendered,
                     runtime_context,
-                    tool_call_id=tool_call_id,
+                    tool_call_id=effective_tool_call_id,
                     source="tool_runtime_service",
                 )
             if self.activity_logger:
@@ -597,12 +845,7 @@ class ToolRuntimeService:
             tool_name=tool_name,
             tool_args=dict(arguments),
             source=source,
-            metadata={
-                "tenant_id": runtime_context.tenant_id,
-                "user_id": str(runtime_context.user_id),
-                "tool_call_id": tool_call_id,
-                "entrypoint": source,
-            },
+            metadata=_tool_trace_metadata(runtime_context, tool_call_id=tool_call_id, source=source),
         )
 
     async def _emit_post_tool_hook(
@@ -625,12 +868,7 @@ class ToolRuntimeService:
             tool_args=dict(arguments),
             tool_result=result_text[:500],
             source=source,
-            metadata={
-                "tenant_id": runtime_context.tenant_id,
-                "user_id": str(runtime_context.user_id),
-                "tool_call_id": tool_call_id,
-                "entrypoint": source,
-            },
+            metadata=_tool_trace_metadata(runtime_context, tool_call_id=tool_call_id, source=source),
         )
 
     async def _emit_tool_failure_hook(
@@ -653,12 +891,7 @@ class ToolRuntimeService:
             tool_args=dict(arguments),
             error=error_text[:500],
             source=source,
-            metadata={
-                "tenant_id": runtime_context.tenant_id,
-                "user_id": str(runtime_context.user_id),
-                "tool_call_id": tool_call_id,
-                "entrypoint": source,
-            },
+            metadata=_tool_trace_metadata(runtime_context, tool_call_id=tool_call_id, source=source),
         )
 
     async def execute_direct(
@@ -743,23 +976,70 @@ class ToolRuntimeService:
         _logger.info("[ToolService] %s: tool=%s agent=%s user=%s", log_label, tool_name, agent_id, resolved_user_id)
 
         runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=resolved_user_id)
+        effective_tool_call_id = _new_runtime_tool_call_id()
+        original_arguments = dict(arguments or {})
+        _record_tool_lifecycle(
+            runtime_context,
+            tool_call_id=effective_tool_call_id,
+            tool_name=tool_name,
+            state="created",
+            original_arguments=original_arguments,
+            effective_arguments=dict(arguments or {}),
+            governance_decisions=(log_label,),
+        )
         try:
             hook_result = await self._emit_pre_tool_hook(
                 tool_name,
                 arguments,
                 runtime_context,
-                tool_call_id=None,
+                tool_call_id=effective_tool_call_id,
                 source=log_label,
             )
             if hook_result and hook_result.block:
+                _record_tool_lifecycle(
+                    runtime_context,
+                    tool_call_id=effective_tool_call_id,
+                    tool_name=tool_name,
+                    state="blocked",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("pre_tool_hook_block", log_label),
+                )
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
                 arguments = hook_result.modified_args
             validation_block = _validate_tool_arguments_block(tool_name, arguments)
             if validation_block:
+                _record_tool_lifecycle(
+                    runtime_context,
+                    tool_call_id=effective_tool_call_id,
+                    tool_name=tool_name,
+                    state="blocked",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("validate_input_block", log_label),
+                )
                 return validation_block
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="validated",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=(log_label,),
+            )
             l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
             if l2_policy_block:
+                _record_tool_lifecycle(
+                    runtime_context,
+                    tool_call_id=effective_tool_call_id,
+                    tool_name=tool_name,
+                    state="blocked",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("l2_policy_block", log_label),
+                )
                 return l2_policy_block
             request = ToolExecutionRequest(
                 tool_name=tool_name,
@@ -779,7 +1059,43 @@ class ToolRuntimeService:
                     )
                 )
 
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="executing",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=(log_label,),
+            )
+            started_frame = _record_tool_execution_frame(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                executor=self.backend.name if self.backend else "unknown",
+                arguments=arguments,
+                status="executing",
+            )
             result = await self.backend.execute(request, _execute_approved_request)
+            _record_tool_execution_frame(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                executor=self.backend.name if self.backend else "unknown",
+                arguments=arguments,
+                status="completed",
+                result=str(result),
+                started_at=started_frame.get("started_at"),
+            )
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="completed",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=(log_label,),
+            )
             # result may be a ToolContentEnvelope — text rendering for logging only.
             result_text = str(result)
             # Activity log for audit trail (mirrors execute() behavior)
@@ -789,6 +1105,8 @@ class ToolRuntimeService:
                         "tool": tool_name,
                         "backend": self.backend.name if self.backend else "unknown",
                         "result": result_text[:300],
+                        "tool_call_lifecycle": _latest_context_record(runtime_context, "tool_lifecycle_records"),
+                        "tool_execution_frame": _latest_context_record(runtime_context, "tool_execution_frames"),
                         **activity_detail,
                     }
                     await _maybe_await(
@@ -807,7 +1125,7 @@ class ToolRuntimeService:
                 arguments,
                 result_text,
                 runtime_context,
-                tool_call_id=None,
+                tool_call_id=effective_tool_call_id,
                 source=log_label,
             )
             if post_hook_result and post_hook_result.output_rewrite is not None:
@@ -824,12 +1142,30 @@ class ToolRuntimeService:
                 retryable=False,
                 actionable_hint="Check tool arguments and retry with a more targeted request.",
             )
+            _record_tool_execution_frame(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                executor=self.backend.name if self.backend else "unknown",
+                arguments=arguments,
+                status="failed",
+                result={"error": type(exc).__name__, "message": str(exc)[:500]},
+            )
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="failed",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("tool_execution_error", log_label),
+            )
             await self._emit_tool_failure_hook(
                 tool_name,
                 arguments,
                 rendered,
                 runtime_context,
-                tool_call_id=None,
+                tool_call_id=effective_tool_call_id,
                 source=log_label,
             )
             return rendered
@@ -840,16 +1176,78 @@ class ToolRuntimeService:
         arguments: dict,
         context: ToolExecutionContext,
     ) -> str | ToolContentEnvelope:
+        latest_lifecycle = _latest_context_record(context, "tool_lifecycle_records")
+        terminal_states = {"completed", "failed", "blocked"}
+        owns_lifecycle = not (
+            latest_lifecycle
+            and latest_lifecycle.get("tool_name") == tool_name
+            and latest_lifecycle.get("lifecycle_state") not in terminal_states
+        )
+        tool_call_id = (
+            _new_runtime_tool_call_id()
+            if owns_lifecycle
+            else str(latest_lifecycle.get("tool_call_id") or _new_runtime_tool_call_id())
+        )
+        original_arguments = dict(arguments or {})
+        if owns_lifecycle:
+            _record_tool_lifecycle(
+                context,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                state="created",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+            )
+
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
+            if owns_lifecycle:
+                _record_tool_lifecycle(
+                    context,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    state="blocked",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("plan_mode_block",),
+                )
             return plan_mode_block
 
         self.ensure_registry()
         validation_block = _validate_tool_arguments_block(tool_name, arguments)
         if validation_block:
+            if owns_lifecycle:
+                _record_tool_lifecycle(
+                    context,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    state="blocked",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("validate_input_block",),
+                )
             return validation_block
+        if owns_lifecycle:
+            _record_tool_lifecycle(
+                context,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                state="validated",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+            )
         l2_policy_block = await self._l2_extension_policy_block(tool_name, context)
         if l2_policy_block:
+            if owns_lifecycle:
+                _record_tool_lifecycle(
+                    context,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    state="blocked",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("l2_policy_block",),
+                )
             return l2_policy_block
         request = ToolExecutionRequest(
             tool_name=tool_name,
@@ -865,7 +1263,58 @@ class ToolRuntimeService:
                 self.fallback_executor(inner_request.tool_name, inner_request.arguments, inner_request.context)
             )
 
-        return await self.backend.execute(request, _execute_request)
+        started_frame = _record_tool_execution_frame(
+            context,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            executor=self.backend.name if self.backend else "unknown",
+            arguments=arguments,
+            status="executing",
+        )
+        try:
+            result = await self.backend.execute(request, _execute_request)
+        except Exception as exc:
+            _record_tool_execution_frame(
+                context,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                executor=self.backend.name if self.backend else "unknown",
+                arguments=arguments,
+                status="failed",
+                result={"error": type(exc).__name__, "message": str(exc)[:500]},
+                started_at=started_frame.get("started_at"),
+            )
+            if owns_lifecycle:
+                _record_tool_lifecycle(
+                    context,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    state="failed",
+                    original_arguments=original_arguments,
+                    effective_arguments=dict(arguments or {}),
+                    governance_decisions=("tool_execution_error",),
+                )
+            raise
+        _record_tool_execution_frame(
+            context,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            executor=self.backend.name if self.backend else "unknown",
+            arguments=arguments,
+            status="completed",
+            result=str(result),
+            started_at=started_frame.get("started_at"),
+        )
+        if owns_lifecycle:
+            _record_tool_lifecycle(
+                context,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                state="completed",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+            )
+        return result
 
     @staticmethod
     def _interactive_plan_mode_readonly_block(tool_name: str, arguments: dict | None = None) -> str | None:

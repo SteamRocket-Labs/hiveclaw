@@ -4,6 +4,35 @@
 
 状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地
 
+2026-06-28 自查追加闭合：
+
+- L2 产品面：旧 `Global Tools` 代码入口和文案已清零，企业后台只呈现 `Extensions & Add-ons`。
+- Truth Search：旧 `knowledge_inject.py` 与旧测试已删除，runtime prompt evidence 统一走 `TruthSearchService`。
+- Hook 生命周期：公共 `execute_tool()` / approved direct path 补齐 PRE/POST/FAIL hook，kernel tool loop 显式关闭 service-level hook 避免重复。
+- L3 deny：permission deny 后会启动隐藏 continuation，把 denial 回灌模型 loop。
+- 压缩状态：聊天 header 接入 `SessionWorkbench.context_window`，可见 latest skipped/status/token-until。
+
+本轮功能提交：
+
+- `1c78720a` `ccplus: narrow enterprise tools to extensions`
+- `31a5264a` `test: cover dynamic extension taxonomy`
+- `cde818ab` `ccplus: route knowledge context through truth search`
+- `b88314e7` `ccplus: run hooks through tool runtime service`
+- `49565c96` `ccplus: resume model loop after permission denial`
+
+最终回归：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests -q
+# 5320 passed, 2 skipped, 4 warnings in 85.38s
+
+cd frontend && npm test
+# Test Files 66 passed (66); Tests 359 passed (359)
+
+cd frontend && npm run build
+# tsc && vite build succeeded
+```
+
 关联文档：
 
 - `docs/ccplus-governance-layer-architecture-2026-06-28.md`
@@ -311,7 +340,7 @@ L3 是当前 session 内的 allow once / allow session / deny。
 
 修复：
 
-- 新增 `TruthSearchService`，逐步替代 ad hoc `knowledge_inject.py` 路径。
+- 新增 `TruthSearchService`，并在本轮自查中删除旧 `knowledge_inject.py` prompt helper；runtime context assembly 已统一到 Truth Search 主路径。
 - 输出 `TruthEvidencePackV1`：
   - query
   - source_refs
@@ -801,7 +830,7 @@ pytest tests/runtime/test_skill_frontmatter_hooks.py tests/runtime/test_hooks_cc
 修改：
 
 - 新增 `backend/app/services/truth_search_service.py`。
-- `knowledge_inject.py` 逐步改成调用 `TruthSearchService` 的 context assembly adapter。
+- 旧 `knowledge_inject.py` 已删除；`runtime/invoker.py` 的兼容 seam 直接调用 `TruthSearchService` 的 context assembly adapter。
 - `action_preflight.py`、`decision_trace.py`、InvocationSpan 写入 knowledge refs。
 
 建议测试：

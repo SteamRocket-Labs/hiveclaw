@@ -2,7 +2,16 @@
 
 日期：2026-06-28
 
-状态：对 `ccplus-governance-layer-architecture-2026-06-28.md`、`ccplus-governance-code-repair-plan-2026-06-28.md`、`ccplus-tool-runtime-mechanism-mapping-2026-06-28.md` 和 `company-knowledge-ontology-plane-plan-2026-06-20.md` 的整合草案。
+状态：自查修复闭合稿。2026-06-28 已把 Truth Search 从旧 `knowledge_inject.py` prompt helper 迁到 `TruthSearchService`，并接入当前 runtime context assembly；旧 helper 已退役删除。
+
+## 0. 2026-06-28 自查实装证据
+
+| 自查断点 | 实装收口 | 代码证据 | 验证证据 |
+| --- | --- | --- | --- |
+| Truth Search 仍有旧 `knowledge_inject.py` 旁路 | 删除旧 helper，`runtime/invoker.py` 的 `fetch_relevant_knowledge()` 只作为测试兼容 seam，内部调用 `TruthSearchService.search()` + `render_prompt_context()` | `backend/app/runtime/invoker.py`、`backend/app/services/truth_search_service.py`、已删除 `backend/app/services/knowledge_inject.py` | `pytest tests/services/test_truth_search_service.py tests/services/test_connector_acl.py tests/runtime/test_invoker.py -q` 已包含在扩大集合：`116 passed, 4 warnings` |
+| 检索结果不是 source-bound evidence | `TruthEvidencePackV1` 增加 `snippets`，Truth Search 输出 citations/source refs/snippets，prompt context 只渲染证据，不授予权限 | `backend/app/runtime/ccplus_contracts.py`、`backend/app/services/truth_search_service.py` | `pytest tests/services/test_truth_search_service.py -q` 通过；全量后端 `pytest tests -q`：`5320 passed, 2 skipped, 4 warnings` |
+| Connector ACL mirror 与 prompt assembly 可能分叉 | `TruthSearchService.search()` 统一调用 `filter_connector_results_for_prompt()`，不可见 source 不进入 prompt context | `backend/app/services/truth_search_service.py`、`backend/tests/services/test_connector_acl.py` | `pytest tests/services/test_connector_acl.py::test_truth_search_prompt_context_applies_connector_acl_mirror -q` 通过 |
+| 文档仍保留旧路径描述而代码已删除旧路径 | 本文档和落地总方案同步改成“已退役旧 helper / 已统一 TruthSearchService” | 本文档、`docs/ccplus-tool-call-governance-closure-landing-plan-2026-06-28.md` | `rg -n "knowledge_inject|test_knowledge_inject" backend/app backend/tests frontend/src` 无匹配 |
 
 ## 结论
 
@@ -49,7 +58,7 @@
 | Web Search 混合 | `web_search` 不应语义上依赖 AnySearch | 基础 `web_search` 保持 core；AnySearch/Exa/Tavily/Firecrawl/XCrawl 进入 L2 add-on。 |
 | Office 混合 | 文档生成/转换和 Office Online 协作编辑是不同层 | 基础文档能力保留 core；Office Online / browser workbench 作为 L2 add-on。 |
 | MCP 命名和 transport 断点 | MCP 是核心 extension mechanism | 先提供稳定 Hive-side tool naming + alias；HTTP/SSE core，stdio/WS/SDK 按 connector/local bridge/coding plugin 分层。 |
-| Truth Search 仍是 ad hoc injection | 现在 `knowledge_inject.py` 还是 OpenViking pre-message helper，不是 Knowledge Core authority path | 用 `KnowledgeSearchService` 替换 ad hoc injection，并写入 trace/citation/ACL decision。 |
+| Truth Search 仍是 ad hoc injection | 已修复：旧 `knowledge_inject.py` 删除，runtime context assembly 统一走 `TruthSearchService`；剩余工作是把 evidence pack 进一步接入 preflight/DecisionTrace 深水区 | 保持 `TruthSearchService` 为唯一 prompt evidence adapter，后续扩展 provider fusion / trace / citation UI。 |
 
 ## 2. 本身修复主线
 
@@ -213,7 +222,7 @@ Source Acquisition / Connectors / Uploads / Agent Memory / Workflow Artifacts
   -> Canonical Markdown Artifact
   -> Knowledge Core segmentation / ACL / source refs
   -> Graphiti / SAG / Vector / Full-text derived indexes
-  -> KnowledgeSearchService fusion
+  -> TruthSearchService fusion
   -> ACL + sensitivity filter
   -> citation validation
   -> prompt injection / ActionPreflight evidence / decision trace
@@ -225,7 +234,7 @@ Source Acquisition / Connectors / Uploads / Agent Memory / Workflow Artifacts
 - Graphiti：temporal facts/entities/relationships provider。
 - SAG：Markdown chunks/events/entities/multi-hop evidence provider。
 - OpenViking / vector / full-text：可替换检索 provider。
-- `KnowledgeSearchService`：融合、去重、排序、冲突暴露、ACL/citation validation。
+- `TruthSearchService`：融合、去重、排序、冲突暴露、ACL/citation validation。
 
 ### 3.3 与 L0-L3 的结合点
 
@@ -236,21 +245,21 @@ Source Acquisition / Connectors / Uploads / Agent Memory / Workflow Artifacts
 | L2 扩展组合面 | Graphiti/SAG/vector provider 可以作为 add-on/provider 安装；Knowledge Core 不可被当成可关闭插件 | 不允许关闭 provider 后破坏 Knowledge Core authority。 |
 | L3 Session Permission | 当工具调用需要用户确认时，permission prompt 可以展示 source-bound policy evidence | 不允许把普通 L3 prompt 送到企业后台，也不允许 Truth Search 自动替用户同意。 |
 | Hooks | hook 可请求 Truth Search 作为证据输入或阻断依据 | 不允许 hook 用未过滤结果扩权或注入不可审计 instruction。 |
-| Preflight | `ActionPreflight` 可调用 `KnowledgeSearchService` 查相关政策、收件人边界、敏感内容、历史冲突 | 不允许 preflight 因检索失败而静默放行高风险动作。 |
+| Preflight | `ActionPreflight` 可调用 `TruthSearchService` 查相关政策、收件人边界、敏感内容、历史冲突 | 不允许 preflight 因检索失败而静默放行高风险动作。 |
 
-### 3.4 替换当前 ad hoc knowledge injection
+### 3.4 已替换当前 ad hoc knowledge injection
 
-当前 `backend/app/services/knowledge_inject.py` 是 OpenViking pre-message helper。它有 ACL filter，但还不是 Knowledge Core / provider fusion / trace-first 架构。
+当前 runtime prompt assembly 不再调用 `backend/app/services/knowledge_inject.py`；该文件已删除。`backend/app/runtime/invoker.py` 保留同名 `fetch_relevant_knowledge()` 只是为了兼容既有测试 monkeypatch seam，真实实现已经调用 `TruthSearchService`。
 
-目标替换为：
+当前落地接口为：
 
 ```text
-KnowledgeSearchService.search(
+TruthSearchService.search(
   query,
-  principal_context,
-  scope,
-  filters,
-  purpose="prompt_injection|preflight|answer_citation|proposal_review",
+  tenant_id,
+  current_user_id,
+  agent_id,
+  source_collector,
 )
 ```
 
@@ -338,13 +347,13 @@ KnowledgeSearchService.search(
 - L3 permission checkpoint/resume。
 - Web/IM 同语义 permission prompt。
 
-### Phase 4：Truth Search 服务化
+### Phase 4：Truth Search 服务化（本轮已完成 prompt assembly 主路径）
 
 交付物：
 
-- `KnowledgeSearchService`
+- `TruthSearchService`
 - `KnowledgeProvider` interface
-- 替换 `knowledge_inject.py` 的 ad hoc prompt injection
+- 已替换并删除 `knowledge_inject.py` 的 ad hoc prompt injection
 - source refs / ACL / citation / conflict / superseded trace
 - restricted knowledge never enters prompt 测试
 

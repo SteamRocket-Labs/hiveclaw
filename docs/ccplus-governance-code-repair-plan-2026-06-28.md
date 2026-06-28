@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：待实施的代码修复计划
+状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。
 
 配套架构文档：`docs/ccplus-governance-layer-architecture-2026-06-28.md`
 
@@ -22,6 +22,38 @@
 - L1 不负责“关掉默认功能”，只负责定义默认功能不能越过的行为边界。
 - L3 是 session-local，不是企业后台审批。
 - 所有真实安全边界都必须在 call-time enforce。
+
+## 0. 2026-06-28 自查实装证据
+
+本轮功能提交：
+
+- `1c78720a` `ccplus: narrow enterprise tools to extensions`：L2 企业工具面收口。
+- `31a5264a` `test: cover dynamic extension taxonomy`：动态 MCP/custom API taxonomy 回归测试。
+- `cde818ab` `ccplus: route knowledge context through truth search`：Truth Search 主路径统一，旧 `knowledge_inject.py` 退役。
+- `b88314e7` `ccplus: run hooks through tool runtime service`：公共工具入口 Hook 生命周期。
+- `49565c96` `ccplus: resume model loop after permission denial`：L3 deny continuation 与压缩状态可视化。
+
+| 修复部分 | 本轮完成项 | 关键代码路径 | 证据 |
+| --- | --- | --- | --- |
+| L2 扩展与组合面 | 企业工具页从旧 `Global Tools` 语义收口到 `Extensions & Add-ons`，只显示 taxonomy 标记的 L2 extension/add-on；动态 MCP/custom API 由 API serialization 补 taxonomy fallback | `backend/app/api/tools.py`、`frontend/src/pages/workspace/WorkspaceToolsSection.tsx`、`frontend/src/i18n/en.json`、`frontend/src/i18n/zh.json` | `pytest tests/api/test_tools_api_surface.py -q` 在扩大集合通过；`npm test`：`66 passed (66), 359 passed (359)` |
+| Truth Search 主路径 | 删除旧 `knowledge_inject.py`；`runtime/invoker.py` 统一调用 `TruthSearchService`；evidence pack 增加 snippets/source refs/citations | `backend/app/runtime/invoker.py`、`backend/app/services/truth_search_service.py`、`backend/app/runtime/ccplus_contracts.py` | `pytest tests/services/test_truth_search_service.py tests/services/test_connector_acl.py tests/runtime/test_invoker.py -q` 在扩大集合通过 |
+| Hook 全生命周期公共入口 | `ToolRuntimeService.execute()` 与 approved/direct path 均触发 PRE/POST/FAIL hooks；hook 改参后继续走 schema/governance/preflight；kernel tool loop 传 `emit_runtime_hooks=False` 避免重复触发 | `backend/app/tools/service.py`、`backend/app/services/agent_tools.py`、`backend/app/runtime/invoker.py` | `pytest tests/tools/test_service.py::test_tool_runtime_service_emits_hooks_and_revalidates_modified_args -q` 通过；Hook/compaction 集合：`110 passed, 4 warnings` |
+| L3 deny continuation | 用户 deny session permission 后不再只写事件；会触发 `PERMISSION_DENIED` hook 并启动隐藏 continuation，把 denial 回到模型 loop | `backend/app/api/chat_sessions.py`、`backend/tests/api/test_chat_session_runs.py` | `pytest tests/api/test_chat_session_runs.py -q` 在扩大集合通过 |
+| 压缩/上下文状态可见性 | Chat header 接入 `SessionWorkbench.context_window`，展示 latest skipped/status/token-until，避免自动压缩状态只在后端事件里不可见 | `frontend/src/pages/agent-detail/AgentChatSection.tsx`、`frontend/src/pages/session-workbench/timelineModel.ts`、`frontend/src/pages/session-workbench/SessionWorkbenchChrome.tsx` | `npm test -- timelineModel.test.ts AgentDetailSections.test.tsx` 通过；`npm run build` 通过 |
+| 旧系统清理 | 当前代码路径中 `Global Tools/globalTools/global tools/knowledge_inject/test_knowledge_inject` 已清零；旧知识注入测试删除并迁移到 Truth Search 测试 | `backend/app/services/tool_seeder.py`、`frontend/src/api/adapter-cleanup.test.ts`、删除 `backend/tests/services/test_knowledge_inject.py` | `rg -n "Global Tools|globalTools|global tools|knowledge_inject|test_knowledge_inject" backend/app backend/tests frontend/src` 无匹配 |
+
+最终回归证据：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests -q
+# 5320 passed, 2 skipped, 4 warnings in 85.38s
+
+cd frontend && npm test
+# Test Files 66 passed (66); Tests 359 passed (359)
+
+cd frontend && npm run build
+# tsc && vite build succeeded
+```
 
 ## 当前代码现实
 

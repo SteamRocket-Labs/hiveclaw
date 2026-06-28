@@ -27,6 +27,7 @@ from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_tools import execute_tool
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
+from app.services.coding_pack_manifest import CODING_PACK_COMMAND_NAMES, coding_pack_command_manifest
 from app.services.command_registry import build_default_command_registry
 from app.services.command_registry import CommandDefinition
 from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, execute_diagnostic_command
@@ -75,22 +76,7 @@ _GOAL_COMMANDS = frozenset({"goal_start", "goal_update", "goal_stop"})
 _TEAM_COMMANDS = frozenset({"team_create", "team_delete"})
 _SCHEDULE_COMMANDS = frozenset({"schedule_create", "schedule_once"})
 _METADATA_COMMANDS = frozenset({"permissions", "config"})
-_EXTERNAL_PACK_COMMANDS = frozenset(
-    {
-        "worktree_enter",
-        "worktree_exit",
-        "diff",
-        "commit",
-        "commit_push_pr",
-        "pr_comments",
-        "github_review",
-        "review",
-        "security_review",
-        "lsp",
-        "notebook",
-        "shell_pack",
-    }
-)
+_EXTERNAL_PACK_COMMANDS = frozenset(CODING_PACK_COMMAND_NAMES)
 _MCP_ACTION_TO_TOOL = {
     "list_tools": "list_mcp_tools",
     "inspect_tool": "inspect_mcp_tool",
@@ -1174,15 +1160,25 @@ async def execute_agent_command(
             ),
         }
     if command.name in _EXTERNAL_PACK_COMMANDS:
+        command_manifest = coding_pack_command_manifest(command.name)
         return {
             "ok": False,
             "command": command.name,
             "result": {
                 "ok": False,
                 "command": command.name,
+                "capability": "coding",
                 "execution_mode": command.execution_mode,
                 "requires_pack_runtime": command.handler_ref,
-                "message": "This command is provided by the optional coding pack and must run through the installed pack runtime.",
+                "requires_local_bridge": True,
+                "coding_plugin_required": True,
+                "local_bridge_required": True,
+                "allowed_transport": "local_bridge",
+                "command_manifest": command_manifest,
+                "message": (
+                    "This command is provided by the optional coding pack and must run through the installed "
+                    "Local Bridge / coding plugin runtime."
+                ),
             },
         }
     if command.name == "mcp":

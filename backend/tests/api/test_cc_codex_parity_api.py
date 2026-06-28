@@ -274,6 +274,44 @@ async def test_commands_api_hides_optional_coding_pack_without_policy(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_coding_pack_command_execute_returns_local_bridge_contract(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    db = _FakeDB()
+
+    async def fake_access(_db, _user, requested_agent_id):
+        assert requested_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
+
+    async def fake_pack_policies(_db, requested_tenant_id, requested_agent_id):
+        assert requested_tenant_id == tenant_id
+        assert requested_agent_id == agent_id
+        return {"coding_pack": True}
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "get_agent_pack_policies", fake_pack_policies)
+
+    result = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="notebook",
+        body=commands_api.ExecuteCommandIn(arguments={"path": "analysis.ipynb"}, origin="agent"),
+        current_user=current_user,
+        db=db,
+    )
+
+    payload = result["result"]
+    assert result["ok"] is False
+    assert payload["capability"] == "coding"
+    assert payload["requires_local_bridge"] is True
+    assert payload["coding_plugin_required"] is True
+    assert payload["command_manifest"]["name"] == "notebook"
+    assert "notebook_view" in payload["command_manifest"]["tools"]
+
+
+@pytest.mark.asyncio
 async def test_commands_api_adds_installed_skills_as_user_invocable_commands(monkeypatch):
     import app.api.commands as commands_api
 

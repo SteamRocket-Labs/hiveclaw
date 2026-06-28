@@ -187,6 +187,7 @@ def test_governance_capability_taxonomy_is_single_source_for_core_and_l2():
 
 
 def test_coding_capability_is_l2_local_bridge_only():
+    from app.services.coding_pack_manifest import CODING_PACK_TOOLS
     from app.services.governance_capability_taxonomy import (
         GovernanceCapabilityLayer,
         capability_descriptor_for_name,
@@ -199,6 +200,7 @@ def test_coding_capability_is_l2_local_bridge_only():
     assert descriptor.l2_visible is True
     assert descriptor.enterprise_toggleable is True
     assert descriptor.requires_local_bridge is True
+    assert tuple(descriptor.tools) == CODING_PACK_TOOLS
     assert CODING_PLUGIN_TOOLS <= set(descriptor.tools)
 
 

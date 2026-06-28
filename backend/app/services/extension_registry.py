@@ -81,6 +81,16 @@ def _hook_descriptor(item: dict[str, Any]) -> ExtensionDescriptorV1:
 
 
 def _command_descriptor(command: CommandDefinition) -> ExtensionDescriptorV1:
+    runtime_effects = [
+        f"category:{command.category}",
+        f"mode:{command.execution_mode}",
+        f"bridge_safe:{str(command.bridge_safe).lower()}",
+        f"remote_safe:{str(command.remote_safe).lower()}",
+        f"visible_to_model:{str(command.visible_to_model).lower()}",
+        f"visible_to_user:{str(command.visible_to_user).lower()}",
+    ]
+    if command.permission_mode == "coding_pack":
+        runtime_effects.extend(("capability:coding", "requires_local_bridge:true", "coding_plugin_required:true"))
     return ExtensionDescriptorV1(
         id=f"command:{command.name}",
         type="command",
@@ -89,14 +99,7 @@ def _command_descriptor(command: CommandDefinition) -> ExtensionDescriptorV1:
         owner_scope="platform" if command.source == "builtin" else "tenant",
         enabled_scope="session",
         permission_requirements=(command.permission_mode,),
-        runtime_effects=(
-            f"category:{command.category}",
-            f"mode:{command.execution_mode}",
-            f"bridge_safe:{str(command.bridge_safe).lower()}",
-            f"remote_safe:{str(command.remote_safe).lower()}",
-            f"visible_to_model:{str(command.visible_to_model).lower()}",
-            f"visible_to_user:{str(command.visible_to_user).lower()}",
-        ),
+        runtime_effects=tuple(runtime_effects),
         audit_refs=(command.handler_ref,),
     )
 

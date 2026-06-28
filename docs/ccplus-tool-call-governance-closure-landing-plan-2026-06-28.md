@@ -878,6 +878,22 @@ source .venv/bin/activate
 pytest tests/tools/test_bridge_equivalence.py tests/services/test_mcp_tool_discovery.py tests/tools/test_governance.py -q
 ```
 
+实施证据（2026-06-28）：
+
+- Red：新增 coding pack 红线后，`pytest tests/services/test_command_registry_optional_packs.py tests/services/test_agent_tools_core_surface.py::test_coding_capability_is_l2_local_bridge_only tests/api/test_cc_codex_parity_api.py::test_coding_pack_command_execute_returns_local_bridge_contract -q` 失败于 `ModuleNotFoundError: No module named 'app.services.coding_pack_manifest'`，以及 `notebook` command 执行缺少 local bridge contract，证明 coding capability、command registry、API execute 返回之间仍是分散字符串和 metadata-only 断点。
+- Green：新增 `backend/app/services/coding_pack_manifest.py` 作为 coding plugin 单源，统一声明 LSP、Worktree、Notebook、persistent shell、PowerShell、local Browser UI / Browser QA 的 local-only tools 与 commands；`governance_capability_taxonomy.py`、`command_registry.py`、`api/commands.py` 全部引用同一 manifest。
+- Green：`execute_agent_command()` 对 coding pack command 现在返回明确 contract：`capability=coding`、`requires_local_bridge=true`、`coding_plugin_required=true`、`allowed_transport=local_bridge`、`command_manifest.tools`，不再只有一句 metadata-only fallback。
+- Green：`extension_registry.py` 的 command descriptor 对 `permission_mode=coding_pack` 增加 `capability:coding`、`requires_local_bridge:true`、`coding_plugin_required:true` runtime effects，Workbench / registry 读取面能看到同一边界。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_command_registry_optional_packs.py tests/services/test_agent_tools_core_surface.py tests/api/test_cc_codex_parity_api.py tests/api/test_extension_registry_api.py tests/tools/test_bridge_equivalence.py -q
+```
+
+- 验证结果：`49 passed, 4 warnings in 1.74s`。
+
 ### Phase 8：killed-process E2E 矩阵
 
 目标：

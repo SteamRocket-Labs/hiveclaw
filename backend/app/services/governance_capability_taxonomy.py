@@ -11,6 +11,7 @@ from __future__ import annotations
 from enum import Enum
 
 from app.runtime.ccplus_contracts import GovernanceCapabilityDescriptorV1
+from app.services.coding_pack_manifest import CODING_PACK_NAME, CODING_PACK_SOURCE, CODING_PACK_TOOLS
 from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
 
@@ -122,23 +123,13 @@ _RUNTIME_GROUP_DESCRIPTORS: tuple[GovernanceCapabilityDescriptorV1, ...] = tuple
 )
 
 _CODING_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
-    name="coding",
+    name=CODING_PACK_NAME,
     layer=GovernanceCapabilityLayer.EXTERNAL_EXTENSION.value,
-    tools=(
-        "lsp_symbol_search",
-        "lsp_references",
-        "worktree_create",
-        "worktree_remove",
-        "notebook_edit",
-        "notebook_view",
-        "persistent_shell_exec",
-        "browser_ui_open",
-        "browser_ui_snapshot",
-    ),
+    tools=CODING_PACK_TOOLS,
     default_enabled=False,
     l2_visible=True,
     enterprise_toggleable=True,
-    source="local_bridge",
+    source=CODING_PACK_SOURCE,
     notes="Local coding-only capability pack. Cloud core sees descriptors only; execution requires Local Bridge.",
     requires_local_bridge=True,
 )

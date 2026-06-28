@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
+from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_team_runtime_service import (
     create_agent_team_runtime,
     message_agent_team_members_runtime,
@@ -28,18 +29,11 @@ from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat
 router = APIRouter(prefix="/agents/{agent_id}/agent-teams", tags=["agent-teams"])
 
 
-class CreateAgentTeamMemberIn(BaseModel):
-    name: str = Field(min_length=1)
-    role: str = ""
-    model_id: uuid.UUID | None = None
-    tool_policy: dict = Field(default_factory=dict)
-    budget: dict = Field(default_factory=dict)
-
-
 class CreateAgentTeamIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     parent_session_id: uuid.UUID
     name: str = Field(min_length=1)
-    members: list[CreateAgentTeamMemberIn] = Field(default_factory=list)
 
 
 class CreateAgentTeamEventIn(BaseModel):
@@ -98,6 +92,7 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict:
         "lead_agent_id": str(team.lead_agent_id),
         "parent_session_id": str(team.parent_session_id),
         "members": [_member_payload(member) for member in members],
+        **teammate_creation_discovery(team.name),
     }
 
 
@@ -273,11 +268,6 @@ async def create_agent_team(
 ) -> dict:
     agent, _access_level = await check_agent_access(db, current_user, agent_id)
     parent_session = await _load_member_parent_session_or_404(db, agent_id=agent_id, session_id=body.parent_session_id)
-    if body.members:
-        raise HTTPException(
-            status_code=400,
-            detail="TeamCreate creates the Team container only; spawn teammates with AgentTool team_name + name",
-        )
     try:
         payload = await create_agent_team_runtime(
             db=db,

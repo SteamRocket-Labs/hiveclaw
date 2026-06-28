@@ -294,11 +294,6 @@ async def goal_start(request: ToolExecutionRequest) -> str:
                 "name": {"type": "string"},
                 "description": {"type": "string"},
                 "agent_type": {"type": "string"},
-                "members": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": "Legacy compatibility only. CC path spawns teammates via spawn_subagent(team_name + name).",
-                },
             },
             "anyOf": [{"required": ["team_name"]}, {"required": ["name"]}],
         },

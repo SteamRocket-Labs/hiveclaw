@@ -59,6 +59,7 @@ def test_command_parity_tools_explain_command_layer_semantics() -> None:
     assert "does not spawn teammates" in team_create.meta.description
     assert "spawn_subagent" in team_create.meta.description
     assert "team_name" in team_create.meta.description
+    assert "members" not in team_create.meta.parameters["properties"]
     assert "planning-only" in advanced_plan.meta.description
     assert "does not execute" in advanced_plan.meta.description
     assert "evidence check" in verify_plan.meta.description

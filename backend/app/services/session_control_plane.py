@@ -27,8 +27,9 @@ from app.runtime.ccplus_contracts import (
     build_permission_profile,
 )
 from app.runtime.turn_envelope import build_prompt_assembly_manifest, build_turn_envelope
-from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
+from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.enterprise_approval_visibility import is_visible_enterprise_approval
+from app.services.session_command_runtime import _checkpoint_payloads, _event_payload, _load_events
 from app.services.session_index import read_session_index
 from app.services.web_chat_runtime import get_active_web_chat_run
 
@@ -204,6 +205,7 @@ def _team_payload(team: AgentTeam, members: list[AgentTeamMember]) -> dict[str, 
         "members": [_team_member_payload(member) for member in members],
         "created_at": _iso(team.created_at),
         "closed_at": _iso(team.closed_at),
+        **teammate_creation_discovery(team.name),
     }
 
 

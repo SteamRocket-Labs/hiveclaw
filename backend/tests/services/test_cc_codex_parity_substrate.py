@@ -30,6 +30,10 @@ def test_command_registry_exposes_index_without_full_schema():
     goal_command = registry.get("goal_start")
     assert goal_command.input_schema["properties"]["objective"]["type"] == "string"
     assert goal_command.execution_mode == "runtime"
+    team_command = registry.get("team_create")
+    assert "members" not in team_command.input_schema["properties"]
+    assert "spawn_subagent" in team_command.description
+    assert "team_name + name" in team_command.description
 
     # Registry must reject ambiguous names across sources unless the later
     # command is an explicit alias to the same canonical handler.

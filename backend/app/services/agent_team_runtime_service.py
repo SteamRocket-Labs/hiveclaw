@@ -21,6 +21,7 @@ from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
+from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_session_continuation import continue_agent_session_from_mailbox
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
@@ -98,6 +99,7 @@ def team_payload(team: AgentTeam, members: list[AgentTeamMember], *, requires_ap
         "lead_agent_id": str(team.lead_agent_id),
         "parent_session_id": str(team.parent_session_id),
         "members": [_team_member_payload(member) for member in members],
+        **teammate_creation_discovery(team.name),
     }
 
 

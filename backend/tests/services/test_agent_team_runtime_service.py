@@ -74,6 +74,13 @@ async def test_team_create_runtime_persists_container_without_teammate_sessions(
     assert payload["requires_api_persist"] is False
     assert payload["status"] == "active"
     assert payload["members"] == []
+    assert payload["team_create_semantics"] == "container_only"
+    assert payload["teammate_creation_tool"] == "spawn_subagent"
+    assert payload["teammate_creation_args"] == {
+        "team_name": "Parity Review",
+        "name": "<member-name>",
+        "prompt": "<task>",
+    }
     team = next(item for item in db.added if isinstance(item, AgentTeam))
     event = next(item for item in db.added if isinstance(item, AgentTeamEvent))
     assert team.parent_session_id == parent_session.id

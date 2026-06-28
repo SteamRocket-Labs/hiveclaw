@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。
+状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。
 
 配套架构文档：`docs/ccplus-governance-layer-architecture-2026-06-28.md`
 
@@ -70,6 +70,16 @@
 | 统一 schema / validateInput 闸口 | 已实装。新增 `app.tools.validation.validate_tool_arguments()`，在 `PRE_TOOL_USE` hook 改参后、L2 policy/governance/preflight/handler 执行前统一校验 tool registered parameters schema；`execute()`、`execute_with_context()`、direct/approved path 都接入，不再让 hook 改写后的非法 args 进入 handler。 | `backend/app/tools/validation.py`、`backend/app/tools/service.py`、`backend/tests/tools/test_service.py`、`backend/tests/tools/test_plan_mode_tool_gate.py` | 红线：`test_tool_runtime_service_blocks_hook_modified_args_that_violate_schema` 旧实现执行 registry；修复后返回 `invalid_tool_arguments` 且 registry/governance 未被调用。回归：`pytest tests/tools tests/services/test_agent_tools_core_surface.py tests/services/test_capability_gate_policy_surface.py tests/services/test_pack_policy_service.py -q` -> `437 passed, 4 warnings`。 |
 | Truth Search 高风险 fail-closed | 已实装。Truth Search provider failure pack 仍保留为 evidence；ActionPreflight 现在对 confirm-first/high-risk 动作遇到 `truth://provider-error/...` 或 provider limitation 时返回 ASK checkpoint，不能因为 `explicit_user_authorized` 直接 DO。低风险 full-authority 动作仍不被 provider failure 机械阻塞。 | `backend/app/services/action_preflight.py`、`backend/tests/services/test_action_preflight.py`、`backend/tests/tools/test_service.py` | 红线：`test_confirm_first_action_does_not_bypass_failed_truth_search_even_with_user_authorization` 旧实现返回 DO；修复后返回 ASK 且 reasons 含 `truth_search_unavailable`。回归：`pytest tests/tools/test_service.py tests/agents/test_subagent_spawn_tool.py tests/services/test_action_preflight.py tests/services/test_truth_search_service.py -q` -> `64 passed, 4 warnings`。 |
 
+## 0.3 2026-06-28 Agent Team 语义追修证据
+
+本节对应提交：本节所在提交，提交信息 `ccplus: align agent team creation semantics`。
+
+| 断点 | 修复状态 | 关键代码路径 | 证据 |
+| --- | --- | --- | --- |
+| Frontend TeamCreate inline members 残留 | 已实装。`SessionNativeControls` 创建 Agent Team 时只提交 `parent_session_id/name`，不再携带 `members`；旧“First member role”输入、`memberRole` 状态和对应 i18n key 已删除。UI 改为展示 container-only 说明，并读取后端 `teammate_creation_tool` / `teammate_creation_args.team_name`，把成员创建入口指向 `spawn_subagent(team_name + name)`。 | `frontend/src/pages/session-workbench/SessionNativeControls.tsx`、`frontend/src/api/domains/ccParity.ts`、`frontend/src/i18n/en.json`、`frontend/src/i18n/zh.json`、`frontend/src/pages/session-workbench/SessionNativeControls.test.tsx` | 红线：`npm test -- --run src/pages/session-workbench/SessionNativeControls.test.tsx src/api/domains/ccParity.test.ts` 旧实现 `1 failed, 11 passed`，失败点为 `teamCreateContainerOnly` 缺失且源码仍含 `memberRole/members`；修复后 `2 passed (2), 12 passed (12)`。 |
+| Backend Agent Team discovery contract | 已实装。新增共享 `teammate_creation_discovery()`，runtime payload、Agent Teams API、Command API、Session Workbench read model 全部返回同一 contract：`team_create_semantics=container_only`、`teammate_creation_tool=spawn_subagent`、`teammate_creation_args={team_name,name,prompt}`。 | `backend/app/services/agent_team_contract.py`、`backend/app/services/agent_team_runtime_service.py`、`backend/app/api/agent_teams.py`、`backend/app/api/commands.py`、`backend/app/services/session_control_plane.py` | 红线：Agent Team 后端集合旧实现 `3 failed, 5 passed`，失败点为 payload 缺 `team_create_semantics` / `teammate_creation_tool`，以及 tool schema 仍暴露 `members`；修复后 `pytest tests/services/test_agent_team_runtime_service.py tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_creates_container_only tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_rejects_inline_members_at_schema_boundary tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_lists_enters_and_closes_team tests/services/test_cc_codex_parity_substrate.py::test_command_registry_exposes_index_without_full_schema tests/runtime/test_unified_prompt_contracts.py::test_command_parity_tools_explain_command_layer_semantics tests/tools/test_cc_codex_parity_tools.py::test_team_create_tool_persists_through_agent_team_runtime -q` -> `11 passed, 4 warnings`。 |
+| team_create tool/API 旧成员体系退役 | 已实装。`command_parity.team_create` 工具 schema 删除 legacy `members`；CommandRegistry 已保持 no-members schema；Agent Teams API DTO 删除 `CreateAgentTeamMemberIn/members`，并用 `extra="forbid"` 在 schema 边界拒绝 inline members，而不是 route 层兼容再手动 400。 | `backend/app/tools/handlers/command_parity.py`、`backend/app/services/command_registry.py`、`backend/app/api/agent_teams.py`、`backend/tests/runtime/test_unified_prompt_contracts.py`、`backend/tests/api/test_cc_codex_parity_api.py` | 红线：`pytest tests/api/test_cc_codex_parity_api.py::test_agent_teams_api_rejects_inline_members_at_schema_boundary -q` 旧实现 `1 failed`，`CreateAgentTeamIn(..., members=[...])` 未抛 `ValidationError`；修复后纳入 Agent Team 后端集合 `11 passed, 4 warnings`。搜索校验：`rg -n "CreateAgentTeamMemberIn|CreateAgentTeamMemberInput|body\\.members|teamMemberPlaceholder|defaultTeamMember|defaultTeamRole|memberRole|members: \\[|Legacy compatibility only" backend/app frontend/src` 仅剩测试断言和无关 fixture。 |
+
 最终回归证据：
 
 ```bash
@@ -79,14 +89,17 @@ cd backend && source .venv/bin/activate && pytest tests/services/test_trigger_da
 cd backend && source .venv/bin/activate && pytest tests/services/test_permission_profile_v1.py::test_session_permission_pending_frame_carries_runtime_turn_frame tests/tools/test_service.py::test_tool_runtime_service_blocks_hook_modified_args_that_violate_schema tests/agents/test_subagent_spawn_tool.py::test_spawn_tool_permission_profile_narrows_child_allowed_tools tests/kernel/test_engine.py::test_mechanical_compaction_lifecycle_hooks_emit_pre_and_post tests/services/test_action_preflight.py::test_confirm_first_action_does_not_bypass_failed_truth_search_even_with_user_authorization -q
 # 5 passed, 4 warnings
 
+cd backend && source .venv/bin/activate && pytest tests/services/test_agent_team_runtime_service.py tests/api/test_cc_codex_parity_api.py tests/api/test_agent_teams_events_api.py tests/services/test_session_control_plane.py tests/tools/test_cc_codex_parity_tools.py tests/runtime/test_unified_prompt_contracts.py tests/services/test_cc_codex_parity_substrate.py -q
+# 63 passed, 4 warnings
+
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5341 passed, 2 skipped, 4 warnings in 86.92s
+# 5342 passed, 2 skipped, 4 warnings in 90.81s
 
 cd backend && source .venv/bin/activate && ruff check app/ tests/
 # All checks passed!
 
-cd frontend && npm test -- --run src/pages/workspace/WorkspaceToolsSection.test.tsx src/pages/agent-detail/AgentDetailSections.test.tsx
-# Test Files 2 passed (2); Tests 72 passed (72)
+cd frontend && npm test -- --run
+# Test Files 67 passed (67); Tests 361 passed (361)
 
 cd frontend && npm run build
 # tsc && vite build succeeded; 6969 modules transformed

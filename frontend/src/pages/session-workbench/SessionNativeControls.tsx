@@ -89,7 +89,6 @@ export default function SessionNativeControls({
   const [goalObjective, setGoalObjective] = React.useState('');
   const [planObjective, setPlanObjective] = React.useState('');
   const [teamName, setTeamName] = React.useState('');
-  const [memberRole, setMemberRole] = React.useState('');
   const [selectedTeamId, setSelectedTeamId] = React.useState<string | null>(null);
   const enabled = Boolean(agentId && sessionId);
 
@@ -143,16 +142,9 @@ export default function SessionNativeControls({
       ccParityApi.createTeam(agentId!, {
         parent_session_id: sessionId!,
         name: teamName.trim(),
-        members: [
-          {
-            name: memberRole.trim() || t('sessionWorkbench.defaultTeamMember', 'Specialist'),
-            role: memberRole.trim() || t('sessionWorkbench.defaultTeamRole', 'Investigate and report back'),
-          },
-        ],
       }),
     onSuccess: (team) => {
       setTeamName('');
-      setMemberRole('');
       setSelectedTeamId(team.id);
       queryClient.invalidateQueries({ queryKey: ['session-workbench-teams', agentId, sessionId] });
     },
@@ -323,13 +315,12 @@ export default function SessionNativeControls({
           style={inputStyle()}
           disabled={!enabled}
         />
-        <input
-          value={memberRole}
-          onChange={(event) => setMemberRole(event.target.value)}
-          placeholder={t('sessionWorkbench.teamMemberPlaceholder', 'First member role')}
-          style={inputStyle()}
-          disabled={!enabled}
-        />
+        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', lineHeight: 1.35 }}>
+          {t(
+            'sessionWorkbench.teamCreateContainerOnly',
+            'Creates the Team container only. Add teammates with spawn_subagent using team_name and name.',
+          )}
+        </div>
         <button type="button" style={buttonStyle()} disabled={!enabled || !teamName.trim()} onClick={() => createTeam.mutate()}>
           {t('sessionWorkbench.createTeam', 'Create team')}
         </button>
@@ -349,6 +340,10 @@ export default function SessionNativeControls({
                     {t('sessionWorkbench.events', 'events')}: {Number(selectedTeamSummary.event_count ?? 0)} · {t('sessionWorkbench.activeMembers', 'active members')}: {Number(selectedTeamSummary.active_member_count ?? 0)}
                   </div>
                 )}
+                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', lineHeight: 1.35 }}>
+                  {t('sessionWorkbench.teamSpawnHint', 'Teammate entry')}: {team.teammate_creation_tool || 'spawn_subagent'} · team_name=
+                  {team.teammate_creation_args?.team_name || team.name}
+                </div>
                 {team.members.map((member) => (
                   <div key={member.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
                     <span style={{ flex: 1, minWidth: 0, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -359,6 +354,11 @@ export default function SessionNativeControls({
                     </button>
                   </div>
                 ))}
+                {team.members.length === 0 && (
+                  <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                    {t('sessionWorkbench.noTeamMembers', 'No teammates yet')}
+                  </div>
+                )}
                 {team.status !== 'closed' && (
                   <button type="button" style={buttonStyle()} onClick={() => closeTeam.mutate(team.id)}>
                     {t('sessionWorkbench.closeTeam', 'Close team')}

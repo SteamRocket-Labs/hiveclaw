@@ -1294,8 +1294,25 @@ async def test_agent_teams_api_creates_container_only(monkeypatch):
     assert result["status"] == "active"
     assert result["transcript_truth"] == "chat_session_t0"
     assert result["members"] == []
+    assert result["team_create_semantics"] == "container_only"
+    assert result["teammate_creation_tool"] == "spawn_subagent"
+    assert result["teammate_creation_args"]["team_name"] == "research"
     assert db.flushes == 1
     assert {type(item).__name__ for item in db.added} == {"AgentTeam", "AgentTeamEvent"}
+
+
+def test_agent_teams_api_rejects_inline_members_at_schema_boundary():
+    import pytest
+    from pydantic import ValidationError
+
+    import app.api.agent_teams as teams_api
+
+    with pytest.raises(ValidationError):
+        teams_api.CreateAgentTeamIn(
+            parent_session_id=uuid4(),
+            name="research",
+            members=[{"name": "critic"}],
+        )
 
 
 @pytest.mark.asyncio

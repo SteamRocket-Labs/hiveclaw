@@ -84,18 +84,9 @@ export interface AdvancedPlanRun {
   [key: string]: unknown;
 }
 
-export interface CreateAgentTeamMemberInput {
-  name: string;
-  role?: string;
-  model_id?: string | null;
-  tool_policy?: Record<string, unknown>;
-  budget?: Record<string, unknown>;
-}
-
 export interface CreateAgentTeamInput {
   parent_session_id: string;
   name: string;
-  members?: CreateAgentTeamMemberInput[];
 }
 
 export interface AgentTeamMember {
@@ -118,7 +109,15 @@ export interface AgentTeam {
   transcript_truth: string;
   lead_agent_id: string;
   parent_session_id: string;
+  member_count?: number;
   members: AgentTeamMember[];
+  team_create_semantics?: string;
+  teammate_creation_tool?: string;
+  teammate_creation_args?: {
+    team_name?: string;
+    name?: string;
+    prompt?: string;
+  };
 }
 
 export interface AgentTeamEnterResult {

@@ -402,11 +402,52 @@ Main | Team: Review crew | Subagent: Critic | Workflow: Release checks | Backgro
 
 位置：
 
-- 输入框上方的 session lane tabs 显示 team/member 标签。
-- 中栏点击 lane tab 切换到 team/member session 或 filtered channel。
-- 右侧 Runtime Tables 显示 team/member graph、mailbox、events、enter/resume/wait/close。
+- 输入框上方、composer 上方显示 **Team Console**。
+- 中栏点击 member row 切换到 team/member session 或 filtered channel。
+- 右侧 Runtime Tables 只显示 team/member graph、mailbox、events、enter/resume/wait/close 的详情和审计，不承担主要切换。
 
 当前 `SessionNativeControls.enterMember` 已能进入 member session，下一步要把它升级为 session lane 交互，而不是藏在右侧长列表。
+
+### 6.2.1 Team Console 表达
+
+Agent Team 的主表达参考 CC/Codex 的 TUI：底部不是普通 tab，而是一组可选择的 agent lane rows。
+
+目标结构：
+
+```text
+────────────────────────────────────────────────────────────────────
+                        当前查看：排查 Phase 0+1 Contract与Taxonomy
+────────────────────────────────────────────────────────────────────
+
+○ main
+› ● general-purpose  排查 Phase 0+1 Contract与Taxonomy        31s · 77.3k tokens
+  ○ general-purpose  排查 Phase 2+3 边界与 L1L3                8s · 62.1k tokens
+
+输入框 / composer
+```
+
+显示规则：
+
+- `main` 永远存在，表示父 session 主线。
+- 每个 team member / subagent / background worker 是一行 lane。
+- 当前正在查看的 lane 用 `›` + 实心点 / 高亮背景表示。
+- 运行中显示 elapsed time、token estimate、tool use count、last activity。
+- 完成显示 completed / failed / cancelled，并保留可查看入口。
+- pending permission / blocked hook / waiting user 用状态徽标显示。
+- 顶部细线右侧可显示当前 active lane label，类似截图中的 cyan label。
+
+交互规则：
+
+- 点击 row：切换中间 transcript 到该 member 的 child session / filtered channel。
+- 点击 `main`：回到父 session 主线。
+- row 右侧可以有停止单个 agent 的 icon button；批量停止放在 Team Console 菜单，不放左侧导航。
+- 如果一个 team 有多个成员，Team Console 默认展开；完成后可折叠成一行 summary。
+- parent transcript 里只保留 “Running N agents...” / “Agent completed” 这类 marker，不把每个 child agent 的全部细节灌进主线。
+
+与右侧 Runtime Tables 的分工：
+
+- Team Console：快速切换当前正在看的 agent/channel。
+- Runtime Tables：显示完整 member graph、mailbox、event log、tool calls、permission/gate、stop/resume 审计。
 
 ### 6.3 Sub-agent
 
@@ -510,8 +551,17 @@ interface SessionLaneModel {
   kind: SessionLaneKind;
   label: string;
   status: 'running' | 'waiting' | 'blocked' | 'completed' | 'failed' | 'cancelled';
+  selected?: boolean;
+  preset?: string;
+  teamId?: string;
+  memberId?: string;
   sessionId?: string;
   runtimeTaskId?: string;
+  elapsedSeconds?: number;
+  tokenCount?: number;
+  toolUseCount?: number;
+  lastActivityLabel?: string;
+  canStop?: boolean;
 }
 
 interface CheckpointTimelineNode {
@@ -572,7 +622,9 @@ npm test -- --run \
 - Rewind 后旧 tail 标为 excluded from context。
 - Compact marker 可打开右侧 Context/Governance detail。
 - `/command ` 选择后进入 composer，执行结果不追加 raw JSON。
-- Agent Team member 显示为输入框上方 lane，点击 enter 切换 session。
+- Agent Team member 显示为输入框上方 Team Console row，点击 row 切换 session / filtered channel。
+- Team Console 渲染 `main` row、selected row、elapsed time、token count、tool use count、running/completed/failed/waiting 状态。
+- Team Console 的 stop single / stop all 动作不写入左侧导航。
 - Subagent / background wake 显示在 lane 和 Runtime Tables。
 - Workflow marker 打开右侧 Runtime Tables 的 Workflow tab。
 - Governance tab 显示 permission profile / pending request / Truth Search evidence refs。

@@ -111,15 +111,23 @@ def test_tool_content_envelope_carries_ccplus_side_effect_channels():
 def test_ccplus_v1_profiles_default_to_governed_safe_values():
     from app.runtime.ccplus_contracts import (
         AgentSessionV1,
+        CompactionLifecycleV1,
         ContextPolicyV1,
         ExtensionRegistryV1,
+        GovernanceCapabilityDescriptorV1,
+        HookLifecycleV1,
+        PendingToolFrameV1,
         PermissionMode,
+        PermissionCheckpointV1,
         PermissionProfileV1,
         SandboxProfile,
+        ToolCallLifecycleV1,
+        ToolExecutionFrameV1,
         ToolResultV1,
         ToolSpecV1,
         TurnStateV1,
         TurnStatus,
+        TruthEvidencePackV1,
     )
 
     permission = PermissionProfileV1()
@@ -147,3 +155,95 @@ def test_ccplus_v1_profiles_default_to_governed_safe_values():
 
     session = AgentSessionV1(session_id="session-1", permission_profile=permission, context_policy=context)
     assert session.session_id == "session-1"
+
+    tool_call = ToolCallLifecycleV1(
+        session_id="session-1",
+        turn_id="turn-1",
+        tool_call_id="call-1",
+        tool_name="send_email",
+        lifecycle_state="validated",
+        governance_decisions=("l0_allow", "l1_missing_policy_escalate_l3"),
+    )
+    assert tool_call.lifecycle_state == "validated"
+    assert tool_call.governance_decisions[-1] == "l1_missing_policy_escalate_l3"
+
+    execution = ToolExecutionFrameV1(
+        tool_call_id="call-1",
+        tool_name="send_email",
+        executor="tool_runtime_service",
+        sandbox_profile=SandboxProfile.EXTERNAL_SANDBOX,
+        input_hash="sha256:input",
+    )
+    assert execution.executor == "tool_runtime_service"
+
+    pending = PendingToolFrameV1(
+        permission_request_id="perm-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        tool_call_id="call-1",
+        tool_name="send_email",
+        arguments={"to": "user@example.com"},
+        permission_profile=permission,
+        knowledge_refs=("truth://policy/1",),
+        hook_refs=("hook://pre/1",),
+    )
+    assert pending.arguments["to"] == "user@example.com"
+    assert pending.permission_profile.mode == PermissionMode.AUTO
+
+    checkpoint = PermissionCheckpointV1(
+        permission_request_id="perm-1",
+        decision="allow_once",
+        pending_frame=pending,
+        resolver_user_id="user-1",
+    )
+    assert checkpoint.pending_frame.tool_call_id == "call-1"
+
+    hook = HookLifecycleV1(
+        hook_run_id="hook-1",
+        event="pre_tool_use",
+        source="plugin:test",
+        trust_level="tenant_approved",
+        lifecycle_state="blocking_capable",
+        original_hash="sha256:old",
+        modified_hash="sha256:new",
+        decision="allow_modified",
+        span_ref="span-1",
+    )
+    assert hook.lifecycle_state == "blocking_capable"
+    assert hook.modified_hash == "sha256:new"
+
+    compaction = CompactionLifecycleV1(
+        compaction_id="compact-1",
+        session_id="session-1",
+        trigger="request_preflight",
+        before_message_count=20,
+        after_message_count=8,
+        pre_hook_refs=("hook://pre_compaction/1",),
+        post_hook_refs=("hook://post_compaction/1",),
+        recovery_manifest_ref="workspace/runtime_artifacts/recovery_manifest.json",
+    )
+    assert compaction.trigger == "request_preflight"
+    assert compaction.recovery_manifest_ref is not None
+
+    evidence = TruthEvidencePackV1(
+        evidence_id="truth-1",
+        query="company outbound email policy",
+        source_refs=("knowledge://policy/email",),
+        citations=("policy/email#L1-L8",),
+        acl_scope="tenant",
+        digest="sha256:evidence",
+        provider="knowledge_core",
+    )
+    assert evidence.source_refs == ("knowledge://policy/email",)
+
+    descriptor = GovernanceCapabilityDescriptorV1(
+        name="web_search",
+        layer="agent_base",
+        tools=("web_search",),
+        default_enabled=True,
+        l2_visible=False,
+        enterprise_toggleable=False,
+        source="core",
+    )
+    assert descriptor.layer == "agent_base"
+    assert descriptor.enterprise_toggleable is False

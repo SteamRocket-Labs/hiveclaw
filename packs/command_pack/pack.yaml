@@ -1,0 +1,50 @@
+name: command_pack
+version: "0.1.0"
+description: "CC/Codex-style session command tools: task bookkeeping, runtime task control, goals, teams, and advanced plan handoff."
+source:
+  kind: builtin
+
+tools:
+  - name: task_create
+    role: owns
+    governance:
+      security_zone: public
+  - name: task_update
+    role: owns
+    governance:
+      security_zone: public
+  - name: task_list
+    role: owns
+    governance:
+      security_zone: public
+  - name: task_get
+    role: owns
+    governance:
+      security_zone: public
+  - name: task_output
+    role: owns
+    governance:
+      security_zone: public
+  - name: task_stop
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: goal_start
+    role: owns
+    governance:
+      security_zone: public
+  - name: team_create
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: advanced_plan
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: verify_plan
+    role: owns
+    governance:
+      security_zone: public
+
+activation:
+  default_state: inactive

@@ -55,6 +55,9 @@ def test_mcp_pack_guide_is_parseable_skill_markdown():
         "call_mcp_tool",
         "mcp_list_resources",
         "mcp_read_resource",
+        "mcp_list_prompts",
+        "mcp_get_prompt",
+        "mcp_auth_status",
     }
 
 

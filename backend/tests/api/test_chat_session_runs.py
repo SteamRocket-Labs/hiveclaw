@@ -724,6 +724,64 @@ def test_resolve_session_permission_allow_uses_channel_native_continuation_for_i
     assert channel_runs[0]["extra_metadata"]["origin_channel"] == "feishu"
 
 
+def test_session_permission_event_broadcast_delivers_im_realtime_copy(monkeypatch):
+    agent_id = uuid4()
+    session_id = uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        source_channel="feishu",
+        delivery_target_json={"channel": "feishu", "receive_id": "chat-1"},
+    )
+    broadcasts = []
+    channel_sends = []
+    db = object()
+
+    async def fake_broadcast(*args):
+        broadcasts.append(args)
+
+    async def fake_send_text(**kwargs):
+        channel_sends.append(kwargs)
+        return SimpleNamespace(status="success")
+
+    monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr("app.services.channel_delivery_service.ChannelDeliveryService.send_text", fake_send_text)
+
+    asyncio.run(
+        chat_sessions_api._broadcast_session_permission_event(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            session=session,
+            payload={
+                "type": "tool_call",
+                "event_type": "tool_result",
+                "name": "read_file",
+                "status": "done",
+                "result": "ok",
+            },
+            channel_text="Tool `read_file` completed after permission approval.",
+        )
+    )
+
+    assert broadcasts[-1][0] == agent_id
+    assert broadcasts[-1][1] == session_id
+    assert broadcasts[-1][2]["event_type"] == "tool_result"
+    assert channel_sends == [
+        {
+            "db": db,
+            "agent_id": agent_id,
+            "reply_target": {"channel": "feishu", "receive_id": "chat-1"},
+            "text": "Tool `read_file` completed after permission approval.",
+            "delivery_mode": "live",
+            "extra_detail": {
+                "source": "session_permission_event",
+                "event_type": "tool_result",
+                "session_id": str(session_id),
+            },
+        }
+    ]
+
+
 def test_resolve_session_permission_rejects_duplicate_resolution_before_reexecution(monkeypatch):
     agent_id = uuid4()
     user_id = uuid4()

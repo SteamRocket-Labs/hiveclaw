@@ -9,6 +9,22 @@ tools:
     role: requires_core
     governance:
       security_zone: public
+  - name: anysearch_get_sub_domains
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: anysearch_search
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: anysearch_batch_search
+    role: optional_provider
+    governance:
+      security_zone: public
+  - name: anysearch_extract
+    role: optional_provider
+    governance:
+      security_zone: public
   - name: exa_search
     role: optional_provider
     governance:
@@ -27,6 +43,14 @@ tools:
       security_zone: public
 
 credential_requirements:
+  - key: anysearch_api_keys
+    scope: tenant
+    storage: encrypted_tool_config
+    used_by:
+      - anysearch_get_sub_domains
+      - anysearch_search
+      - anysearch_batch_search
+      - anysearch_extract
   - key: exa_api_key
     scope: tenant
     storage: encrypted_tool_config

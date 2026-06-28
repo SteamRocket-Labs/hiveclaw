@@ -354,6 +354,19 @@ def _merge_metadata_string_list(metadata: dict[str, Any], key: str, values: list
         metadata[key] = target
 
 
+def _mcp_server_refs_from_assignments(assignments: list[dict[str, Any]]) -> list[str]:
+    refs: list[str] = []
+    for item in assignments:
+        if not isinstance(item, dict):
+            continue
+        for key in ("server", "server_name", "name", "server_id", "url"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                refs.append(value)
+                break
+    return list(dict.fromkeys(refs))
+
+
 def hydrate_session_context_from_recovery_manifest(session_context: Any, manifest: RecoveryManifest | None) -> bool:
     """Restore machine-readable runtime state from a persisted RecoveryManifest.
 
@@ -418,6 +431,7 @@ def hydrate_session_context_from_recovery_manifest(session_context: Any, manifes
         _merge_metadata_dict_list(metadata, key, values)
     _merge_metadata_string_list(metadata, "truth_evidence_refs", manifest.truth_evidence_refs)
     _merge_metadata_string_list(metadata, "evidence_refs", manifest.truth_evidence_refs)
+    _merge_metadata_string_list(metadata, "mcp_server_refs", _mcp_server_refs_from_assignments(manifest.mcp_assignments))
     if manifest.permission_profile:
         metadata["permission_profile"] = dict(manifest.permission_profile)
     if manifest.pending_tool_frames:

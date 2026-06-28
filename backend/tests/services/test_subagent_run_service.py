@@ -6,8 +6,12 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from app.agents.subagent import SUBAGENT_TYPE_WORKER, SubagentResult
+from app.database import tenant_scoped_session
+from app.models.chat_session import ChatSession
+from app.models.runtime_task import RuntimeTask
 from app.services import subagent_run_service as svc
 
 
@@ -88,6 +92,100 @@ async def test_start_subagent_run_creates_child_session_and_records_session_cont
     assert metadata["session_contract"]["kind"] == "subagent_child_session"
     assert metadata["session_contract"]["continuation_address"] == "child-session"
     assert metadata["session_contract"]["run_id"] == started.run_id
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task(owner_sessionmaker, monkeypatch):
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    import app.services.runtime_task_service as runtime_task_service
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=tenant_id, name="subagent-real", slug=f"sa-{tenant_id.hex[:10]}"))
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=user_id,
+                username=f"sa-u-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:10]}@subagent.test",
+                password_hash="x",
+                display_name="Subagent Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            Agent(
+                id=parent_agent_id,
+                tenant_id=tenant_id,
+                name="parent-agent",
+                role_description="parent",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=parent_agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Parent Session",
+                source_channel="web",
+            )
+        )
+
+    def scoped_session(tenant=None, **_kwargs):
+        return tenant_scoped_session(tenant, session_factory=owner_sessionmaker)
+
+    async def resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(svc, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", resolve_tenant)
+
+    started = await svc.start_subagent_run(
+        parent_agent_id=parent_agent_id,
+        parent_user_id=user_id,
+        spec_name="researcher",
+        spec_type="explorer",
+        task="inspect the evidence",
+        parent_session_id=str(parent_session_id),
+        trace_id="trace-skill-fork",
+        context_mode="none",
+    )
+
+    assert started.child_session_id
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        child_session = (
+            await session.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(started.child_session_id)))
+        ).scalar_one()
+        runtime_task = (
+            await session.execute(select(RuntimeTask).where(RuntimeTask.id == uuid.UUID(started.run_id)))
+        ).scalar_one()
+
+    assert child_session.source_channel == "subagent"
+    assert child_session.session_kind == "subagent"
+    assert child_session.parent_session_id == parent_session_id
+    assert child_session.transcript_metadata_json["session_contract"]["continuation_address"] == started.child_session_id
+    assert child_session.transcript_metadata_json["session_contract"]["run_id"] == started.run_id
+    assert runtime_task.task_type == svc.SUBAGENT_RUN_TASK_TYPE
+    assert runtime_task.status == "running"
+    assert runtime_task.parent_agent_id == parent_agent_id
+    assert runtime_task.parent_session_id == str(parent_session_id)
+    assert runtime_task.child_session_id == started.child_session_id
+    assert runtime_task.metadata_json["session_contract"]["continuation_address"] == started.child_session_id
+    assert runtime_task.metadata_json["session_contract"]["run_id"] == started.run_id
 
 
 @pytest.mark.asyncio

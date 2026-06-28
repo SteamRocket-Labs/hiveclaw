@@ -18,6 +18,7 @@ governs reminder frequency (session metadata), never tool visibility.
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -215,6 +216,39 @@ def test_runtime_tool_groups_are_compat_projection_of_taxonomy():
         assert group.tools == descriptor.tools
         assert group.source == descriptor.source
         assert group.summary == descriptor.notes
+
+
+def test_l2_taxonomy_decorator_and_pack_manifests_are_consistent():
+    from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
+    from app.services.governance_capability_taxonomy import (
+        CAPABILITY_MAP,
+        CORE_TOOL_NAMES,
+        RUNTIME_L2_CAPABILITY_SPECS,
+    )
+    from app.tools.collector import collect_tools
+
+    taxonomy = {
+        spec.name: {tool for tool in spec.tools if tool not in CORE_TOOL_NAMES}
+        for spec in RUNTIME_L2_CAPABILITY_SPECS
+    }
+    decorator_groups = {
+        name: set(tools)
+        for name, tools in collect_tools().pack_tool_groups.items()
+        if name in taxonomy
+    }
+    manifest_groups: dict[str, set[str]] = {}
+    for packs_dir in find_pack_dirs(Path(__file__).resolve()):
+        reader = PackCatalogReader(packs_dir)
+        reader.discover()
+        for manifest in reader.list_packs():
+            if manifest.name not in taxonomy:
+                continue
+            manifest_groups[manifest.name] = set(manifest.owns_names) | set(manifest.optional_provider_names)
+            assert set(manifest.requires_core_names) <= CORE_TOOL_NAMES
+
+    assert decorator_groups == taxonomy
+    assert manifest_groups == taxonomy
+    assert set().union(*taxonomy.values()) <= set(CAPABILITY_MAP)
 
 
 def test_coding_capability_is_l2_local_bridge_only():

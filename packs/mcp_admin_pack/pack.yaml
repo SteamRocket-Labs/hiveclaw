@@ -33,6 +33,18 @@ tools:
     role: owns
     governance:
       security_zone: restricted
+  - name: mcp_list_prompts
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: mcp_get_prompt
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: mcp_auth_status
+    role: owns
+    governance:
+      security_zone: restricted
 
 activation:
   default_state: inactive

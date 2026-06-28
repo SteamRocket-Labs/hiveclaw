@@ -203,6 +203,7 @@ _NON_TOOL_IDENTIFIERS: set[str] = {
     "tests",
     # MCP vocabulary
     "mcp_server",
+    "prompt_name",
     "rpc",
     "json",
     "yaml",

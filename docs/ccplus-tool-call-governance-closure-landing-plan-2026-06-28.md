@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。2026-06-28 最终追修继续补齐三审后仍可复现的源代码断点：D1 session/extension surfaces 不再直读 `RUNTIME_TOOL_GROUPS`，D4 Skill fork 改为同一次 `load_skill` 调用内执行，D5 allow continuation 保留 IM/origin channel，D7 Truth evidence 从 `ToolRuntimeService` 进入 kernel span metadata sink，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 追加补齐 sub-agent 子执行体恢复：background `spawn_subagent` 把 `subagent_run_id` / `child_session_id` 传入子 invocation，子工具调用开始前写入 `child_pending_tool_frame`，重启扫描对 replay-safe 只读子帧恢复，对 mutating 子帧 fail closed 到 `needs_reconciliation`。2026-06-28 CC 追加反馈最终追修：D10 persisted manifest 机械 hydrate 回 `SessionContext`；D1 runtime L2 specs 真源迁入 taxonomy，`runtime_tool_groups.py` 退为兼容投影；D5 IM permission continuation 改走 channel-native durable run；D4 Skill fork 默认进入 background child-session contract。
+状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。2026-06-28 最终追修继续补齐三审后仍可复现的源代码断点：D1 session/extension surfaces 不再直读 `RUNTIME_TOOL_GROUPS`，D4 Skill fork 改为同一次 `load_skill` 调用内执行，D5 allow continuation 保留 IM/origin channel，D7 Truth evidence 从 `ToolRuntimeService` 进入 kernel span metadata sink，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 追加补齐 sub-agent 子执行体恢复：background `spawn_subagent` 把 `subagent_run_id` / `child_session_id` 传入子 invocation，子工具调用开始前写入 `child_pending_tool_frame`，重启扫描对 replay-safe 只读子帧恢复，对 mutating 子帧 fail closed 到 `needs_reconciliation`。2026-06-28 CC 追加反馈最终追修：D10 persisted manifest 机械 hydrate 回 `SessionContext`；D1 runtime L2 specs 真源迁入 taxonomy，`runtime_tool_groups.py` 退为兼容投影；D5 IM permission continuation 改走 channel-native durable run；D4 Skill fork 默认进入 background child-session contract。2026-06-28 第五轮最终追修已完成剩余深水项：主会话 recovered pending tool frame 安全重派发 / mutating fail-closed、MCP assignments 进入活跃 MCP refs、IM permission 即时事件发送、真实 PG child session + RuntimeTask 验收、taxonomy/decorator/pack manifest 三向一致性。
 
 2026-06-28 自查追加闭合：
 
@@ -53,14 +53,15 @@
 - `fe92bdf1` `ccplus: close residual tool governance gaps`：补齐 D1/D4/D5/D7/D10 最后一轮源代码断点，并更新本账本。
 - 本轮提交 `ccplus: recover subagent child tool frames`：补齐 sub-agent 子执行体 pending tool frame checkpoint、replay-safe 恢复和 mutating reconciliation，并更新本账本。
 - 本轮提交 `ccplus: close final governance parity gaps`：补齐 D10 manifest hydrate、D1 taxonomy truth source、D5 channel-native permission continuation、D4 Skill fork background child-session contract，并更新本账本。
+- 本轮提交 `ccplus: close fifth-round governance gaps`：补齐 D10 主会话 pending frame 安全重派发、D10 MCP assignments 活消费、D5 IM permission 即时事件、D4 真实 child session DB 验收、D1 taxonomy/decorator/pack manifest 三向一致性，并更新本账本。
 
-账本口径：从 `b1b5f85a ccplus: add capability governance surface` 之后到本轮最终 parity gap 追修提交，本文件记录 24 个后续追修 / 文档校正提交。后续新增代码闭环提交必须继续追加到这里，避免代码与宣称口径脱节。
+账本口径：从 `b1b5f85a ccplus: add capability governance surface` 之后到本轮第五轮治理断点追修提交，本文件记录 25 个后续追修 / 文档校正提交。后续新增代码闭环提交必须继续追加到这里，避免代码与宣称口径脱节。
 
 最终回归：
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5368 passed, 2 skipped, 4 warnings in 94.94s
+# 5373 passed, 2 skipped, 4 warnings in 95.47s
 
 cd backend && source .venv/bin/activate && ruff check app/ tests/
 # All checks passed!
@@ -82,6 +83,8 @@ cd frontend && npm run build
 | D7 Truth evidence span | `ToolRuntimeService.execute(trace_metadata_sink=...)` 把 Truth evidence refs/payload 和 preflight block 写入 sink；kernel tool span metadata 合并 sink 后进入 canonical InvocationSpan 抽取面。 | `test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink`、`test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span` 纳入目标集，目标集 `6 passed, 4 warnings`。 |
 | D10 prompt recovery | `_build_runtime_attachment_sections()` 从 `runtime_artifacts/recovery_manifest.json` 读 persisted manifest，并调用 `hydrate_session_context_from_recovery_manifest()` 机械恢复 `SessionContext` runtime state；prompt text 仍作为模型可见恢复块保留。 | `test_recovery_manifest_hydrates_session_context_runtime_state` 纳入目标集；目标集 `6 passed, 4 warnings`，全量后端 `5368 passed`。 |
 | D11 sub-agent 子执行体恢复 | `start_subagent_run()` 生成的 `run_id` / `child_session_id` 现在进入 `SubagentSpawnContext` 和 child `SessionContext`；`on_tool_call` 通过 `record_subagent_child_tool_frame()` 在子工具执行前持久化 `child_pending_tool_frame`，终态清理 stale pending frame；`resume_persisted_subagent_runs()` 对 replay-safe 只读子帧恢复同一 child session，对 `write_file` 等 mutating 子帧标记 `needs_reconciliation` 并投影到 child session。 | `cd backend && .venv/bin/python -m pytest tests/services/test_subagent_run_service.py tests/agents/test_subagent.py::test_spawn_threads_child_recovery_identity_into_session_context tests/agents/test_subagent.py::test_spawn_builds_governed_request tests/tools/test_agent_tool_cc_compat.py::test_spawn_subagent_permission_profile_allowed_tools_are_scoped -q` -> `20 passed, 4 warnings`。 |
+| 第五轮 D10 主会话工具恢复 | `AgentKernel.handle()` 在模型循环前消费 recovered main-session pending frames；replay-safe 只读工具走 governed `_execute_tool_with_hooks()`，mutating frame 写 `needs_reconciliation` 而不是自动重放。MCP assignments 同时 hydrate 为 `mcp_server_refs`，进入活跃 MCP refs 消费面。 | `test_recovered_pending_tool_frame_replays_read_only_tool_through_governed_runtime`、`test_recovered_pending_tool_frame_fails_closed_for_mutating_tool`、`test_recovery_manifest_hydrates_session_context_runtime_state` 纳入目标集；目标集 `20 passed, 4 warnings in 3.60s`。 |
+| 第五轮 D4/D5/D1 证据闭环 | D4 新增真实 PG child `ChatSession` + `RuntimeTask` 断言；D5 `_broadcast_session_permission_event()` 同时 web broadcast 和 IM live send；D1 新增 taxonomy/decorator/root+backend pack manifest 三向一致性，并补齐 MCP guide / shipped manifest / command_pack manifest。 | `test_start_subagent_run_real_pg_creates_child_session_and_runtime_task`、`test_session_permission_event_broadcast_delivers_im_realtime_copy`、`test_l2_taxonomy_decorator_and_pack_manifests_are_consistent` 纳入目标集；skill/pack lint 集 `36 passed, 4 warnings in 2.13s`；全量后端 `5373 passed, 2 skipped, 4 warnings in 95.47s`。 |
 
 关联文档：
 

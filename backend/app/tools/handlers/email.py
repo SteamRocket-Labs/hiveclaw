@@ -42,6 +42,7 @@ from app.tools.runtime import ToolExecutionRequest
     display_name="Send Email",
     icon="\U0001f4e7",
     governance="sensitive",
+    pack="email_pack",
     adapter="request",
 ))
 async def send_email(request: ToolExecutionRequest) -> str:
@@ -79,6 +80,7 @@ async def send_email(request: ToolExecutionRequest) -> str:
     category="email",
     display_name="Read Emails",
     icon="\U0001f4ec",
+    pack="email_pack",
     adapter="request",
 ))
 async def read_emails(request: ToolExecutionRequest) -> str:
@@ -114,6 +116,7 @@ async def read_emails(request: ToolExecutionRequest) -> str:
     display_name="Reply Email",
     icon="\u21a9\ufe0f",
     governance="sensitive",
+    pack="email_pack",
     adapter="request",
 ))
 async def reply_email(request: ToolExecutionRequest) -> str:

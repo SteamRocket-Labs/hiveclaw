@@ -191,6 +191,7 @@ def test_recovery_manifest_hydrates_session_context_runtime_state(tmp_path) -> N
     ]
     assert session.metadata["permission_profile"]["allowed_tools"] == ["write_file"]
     assert session.metadata["truth_evidence_refs"] == ["truth://policy/email-confirmation"]
+    assert session.metadata["mcp_server_refs"] == ["docs"]
     assert session.metadata["pending_skill_handoffs"] == [
         {"skill_slug": "research", "execution_tool": "spawn_subagent"}
     ]

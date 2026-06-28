@@ -2,9 +2,41 @@
 
 日期：2026-06-28
 
-状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。2026-06-28 Current HEAD 最终闭环追修已完成本轮新增断点：D1 taxonomy 入口继续收口到 session/extension surfaces，D4 Skill fork 改为同一次 `load_skill` 工具调用内执行，D5 permission allow continuation 保留 IM/origin channel，D7 Truth evidence 进入 kernel canonical span metadata，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 CC 追加反馈追修已进一步闭合：D1 runtime L2 spec 真源迁入 taxonomy，`runtime_tool_groups.py` 退为兼容投影；D10 persisted manifest 机械 hydrate 回 `SessionContext`；D5 IM permission continuation 走 channel-native durable run；D4 Skill fork 默认 background child-session contract。
+状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。2026-06-28 Current HEAD 最终闭环追修已完成本轮新增断点：D1 taxonomy 入口继续收口到 session/extension surfaces，D4 Skill fork 改为同一次 `load_skill` 工具调用内执行，D5 permission allow continuation 保留 IM/origin channel，D7 Truth evidence 进入 kernel canonical span metadata，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 CC 追加反馈追修已进一步闭合：D1 runtime L2 spec 真源迁入 taxonomy，`runtime_tool_groups.py` 退为兼容投影；D10 persisted manifest 机械 hydrate 回 `SessionContext`；D5 IM permission continuation 走 channel-native durable run；D4 Skill fork 默认 background child-session contract。2026-06-28 第五轮最终追修已补齐剩余最后一公里：主会话 recovered pending tool frame 安全重派发 / mutating fail-closed、MCP assignments 进入活跃 prompt manifest 引用、IM permission 即时事件回灌、真实 PG child session + RuntimeTask 断言、taxonomy/decorator/pack manifest 三向一致性。
 
 配套架构文档：`docs/ccplus-governance-layer-architecture-2026-06-28.md`
+
+## 0.7 2026-06-28 第五轮最终追修证据
+
+基线：本节吸收第五轮反馈中成立的四类残留：D10 主会话工具恢复深度、D4 child session 真落库证据、D5 IM 即时事件回灌、D1 taxonomy/decorator/pack 三向一致性。实现后重新跑全量后端回归，结果为 `5373 passed, 2 skipped, 4 warnings in 95.47s`。
+
+| 断点 | 修复状态 | 关键代码路径 | 证据 |
+| --- | --- | --- | --- |
+| D10 主会话 recovered pending tool frame | 已实装。`AgentKernel.handle()` 在 permission/context 解析前先 hydrate persisted manifest；`_execute_recovered_pending_tool_frames()` 在模型循环前消费 `SessionContext.metadata.recovered_pending_tool_frames` / `pending_tool_frames`。`read_file` 等 replay-safe 只读工具通过同一个 governed `_execute_tool_with_hooks()` 重派发；`write_file` 等 mutating 工具不自动执行，写入 `recovered_tool_frame_reconciliation` 并发 `tool_recovery` 事件。 | `backend/app/kernel/engine.py`、`backend/tests/kernel/test_engine.py` | 红线：`test_recovered_pending_tool_frame_replays_read_only_tool_through_governed_runtime` 与 `test_recovered_pending_tool_frame_fails_closed_for_mutating_tool` 旧实现缺少 `_execute_recovered_pending_tool_frames()`；修复后目标集 `20 passed, 4 warnings in 3.60s`。 |
+| D10 MCP assignments 活消费 | 已实装。`hydrate_session_context_from_recovery_manifest()` 不只保留 `mcp_assignments` 原始 metadata，还从 server/name/url 派生 `mcp_server_refs`，进入现有 prompt manifest / MCP server ref 消费面。 | `backend/app/runtime/recovery_manifest.py`、`backend/tests/runtime/test_recovery_manifest_persistence.py` | 红线：`test_recovery_manifest_hydrates_session_context_runtime_state` 增加 `mcp_server_refs == ["docs"]` 断言；目标集 `20 passed, 4 warnings in 3.60s`。 |
+| D4 child session / RuntimeTask 真实落库 | 已实装。`start_subagent_run()` 统一使用 hex run id，使 child session contract、returned run id、`RuntimeTask.id` 一致。新增 Testcontainers PG 测试真实创建 Tenant/User/Agent/parent session，调用 `start_subagent_run()` 后断言 child `ChatSession`、`RuntimeTask`、parent_session_id、session_contract、child_session_id 全部落库匹配，不再只靠 kernel mock 串证明。 | `backend/app/services/subagent_run_service.py`、`backend/tests/services/test_subagent_run_service.py` | 红线：`test_start_subagent_run_real_pg_creates_child_session_and_runtime_task` 首次执行暴露 run id hyphen/hex 不一致；修复后 `1 passed, 4 warnings in 4.47s`，并纳入目标集 `20 passed, 4 warnings in 3.60s`。 |
+| D5 IM permission 即时事件回灌 | 已实装。新增 `_broadcast_session_permission_event()`：所有 permission 事件仍写 web session event，同时当 session `source_channel != web` 且有 `delivery_target_json` 时，通过 `ChannelDeliveryService.send_text(..., delivery_mode="live")` 发送即时 channel copy。最终 continuation 仍保留 channel-native durable run。 | `backend/app/api/chat_sessions.py`、`backend/tests/api/test_chat_session_runs.py` | 红线：`test_session_permission_event_broadcast_delivers_im_realtime_copy` 固定 web broadcast + IM send 双路径；目标集 `20 passed, 4 warnings in 3.60s`。 |
+| D1 taxonomy / decorator / pack.yaml 三向一致性 | 已实装。`mcp_admin_pack` 补齐 live prompt/auth 工具；email/command parity handlers 写入 pack metadata；新增 `command_pack` root/backend manifests；web pack manifest 补齐 AnySearch optional providers；`test_l2_taxonomy_decorator_and_pack_manifests_are_consistent` 比对 taxonomy specs、`@tool(pack=...)` decorator、root/backend pack manifests 三方完全一致，并确认 L2 tool 全部在 `CAPABILITY_MAP`。 | `backend/app/services/governance_capability_taxonomy.py`、`backend/app/tools/handlers/email.py`、`backend/app/tools/handlers/command_parity.py`、`backend/packs/**/pack.yaml`、`packs/**/pack.yaml`、`backend/tests/services/test_agent_tools_core_surface.py` | 红线：新增三向一致性测试初跑暴露 `email_pack`、`command_pack`、`mcp_admin_pack`、`web_pack` 漂移；修复后目标集 `20 passed, 4 warnings in 3.60s`。全量首次暴露 pack guide / shipped manifest 同步缺口，已补 `mcp-installer` skill guide、`_SHIPPED`、`prompt_name` 非工具参数白名单；相关 lint 集 `36 passed, 4 warnings in 2.13s`。 |
+
+最终验证：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/python -m pytest tests/runtime/test_recovery_manifest_persistence.py::test_recovery_manifest_hydrates_session_context_runtime_state tests/kernel/test_engine.py::test_recovered_pending_tool_frame_replays_read_only_tool_through_governed_runtime tests/kernel/test_engine.py::test_recovered_pending_tool_frame_fails_closed_for_mutating_tool tests/api/test_chat_session_runs.py::test_session_permission_event_broadcast_delivers_im_realtime_copy tests/services/test_agent_tools_core_surface.py::test_l2_taxonomy_decorator_and_pack_manifests_are_consistent tests/services/test_subagent_run_service.py::test_start_subagent_run_real_pg_creates_child_session_and_runtime_task tests/services/test_pack_skill_alignment.py tests/tools/test_pack_manifest.py -q
+# 20 passed, 4 warnings in 3.60s
+
+.venv/bin/python -m pytest tests/templates/test_skill_capability_alignment.py::TestCapabilityAlignment::test_body_tool_references_are_declared_or_allowed tests/services/test_pack_skill_alignment.py tests/tools/test_pack_manifest.py -q
+# 36 passed, 4 warnings in 2.13s
+
+.venv/bin/ruff check app/ tests/
+# All checks passed!
+
+git diff --check
+# exit 0
+
+.venv/bin/python -m pytest tests -q
+# 5373 passed, 2 skipped, 4 warnings in 95.47s
+```
 
 ## 0.6 2026-06-28 CC 追加反馈最终追修证据
 

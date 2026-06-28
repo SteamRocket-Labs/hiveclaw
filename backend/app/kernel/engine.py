@@ -420,18 +420,26 @@ def _file_snapshot_changed(before: dict[str, Any], current: dict[str, Any]) -> b
     return False
 
 
+def _load_and_hydrate_recovery_manifest(agent_id: Any, session_context: Any | None):
+    if agent_id is None or session_context is None:
+        return None
+    from app.runtime.recovery_manifest import hydrate_session_context_from_recovery_manifest, load_recovery_manifest
+
+    workspace = _agent_workspace_root(agent_id)
+    manifest = load_recovery_manifest(agent_id, data_root=workspace.parent)
+    if manifest is not None:
+        hydrate_session_context_from_recovery_manifest(session_context, manifest)
+    return manifest
+
+
 def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | None) -> list[str]:
     if session_context is None:
         return []
 
     sections: list[str] = []
     try:
-        from app.runtime.recovery_manifest import hydrate_session_context_from_recovery_manifest, load_recovery_manifest
-
-        workspace = _agent_workspace_root(agent_id)
-        manifest = load_recovery_manifest(agent_id, data_root=workspace.parent)
+        manifest = _load_and_hydrate_recovery_manifest(agent_id, session_context)
         if manifest is not None:
-            hydrate_session_context_from_recovery_manifest(session_context, manifest)
             manifest_text = manifest.to_restoration_text()
             if manifest_text:
                 sections.append(f"### Recovery Manifest\n{manifest_text}")
@@ -1692,6 +1700,168 @@ async def _execute_pending_skill_fork_handoffs(
     return result_str + "\n\n---\n" + "\n\n---\n".join(sections)
 
 
+_RECOVERABLE_TOOL_FRAME_STATUSES = frozenset({"", "pending", "running", "started", "in_progress"})
+
+
+def _recovered_pending_tool_frames(session_context: Any | None) -> list[dict[str, Any]]:
+    metadata = getattr(session_context, "metadata", None) if session_context is not None else None
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("recovered_pending_tool_frames")
+    if raw is None:
+        raw = metadata.get("pending_tool_frames")
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    frames: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status not in _RECOVERABLE_TOOL_FRAME_STATUSES:
+            continue
+        if not str(item.get("tool_name") or "").strip():
+            continue
+        frames.append(dict(item))
+    return frames
+
+
+def _recovered_tool_frame_replay_safe(tool_name: str) -> bool:
+    return bool(tool_name) and is_parallel_safe_tool(tool_name) and not is_destructive_tool(tool_name)
+
+
+def _remove_recovered_tool_frames_from_metadata(metadata: dict[str, Any], frames: list[dict[str, Any]]) -> None:
+    call_ids = {str(frame.get("tool_call_id") or "").strip() for frame in frames if str(frame.get("tool_call_id") or "")}
+    tool_names = {str(frame.get("tool_name") or "").strip() for frame in frames if str(frame.get("tool_name") or "")}
+    for key in ("recovered_pending_tool_frames", "pending_tool_frames"):
+        existing = metadata.get(key)
+        if isinstance(existing, dict):
+            existing = [existing]
+        if not isinstance(existing, list):
+            continue
+        remaining = []
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            item_call_id = str(item.get("tool_call_id") or "").strip()
+            item_tool_name = str(item.get("tool_name") or "").strip()
+            if item_call_id and item_call_id in call_ids:
+                continue
+            if not item_call_id and item_tool_name in tool_names:
+                continue
+            remaining.append(dict(item))
+        metadata[key] = remaining
+    pending = metadata.get("pending_tool_frame")
+    if isinstance(pending, dict):
+        pending_call_id = str(pending.get("tool_call_id") or "").strip()
+        pending_tool_name = str(pending.get("tool_name") or "").strip()
+        if (pending_call_id and pending_call_id in call_ids) or (not pending_call_id and pending_tool_name in tool_names):
+            metadata.pop("pending_tool_frame", None)
+
+
+async def _execute_recovered_pending_tool_frames(
+    *,
+    execute_tool: ExecuteTool,
+    request: InvocationRequest,
+    runtime_config: RuntimeConfig | None,
+    emit_event: Callable[[dict], Awaitable[None]],
+    tools_for_llm: list[dict] | None = None,
+    api_messages: list | None = None,
+    record_span: Callable[..., Awaitable[dict[str, Any] | None]] | None = None,
+) -> str:
+    """Replay safe recovered main-session tool frames or fail closed.
+
+    RecoveryManifest hydrate restores pending frames into SessionContext. This
+    function is the machine consumer: replay only read-only / parallel-safe
+    frames through the normal governed runtime, and mark mutating frames for
+    reconciliation so a restart never silently duplicates side effects.
+    """
+    session = request.session_context
+    metadata = getattr(session, "metadata", None) if session is not None else None
+    if not isinstance(metadata, dict):
+        return ""
+    frames = _recovered_pending_tool_frames(session)
+    if not frames:
+        return ""
+
+    sections: list[str] = []
+    replay_results: list[dict[str, Any]] = []
+    reconciliation: list[dict[str, Any]] = []
+    for frame in frames:
+        tool_name = str(frame.get("tool_name") or "").strip()
+        tool_args = frame.get("arguments") if isinstance(frame.get("arguments"), dict) else frame.get("tool_args")
+        if not isinstance(tool_args, dict):
+            tool_args = {}
+        tool_call_id = str(frame.get("tool_call_id") or "").strip() or None
+        if not _recovered_tool_frame_replay_safe(tool_name):
+            record = {
+                **dict(frame),
+                "tool_name": tool_name,
+                "status": "needs_reconciliation",
+                "reason": "recovered_tool_frame_not_replay_safe",
+            }
+            reconciliation.append(record)
+            sections.append(
+                f"Recovered pending tool `{tool_name}` requires reconciliation because it is not safe to replay."
+            )
+            await emit_event(
+                {
+                    "type": "tool_recovery",
+                    "event_type": "recovered_tool_frame_reconciliation",
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "status": "needs_reconciliation",
+                    "reason": "recovered_tool_frame_not_replay_safe",
+                }
+            )
+            continue
+
+        result, effective_args, executed = await _execute_tool_with_hooks(
+            execute_tool=execute_tool,
+            request=request,
+            runtime_config=runtime_config,
+            tool_name=tool_name,
+            tool_args=dict(tool_args),
+            tool_call_id=tool_call_id,
+            emit_event=emit_event,
+            tools_for_llm=tools_for_llm,
+            api_messages=api_messages,
+            record_span=record_span,
+        )
+        status = "done" if executed else "failed"
+        replay_results.append(
+            {
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "arguments": dict(effective_args),
+                "status": status,
+                "result": str(result)[:1000],
+            }
+        )
+        sections.append(f"Recovered pending tool `{tool_name}` replayed with status `{status}`.\n{result}")
+        await emit_event(
+            {
+                "type": "tool_recovery",
+                "event_type": "recovered_tool_frame_replayed",
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "status": status,
+            }
+        )
+
+    _remove_recovered_tool_frames_from_metadata(metadata, frames)
+    if replay_results:
+        metadata["recovered_tool_frame_replay_results"] = replay_results
+    if reconciliation:
+        metadata["recovered_tool_frame_reconciliation"] = reconciliation
+    try:
+        _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
+    except Exception as exc:
+        logger.debug("[Kernel] recovered tool-frame checkpoint update failed: %s", exc)
+    return "\n\n".join(sections)
+
+
 def _fingerprint_prompt(prompt_prefix: str) -> str:
     return hashlib.sha256(prompt_prefix.encode("utf-8")).hexdigest()
 
@@ -2734,6 +2904,11 @@ class AgentKernel:
             runtime_execution_mode = getattr(runtime_config, "execution_mode", None)
             if not request.invocation_scope and runtime_execution_mode:
                 request.invocation_scope = runtime_execution_mode
+            if request.agent_id and request.session_context is not None:
+                try:
+                    _load_and_hydrate_recovery_manifest(request.agent_id, request.session_context)
+                except Exception as exc:
+                    logger.debug("[Kernel] early recovery manifest hydrate unavailable: %s", exc)
 
             resolved_memory_context = await _maybe_await(
                 self._deps.resolve_memory_context(request, runtime_config.tenant_id)
@@ -3429,6 +3604,22 @@ class AgentKernel:
                         tool_call_id=msg.get("tool_call_id"),
                         reasoning_content=msg.get("reasoning_content"),
                         reasoning_signature=msg.get("reasoning_signature"),
+                    )
+                )
+            recovered_tool_results = await _execute_recovered_pending_tool_frames(
+                execute_tool=self._deps.execute_tool,
+                request=request,
+                runtime_config=runtime_config,
+                emit_event=_emit_event,
+                tools_for_llm=tools_for_llm,
+                api_messages=api_messages,
+                record_span=_record_span,
+            )
+            if recovered_tool_results:
+                api_messages.append(
+                    LLMMessage(
+                        role="system",
+                        content="## Recovered Tool Results\n" + recovered_tool_results,
                     )
                 )
 

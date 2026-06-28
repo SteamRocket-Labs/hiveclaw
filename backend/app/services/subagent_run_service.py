@@ -175,7 +175,7 @@ async def start_subagent_run(
 ) -> SubagentRunStart:
     """Create the durable ``running`` record for a background subagent. Returns
     the run id and child session id the parent can use for continuation."""
-    run_id = str(uuid.uuid4())
+    run_id = uuid.uuid4().hex
     child_session_id = None
     if parent_user_id is not None:
         child_session_id = await create_subagent_child_session(

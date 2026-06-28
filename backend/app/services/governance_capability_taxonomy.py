@@ -193,6 +193,9 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
             "call_mcp_tool",
             "mcp_list_resources",
             "mcp_read_resource",
+            "mcp_list_prompts",
+            "mcp_get_prompt",
+            "mcp_auth_status",
         ),
     ),
     RuntimeL2CapabilitySpec(

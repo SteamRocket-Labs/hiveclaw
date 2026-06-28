@@ -544,6 +544,44 @@ async def _start_session_permission_continuation_run(
     )
 
 
+async def _broadcast_session_permission_event(
+    *,
+    db: Any,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    session: ChatSession,
+    payload: dict[str, Any],
+    channel_text: str | None = None,
+) -> None:
+    await broadcast_web_chat_event(agent_id, session_id, payload)
+    source_channel = str(getattr(session, "source_channel", None) or "web").strip().lower() or "web"
+    target = getattr(session, "delivery_target_json", None)
+    if source_channel == "web" or not isinstance(target, dict) or not channel_text:
+        return
+    try:
+        from app.services.channel_delivery_service import ChannelDeliveryService
+
+        await ChannelDeliveryService.send_text(
+            db=db,
+            agent_id=agent_id,
+            reply_target=target,
+            text=channel_text,
+            delivery_mode="live",
+            extra_detail={
+                "source": "session_permission_event",
+                "event_type": str(payload.get("event_type") or payload.get("type") or ""),
+                "session_id": str(session_id),
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "Session permission channel event delivery failed: agent_id=%s session_id=%s error=%s",
+            agent_id,
+            session_id,
+            exc,
+        )
+
+
 def _permission_request_allows_session_scope(request_payload: dict[str, Any]) -> bool:
     if request_payload.get("allow_session_allowed") is False:
         return False
@@ -1315,7 +1353,14 @@ async def resolve_session_permission(
             materialize_chat_message=False,
         )
         await db.commit()
-        await broadcast_web_chat_event(agent_id, session_id, expired_payload)
+        await _broadcast_session_permission_event(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            session=session,
+            payload=expired_payload,
+            channel_text="The pending permission request expired. Please send the request again if you still want to proceed.",
+        )
         raise HTTPException(status_code=410, detail="Session permission request expired")
     tool_call_id = pending_frame.tool_call_id or str(tool_payload.get("tool_call_id") or "")
     permission_checkpoint = _permission_checkpoint_payload(
@@ -1403,16 +1448,19 @@ async def resolve_session_permission(
             )
         except ActiveWebChatRunExists as exc:
             run_payload = {"status": "queued", **exc.run}
-        await broadcast_web_chat_event(
-            agent_id,
-            session_id,
-            {
+        await _broadcast_session_permission_event(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            session=session,
+            payload={
                 "type": "permission_resolved",
                 "event_type": "permission_resolved",
                 **resolution_metadata,
                 "status": "denied",
                 "run": run_payload,
             },
+            channel_text=f"Permission request for tool `{tool_name or 'unknown_tool'}` was denied.",
         )
         return {"status": "denied", "permission_request_id": str(permission_request_id), "run": run_payload}
 
@@ -1455,10 +1503,12 @@ async def resolve_session_permission(
                 "visibility": "expanded",
             },
         )
-        await broadcast_web_chat_event(
-            agent_id,
-            session_id,
-            {
+        await _broadcast_session_permission_event(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            session=session,
+            payload={
                 "type": "tool_call",
                 "event_type": "tool_result",
                 "role": "tool_call",
@@ -1471,6 +1521,7 @@ async def resolve_session_permission(
                 "sequence": persisted_tool_event.sequence if persisted_tool_event else None,
                 "metadata": persisted_tool_event.transcript_event.metadata_json if persisted_tool_event else {},
             },
+            channel_text=f"Tool `{tool_name}` completed after permission approval.",
         )
 
         try:
@@ -1534,7 +1585,14 @@ async def resolve_session_permission(
             metadata=failure_payload,
         )
         await db.commit()
-        await broadcast_web_chat_event(agent_id, session_id, failure_payload)
+        await _broadcast_session_permission_event(
+            db=db,
+            agent_id=agent_id,
+            session_id=session_id,
+            session=session,
+            payload=failure_payload,
+            channel_text=failure_payload["message"],
+        )
         return {
             "status": "failed",
             "permission_request_id": str(permission_request_id),
@@ -1542,10 +1600,12 @@ async def resolve_session_permission(
             "error_type": error_type,
         }
 
-    await broadcast_web_chat_event(
-        agent_id,
-        session_id,
-        {
+    await _broadcast_session_permission_event(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        session=session,
+        payload={
             "type": "permission_resolved",
             "event_type": "permission_resolved",
             **resolution_metadata,

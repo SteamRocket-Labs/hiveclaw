@@ -1333,6 +1333,123 @@ async def test_load_skill_frontmatter_fork_executes_in_same_tool_call(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_recovered_pending_tool_frame_replays_read_only_tool_through_governed_runtime(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_recovered_pending_tool_frames
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    session = SessionContext(
+        session_id="session-recover",
+        metadata={
+            "recovered_pending_tool_frames": [
+                {
+                    "tool_call_id": "call-read",
+                    "tool_name": "read_file",
+                    "arguments": {"path": "workspace/report.md"},
+                    "status": "running",
+                }
+            ]
+        },
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "continue"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=session,
+        memory_session_id="session-recover",
+    )
+    calls: list[dict[str, object]] = []
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, tool_call_id=None):
+        calls.append({"tool_name": _tool_name, "args": dict(_tool_args), "tool_call_id": tool_call_id})
+        return "Recovered contents"
+
+    async def emit_event(_event):
+        return None
+
+    text = await _execute_recovered_pending_tool_frames(
+        execute_tool=fake_execute_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        emit_event=emit_event,
+    )
+
+    assert calls == [
+        {
+            "tool_name": "read_file",
+            "args": {"path": "workspace/report.md"},
+            "tool_call_id": "call-read",
+        }
+    ]
+    assert "Recovered pending tool `read_file` replayed" in text
+    assert "Recovered contents" in text
+    assert session.metadata["recovered_pending_tool_frames"] == []
+    assert session.metadata["recovered_tool_frame_replay_results"][0]["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_recovered_pending_tool_frames
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    session = SessionContext(
+        session_id="session-recover",
+        metadata={
+            "recovered_pending_tool_frames": [
+                {
+                    "tool_call_id": "call-write",
+                    "tool_name": "write_file",
+                    "arguments": {"path": "workspace/report.md", "content": "new"},
+                    "status": "running",
+                }
+            ]
+        },
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "continue"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=session,
+        memory_session_id="session-recover",
+    )
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("mutating recovered frame must not auto-replay")
+
+    async def emit_event(_event):
+        return None
+
+    text = await _execute_recovered_pending_tool_frames(
+        execute_tool=fail_if_called,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        emit_event=emit_event,
+    )
+
+    assert "requires reconciliation" in text
+    assert session.metadata["recovered_pending_tool_frames"] == []
+    reconciliation = session.metadata["recovered_tool_frame_reconciliation"][0]
+    assert reconciliation["tool_name"] == "write_file"
+    assert reconciliation["status"] == "needs_reconciliation"
+    assert reconciliation["reason"] == "recovered_tool_frame_not_replay_safe"
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_tool_with_hooks

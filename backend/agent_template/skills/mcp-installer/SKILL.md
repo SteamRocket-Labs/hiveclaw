@@ -9,6 +9,9 @@ tools:
   - call_mcp_tool
   - mcp_list_resources
   - mcp_read_resource
+  - mcp_list_prompts
+  - mcp_get_prompt
+  - mcp_auth_status
 is_system: true
 ---
 
@@ -48,6 +51,9 @@ specific MCP resources.
 | Inspect one imported tool's schema | `inspect_mcp_tool` | `tool_name` (from `list_mcp_tools`) |
 | List a server's first-class resources | `mcp_list_resources` | optional `server` |
 | Read a specific MCP resource payload | `mcp_read_resource` | `uri` (from `mcp_list_resources`), optional `server` |
+| List a server's first-class prompt templates | `mcp_list_prompts` | optional `server` |
+| Render one MCP prompt template | `mcp_get_prompt` | `prompt_name` (from `mcp_list_prompts`), optional `arguments`, optional `server` |
+| Check imported server auth state | `mcp_auth_status` | optional `server` |
 
 </tool_reference>
 
@@ -101,6 +107,16 @@ read them via the protocol resource tools:
 ```python
 mcp_list_resources()           # → resource URIs
 mcp_read_resource(uri="mcp://...")
+```
+If the server exposes prompt templates, list and render them through the
+protocol prompt tools:
+```python
+mcp_list_prompts()             # → prompt names
+mcp_get_prompt(prompt_name="<name>", arguments={})
+```
+For auth troubleshooting, use:
+```python
+mcp_auth_status()
 ```
 
 ### 5. Hosted registry auth guidance

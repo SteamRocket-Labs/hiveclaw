@@ -123,6 +123,25 @@ def test_serialize_tool_includes_governance_taxonomy_metadata():
     assert extension_payload["governance_taxonomy"]["enterprise_toggleable"] is True
 
 
+def test_serialize_tool_classifies_dynamic_mcp_and_custom_api_as_extensions():
+    import app.api.tools as tools_api
+
+    tenant_id = uuid4()
+    mcp_tool = _make_mcp_tool(name="vendor_search", tenant_id=tenant_id)
+    custom_api_tool = _make_builtin_tool(name="custom_api__crm__lookup", category="custom")
+    custom_api_tool.type = "custom_api"
+
+    mcp_payload = tools_api._serialize_tool(mcp_tool)
+    custom_payload = tools_api._serialize_tool(custom_api_tool)
+
+    assert mcp_payload["governance_taxonomy"]["layer"] == "external_extension"
+    assert mcp_payload["governance_taxonomy"]["source"] == "mcp"
+    assert mcp_payload["governance_taxonomy"]["l2_visible"] is True
+    assert custom_payload["governance_taxonomy"]["layer"] == "external_extension"
+    assert custom_payload["governance_taxonomy"]["source"] == "custom_api"
+    assert custom_payload["governance_taxonomy"]["enterprise_toggleable"] is True
+
+
 @pytest.mark.asyncio
 async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_tools(monkeypatch):
     import app.api.tools as tools_api

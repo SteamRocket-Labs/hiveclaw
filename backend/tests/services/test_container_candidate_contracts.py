@@ -96,6 +96,7 @@ def test_t2_append_persists_container_candidate(tmp_path) -> None:
         extractions=[
             {
                 "category": "strategy",
+                "content": "Workflow candidate captures repeatable deployment validation steps.",
                 "container_candidate": "workflow_candidate",
             }
         ],

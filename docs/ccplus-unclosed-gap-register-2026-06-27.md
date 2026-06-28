@@ -34,7 +34,7 @@
 - 2026-06-27 B-1 Workspace rewind snapshot 已关闭：user checkpoint 写入时自动捕获 workspace snapshot；`/rewind mode=workspace|both` 先确认再恢复 workspace。旧 session 无 snapshot 时仍 fail-closed `not_supported`。
 - 2026-06-27 B-2 Hidden session commands 已关闭：Web 用户 schema/execute/manual slash 只接受 user-visible command names；hidden/canonical/internal command 保留 agent/local/internal origin，不再作为用户命令宣传或半接 UI。
 - 2026-06-27 B-3 Background completion wake 已关闭：Sub-agent、Agent Team member、Workflow/long-running RuntimeTask 完成状态统一投影为 `session_workbench.completion_wakes`，并附 `completion_wake_policy` / `completion_wake_summary`。父 session 可通过 session event / parent wake / Workbench / notification 顺序观察，断线或重启后从 RuntimeTask + Team read model 重建。
-- 2026-06-27 B-4 后端全量 residual sweep 已登记：Dynamic Workflow 定向闭环测试全部通过，但 `cd backend && source .venv/bin/activate && pytest tests -q` 仍有 16 个非 Dynamic residual failures（5268 passed, 16 failed, 2 skipped, 4 warnings）。这些失败主要来自既有全局 truth surface drift：stale gateway.py/entrypoint imports、MCP prompt tool coverage、kernel event part contract、subagent preset/test anchor、agent seeder 文案、legacy T2/container candidate contract、migration/backfill 计数等。上线绿灯前必须单独关闭 B-4。
+- 2026-06-28 B-4 后端全量 residual sweep 已关闭：本轮复核先复现全量红灯，再修复 runtime context policy 被 prompt manifest 覆盖、debug context event 污染 `InvocationResult.parts`、channel permission 误把裸“通过”当批准、非 Web channel session-permission prompt 未投递、stale gateway/model/test truth surface、MCP prompt tool coverage、coordinator/A2A 分层测试预期、subagent preset/test anchor、agent seeder A2A 文案、T2/container candidate fixture、migration/backfill 计数等。当前证据：`cd backend && source .venv/bin/activate && pytest tests -q` -> `5287 passed, 2 skipped, 4 warnings`。
 
 ## 1. 已关闭项
 
@@ -440,6 +440,50 @@ cd frontend && npm test -- --run src/pages/session-workbench/timelineModel.test.
 # 1 file passed, 6 tests passed
 ```
 
+### C-14 / B-4：后端全量 residual sweep 与 CCPlus truth surface drift
+
+已做：
+
+- `backend/app/kernel/engine.py` 不再让 `PromptAssemblyManifest.context_budget` 覆盖 `SessionContext.metadata["context_policy"]`；prompt manifest 只作为 read model 合并，保留 `tool_result_inline_limit` / `round_tool_result_budget` 等下一轮请求前实际消费的 runtime policy。
+- `backend/app/kernel/engine.py` 不再把 `visibility=debug` 的 session-context event 塞进 `InvocationResult.parts`；Codex-style context telemetry 仍通过 `on_event` / runtime event 观察，不污染 agent 可见输出合同。
+- `backend/app/services/channel_agent_runtime.py` 移除裸“通过”作为 channel permission allow 关键词，避免普通中文句子（如“通过渠道发来的消息”）误触发权限批准；同时兼容 scalar-result test doubles。
+- `backend/app/services/web_chat_runtime.py` 在非 Web 来源 turn 遇到 `session_permission_required` 时，把明确的权限确认提示投递回原 IM channel，而不是只在 Web 卡片中暂停。
+- `backend/app/runtime/prompt_sections/tools.py` 明确 `mcp_list_prompts` / `mcp_get_prompt` / `mcp_auth_status` 的发现信号，关闭 MCP prompt tools orphan。
+- `backend/app/services/agent_seeder.py` 的默认员工协作文案改为 A2A live collaborator projection，不再教 `relationships.md` / hard-coded colleague 语义。
+- `backend/entrypoint.sh`、architecture tests、tool-surface tests、migration/backfill tests 已同步到 `retire_openclaw_gateway_0627` 后的当前 truth surface。
+- coordinator 相关 tests 已同步到 To Session Worker 唯一路径：coordinator 保留 `spawn_subagent`，不把 `delegate_to_agent` 混回 session-local worker 路径。
+
+闭环事实：
+
+- 这轮不是只更新测试。至少四个 runtime 断点被真实修复：context policy overwrite、debug event parts pollution、channel permission false positive、channel permission prompt delivery。
+- A2A Workflow 仍排除在本轮范围外；A2A authorization/read model 与 session-local Dynamic Workflow/Coordinator 没有合并。
+- B-4 不再是上线前残余红灯；全量后端已从红灯收敛到绿灯。
+
+验证证据：
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/agents/test_subagent.py::test_builtin_type_prompts_exist_and_nonempty tests/architecture/test_entrypoint_model_imports.py::test_entrypoint_model_imports_resolve_all_foreign_keys tests/architecture/test_rls_tenant_write_contracts.py::test_channel_runtime_chat_message_writes_must_carry_tenant_id tests/kernel/test_autonomy_prompt_boundaries.py::test_runtime_config_execution_mode_reaches_prompt_builder_and_tool_filter tests/kernel/test_engine.py::test_agent_kernel_handles_tool_round_and_collects_parts tests/kernel/test_engine.py::test_agent_kernel_does_not_expand_tools_after_load_skill tests/kernel/test_prompt_cache_integration.py::test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suffix tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head tests/services/test_agent_seeder.py::test_seeded_relationships_use_governed_a2a_projection_language tests/services/test_channel_agent_runtime_t0.py::test_channel_legacy_runtime_writes_replayable_t0_turn tests/services/test_container_candidate_contracts.py::test_t2_append_persists_container_candidate tests/services/test_feishu_outbound_identity_source.py::test_retired_gateway_source_is_not_a_live_outbound_identity_path tests/test_backfill_stage2b_plan.py::test_plan_covers_18_distinct_tables tests/tools/test_audit.py::test_coverage_report_has_no_orphans tests/tools/test_bridge_equivalence.py::test_combined_openai_tools_matches_registered_builtin_surface -q
+# 15 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && ruff check app/kernel/engine.py app/services/channel_agent_runtime.py app/services/web_chat_runtime.py app/runtime/prompt_sections/tools.py app/services/agent_seeder.py tests/agents/test_subagent.py tests/architecture/test_rls_tenant_write_contracts.py tests/kernel/test_autonomy_prompt_boundaries.py tests/kernel/test_engine.py tests/kernel/test_prompt_cache_integration.py tests/migrations/test_workflow_migration.py tests/services/test_container_candidate_contracts.py tests/services/test_feishu_outbound_identity_source.py tests/services/test_web_chat_runtime.py tests/test_backfill_stage2b_plan.py tests/tools/test_bridge_equivalence.py
+# All checks passed!
+
+cd backend && source .venv/bin/activate && pytest tests/runtime/test_session_context_controller.py tests/kernel/test_session_context_controller_integration.py tests/services/test_web_chat_runtime.py::test_active_compact_projection_replaces_prior_history_and_keeps_later_tail tests/services/test_web_chat_runtime.py::test_active_rewind_projection_truncates_history_to_checkpoint_and_keeps_later_tail tests/services/test_session_command_runtime.py tests/runtime/test_subagent_listing_section.py tests/agents/test_subagent_scope_resolution.py tests/agents/test_subagent_spawn_tool.py tests/services/test_agent_team_runtime_service.py tests/api/test_agent_teams_events_api.py tests/services/test_a2a_collaboration_policy.py tests/services/test_subagent_wake_consumer.py tests/services/test_workflow_daemon.py tests/runtime/test_dynamic_workflow_proposal.py tests/tools/test_workflow_tool.py -q
+# 118 passed, 4 warnings
+
+cd backend && source .venv/bin/activate && pytest tests/services/test_web_chat_runtime.py::test_execute_web_chat_run_delivers_session_permission_prompt_to_channel -q
+# 1 passed, 3 warnings
+
+cd backend && source .venv/bin/activate && pytest tests -q
+# 5287 passed, 2 skipped, 4 warnings
+
+cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts src/pages/session-workbench/timelineModel.test.ts src/api/domains/ccParity.test.ts
+# 4 files passed, 88 tests passed
+
+cd frontend && npm run build
+# tsc && vite build completed successfully
+```
+
 ## 2. 仍未闭环或待裁决项
 
 当前 Dynamic Workflow 登记表内无剩余上线阻断项。
@@ -453,6 +497,7 @@ cd frontend && npm test -- --run src/pages/session-workbench/timelineModel.test.
 以下说法仍不能无证据使用：
 
 1. “上线前最后一轮所有断点都已补齐。”但没有附带代码入口、runtime 消费、前端可观察性和测试证据。
+2. “A2A Workflow 已完成。”A2A Workflow 明确排除在本轮范围外，仍是后续完整 Agent principal process graph 工作。
 
 允许的准确说法：
 
@@ -471,17 +516,20 @@ Hooks external runner、MCP live prompts/auth status、SkillTool/frontmatter hoo
 Dynamic Workflow proposal/runtime/UI 已接入唯一 `propose_dynamic_workflow` -> `preview_workflow` -> `start_workflow` 路径；
 Background completion wake 已统一到 `session_workbench.completion_wakes`，Sub-agent、Agent Team member、
 Workflow/long-running RuntimeTask 不再各自发明完成反馈面。
+
+B-4 后端全量 residual sweep 已关闭；当前 checkout 的后端全量测试为 5287 passed, 2 skipped, 4 warnings。
 ```
 
 ## 4. 建议修复顺序
 
-Dynamic Workflow 本轮闭环已完成；但后端全量 residual sweep 显示仍不能声明“全仓可上线绿灯”。下一轮建议只处理 B-4，顺序如下：
+当前本登记表内，排除 A2A Workflow 后无剩余上线阻断项。后续如果继续推进 A2A Workflow，应另开完整 slice，不能把它塞回 Dynamic Workflow 或 To Session Worker 路径。
 
-1. 修复 stale file/model truth surface：`app.models.gateway_message`、`backend/app/api/gateway.py` 引用。
-2. 修复 tool coverage / bridge equivalence drift：`mcp_list_prompts`、`mcp_get_prompt`、`mcp_auth_status`、`run_skill_tool`、`propose_dynamic_workflow` 的 pack/prompt/test contract。
-3. 修复 kernel event part contract 测试与当前 context-window event 输出的冲突。
-4. 修复 subagent preset、agent seeder、T2 container candidate、migration/backfill count 等历史 contract drift。
-5. 重跑 `cd backend && source .venv/bin/activate && pytest tests -q`，只有全量通过后才能把 B-4 标记关闭。
+若上线前再出现新红灯，修复顺序仍按 §0 闭环口径执行：
+
+1. 先判定是否是真 runtime gap、stale test/doc contract、还是明确排除的 A2A Workflow 范围。
+2. 真 runtime gap 必须先补 regression，再修生产入口。
+3. stale contract 必须同步到当前唯一 truth surface，不能保留第二套旧语义。
+4. 修完后重跑 targeted suite、全量 backend、frontend targeted/build，并把证据回写本文。
 
 ## 5. 证据检查命令
 

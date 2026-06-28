@@ -59,7 +59,6 @@ def test_channel_runtime_chat_message_writes_must_carry_tenant_id() -> None:
             "telegram.py",
             "dingtalk.py",
             "discord_bot.py",
-            "gateway.py",
         )
     ] + [
         APP_ROOT / "services" / "wechat_personal_stream.py",

@@ -5,9 +5,9 @@ from __future__ import annotations
 from app.scripts.backfill_stage2b_tenant_id import BACKFILL_PLAN
 
 
-def test_plan_covers_19_distinct_tables():
-    assert len(BACKFILL_PLAN) == 19
-    assert len({s.table for s in BACKFILL_PLAN}) == 19
+def test_plan_covers_18_distinct_tables():
+    assert len(BACKFILL_PLAN) == 18
+    assert len({s.table for s in BACKFILL_PLAN}) == 18
 
 
 def test_task_logs_backfilled_after_tasks():

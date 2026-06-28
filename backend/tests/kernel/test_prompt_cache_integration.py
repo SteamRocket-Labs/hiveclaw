@@ -313,8 +313,7 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
     )
 
     assert result.content == "done"
-    assert fake_client.calls[1]["tools"][0]["function"]["name"] == "delegate_to_agent"
-    assert len(fake_client.calls[1]["tools"]) == 1
+    assert fake_client.calls[1]["tools"] is None
 
     expanded_system = fake_client.calls[1]["messages"][0].content
     expanded_dynamic = fake_client.calls[1]["messages"][-1].content

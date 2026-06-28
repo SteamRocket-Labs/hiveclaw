@@ -2046,14 +2046,7 @@ def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None
     if data.get("status") != "done":
         return None
     tool_name = str(data.get("name") or "")
-    raw_result = data.get("result")
-    if isinstance(raw_result, dict):
-        payload = raw_result
-    else:
-        try:
-            payload = json.loads(str(raw_result or "{}"))
-        except (TypeError, ValueError):
-            return None
+    payload = _tool_result_payload_from_runtime_event(data)
     if not isinstance(payload, dict):
         return None
     if payload.get("status") == "session_permission_required":
@@ -2078,6 +2071,55 @@ def _interactive_pause_summary_for_tool_call(data: dict[str, Any]) -> str | None
     ):
         return "create_digital_employee_success"
     return None
+
+
+def _tool_result_payload_from_runtime_event(data: dict[str, Any]) -> dict[str, Any]:
+    raw_result = data.get("result")
+    if isinstance(raw_result, dict):
+        return raw_result
+    try:
+        payload = json.loads(str(raw_result or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _channel_session_permission_prompt_for_tool_call(data: dict[str, Any]) -> str | None:
+    payload = _tool_result_payload_from_runtime_event(data)
+    if payload.get("status") != "session_permission_required":
+        return None
+    request = payload.get("permission_request")
+    if not isinstance(request, dict):
+        request = {}
+
+    tool_name = str(
+        request.get("tool_display_name")
+        or request.get("tool_name")
+        or data.get("name")
+        or "requested tool"
+    )
+    permission_request_id = str(request.get("permission_request_id") or "").strip()
+    capability = str(request.get("capability") or "").strip()
+    raw_reason = str(request.get("decision_reason") or payload.get("message") or "").strip()
+    if "enterprise capability policy" in raw_reason.lower():
+        reason = "按当前 Session 权限模式，需要你在会话内确认后才能执行。"
+    else:
+        reason = raw_reason
+    allow_session_allowed = request.get("allow_session_allowed") is not False
+
+    lines = [f"需要你在当前会话确认权限：{tool_name}。"]
+    if capability:
+        lines.append(f"能力：{capability}")
+    if reason:
+        lines.append(f"原因：{reason}")
+    actions = ["回复「允许」批准本次"]
+    if allow_session_allowed:
+        actions.append("回复「本会话允许」在本会话持续允许这个工具")
+    actions.append("回复「拒绝」取消")
+    lines.append("；".join(actions) + "。")
+    if permission_request_id:
+        lines.append(f"permission_request_id={permission_request_id}")
+    return "\n".join(lines)
 
 
 def _plan_mode_unsubmitted_terminal_error(session_context: Any | None) -> str | None:
@@ -2846,6 +2888,12 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 pause_summary = _interactive_pause_summary_for_tool_call(data)
                 if pause_summary:
                     interactive_pause_summary = pause_summary
+                    if pause_summary == "awaiting_session_permission" and not _is_web_origin_turn(
+                        metadata, runtime_session_context
+                    ):
+                        channel_prompt = _channel_session_permission_prompt_for_tool_call(data)
+                        if channel_prompt:
+                            await _deliver_run_result_to_channel(agent.id, session_id, channel_prompt)
                     await _finalize_terminal_tool_card_now(pause_summary)
                     raise _TerminalToolCardSignal(pause_summary)
 

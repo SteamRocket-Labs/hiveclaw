@@ -163,6 +163,7 @@ async def test_runtime_config_execution_mode_reaches_prompt_builder_and_tool_fil
             resolve_memory_context=lambda *_args, **_kwargs: "",
             resolve_retrieval_context=lambda *_args, **_kwargs: "",
             get_tools=lambda *_args, **_kwargs: [
+                {"type": "function", "function": {"name": "spawn_subagent", "description": "", "parameters": {}}},
                 {"type": "function", "function": {"name": "delegate_to_agent", "description": "", "parameters": {}}},
                 {"type": "function", "function": {"name": "web_search", "description": "", "parameters": {}}},
             ],
@@ -190,6 +191,6 @@ async def test_runtime_config_execution_mode_reaches_prompt_builder_and_tool_fil
     )
 
     assert captured_modes == ["coordinator"]
-    assert fake_client.calls[0]["tools"][0]["function"]["name"] == "delegate_to_agent"
+    assert fake_client.calls[0]["tools"][0]["function"]["name"] == "spawn_subagent"
     assert len(fake_client.calls[0]["tools"]) == 1
     assert "MODE=coordinator" in fake_client.calls[0]["messages"][0].content

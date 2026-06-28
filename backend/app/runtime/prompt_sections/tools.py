@@ -17,8 +17,9 @@ per-action tools via a `mode` parameter; pick whichever surface keeps the \
 intent clearest.
 - Discovering capabilities: when you need a tool that is not already callable, use `tool_search` to \
 discover and load it. This covers deferred tool groups (advanced web search/crawling, feishu, email) \
-AND this agent's imported MCP server tools — matching deferred schemas become callable in the current \
-session (a denied or disabled MCP tool will not be listed). Use CORE `web_search` first for basic \
+AND this agent's imported MCP server tools/resources/prompts — matching deferred schemas become callable in the current \
+session (a denied or disabled MCP tool will not be listed). Use `mcp_list_prompts` / `mcp_get_prompt` \
+for imported MCP prompt templates and `mcp_auth_status` when MCP auth blocks a tool/resource/prompt. Use CORE `web_search` first for basic \
 internet lookup; if those results are insufficient, use `tool_search` to discover advanced tools such \
 as `exa_search`, `tavily_search`, `firecrawl_fetch`, or `xcrawl_scrape`. Use `load_skill` only for a \
 skill's capability-capsule guidance, not to unlock tools. Use `web_fetch` when you already have a specific URL.

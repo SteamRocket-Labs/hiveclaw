@@ -110,6 +110,7 @@ def test_builtin_type_prompts_exist_and_nonempty():
     from app.agents.subagent import _TYPE_PRESETS, builtin_type_prompt
 
     anchors = {
+        "general-purpose": "agent for Hive",  # CC general-purpose port
         "explorer": "READ-ONLY",  # CC Explore port
         "worker": "agent for Hive",  # CC general-purpose port
         "critic": "VERDICT",  # CC verification port

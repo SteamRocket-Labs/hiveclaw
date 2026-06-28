@@ -611,6 +611,8 @@ def _should_buffer_stream_for_source_acl(request: InvocationRequest) -> bool:
 
 
 def _event_to_part(event: dict[str, Any]) -> dict[str, Any] | None:
+    if event.get("visibility") == "debug":
+        return None
     event_type = event.get("type")
     if event_type == "permission":
         return build_permission_event(event)["part"]
@@ -623,7 +625,10 @@ def _event_to_part(event: dict[str, Any]) -> dict[str, Any] | None:
         payload.pop("type", None)
         return build_tool_group_activation_event(payload)["part"]
     if isinstance(event.get("part"), dict):
-        return event["part"]
+        part = event["part"]
+        if part.get("visibility") == "debug":
+            return None
+        return part
     return None
 
 
@@ -2488,7 +2493,19 @@ class AgentKernel:
                 session_ctx.metadata["prompt_sections"] = list(prompt_manifest.get("prompt_sections") or [])
                 session_ctx.metadata["active_tool_names"] = list(prompt_manifest.get("active_tool_names") or [])
                 session_ctx.metadata["deferred_tool_names"] = list(prompt_manifest.get("available_deferred_tools") or [])
-                session_ctx.metadata["context_policy"] = dict(prompt_manifest.get("context_budget") or {})
+                existing_context_policy = (
+                    dict(session_ctx.metadata.get("context_policy") or {})
+                    if isinstance(session_ctx.metadata.get("context_policy"), dict)
+                    else {}
+                )
+                # The prompt manifest exposes the assembled prompt budget as a
+                # read model; it must not erase runtime context-policy knobs such
+                # as tool result budgets that are consumed before the next model
+                # request.
+                session_ctx.metadata["context_policy"] = {
+                    **existing_context_policy,
+                    **dict(prompt_manifest.get("context_budget") or {}),
+                }
 
             async def _record_compaction_fact(fact: dict[str, Any]) -> None:
                 await _record_span(

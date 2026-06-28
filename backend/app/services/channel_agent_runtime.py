@@ -140,11 +140,11 @@ def _parse_channel_permission_action(text: str) -> str | None:
     import re
 
     clean = text or ""
-    if re.search(r"(本会话|当前会话|this session|for this session|session).*?(允许|批准|同意|通过|allow|approve|yes)", clean, re.IGNORECASE):
+    if re.search(r"(本会话|当前会话|this session|for this session|session).*?(允许|批准|同意|可以|allow|approve|yes)", clean, re.IGNORECASE):
         return "allow_session"
     if re.search(r"(拒绝|驳回|不通过|deny|denied|reject|rejected)", clean, re.IGNORECASE):
         return "deny"
-    if re.search(r"(允许|批准|同意|通过|可以|approve|approved|allow|allowed|yes|ok)", clean, re.IGNORECASE):
+    if re.search(r"(允许|批准|同意|可以|approve|approved|allow|allowed|yes|ok)", clean, re.IGNORECASE):
         return "allow_once"
     return None
 
@@ -335,7 +335,17 @@ async def try_resolve_channel_session_permission_from_text(
     resolved_ids: set[str] = set()
     pending_id: uuid.UUID | None = None
     pending_tool_name = ""
-    for event in result.scalars().all():
+    if hasattr(result, "scalars"):
+        permission_events = result.scalars().all()
+    elif hasattr(result, "all"):
+        permission_events = result.all()
+    elif hasattr(result, "scalar_one_or_none"):
+        item = result.scalar_one_or_none()
+        permission_events = [] if item is None else [item]
+    else:
+        permission_events = []
+
+    for event in permission_events:
         metadata = dict(getattr(event, "metadata_json", None) or {})
         decision_request_id = metadata.get("permission_request_id")
         if decision_request_id and getattr(event, "event_type", "") in {

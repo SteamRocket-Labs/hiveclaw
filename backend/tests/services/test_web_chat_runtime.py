@@ -1575,6 +1575,112 @@ async def test_execute_web_chat_run_interrupts_kernel_after_terminal_tool_card(m
 
 
 @pytest.mark.asyncio
+async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channel(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4().hex
+    permission_request_id = uuid4()
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        parent_session_id=session_id,
+        prompt="委派给 Researcher",
+        metadata_json={
+            "user_id": str(user_id),
+            "session_id": session_id,
+            "source": "telegram",
+            "channel": "telegram",
+            "permission_mode": "auto",
+            "permission_profile": {"mode": "auto", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        },
+        trace_id=None,
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Coordinator",
+        role_description="",
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+        tenant_id=uuid4(),
+        agent_type="native",
+    )
+    user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
+    llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
+    session = SimpleNamespace(delivery_target_json={"channel": "telegram", "chat_id": "100", "sender_id": "200"})
+    deliveries: list[tuple] = []
+
+    async def fake_load_context(_run_uuid):
+        return runtime_task, agent, user, llm_model, None, [], session
+
+    async def fake_invoke(request):
+        await request.on_tool_call(
+            {
+                "name": "send_message_to_agent",
+                "args": {"agent_name": "Researcher", "message": "请验证 Web 通道"},
+                "status": "done",
+                "result": json.dumps(
+                    {
+                        "status": "session_permission_required",
+                        "message": "Tool requires session permission",
+                        "permission_request": {
+                            "permission_request_id": str(permission_request_id),
+                            "tool_name": "send_message_to_agent",
+                            "tool_display_name": "Send Message to Agent",
+                            "arguments": {"agent_name": "Researcher", "message": "请验证 Web 通道"},
+                            "capability": "agent.message.send",
+                            "permission_mode": "auto",
+                            "decision_reason": "no enterprise capability policy is configured for this tool",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+        raise AssertionError("session permission should pause before the model writes a refusal")
+
+    async def fake_finalize_without_assistant(**_kwargs):
+        return True
+
+    async def fake_deliver(*args, **kwargs):
+        deliveries.append((args, kwargs))
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
+    monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
+    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(
+        runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant, raising=False
+    )
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", noop_async)
+    monkeypatch.setattr(runtime, "_claim_pending_reply_suffix_for_session", noop_async)
+    monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
+    monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
+    monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    monkeypatch.setattr(runtime, "_deliver_run_result_to_channel", fake_deliver)
+
+    await runtime.execute_web_chat_run(run_id)
+
+    assert len(deliveries) == 1
+    delivered_args, _delivered_kwargs = deliveries[0]
+    assert delivered_args[0] == agent_id
+    assert delivered_args[1] == session_id
+    delivered_text = delivered_args[2]
+    assert "Send Message to Agent" in delivered_text
+    assert "允许" in delivered_text
+    assert "本会话允许" in delivered_text
+    assert "拒绝" in delivered_text
+    assert str(permission_request_id) in delivered_text
+    assert "enterprise capability policy" not in delivered_text
+
+
+@pytest.mark.asyncio
 async def test_execute_web_chat_run_releases_active_run_inside_terminal_tool_callback(monkeypatch):
     """The user can answer immediately after an ask_user_question card appears.
 

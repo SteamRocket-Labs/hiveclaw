@@ -135,9 +135,9 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
    - Skill progressive disclosure 仍保留；`load_skill` tool events 已进入 `TurnEnvelope`；`run_skill_tool` 和 skill frontmatter hooks 已进入 governed runtime。
    - MCP call 能力继续走 governed wrapper；live `mcp_list_prompts` / `mcp_get_prompt` / `mcp_auth_status` 与 resources 复用同一 MCP server resolution 和 capability gate。
 
-### 2.3 2026-06-27 最终复核
+### 2.3 2026-06-28 最终复核
 
-本次复核重新对照本文引用的专项文档和当前实现，当前裁决如下：
+本次复核重新对照本文引用的专项文档和当前实现，并关闭 `docs/ccplus-unclosed-gap-register-2026-06-27.md` 中 B-4 后端全量 residual sweep。当前裁决如下：
 
 | 复核项 | 当前结论 | 证据位置 |
 | --- | --- | --- |
@@ -146,9 +146,9 @@ Hive Memory / self-evolution / enterprise control plane 是显式 Hive-native �
 | 可以影响 Session 的 Command | `/compact`、`/rewind`、`/branch`、`/clear` 已统一 typed session command result；前端消费 `ui_action`，raw JSON 不再进入 assistant 正文。 | `ccplus-session-control-command-alignment-2026-06-27.md`，`backend/app/services/session_command_runtime.py`，`frontend/src/pages/agent-detail/sessionCommandResult.ts` |
 | Skill 和 Agent | To Session Worker / To Employee 已拆分；`spawn_subagent` 是 session-local AgentTool-style path；`delegate_to_agent` 保留为 A2A / To Employee；Agent Team create/message 走同一 `AgentTeamRuntimeService`。 | `ccplus-subagent-team-skill-mcp-hooks-parity-audit-2026-06-27.md`，`backend/app/tools/handlers/subagent.py`，`backend/app/services/agent_team_runtime_service.py` |
 | MCP Hooks | HookRegistry explicit state、Skill/MCP refs、MCP tools/prompts/resources 已进入 `TurnEnvelope` / `ExtensionRegistry` / Workbench；external command/prompt/http/agent hook runner、live MCP `prompts/list` / `prompts/get` 和 MCP auth status 已接 production-live governed path。 | `backend/app/runtime/hooks.py`，`backend/app/runtime/hook_runner.py`，`backend/app/services/plugin_hook_service.py`，`backend/app/tools/handlers/mcp.py` |
-| 压缩功能 | `/compact` 已调用 LLM summary path 并安装 active projection；kernel request preflight 已有 context controller / tool-result budget / compaction events。 | `backend/app/services/session_command_runtime.py`，`backend/app/kernel/engine.py`，`backend/app/runtime/session_context_controller.py` |
+| 压缩功能 | `/compact` 已调用 LLM summary path 并安装 active projection；kernel request preflight 已有 context controller / tool-result budget / compaction events；prompt manifest 不再覆盖 runtime `context_policy`，下一轮请求会真实消费 tool-result budget。 | `backend/app/services/session_command_runtime.py`，`backend/app/kernel/engine.py`，`backend/app/runtime/session_context_controller.py` |
 
-上线口径：如果标准是“路径唯一、提示词不劝退、session spine 内无隐藏第二规则”，本轮已闭合。若后续发现新的 CCPlus parity 断点，必须先登记到 gap register，再用红测、实装、文档证据和 commit 关闭。
+上线口径：排除 A2A Workflow 后，如果标准是“路径唯一、提示词不劝退、session spine 内无隐藏第二规则”，本轮已闭合。当前证据：`cd backend && source .venv/bin/activate && pytest tests -q` -> `5287 passed, 2 skipped, 4 warnings`；`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx src/pages/agent-detail/sessionCommandResult.test.ts src/pages/session-workbench/timelineModel.test.ts src/api/domains/ccParity.test.ts` -> `4 files passed, 88 tests passed`；`cd frontend && npm run build` -> `tsc && vite build completed successfully`。若后续发现新的 CCPlus parity 断点，必须先登记到 gap register，再用红测、实装、文档证据和 commit 关闭。
 
 ## 3. 四条主线
 

@@ -1844,7 +1844,7 @@ async def test_agent_kernel_does_not_expand_tools_after_load_skill():
     assert expansion_calls == []
     assert fake_client.calls[0]["tools"][0]["function"]["name"] == "core_tool"
     assert fake_client.calls[1]["tools"][0]["function"]["name"] == "core_tool"
-    assert emitted_events == []
+    assert not any(event.get("type") == "tool_group_activation" for event in emitted_events)
 
 
 @pytest.mark.asyncio

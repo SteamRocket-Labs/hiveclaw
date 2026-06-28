@@ -803,7 +803,12 @@ async def list_agent_tools_with_config(
         tool
         for tool in tool_rows
         if is_tool_allowed_for_agent(tool, agent)
-        and (tool.is_default or tool.id in assignments or tool.name in skill_declared_tool_names)
+        and (
+            tool.is_default
+            or tool.id in assignments
+            or tool.name in skill_declared_tool_names
+            or is_agent_base_tool(str(tool.name))
+        )
     ]
     return [_serialize_agent_tool_row(tool, assignments.get(tool.id)) for tool in tool_rows]
 

@@ -677,6 +677,20 @@ source .venv/bin/activate
 pytest tests/tools/test_search_provider_tool_definitions.py tests/services/test_pack_skill_alignment.py tests/tools/test_bridge_equivalence.py -q
 ```
 
+实施证据（2026-06-28）：
+
+- Red：新增 Office boundary 红线后，`pytest tests/services/test_agent_tools_core_surface.py -q` 失败于 `OFFICE_RUNTIME_TOOLS <= CORE_TOOL_NAMES`，证明 `read_document` / `office_document_*` 仍被当成 pack/skill 工具而非 core runtime。
+- Green：已将 `read_document`、`office_document_create/view/query/apply/validate/dump` 纳入 taxonomy `agent_base`；`office_pack` 不再把这些工具暴露成 L2；新增 `office_browser` L2 descriptor 承接 ONLYOFFICE/browser WYSIWYG 能力；agent tools API 使用 taxonomy 让 core runtime 工具不依赖 skill declared rows 可见。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_surface.py tests/tools/test_search_provider_tool_definitions.py tests/services/test_pack_skill_alignment.py tests/tools/test_bridge_equivalence.py -q
+```
+
+- 验证结果：`46 passed, 4 warnings in 1.56s`。
+
 ### Phase 3：L1 policy 和 L3 pending frame
 
 目标：

@@ -21,6 +21,15 @@ SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "propose_dynamic_workflow", "previe
 WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
 ADVANCED_WEB_TOOLS = {"exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"}
 CODING_PLUGIN_TOOLS = {"lsp_symbol_search", "worktree_create", "notebook_edit", "browser_ui_open"}
+OFFICE_RUNTIME_TOOLS = {
+    "read_document",
+    "office_document_create",
+    "office_document_view",
+    "office_document_query",
+    "office_document_apply",
+    "office_document_validate",
+    "office_document_dump",
+}
 
 
 # ── Red test #1 — turn-1 visibility ─────────────────────────────────
@@ -191,3 +200,29 @@ def test_coding_capability_is_l2_local_bridge_only():
     assert descriptor.enterprise_toggleable is True
     assert descriptor.requires_local_bridge is True
     assert CODING_PLUGIN_TOOLS <= set(descriptor.tools)
+
+
+def test_office_runtime_is_core_but_browser_office_is_l2():
+    from app.services.agent_tools import CORE_TOOL_NAMES
+    from app.services.governance_capability_taxonomy import (
+        GovernanceCapabilityLayer,
+        capability_descriptor_for_name,
+        capability_descriptor_for_tool,
+        iter_l2_capabilities,
+    )
+
+    assert OFFICE_RUNTIME_TOOLS <= CORE_TOOL_NAMES
+    for tool_name in OFFICE_RUNTIME_TOOLS:
+        descriptor = capability_descriptor_for_tool(tool_name)
+        assert descriptor is not None
+        assert descriptor.layer == GovernanceCapabilityLayer.AGENT_BASE.value
+        assert descriptor.l2_visible is False
+
+    l2_tools = {tool for descriptor in iter_l2_capabilities() for tool in descriptor.tools}
+    assert not (OFFICE_RUNTIME_TOOLS & l2_tools)
+
+    browser_office = capability_descriptor_for_name("office_browser")
+    assert browser_office is not None
+    assert browser_office.layer == GovernanceCapabilityLayer.PLATFORM_ADDON.value
+    assert browser_office.l2_visible is True
+    assert browser_office.enterprise_toggleable is True

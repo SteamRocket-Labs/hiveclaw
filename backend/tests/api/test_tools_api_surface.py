@@ -169,6 +169,46 @@ async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_to
 
 
 @pytest.mark.asyncio
+async def test_list_agent_tools_with_config_surfaces_agent_base_tools_without_skill_declaration(monkeypatch):
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    office_tool = _make_builtin_tool(
+        name="office_document_create",
+        category="office_pack",
+        is_default=False,
+    )
+    undeclared_builtin = _make_builtin_tool(name="finance_quote", category="finance", is_default=False)
+    db = _FakeDB(
+        [
+            _ScalarResult(agent),  # check_agent_access
+            _ListResult([]),  # existing AgentTool rows
+            _ListResult([office_tool, undeclared_builtin]),  # visible catalog
+        ]
+    )
+
+    async def fake_skill_declared_tool_names(target_agent_id):
+        assert target_agent_id == agent_id
+        return set()
+
+    monkeypatch.setattr(tools_api, "_get_agent_skill_declared_tool_names", fake_skill_declared_tool_names)
+
+    payload = await tools_api.list_agent_tools_with_config(
+        agent_id=agent_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    by_name = {row["name"]: row for row in payload}
+    assert set(by_name) == {"office_document_create"}
+    assert by_name["office_document_create"]["governance_taxonomy"]["layer"] == "agent_base"
+    assert by_name["office_document_create"]["enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_list_agent_tools_with_config_hides_hr_only_tool_from_regular_agent(monkeypatch):
     import app.api.tools as tools_api
 
@@ -226,16 +266,16 @@ async def test_update_agent_tools_creates_missing_system_assignment(monkeypatch)
     tenant_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
-    office_tool = _make_builtin_tool(
-        name="office_document_create",
-        category="office_pack",
+    extension_tool = _make_builtin_tool(
+        name="exa_search",
+        category="web_pack",
         is_default=False,
     )
-    office_tool.id = tool_id
+    extension_tool.id = tool_id
     db = _FakeDB(
         [
             _ScalarResult(None),  # _get_agent_tool
-            _ScalarResult(office_tool),  # _get_visible_agent_tool
+            _ScalarResult(extension_tool),  # _get_visible_agent_tool
         ]
     )
     created = {}

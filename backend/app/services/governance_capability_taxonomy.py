@@ -64,6 +64,13 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "tool_search",
         "web_fetch",
         "web_search",
+        "read_document",
+        "office_document_create",
+        "office_document_view",
+        "office_document_query",
+        "office_document_apply",
+        "office_document_validate",
+        "office_document_dump",
         "spawn_subagent",
         "check_subagent",
         "propose_dynamic_workflow",
@@ -136,16 +143,31 @@ _CODING_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     requires_local_bridge=True,
 )
 
+_OFFICE_BROWSER_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
+    name="office_browser",
+    layer=GovernanceCapabilityLayer.PLATFORM_ADDON.value,
+    tools=(
+        "onlyoffice_browser_session",
+        "onlyoffice_signed_callback",
+    ),
+    default_enabled=False,
+    l2_visible=True,
+    enterprise_toggleable=True,
+    source="office_browser",
+    notes="Browser WYSIWYG Office integration. Agent document runtime remains agent_base.",
+)
+
 _DESCRIPTORS_BY_NAME: dict[str, GovernanceCapabilityDescriptorV1] = {
     _CORE_DESCRIPTOR.name: _CORE_DESCRIPTOR,
     **{descriptor.name: descriptor for descriptor in _RUNTIME_GROUP_DESCRIPTORS},
     _CODING_DESCRIPTOR.name: _CODING_DESCRIPTOR,
+    _OFFICE_BROWSER_DESCRIPTOR.name: _OFFICE_BROWSER_DESCRIPTOR,
 }
 
 _DESCRIPTORS_BY_TOOL: dict[str, GovernanceCapabilityDescriptorV1] = {
     tool_name: _CORE_DESCRIPTOR for tool_name in CORE_TOOL_NAMES
 }
-for _descriptor in (*_RUNTIME_GROUP_DESCRIPTORS, _CODING_DESCRIPTOR):
+for _descriptor in (*_RUNTIME_GROUP_DESCRIPTORS, _CODING_DESCRIPTOR, _OFFICE_BROWSER_DESCRIPTOR):
     for _tool_name in _descriptor.tools:
         _DESCRIPTORS_BY_TOOL.setdefault(_tool_name, _descriptor)
 

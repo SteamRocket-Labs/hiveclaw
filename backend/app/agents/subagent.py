@@ -342,6 +342,9 @@ class SubagentSpawnContext:
     memory_store: Any | None = None
     memory_distiller: MemoryDistiller | None = None
     parent_session_id: str | None = None
+    subagent_run_id: str | None = None
+    child_session_id: str | None = None
+    recovery_metadata: dict[str, Any] = field(default_factory=dict)
     parent_messages: list[dict] = field(default_factory=list)  # source for fork=all
 
 
@@ -790,8 +793,26 @@ async def _spawn_one(
 
     async def on_tool_call(event: dict[str, Any]) -> None:
         status = str(event.get("status") or "")
+        tool_name = str(event.get("name") or event.get("tool_name") or "").strip()
+        tool_call_id = str(event.get("tool_call_id") or "").strip()
+        if ctx.subagent_run_id and tool_name:
+            try:
+                from app.services.subagent_run_service import record_subagent_child_tool_frame
+
+                await record_subagent_child_tool_frame(
+                    run_id=ctx.subagent_run_id,
+                    tool_name=tool_name,
+                    tool_args=event.get("args") if isinstance(event.get("args"), dict) else {},
+                    tool_call_id=tool_call_id,
+                    status=status,
+                    child_session_id=ctx.child_session_id or t0_session_id,
+                    parent_session_id=ctx.parent_session_id,
+                    trace_id=ctx.trace_id,
+                )
+            except Exception as exc:
+                logger.warning("[Subagent] child tool-frame checkpoint failed (non-fatal): %s", exc)
         payload = {
-            "name": event.get("name", ""),
+            "name": tool_name or event.get("name", ""),
             "args": event.get("args"),
             "status": status,
             "tool_call_id": event.get("tool_call_id"),
@@ -853,16 +874,22 @@ async def _spawn_one(
         agent_id=ctx.parent_agent_id,
         user_id=ctx.parent_user_id,
         on_tool_call=on_tool_call
-        if t0_session_id or budget.max_sources is not None or budget.max_source_chars is not None
+        if ctx.subagent_run_id or t0_session_id or budget.max_sources is not None or budget.max_source_chars is not None
         else None,
         session_context=SessionContext(
             source="subagent",
             channel="internal",
+            session_id=ctx.child_session_id or t0_session_id,
             metadata={
                 "subagent_name": spec.name,
                 "subagent_type": spec.type,
                 "trace_id": ctx.trace_id or "",
                 "depth": child_depth,
+                "subagent_run_id": ctx.subagent_run_id,
+                "child_session_id": ctx.child_session_id,
+                "parent_session_id": ctx.parent_session_id,
+                "origin_channel": "subagent",
+                **dict(ctx.recovery_metadata or {}),
             },
         ),
         core_tools_only=False,

@@ -559,6 +559,8 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             context_mode=spec.isolation,
         )
         run_id = started.run_id
+        ctx.subagent_run_id = run_id
+        ctx.child_session_id = started.child_session_id
         await spawn_subagent(
             ctx,
             spec,

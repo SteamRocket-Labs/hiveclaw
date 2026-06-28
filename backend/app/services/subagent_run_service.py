@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -38,6 +39,8 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 
 SUBAGENT_RUN_TASK_TYPE = "subagent"
 SUBAGENT_RESTART_REPLAY_SAFE_TYPES = frozenset({SUBAGENT_TYPE_EXPLORER, SUBAGENT_TYPE_CRITIC})
+_CHILD_TOOL_TERMINAL_STATUSES = frozenset({"done", "completed", "failed", "error", "cancelled", "timed_out"})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +416,165 @@ def _coerce_runtime_context(runtime: Any) -> SubagentSpawnContext | None:
     return None
 
 
+def _pending_child_tool_frame(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    frame = metadata.get("child_pending_tool_frame")
+    if isinstance(frame, dict) and frame.get("tool_name"):
+        return dict(frame)
+    frames = metadata.get("child_pending_tool_frames")
+    if isinstance(frames, list):
+        for item in reversed(frames):
+            if isinstance(item, dict) and item.get("tool_name"):
+                return dict(item)
+    frame = metadata.get("pending_tool_frame")
+    if isinstance(frame, dict) and frame.get("tool_name") and frame.get("subagent_run_id"):
+        return dict(frame)
+    frames = metadata.get("pending_tool_frames")
+    if isinstance(frames, list):
+        for item in reversed(frames):
+            if isinstance(item, dict) and item.get("tool_name") and item.get("subagent_run_id"):
+                return dict(item)
+    return None
+
+
+def _child_pending_tool_frame_replay_safe(frame: dict[str, Any]) -> bool:
+    tool_name = str(frame.get("tool_name") or "").strip()
+    if not tool_name:
+        return False
+    try:
+        from app.tools.governance import SAFE_TOOLS, SENSITIVE_TOOLS
+
+        return tool_name in SAFE_TOOLS and tool_name not in SENSITIVE_TOOLS
+    except Exception:
+        # Fail closed: restart recovery must never replay a tool whose safety
+        # classification cannot be loaded.
+        return False
+
+
+def _child_pending_frame_recovery_metadata(
+    *,
+    frame: dict[str, Any],
+    run_id: str,
+    child_session_id: str | None,
+    parent_session_id: str | None,
+    trace_id: str | None,
+) -> dict[str, Any]:
+    recovered_frame = dict(frame)
+    recovered_frame["subagent_run_id"] = run_id
+    if child_session_id:
+        recovered_frame["child_session_id"] = child_session_id
+    if parent_session_id:
+        recovered_frame["parent_session_id"] = parent_session_id
+    if trace_id:
+        recovered_frame["trace_id"] = trace_id
+    recovered_frame.setdefault("status", "running")
+    recovered_frame.setdefault("origin_channel", "subagent")
+    return {
+        "pending_tool_frame": recovered_frame,
+        "pending_tool_frames": [recovered_frame],
+        "child_pending_tool_frame": recovered_frame,
+        "child_pending_tool_frames": [recovered_frame],
+        "subagent_run_id": run_id,
+        "child_session_id": child_session_id,
+        "parent_session_id": parent_session_id,
+        "origin_channel": "subagent",
+        "source": "subagent_restart_recovery",
+    }
+
+
+async def _mark_subagent_run_needs_reconciliation(
+    *,
+    run_id: str,
+    metadata: dict[str, Any],
+    blocker: str,
+    summary: str,
+    trace_id: str | None,
+    session_id: str | None,
+) -> None:
+    await update_runtime_task_record(
+        run_id,
+        status="needs_reconciliation",
+        result_summary=summary,
+        metadata_json=build_restart_reconciliation_metadata(
+            metadata,
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            task_id=run_id,
+            blocker=blocker,
+            summary=summary,
+            trace_id=str(trace_id or ""),
+            session_id=str(session_id or ""),
+        ),
+    )
+    try:
+        await update_subagent_child_session_state_for_run(
+            run_id=run_id,
+            status="needs_reconciliation",
+            summary=summary,
+        )
+    except Exception:
+        logger.debug("[Subagent] child session reconciliation projection failed for run %s", run_id, exc_info=True)
+
+
+async def record_subagent_child_tool_frame(
+    *,
+    run_id: str,
+    tool_name: str,
+    tool_args: dict[str, Any] | None,
+    tool_call_id: str | None,
+    status: str,
+    child_session_id: str | None = None,
+    parent_session_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    """Persist the child invocation's active tool frame on the subagent RuntimeTask.
+
+    This is the subagent analogue of the kernel RecoveryManifest pending-frame:
+    if the worker process dies mid-tool, the startup pump can decide whether to
+    resume/replay or require human reconciliation without guessing from the
+    coarse subagent type alone.
+    """
+
+    normalized_status = str(status or "running").strip().lower() or "running"
+    if normalized_status in _CHILD_TOOL_TERMINAL_STATUSES:
+        await update_runtime_task_record(
+            run_id,
+            metadata_json={
+                "child_pending_tool_frame": None,
+                "child_pending_tool_frames": [],
+                "last_child_tool_frame": {
+                    "tool_call_id": str(tool_call_id or ""),
+                    "tool_name": str(tool_name or ""),
+                    "arguments": dict(tool_args or {}),
+                    "status": normalized_status,
+                    "child_session_id": child_session_id,
+                    "parent_session_id": parent_session_id,
+                    "trace_id": trace_id,
+                    "origin_channel": "subagent",
+                    "subagent_run_id": str(run_id),
+                },
+            },
+        )
+        return
+
+    frame = {
+        "tool_call_id": str(tool_call_id or ""),
+        "tool_name": str(tool_name or ""),
+        "arguments": dict(tool_args or {}),
+        "status": normalized_status,
+        "child_session_id": child_session_id,
+        "parent_session_id": parent_session_id,
+        "trace_id": trace_id,
+        "origin_channel": "subagent",
+        "subagent_run_id": str(run_id),
+    }
+    await update_runtime_task_record(
+        run_id,
+        metadata_json={
+            "child_pending_tool_frame": frame,
+            "child_pending_tool_frames": [frame],
+        },
+    )
+
+
 async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
     """Resume replay-safe background subagents after a process restart."""
 
@@ -426,27 +588,41 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
         spec_type = str(metadata.get("subagent_type") or "")
         if not metadata.get("resume_after_restart") or not metadata.get("resumable_subagent"):
             continue
+        child_session_id = str(record.get("child_session_id") or metadata.get("child_session_id") or "").strip()
+        parent_session_id = str(record.get("parent_session_id") or metadata.get("parent_session_id") or "").strip()
+        trace_id = str(record.get("trace_id") or metadata.get("trace_id") or "").strip()
+        child_frame = _pending_child_tool_frame(metadata)
+        if child_frame is not None and not _child_pending_tool_frame_replay_safe(child_frame):
+            await _mark_subagent_run_needs_reconciliation(
+                run_id=run_id,
+                metadata={
+                    **metadata,
+                    "child_pending_tool_frame": dict(child_frame),
+                    "child_pending_tool_frames": [dict(child_frame)],
+                },
+                blocker="child_pending_tool_frame_not_replay_safe",
+                summary=(
+                    "Subagent was interrupted while a child tool call was running. "
+                    f"Tool {child_frame.get('tool_name')!r} is not safe to replay automatically; "
+                    "human reconciliation is required before retry."
+                ),
+                trace_id=trace_id,
+                session_id=child_session_id or parent_session_id,
+            )
+            continue
         replay_safe = _subagent_type_restart_replay_safe(spec_type)
         if not replay_safe:
-            await update_runtime_task_record(
-                run_id,
-                status="needs_reconciliation",
-                result_summary=(
-                    "Subagent was not resumed after restart because its type is not safe to replay without "
-                    "duplicating side effects. Reconciliation is required before retry."
-                ),
-                metadata_json=build_restart_reconciliation_metadata(
-                    metadata,
-                    task_type=SUBAGENT_RUN_TASK_TYPE,
-                    task_id=run_id,
-                    blocker="non_idempotent_subagent_type",
-                    summary=(
-                        "Subagent was not resumed after restart because its type is not safe to replay without "
-                        "duplicating side effects. Reconciliation is required before retry."
-                    ),
-                    trace_id=str(record.get("trace_id") or ""),
-                    session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
-                ),
+            summary = (
+                "Subagent was not resumed after restart because its type is not safe to replay without "
+                "duplicating side effects. Reconciliation is required before retry."
+            )
+            await _mark_subagent_run_needs_reconciliation(
+                run_id=run_id,
+                metadata=metadata,
+                blocker="non_idempotent_subagent_type",
+                summary=summary,
+                trace_id=trace_id,
+                session_id=child_session_id or parent_session_id,
             )
             continue
         parent_agent_id = uuid.UUID(str(record.get("parent_agent_id") or ""))
@@ -459,8 +635,18 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
                 metadata_json={"resume_failed": True},
             )
             continue
-        runtime.trace_id = str(record.get("trace_id") or runtime.trace_id or "")
-        runtime.parent_session_id = str(record.get("parent_session_id") or runtime.parent_session_id or "")
+        runtime.trace_id = trace_id or runtime.trace_id or ""
+        runtime.parent_session_id = parent_session_id or runtime.parent_session_id or ""
+        runtime.subagent_run_id = run_id
+        runtime.child_session_id = child_session_id or runtime.child_session_id
+        if child_frame is not None:
+            runtime.recovery_metadata = _child_pending_frame_recovery_metadata(
+                frame=child_frame,
+                run_id=run_id,
+                child_session_id=runtime.child_session_id,
+                parent_session_id=runtime.parent_session_id,
+                trace_id=runtime.trace_id,
+            )
         spec = SubagentSpec(
             name=str(metadata.get("subagent_name") or record.get("child_agent_name") or spec_type),
             type=spec_type,
@@ -472,9 +658,9 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
                 task_type=SUBAGENT_RUN_TASK_TYPE,
                 task_id=run_id,
                 side_effect_risk=str(metadata.get("side_effect_risk") or "read_only"),
-                phase="resume_intent_recorded",
-                trace_id=str(record.get("trace_id") or ""),
-                session_id=str(record.get("child_session_id") or record.get("parent_session_id") or ""),
+                phase="child_frame_resume_intent_recorded" if child_frame is not None else "resume_intent_recorded",
+                trace_id=trace_id,
+                session_id=child_session_id or parent_session_id,
             ),
         )
         await update_runtime_task_record(
@@ -482,6 +668,8 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
             status="running",
             metadata_json={
                 "resumed_after_restart": True,
+                "child_frame_recovered_after_restart": child_frame is not None,
+                **({"child_pending_tool_frame": dict(child_frame)} if child_frame is not None else {}),
                 "restart_replay_contract": metadata.get("restart_replay_contract"),
                 "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },

@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。2026-06-28 最终追修继续补齐三审后仍可复现的源代码断点：D1 session/extension surfaces 不再直读 `RUNTIME_TOOL_GROUPS`，D4 Skill fork 改为同一次 `load_skill` 调用内执行，D5 allow continuation 保留 IM/origin channel，D7 Truth evidence 从 `ToolRuntimeService` 进入 kernel span metadata sink，D10 persisted recovery manifest 进入正常 prompt assembly。
+状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。2026-06-28 最终追修继续补齐三审后仍可复现的源代码断点：D1 session/extension surfaces 不再直读 `RUNTIME_TOOL_GROUPS`，D4 Skill fork 改为同一次 `load_skill` 调用内执行，D5 allow continuation 保留 IM/origin channel，D7 Truth evidence 从 `ToolRuntimeService` 进入 kernel span metadata sink，D10 persisted recovery manifest 进入正常 prompt assembly。2026-06-28 追加补齐 sub-agent 子执行体恢复：background `spawn_subagent` 把 `subagent_run_id` / `child_session_id` 传入子 invocation，子工具调用开始前写入 `child_pending_tool_frame`，重启扫描对 replay-safe 只读子帧恢复，对 mutating 子帧 fail closed 到 `needs_reconciliation`。
 
 2026-06-28 自查追加闭合：
 
@@ -51,14 +51,15 @@
 - `12bb68a9` `ccplus: preserve permission origin channel`
 - `3f822aa1` `ccplus: persist recovery checkpoints before tool execution`：补齐 D10 真实 killed-process `invoke_agent` recovery harness 的生产 checkpoint 机制。
 - `fe92bdf1` `ccplus: close residual tool governance gaps`：补齐 D1/D4/D5/D7/D10 最后一轮源代码断点，并更新本账本。
+- 本轮提交 `ccplus: recover subagent child tool frames`：补齐 sub-agent 子执行体 pending tool frame checkpoint、replay-safe 恢复和 mutating reconciliation，并更新本账本。
 
-账本口径：从 `b1b5f85a ccplus: add capability governance surface` 之后到代码基线 `fe92bdf1`，本文件记录 22 个后续追修 / 文档校正提交。后续新增代码闭环提交必须继续追加到这里，避免代码与宣称口径脱节。
+账本口径：从 `b1b5f85a ccplus: add capability governance surface` 之后到本轮 sub-agent 子执行体恢复提交，本文件记录 23 个后续追修 / 文档校正提交。后续新增代码闭环提交必须继续追加到这里，避免代码与宣称口径脱节。
 
 最终回归：
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5361 passed, 2 skipped, 4 warnings in 93.64s
+# 5365 passed, 2 skipped, 4 warnings in 95.04s
 
 cd backend && source .venv/bin/activate && ruff check app/ tests/
 # All checks passed!
@@ -74,11 +75,12 @@ cd frontend && npm run build
 
 | 断点 | 当前闭环 | 证据 |
 | --- | --- | --- |
-| D1 taxonomy 入口 | `runtime.invoker._infer_active_tool_groups()` 与 `api.agents.get_agent_extension_registry()` 均改走 governance taxonomy facade；extension registry 测试 fixture 也改为 patch taxonomy descriptor，不再依赖 runtime group side table。 | `cd backend && .venv/bin/python -m pytest tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups tests/api/test_extension_registry_api.py::test_get_agent_extensions_returns_extension_registry_projection -q` 纳入最终回归；全量后端 `5361 passed`。 |
+| D1 taxonomy 入口 | `runtime.invoker._infer_active_tool_groups()` 与 `api.agents.get_agent_extension_registry()` 均改走 governance taxonomy facade；extension registry 测试 fixture 也改为 patch taxonomy descriptor，不再依赖 runtime group side table。 | `cd backend && .venv/bin/python -m pytest tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups tests/api/test_extension_registry_api.py::test_get_agent_extensions_returns_extension_registry_projection -q` 纳入最终回归；全量后端 `5365 passed`。 |
 | D4 Skill fork | `load_skill` 成功后先注册 session skill hooks / execution plans，再消费 pending fork handoff；`spawn_subagent` 通过同一个 governed `_execute_tool_with_hooks()` 在同一次 tool call 内执行。 | `test_load_skill_frontmatter_fork_executes_in_same_tool_call` 纳入目标集，目标集 `6 passed, 4 warnings`。 |
 | D5 permission allow channel | permission allow continuation 的 `resolution_channel`、`origin_channel`、`channel` 使用 pending frame / session source，不再硬编码 web；原始 tool frame 元数据继续带回 replay。 | `test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id` 纳入目标集，permission/truth/tool runtime 相关回归 `33 passed, 15 deselected, 4 warnings`。 |
 | D7 Truth evidence span | `ToolRuntimeService.execute(trace_metadata_sink=...)` 把 Truth evidence refs/payload 和 preflight block 写入 sink；kernel tool span metadata 合并 sink 后进入 canonical InvocationSpan 抽取面。 | `test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink`、`test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span` 纳入目标集，目标集 `6 passed, 4 warnings`。 |
 | D10 prompt recovery | `_build_runtime_attachment_sections()` 从 `runtime_artifacts/recovery_manifest.json` 读 persisted manifest 并加入 `### Recovery Manifest`，正常 prompt assembly 与 cached dynamic suffix 都能恢复 pending frame / permission / evidence。 | `test_runtime_attachment_sections_include_persisted_recovery_manifest` 纳入目标集，kernel/trace/taxonomy 相关回归 `10 passed, 78 deselected, 4 warnings`。 |
+| D11 sub-agent 子执行体恢复 | `start_subagent_run()` 生成的 `run_id` / `child_session_id` 现在进入 `SubagentSpawnContext` 和 child `SessionContext`；`on_tool_call` 通过 `record_subagent_child_tool_frame()` 在子工具执行前持久化 `child_pending_tool_frame`，终态清理 stale pending frame；`resume_persisted_subagent_runs()` 对 replay-safe 只读子帧恢复同一 child session，对 `write_file` 等 mutating 子帧标记 `needs_reconciliation` 并投影到 child session。 | `cd backend && .venv/bin/python -m pytest tests/services/test_subagent_run_service.py tests/agents/test_subagent.py::test_spawn_threads_child_recovery_identity_into_session_context tests/agents/test_subagent.py::test_spawn_builds_governed_request tests/tools/test_agent_tool_cc_compat.py::test_spawn_subagent_permission_profile_allowed_tools_are_scoped -q` -> `20 passed, 4 warnings`。 |
 
 关联文档：
 
@@ -254,7 +256,7 @@ L3 是当前 session 内的 allow once / allow session / deny。
 
 ## 4. 关键断点和修复主线
 
-本节保留的是落地过程中的断点清单和验收红线。凡是本节出现“必须补 / 需要证明”的句子，均按当时审计语境理解；当前 HEAD 的最终状态以本文顶部“最终追修断点表”、Phase 8 实施证据、以及 `5361 passed` 全量回归为准。当前仍可扩展但非 blocker 的项会明确写成“后续可扩展”。
+本节保留的是落地过程中的断点清单和验收红线。凡是本节出现“必须补 / 需要证明”的句子，均按当时审计语境理解；当前 HEAD 的最终状态以本文顶部“最终追修断点表”、Phase 8 实施证据、以及 `5365 passed` 全量回归为准。当前仍可扩展但非 blocker 的项会明确写成“后续可扩展”。
 
 ### D1. 治理能力 taxonomy 没有统一入口
 
@@ -455,12 +457,17 @@ L3 是当前 session 内的 allow once / allow session / deny。
   - pending Skill fork handoff
   - compact 后 resume
   - MCP assignment / Truth evidence 不丢
+- 本轮追加 sub-agent 子执行体恢复闭环：
+  - background `spawn_subagent_tool()` 在创建 durable run 后把 `run_id` 和 `child_session_id` 写回 `SubagentSpawnContext`。
+  - child `invoke_agent()` 使用稳定 `child_session_id` 作为 `SessionContext.session_id`，metadata 保留 `subagent_run_id`、`parent_session_id`、`pending_tool_frame`。
+  - child tool call 开始时持久化 `child_pending_tool_frame`；成功、失败、取消、超时等终态清理 stale pending frame 并记录 `last_child_tool_frame`。
+  - restart scanner 对 replay-safe 只读 child frame 恢复同一 child session；对 mutating child frame fail closed 到 `needs_reconciliation`，不自动重放副作用工具。
 
 后续仍可扩展的 live-replay 矩阵：
 
 - permission allow crash 后恢复同 frame tool result。
-- `spawn_subagent` 子执行体内部 run 被 kill 后恢复。
-- `start_workflow` waiting gate 内部执行体被 kill 后恢复。
+- `spawn_subagent` 子执行体真实子进程 kill / restart 的差异化深度 E2E；当前语义闭环已由 child pending frame checkpoint + restart scanner 覆盖。
+- `start_workflow` waiting gate 真实进程 kill / restart 的差异化深度 E2E；当前方案依赖 Workflow `RuntimeTask`、step journal、wait signal / gate checkpoint 和 explicit resume。
 - disabled extension stale transcript call。
 - hook modified args crash。
 
@@ -608,7 +615,7 @@ Hive 当时必须追平，当前已完成的追平项：
 - initial compact、request-preflight autocompact、PTL reactive compact 已补齐 `PRE_COMPACTION/POST_COMPACTION` 路由；kernel mid-loop、manual `/compact` 和 PTL fallback 已纳入 lifecycle wrapper / mechanical lifecycle wrapper。
 - Hook lifecycle 已按 blocking-capable / observe-only / disabled-noop 分类写入 catalog 与 span lifecycle records。
 - Skill allowedTools/fork 已变成 execution profile；`context: fork` handoff 通过 governed `spawn_subagent` 执行。
-- Resume / compact boundary 已通过 persisted `RecoveryManifest`、normal prompt attachment、killed-process E2E 与 restoration tests 证明主恢复面可用；子执行体内部 kill/replay 仍属于后续可扩展深度矩阵，不是当前 blocker。
+- Resume / compact boundary 已通过 persisted `RecoveryManifest`、normal prompt attachment、killed-process E2E 与 restoration tests 证明主恢复面可用；sub-agent 子执行体 pending tool frame 已进入 durable run checkpoint，replay-safe child frame 可恢复，mutating child frame fail closed 到 reconciliation；Workflow wait/gate 依赖 workflow journal/checkpoint/signal 恢复，差异化真实进程 kill E2E 属于增强矩阵，不再是语义 blocker。
 
 ### 5.2 Codex 优化应吸收的位置
 
@@ -786,7 +793,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_
 ```
 
 - 验证结果：`46 passed, 4 warnings in 1.56s`。
-- Web Search 追修验证结果：`pytest tests/services/test_web_mcp_resilience.py tests/services/test_prompt_contracts.py tests/tools/test_search_provider_tool_definitions.py -q` 纳入扩大集合通过；当前最终后端全量以本文顶部最终回归为准：`5361 passed, 2 skipped, 4 warnings`。
+- Web Search 追修验证结果：`pytest tests/services/test_web_mcp_resilience.py tests/services/test_prompt_contracts.py tests/tools/test_search_provider_tool_definitions.py -q` 纳入扩大集合通过；当前最终后端全量以本文顶部最终回归为准：`5365 passed, 2 skipped, 4 warnings`。
 - ownership 收口验证命令：
 
 ```bash
@@ -1137,7 +1144,7 @@ ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/ses
 9. L3 pending tool frame / same-turn resume。
 10. Truth Search evidence layer。
 11. MCP local transport / Coding plugin 边界。
-12. killed-process recovery manifest harness 覆盖 `write_file` / `spawn_subagent` / `start_workflow` 工具调用入口、compact restoration、fork handoff metadata；子执行体内部 restart drill 列为扩展矩阵。
+12. killed-process recovery manifest harness 覆盖 `write_file` / `spawn_subagent` / `start_workflow` 工具调用入口、compact restoration、fork handoff metadata；sub-agent 子执行体 pending tool frame 已有 durable checkpoint 和 restart scanner，真实子进程 kill drill 仅作为增强矩阵。
 13. Hook 全生命周期触发与证据矩阵。
 14. 压缩全生命周期：initial、mid-loop、manual、PTL、final/close 全路径闭环。
 15. Session/extension surfaces 统一走 taxonomy facade，不再直读 `RUNTIME_TOOL_GROUPS`。
@@ -1145,6 +1152,7 @@ ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/ses
 17. Session permission allow continuation 保留 IM/origin channel，不再退化为 Web-only resume metadata。
 18. Truth Search evidence 从治理 preflight 写入 kernel span metadata sink，并进入 canonical InvocationSpan 抽取面。
 19. Persisted recovery manifest 进入正常 prompt assembly，不再只在 post-compaction restoration path 可见。
+20. Background sub-agent child session 恢复：`subagent_run_id` / `child_session_id` 贯穿 child invocation，child pending tool frame 可恢复或 fail-closed reconciliation。
 
 因此，Hive 现在可以做到：
 

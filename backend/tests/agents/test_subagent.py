@@ -217,6 +217,35 @@ async def test_spawn_builds_governed_request():
 
 
 @pytest.mark.asyncio
+async def test_spawn_threads_child_recovery_identity_into_session_context():
+    captured: list = []
+    ctx = _ctx(
+        trace_id="tr-1",
+        parent_session_id="parent-session",
+        subagent_run_id="run-1",
+        child_session_id="child-session",
+        recovery_metadata={
+            "pending_tool_frame": {
+                "tool_call_id": "call-read",
+                "tool_name": "read_file",
+                "arguments": {"path": "workspace/a.md"},
+            }
+        },
+    )
+    spec = SubagentSpec(name="market-explorer", type="explorer", max_tool_rounds=6)
+
+    result = await _spawn_one(ctx, SubagentJob(spec=spec, task="investigate X"), invoke=_ok_invoke(capture=captured))
+
+    assert result.ok
+    req = captured[0]
+    assert req.session_context.session_id == "child-session"
+    assert req.session_context.metadata["subagent_run_id"] == "run-1"
+    assert req.session_context.metadata["child_session_id"] == "child-session"
+    assert req.session_context.metadata["parent_session_id"] == "parent-session"
+    assert req.session_context.metadata["pending_tool_frame"]["tool_call_id"] == "call-read"
+
+
+@pytest.mark.asyncio
 async def test_spawn_writes_replayable_t0_sidechain(monkeypatch, tmp_path):
     from app.memory.t0.ledger import replay_t0_session_events
 

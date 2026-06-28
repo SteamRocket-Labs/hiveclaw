@@ -91,6 +91,54 @@ async def test_start_subagent_run_creates_child_session_and_records_session_cont
 
 
 @pytest.mark.asyncio
+async def test_record_subagent_child_tool_frame_persists_and_clears_pending_frame(monkeypatch):
+    updates: list[tuple[str, dict]] = []
+
+    async def _fake_update(run_id, **kwargs):
+        updates.append((run_id, kwargs))
+        return True
+
+    monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
+
+    await svc.record_subagent_child_tool_frame(
+        run_id="run-1",
+        tool_name="read_file",
+        tool_args={"path": "workspace/a.md"},
+        tool_call_id="call-read",
+        status="running",
+        child_session_id="child-session",
+        parent_session_id="parent-session",
+        trace_id="trace-1",
+    )
+
+    running_metadata = updates[-1][1]["metadata_json"]
+    assert running_metadata["child_pending_tool_frame"]["tool_call_id"] == "call-read"
+    assert running_metadata["child_pending_tool_frame"]["tool_name"] == "read_file"
+    assert running_metadata["child_pending_tool_frame"]["arguments"] == {"path": "workspace/a.md"}
+    assert running_metadata["child_pending_tool_frame"]["origin_channel"] == "subagent"
+    assert running_metadata["child_pending_tool_frame"]["subagent_run_id"] == "run-1"
+    assert running_metadata["child_pending_tool_frames"] == [running_metadata["child_pending_tool_frame"]]
+
+    await svc.record_subagent_child_tool_frame(
+        run_id="run-1",
+        tool_name="read_file",
+        tool_args={"path": "workspace/a.md"},
+        tool_call_id="call-read",
+        status="done",
+        child_session_id="child-session",
+        parent_session_id="parent-session",
+        trace_id="trace-1",
+    )
+
+    done_metadata = updates[-1][1]["metadata_json"]
+    assert done_metadata["child_pending_tool_frame"] is None
+    assert done_metadata["child_pending_tool_frames"] == []
+    assert done_metadata["last_child_tool_frame"]["status"] == "done"
+    assert done_metadata["last_child_tool_frame"]["tool_call_id"] == "call-read"
+    assert done_metadata["last_child_tool_frame"]["subagent_run_id"] == "run-1"
+
+
+@pytest.mark.asyncio
 async def test_start_subagent_run_marks_readonly_types_restart_resumable(monkeypatch):
     captured: dict = {}
 
@@ -356,6 +404,142 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
     assert calls["task"] == "read x"
     assert calls["kwargs"]["run_in_background"] is True
     assert callable(calls["kwargs"]["on_complete"])
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_restores_readonly_child_pending_frame(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    child_session_id = str(uuid.uuid4())
+    calls: dict[str, object] = {}
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(parent),
+                "child_agent_name": "scout",
+                "prompt": "read x",
+                "trace_id": "trace-subagent",
+                "parent_session_id": "parent-session",
+                "child_session_id": child_session_id,
+                "metadata": {
+                    "subagent_type": "explorer",
+                    "subagent_name": "scout",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "child_pending_tool_frame": {
+                        "tool_call_id": "call-read",
+                        "tool_name": "read_file",
+                        "arguments": {"path": "workspace/a.md"},
+                        "status": "running",
+                        "origin_channel": "subagent",
+                    },
+                },
+            }
+        ]
+
+    async def fake_resolve_parent_runtime(parent_agent_id):
+        calls["resolved_parent"] = parent_agent_id
+        return {
+            "ctx_kwargs": {
+                "parent_agent_id": parent,
+                "parent_user_id": uuid.uuid4(),
+                "model": object(),
+                "parent_agent_name": "Parent",
+                "tenant_id": uuid.uuid4(),
+            }
+        }
+
+    async def fake_spawn_subagent(ctx, spec, task, **kwargs):
+        calls["ctx"] = ctx
+        calls["spec"] = spec
+        calls["task"] = task
+        calls["kwargs"] = kwargs
+        return object()
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        calls.setdefault("updates", []).append((task_id, kwargs))
+        return True
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == [run_id]
+    assert calls["resolved_parent"] == parent
+    assert calls["ctx"].subagent_run_id == run_id
+    assert calls["ctx"].child_session_id == child_session_id
+    assert calls["ctx"].recovery_metadata["pending_tool_frame"]["tool_call_id"] == "call-read"
+    assert calls["ctx"].recovery_metadata["pending_tool_frame"]["tool_name"] == "read_file"
+    assert calls["ctx"].recovery_metadata["pending_tool_frame"]["subagent_run_id"] == run_id
+    assert calls["updates"][-1][1]["metadata_json"]["child_frame_recovered_after_restart"] is True
+    assert calls["updates"][-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == (
+        "child_frame_resume_intent_recorded"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_frame(monkeypatch):
+    run_id = uuid.uuid4().hex
+    updates: list[tuple[str, dict]] = []
+    session_updates: list[dict] = []
+
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "parent_agent_id": str(uuid.uuid4()),
+                "child_agent_name": "worker",
+                "prompt": "write x",
+                "trace_id": "trace-subagent",
+                "parent_session_id": "parent-session",
+                "child_session_id": "child-session",
+                "metadata": {
+                    "subagent_type": "explorer",
+                    "subagent_name": "worker",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "child_pending_tool_frame": {
+                        "tool_call_id": "call-write",
+                        "tool_name": "write_file",
+                        "arguments": {"path": "workspace/a.md", "content": "x"},
+                        "status": "running",
+                        "origin_channel": "subagent",
+                    },
+                },
+            }
+        ]
+
+    async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - must not run
+        raise AssertionError("mutating child pending frame must not replay")
+
+    async def fake_update_runtime_task_record(task_id, **kwargs):
+        updates.append((task_id, kwargs))
+        return True
+
+    async def fake_update_child_session_state(**kwargs):
+        session_updates.append(kwargs)
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session_state)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == []
+    assert updates[-1][0] == run_id
+    assert updates[-1][1]["status"] == "needs_reconciliation"
+    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "child_pending_tool_frame_not_replay_safe"
+    assert updates[-1][1]["metadata_json"]["child_pending_tool_frame"]["tool_name"] == "write_file"
+    assert session_updates[-1]["run_id"] == run_id
+    assert session_updates[-1]["status"] == "needs_reconciliation"
 
 
 @pytest.mark.asyncio

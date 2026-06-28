@@ -292,6 +292,18 @@ def _log_runtime_hook_failure(event: Any, *, source: str, exc: Exception) -> Non
     _record_runtime_hook_failure(event, source=source, exc=exc)
 
 
+def _hook_lifecycle_records_from_metadata(*metadata_items: dict[str, Any] | None) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for metadata in metadata_items:
+        if not isinstance(metadata, dict):
+            continue
+        raw_records = metadata.get("hook_lifecycle_records")
+        if not isinstance(raw_records, list):
+            continue
+        records.extend(dict(item) for item in raw_records if isinstance(item, dict))
+    return records
+
+
 def _observe_runtime_hook_task(task: asyncio.Task[Any], event: Any, *, source: str) -> None:
     try:
         task.result()
@@ -1034,6 +1046,11 @@ async def _execute_tool_with_hooks(
     from app.runtime.hooks import HookEvent, emit_hook
 
     effective_args = dict(tool_args)
+    pre_hook_metadata = {
+        "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
+        "agent_name": getattr(request, "agent_name", None),
+        "source": getattr(request.session_context, "source", None) if request.session_context else None,
+    }
     hook_result = await emit_hook(
         HookEvent.PRE_TOOL_USE,
         agent_id=request.agent_id,
@@ -1041,29 +1058,33 @@ async def _execute_tool_with_hooks(
         tool_name=tool_name,
         tool_args=effective_args,
         source=getattr(request.session_context, "source", None) if request.session_context else None,
-        metadata={
-            "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
-            "agent_name": getattr(request, "agent_name", None),
-            "source": getattr(request.session_context, "source", None) if request.session_context else None,
-        },
+        metadata=pre_hook_metadata,
     )
     if hook_result and hook_result.modified_args:
         effective_args = hook_result.modified_args
     if hook_result and hook_result.block:
         if record_span:
+            span_metadata = {"status": "blocked_by_hook", "reason": hook_result.reason or "policy"}
+            hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
+            if hook_records:
+                span_metadata["hook_lifecycle_records"] = hook_records
             await record_span(
                 span_type="tool",
                 name=tool_name,
                 started_at_ms=monotonic_ms(),
-                metadata={"status": "blocked_by_hook", "reason": hook_result.reason or "policy"},
+                metadata=span_metadata,
             )
         else:
+            span_metadata = {"status": "blocked_by_hook", "reason": hook_result.reason or "policy"}
+            hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
+            if hook_records:
+                span_metadata["hook_lifecycle_records"] = hook_records
             append_invocation_span(
                 agent_id=request.agent_id,
                 span_type="tool",
                 name=tool_name,
                 started_at_ms=monotonic_ms(),
-                metadata={"status": "blocked_by_hook", "reason": hook_result.reason or "policy"},
+                metadata=span_metadata,
             )
         return "Blocked by hook: " + (hook_result.reason or "policy"), effective_args, False
 
@@ -1086,38 +1107,67 @@ async def _execute_tool_with_hooks(
             )
         except _KernelCancelledError:
             if record_span:
+                span_metadata = {"status": "cancelled"}
+                hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
+                if hook_records:
+                    span_metadata["hook_lifecycle_records"] = hook_records
                 await record_span(
                     span_type="tool",
                     name=tool_name,
                     started_at_ms=tool_started_ms,
-                    metadata={"status": "cancelled"},
+                    metadata=span_metadata,
                 )
             else:
+                span_metadata = {"status": "cancelled"}
+                hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
+                if hook_records:
+                    span_metadata["hook_lifecycle_records"] = hook_records
                 append_invocation_span(
                     agent_id=request.agent_id,
                     span_type="tool",
                     name=tool_name,
                     started_at_ms=tool_started_ms,
-                    metadata={"status": "cancelled"},
+                    metadata=span_metadata,
                 )
             raise
         except Exception as exc:
             err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
             if record_span:
+                span_metadata = {
+                    "status": "error",
+                    "error_class": type(exc).__name__,
+                    "error": str(exc)[:500],
+                }
+                hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
+                if hook_records:
+                    span_metadata["hook_lifecycle_records"] = hook_records
                 await record_span(
                     span_type="tool",
                     name=tool_name,
                     started_at_ms=tool_started_ms,
-                    metadata={"status": "error", "error_class": type(exc).__name__, "error": str(exc)[:500]},
+                    metadata=span_metadata,
                 )
             else:
+                span_metadata = {
+                    "status": "error",
+                    "error_class": type(exc).__name__,
+                    "error": str(exc)[:500],
+                }
+                hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata)
+                if hook_records:
+                    span_metadata["hook_lifecycle_records"] = hook_records
                 append_invocation_span(
                     agent_id=request.agent_id,
                     span_type="tool",
                     name=tool_name,
                     started_at_ms=tool_started_ms,
-                    metadata={"status": "error", "error_class": type(exc).__name__, "error": str(exc)[:500]},
+                    metadata=span_metadata,
                 )
+            failure_hook_metadata = {
+                "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
+                "agent_name": getattr(request, "agent_name", None),
+                "source": getattr(request.session_context, "source", None) if request.session_context else None,
+            }
             await emit_hook(
                 HookEvent.POST_TOOL_FAILURE,
                 agent_id=request.agent_id,
@@ -1126,11 +1176,7 @@ async def _execute_tool_with_hooks(
                 tool_args=effective_args,
                 error=err,
                 source=getattr(request.session_context, "source", None) if request.session_context else None,
-                metadata={
-                    "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
-                    "agent_name": getattr(request, "agent_name", None),
-                    "source": getattr(request.session_context, "source", None) if request.session_context else None,
-                },
+                metadata=failure_hook_metadata,
             )
             return err, effective_args, False
     finally:
@@ -1172,6 +1218,11 @@ async def _execute_tool_with_hooks(
         except Exception as exc:  # noqa: BLE001 - source registry must not break tool execution
             logger.warning("[Kernel] connector source registration failed for tool %s: %s", tool_name, exc)
 
+    post_hook_metadata = {
+        "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
+        "agent_name": getattr(request, "agent_name", None),
+        "source": getattr(request.session_context, "source", None) if request.session_context else None,
+    }
     post_tool_hook_result = await emit_hook(
         HookEvent.POST_TOOL_USE,
         agent_id=request.agent_id,
@@ -1181,11 +1232,7 @@ async def _execute_tool_with_hooks(
         tool_result=result_str[:500],
         messages=request.messages[-10:] if request.messages else None,
         source=getattr(request.session_context, "source", None) if request.session_context else None,
-        metadata={
-            "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
-            "agent_name": getattr(request, "agent_name", None),
-            "source": getattr(request.session_context, "source", None) if request.session_context else None,
-        },
+        metadata=post_hook_metadata,
     )
     if post_tool_hook_result and post_tool_hook_result.output_rewrite is not None:
         rewrite = post_tool_hook_result.output_rewrite
@@ -1198,6 +1245,9 @@ async def _execute_tool_with_hooks(
         }
         if code_execution_evidence is not None:
             span_metadata["code_execution_evidence"] = code_execution_evidence
+        hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata, post_hook_metadata)
+        if hook_records:
+            span_metadata["hook_lifecycle_records"] = hook_records
         await record_span(
             span_type="tool",
             name=tool_name,
@@ -1212,6 +1262,9 @@ async def _execute_tool_with_hooks(
         }
         if code_execution_evidence is not None:
             span_metadata["code_execution_evidence"] = code_execution_evidence
+        hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata, post_hook_metadata)
+        if hook_records:
+            span_metadata["hook_lifecycle_records"] = hook_records
         append_invocation_span(
             agent_id=request.agent_id,
             span_type="tool",

@@ -65,6 +65,8 @@ def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() ->
         assert entry["input_schema"]["type"] == "object"
         assert entry["output_schema"]["type"] == "object"
         assert entry["runtime_consumer"]
+        assert entry["trust_level"] in {"platform_trusted", "tenant_approved", "agent_scoped", "disabled_noop"}
+        assert entry["failure_policy"] in {"fail_closed_if_blocking", "observe_continue", "disabled_noop"}
 
     assert catalog["worktree_create"]["lifecycle_state"] == "disabled_noop"
     assert catalog["worktree_create"]["runtime_consumer"] == "disabled_noop_audit"
@@ -162,6 +164,43 @@ async def test_permission_request_hook_returns_decision_payload() -> None:
         "updatedInput": {"query": "github trending"},
         "updatedPermissions": [{"tool": "web_search", "behavior": "allow", "scope": "session"}],
     }
+
+
+@pytest.mark.asyncio
+async def test_hook_emit_records_hook_lifecycle_v1_for_modified_args() -> None:
+    registry = HookRegistry()
+
+    def rewrite(ctx: HookContext) -> HookResult:
+        assert ctx.tool_args == {"query": "github"}
+        return HookResult(modified_args={"query": "github trending"})
+
+    registry.register(HookEvent.PRE_TOOL_USE, rewrite, key="skill:session-1:research:pre_tool_use")
+    metadata = {"tenant_id": "tenant-1"}
+
+    result = await registry.emit(
+        HookContext(
+            event=HookEvent.PRE_TOOL_USE,
+            agent_id="agent-1",
+            session_id="session-1",
+            tool_name="web_search",
+            tool_args={"query": "github"},
+            metadata=metadata,
+        )
+    )
+
+    assert result is not None
+    assert result.modified_args == {"query": "github trending"}
+    records = metadata["hook_lifecycle_records"]
+    assert len(records) == 1
+    record = records[0]
+    assert record["event"] == "pre_tool_use"
+    assert record["source"] == "skill:session-1:research:pre_tool_use"
+    assert record["trust_level"] == "agent_scoped"
+    assert record["lifecycle_state"] == "active"
+    assert record["decision"] == "rewrite_args"
+    assert record["matcher_fields"]["tool_name"] == "web_search"
+    assert record["original_hash"] and record["modified_hash"]
+    assert record["original_hash"] != record["modified_hash"]
 
 
 @pytest.mark.asyncio

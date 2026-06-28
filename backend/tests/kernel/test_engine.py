@@ -894,6 +894,62 @@ async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.hooks import HookEvent, HookResult, hook_registry
+    from app.runtime.session import SessionContext
+
+    hook_registry.clear()
+
+    def rewrite(_ctx):
+        return HookResult(modified_args={"query": "github trending"})
+
+    hook_registry.register(HookEvent.PRE_TOOL_USE, rewrite, key="skill:session-1:research:pre_tool_use")
+    spans = []
+
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "call tool"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=SessionContext(session_id="session-1"),
+        memory_session_id="session-1",
+    )
+
+    async def fake_execute_tool(_tool_name, tool_args, _request, _emit_event):
+        assert tool_args == {"query": "github trending"}
+        return "search result"
+
+    async def emit_event(_event):
+        return None
+
+    async def record_span(**kwargs):
+        spans.append(kwargs)
+        return {"id": "span-1"}
+
+    try:
+        result, effective_args, executed = await _execute_tool_with_hooks(
+            execute_tool=fake_execute_tool,
+            request=request,
+            tool_name="web_search",
+            tool_args={"query": "github"},
+            emit_event=emit_event,
+            record_span=record_span,
+        )
+    finally:
+        hook_registry.clear()
+
+    assert result == "search result"
+    assert effective_args == {"query": "github trending"}
+    assert executed is True
+    lifecycle_records = spans[-1]["metadata"]["hook_lifecycle_records"]
+    assert lifecycle_records[0]["event"] == "pre_tool_use"
+    assert lifecycle_records[0]["decision"] == "rewrite_args"
+    assert lifecycle_records[0]["source"] == "skill:session-1:research:pre_tool_use"
+
+
+@pytest.mark.asyncio
 async def test_agent_kernel_handles_tool_round_and_collects_parts():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig

@@ -7,10 +7,15 @@ and compaction events. Handlers are async callables registered per event type.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Awaitable, Callable, Literal
+
+from app.runtime.ccplus_contracts import HookLifecycleV1
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +303,20 @@ def _hook_runtime_consumer(event: HookEvent) -> str:
     if event in _DISABLED_NOOP_HOOK_EVENTS:
         return "disabled_noop_audit"
     return _HOOK_RUNTIME_CONSUMERS.get(event, "hook_registry_observer")
+
+
+def _hook_catalog_trust_level(event: HookEvent) -> str:
+    if event in _DISABLED_NOOP_HOOK_EVENTS:
+        return "disabled_noop"
+    return "platform_trusted"
+
+
+def _hook_catalog_failure_policy(event: HookEvent) -> str:
+    if event in _DISABLED_NOOP_HOOK_EVENTS:
+        return "disabled_noop"
+    if event in _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS:
+        return "observe_continue"
+    return "fail_closed_if_blocking"
 
 
 def _hook_matcher_fields(event: HookEvent) -> list[str]:
@@ -805,6 +824,111 @@ def _matcher_spec_to_dict(spec: HookMatcherSpec | None) -> dict[str, Any] | None
     }
 
 
+def _json_ready(value: Any) -> Any:
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+
+
+def _stable_hash(value: Any) -> str:
+    payload = json.dumps(_json_ready(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _binding_source(binding: _HookBinding) -> str:
+    return str(binding.key or binding.profile_name or binding.handler_name or "<anonymous>")
+
+
+def _binding_trust_level(binding: _HookBinding) -> str:
+    source = _binding_source(binding)
+    if source.startswith("skill:"):
+        return "agent_scoped"
+    if source.startswith("plugin:") or binding.handler_name == "governed_hook_runner":
+        return "tenant_approved"
+    return "platform_trusted"
+
+
+def _ctx_matcher_fields(ctx: HookContext) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "agent_id": str(ctx.agent_id) if ctx.agent_id is not None else None,
+        "session_id": ctx.session_id,
+        "source": ctx.source,
+    }
+    if ctx.tool_name:
+        fields["tool_name"] = ctx.tool_name
+    if ctx.agent_type:
+        fields["agent_type"] = ctx.agent_type
+    for key in ("tenant_id", "runtime_task_id", "capability", "team_id", "member_id", "trigger"):
+        if key in ctx.metadata:
+            fields[key] = ctx.metadata.get(key)
+    return fields
+
+
+def _hook_decision(event: HookEvent, result: HookResult | None, exc: Exception | None = None) -> str:
+    if exc is not None:
+        return "failure"
+    if result is None:
+        return "observed"
+    if result.block:
+        return "block"
+    if result.prevent_continuation:
+        return "prevent_continuation"
+    if event == HookEvent.PRE_TOOL_USE and result.modified_args is not None:
+        return "rewrite_args"
+    if event == HookEvent.POST_TOOL_USE and result.output_rewrite is not None:
+        return "rewrite_output"
+    if result.additional_contexts:
+        return "add_context"
+    if result.permission_behavior or result.permission_request_result:
+        return "permission_decision"
+    if result.async_hook:
+        return "async"
+    return "observed"
+
+
+def _append_hook_lifecycle_record(
+    ctx: HookContext,
+    binding: _HookBinding,
+    *,
+    original_tool_args: dict[str, Any] | None,
+    result: HookResult | None = None,
+    exc: Exception | None = None,
+) -> None:
+    metadata = ctx.metadata if isinstance(ctx.metadata, dict) else {}
+    source = _binding_source(binding)
+    original_payload = {
+        "prompt": ctx.prompt,
+        "tool_name": ctx.tool_name,
+        "tool_args": original_tool_args,
+        "tool_result": ctx.tool_result,
+        "last_assistant_message": ctx.last_assistant_message,
+        "metadata": {key: value for key, value in metadata.items() if key != "hook_lifecycle_records"},
+    }
+    modified_args = result.modified_args if result and result.modified_args is not None else ctx.tool_args
+    modified_payload = {**original_payload, "tool_args": modified_args}
+    result_payload: dict[str, Any] = {}
+    if result is not None:
+        result_payload = asdict(result)
+    if exc is not None:
+        result_payload = {"error_class": type(exc).__name__, "error": str(exc)}
+    lifecycle = HookLifecycleV1(
+        hook_run_id=str(uuid.uuid4()),
+        event=ctx.event.value,
+        source=source,
+        trust_level=_binding_trust_level(binding),
+        lifecycle_state=_hook_lifecycle_state(ctx.event),
+        matcher_fields=_ctx_matcher_fields(ctx),
+        input_schema_ref=f"hook:{ctx.event.value}:input:v1",
+        output_schema_ref=f"hook:{ctx.event.value}:output:v1",
+        decision=_hook_decision(ctx.event, result, exc),
+        original_hash=_stable_hash(original_payload),
+        modified_hash=_stable_hash(modified_payload),
+        result_hash=_stable_hash(result_payload) if result_payload else None,
+        additional_context_refs=tuple(result.additional_contexts if result else ()),
+        output_rewrite_ref="hook_output_rewrite" if result and result.output_rewrite is not None else None,
+        failure_policy=_hook_catalog_failure_policy(ctx.event),
+    )
+    metadata.setdefault("hook_lifecycle_records", []).append(_json_ready(asdict(lifecycle)))
+
+
 def _merge_matcher_specs(base: HookMatcherSpec, override: HookMatcherSpec | None) -> HookMatcherSpec:
     if override is None:
         return base
@@ -1182,6 +1306,8 @@ class HookRegistry:
                 "input_schema": _hook_input_schema(event),
                 "output_schema": _hook_output_schema(event),
                 "runtime_consumer": self._runtime_consumer_for_event(event),
+                "trust_level": _hook_catalog_trust_level(event),
+                "failure_policy": _hook_catalog_failure_policy(event),
             }
             for event in HookEvent
         ]
@@ -1233,6 +1359,7 @@ class HookRegistry:
                 if binding.matcher and not binding.matcher(ctx):
                     continue
 
+                original_tool_args = dict(ctx.tool_args or {}) if isinstance(ctx.tool_args, dict) else None
                 result = binding.handler(ctx)
                 if asyncio.iscoroutine(result):
                     timeout_seconds = None
@@ -1248,6 +1375,12 @@ class HookRegistry:
                         result = await result
 
                 if isinstance(result, HookResult):
+                    _append_hook_lifecycle_record(
+                        ctx,
+                        binding,
+                        original_tool_args=original_tool_args,
+                        result=result,
+                    )
                     if ctx.event == HookEvent.PRE_TOOL_USE and result.modified_args is not None:
                         ctx.tool_args = result.modified_args
                         final_result = HookResult(
@@ -1282,32 +1415,47 @@ class HookRegistry:
                         )
                     ):
                         final_result = result
-                    if result.block and self._blocking_supported(ctx.event):
-                        blocked = HookResult(
-                            block=True,
-                            reason=result.reason,
-                            modified_args=ctx.tool_args,
-                            additional_contexts=list(result.additional_contexts or []),
-                            prevent_continuation=result.prevent_continuation,
-                            stop_reason=result.stop_reason,
-                            output_rewrite=result.output_rewrite,
-                        )
-                        logger.info(
-                            "[Hooks] %s blocked by handler: %s",
-                            ctx.tool_name or ctx.event.value,
-                            result.reason,
-                        )
-                        return blocked
-                    if result.prevent_continuation and self._blocking_supported(ctx.event):
-                        return HookResult(
-                            block=False,
-                            reason=result.reason,
-                            modified_args=ctx.tool_args,
-                            additional_contexts=list(result.additional_contexts or []),
-                            prevent_continuation=True,
-                            stop_reason=result.stop_reason,
-                        )
+                else:
+                    _append_hook_lifecycle_record(
+                        ctx,
+                        binding,
+                        original_tool_args=original_tool_args,
+                        result=None,
+                    )
+                    continue
+                if result.block and self._blocking_supported(ctx.event):
+                    blocked = HookResult(
+                        block=True,
+                        reason=result.reason,
+                        modified_args=ctx.tool_args,
+                        additional_contexts=list(result.additional_contexts or []),
+                        prevent_continuation=result.prevent_continuation,
+                        stop_reason=result.stop_reason,
+                        output_rewrite=result.output_rewrite,
+                    )
+                    logger.info(
+                        "[Hooks] %s blocked by handler: %s",
+                        ctx.tool_name or ctx.event.value,
+                        result.reason,
+                    )
+                    return blocked
+                if result.prevent_continuation and self._blocking_supported(ctx.event):
+                    return HookResult(
+                        block=False,
+                        reason=result.reason,
+                        modified_args=ctx.tool_args,
+                        additional_contexts=list(result.additional_contexts or []),
+                        prevent_continuation=True,
+                        stop_reason=result.stop_reason,
+                    )
             except Exception as exc:
+                original_tool_args = dict(ctx.tool_args or {}) if isinstance(ctx.tool_args, dict) else None
+                _append_hook_lifecycle_record(
+                    ctx,
+                    binding,
+                    original_tool_args=original_tool_args,
+                    exc=exc,
+                )
                 from app.memory.metrics import record_hook_failure
 
                 record_hook_failure(event=ctx.event.value, source="registry", reason=type(exc).__name__)

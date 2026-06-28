@@ -766,6 +766,21 @@ pytest tests/runtime/test_skill_frontmatter_hooks.py -q
 
 - 验证结果：`2 passed, 4 warnings in 0.11s`。
 
+实施证据（2026-06-28，4B HookLifecycleV1 投影与 span 证据）：
+
+- Red：新增 hook catalog 红线后，`pytest tests/runtime/test_hooks_cc_parity.py::test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability tests/runtime/test_hooks_cc_parity.py::test_hook_emit_records_hook_lifecycle_v1_for_modified_args -q` 失败于缺少 `trust_level` / `hook_lifecycle_records`，证明 hook catalog 和实际 hook run 没有统一 lifecycle 证据。
+- Red：新增 kernel span 红线后，`pytest tests/kernel/test_engine.py::test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span -q` 失败于 `KeyError: 'hook_lifecycle_records'`，证明 registry 产生的 hook lifecycle 没有进入 tool span。
+- Green：`HookRegistry.describe_event_catalog()` 现在暴露 `trust_level` 和 `failure_policy`；`HookRegistry.emit()` 为每个实际 handler run 写入 `HookLifecycleV1` 序列化记录，包括 source、trust level、lifecycle state、matcher fields、decision、original/modified/result hash；kernel `_execute_tool_with_hooks()` 将 pre/post hook lifecycle records 写入 tool span metadata。
+- 验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/runtime/test_skill_frontmatter_hooks.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_hooks.py tests/runtime/test_hook_wire_standard.py tests/runtime/test_governed_hook_runner.py tests/kernel/test_engine.py::test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span tests/kernel/test_engine.py::test_hook_emitter_consumes_post_tool_output_rewrite tests/kernel/test_engine_stop_hooks.py -q
+```
+
+- 验证结果：`70 passed, 4 warnings in 1.23s`。
+
 ### Phase 5：Truth Search 服务化并接入 preflight
 
 目标：

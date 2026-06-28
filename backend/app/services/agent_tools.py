@@ -28,8 +28,12 @@ from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.config import get_settings
 from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
-from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
-from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled
+from app.services.governance_capability_taxonomy import (
+    CORE_TOOL_NAMES,
+    iter_runtime_l2_capabilities,
+    iter_runtime_l2_capabilities_for_query,
+)
+from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled, policy_pack_names_for_tool
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.tool_visibility import HR_ONLY_TOOL_NAMES, is_hr_agent, is_tool_allowed_for_agent
 from app.tools import (
@@ -40,12 +44,7 @@ from app.tools import (
     run_tool_governance,
 )
 from app.tools.result_envelope import ToolContentEnvelope
-from app.tools.runtime_tool_groups import (
-    RUNTIME_TOOL_GROUPS,
-    iter_runtime_tool_groups,
-    normalize_tool_query,
-    static_runtime_tool_group_names_for_tool,
-)
+from app.tools.runtime_tool_groups import normalize_tool_query
 
 logger = logging.getLogger(__name__)
 
@@ -544,20 +543,24 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
         normalized = select_target.lower()
     compact = normalize_tool_query(normalized)
     pack_policies: dict[str, bool] | None = None
+    pack_policy_available = True
     try:
         tenant_id = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
             pack_policies = await get_agent_pack_policies(db, tenant_id, agent_id)
-    except Exception:
-        pack_policies = None
+    except Exception as exc:
+        logger.warning("[Tools] pack policy lookup failed for discovery; failing L2 discovery closed: %s", exc)
+        pack_policy_available = False
 
     def _pack_enabled(pack_name: str) -> bool:
+        if not pack_policy_available:
+            return False
         if pack_policies is None:
-            return True
+            return False
         return is_pack_enabled(pack_policies, pack_name)
 
     if normalized:
-        for pack in RUNTIME_TOOL_GROUPS:
+        for pack in iter_runtime_l2_capabilities():
             if not _pack_enabled(pack.name):
                 continue
             for tool_name in pack.tools:
@@ -567,7 +570,7 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
                     return [tool_name]
     requested: list[str] = []
     seen: set[str] = set()
-    for pack in iter_runtime_tool_groups(query):
+    for pack in iter_runtime_l2_capabilities_for_query(query):
         if not _pack_enabled(pack.name):
             continue
         for tool_name in pack.tools:
@@ -766,7 +769,7 @@ async def get_agent_tools_for_llm(
                 # MCP tools are gated by assignment reachability (above), not by a
                 # pack policy — the mcp_server:* pseudo-pack was retired in Step 6.
                 # Non-MCP tools still respect their static pack policy.
-                static_packs = set(static_runtime_tool_group_names_for_tool(t.name))
+                static_packs = set(policy_pack_names_for_tool(t.name))
                 if static_packs and not any(is_pack_enabled(pack_policies, pack_name) for pack_name in static_packs):
                     continue
 

@@ -17,6 +17,8 @@ governs reminder frequency (session metadata), never tool visibility.
 
 from __future__ import annotations
 
+import pytest
+
 SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "propose_dynamic_workflow", "preview_workflow", "start_workflow"}
 WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
 ADVANCED_WEB_TOOLS = {"exa_search", "tavily_search", "firecrawl_fetch", "xcrawl_scrape"}
@@ -204,7 +206,7 @@ def test_coding_capability_is_l2_local_bridge_only():
     assert CODING_PLUGIN_TOOLS <= set(descriptor.tools)
 
 
-def test_office_runtime_is_core_but_browser_office_is_l2():
+def test_office_runtime_is_core_and_browser_office_is_not_cloud_descriptor():
     from app.services.agent_tools import CORE_TOOL_NAMES
     from app.services.governance_capability_taxonomy import (
         GovernanceCapabilityLayer,
@@ -224,7 +226,24 @@ def test_office_runtime_is_core_but_browser_office_is_l2():
     assert not (OFFICE_RUNTIME_TOOLS & l2_tools)
 
     browser_office = capability_descriptor_for_name("office_browser")
-    assert browser_office is not None
-    assert browser_office.layer == GovernanceCapabilityLayer.PLATFORM_ADDON.value
-    assert browser_office.l2_visible is True
-    assert browser_office.enterprise_toggleable is True
+    assert browser_office is None
+    assert capability_descriptor_for_tool("onlyoffice_browser_session") is None
+    assert capability_descriptor_for_tool("onlyoffice_signed_callback") is None
+
+
+@pytest.mark.asyncio
+async def test_discoverable_l2_tools_fail_closed_when_pack_policy_unavailable(monkeypatch):
+    from uuid import uuid4
+
+    import app.services.agent_tools as agent_tools
+
+    async def fail_resolve(_agent_id):
+        raise RuntimeError("tenant unavailable")
+
+    async def no_mcp(_agent_id, _query):
+        return []
+
+    monkeypatch.setattr(agent_tools, "resolve_tenant_for_agent", fail_resolve)
+    monkeypatch.setattr(agent_tools, "list_agent_mcp_deferred_tools", no_mcp)
+
+    assert await agent_tools.discoverable_tool_names_for_query(uuid4(), "exa") == []

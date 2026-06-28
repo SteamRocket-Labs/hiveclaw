@@ -17,8 +17,10 @@ def test_static_non_manifest_packs_remain_enabled_by_default():
 
 
 def test_policy_pack_names_include_manifest_owned_tools_only():
+    from app.services.governance_capability_taxonomy import taxonomy_policy_pack_names_for_tool
     from app.services.pack_policy_service import policy_pack_names_for_tool
 
+    assert policy_pack_names_for_tool("exa_search") == taxonomy_policy_pack_names_for_tool("exa_search")
     assert "office_pack" not in policy_pack_names_for_tool("office_document_create")
     assert "office_pack" not in policy_pack_names_for_tool("read_document")
     assert "office_pack" not in policy_pack_names_for_tool("web_search")

@@ -13,9 +13,6 @@ from app.packs.catalog_reader import PackCatalogReader, find_pack_dirs
 
 
 _MANIFEST_DEFAULT_ENABLEMENT: dict[str, bool] | None = None
-_REGISTERED_TOOL_PACK_NAMES: dict[str, tuple[str, ...]] | None = None
-
-
 def tenant_pack_policy_key(tenant_id: uuid.UUID) -> str:
     return f"tenant:{tenant_id}:pack_policies"
 
@@ -176,29 +173,10 @@ def is_pack_enabled(pack_policies: dict[str, bool], pack_name: str) -> bool:
 def policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
     """Return policy-relevant pack names for a tool.
 
-    Static packs infer membership from `app.tools.runtime_tool_groups`. Dedicated tool
-    handlers may also declare `ToolMeta.pack`, keeping first-class tools attached
-    to their pack without incorrectly tagging shared dependencies.
+    The governance taxonomy owns the CORE-vs-L2 boundary. Keep this function as
+    the storage-layer compatibility entrypoint, but do not infer policy packs
+    directly from runtime groups here.
     """
-    global _REGISTERED_TOOL_PACK_NAMES
-    if _REGISTERED_TOOL_PACK_NAMES is None:
-        from app.tools.collector import collect_tools
-        from app.tools.runtime_tool_groups import static_runtime_tool_group_names_for_tool
+    from app.services.governance_capability_taxonomy import taxonomy_policy_pack_names_for_tool
 
-        by_tool: dict[str, set[str]] = {}
-        for pack_name, names in collect_tools().pack_tool_groups.items():
-            for name in names:
-                by_tool.setdefault(name, set()).add(pack_name)
-        for name in tuple(by_tool):
-            by_tool[name].update(static_runtime_tool_group_names_for_tool(name))
-        _REGISTERED_TOOL_PACK_NAMES = {
-            name: tuple(sorted(pack_names))
-            for name, pack_names in by_tool.items()
-        }
-
-    if tool_name in _REGISTERED_TOOL_PACK_NAMES:
-        return _REGISTERED_TOOL_PACK_NAMES[tool_name]
-
-    from app.tools.runtime_tool_groups import static_runtime_tool_group_names_for_tool
-
-    return static_runtime_tool_group_names_for_tool(tool_name)
+    return taxonomy_policy_pack_names_for_tool(tool_name)

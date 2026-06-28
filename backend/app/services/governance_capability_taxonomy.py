@@ -265,20 +265,6 @@ _CODING_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     requires_local_bridge=True,
 )
 
-_OFFICE_BROWSER_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
-    name="office_browser",
-    layer=GovernanceCapabilityLayer.PLATFORM_ADDON.value,
-    tools=(
-        "onlyoffice_browser_session",
-        "onlyoffice_signed_callback",
-    ),
-    default_enabled=False,
-    l2_visible=True,
-    enterprise_toggleable=True,
-    source="office_browser",
-    notes="Browser WYSIWYG Office integration. Agent document runtime remains agent_base.",
-)
-
 def _runtime_group_descriptors() -> tuple[GovernanceCapabilityDescriptorV1, ...]:
     from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
@@ -289,18 +275,37 @@ def _runtime_group_descriptors() -> tuple[GovernanceCapabilityDescriptorV1, ...]
     )
 
 
+def iter_runtime_l2_capabilities() -> tuple[GovernanceCapabilityDescriptorV1, ...]:
+    """Return runtime-discoverable L2 capabilities.
+
+    Local bridge descriptors such as the coding pack are product taxonomy rows,
+    not cloud runtime discovery rows. Discovery and pack policy should use this
+    facade instead of importing ``RUNTIME_TOOL_GROUPS`` directly.
+    """
+    return _runtime_group_descriptors()
+
+
+def iter_runtime_l2_capabilities_for_query(query: str = "") -> tuple[GovernanceCapabilityDescriptorV1, ...]:
+    from app.tools.runtime_tool_groups import iter_runtime_tool_groups
+
+    return tuple(
+        descriptor
+        for descriptor in (_descriptor_from_runtime_group(group) for group in iter_runtime_tool_groups(query))
+        if descriptor.tools
+    )
+
+
 def _descriptors_by_name() -> dict[str, GovernanceCapabilityDescriptorV1]:
     return {
         _CORE_DESCRIPTOR.name: _CORE_DESCRIPTOR,
         **{descriptor.name: descriptor for descriptor in _runtime_group_descriptors()},
         _CODING_DESCRIPTOR.name: _CODING_DESCRIPTOR,
-        _OFFICE_BROWSER_DESCRIPTOR.name: _OFFICE_BROWSER_DESCRIPTOR,
     }
 
 
 def _descriptors_by_tool() -> dict[str, GovernanceCapabilityDescriptorV1]:
     descriptors_by_tool = {tool_name: _CORE_DESCRIPTOR for tool_name in CORE_TOOL_NAMES}
-    for descriptor in (*_runtime_group_descriptors(), _CODING_DESCRIPTOR, _OFFICE_BROWSER_DESCRIPTOR):
+    for descriptor in (*_runtime_group_descriptors(), _CODING_DESCRIPTOR):
         for tool_name in descriptor.tools:
             descriptors_by_tool.setdefault(tool_name, descriptor)
     return descriptors_by_tool
@@ -330,3 +335,45 @@ def is_agent_base_tool(tool_name: str) -> bool:
 def is_l2_tool(tool_name: str) -> bool:
     descriptor = capability_descriptor_for_tool(tool_name)
     return bool(descriptor and descriptor.l2_visible)
+
+
+_POLICY_PACK_NAMES_BY_TOOL: dict[str, tuple[str, ...]] | None = None
+
+
+def taxonomy_policy_pack_names_for_tool(tool_name: str) -> tuple[str, ...]:
+    """Return L2 policy pack names for a runtime tool.
+
+    This is the taxonomy-owned facade for call-time L2 policy. It intentionally
+    excludes agent_base tools even when an old manifest or ToolMeta row still
+    mentions a pack, so CORE cannot become disableable through stale metadata.
+    """
+    global _POLICY_PACK_NAMES_BY_TOOL
+    name = str(tool_name or "").strip()
+    if not name or name in CORE_TOOL_NAMES:
+        return ()
+
+    if _POLICY_PACK_NAMES_BY_TOOL is None:
+        by_tool: dict[str, set[str]] = {}
+        for descriptor in iter_runtime_l2_capabilities():
+            for candidate in descriptor.tools:
+                if candidate not in CORE_TOOL_NAMES:
+                    by_tool.setdefault(candidate, set()).add(descriptor.name)
+
+        try:
+            from app.tools.collector import collect_tools
+
+            for pack_name, names in collect_tools().pack_tool_groups.items():
+                descriptor = capability_descriptor_for_name(pack_name)
+                if descriptor is None or not descriptor.l2_visible:
+                    continue
+                for candidate in names:
+                    if candidate not in CORE_TOOL_NAMES:
+                        by_tool.setdefault(candidate, set()).add(pack_name)
+        except Exception:
+            # Runtime group descriptors are the canonical fallback. Collector
+            # failures must not make CORE tools policy-controlled.
+            pass
+
+        _POLICY_PACK_NAMES_BY_TOOL = {candidate: tuple(sorted(pack_names)) for candidate, pack_names in by_tool.items()}
+
+    return _POLICY_PACK_NAMES_BY_TOOL.get(name, ())

@@ -939,6 +939,12 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
     if (request.standalone_system_prompt or "").strip():
         return ""
     metadata = _span_session_metadata(request)
+    try:
+        from app.services.skill_execution_adapter import apply_skill_execution_plans_to_metadata
+
+        apply_skill_execution_plans_to_metadata(metadata)
+    except Exception as exc:
+        logger.debug("[Kernel] skill execution plan metadata consumption failed: %s", exc)
     policy = metadata.get("permission_profile")
     policy_dict = dict(policy) if isinstance(policy, dict) else {}
     approval_policy = str(
@@ -965,7 +971,7 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
         denied_actions.append("tool_execution_without_tenant")
     from app.runtime.prompts.permissions import PermissionsPromptContext, build_permissions_prompt
 
-    return build_permissions_prompt(
+    permissions_prompt = build_permissions_prompt(
         PermissionsPromptContext(
             approval_policy=approval_policy,
             network_access=network_access,
@@ -980,6 +986,33 @@ def _build_permissions_context(request: InvocationRequest, runtime_config: Runti
             ),
         )
     )
+    handoff_context = _render_pending_skill_handoffs(metadata)
+    if handoff_context:
+        return permissions_prompt + "\n" + handoff_context
+    return permissions_prompt
+
+
+def _render_pending_skill_handoffs(metadata: dict[str, Any]) -> str:
+    handoffs = metadata.get("pending_skill_handoffs")
+    if not isinstance(handoffs, list):
+        return ""
+    lines = ["# Pending Skill Execution Handoffs"]
+    for raw in handoffs:
+        if not isinstance(raw, dict):
+            continue
+        skill = str(raw.get("skill") or raw.get("skill_slug") or "").strip()
+        execution_tool = str(raw.get("execution_tool") or "").strip()
+        if not skill or not execution_tool:
+            continue
+        tool_arguments = raw.get("tool_arguments") if isinstance(raw.get("tool_arguments"), dict) else {}
+        lines.append(
+            f"- {skill}: call `{execution_tool}` through the governed tool runtime when this skill needs isolated execution."
+        )
+        if tool_arguments:
+            lines.append(f"  tool_arguments: {json.dumps(tool_arguments, ensure_ascii=False, sort_keys=True)}")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines) + "\n"
 
 
 async def _compress_messages_with_trace(

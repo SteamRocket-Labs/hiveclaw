@@ -124,3 +124,15 @@ def test_loaded_skill_frontmatter_records_execution_plan_and_permission_profile(
     assert plan["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
     assert plan["permission_profile"]["mode"] == "auto"
     assert plan["tool_arguments"]["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    assert session.metadata["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    handoffs = session.metadata["pending_skill_handoffs"]
+    assert handoffs == [
+        {
+            "skill": "Research",
+            "skill_slug": "research",
+            "source": "skills/research/SKILL.md",
+            "execution_tool": "spawn_subagent",
+            "tool_arguments": plan["tool_arguments"],
+            "permission_profile": plan["permission_profile"],
+        }
+    ]

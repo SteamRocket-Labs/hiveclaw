@@ -285,6 +285,12 @@ def _permission_profile_from_session_context(session_context: SessionContext | N
     metadata = getattr(session_context, "metadata", None) if session_context is not None else None
     if not isinstance(metadata, dict):
         return None
+    try:
+        from app.services.skill_execution_adapter import apply_skill_execution_plans_to_metadata
+
+        apply_skill_execution_plans_to_metadata(metadata)
+    except Exception:
+        logger.debug("[Invoker] skill execution plan metadata consumption failed", exc_info=True)
     raw = metadata.get("permission_profile")
     if raw is None:
         return None

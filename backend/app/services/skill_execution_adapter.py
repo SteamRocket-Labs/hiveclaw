@@ -93,3 +93,59 @@ def build_skill_execution_plan(skill: ParsedSkill) -> SkillExecutionPlan:
 def skill_execution_plan_payload(skill: ParsedSkill) -> dict[str, Any]:
     """Serialize a SkillExecutionPlan for session metadata and workbench views."""
     return _json_ready(asdict(build_skill_execution_plan(skill)))
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def apply_skill_execution_plans_to_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Apply stored skill execution plans to runtime-consumed metadata.
+
+    This is the runtime consumer for frontmatter execution plans. It keeps skill
+    loading progressive-disclosure only, but makes scoped allowed tools and fork
+    handoffs visible to the governed tool loop.
+    """
+    plans = metadata.get("skill_execution_plans")
+    if not isinstance(plans, list):
+        return metadata
+
+    permission_profile = dict(metadata.get("permission_profile") or {})
+    merged_allowed = _string_list(permission_profile.get("allowed_tools"))
+    handoffs_by_slug = {
+        str(item.get("skill_slug") or item.get("skill")): dict(item)
+        for item in metadata.get("pending_skill_handoffs", [])
+        if isinstance(item, dict)
+    }
+
+    for raw_plan in plans:
+        if not isinstance(raw_plan, dict):
+            continue
+        profile = raw_plan.get("permission_profile")
+        if isinstance(profile, dict):
+            permission_profile.setdefault("mode", profile.get("mode") or "auto")
+            for tool_name in _string_list(profile.get("allowed_tools")):
+                if tool_name not in merged_allowed:
+                    merged_allowed.append(tool_name)
+        if raw_plan.get("execution_tool") == "spawn_subagent":
+            skill_slug = str(raw_plan.get("skill_slug") or raw_plan.get("skill") or "").strip()
+            if not skill_slug:
+                continue
+            handoffs_by_slug[skill_slug] = {
+                "skill": str(raw_plan.get("skill") or skill_slug),
+                "skill_slug": skill_slug,
+                "source": str(raw_plan.get("source") or ""),
+                "execution_tool": "spawn_subagent",
+                "tool_arguments": dict(raw_plan.get("tool_arguments") or {}),
+                "permission_profile": dict(profile) if isinstance(profile, dict) else {},
+            }
+
+    if merged_allowed:
+        permission_profile["allowed_tools"] = merged_allowed
+        permission_profile.setdefault("mode", "auto")
+        metadata["permission_profile"] = permission_profile
+    if handoffs_by_slug:
+        metadata["pending_skill_handoffs"] = list(handoffs_by_slug.values())
+    return metadata

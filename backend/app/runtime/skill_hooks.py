@@ -7,7 +7,7 @@ from typing import Any
 
 from app.runtime.hooks import HookContext, HookEvent, HookRegistry, HookResult, hook_registry
 from app.runtime.session import SessionContext
-from app.services.skill_execution_adapter import skill_execution_plan_payload
+from app.services.skill_execution_adapter import apply_skill_execution_plans_to_metadata, skill_execution_plan_payload
 from app.skills.loader import WorkspaceSkillLoader
 from app.skills.registry import SkillRegistry
 from app.skills.types import ParsedSkill
@@ -61,6 +61,7 @@ def _append_session_execution_plan(session_context: SessionContext, parsed: Pars
     by_key = {str(item.get("skill_slug") or item.get("skill")): dict(item) for item in existing if isinstance(item, dict)}
     by_key[str(plan["skill_slug"])] = plan
     session_context.metadata["skill_execution_plans"] = list(by_key.values())
+    apply_skill_execution_plans_to_metadata(session_context.metadata)
 
 
 def register_loaded_skill_hooks(

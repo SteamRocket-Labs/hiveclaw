@@ -74,6 +74,49 @@ def test_permissions_context_exposes_plan_mode_plan_file_as_writable_root() -> N
     assert "- workspace/plans/session-1.plan.md" in prompt
 
 
+def test_permissions_context_consumes_skill_execution_plans() -> None:
+    from app.kernel import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _build_permissions_context
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(
+        session_id="session-skill",
+        metadata={
+            "skill_execution_plans": [
+                {
+                    "skill": "Research",
+                    "skill_slug": "research",
+                    "source": "skills/research/SKILL.md",
+                    "execution_mode": "fork",
+                    "execution_tool": "spawn_subagent",
+                    "permission_profile": {"mode": "auto", "allowed_tools": ["web_search", "read_file"]},
+                    "tool_arguments": {
+                        "prompt": "Use the loaded skill `Research`.",
+                        "skill": "Research",
+                        "permission_profile": {"mode": "auto", "allowed_tools": ["web_search", "read_file"]},
+                    },
+                }
+            ]
+        },
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(),
+        messages=[],
+        agent_name="agent",
+        role_description="role",
+        session_context=session,
+    )
+
+    prompt = _build_permissions_context(request, RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3))
+
+    assert "- web_search" in prompt
+    assert "- read_file" in prompt
+    assert "Pending Skill Execution Handoffs" in prompt
+    assert "spawn_subagent" in prompt
+    assert "Research" in prompt
+    assert session.metadata["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+
+
 def test_split_concatenated_json_returns_single_object_when_valid():
     """T1-4: a single valid JSON object passes through untouched."""
     from app.kernel.engine import _split_concatenated_json

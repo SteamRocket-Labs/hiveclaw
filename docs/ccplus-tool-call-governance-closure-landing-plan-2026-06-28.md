@@ -7,6 +7,10 @@
 2026-06-28 自查追加闭合：
 
 - L2 产品面：旧 `Global Tools` 代码入口和文案已清零，企业后台只呈现 `Extensions & Add-ons`。
+- Web Search 边界：基础 `web_search` 不再使用 AnySearch primary；AnySearch 仅通过 L2 `anysearch_*` 工具进入。
+- Server-side 基础能力保护：company/global API 和 per-agent API 都拒绝关闭 `agent_base` built-in。
+- L2 call-time gate：disabled extension 不只挡 discovery；`execute()`、approved/direct path、`execute_with_context()` 均在 registry/backend 前执行 pack policy gate。
+- L1 产品闭环：Agent Detail 增加 Governance tab，接入 Capability Policies 管理面。
 - Truth Search：旧 `knowledge_inject.py` 与旧测试已删除，runtime prompt evidence 统一走 `TruthSearchService`。
 - Hook 生命周期：公共 `execute_tool()` / approved direct path 补齐 PRE/POST/FAIL hook，kernel tool loop 显式关闭 service-level hook 避免重复。
 - L3 deny：permission deny 后会启动隐藏 continuation，把 denial 回灌模型 loop。
@@ -19,15 +23,18 @@
 - `cde818ab` `ccplus: route knowledge context through truth search`
 - `b88314e7` `ccplus: run hooks through tool runtime service`
 - `49565c96` `ccplus: resume model loop after permission denial`
+- `2c7c180e` `ccplus: split core web search from anysearch`
+- `343b01a1` `ccplus: enforce agent-base and l2 policy at runtime`
+- `b1b5f85a` `ccplus: add capability governance surface`
 
 最终回归：
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5320 passed, 2 skipped, 4 warnings in 85.38s
+# 5324 passed, 2 skipped, 4 warnings in 85.73s
 
-cd frontend && npm test
-# Test Files 66 passed (66); Tests 359 passed (359)
+cd frontend && npm test -- --run
+# Test Files 66 passed (66); Tests 360 passed (360)
 
 cd frontend && npm run build
 # tsc && vite build succeeded
@@ -253,7 +260,7 @@ L3 是当前 session 内的 allow once / allow session / deny。
 - 关闭 `send_message_to_agent`、`web_fetch`、`web_search`、`start_workflow` 返回明确错误。
 - 关闭 Exa、Firecrawl、Plaza、Feishu、MCP assignment 后不可发现、不可执行。
 
-### D3. Skill command / SkillTool 没有完全闭合
+### D3. Skill command / SkillTool 追修前未完全闭合
 
 问题：
 
@@ -331,7 +338,7 @@ L3 是当前 session 内的 allow once / allow session / deny。
 - 重复 resolve、stale request、非同 session request 被拒绝。
 - process restart 后 pending permission 可恢复或明确 expired。
 
-### D6. Truth Search 还没有治理化
+### D6. Truth Search 追修前未治理化
 
 问题：
 
@@ -361,7 +368,7 @@ L3 是当前 session 内的 allow once / allow session / deny。
 - provider failure 对高风险动作 fail closed 或请求 L3，而不是静默放行。
 - final answer citation 和 decision_trace 能回溯到 source_refs。
 
-### D7. MCP local transport 和 prompt catalog 边界未完全收口
+### D7. MCP local transport 和 prompt catalog 边界追修
 
 问题：
 
@@ -455,7 +462,7 @@ Hook 落地规则：
 - initial compact、request-preflight autocompact、kernel mid-loop compact、manual `/compact`、PTL compact 都触发 `PRE_COMPACTION/POST_COMPACTION`。
 - Coding plugin 关闭时 Worktree/CWD/File hooks 是 disabled-noop；开启后才有真实 trigger。
 
-### D10. 压缩全生命周期还没有被提升为一等闭环
+### D10. 压缩全生命周期一等闭环追修
 
 问题：
 
@@ -709,6 +716,8 @@ pytest tests/tools/test_search_provider_tool_definitions.py tests/services/test_
 实施证据（2026-06-28）：
 
 - Red：新增 Office boundary 红线后，`pytest tests/services/test_agent_tools_core_surface.py -q` 失败于 `OFFICE_RUNTIME_TOOLS <= CORE_TOOL_NAMES`，证明 `read_document` / `office_document_*` 仍被当成 pack/skill 工具而非 core runtime。
+- Red：追修 Web Search boundary 红线后，新增 `test_web_search_auto_uses_searxng_even_when_anysearch_key_is_configured`，AnySearch fake 一旦被 CORE `web_search` 调用就抛错，证明旧 primary 行为必须退役。
+- Green：基础 `web_search` 的 description/config schema 改为 CORE basic provider chain；`auto` 只在配置存在时选 SearXNG，否则返回 provider_unavailable；legacy `search_engine=anysearch` 被归一到 core auto；AnySearch provider 仅保留在 `anysearch_get_sub_domains` / `anysearch_search` / `anysearch_batch_search` / `anysearch_extract` L2 tools。
 - Green：已将 `read_document`、`office_document_create/view/query/apply/validate/dump` 纳入 taxonomy `agent_base`；`office_pack` 不再把这些工具暴露成 L2；新增 `office_browser` L2 descriptor 承接 ONLYOFFICE/browser WYSIWYG 能力；agent tools API 使用 taxonomy 让 core runtime 工具不依赖 skill declared rows 可见。
 - Full-suite red：全量后端回归 `pytest tests -q` 暴露 `CORE∩pack invariant violated`，因为 `office_pack` runtime group、`office_pack/pack.yaml role=owns` 和 `ToolMeta.pack="office_pack"` 仍然把 `read_document` / `office_document_*` 作为 pack-owned tools 维护，证明旧系统没有完全退役。
 - Green：已退役 `office_pack` 的 runtime group ownership，`backend/packs/office_pack/pack.yaml` 中 Office runtime tools 改为 `role: requires_core`，Office handlers 移除 `pack="office_pack"`，`pack_policy_service.policy_pack_names_for_tool()` 不再把 core Office tools 归到 `office_pack`；manifest-only catalog 仍暴露 `owns` / `requires_core` 角色，保留 skill guide / install catalog 语义。
@@ -721,6 +730,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_
 ```
 
 - 验证结果：`46 passed, 4 warnings in 1.56s`。
+- Web Search 追修验证结果：`pytest tests/services/test_web_mcp_resilience.py tests/services/test_prompt_contracts.py tests/tools/test_search_provider_tool_definitions.py -q` 纳入扩大集合通过；最终后端全量 `5324 passed, 2 skipped, 4 warnings`。
 - ownership 收口验证命令：
 
 ```bash
@@ -755,8 +765,10 @@ pytest tests/services/test_permission_profile_v1.py tests/services/test_web_chat
 
 - Red：新增 L3 pending-frame 红线后，`pytest tests/services/test_permission_profile_v1.py -q` 失败于 `ToolGovernanceContext.__init__() got an unexpected keyword argument 'tool_call_id'`，证明治理上下文没有携带模型原始 tool call id。
 - Red：新增 session resolve 红线后，`pytest tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id -q` 失败于 `KeyError: 'permission_checkpoint'`，证明用户 allow 后没有持久化 `PermissionCheckpointV1`。
+- Red：追修 L1 产品闭环红线后，`AgentDetailSections.test.tsx` 失败于缺少 `governance` tab / `AgentGovernanceSection` / `listCapabilityPolicies` wiring，证明 Capability Policies 只有 API adapter，没有产品入口。
 - Green：已在 `run_tool_governance()` 的 session permission request 中写入 `pending_tool_frame`；kernel / invoker / `ToolRuntimeService` / `execute_tool()` 统一透传原始 `tool_call_id`；`resolve_session_permission()` 现在从 request payload 恢复 `PendingToolFrameV1`，写入 `PermissionCheckpointV1`，并用同一个 `tool_call_id` 执行、持久化和广播结果。
 - Green：`ToolRuntimeService` 的治理 resolver 调用改为签名感知透传，真实 resolver 接收 `tool_call_id`，不支持该参数的测试替身不会形成新断点。
+- Green：Agent Detail 增加 `governance` tab，Workbench permissions area 的 primary tab 改为 `governance`，`AgentGovernanceSection` 渲染 capability rows 并调用 `listCapabilityPolicies` / `upsertCapabilityPolicy`。
 - 验证命令：
 
 ```bash
@@ -766,6 +778,7 @@ pytest tests/services/test_permission_profile_v1.py tests/api/test_chat_session_
 ```
 
 - 验证结果：`89 passed, 4 warnings in 1.67s`。
+- L1 产品闭环验证结果：`npm test -- AgentDetailSections.test.tsx WorkspaceToolsSection.test.tsx`：`72 passed`；`npm run build` 通过。
 
 ### Phase 4：SkillTool / Hook parity
 
@@ -961,9 +974,11 @@ pytest tests/e2e/test_tool_call_killed_process_recovery.py tests/e2e/test_sessio
 
 - Red：新增恢复闭环红线后，`pytest tests/e2e/test_tool_call_recovery_closure.py -q` 失败于 `AttributeError: 'RecoveryManifest' object has no attribute 'discovered_tools'` 和 `TypeError: prepare_session_context_for_request() got an unexpected keyword argument 'session_id'`，证明 compact / killed-process recovery 仍缺 tool surface、permission frame、hook lifecycle、compaction lifecycle 的一等恢复字段。
 - Red：新增 stale discovered tool 红线后，`pytest tests/e2e/test_tool_call_recovery_closure.py tests/services/test_agent_tools.py::test_requested_discovered_tool_does_not_bypass_disabled_pack_policy -q` 初始失败，证明 `requested_names` / stale transcript 入口仍可能绕过 disabled pack policy 的执行期收口。
+- Red：追修 call-time gate 红线后，`test_tool_runtime_service_blocks_disabled_l2_pack_in_execute_with_context` 初始失败于返回 `SHOULD_NOT_RUN`，证明 direct context execution 可绕过 pack policy。
 - Green：`RecoveryManifest` 现在通过 `to_payload()` 和 `to_restoration_text()` 显式保留 `discovered_tools`、`pending_tool_frames`、`permission_checkpoints`、`hook_lifecycle_records`、`compaction_lifecycle_records`、`permission_profile`，kernel 写出的 `runtime_artifacts/recovery_manifest.json` 使用同一 payload，不再维护第二套恢复字段。
 - Green：`prepare_session_context_for_request()` 增加 stable `compaction_id`、`session_id`、`turn_id`、`runtime_task_id`、`trigger` 和 before/after message/token estimates；request-preflight autocompact 会发出 `compaction_lifecycle` event，kernel 将该 lifecycle 追加进 session metadata，确保后续 resume / fork / compact restoration 可见。
 - Green：`get_agent_tools_for_llm(... requested_names=...)` 的回归测试固定了 disabled pack call-time deny：被 stale transcript 或 discovered tool 直接点名的 L2 add-on 不能绕过 `get_agent_pack_policies()`，CORE `read_file` 保持可见，disabled `exa_search` 不可见。
+- Green：`ToolRuntimeService` 在 `execute()`、`execute_direct()` / `execute_approved()` 的 shared path、`execute_with_context()` 统一调用 `_l2_extension_policy_block()`；disabled L2 tool 在 registry/backend/preflight 前返回 `extension_disabled`，不会下落到 L3。
 - 验证命令：
 
 ```bash
@@ -1057,14 +1072,18 @@ ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/ses
 
 1. Governance taxonomy 单源。
 2. L2 只管 extension，不管 core。
-3. SkillTool fork / allowed-tools permission profile。
-4. Hook modified args 二次治理。
-5. L3 pending tool frame / same-turn resume。
-6. Truth Search evidence layer。
-7. MCP local transport / Coding plugin 边界。
-8. killed-process / compact / fork E2E 矩阵。
-9. Hook 全生命周期触发与证据矩阵。
-10. 压缩全生命周期：initial、mid-loop、manual、PTL、final/close 全路径闭环。
+3. 基础 `web_search` 与 AnySearch L2 provider boundary。
+4. Company/global API 不可关闭 `agent_base` built-in。
+5. L2 disabled call-time gate 覆盖 `execute`、approved/direct、`execute_with_context`。
+6. L1 Capability Policies 产品入口。
+7. SkillTool fork / allowed-tools permission profile。
+8. Hook modified args 二次治理。
+9. L3 pending tool frame / same-turn resume。
+10. Truth Search evidence layer。
+11. MCP local transport / Coding plugin 边界。
+12. killed-process / compact / fork E2E 矩阵。
+13. Hook 全生命周期触发与证据矩阵。
+14. 压缩全生命周期：initial、mid-loop、manual、PTL、final/close 全路径闭环。
 
 因此，Hive 现在可以做到：
 

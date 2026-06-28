@@ -8,7 +8,7 @@
 
 1. Hive 已经实现了大部分 CC 工具调用语义，并且在若干地方吸收了 Codex 的工程优势：typed session/workbench、permission profile、sandbox/provider、invocation spans、session graph、durable RuntimeTask、branch/rewind/compact。
 2. 现在不能再按“功能名是否存在”判断完成度，必须按工具调用闭环判断：工具 schema 可见、上下文组装、模型调用、工具调用解析、治理/权限/hook、执行、结果回灌、T0/transcript/InvocationSpan、恢复/分叉/压缩、E2E 验证。
-3. 核心断点集中在：Skill command 的 fork/allowedTools 执行语义、session permission 的 crash-safe pending frame、MCP 本地 transport 适配、Truth Search 治理化、coding pack 正式化、跨工具闭环 E2E 证明。
+3. 第一轮核心断点曾集中在：Skill command 的 fork/allowedTools 执行语义、session permission 的 crash-safe pending frame、MCP 本地 transport 适配、Truth Search 治理化、coding pack 正式化、跨工具闭环 E2E 证明；2026-06-28 追修又补齐了基础 `web_search` / AnySearch 边界、server-side `agent_base` 禁关、L2 call-time gate、L1 Capability Policy 产品面。
 4. Worktree、LSP、Notebook、persistent terminal、local Browser UI 都不进入 core runtime baseline；它们是后续可开启 Coding 插件。
 
 ### 0.1 2026-06-28 自查修复追加结论
@@ -22,15 +22,19 @@
 | 公共 `execute_tool()` 入口绕过 PRE/POST hook | `ToolRuntimeService.execute()` 成为非 kernel 入口 hook 生命周期 authority；kernel 入口显式关闭 service-level hook 避免重复 | `backend/app/tools/service.py`、`backend/app/services/agent_tools.py`、`backend/app/runtime/invoker.py` |
 | L3 deny 后没有回到模型 loop | deny 现在会触发隐藏 continuation，把 denial 作为模型可处理输入回灌 | `backend/app/api/chat_sessions.py` |
 | 自动压缩/上下文状态只在后端事件可见 | Chat/Session Workbench header 展示 `context_window.latest_status/latest_skipped` | `frontend/src/pages/session-workbench/timelineModel.ts`、`frontend/src/pages/session-workbench/SessionWorkbenchChrome.tsx` |
+| `web_search` 仍混用 AnySearch primary | 基础 `web_search` 只保留 CORE basic provider chain；AnySearch 仅通过 L2 `anysearch_*` tools 使用 | `2c7c180e`、`backend/app/tools/handlers/search.py`、`backend/app/services/agent_tool_domains/web_mcp.py` |
+| company/global API 仍能关闭 built-in `agent_base` | `update_global_tool()` / `delete_global_tool()` 对 `agent_base` built-in 返回 `agent_base_capability_not_toggleable` | `343b01a1`、`backend/app/api/tools.py`、`backend/tests/api/test_tools_api_surface.py` |
+| L2 disabled 只挡 discovery，不挡 direct call | `ToolRuntimeService` 在 `execute()`、approved/direct、`execute_with_context()` 前置 pack policy gate | `343b01a1`、`backend/app/tools/service.py`、`backend/tests/tools/test_service.py` |
+| L1 Capability Policies 没有产品入口 | Agent Detail 增加 Governance tab，渲染 capability rows 并调用 policy API | `b1b5f85a`、`frontend/src/pages/agent-detail/AgentGovernanceSection.tsx` |
 
 回归证据：
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5320 passed, 2 skipped, 4 warnings in 85.38s
+# 5324 passed, 2 skipped, 4 warnings in 85.73s
 
-cd frontend && npm test
-# Test Files 66 passed (66); Tests 359 passed (359)
+cd frontend && npm test -- --run
+# Test Files 66 passed (66); Tests 360 passed (360)
 
 cd frontend && npm run build
 # tsc && vite build succeeded
@@ -203,7 +207,7 @@ Feature-gated built-ins 不作为独立类别。实验或 coding-only 能力应�
   - `active_tool_names/deferred_tool_names`
 - resolve 后写入原 frame 的 tool result，并触发 same-turn resume。
 
-### D3. MCP local transports 还没有 core-level 适配
+### D3. MCP local transports 的 core / local plugin 边界
 
 现状：
 - HTTP/SSE 已闭合。
@@ -218,7 +222,7 @@ Feature-gated built-ins 不作为独立类别。实验或 coding-only 能力应�
   - 本地 runner 执行 stdio/WS/SDK transport。
   - 结果回云端仍走 ToolResultV1 + T0 + InvocationSpan。
 
-### D4. Truth Search 还没有完全治理化
+### D4. Truth Search 治理化闭环
 
 现状：
 - prompt assembly 主路径已退役 `knowledge_inject.py`，统一走 `TruthSearchService`。

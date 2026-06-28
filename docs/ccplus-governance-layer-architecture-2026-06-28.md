@@ -132,7 +132,7 @@ Web 能力必须拆开判断：
 - **Agent 基础能力**：`web_fetch`，以及平台基础 `web_search`。这里的基础 `web_search` 应该代表平台默认搜索底座，例如自研 SearchRNG / SearXNG 路径。
 - **L2 默认增值能力**：AnySearch、Exa、Tavily、Firecrawl、XCrawl，以及其他垂直或 provider-backed 搜索/抓取能力。
 
-当前代码里 `web_search` 的描述仍然混合了 “AnySearch API first, then SearXNG fallback”。按本文治理口径，这里应该拆开：基础 `web_search` 不应该依赖 AnySearch 作为语义默认；AnySearch 应作为 L2 增强能力独立安装、开启、关闭或替换。
+2026-06-28 追修后，当前代码已按本文治理口径拆开：基础 `web_search` 的 description/config schema 只表达 CORE basic provider chain，legacy `search_engine=anysearch` 会被归一到 core auto，不再执行 AnySearch；AnySearch 保留为 `anysearch_get_sub_domains`、`anysearch_search`、`anysearch_batch_search`、`anysearch_extract` 这组 L2 增强能力。验证覆盖：`tests/services/test_web_mcp_resilience.py`、`tests/services/test_prompt_contracts.py`、`tests/tools/test_search_provider_tool_definitions.py`。
 
 ### Office 能力判定
 

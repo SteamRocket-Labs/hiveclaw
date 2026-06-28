@@ -1,23 +1,29 @@
 # AnySearch Web Search Fallback 设计方案
 
-Status: implemented  
+Status: superseded by CCPlus L2 boundary on 2026-06-28
 Date: 2026-06-20  
 Scope: `web_search` provider design, tool definition wording, and agent prompt contract.
 
 ## 1. 结论
 
-AnySearch 可以作为 Hive `web_search` 的主 provider，用来替代当前 `auto` 路径里的 direct DuckDuckGo HTML fallback。
+本文件保留为 2026-06-20 的历史方案记录；其中“AnySearch 作为基础 `web_search` 主 provider”的方向已在 2026-06-28 被 CCPlus L2 治理边界取代。
 
-目标不是移除 SearXNG。SearXNG 已经是环境变量驱动的基础搜索服务，且本身可以聚合 DuckDuckGo 等多个搜索源；它应该保留为无 AnySearch API key 时的 no-key fallback / auxiliary provider。继续在 `web_search` 里单独放一个 direct DuckDuckGo HTML provider 是重复且脆弱的。目标链路应调整为：
+当前结论：
+
+- 基础 `web_search` 是 `agent_base` CORE 能力，只代表平台基础搜索底座。
+- AnySearch、Exa、Tavily、Firecrawl、XCrawl 属于 L2 provider-backed add-on / extension。
+- AnySearch 不再作为基础 `web_search` 的默认优先路径；legacy `search_engine=anysearch` 会被归一到 core auto，不执行 AnySearch。
+- AnySearch 通过 `anysearch_get_sub_domains`、`anysearch_search`、`anysearch_batch_search`、`anysearch_extract` 进入 `web_pack`。
+
+当前目标链路是：
 
 ```text
 web_search(auto)
-  -> AnySearch API key pool, when at least one AnySearch API key is configured and callable
-  -> SearXNG JSON API fallback, when AnySearch API key is absent or all AnySearch keys are temporarily unavailable
-  -> structured provider-unavailable / quota-exhausted result
+  -> SearXNG JSON API when configured
+  -> structured provider-unavailable result when no CORE provider is configured
 ```
 
-判断标准是 AnySearch 是否有可调用 API key，而不是 SearXNG 是否配置。Agent 面仍然只看到一个基础工具 `web_search`。AnySearch key 轮询、quota、错误重试、provider fallback 都应该是平台内部行为，不应该暴露给 Agent prompt 让模型自己决定。
+Agent 面仍然先看到基础工具 `web_search`；当基础结果不足时，通过 `tool_search` 发现 L2 advanced search tools。AnySearch key 轮询、quota、错误重试属于 AnySearch L2 adapter 的内部行为，不进入 CORE `web_search` prompt。
 
 补充决策：AnySearch 官方还暴露 `POST https://api.anysearch.com/mcp` JSON-RPC 2.0 endpoint。Hive 不把它做成用户可见的“外部 MCP server 配置”，也不要求用户在后台手动 import MCP。Hive 在后端内置一个 AnySearch MCP adapter，并把其能力封装成原生 read-only tools，作为 `web_pack` 的垂直数据搜索层：
 
@@ -141,21 +147,21 @@ Docs:
 
 `auto` 应该变成：
 
-1. 如果 AnySearch 配置了至少一个 API key，优先调用 AnySearch。
-2. 如果有多个 AnySearch API key，按 key pool 轮询；当前 key 不可用时尝试下一个 key。
-3. 如果没有配置 AnySearch API key，或者所有 AnySearch key 都因为 quota/rate limit/transient failure 暂时不可用，则调用 SearXNG JSON API。
-4. 如果 AnySearch 和 SearXNG 都不可用，返回结构化错误，不再自动调用 direct DuckDuckGo HTML。
+1. 基础 `web_search(auto)` 优先使用 CORE provider，不根据 AnySearch API key 切换主路径。
+2. 如果 SearXNG 没有配置，基础 `web_search` 返回结构化 provider-unavailable。
+3. AnySearch key pool、quota、rate limit、transient failure 只影响 L2 `anysearch_*` tools。
+4. Direct DuckDuckGo HTML 只保留为 `duckduckgo_legacy` manual/debug compatibility path。
 
-这意味着 `SEARXNG_URL` 配了不等于主路径永远走 SearXNG。只要 AnySearch API key 存在且可调用，AnySearch 就是主路径。
+这意味着 `SEARXNG_URL` 配置状态决定 CORE `web_search` 是否有基础 provider；AnySearch 配置状态不改变 CORE `web_search` 的 provider selection。
 
 ### 4.2 SearXNG 仍需保留
 
 保留 SearXNG 的原因：
 
 - 它是开源聚合搜索引擎，搜索源可配置，包含 DuckDuckGo 等 engine。
-- 它符合用户当前判断：不要用 AnySearch 替代或移除 SearXNG。
+- 它符合当前治理判断：不要用 L2 provider 替代或移除 CORE provider。
 - 它能作为自建、可控、低成本的基础搜索源。
-- 它是 AnySearch API key 未配置时的 no-key fallback。
+- 它是 CORE `web_search` 当前的基础 provider。
 
 ### 4.3 Direct DuckDuckGo 的处理
 
@@ -166,7 +172,7 @@ Docs:
 - Preferred: 保留为 `duckduckgo_legacy`，仅供手工调试或兼容旧配置，不在默认 enum 文案里推荐。
 - Stricter: 完全移出 `web_search` provider chain。
 
-当前建议采用 Preferred，降低迁移风险，同时把默认路径从 direct DuckDuckGo HTML 迁到 AnySearch。
+当前采用 Preferred，降低迁移风险，同时把默认路径从 direct DuckDuckGo HTML 迁到 SearXNG core provider；AnySearch 不进入默认路径。
 
 ## 5. AnySearch 多 key 轮询设计
 
@@ -186,12 +192,12 @@ ANYSEARCH_TIMEOUT_SECONDS=12
 ```text
 tenant/user configured key pool
   -> platform global key pool
-  -> SearXNG fallback
+  -> structured L2 provider error
 ```
 
 API key 必须存储在服务端的加密 secret/config surface，不能作为 Agent tool args，也不能进入 Agent prompt。
 
-Anonymous AnySearch 不建议作为 production 默认路径。它可以作为 dev/eval 手工开关，但 product 默认判断应保持简单：有 AnySearch API key 就用 AnySearch，没有 key 就用 SearXNG。
+Anonymous AnySearch 不建议作为 production 默认路径。它可以作为 dev/eval 手工开关，但 product 默认判断应保持简单：AnySearch L2 tools 有 key 才调用 AnySearch；CORE `web_search` 不因 AnySearch key presence 改变 provider。
 
 ### 5.2 轮询
 
@@ -224,7 +230,7 @@ global
 | 402 | Quota exhausted | Mark key exhausted until reset/TTL, try next key |
 | 403 | Expired/disabled/not enabled | Mark key unavailable, try next key |
 | 429 | Rate limited | Respect `Retry-After` / reset header if present; otherwise cooldown, try next key |
-| 5xx | Provider failure | Try next key; if no AnySearch key is currently callable, fall back to SearXNG |
+| 5xx | Provider failure | Try next key; if no AnySearch key is currently callable, return structured L2 provider error and ask the agent to use CORE `web_search` separately if useful |
 
 重要限制：如果多个 API key 属于同一个 AnySearch account，provider 可能按 account 维度限额，而不是按 key 维度限额。平台可以支持用户填多个 key 做 pool，但不能承诺“10 个 key 一定等于 1 万次/天”。这个判断必须写进后台 UI 和文档，避免误导用户或鼓励绕过服务条款。
 
@@ -255,74 +261,38 @@ anysearch_extract
 
 ### 6.2 ToolMeta description
 
-当前描述应从：
+2026-06-28 后的当前描述应保持为：
 
 ```text
-Search the web via configured SearXNG JSON API, with DuckDuckGo HTML fallback.
-```
-
-调整为类似：
-
-```text
-Search the public web through Hive's basic provider chain: AnySearch API first when configured, then SearXNG fallback. Use this before advanced search tools.
+Basic internet search for public information using Hive's built-in basic provider chain
+(SearXNG when configured, with legacy HTML fallback only for manual/debug use).
 ```
 
 ### 6.3 Config schema
 
-建议把 `search_engine` 改为：
+2026-06-28 后，基础 `web_search` 的 `search_engine` 只能保留 CORE provider options：
 
 ```json
 {
-  "enum": ["auto", "searxng", "anysearch", "duckduckgo_legacy"],
+  "enum": ["auto", "searxng", "duckduckgo_legacy"],
   "default": "auto"
 }
 ```
 
-新增 AnySearch provider config：
-
-```json
-{
-  "anysearch_api_keys": {
-    "type": "array",
-    "items": { "type": "string" },
-    "description": "Server-side AnySearch API key pool. Must not be passed from agent prompt."
-  },
-  "anysearch_zone": {
-    "type": "string",
-    "enum": ["intl", "cn"],
-    "default": "intl"
-  },
-  "anysearch_content_types": {
-    "type": "array",
-    "items": { "type": "string" },
-    "default": ["web"]
-  },
-  "anysearch_domain": {
-    "type": "string"
-  },
-  "anysearch_tag": {
-    "type": "string"
-  },
-  "anysearch_params": {
-    "type": "object"
-  }
-}
-```
-
-如果 config schema 是展示给管理员看的，`anysearch_api_keys` 应显示为 secret textarea / masked list，不应以明文 JSON 形式展示。
+AnySearch provider config 不再暴露在 CORE `web_search` schema 中。AnySearch API keys、zone、content types、domain/tag/params 属于 L2 AnySearch adapter / `web_pack` 的配置域。
 
 ### 6.4 Result format
 
 `web_search` 返回给 Agent 的内容应保持轻量：
 
 ```text
-Search results for "<query>" via AnySearch:
+Search results for "<query>" via the CORE provider:
 1. Title
    URL
    Snippet
 ```
 
-AnySearch 的 `content` 字段不应该完整塞进 search result。最多保留短摘要；需要全文时让 Agent 后续调用 `web_fetch`。
+AnySearch L2 search result 也不应该把 provider 的长 `content` 字段完整塞进 search result。最多保留短摘要；需要全文时让 Agent 后续调用 `web_fetch` 或在 AnySearch workflow 中对已知 URL 调用 `anysearch_extract`。
 
 ## 7. Agent Prompt 修改
 
@@ -331,7 +301,7 @@ Prompt 修改原则：
 - Agent 不需要知道 key 轮询。
 - Agent 不需要选择 AnySearch key。
 - Agent 不需要在普通搜索失败时要求用户提供 AnySearch key。
-- Agent 不需要根据 SearXNG 是否配置来判断搜索路径；平台根据 AnySearch API key presence 自动选择 provider。
+- Agent 不需要根据 provider 配置判断搜索路径；平台只让 CORE `web_search` 表达基础搜索，provider-backed 增强搜索通过 `tool_search` 发现。
 - Agent 只需要知道：`web_search` 是基础联网搜索；如果基础搜索不够，再通过 `tool_search` 找 Exa/Tavily/Firecrawl/XCrawl 等高级工具。
 
 ### 7.1 必改位置
@@ -349,7 +319,7 @@ web_search
 
 ```text
 web_search
-- Basic public web search using Hive's built-in provider chain: AnySearch API first when configured, SearXNG fallback otherwise.
+- Basic public web search using Hive's built-in basic provider chain: SearXNG when configured, with legacy HTML fallback only for manual/debug use.
 ```
 
 `backend/app/tools/handlers/search.py`
@@ -368,7 +338,7 @@ ToolMeta description 和 config schema 是最重要的 prompt surface，因为�
 
 `backend/app/tools/runtime_tool_groups.py`
 
-这里描述的是 advanced web pack，重点仍是 Exa/Tavily/Firecrawl/XCrawl。AnySearch 作为基础 fallback，不需要放进 advanced pack。
+这里描述的是 advanced web pack，重点是 AnySearch、Exa、Tavily、Firecrawl、XCrawl 等 L2 provider-backed 能力。AnySearch 不属于基础 fallback。
 
 ## 8. 测试计划
 
@@ -382,16 +352,17 @@ backend/tests/services/test_prompt_contracts.py
 
 Red phase 测试项：
 
-1. `test_web_search_anysearch_key_present_prefers_anysearch_over_searxng`
+1. `test_web_search_auto_uses_searxng_even_when_anysearch_key_is_configured`
 2. `test_web_search_no_anysearch_key_uses_searxng_fallback`
-3. `test_anysearch_key_pool_round_robin_uses_next_key`
-4. `test_anysearch_401_skips_bad_key_and_tries_next`
-5. `test_anysearch_402_marks_key_exhausted_and_tries_next`
-6. `test_anysearch_429_respects_retry_after`
-7. `test_anysearch_all_keys_temporarily_unavailable_falls_back_to_searxng`
-8. `test_anysearch_parses_nested_data_results_live_shape`
-9. `test_web_search_tool_definition_mentions_anysearch_first_and_searxng_fallback`
-10. `test_web_research_skill_mentions_anysearch_first_and_searxng_fallback`
+3. `test_web_search_legacy_anysearch_config_uses_basic_provider_not_anysearch`
+4. `test_anysearch_key_pool_round_robin_uses_next_key`
+5. `test_anysearch_401_skips_bad_key_and_tries_next`
+6. `test_anysearch_402_marks_key_exhausted_and_tries_next`
+7. `test_anysearch_429_respects_retry_after`
+8. `test_anysearch_all_keys_temporarily_unavailable_returns_l2_provider_error`
+9. `test_anysearch_parses_nested_data_results_live_shape`
+10. `test_web_search_tool_definition_keeps_anysearch_out_of_core_primary_path`
+11. `test_web_research_skill_documents_anysearch_as_l2_vertical_workflow`
 11. `test_anysearch_mcp_get_sub_domains_calls_official_json_rpc_endpoint`
 12. `test_anysearch_mcp_search_forwards_vertical_domain_arguments`
 13. `test_anysearch_mcp_batch_search_forwards_queries`
@@ -412,15 +383,15 @@ ruff check app/services/agent_tool_domains/web_mcp.py app/tools/handlers/search.
 
 ## 9. 实施顺序
 
-1. Add tests for AnySearch provider behavior and prompt/tool definition contract.
-2. Add config fields for AnySearch global settings.
-3. Add `_search_anysearch()` provider in `web_mcp.py`.
-4. Change `auto` selection so AnySearch is primary when an API key is configured.
-5. Use SearXNG as fallback when AnySearch has no configured key or no currently callable key.
-6. Keep direct DuckDuckGo only as `duckduckgo_legacy` if we choose the compatibility path.
-7. Update `web_search` ToolMeta and config schema.
-8. Update `web-research` system skill wording.
-9. Add AnySearch MCP adapter and `web_pack` vertical tools.
+1. Keep AnySearch provider behavior tests on the L2 `anysearch_*` adapter.
+2. Do not add AnySearch config fields to CORE `web_search` schema.
+3. Keep `_search_anysearch()` as an internal helper for L2 AnySearch adapter tests, not as the CORE `web_search` provider.
+4. Keep `auto` selection on CORE provider only.
+5. Return structured provider-unavailable when CORE provider is not configured; use `tool_search` to discover L2 providers.
+6. Keep direct DuckDuckGo only as `duckduckgo_legacy` manual/debug compatibility path.
+7. Keep `web_search` ToolMeta and config schema provider-neutral and CORE-only.
+8. Keep `web-research` system skill wording aligned with L2 escalation.
+9. Keep AnySearch MCP adapter and `web_pack` vertical tools as L2 add-ons.
 10. Update `web-research` system skill wording for vertical workflows.
 11. Run targeted backend tests and lint.
 12. After user confirmation, deploy backend to product and eval environments.

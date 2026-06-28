@@ -140,6 +140,7 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
    - compact / permission / plan approval / branch anchor 是 marker。
    - node 状态：`past`、`current_head`、`rewound_tail`、`new_tail`、`branch_anchor`、`compacted_scope`。
    - 这条线长在对话流本身，不放到左侧导航，也不作为右侧列表。
+   - 这不是完整 Git 实现，而是借用 Git timeline 的视觉语言：线、节点、分叉、hover preview、当前 head 高亮。
 
 4. Transcript / run cells
    - 用户消息。
@@ -289,6 +290,47 @@ Full access = Bypass session prompts, still obey enterprise rules.
 ### 5.1 Checkpoint
 
 Checkpoint 是 user prompt node，不是每个工具调用 node。
+
+### 5.1.1 Git-like checkpoint rail
+
+这里要借鉴 CC / Codex 的“细线 + 节点 + hover 卡片”表达，而不是实现真实 Git。
+
+目标效果：
+
+```text
+│
+●  checkpoint 1  用户发起任务
+│
+│  tool calls / search / todo / workflow marker
+│
+●  checkpoint 2  阶段性结果
+│\
+│ ● branch A     从 checkpoint 2 分出
+│ │
+│ ● branch A head
+│
+●  checkpoint 3  main 继续
+│
+╳  rewound old tail  被回溯排除，不再进入 active context
+│
+●  new tail after rewind
+```
+
+交互规则：
+
+- 单击节点：选中 checkpoint，滚动 / 聚焦到对应对话位置，并在节点旁显示 preview card。
+- preview card：显示该 checkpoint 的用户输入摘要、时间、工具调用数、文件变化数、是否有 compact / branch / workspace snapshot。
+- 主操作：`回到这里`、`从这里分支`、`查看上下文`、`查看文件变化`、`复制输入`。
+- 选中节点时，rail 上的线段应有轻微高亮或流动动效，让用户看到“当前看到的是哪一段工作线”。
+- branch 节点用短分叉线表达，不需要完整 DAG 布局；同一 checkpoint 多个 branch 可折叠成 branch count。
+- rewind 后的旧 tail 不删除，只灰掉 / 降低透明度，并明确标注“不在当前上下文”。
+- compact marker 是线上的压缩标记，不是普通 assistant 消息。
+
+动效边界：
+
+- 可以有节点 pulse、线段 draw-in、选中态平滑过渡、hover card fade/slide。
+- 不做花哨的全屏动画，不改变 transcript 的阅读稳定性。
+- 动效必须服务于“我当前在哪个 checkpoint / 哪条线 / 哪些内容已被排除”。
 
 点击 checkpoint 后打开菜单：
 

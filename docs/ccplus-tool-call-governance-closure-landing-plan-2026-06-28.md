@@ -29,6 +29,18 @@
 
 后续闭环追修提交：
 
+- `c6757d6a` `docs: record ccplus governance blocker closure`
+- `89201dd1` `docs: refine agent session switching ui`
+- `dc38ac2e` `ccplus: harden session permission resolution`
+- `aa91aa85` `ccplus: restore persisted recovery manifest`
+- `f51d018e` `ccplus: centralize capability taxonomy map`
+- `5d4178e1` `ccplus: unify compaction lifecycle hooks`
+- `0083f420` `ccplus: persist truth search evidence in governance`
+- `bdcfaa7c` `ccplus: consume skill execution plans at runtime`
+- `74e7290c` `ccplus: record final governance closure evidence`
+- `84462390` `docs: clarify workflow leaf tui boundary`
+- `5706f40d` `ccplus: close session audit tool lifecycle gaps`
+- `0d0686a4` `ccplus: align agent team creation semantics`
 - `67822a30` `docs: record current ccplus closure gaps`
 - `87ee8028` `ccplus: close taxonomy discovery gaps`
 - `4285ac8b` `ccplus: record tool lifecycle frames`
@@ -37,8 +49,10 @@
 - `5e4833b7` `ccplus: close recovery crash matrix`
 - `2ad3b370` `ccplus: fix closure regression suite`
 - `12bb68a9` `ccplus: preserve permission origin channel`
-- 本节所在提交：补齐 D10 真实 killed-process `invoke_agent` recovery harness，并更新本账本。
-- 本节所在提交：补齐 D1/D4/D5/D7/D10 最后一轮源代码断点，并更新本账本。
+- `3f822aa1` `ccplus: persist recovery checkpoints before tool execution`：补齐 D10 真实 killed-process `invoke_agent` recovery harness 的生产 checkpoint 机制。
+- `fe92bdf1` `ccplus: close residual tool governance gaps`：补齐 D1/D4/D5/D7/D10 最后一轮源代码断点，并更新本账本。
+
+账本口径：从 `b1b5f85a ccplus: add capability governance surface` 之后到代码基线 `fe92bdf1`，本文件记录 22 个后续追修 / 文档校正提交。后续新增代码闭环提交必须继续追加到这里，避免代码与宣称口径脱节。
 
 最终回归：
 
@@ -240,6 +254,8 @@ L3 是当前 session 内的 allow once / allow session / deny。
 
 ## 4. 关键断点和修复主线
 
+本节保留的是落地过程中的断点清单和验收红线。凡是本节出现“必须补 / 需要证明”的句子，均按当时审计语境理解；当前 HEAD 的最终状态以本文顶部“最终追修断点表”、Phase 8 实施证据、以及 `5361 passed` 全量回归为准。当前仍可扩展但非 blocker 的项会明确写成“后续可扩展”。
+
 ### D1. 治理能力 taxonomy 没有统一入口
 
 问题：
@@ -417,9 +433,9 @@ L3 是当前 session 内的 allow once / allow session / deny。
 - disabled MCP tool 不可被 `tool_search` 发现，也不可通过 stale name 调用。
 - MCP prompt import 不绕过 plugin trust gate。
 
-### D8. Killed-process / resume / compact E2E 证据不足
+### D8. Killed-process / resume / compact E2E 证据补齐
 
-问题：
+当时问题：
 
 - 单点测试较多，但要证明整个 session 内不会漏，需要 killed-process 矩阵。
 - 旧 `5e4833b7` 的“crash matrix”主要证明手填 `recovery_manifest.json` 可被渲染，不证明进程被杀前 runtime 真的写出恢复 artifact。
@@ -454,9 +470,9 @@ L3 是当前 session 内的 allow once / allow session / deny。
 - 恢复后 active/deferred tools、permission profile、loaded skills、MCP assignments 不丢。
 - 当前代码证据：`tests/e2e/test_tool_call_recovery_closure.py::test_killed_process_invoke_agent_persists_recoverable_tool_matrix` 真启动/kill 子进程；`tests/runtime/test_recovery_manifest_persistence.py::test_persist_recovery_manifest_deletes_stale_empty_checkpoint` 钉住成功路径不留下 stale running frame。
 
-### D9. Hook 全生命周期没有在方案中完整展开
+### D9. Hook 全生命周期展开与证据矩阵
 
-问题：
+当时问题：
 
 - 现有方案已经写了 hook 改参后二次治理，但还不够完整。
 - Hive 当前 `HookEvent` 覆盖的触发点已经超过 `PreToolUse/PostToolUse`，包括 prompt、session、turn、stop、subagent、permission、task、team、workspace、compaction、notification 等生命周期。
@@ -464,7 +480,7 @@ L3 是当前 session 内的 allow once / allow session / deny。
 
 当前 Hive hook 生命周期分层：
 
-| 生命周期段 | Hook event | 当前状态 | 必须补的断点 |
+| 生命周期段 | Hook event | 当前状态 | 当时验收红线 / 当前结论 |
 | --- | --- | --- | --- |
 | 用户输入后、模型前 | `USER_PROMPT_SUBMIT` | 已在 invoker 触发，可 block / add context | 需要记录 prompt hook 的 added context refs、T0 refs、blocking reason；hook 追加上下文要进入 prompt manifest。 |
 | invocation 开始 | `SESSION_START` | 已在 invoker 触发 | 需要证明它在 compact/resume/fork 后仍重新触发或明确不触发。 |
@@ -494,7 +510,7 @@ Hook 落地规则：
 - `output_rewrite` 必须标注为 hook rewrite，不得覆盖原始 tool result 证据。
 - async hook 必须二选一：durable wake + retry，或明确 non-blocking observe-only。
 
-新增验收：
+已纳入或保留的验收：
 
 - `USER_PROMPT_SUBMIT` block 后不会进入 model loop，且 T0 有 blocked reason。
 - `STOP` block 后模型继续一轮，但 `stop_hook_active` 防止循环。
@@ -504,7 +520,7 @@ Hook 落地规则：
 
 ### D10. 压缩全生命周期一等闭环追修
 
-问题：
+当时问题：
 
 - 现有方案只写了 compact 后保留工具面和 recovery，但没有把压缩当成完整 runtime lifecycle。
 - 之前上下文累积出过问题：如果 loop 内 `api_messages`、session history、active projection、T0 transcript 没有正确累积，自动压缩和最终压缩都会失效。
@@ -533,7 +549,7 @@ session history / active projection / T0 replay
 
 压缩类型与断点：
 
-| 类型 | Hive 当前对应 | 必须补的断点 |
+| 类型 | Hive 当前对应 | 当时验收红线 / 当前结论 |
 | --- | --- | --- |
 | 初始压缩 | kernel 调 `maybe_compress_messages(..., instructions=\"initial_context_compaction\")` | 要证明 active projection 已先应用，不能从完整旧 transcript 重新撑爆；初始压缩也要有 compact lifecycle event / refs。 |
 | 请求前自动压缩 | `prepare_session_context_for_request()` 每轮检查 tool result budget 和 autocompact threshold | 要证明每轮 `api_messages` 真实累积 assistant/tool result；否则 token status 永远不增长；该路径目前有 context status / compaction events，但还要补 `PRE_COMPACTION/POST_COMPACTION` hook payload。 |
@@ -546,7 +562,7 @@ session history / active projection / T0 replay
 | post-compact restore | `RecoveryManifest`、recent files、skills、tool outcomes、external refs、pending items | manifest 还需要显式带 `discovered_tools`、permission profile、pending tool frame、MCP assignments、truth refs。 |
 | compaction trace | `CompactionTraceContext`、context window events | 每次 attempt/completed/checkpoint 都要有 stable compaction id 和 InvocationSpan。 |
 
-压缩必须新增的 hard invariants：
+压缩已固定的 hard invariants：
 
 - `api_messages` 是 loop 内模型上下文的 canonical state；每个 assistant、tool_call、tool_result 都必须追加进去。
 - context pressure 只能用当前 active context estimate，不得用 cumulative usage 当触发条件。
@@ -558,7 +574,7 @@ session history / active projection / T0 replay
 - 多次 compaction 后，旧 summary 要进入下一次 compact request，不能丢失早期 compacted state。
 - 被 compact 的 tool_result 如果超过 summary input cap，必须有 artifact ref 或 source ref 回读路径。
 
-新增验收：
+已纳入或保留的验收：
 
 - 多轮工具调用让 `api_messages` 持续增长，跨过阈值后触发 `compaction_started/completed`。
 - active projection 已安装时，下一轮 history 只使用 compacted replacement + tail。
@@ -587,12 +603,12 @@ Hive 当前已经吸收：
 - `ToolRuntimeService` 已经把 governance、preflight、execution 串起来。
 - `prepare_session_context_for_request()` 已经具备 request-preflight token status 和 tool-result budget。
 
-Hive 仍必须追平：
+Hive 当时必须追平，当前已完成的追平项：
 
-- initial compact、request-preflight autocompact、PTL reactive compact 必须补齐 `PRE_COMPACTION/POST_COMPACTION`；kernel mid-loop 已触发但仍要补足 refs / resume shape 验收。
-- Hook lifecycle 必须按 blocking-capable / observe-only / disabled-noop 分类验收。
-- Skill allowedTools/fork 必须变成执行 profile，而不是 guidance。
-- Resume / compact boundary 必须证明不会重放 full pre-compact history。
+- initial compact、request-preflight autocompact、PTL reactive compact 已补齐 `PRE_COMPACTION/POST_COMPACTION` 路由；kernel mid-loop、manual `/compact` 和 PTL fallback 已纳入 lifecycle wrapper / mechanical lifecycle wrapper。
+- Hook lifecycle 已按 blocking-capable / observe-only / disabled-noop 分类写入 catalog 与 span lifecycle records。
+- Skill allowedTools/fork 已变成 execution profile；`context: fork` handoff 通过 governed `spawn_subagent` 执行。
+- Resume / compact boundary 已通过 persisted `RecoveryManifest`、normal prompt attachment、killed-process E2E 与 restoration tests 证明主恢复面可用；子执行体内部 kill/replay 仍属于后续可扩展深度矩阵，不是当前 blocker。
 
 ### 5.2 Codex 优化应吸收的位置
 
@@ -770,7 +786,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_
 ```
 
 - 验证结果：`46 passed, 4 warnings in 1.56s`。
-- Web Search 追修验证结果：`pytest tests/services/test_web_mcp_resilience.py tests/services/test_prompt_contracts.py tests/tools/test_search_provider_tool_definitions.py -q` 纳入扩大集合通过；当前最终后端全量 `5356 passed, 2 skipped, 4 warnings`。
+- Web Search 追修验证结果：`pytest tests/services/test_web_mcp_resilience.py tests/services/test_prompt_contracts.py tests/tools/test_search_provider_tool_definitions.py -q` 纳入扩大集合通过；当前最终后端全量以本文顶部最终回归为准：`5361 passed, 2 skipped, 4 warnings`。
 - ownership 收口验证命令：
 
 ```bash

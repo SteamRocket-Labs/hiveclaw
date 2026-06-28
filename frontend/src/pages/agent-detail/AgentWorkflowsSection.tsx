@@ -101,7 +101,7 @@ function formatTimestamp(value: string | null): string {
   return Number.isNaN(parsed.getTime()) ? '' : parsed.toLocaleString();
 }
 
-// ── plan handoff for high-risk manual starts (unchanged contract) ──
+// ── preview binding + optional plan handoff for confirmation-required starts ──
 
 export type WorkflowPlanHandoffFields = {
   confirmedPlanId: string;
@@ -114,12 +114,18 @@ export function buildWorkflowStartOptions(
   handoff: WorkflowPlanHandoffFields,
 ): StartWorkflowOptions | null {
   if (!preview) return null;
-  if (preview.risk !== 'high') return {};
+  const binding = {
+    previewId: preview.preview_id,
+    definitionHash: preview.definition_hash,
+    argsHash: preview.args_hash,
+  };
+  if (!preview.confirmation_required) return binding;
   const planVersion = Number(handoff.planVersion);
   if (!handoff.confirmedPlanId.trim() || !Number.isInteger(planVersion) || planVersion <= 0 || !handoff.planHash.trim()) {
     return null;
   }
   return {
+    ...binding,
     confirmedPlanId: handoff.confirmedPlanId.trim(),
     planVersion,
     planHash: handoff.planHash.trim(),
@@ -644,8 +650,8 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                 type="button"
                 data-testid="workflow-start-button"
                 onClick={() => startMutation.mutate()}
-                disabled={startMutation.isPending || !preview || (preview.risk === 'high' && !startOptions)}
-                title={preview?.risk === 'high' ? t('workflows.highRiskNeedsPlan') : undefined}
+                disabled={startMutation.isPending || !preview || (preview.confirmation_required && !startOptions)}
+                title={preview?.confirmation_required ? t('workflows.highRiskNeedsPlan') : undefined}
               >
                 {t('workflows.confirmAndRun')}
               </button>
@@ -657,8 +663,8 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
             )}
             {preview && (
               <div data-testid="workflow-preview-card" style={{ marginTop: 12, fontSize: 13 }}>
-                <span style={badgeStyle(preview.risk === 'high' ? 'warn' : 'ok')}>
-                  {t(preview.risk === 'high' ? 'workflows.riskHigh' : 'workflows.riskLow')}
+                <span style={badgeStyle(preview.confirmation_required ? 'warn' : 'ok')}>
+                  {t(preview.confirmation_required ? 'workflows.confirmationRequired' : 'workflows.confirmationNotRequired')}
                 </span>
                 <span style={{ marginLeft: 12 }}>
                   {t('workflows.plannedLeaves', { count: preview.planned_leaf_calls })}
@@ -666,11 +672,11 @@ export default function AgentWorkflowsSection({ agentId, canManage = false }: Ag
                 <span style={{ marginLeft: 12, color: 'var(--text-secondary)' }}>
                   hash: {preview.definition_hash.slice(0, 12)}…
                 </span>
-                {preview.risk === 'high' && (
+                {preview.confirmation_required && (
                   <div data-testid="workflow-plan-required" style={{ marginTop: 8, color: 'var(--warning)' }}>
                     {t('workflows.highRiskNeedsPlan')}
                     <ul style={{ margin: '4px 0 0 16px' }}>
-                      {preview.risk_reasons.map((reason) => (
+                      {preview.confirmation_reasons.map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}
                     </ul>

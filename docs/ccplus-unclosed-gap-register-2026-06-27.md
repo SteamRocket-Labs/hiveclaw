@@ -297,6 +297,7 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_section
 - proposal/candidate schema 接收 `goal`、`why_workflow`、`success_criteria`、`budget`、`failure_policy`、`lowered_definition` 和 shared/per-candidate `args`。
 - 每个 candidate 必须降低到现有 `WorkflowDefinition`，并通过 `compile_workflow(...)` + `admit_workflow(...)` + `inspect_workflow_confirmation_needs(...)`。
 - `preview_workflow` 可绑定 `proposal_id` / `candidate_id`；`start_workflow` 会校验 preview binding，并把 dynamic binding 写入 workflow run metadata。
+- REST `/agents/{agent_id}/workflows/preview` 和 AgentTool `preview_workflow` 共用 `app.runtime.workflow_preview` preview binding store；REST `/workflows/runs` 已关闭裸 `definition + args` 启动，只接受 fresh `preview_id` 绑定。
 - `preview_workflow` 会校验 dynamic candidate 的 lowered definition hash 和 args hash；`start_workflow` 禁止把普通 preview 临时标成 dynamic run。
 - `WorkflowRuntimeService.start_run(...)` 接收 `run_metadata`，但仍用同一 RuntimeTask、WorkflowEngine、journal、quota 和 session event 路径。
 - `WorkflowRuntimeService._execute(...)` 在 Dynamic Workflow run 结束时，从 `workflow_steps` / `workflow_leaf_calls` 汇总 `outcome_evidence` 和 `repair_plan`，写回 `RuntimeTask.metadata_json.dynamic_workflow`。
@@ -312,7 +313,8 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/prompt_section
 
 - Dynamic Workflow 默认入口不再是手写 JSON；模型可先提出候选，再把选中候选送入现有 preview/start。
 - Workflow 不执行任意 JS/Python；candidate 的 `lowered_definition` 只能是结构化 `WorkflowDefinition`。
-- `start_workflow` 仍不能凭口头确认启动；它必须绑定 fresh `preview_id` 或 exact `definition_hash + args_hash`。
+- AgentTool `start_workflow` 仍不能凭口头确认启动；它必须绑定 fresh `preview_id` 或 exact `definition_hash + args_hash`。
+- REST/UI `startWorkflow` 必须绑定 fresh `preview_id`；前端 `WorkflowPreview` 不再使用旧 `risk/risk_reasons` 层，而是使用后端 `confirmation_required/confirmation_reasons`。
 - leaf 失败不会创建第二套补救系统，也不会默认整链重跑；repair 从同一 run journal resume，已完成 leaf 继续作为缓存证据。
 - dynamic run 的沉淀不再停在 metadata：promotion suggestion 可基于完成次数和 outcome quality evidence 提醒固化。
 - A2A Workflow 没有被塞入 Dynamic Workflow；Dynamic Workflow 仍是当前 session 内的 To Session Worker orchestration。
@@ -440,7 +442,9 @@ cd frontend && npm test -- --run src/pages/session-workbench/timelineModel.test.
 
 ## 2. 仍未闭环或待裁决项
 
-当前登记表内无剩余上线阻断项。
+当前 Dynamic Workflow 登记表内无剩余上线阻断项。
+
+非本轮范围：A2A Workflow 仍是后续 TODO。它指完整 Agent principal 之间的 process graph / artifact_ref / node session / edge gate，不塞进 Dynamic Workflow，也不复用 `WorkflowDefinition` 伪装成跨 Agent 大循环。
 
 约束仍然保留：以后任何新增 gap 仍必须按本文 §0 的闭环最低口径重新登记，不能因为本轮清零而降低证据要求。
 

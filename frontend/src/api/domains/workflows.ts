@@ -4,9 +4,8 @@
  * One mental model for the user — 自动化流程 — backed by two definition
  * sources on ONE engine (§3.1):
  *
- *   POST /agents/{agentId}/workflows/preview            compile+admission+risk, never runs
- *   POST /agents/{agentId}/workflows/runs               start (low risk: user-confirmed click;
- *                                                       high risk: confirmed plan required)
+ *   POST /agents/{agentId}/workflows/preview            compile+admission+confirmation notes, never runs
+ *   POST /agents/{agentId}/workflows/runs               start only with the exact preview binding
  *   GET  /agents/{agentId}/workflows/runs               run history (asset view §4)
  *   GET  /agents/{agentId}/workflows/runs/{runId}       run + step journal
  *   POST /agents/{agentId}/workflows/runs/{runId}/cancel kill (resumable later)
@@ -25,8 +24,6 @@ import { get, post } from '../core';
 // ---------------------------------------------------------------------------
 // types
 // ---------------------------------------------------------------------------
-
-export type WorkflowRiskLevel = 'low' | 'high';
 
 export type WorkflowRunStatus =
   | 'pending'
@@ -48,9 +45,11 @@ export type WorkflowStepStatus =
 export type WorkflowDefinitionStatus = 'draft' | 'active' | 'deprecated' | 'revoked';
 
 export interface WorkflowPreview {
+  preview_id: string;
   definition_hash: string;
-  risk: WorkflowRiskLevel;
-  risk_reasons: string[];
+  args_hash: string;
+  confirmation_required: boolean;
+  confirmation_reasons: string[];
   planned_leaf_calls: number;
   budget_tokens: number;
 }
@@ -128,7 +127,8 @@ export interface WorkflowStartResult {
   status: WorkflowRunStatus;
   reason: string | null;
   definition_hash: string;
-  risk: WorkflowRiskLevel;
+  confirmation_required: boolean;
+  confirmation_reasons: string[];
 }
 
 export interface WorkflowDefinitionRecord {
@@ -196,6 +196,9 @@ export function previewWorkflow(
 }
 
 export interface StartWorkflowOptions {
+  previewId: string;
+  definitionHash: string;
+  argsHash: string;
   confirmedPlanId?: string;
   planVersion?: number;
   planHash?: string;
@@ -206,11 +209,14 @@ export function startWorkflow(
   agentId: string,
   definition: Record<string, unknown>,
   args: Record<string, unknown> = {},
-  options: StartWorkflowOptions = {},
+  options: StartWorkflowOptions,
 ): Promise<WorkflowStartResult> {
   return post<WorkflowStartResult>(`/agents/${agentId}/workflows/runs`, {
     definition,
     args,
+    preview_id: options.previewId,
+    definition_hash: options.definitionHash,
+    args_hash: options.argsHash,
     confirmed_plan_id: options.confirmedPlanId ?? null,
     plan_version: options.planVersion ?? null,
     plan_hash: options.planHash ?? null,

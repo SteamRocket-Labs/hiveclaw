@@ -60,6 +60,12 @@ def _high_risk_definition() -> dict:
     }
 
 
+def _arg_bound_definition() -> dict:
+    definition = _low_risk_definition()
+    definition["args_schema"] = {"slice": {"type": "string", "required": True}}
+    return definition
+
+
 def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_level="manage"):
     api = FastAPI()
     api.include_router(workflows_api.router)
@@ -108,7 +114,9 @@ def test_preview_returns_hash_confirmation_notes_and_planned_leaves(monkeypatch)
     )
     assert resp.status_code == 200
     body = resp.json()
+    assert body["preview_id"]
     assert body["definition_hash"]
+    assert body["args_hash"]
     assert "risk" not in body
     assert body["confirmation_required"] is False
     assert body["confirmation_reasons"] == []
@@ -138,11 +146,34 @@ def test_preview_maps_compile_error_to_400(monkeypatch):
     assert resp.status_code == 400
 
 
-def test_start_runs_without_plan_gate(monkeypatch):
+def test_start_requires_preview_binding(monkeypatch):
     client = _client(_user(), monkeypatch)
     resp = client.post(
         f"/agents/{uuid.uuid4()}/workflows/runs",
         json={"definition": _low_risk_definition(), "args": {}},
+    )
+    assert resp.status_code == 400
+    assert "preview" in resp.json()["detail"]
+    assert client.fake_launch.calls == []
+
+
+def test_start_runs_with_preview_binding_without_plan_gate(monkeypatch):
+    agent_id = uuid.uuid4()
+    client = _client(_user(), monkeypatch)
+    preview_resp = client.post(
+        f"/agents/{agent_id}/workflows/preview",
+        json={"definition": _low_risk_definition(), "args": {}},
+    )
+    preview = preview_resp.json()
+    resp = client.post(
+        f"/agents/{agent_id}/workflows/runs",
+        json={
+            "definition": _low_risk_definition(),
+            "args": {},
+            "preview_id": preview["preview_id"],
+            "definition_hash": preview["definition_hash"],
+            "args_hash": preview["args_hash"],
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "completed"
@@ -150,11 +181,48 @@ def test_start_runs_without_plan_gate(monkeypatch):
     assert client.fake_gate_check.calls == []  # start never consults PlanModeGate
 
 
-def test_external_effect_start_without_plan_still_runs_without_plan_mode_gate(monkeypatch):
-    client = _client(_user(), monkeypatch, gate_allowed=False, gate_reason="needs_plan")
+def test_start_rejects_preview_bound_to_different_args(monkeypatch):
+    agent_id = uuid.uuid4()
+    client = _client(_user(), monkeypatch)
+    definition = _arg_bound_definition()
+    preview_resp = client.post(
+        f"/agents/{agent_id}/workflows/preview",
+        json={"definition": definition, "args": {"slice": "api"}},
+    )
+    assert preview_resp.status_code == 200
+    preview = preview_resp.json()
     resp = client.post(
-        f"/agents/{uuid.uuid4()}/workflows/runs",
+        f"/agents/{agent_id}/workflows/runs",
+        json={
+            "definition": definition,
+            "args": {"slice": "runtime"},
+            "preview_id": preview["preview_id"],
+            "definition_hash": preview["definition_hash"],
+            "args_hash": preview["args_hash"],
+        },
+    )
+    assert resp.status_code == 400
+    assert "differ" in resp.json()["detail"]
+    assert client.fake_launch.calls == []
+
+
+def test_external_effect_start_with_preview_binding_still_runs_without_plan_mode_gate(monkeypatch):
+    agent_id = uuid.uuid4()
+    client = _client(_user(), monkeypatch, gate_allowed=False, gate_reason="needs_plan")
+    preview_resp = client.post(
+        f"/agents/{agent_id}/workflows/preview",
         json={"definition": _high_risk_definition(), "args": {}},
+    )
+    preview = preview_resp.json()
+    resp = client.post(
+        f"/agents/{agent_id}/workflows/runs",
+        json={
+            "definition": _high_risk_definition(),
+            "args": {},
+            "preview_id": preview["preview_id"],
+            "definition_hash": preview["definition_hash"],
+            "args_hash": preview["args_hash"],
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["confirmation_required"] is True
@@ -163,13 +231,22 @@ def test_external_effect_start_without_plan_still_runs_without_plan_mode_gate(mo
 
 
 def test_confirmed_plan_metadata_is_forwarded_as_optional_provenance_without_gate(monkeypatch):
+    agent_id = uuid.uuid4()
     client = _client(_user(), monkeypatch, gate_allowed=True)
     plan_id = str(uuid.uuid4())
+    preview_resp = client.post(
+        f"/agents/{agent_id}/workflows/preview",
+        json={"definition": _high_risk_definition(), "args": {}},
+    )
+    preview = preview_resp.json()
     resp = client.post(
-        f"/agents/{uuid.uuid4()}/workflows/runs",
+        f"/agents/{agent_id}/workflows/runs",
         json={
             "definition": _high_risk_definition(),
             "args": {},
+            "preview_id": preview["preview_id"],
+            "definition_hash": preview["definition_hash"],
+            "args_hash": preview["args_hash"],
             "confirmed_plan_id": plan_id,
             "plan_version": 2,
             "plan_hash": "abc123",

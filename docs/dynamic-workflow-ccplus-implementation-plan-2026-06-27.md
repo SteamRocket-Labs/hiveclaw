@@ -11,7 +11,7 @@ Dynamic Workflow 先做，而且可以开始做。它和 A2A Workflow 必须分�
 | 轨道 | 本轮是否做 | 唯一路径 | 边界 |
 | --- | --- | --- | --- |
 | Dynamic Workflow | 是 | 当前 Agent 在当前 session 内设计 harness，降级为 Hive `WorkflowDefinition`，经预览、批准、运行、补救、固化 | 不跨完整 Agent principal，不读他人 memory/workspace/tool context |
-| Fixed Workflow | 是，作为 Dynamic 的固化结果和已有 runtime | approved registered workflow version/hash | 不重新发明一套 runtime |
+| Registered template / Dynamic 固化物 | 是，作为 Dynamic 的固化结果和已有 runtime asset | approved registered workflow version/hash | 不是第三种 workflow，不重新发明一套 runtime |
 | A2A Workflow | 后做 | 完整 Agent principal 之间的 process graph、artifact_ref、node session、edge gate | 不塞进 Dynamic Workflow，不复用 `WorkflowDefinition` 变成万能 DSL |
 
 唯一主线：
@@ -59,7 +59,8 @@ Dynamic Workflow 先做，而且可以开始做。它和 A2A Workflow 必须分�
 本地核验结论：
 
 - Hive 已有下层 runtime：`backend/app/runtime/workflow_definition.py`、`workflow_compiler.py`、`workflow_admission.py`、`workflow_engine.py`、`backend/app/services/workflow_runtime_service.py`、`workflow_definitions.py`、`workflow_trigger.py`、`workflow_promote_suggestions.py`、`backend/app/tools/handlers/workflow.py`。
-- Hive 已有 `preview_workflow/start_workflow`，并且 `start_workflow` 已绑定 `preview_id` 或 `definition_hash + args_hash`。
+- Hive 已有 `preview_workflow/start_workflow`，并且 AgentTool `start_workflow` 已绑定 `preview_id` 或 `definition_hash + args_hash`。
+- REST/UI 手动启动不再是第二条 raw path：`/workflows/runs` 必须携带 fresh `preview_id`，该 `preview_id` 来自同一个 `app.runtime.workflow_preview` binding store。
 - Hive 已有 `propose_dynamic_workflow`、Dynamic proposal/candidate validation/lowering、proposal-aware chat card、run metadata、journal outcome evidence、repair endpoint、promotion evidence，以及 Workflows tab 的 dynamic evidence/repair 操作。
 - FreeCode / claude-code-org 本地 checkout 能看到 workflow feature gate 和 `local_workflow` task type，但没有完整 WorkflowTool 实现目录，不能作为实现细节真相源。
 - Codex Rust 没有等价 Dynamic Workflow runtime；Codex 可吸收的是 Plan Mode、policy gate、thread/workbench/progress/verification 等工程控制优势。
@@ -400,7 +401,7 @@ pytest tests/api/test_workflow_definitions.py tests/services/test_workflow_trigg
 本轮完成后必须满足：
 
 1. Agent 能在同一 session 内主动提出 Dynamic Workflow，而不是只会直接做或手写 JSON。
-2. `propose_dynamic_workflow`、`preview_workflow`、`start_workflow` 是唯一启动链路。
+2. `propose_dynamic_workflow`、`preview_workflow`、`start_workflow` 是 AgentTool 唯一启动链路；REST/UI 手动入口也必须先 preview，并用 fresh `preview_id` 启动，不存在裸 `definition + args` 第二路径。
 3. 用户能在 chat 或 Workflows tab 看见 proposal、phase、agent/leaf、token、耗时、错误、结果和 promote 状态。
 4. 一个 leaf 失败不会导致整链重跑；完成叶子可缓存，失败叶子可定向补救。
 5. prompt 明确区分 Sub-agent、Agent Team、Dynamic Workflow、A2A Workflow。

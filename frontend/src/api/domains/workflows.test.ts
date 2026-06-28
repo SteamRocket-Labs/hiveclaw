@@ -58,12 +58,14 @@ function requestOf(callIndex = 0): { url: string; init: RequestInit } {
 }
 
 describe('previewWorkflow', () => {
-  it('POSTs definition+args and returns hash/risk/planned leaves', async () => {
+  it('POSTs definition+args and returns preview binding/confirmation notes', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
+        preview_id: 'preview-1',
         definition_hash: 'h-1',
-        risk: 'low',
-        risk_reasons: [],
+        args_hash: 'args-1',
+        confirmation_required: false,
+        confirmation_reasons: [],
         planned_leaf_calls: 3,
         budget_tokens: 50_000,
       }),
@@ -75,25 +77,40 @@ describe('previewWorkflow', () => {
     expect(url).toBe('/api/agents/agent-1/workflows/preview');
     expect(init.method).toBe('POST');
     expect(JSON.parse(String(init.body))).toEqual({ definition: { name: 'wf' }, args: { week: 'W23' } });
+    expect(preview.preview_id).toBe('preview-1');
     expect(preview.definition_hash).toBe('h-1');
-    expect(preview.risk).toBe('low');
+    expect(preview.args_hash).toBe('args-1');
+    expect(preview.confirmation_required).toBe(false);
     expect(preview.planned_leaf_calls).toBe(3);
   });
 });
 
 describe('startWorkflow', () => {
-  it('threads the confirmed plan binding for high-risk launches', async () => {
+  it('threads the preview binding and confirmed plan provenance', async () => {
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ run_id: 'r-1', status: 'completed', reason: null, definition_hash: 'h', risk: 'high' }),
+      jsonResponse({
+        run_id: 'r-1',
+        status: 'completed',
+        reason: null,
+        definition_hash: 'h',
+        confirmation_required: true,
+        confirmation_reasons: ['external effects'],
+      }),
     );
 
     await startWorkflow('agent-1', { name: 'wf' }, {}, {
+      previewId: 'preview-1',
+      definitionHash: 'h',
+      argsHash: 'args-1',
       confirmedPlanId: 'plan-9',
       planVersion: 2,
       planHash: 'ph',
     });
 
     const body = JSON.parse(String(requestOf().init.body));
+    expect(body.preview_id).toBe('preview-1');
+    expect(body.definition_hash).toBe('h');
+    expect(body.args_hash).toBe('args-1');
     expect(body.confirmed_plan_id).toBe('plan-9');
     expect(body.plan_version).toBe(2);
     expect(body.plan_hash).toBe('ph');

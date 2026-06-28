@@ -21,85 +21,18 @@ from app.runtime.dynamic_workflow import (
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
+from app.runtime.workflow_preview import (
+    get_workflow_preview,
+    prune_workflow_preview_cache,
+    record_workflow_preview,
+    validate_workflow_preview_binding,
+)
 from app.services.workflow_launch import inspect_workflow_confirmation_needs, start_ephemeral_workflow_for_agent
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
 
 _PREVIEW_TTL_SECONDS = 60 * 60
-_WORKFLOW_PREVIEW_CACHE: dict[str, dict[str, Any]] = {}
 _DYNAMIC_WORKFLOW_PROPOSAL_CACHE: dict[str, dict[str, Any]] = {}
-
-
-def _prune_preview_cache(now: float | None = None) -> None:
-    now = now or time.monotonic()
-    expired = [
-        preview_id
-        for preview_id, record in _WORKFLOW_PREVIEW_CACHE.items()
-        if now - float(record.get("created_at", 0.0)) > _PREVIEW_TTL_SECONDS
-    ]
-    for preview_id in expired:
-        _WORKFLOW_PREVIEW_CACHE.pop(preview_id, None)
-
-
-def _record_preview(
-    *,
-    agent_id: uuid.UUID,
-    definition_hash: str,
-    args_hash: str,
-    confirmation_required: bool,
-    proposal_id: str | None = None,
-    candidate_id: str | None = None,
-    dynamic_candidate: dict[str, Any] | None = None,
-) -> str:
-    _prune_preview_cache()
-    preview_id = str(uuid.uuid4())
-    _WORKFLOW_PREVIEW_CACHE[preview_id] = {
-        "agent_id": str(agent_id),
-        "definition_hash": definition_hash,
-        "args_hash": args_hash,
-        "confirmation_required": confirmation_required,
-        "proposal_id": proposal_id,
-        "candidate_id": candidate_id,
-        "dynamic_candidate": dynamic_candidate,
-        "created_at": time.monotonic(),
-    }
-    return preview_id
-
-
-def _validate_preview_binding(
-    *,
-    agent_id: uuid.UUID,
-    definition: dict,
-    args: dict,
-    preview_id: str | None,
-    expected_definition_hash: str | None,
-    expected_args_hash: str | None,
-) -> tuple[bool, str]:
-    compiled = compile_workflow(definition)
-    actual_definition_hash = compiled.definition_hash
-    actual_args_hash = compute_definition_hash(args)
-
-    if preview_id:
-        _prune_preview_cache()
-        record = _WORKFLOW_PREVIEW_CACHE.get(preview_id)
-        if record is None:
-            return False, "start_workflow requires a fresh preview_workflow result; preview_id is unknown or expired"
-        if record.get("agent_id") != str(agent_id):
-            return False, "start_workflow preview_id belongs to another agent"
-        if record.get("definition_hash") != actual_definition_hash or record.get("args_hash") != actual_args_hash:
-            return False, "start_workflow definition/args differ from the preview_workflow artifact"
-        return True, ""
-
-    if expected_definition_hash or expected_args_hash:
-        if not expected_definition_hash or not expected_args_hash:
-            return False, "start_workflow requires both definition_hash and args_hash when preview_id is omitted"
-        if expected_definition_hash != actual_definition_hash:
-            return False, "start_workflow definition_hash does not match the supplied definition"
-        if expected_args_hash != actual_args_hash:
-            return False, "start_workflow args_hash does not match the supplied args"
-        return True, ""
-
-    return False, "start_workflow requires preview_workflow first; pass preview_id from preview_workflow"
 
 
 _DEFINITION_PARAM = {
@@ -124,7 +57,7 @@ def _cache_dynamic_workflow_proposal(proposal: dict[str, Any]) -> None:
 def _load_dynamic_candidate(proposal_id: str | None, candidate_id: str | None) -> dict[str, Any] | None:
     if not proposal_id or not candidate_id:
         return None
-    _prune_preview_cache()
+    prune_workflow_preview_cache()
     proposal = _DYNAMIC_WORKFLOW_PROPOSAL_CACHE.get(proposal_id)
     if not proposal:
         return None
@@ -268,7 +201,7 @@ async def preview_workflow(agent_id: uuid.UUID, arguments: dict) -> str:
     return json.dumps(
         {
             "ok": True,
-            "preview_id": _record_preview(
+            "preview_id": record_workflow_preview(
                 agent_id=agent_id,
                 definition_hash=compiled.definition_hash,
                 args_hash=args_hash,
@@ -354,17 +287,18 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
     proposal_id = str(arguments.get("proposal_id") or "").strip() or None
     candidate_id = str(arguments.get("candidate_id") or "").strip() or None
     try:
-        preview_ok, preview_error = _validate_preview_binding(
+        preview_ok, preview_error, preview_record = validate_workflow_preview_binding(
             agent_id=agent_id,
             definition=definition,
             args=args,
             preview_id=preview_id,
             expected_definition_hash=definition_hash,
             expected_args_hash=args_hash,
+            allow_hash_fallback=True,
         )
         if not preview_ok:
             return json.dumps({"ok": False, "error": preview_error}, ensure_ascii=False)
-        preview_record = _WORKFLOW_PREVIEW_CACHE.get(preview_id) if preview_id else None
+        preview_record = preview_record or get_workflow_preview(preview_id)
         preview_proposal_id = str((preview_record or {}).get("proposal_id") or "").strip() or None
         preview_candidate_id = str((preview_record or {}).get("candidate_id") or "").strip() or None
         if (proposal_id or candidate_id) and not (preview_proposal_id and preview_candidate_id):

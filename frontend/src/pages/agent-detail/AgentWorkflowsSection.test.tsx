@@ -158,11 +158,13 @@ describe('runStatusTone', () => {
   });
 });
 
-function preview(risk: WorkflowPreview['risk']): WorkflowPreview {
+function preview(confirmationRequired: boolean): WorkflowPreview {
   return {
+    preview_id: 'preview-1',
     definition_hash: 'hash-1',
-    risk,
-    risk_reasons: risk === 'high' ? ['external effects'] : [],
+    args_hash: 'args-1',
+    confirmation_required: confirmationRequired,
+    confirmation_reasons: confirmationRequired ? ['external effects'] : [],
     planned_leaf_calls: 1,
     budget_tokens: 1000,
   };
@@ -175,22 +177,29 @@ const emptyHandoff: WorkflowPlanHandoffFields = {
 };
 
 describe('buildWorkflowStartOptions', () => {
-  it('does not require a plan handoff for low-risk workflows', () => {
-    expect(buildWorkflowStartOptions(preview('low'), emptyHandoff)).toEqual({});
+  it('always threads the preview binding', () => {
+    expect(buildWorkflowStartOptions(preview(false), emptyHandoff)).toEqual({
+      previewId: 'preview-1',
+      definitionHash: 'hash-1',
+      argsHash: 'args-1',
+    });
   });
 
-  it('blocks high-risk workflows until a confirmed plan handoff is present', () => {
-    expect(buildWorkflowStartOptions(preview('high'), emptyHandoff)).toBeNull();
+  it('blocks confirmation-required workflows until a confirmed plan handoff is present', () => {
+    expect(buildWorkflowStartOptions(preview(true), emptyHandoff)).toBeNull();
   });
 
-  it('threads confirmed plan fields for high-risk starts', () => {
+  it('threads confirmed plan fields with the preview binding for confirmation-required starts', () => {
     expect(
-      buildWorkflowStartOptions(preview('high'), {
+      buildWorkflowStartOptions(preview(true), {
         confirmedPlanId: ' plan-1 ',
         planVersion: '2',
         planHash: ' hash-plan ',
       }),
     ).toEqual({
+      previewId: 'preview-1',
+      definitionHash: 'hash-1',
+      argsHash: 'args-1',
       confirmedPlanId: 'plan-1',
       planVersion: 2,
       planHash: 'hash-plan',

@@ -37,6 +37,8 @@ from app.database import get_db
 from app.models.user import User
 from app.runtime.workflow_admission import AdmissionLimits, WorkflowAdmissionError, admit_workflow
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
+from app.runtime.workflow_definition import compute_definition_hash
+from app.runtime.workflow_preview import record_workflow_preview, validate_workflow_preview_binding
 from app.services.workflow_definitions import WorkflowDefinitionError, WorkflowDefinitionService
 from app.services.workflow_launch import (
     build_resumable_workflow_leaf_executor,
@@ -57,6 +59,9 @@ class WorkflowPreviewRequest(BaseModel):
 class WorkflowStartRequest(BaseModel):
     definition: dict[str, Any]
     args: dict[str, Any] = Field(default_factory=dict)
+    preview_id: str | None = None
+    definition_hash: str | None = None
+    args_hash: str | None = None
     confirmed_plan_id: str | None = None
     plan_version: int | None = None
     plan_hash: str | None = None
@@ -91,8 +96,16 @@ async def preview_workflow_endpoint(
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
     compiled, admission, confirmation = _compile_and_assess(payload)
+    args_hash = compute_definition_hash(payload.args)
     return {
+        "preview_id": record_workflow_preview(
+            agent_id=agent_id,
+            definition_hash=compiled.definition_hash,
+            args_hash=args_hash,
+            confirmation_required=confirmation.requires_confirmation,
+        ),
         "definition_hash": compiled.definition_hash,
+        "args_hash": args_hash,
         "confirmation_required": confirmation.requires_confirmation,
         "confirmation_reasons": confirmation.reasons,
         "planned_leaf_calls": admission.planned_leaf_calls,
@@ -109,6 +122,17 @@ async def start_workflow_endpoint(
 ) -> dict:
     await check_agent_access(db, current_user, agent_id)
     compiled, _admission, confirmation = _compile_and_assess(payload)
+    preview_ok, preview_error, _preview_record = validate_workflow_preview_binding(
+        agent_id=agent_id,
+        definition=payload.definition,
+        args=payload.args,
+        preview_id=payload.preview_id,
+        expected_definition_hash=payload.definition_hash,
+        expected_args_hash=payload.args_hash,
+        allow_hash_fallback=False,
+    )
+    if not preview_ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=preview_error)
 
     try:
         handle = await start_ephemeral_workflow_for_agent(

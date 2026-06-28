@@ -1101,6 +1101,34 @@ async def resolve_session_permission(
             source="session_permission_resolve",
             metadata=resolution_metadata,
         )
+        active_run = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+        if active_run:
+            run_payload = active_run
+        else:
+            try:
+                run_payload = await start_web_chat_run(
+                    db=db,
+                    agent=agent,
+                    user=current_user,
+                    session=session,
+                    content=(
+                        f"The user denied the session permission request for tool {tool_name or 'unknown_tool'}. "
+                        "Do not retry the denied tool in this continuation. Explain the denial and offer a safe "
+                        "alternative path that stays within the current permissions."
+                    ),
+                    display_content="",
+                    append_user_message=False,
+                    extra_metadata={
+                        **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
+                        "source": "session_permission_denied_resume",
+                        "latest_user_prompt_overrides_history": True,
+                        "resumed_from_permission_request_id": str(permission_request_id),
+                        "denied_tool_name": tool_name,
+                        "denied_tool_call_id": tool_call_id,
+                    },
+                )
+            except ActiveWebChatRunExists as exc:
+                run_payload = {"status": "queued", **exc.run}
         await broadcast_web_chat_event(
             agent_id,
             session_id,
@@ -1109,9 +1137,10 @@ async def resolve_session_permission(
                 "event_type": "permission_resolved",
                 **resolution_metadata,
                 "status": "denied",
+                "run": run_payload,
             },
         )
-        return {"status": "denied", "permission_request_id": str(permission_request_id)}
+        return {"status": "denied", "permission_request_id": str(permission_request_id), "run": run_payload}
 
     if not tool_name:
         raise HTTPException(status_code=400, detail="Permission request is missing tool_name")

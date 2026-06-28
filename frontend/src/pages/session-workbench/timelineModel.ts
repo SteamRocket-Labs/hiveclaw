@@ -1,4 +1,5 @@
 import type { SessionIndex } from '../../api/domains/chat';
+import type { SessionWorkbench } from '../../api/domains/ccParity';
 import {
   buildRunTimelineFromMessages,
   isDisclosureStepMessage,
@@ -47,6 +48,8 @@ export interface SessionWorkbenchHeaderModel {
   checkpointCount: number;
   branchDepth: number;
   compactionCount: number;
+  contextWindowStatusLabel: string | null;
+  contextWindowTitle: string | null;
   activeRunStatus: string | null;
 }
 
@@ -70,6 +73,7 @@ export interface BuildThreadTimelineInput {
   activeSession?: Record<string, unknown> | null;
   runtimeSummary?: ChatRuntimeSummary | null;
   sessionIndex?: SessionIndex | null;
+  sessionWorkbench?: SessionWorkbench | null;
   branchLineage?: Array<{ id: unknown; parent_session_id?: unknown }> | null;
   isWaiting: boolean;
   isStreaming: boolean;
@@ -179,6 +183,57 @@ function getLatestCheckpointLabel(sessionIndex?: SessionIndex | null): string | 
   if (!latest) return null;
   const raw = latest.checkpoint_kind ?? latest.kind ?? latest.type ?? latest.id;
   return raw == null ? null : String(raw);
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function compactTokenCount(value: number | null): string | null {
+  if (value === null) return null;
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
+}
+
+function getContextWindowProjection(sessionWorkbench?: SessionWorkbench | null): {
+  label: string | null;
+  title: string | null;
+} {
+  const contextWindow = sessionWorkbench?.context_window;
+  if (!contextWindow) return { label: null, title: null };
+  const latestStatus = contextWindow.latest_status || null;
+  const latestSkipped = contextWindow.latest_skipped || null;
+  const latestBudget = contextWindow.latest_tool_result_budget || null;
+  const reason = String(latestSkipped?.reason || latestBudget?.reason || '').trim();
+  const tokensUntil = finiteNumber(latestStatus?.tokens_until_compaction);
+  const activeTokens = finiteNumber(latestStatus?.active_context_tokens ?? latestSkipped?.active_context_tokens);
+  const scopeTokens = finiteNumber(latestStatus?.auto_compact_scope_tokens);
+  const scopeLimit = finiteNumber(latestStatus?.auto_compact_scope_limit);
+  const cumulative = finiteNumber(latestStatus?.cumulative_run_tokens ?? latestSkipped?.cumulative_run_tokens);
+
+  let label: string | null = null;
+  if (reason) {
+    label = `skipped: ${reason}`;
+  } else if (tokensUntil !== null) {
+    label = `${compactTokenCount(tokensUntil)} left`;
+  } else if (contextWindow.decision_count) {
+    label = `${contextWindow.decision_count} decisions`;
+  }
+
+  const titleParts = [
+    activeTokens !== null ? `active ${compactTokenCount(activeTokens)} tokens` : null,
+    scopeTokens !== null ? `scope ${compactTokenCount(scopeTokens)} tokens` : null,
+    scopeLimit !== null ? `limit ${compactTokenCount(scopeLimit)} tokens` : null,
+    tokensUntil !== null ? `${compactTokenCount(tokensUntil)} tokens until compaction` : null,
+    cumulative !== null ? `run total ${compactTokenCount(cumulative)} tokens` : null,
+    reason ? `latest decision: ${reason}` : null,
+  ].filter(Boolean);
+
+  return {
+    label,
+    title: titleParts.length ? titleParts.join(' · ') : null,
+  };
 }
 
 function getBranchDepth(activeSession?: Record<string, unknown> | null, branchLineage?: Array<{ id: unknown; parent_session_id?: unknown }> | null): number {
@@ -339,6 +394,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
     cells.push(pendingRunCell);
   }
   const sessionIndex = input.sessionIndex && !Array.isArray(input.sessionIndex) ? input.sessionIndex : null;
+  const sessionWorkbench = input.sessionWorkbench && !Array.isArray(input.sessionWorkbench) ? input.sessionWorkbench : null;
+  const contextWindow = getContextWindowProjection(sessionWorkbench);
   const runtimeSummary = input.runtimeSummary || null;
   const headerStatus = getHeaderStatus(cells, input.isWaiting, input.isStreaming, input.activeRunStatus);
 
@@ -354,6 +411,8 @@ export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTime
       checkpointCount: sessionIndex?.checkpoints?.length ?? 0,
       branchDepth: getBranchDepth(input.activeSession, input.branchLineage),
       compactionCount: runtimeSummary?.compaction_count ?? 0,
+      contextWindowStatusLabel: contextWindow.label,
+      contextWindowTitle: contextWindow.title,
       activeRunStatus: input.activeRunStatus || null,
     },
     inspector: {

@@ -30,6 +30,7 @@ import { SessionWorkbenchHeader, SessionWorkbenchInspector } from '../session-wo
 import SessionNativeControls from '../session-workbench/SessionNativeControls';
 import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
 import { chatApi } from '../../api/domains/chat';
+import { ccParityApi } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
 import { composerShortcutText } from './sessionComposerShortcuts';
@@ -2159,12 +2160,20 @@ export default function AgentChatSection({
     enabled: Boolean(effectiveAgentId && activeSessionId),
     staleTime: 10_000,
   });
+  const { data: sessionWorkbenchData } = useQuery({
+    queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId],
+    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!),
+    enabled: Boolean(effectiveAgentId && activeSessionId),
+    staleTime: 10_000,
+  });
   const sessionIndex = sessionIndexData && !Array.isArray(sessionIndexData) ? sessionIndexData : null;
+  const sessionWorkbench = sessionWorkbenchData && !Array.isArray(sessionWorkbenchData) ? sessionWorkbenchData : null;
   const threadTimelineModel = buildThreadTimeline({
     messages: visibleTimeline,
     activeSession,
     runtimeSummary,
     sessionIndex,
+    sessionWorkbench,
     branchLineage,
     isWaiting,
     isStreaming,

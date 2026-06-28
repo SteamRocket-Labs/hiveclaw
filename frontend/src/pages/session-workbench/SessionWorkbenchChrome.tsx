@@ -28,10 +28,12 @@ function HeaderChip({
   label,
   value,
   icon,
+  title,
 }: {
   label: string;
   value: React.ReactNode;
   icon?: React.ReactNode;
+  title?: string;
 }) {
   return (
     <span
@@ -48,7 +50,7 @@ function HeaderChip({
         fontSize: '11px',
         whiteSpace: 'nowrap',
       }}
-      title={label}
+      title={title || label}
     >
       {icon}
       <span style={{ color: 'var(--text-tertiary)' }}>{label}</span>
@@ -114,6 +116,14 @@ export function SessionWorkbenchHeader({ model }: { model: SessionWorkbenchHeade
         <HeaderChip label={t('sessionWorkbench.checkpoints', 'checkpoints')} value={model.checkpointCount} icon={<IconGitCommit size={13} />} />
         <HeaderChip label={t('sessionWorkbench.branchDepth', 'branch')} value={model.branchDepth} icon={<IconGitBranch size={13} />} />
         <HeaderChip label={t('sessionWorkbench.compactions', 'compactions')} value={model.compactionCount} icon={<IconDatabase size={13} />} />
+        {model.contextWindowStatusLabel && (
+          <HeaderChip
+            label={t('sessionWorkbench.contextWindow', 'context')}
+            value={model.contextWindowStatusLabel}
+            title={model.contextWindowTitle || undefined}
+            icon={<IconDatabase size={13} />}
+          />
+        )}
         {model.activeRunStatus && (
           <HeaderChip label={t('sessionWorkbench.activeRun', 'run')} value={model.activeRunStatus} icon={<IconPlayerPlay size={13} />} />
         )}

@@ -475,6 +475,8 @@ export default function LocalAgentChatSection({ agentId, agent, agentPermissions
     checkpointCount: 0,
     branchDepth: 0,
     compactionCount: 0,
+    contextWindowStatusLabel: null,
+    contextWindowTitle: null,
     activeRunStatus: sending ? 'sending' : null,
   };
 

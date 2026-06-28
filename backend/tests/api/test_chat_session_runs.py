@@ -334,6 +334,7 @@ def test_resolve_session_permission_denial_emits_permission_denied_hook(monkeypa
     emitted_hooks = []
     appended_events = []
     broadcasts = []
+    started_runs = []
 
     async def fake_get_run_session_and_agent(**_kwargs):
         return session, agent, "use"
@@ -347,10 +348,19 @@ def test_resolve_session_permission_denial_emits_permission_denied_hook(monkeypa
     async def fake_broadcast(*args):
         broadcasts.append(args)
 
+    async def fake_get_active_web_chat_run(**_kwargs):
+        return None
+
+    async def fake_start_web_chat_run(**kwargs):
+        started_runs.append(kwargs)
+        return {"run_id": run_id.hex, "status": "running"}
+
     monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
     monkeypatch.setattr(chat_sessions_api, "emit_hook", fake_emit_hook)
     monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
     monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
+    monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
     client = _client(monkeypatch, db=db, user=user, agent=agent)
 
     response = client.post(
@@ -360,13 +370,19 @@ def test_resolve_session_permission_denial_emits_permission_denied_hook(monkeypa
 
     assert response.status_code == 200
     assert response.json()["status"] == "denied"
+    assert response.json()["run"] == {"run_id": run_id.hex, "status": "running"}
     assert db.commits == 1
     assert appended_events[-1]["event_type"] == "session_permission_decision"
     assert emitted_hooks
     assert emitted_hooks[-1][0] == chat_sessions_api.HookEvent.PERMISSION_DENIED
     assert emitted_hooks[-1][1]["tool_name"] == "send_email"
     assert emitted_hooks[-1][1]["metadata"]["permission_request"]["permission_request_id"] == str(permission_request_id)
+    assert started_runs[0]["append_user_message"] is False
+    assert started_runs[0]["extra_metadata"]["source"] == "session_permission_denied_resume"
+    assert started_runs[0]["extra_metadata"]["latest_user_prompt_overrides_history"] is True
+    assert "denied" in started_runs[0]["content"]
     assert broadcasts[-1][2]["status"] == "denied"
+    assert broadcasts[-1][2]["run"] == {"run_id": run_id.hex, "status": "running"}
 
 
 def test_resolve_session_permission_finds_session_native_permission_event(monkeypatch):
@@ -408,6 +424,7 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     emitted_hooks = []
     appended_events = []
     broadcasts = []
+    started_runs = []
 
     async def fake_get_run_session_and_agent(**_kwargs):
         return session, agent, "use"
@@ -421,10 +438,19 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     async def fake_broadcast(*args):
         broadcasts.append(args)
 
+    async def fake_get_active_web_chat_run(**_kwargs):
+        return None
+
+    async def fake_start_web_chat_run(**kwargs):
+        started_runs.append(kwargs)
+        return {"run_id": run_id.hex, "status": "running"}
+
     monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
     monkeypatch.setattr(chat_sessions_api, "emit_hook", fake_emit_hook)
     monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
     monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
+    monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
     client = _client(monkeypatch, db=db, user=user, agent=agent)
 
     response = client.post(
@@ -434,9 +460,14 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
 
     assert response.status_code == 200
     assert response.json()["status"] == "denied"
+    assert response.json()["run"] == {"run_id": run_id.hex, "status": "running"}
     assert appended_events[-1]["metadata"]["source_event_id"] == str(event.id)
     assert emitted_hooks[-1][1]["tool_name"] == "write_file"
+    assert started_runs[0]["append_user_message"] is False
+    assert started_runs[0]["extra_metadata"]["source"] == "session_permission_denied_resume"
+    assert started_runs[0]["extra_metadata"]["resumed_from_permission_request_id"] == str(permission_request_id)
     assert broadcasts[-1][2]["status"] == "denied"
+    assert broadcasts[-1][2]["run"] == {"run_id": run_id.hex, "status": "running"}
 
 
 def test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id(monkeypatch):

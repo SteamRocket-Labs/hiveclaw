@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildCompletionWakeModel, buildThreadTimeline } from './timelineModel';
 import type { AgentChatMessage } from '../agent-detail/chatRuntime';
 import type { SessionIndex } from '../../api/domains/chat';
+import type { SessionWorkbench } from '../../api/domains/ccParity';
 
 describe('session workbench timeline model', () => {
   it('keeps a turn run as one cell with reasoning, tool, and final answer parts', () => {
@@ -115,11 +116,38 @@ describe('session workbench timeline model', () => {
       t0_segments: [{ id: 'seg-1' }, { id: 'seg-2' }],
       resume_health: { status: 'recovered', reason: 'interrupted tool repaired' },
     };
+    const sessionWorkbench = {
+      schema: 'hive.ccplus.session_workbench.v1',
+      agent_id: 'agent-1',
+      session: {},
+      context_window: {
+        schema: 'hive.ccplus.context_window.v1',
+        decision_count: 2,
+        latest_status: {
+          active_context_tokens: 50_000,
+          auto_compact_scope_limit: 223_000,
+          tokens_until_compaction: 173_000,
+          cumulative_run_tokens: 1_200_000,
+        },
+        latest_skipped: {
+          reason: 'below_autocompact_threshold',
+          active_context_tokens: 50_000,
+          cumulative_run_tokens: 1_200_000,
+        },
+        decisions: [],
+      },
+      turn: { truth_source: 'transcript', event_count: 42 },
+      controls: {},
+      runtime_tasks: [],
+      goals: [],
+      teams: [],
+    } as unknown as SessionWorkbench;
 
     const model = buildThreadTimeline({
       messages: [],
       activeSession: { id: 'session-1', title: 'Recovered session' },
       sessionIndex,
+      sessionWorkbench,
       runtimeSummary: {
         activated_tool_groups: [],
         used_tools: [],
@@ -143,7 +171,11 @@ describe('session workbench timeline model', () => {
       checkpointCount: 1,
       branchDepth: 1,
       compactionCount: 2,
+      contextWindowStatusLabel: 'skipped: below_autocompact_threshold',
     });
+    expect(model.header.contextWindowTitle).toContain('active 50.0K tokens');
+    expect(model.header.contextWindowTitle).toContain('173.0K tokens until compaction');
+    expect(model.header.contextWindowTitle).toContain('latest decision: below_autocompact_threshold');
     expect(model.inspector.sessionEventCount).toBe(42);
     expect(model.inspector.t0SegmentCount).toBe(2);
     expect(model.inspector.latestCheckpointLabel).toBe('user_turn_stop');

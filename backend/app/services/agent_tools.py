@@ -870,6 +870,7 @@ async def execute_tool(
     permission_profile: Any | None = None,
     turn_id: str | None = None,
     runtime_task_id: str | None = None,
+    origin_channel: str | None = None,
     round_state: dict[str, Any] | None = None,
     t0_refs: tuple[str, ...] = (),
     plan_mode_interactive_available: bool = False,
@@ -888,6 +889,7 @@ async def execute_tool(
         permission_profile=permission_profile,
         turn_id=turn_id,
         runtime_task_id=runtime_task_id,
+        origin_channel=origin_channel,
         round_state=round_state,
         t0_refs=t0_refs,
         plan_mode_interactive_available=plan_mode_interactive_available,
@@ -906,6 +908,7 @@ async def execute_session_permission_tool(
     tool_call_id: str | None = None,
     turn_id: str | None = None,
     runtime_task_id: str | None = None,
+    origin_channel: str | None = None,
     round_state: dict[str, Any] | None = None,
     t0_refs: tuple[str, ...] = (),
 ) -> str | ToolContentEnvelope:
@@ -920,6 +923,7 @@ async def execute_session_permission_tool(
         permission_profile=permission_profile,
         turn_id=turn_id,
         runtime_task_id=runtime_task_id,
+        origin_channel=origin_channel,
         round_state=round_state,
         t0_refs=t0_refs,
     )

@@ -167,6 +167,7 @@ async def _resolve_runtime_context(
     permission_profile: Any | None = None,
     turn_id: str | None = None,
     runtime_task_id: str | None = None,
+    origin_channel: str | None = None,
     round_state: dict[str, Any] | None = None,
     t0_refs: tuple[str, ...] = (),
 ) -> ToolExecutionContext:
@@ -185,6 +186,8 @@ async def _resolve_runtime_context(
         kwargs["turn_id"] = turn_id
     if runtime_task_id is not None and (accepts_kwargs or "runtime_task_id" in params):
         kwargs["runtime_task_id"] = runtime_task_id
+    if origin_channel is not None and (accepts_kwargs or "origin_channel" in params):
+        kwargs["origin_channel"] = origin_channel
     if round_state is not None and (accepts_kwargs or "round_state" in params):
         kwargs["round_state"] = round_state
     if t0_refs and (accepts_kwargs or "t0_refs" in params):
@@ -475,6 +478,7 @@ class ToolRuntimeService:
         permission_profile: Any | None = None,
         turn_id: str | None = None,
         runtime_task_id: str | None = None,
+        origin_channel: str | None = None,
         round_state: dict[str, Any] | None = None,
         t0_refs: tuple[str, ...] = (),
         plan_mode_interactive_available: bool = False,
@@ -503,6 +507,7 @@ class ToolRuntimeService:
             permission_profile=permission_profile,
             turn_id=turn_id,
             runtime_task_id=runtime_task_id,
+            origin_channel=origin_channel,
             round_state=round_state,
             t0_refs=t0_refs,
         )

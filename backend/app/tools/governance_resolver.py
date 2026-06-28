@@ -43,6 +43,7 @@ class ToolGovernanceResolver:
             permission_profile=runtime_context.permission_profile,
             turn_id=runtime_context.turn_id,
             runtime_task_id=runtime_context.runtime_task_id,
+            origin_channel=runtime_context.origin_channel,
             round_state=dict(runtime_context.round_state or {}),
             t0_refs=tuple(runtime_context.t0_refs or ()),
         )

@@ -317,6 +317,13 @@ def _tool_frame_kwargs_from_session_context(session_context: SessionContext | No
         result["turn_id"] = str(metadata["turn_id"])
     if metadata.get("runtime_task_id") or metadata.get("task_id"):
         result["runtime_task_id"] = str(metadata.get("runtime_task_id") or metadata.get("task_id"))
+    origin_channel = (
+        metadata.get("origin_channel")
+        or getattr(session_context, "channel", None)
+        or getattr(session_context, "source", None)
+    )
+    if origin_channel:
+        result["origin_channel"] = str(origin_channel)
     return result
 
 

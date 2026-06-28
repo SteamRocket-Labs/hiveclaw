@@ -26,6 +26,7 @@ class ToolRuntimeResolver:
         permission_profile: Any | None = None,
         turn_id: str | None = None,
         runtime_task_id: str | None = None,
+        origin_channel: str | None = None,
         round_state: dict[str, Any] | None = None,
         t0_refs: tuple[str, ...] = (),
     ) -> ToolExecutionContext:
@@ -59,6 +60,7 @@ class ToolRuntimeResolver:
             permission_profile=permission_profile,
             turn_id=turn_id,
             runtime_task_id=runtime_task_id,
+            origin_channel=origin_channel,
             round_state=dict(round_state or {}),
             t0_refs=tuple(str(ref) for ref in (t0_refs or ()) if str(ref).strip()),
         )

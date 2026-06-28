@@ -404,6 +404,18 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
         "arguments": {"path": "workspace/plan.md", "content": "# Plan"},
         "capability": "workspace.file.write",
         "permission_mode": "default",
+        "pending_tool_frame": {
+            "permission_request_id": str(permission_request_id),
+            "session_id": str(session_id),
+            "tool_call_id": "tool-call-im",
+            "tool_name": "write_file",
+            "arguments": {"path": "workspace/plan.md", "content": "# Plan"},
+            "origin_channel": "feishu",
+            "runtime_task_id": "runtime-im",
+            "turn_id": "turn-im",
+            "round_state": {"round": 2},
+            "t0_refs": ["t0://sessions/session-native/events/9"],
+        },
     }
     event = SimpleNamespace(
         id=uuid4(),
@@ -469,6 +481,11 @@ def test_resolve_session_permission_finds_session_native_permission_event(monkey
     assert emitted_hooks[-1][1]["tool_name"] == "write_file"
     assert started_runs[0]["append_user_message"] is False
     assert started_runs[0]["extra_metadata"]["source"] == "session_permission_denied_resume"
+    assert started_runs[0]["extra_metadata"]["origin_channel"] == "feishu"
+    assert started_runs[0]["extra_metadata"]["resumed_runtime_task_id"] == "runtime-im"
+    assert started_runs[0]["extra_metadata"]["resumed_turn_id"] == "turn-im"
+    assert started_runs[0]["extra_metadata"]["round_state"] == {"round": 2}
+    assert started_runs[0]["extra_metadata"]["t0_refs"] == ["t0://sessions/session-native/events/9"]
     assert started_runs[0]["extra_metadata"]["resumed_from_permission_request_id"] == str(permission_request_id)
     assert broadcasts[-1][2]["status"] == "denied"
     assert broadcasts[-1][2]["run"] == {"run_id": run_id.hex, "status": "running"}

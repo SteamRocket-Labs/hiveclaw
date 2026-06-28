@@ -187,6 +187,7 @@ class ToolGovernanceContext:
     permission_profile: PermissionProfileV1 | None = None
     turn_id: str | None = None
     runtime_task_id: str | None = None
+    origin_channel: str | None = None
     round_state: dict[str, Any] | None = None
     t0_refs: tuple[str, ...] = ()
 
@@ -507,7 +508,7 @@ async def _emit_session_no_policy_result(
         tool_call_id=str(context.tool_call_id or ""),
         tool_name=context.tool_name,
         arguments=dict(context.arguments or {}),
-        origin_channel=None,
+        origin_channel=context.origin_channel,
         permission_profile=profile,
         round_state=dict(context.round_state or {}),
         knowledge_refs=(),

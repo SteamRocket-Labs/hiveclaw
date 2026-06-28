@@ -237,6 +237,7 @@ async def test_session_permission_pending_frame_carries_runtime_turn_frame() -> 
             permission_profile=PermissionProfileV1(mode="default", default_decision="escalate"),
             turn_id="turn-1",
             runtime_task_id="runtime-1",
+            origin_channel="feishu",
             round_state={"round": 3, "tool_call_index": 1},
             t0_refs=("t0://sessions/session-1/segments/seg-1/events.jsonl#42",),
         ),
@@ -252,6 +253,7 @@ async def test_session_permission_pending_frame_carries_runtime_turn_frame() -> 
     pending_frame = events[-1]["permission_request"]["pending_tool_frame"]
     assert pending_frame["turn_id"] == "turn-1"
     assert pending_frame["runtime_task_id"] == "runtime-1"
+    assert pending_frame["origin_channel"] == "feishu"
     assert pending_frame["round_state"] == {"round": 3, "tool_call_index": 1}
     assert pending_frame["t0_refs"] == ("t0://sessions/session-1/segments/seg-1/events.jsonl#42",)
 

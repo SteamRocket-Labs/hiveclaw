@@ -2,6 +2,13 @@ from app.services.capability_gate import CAPABILITY_MAP, get_all_capabilities
 from app.tools.collector import collect_tools
 
 
+def test_capability_map_is_owned_by_governance_taxonomy():
+    from app.services.capability_gate import CAPABILITY_MAP as gate_map
+    from app.services.governance_capability_taxonomy import CAPABILITY_MAP as taxonomy_map
+
+    assert gate_map is taxonomy_map
+
+
 def test_capability_map_covers_all_governance_classified_tools():
     collected = collect_tools()
     governance_tools = set(collected.safe_tools) | set(collected.sensitive_tools)

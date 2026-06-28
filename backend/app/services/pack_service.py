@@ -14,7 +14,7 @@ from app.models.channel_config import ChannelConfig
 from app.models.llm import LLMModel
 from app.packs.catalog_reader import PackCatalogReader, PackManifest, find_pack_dirs
 from app.services.agent_tools import CORE_TOOL_NAMES, get_combined_openai_tools
-from app.services.capability_gate import CAPABILITY_MAP
+from app.services.governance_capability_taxonomy import CAPABILITY_MAP
 from app.services.llm_client import get_provider_spec
 from app.services.pack_policy_service import get_agent_pack_policies, get_tenant_pack_policies, is_pack_enabled
 from app.services.token_tracker import estimate_tokens_from_text

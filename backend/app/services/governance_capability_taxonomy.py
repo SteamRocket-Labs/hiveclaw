@@ -12,7 +12,6 @@ from enum import Enum
 
 from app.runtime.ccplus_contracts import GovernanceCapabilityDescriptorV1
 from app.services.coding_pack_manifest import CODING_PACK_NAME, CODING_PACK_SOURCE, CODING_PACK_TOOLS
-from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
 
 class GovernanceCapabilityLayer(str, Enum):
@@ -84,6 +83,144 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
+CAPABILITY_MAP: dict[str, str] = {
+    "glob_search": "workspace.file.read",
+    "list_files": "workspace.file.read",
+    "grep_search": "workspace.file.read",
+    "read_file": "workspace.file.read",
+    "read_document": "workspace.file.read",
+    "write_file": "workspace.file.write",
+    "edit_file": "workspace.file.write",
+    "delete_file": "workspace.file.delete",
+    "fs_read": "workspace.file.read",
+    "fs_write": "workspace.file.write",
+    "fs_list": "workspace.file.read",
+    "office_document_create": "workspace.file.write",
+    "office_document_view": "workspace.file.read",
+    "office_document_query": "workspace.file.read",
+    "office_document_apply": "workspace.file.write",
+    "office_document_validate": "workspace.file.read",
+    "office_document_dump": "workspace.file.read",
+    "execute_code": "workspace.code.execute",
+    "run_command": "workspace.command.execute",
+    "track_todo": "agent.task.track",
+    "record_finding": "agent.task.track",
+    "read_ledger": "agent.task.read",
+    "task_create": "agent.task.track",
+    "task_update": "agent.task.track",
+    "task_list": "agent.task.read",
+    "task_get": "agent.task.read",
+    "task_output": "agent.async_task.read",
+    "task_stop": "agent.async_task.modify",
+    "goal_start": "agent.goal.modify",
+    "team_create": "agent.team.modify",
+    "advanced_plan": "agent.plan.modify",
+    "verify_plan": "agent.plan.read",
+    "exit_plan_mode": "agent.plan.modify",
+    "ask_user_question": "agent.plan.clarify",
+    "request_plan_mode": "agent.plan.request",
+    "search_memory": "agent.memory.read",
+    "load_memory": "agent.memory.read",
+    "save_memory": "agent.memory.write",
+    "update_memory": "agent.memory.write",
+    "retire_memory": "agent.memory.write",
+    "submit_t3_consolidation_pitch": "agent.memory.write",
+    "submit_t3_memory_gate_review": "agent.memory.write",
+    "submit_t3_revised_patch": "agent.memory.write",
+    "load_skill": "agent.skill.read",
+    "run_skill_tool": "agent.skill.execute",
+    "save_skill": "agent.skill.write",
+    "pin_skill": "agent.skill.write",
+    "tool_search": "agent.tool.discover",
+    "get_current_time": "system.time.read",
+    "discover_resources": "agent.tool.discover",
+    "search_clawhub": "agent.tool.discover",
+    "list_mcp_tools": "agent.mcp.read",
+    "inspect_mcp_tool": "agent.mcp.read",
+    "list_mcp_resources": "agent.mcp.read",
+    "read_mcp_resource": "agent.mcp.read",
+    "mcp_list_resources": "agent.mcp.read",
+    "mcp_read_resource": "agent.mcp.read",
+    "mcp_list_prompts": "agent.mcp.read",
+    "mcp_get_prompt": "agent.mcp.read",
+    "mcp_auth_status": "agent.mcp.read",
+    "call_mcp_tool": "agent.mcp.call",
+    "send_feishu_message": "channel.feishu.message",
+    "feishu_wiki_list": "channel.feishu.document",
+    "feishu_doc_read": "channel.feishu.document",
+    "feishu_url_resolve": "channel.feishu.document",
+    "feishu_url_read": "channel.feishu.document",
+    "feishu_drive_file_read": "channel.feishu.document",
+    "feishu_user_search": "channel.feishu.directory",
+    "feishu_sheet_info": "channel.feishu.spreadsheet",
+    "feishu_sheet_read": "channel.feishu.spreadsheet",
+    "feishu_calendar_create": "channel.feishu.calendar",
+    "feishu_calendar_list": "channel.feishu.calendar",
+    "feishu_calendar_update": "channel.feishu.calendar",
+    "feishu_calendar_delete": "channel.feishu.calendar",
+    "feishu_doc_create": "channel.feishu.document",
+    "feishu_doc_append": "channel.feishu.document",
+    "feishu_doc_share": "channel.feishu.document",
+    "feishu_doc_delete": "channel.feishu.document",
+    "feishu_base_app_create": "channel.feishu.base",
+    "feishu_base_field_create": "channel.feishu.base",
+    "feishu_base_field_list": "channel.feishu.base",
+    "feishu_base_record_list": "channel.feishu.base",
+    "feishu_base_table_list": "channel.feishu.base",
+    "feishu_base_record_upsert": "channel.feishu.base",
+    "feishu_base_record_upload_attachment": "channel.feishu.base",
+    "feishu_base_record_delete": "channel.feishu.base",
+    "feishu_task_list": "channel.feishu.task",
+    "feishu_task_create": "channel.feishu.task",
+    "feishu_task_complete": "channel.feishu.task",
+    "feishu_task_comment": "channel.feishu.task",
+    "feishu_approval_create": "channel.feishu.approval",
+    "feishu_approval_definition": "channel.feishu.approval",
+    "feishu_approval_query": "channel.feishu.approval",
+    "feishu_approval_get": "channel.feishu.approval",
+    "read_emails": "channel.email.read",
+    "send_email": "channel.email.send",
+    "reply_email": "channel.email.send",
+    "send_web_message": "channel.message.send",
+    "send_channel_message": "channel.message.send",
+    "send_channel_file": "channel.file.send",
+    "upload_image": "channel.file.send",
+    "list_triggers": "agent.trigger.read",
+    "set_trigger": "agent.trigger.modify",
+    "update_trigger": "agent.trigger.modify",
+    "cancel_trigger": "agent.trigger.modify",
+    "import_mcp_server": "agent.tool.install",
+    "delegate_to_agent": "agent.message.send",
+    "send_message_to_agent": "agent.message.send",
+    "send_agent_session_message": "agent.message.send",
+    "spawn_subagent": "agent.subagent.spawn",
+    "check_subagent": "agent.subagent.read",
+    "propose_dynamic_workflow": "agent.workflow.preview",
+    "preview_workflow": "agent.workflow.preview",
+    "start_workflow": "agent.workflow.run",
+    "check_async_task": "agent.async_task.read",
+    "list_async_tasks": "agent.async_task.read",
+    "cancel_async_task": "agent.async_task.modify",
+    "create_digital_employee": "agent.employee.create",
+    "preview_agent_blueprint": "agent.employee.create",
+    "plaza_get_new_posts": "plaza.post.read",
+    "plaza_create_post": "plaza.post.write",
+    "plaza_add_comment": "plaza.post.write",
+    "web_search": "external.web.search",
+    "bing_search": "external.web.search",
+    "anysearch_get_sub_domains": "external.web.search",
+    "anysearch_search": "external.web.search",
+    "anysearch_batch_search": "external.web.search",
+    "exa_search": "external.web.search",
+    "tavily_search": "external.web.search",
+    "web_fetch": "external.web.read",
+    "anysearch_extract": "external.web.read",
+    "firecrawl_fetch": "external.web.read",
+    "xcrawl_scrape": "external.web.read",
+    "read_webpage": "external.web.read",
+}
+
+
 _CORE_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     name="agent_base",
     layer=GovernanceCapabilityLayer.AGENT_BASE.value,
@@ -116,12 +253,6 @@ def _descriptor_from_runtime_group(group) -> GovernanceCapabilityDescriptorV1:
     )
 
 
-_RUNTIME_GROUP_DESCRIPTORS: tuple[GovernanceCapabilityDescriptorV1, ...] = tuple(
-    descriptor
-    for descriptor in (_descriptor_from_runtime_group(group) for group in RUNTIME_TOOL_GROUPS)
-    if descriptor.tools
-)
-
 _CODING_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     name=CODING_PACK_NAME,
     layer=GovernanceCapabilityLayer.EXTERNAL_EXTENSION.value,
@@ -148,23 +279,35 @@ _OFFICE_BROWSER_DESCRIPTOR = GovernanceCapabilityDescriptorV1(
     notes="Browser WYSIWYG Office integration. Agent document runtime remains agent_base.",
 )
 
-_DESCRIPTORS_BY_NAME: dict[str, GovernanceCapabilityDescriptorV1] = {
-    _CORE_DESCRIPTOR.name: _CORE_DESCRIPTOR,
-    **{descriptor.name: descriptor for descriptor in _RUNTIME_GROUP_DESCRIPTORS},
-    _CODING_DESCRIPTOR.name: _CODING_DESCRIPTOR,
-    _OFFICE_BROWSER_DESCRIPTOR.name: _OFFICE_BROWSER_DESCRIPTOR,
-}
+def _runtime_group_descriptors() -> tuple[GovernanceCapabilityDescriptorV1, ...]:
+    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
-_DESCRIPTORS_BY_TOOL: dict[str, GovernanceCapabilityDescriptorV1] = {
-    tool_name: _CORE_DESCRIPTOR for tool_name in CORE_TOOL_NAMES
-}
-for _descriptor in (*_RUNTIME_GROUP_DESCRIPTORS, _CODING_DESCRIPTOR, _OFFICE_BROWSER_DESCRIPTOR):
-    for _tool_name in _descriptor.tools:
-        _DESCRIPTORS_BY_TOOL.setdefault(_tool_name, _descriptor)
+    return tuple(
+        descriptor
+        for descriptor in (_descriptor_from_runtime_group(group) for group in RUNTIME_TOOL_GROUPS)
+        if descriptor.tools
+    )
+
+
+def _descriptors_by_name() -> dict[str, GovernanceCapabilityDescriptorV1]:
+    return {
+        _CORE_DESCRIPTOR.name: _CORE_DESCRIPTOR,
+        **{descriptor.name: descriptor for descriptor in _runtime_group_descriptors()},
+        _CODING_DESCRIPTOR.name: _CODING_DESCRIPTOR,
+        _OFFICE_BROWSER_DESCRIPTOR.name: _OFFICE_BROWSER_DESCRIPTOR,
+    }
+
+
+def _descriptors_by_tool() -> dict[str, GovernanceCapabilityDescriptorV1]:
+    descriptors_by_tool = {tool_name: _CORE_DESCRIPTOR for tool_name in CORE_TOOL_NAMES}
+    for descriptor in (*_runtime_group_descriptors(), _CODING_DESCRIPTOR, _OFFICE_BROWSER_DESCRIPTOR):
+        for tool_name in descriptor.tools:
+            descriptors_by_tool.setdefault(tool_name, descriptor)
+    return descriptors_by_tool
 
 
 def iter_governance_capabilities() -> tuple[GovernanceCapabilityDescriptorV1, ...]:
-    return tuple(_DESCRIPTORS_BY_NAME.values())
+    return tuple(_descriptors_by_name().values())
 
 
 def iter_l2_capabilities() -> tuple[GovernanceCapabilityDescriptorV1, ...]:
@@ -172,11 +315,11 @@ def iter_l2_capabilities() -> tuple[GovernanceCapabilityDescriptorV1, ...]:
 
 
 def capability_descriptor_for_name(name: str) -> GovernanceCapabilityDescriptorV1 | None:
-    return _DESCRIPTORS_BY_NAME.get(str(name or "").strip())
+    return _descriptors_by_name().get(str(name or "").strip())
 
 
 def capability_descriptor_for_tool(tool_name: str) -> GovernanceCapabilityDescriptorV1 | None:
-    return _DESCRIPTORS_BY_TOOL.get(str(tool_name or "").strip())
+    return _descriptors_by_tool().get(str(tool_name or "").strip())
 
 
 def is_agent_base_tool(tool_name: str) -> bool:

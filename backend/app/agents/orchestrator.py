@@ -20,7 +20,7 @@ from app.kernel.contracts import ExecutionIdentityRef
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import CORE_TOOL_NAMES
-from app.services.capability_gate import CAPABILITY_MAP
+from app.services.governance_capability_taxonomy import CAPABILITY_MAP
 from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
     build_restart_replay_contract,

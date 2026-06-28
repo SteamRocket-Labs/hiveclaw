@@ -105,6 +105,75 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_emits_hooks_and_revalidates_modified_args():
+    from app.runtime.hooks import HookEvent, HookResult, hook_registry
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        session_id="session-1",
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="write_file",
+        arguments={"path": "workspace/notes.md", "content": "x"},
+    )
+    governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
+    registry = _FakeRegistry("OK")
+    hook_events: list[tuple[str, dict | None]] = []
+
+    def pre_hook(ctx):
+        hook_events.append((ctx.event.value, dict(ctx.tool_args or {})))
+        return HookResult(modified_args={"path": "workspace/safe.md", "content": ctx.tool_args["content"]})
+
+    def post_hook(ctx):
+        hook_events.append((ctx.event.value, dict(ctx.tool_args or {})))
+        return None
+
+    async def fake_run_governance(_context, _deps, *, event_callback=None):
+        return None
+
+    hook_registry.clear()
+    hook_registry.register(HookEvent.PRE_TOOL_USE, pre_hook)
+    hook_registry.register(HookEvent.POST_TOOL_USE, post_hook)
+    try:
+        service = ToolRuntimeService(
+            runtime_resolver=_FakeRuntimeResolver(context),
+            governance_resolver=governance_resolver,
+            registry=registry,
+            ensure_registry=lambda: None,
+            governance_runner=fake_run_governance,
+            fallback_executor=lambda *_args, **_kwargs: "fallback",
+            direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+            activity_logger=None,
+        )
+
+        result = await service.execute(
+            "write_file",
+            {"path": "workspace/notes.md", "content": "x"},
+            agent_id=context.agent_id,
+            user_id=context.user_id,
+        )
+    finally:
+        hook_registry.clear()
+
+    assert result == "OK"
+    assert governance_resolver.context_calls[0][2]["path"] == "workspace/safe.md"
+    assert registry.calls[0].arguments["path"] == "workspace/safe.md"
+    assert hook_events == [
+        ("pre_tool_use", {"path": "workspace/notes.md", "content": "x"}),
+        ("post_tool_use", {"path": "workspace/safe.md", "content": "x"}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_threads_session_permission_context_into_delegation():
     from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
     from app.tools.governance import ToolGovernanceContext

@@ -297,6 +297,7 @@ class ToolRuntimeService:
         permission_profile: Any | None = None,
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
+        emit_runtime_hooks: bool = True,
     ) -> str | ToolContentEnvelope:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
@@ -320,6 +321,18 @@ class ToolRuntimeService:
             permission_profile=permission_profile,
         )
         arguments = _inject_runtime_context_arguments(tool_name, arguments, runtime_context)
+        if emit_runtime_hooks:
+            hook_result = await self._emit_pre_tool_hook(
+                tool_name,
+                arguments,
+                runtime_context,
+                tool_call_id=tool_call_id,
+                source="tool_runtime_service",
+            )
+            if hook_result and hook_result.block:
+                return "Blocked by hook: " + (hook_result.reason or "policy")
+            if hook_result and hook_result.modified_args is not None:
+                arguments = hook_result.modified_args
         governance_kwargs: dict[str, Any] = {
             "runtime_context": runtime_context,
             "tool_name": tool_name,
@@ -392,8 +405,37 @@ class ToolRuntimeService:
                             detail=tool_error_payload,
                         )
                     )
+            if emit_runtime_hooks:
+                post_hook_result = await self._emit_post_tool_hook(
+                    tool_name,
+                    arguments,
+                    result_text,
+                    runtime_context,
+                    tool_call_id=tool_call_id,
+                    source="tool_runtime_service",
+                )
+                if post_hook_result and post_hook_result.output_rewrite is not None:
+                    rewrite = post_hook_result.output_rewrite
+                    return rewrite if isinstance(rewrite, str) else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
             return result
         except asyncio.TimeoutError:
+            rendered = render_tool_error(
+                tool_name=tool_name,
+                error_class="timeout",
+                message=f"{tool_name} exceeded the {int(timeout_seconds)} second time limit.",
+                provider="runtime",
+                retryable=True,
+                actionable_hint="Try a simpler request, smaller input, or a more targeted operation.",
+            )
+            if emit_runtime_hooks:
+                await self._emit_tool_failure_hook(
+                    tool_name,
+                    arguments,
+                    rendered,
+                    runtime_context,
+                    tool_call_id=tool_call_id,
+                    source="tool_runtime_service",
+                )
             if self.activity_logger:
                 await _maybe_await(
                     self.activity_logger(
@@ -409,16 +451,26 @@ class ToolRuntimeService:
                         },
                     )
                 )
-            return render_tool_error(
-                tool_name=tool_name,
-                error_class="timeout",
-                message=f"{tool_name} exceeded the {int(timeout_seconds)} second time limit.",
-                provider="runtime",
-                retryable=True,
-                actionable_hint="Try a simpler request, smaller input, or a more targeted operation.",
-            )
+            return rendered
         except Exception as exc:
             traceback.print_exc()
+            rendered = render_tool_error(
+                tool_name=tool_name,
+                error_class="tool_execution_error",
+                message=f"{tool_name} failed with {type(exc).__name__}: {str(exc)[:500]}",
+                provider="runtime",
+                retryable=False,
+                actionable_hint="Check tool arguments and try again with simpler or better-scoped input.",
+            )
+            if emit_runtime_hooks:
+                await self._emit_tool_failure_hook(
+                    tool_name,
+                    arguments,
+                    rendered,
+                    runtime_context,
+                    tool_call_id=tool_call_id,
+                    source="tool_runtime_service",
+                )
             if self.activity_logger:
                 await _maybe_await(
                     self.activity_logger(
@@ -435,14 +487,89 @@ class ToolRuntimeService:
                         },
                     )
                 )
-            return render_tool_error(
-                tool_name=tool_name,
-                error_class="tool_execution_error",
-                message=f"{tool_name} failed with {type(exc).__name__}: {str(exc)[:500]}",
-                provider="runtime",
-                retryable=False,
-                actionable_hint="Check tool arguments and try again with simpler or better-scoped input.",
-            )
+            return rendered
+
+    async def _emit_pre_tool_hook(
+        self,
+        tool_name: str,
+        arguments: dict,
+        runtime_context: ToolExecutionContext,
+        *,
+        tool_call_id: str | None,
+        source: str,
+    ) -> Any | None:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        return await emit_hook(
+            HookEvent.PRE_TOOL_USE,
+            agent_id=runtime_context.agent_id,
+            session_id=runtime_context.session_id,
+            tool_name=tool_name,
+            tool_args=dict(arguments),
+            source=source,
+            metadata={
+                "tenant_id": runtime_context.tenant_id,
+                "user_id": str(runtime_context.user_id),
+                "tool_call_id": tool_call_id,
+                "entrypoint": source,
+            },
+        )
+
+    async def _emit_post_tool_hook(
+        self,
+        tool_name: str,
+        arguments: dict,
+        result_text: str,
+        runtime_context: ToolExecutionContext,
+        *,
+        tool_call_id: str | None,
+        source: str,
+    ) -> Any | None:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        return await emit_hook(
+            HookEvent.POST_TOOL_USE,
+            agent_id=runtime_context.agent_id,
+            session_id=runtime_context.session_id,
+            tool_name=tool_name,
+            tool_args=dict(arguments),
+            tool_result=result_text[:500],
+            source=source,
+            metadata={
+                "tenant_id": runtime_context.tenant_id,
+                "user_id": str(runtime_context.user_id),
+                "tool_call_id": tool_call_id,
+                "entrypoint": source,
+            },
+        )
+
+    async def _emit_tool_failure_hook(
+        self,
+        tool_name: str,
+        arguments: dict,
+        error_text: str,
+        runtime_context: ToolExecutionContext,
+        *,
+        tool_call_id: str | None,
+        source: str,
+    ) -> None:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        await emit_hook(
+            HookEvent.POST_TOOL_FAILURE,
+            agent_id=runtime_context.agent_id,
+            session_id=runtime_context.session_id,
+            tool_name=tool_name,
+            tool_args=dict(arguments),
+            error=error_text[:500],
+            source=source,
+            metadata={
+                "tenant_id": runtime_context.tenant_id,
+                "user_id": str(runtime_context.user_id),
+                "tool_call_id": tool_call_id,
+                "entrypoint": source,
+            },
+        )
 
     async def execute_direct(
         self,
@@ -527,6 +654,17 @@ class ToolRuntimeService:
 
         runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=resolved_user_id)
         try:
+            hook_result = await self._emit_pre_tool_hook(
+                tool_name,
+                arguments,
+                runtime_context,
+                tool_call_id=None,
+                source=log_label,
+            )
+            if hook_result and hook_result.block:
+                return "Blocked by hook: " + (hook_result.reason or "policy")
+            if hook_result and hook_result.modified_args is not None:
+                arguments = hook_result.modified_args
             request = ToolExecutionRequest(
                 tool_name=tool_name,
                 arguments=arguments,
@@ -568,10 +706,21 @@ class ToolRuntimeService:
                     )
                 except Exception as _log_err:
                     _logger.warning("[ToolService] Activity logging failed for %s: %s", log_label, _log_err)
+            post_hook_result = await self._emit_post_tool_hook(
+                tool_name,
+                arguments,
+                result_text,
+                runtime_context,
+                tool_call_id=None,
+                source=log_label,
+            )
+            if post_hook_result and post_hook_result.output_rewrite is not None:
+                rewrite = post_hook_result.output_rewrite
+                return rewrite if isinstance(rewrite, str) else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
             return result
         except Exception as exc:
             _logger.error("[ToolService] %s failed: tool=%s agent=%s error=%s", log_label, tool_name, agent_id, exc)
-            return render_tool_error(
+            rendered = render_tool_error(
                 tool_name=tool_name,
                 error_class="tool_execution_error",
                 message=f"{tool_name} failed with {type(exc).__name__}: {exc}",
@@ -579,6 +728,15 @@ class ToolRuntimeService:
                 retryable=False,
                 actionable_hint="Check tool arguments and retry with a more targeted request.",
             )
+            await self._emit_tool_failure_hook(
+                tool_name,
+                arguments,
+                rendered,
+                runtime_context,
+                tool_call_id=None,
+                source=log_label,
+            )
+            return rendered
 
     async def execute_with_context(
         self,

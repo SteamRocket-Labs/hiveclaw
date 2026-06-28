@@ -28,6 +28,8 @@ from app.services.action_preflight import (
 from app.services.decision_trace import TenantScopedSqlDecisionTraceStore
 from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.privacy_layer import PrivacyLayer
+from app.services.governance_capability_taxonomy import is_l2_tool
+from app.services.pack_policy_service import get_agent_pack_policies, is_pack_enabled, policy_pack_names_for_tool
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
 from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
@@ -246,6 +248,7 @@ class ToolRuntimeService:
     coordination_runtime: CoordinationRuntime | None = None
     coordination_gateway: CoordinationGateway | None = None
     truth_search_service: Any | None = None
+    pack_policy_loader: Callable[[ToolExecutionContext], Awaitable[dict[str, bool]] | dict[str, bool]] | None = None
     preflight_enabled: bool = True
     # Confirmation gate. The gate is read-only and stateless; the session factory
     # opens a short-lived async session for the by-id plan lookup. Both are DI
@@ -282,6 +285,52 @@ class ToolRuntimeService:
             from app.services.plan_mode_service import get_plan_mode_service
 
             self.plan_mode_service = get_plan_mode_service()
+
+    async def _load_pack_policies(self, runtime_context: ToolExecutionContext) -> dict[str, bool]:
+        if self.pack_policy_loader is not None:
+            loaded = self.pack_policy_loader(runtime_context)
+            if inspect.isawaitable(loaded):
+                loaded = await loaded
+            return dict(loaded or {})
+        if not runtime_context.tenant_id:
+            return {}
+        from app.database import tenant_scoped_session
+
+        try:
+            tenant_id = uuid.UUID(str(runtime_context.tenant_id))
+        except (TypeError, ValueError):
+            return {}
+        async with tenant_scoped_session(tenant_id) as db:
+            return await get_agent_pack_policies(db, tenant_id, runtime_context.agent_id)
+
+    async def _l2_extension_policy_block(self, tool_name: str, runtime_context: ToolExecutionContext) -> str | None:
+        if not is_l2_tool(tool_name):
+            return None
+        pack_names = policy_pack_names_for_tool(tool_name)
+        if not pack_names:
+            return None
+        if not runtime_context.tenant_id:
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="extension_disabled",
+                message=f"{tool_name} is an L2 extension tool, but no tenant context was available for call-time policy enforcement.",
+                provider="ccplus_l2_gate",
+                retryable=False,
+                actionable_hint="Retry from a normal agent session so tenant and agent extension policies can be checked.",
+            )
+        pack_policies = await self._load_pack_policies(runtime_context)
+        disabled_packs = tuple(pack_name for pack_name in pack_names if not is_pack_enabled(pack_policies, pack_name))
+        if not disabled_packs:
+            return None
+        pack_list = ", ".join(disabled_packs)
+        return render_tool_error(
+            tool_name=tool_name,
+            error_class="extension_disabled",
+            message=f"{tool_name} belongs to disabled L2 extension pack(s): {pack_list}.",
+            provider="ccplus_l2_gate",
+            retryable=False,
+            actionable_hint=f"Enable the extension pack(s) for this agent before calling {tool_name}: {pack_list}.",
+        )
 
     async def execute(
         self,
@@ -333,6 +382,9 @@ class ToolRuntimeService:
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
                 arguments = hook_result.modified_args
+        l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
+        if l2_policy_block:
+            return l2_policy_block
         governance_kwargs: dict[str, Any] = {
             "runtime_context": runtime_context,
             "tool_name": tool_name,
@@ -665,6 +717,9 @@ class ToolRuntimeService:
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
                 arguments = hook_result.modified_args
+            l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
+            if l2_policy_block:
+                return l2_policy_block
             request = ToolExecutionRequest(
                 tool_name=tool_name,
                 arguments=arguments,
@@ -749,6 +804,9 @@ class ToolRuntimeService:
             return plan_mode_block
 
         self.ensure_registry()
+        l2_policy_block = await self._l2_extension_policy_block(tool_name, context)
+        if l2_policy_block:
+            return l2_policy_block
         request = ToolExecutionRequest(
             tool_name=tool_name,
             arguments=arguments,

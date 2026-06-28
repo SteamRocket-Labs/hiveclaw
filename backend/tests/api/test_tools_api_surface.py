@@ -380,6 +380,59 @@ async def test_update_agent_tools_rejects_agent_base_tool_toggle(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_update_global_tool_rejects_agent_base_builtin_disable(monkeypatch):
+    import app.api.tools as tools_api
+
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    core_tool = _make_builtin_tool(name="web_search", category="search", is_default=True)
+    db = _FakeDB([_ScalarResult(core_tool)])
+
+    async def fail_update_tenant_tool_config(*_args, **_kwargs):
+        raise AssertionError("agent_base builtin tools must not write disabled TenantToolConfig rows")
+
+    monkeypatch.setattr(tools_api, "update_tenant_tool_config", fail_update_tenant_tool_config)
+
+    with pytest.raises(HTTPException) as exc:
+        await tools_api.update_global_tool(
+            tool_id=core_tool.id,
+            data=tools_api.ToolUpdateIn(enabled=False),
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "agent_base_capability_not_toggleable"
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
+async def test_delete_global_tool_rejects_agent_base_builtin_disable(monkeypatch):
+    import app.api.tools as tools_api
+
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    core_tool = _make_builtin_tool(name="read_file", category="file", is_default=True)
+    db = _FakeDB([_ScalarResult(core_tool)])
+
+    async def fail_update_tenant_tool_config(*_args, **_kwargs):
+        raise AssertionError("delete must not disable agent_base builtin tools through TenantToolConfig")
+
+    monkeypatch.setattr(tools_api, "update_tenant_tool_config", fail_update_tenant_tool_config)
+
+    with pytest.raises(HTTPException) as exc:
+        await tools_api.delete_global_tool(
+            tool_id=core_tool.id,
+            current_user=current_user,
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "agent_base_capability_not_toggleable"
+    assert db.committed is False
+
+
+@pytest.mark.asyncio
 async def test_update_agent_tools_rejects_existing_hr_only_assignment_for_regular_agent(monkeypatch):
     import app.api.tools as tools_api
 

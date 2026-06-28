@@ -712,6 +712,11 @@ async def update_global_tool(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tool access denied")
 
     if tool.tenant_id is None:
+        if data.enabled is False and is_agent_base_tool(str(tool.name)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="agent_base_capability_not_toggleable",
+            )
         # Builtin tool (shared across tenants): write to TenantToolConfig, never modify Tool.config.
         # This applies to ALL users including platform_admin — each tenant's config is isolated.
         ttc = await update_tenant_tool_config(
@@ -758,6 +763,11 @@ async def delete_global_tool(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tool access denied")
 
     if tool.tenant_id is None:
+        if is_agent_base_tool(str(tool.name)):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="agent_base_capability_not_toggleable",
+            )
         # Builtin tool: NEVER delete the global Tool row. Remove this tenant's
         # assignments and mark TenantToolConfig as disabled.
         agent_ids = await _get_tenant_agent_ids(db, current_user.tenant_id)

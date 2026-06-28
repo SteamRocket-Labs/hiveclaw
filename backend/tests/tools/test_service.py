@@ -105,6 +105,102 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_blocks_disabled_l2_pack_at_call_time(monkeypatch):
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="exa_search",
+        arguments={"query": "openai sdk"},
+    )
+    governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+
+    async def fake_run_governance(_context, _deps, *, event_callback=None):
+        return None
+
+    monkeypatch.setattr("app.tools.service.is_l2_tool", lambda tool_name: tool_name == "exa_search", raising=False)
+    monkeypatch.setattr("app.tools.service.policy_pack_names_for_tool", lambda tool_name: ("web_pack",), raising=False)
+    monkeypatch.setattr("app.tools.service.is_pack_enabled", lambda policies, pack_name: bool(policies.get(pack_name)), raising=False)
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=governance_resolver,
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=fake_run_governance,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        pack_policy_loader=lambda runtime_context: {"web_pack": False},
+    )
+
+    result = await service.execute(
+        "exa_search",
+        {"query": "openai sdk"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert "<tool_error>" in result
+    assert "extension_disabled" in result
+    assert "web_pack" in result
+    assert registry.calls == []
+    assert governance_resolver.context_calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_blocks_disabled_l2_pack_in_execute_with_context(monkeypatch):
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/ws"),
+    )
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+
+    monkeypatch.setattr("app.tools.service.is_l2_tool", lambda tool_name: tool_name == "exa_search", raising=False)
+    monkeypatch.setattr("app.tools.service.policy_pack_names_for_tool", lambda tool_name: ("web_pack",), raising=False)
+    monkeypatch.setattr("app.tools.service.is_pack_enabled", lambda policies, pack_name: bool(policies.get(pack_name)), raising=False)
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        pack_policy_loader=lambda runtime_context: {"web_pack": False},
+    )
+
+    result = await service.execute_with_context(
+        "exa_search",
+        {"query": "openai sdk"},
+        context,
+    )
+
+    assert "<tool_error>" in result
+    assert "extension_disabled" in result
+    assert "web_pack" in result
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_emits_hooks_and_revalidates_modified_args():
     from app.runtime.hooks import HookEvent, HookResult, hook_registry
     from app.tools.governance import ToolGovernanceContext

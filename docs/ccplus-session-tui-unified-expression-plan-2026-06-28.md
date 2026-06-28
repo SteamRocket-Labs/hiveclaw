@@ -497,21 +497,101 @@ Background completion wake 已进入 Workbench read model。UI 应表达为：
 
 ## 7. Dynamic Workflow
 
-Dynamic Workflow 不应该只是一张 inline card。
+Dynamic Workflow 不应该只是一张 inline card，也不应该被误表达成 Agent Team 的完整 member session。
 
-推荐表达：
+真实实现路径：
 
-- 中栏只显示 proposal/start/step-complete/final marker。
-- 右侧 Runtime Tables 的 Workflow tab 显示：
-  - proposal candidate
-  - exact artifact/hash
-  - step graph
-  - journal
-  - gate/wait/resume
-  - repair action
-  - promote suggestion
+- Dynamic Workflow root 是 `RuntimeTask(task_type="workflow")`。
+- 它的进度由 `workflow_steps` 和 `workflow_leaf_calls` 组成。
+- workflow leaf 通过 `build_subagent_leaf_executor()` 调用真实 `spawn_subagent(ctx, spec, task)`。
+- 该调用是同步 leaf worker，返回 conclusion-only `SubagentResult`。
+- 当前 `GET /agents/{agent_id}/workflows/runs/{run_id}` 的 `leaf_calls` 只返回 `step_id`、`leaf_id`、`status`、`error`、`token_usage`，没有 `child_session_id`。
+- 因此 Dynamic Workflow leaf 当前不是 enterable ChatSession，不能像 Agent Team member 一样进入完整第二 / 第三 session 通道。
 
-点击 workflow marker 默认打开右侧 Runtime Tables 的 Workflow tab。
+证据：
+
+- `backend/app/services/workflow_launch.py`：`build_subagent_leaf_executor()` 将 leaf 绑定到真实 `spawn_subagent`。
+- `backend/app/agents/subagent.py`：同步 `spawn_subagent(run_in_background=False)` 返回 resolved `SubagentHandle.result`，而 `SubagentResult` 是 conclusion-only。
+- `backend/app/api/workflows.py`：workflow detail API 的 `leaf_calls` 没有 `child_session_id`。
+- `frontend/src/pages/agent-detail/AgentWorkflowsSection.tsx`：当前 UI 只把 `leaf_calls` 渲染成普通状态列表。
+
+### 7.1 UI 形态
+
+Dynamic Workflow 的 UI/UX 应比 Agent Team 简单。它的主要目标不是进入每个 leaf 的完整对话，而是清楚表达 workflow run 的整体状态、阶段进度、leaf 状态、整合节点和最终产物。
+
+右侧入口：
+
+- 右侧下栏仍然提供统一入口。
+- `Runtime Agents` 可以显示 workflow root row，例如 `Workflow: ccplus-closure-audit · 21/24 agents done`。
+- workflow root row 用于提示“有一个 workflow 正在跑”，但不把每个 leaf 冒充为可进入的 agent session。
+- 点击 workflow root row：中间切到 `Workflow Run Window`。
+- 点击 workflow marker：默认打开右侧 `Workflow` tab。
+
+中间 `Workflow Run Window`：
+
+```text
+[Workflow: ccplus-closure-audit]  running
+Main > Workflow / ccplus-closure-audit
+
+Phase / Step
+▾ 1 Audit                21/24 leaves done
+  ✓ find:D0-contracts    115.3k tok · done
+  ✓ find:D1-taxonomy     108k tok · done
+  ○ verify:D7-truth      running
+▸ 2 Synthesize
+
+Selected leaf detail
+  prompt summary
+  status / tokens / tools
+  result summary
+  sources / error
+```
+
+右侧 `Workflow` tab：
+
+- proposal candidate
+- exact artifact/hash
+- phase / step tree
+- leaf status table
+- selected leaf detail
+- journal
+- gate/wait/resume
+- repair action
+- promote suggestion
+
+交互规则：
+
+- workflow root 可切换中间 `Workflow Run Window`，但它不是 ChatSession。
+- step row 展开 / 折叠，不切换 session。
+- leaf row 展开 detail，不切换 session。
+- 只有 leaf 或 background subagent 显式带 `child_session_id` 时，才允许显示 “Enter session”。
+- 当前 Dynamic Workflow leaf 没有 `child_session_id`，所以只显示 `View leaf detail`。
+- parent transcript 只保留 proposal/start/progress/final marker，不把每个 leaf transcript 灌进主线。
+
+### 7.2 与 Agent Team 的边界
+
+| 项 | Agent Team | Dynamic Workflow |
+| --- | --- | --- |
+| 运行本体 | `AgentTeam` + `AgentTeamMember` | `RuntimeTask(workflow)` |
+| worker 形态 | teammate child `ChatSession` | workflow step / leaf call |
+| 是否 enterable | 是，member 有 `chat_session_id` | 当前否，leaf 无 `child_session_id` |
+| 中间点击行为 | 切换到 member session window | 切换到 workflow run window / 展开 leaf detail |
+| 右侧表达 | Runtime Agents row 为主 | Workflow tab 的 phase / step / leaf tree 为主 |
+
+### 7.3 真实断点
+
+当前存在两个需要实装时修掉的断点：
+
+1. **Agent Team 前端创建路径仍传 `members`。**
+   - 前端 `SessionNativeControls.createTeam` 仍向 `ccParityApi.createTeam()` 传 `members`。
+   - 后端 `create_agent_team_runtime_result()` 已明确 `TeamCreate creates the Team container only; spawn teammates with spawn_subagent team_name + name`。
+   - 结论：这是前端调用路径问题为主；后端 runtime 语义是正确的、fail-closed 的。后端 API schema 保留 `members?: []` 是兼容残留，但实际非空会被拒绝。
+   - 修复：前端 `createTeam` 只创建 container；成员创建必须走 `spawn_subagent(team_name + name)` 或对应 typed command result。
+
+2. **Dynamic Workflow leaf 当前没有 enterable session contract。**
+   - 当前 `WorkflowLeafCall` 和 workflow detail API 不携带 `child_session_id`。
+   - 这不是 bug，而是正确的 UI 边界：workflow leaf 是同步 subagent worker / leaf call，不是 Agent Team member session。
+   - 修复：UI 不提供 leaf session enter；只提供 leaf detail。未来如果 workflow leaf 改为 background subagent 并持久化 `child_session_id`，再按显式字段开启 enter。
 
 ## 8. 思考、工具调用与交付物暴露边界
 
@@ -653,6 +733,9 @@ npm test -- --run \
 - Runtime Agents panel 的 stop single / stop all 动作不写入左侧导航。
 - Subagent / background wake 显示在右侧 Runtime Agents 和 Runtime Tables。
 - Workflow marker 打开右侧 Runtime Tables 的 Workflow tab。
+- Dynamic Workflow root row 切换中间 `Workflow Run Window`，leaf row 只展开 detail，不进入 session。
+- Dynamic Workflow leaf 没有 `child_session_id` 时不显示 “Enter session”。
+- Agent Team create 前端不得再向 container-only create API 传非空 `members`。
 - Governance tab 显示 permission profile / pending request / Truth Search evidence refs。
 - Raw tab 默认不展开 provider/tool JSON。
 
@@ -671,7 +754,7 @@ cd frontend && npm run build
 3. **命令层**：slash command category + typed `ui_action` -> timeline marker + right panel action。
 4. **治理层**：permission mode、pending approvals、L0-L3、Truth Search evidence 进入右侧 Governance tab。
 5. **状态层**：compact/rewind/branch/clear/resume 进入 git-line checkpoint flow + 右侧 Context / Runs tab。
-6. **协作层**：Agent Team/Subagent/Background/Workflow 统一成 session windows。
+6. **协作层**：Agent Team/Subagent/Background 统一成 enterable session windows；Dynamic Workflow 统一成 workflow run window + leaf detail。
 7. **交付层**：Workspace Documents 替代文档/文件弹窗主路径。
 8. **验收层**：前端单测 + build；后端不改 contract 时不跑全量 backend，若补 API contract 再按对应后端测试补齐。
 
@@ -682,7 +765,7 @@ cd frontend && npm run build
 - 用户能在一个 Session 内看到当前工作线、分支、checkpoint、active head、compact 状态。
 - 用户能用同一个 composer 输入 `/command args`，并看到命令结果进入 session 状态，而不是 raw JSON。
 - Permission / Full access / Ask first / Approve for me 在 Header、composer footer、右侧 Governance tab 三处一致。
-- Agent Team、Sub-agent、Background Agent、Dynamic Workflow 都是 session windows，不再只藏在独立 tab 或弹窗里。
+- Agent Team、Sub-agent、Background Agent 是 enterable session windows；Dynamic Workflow 是 workflow run window，不再只藏在独立 tab 或弹窗里。
 - 工具调用默认显示 summary；Raw 细节只在 Raw tab。
 - 当前文档、文件、snapshot、artifact 在右侧 Workspace Documents 可查看，不依赖 modal 作为主交互。
 - Rewind 和 Branch 视觉上明确不同：rewind 改当前 head，branch 产生新 session line。

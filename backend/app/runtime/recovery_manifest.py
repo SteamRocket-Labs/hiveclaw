@@ -386,3 +386,58 @@ def merge_session_memory_into_manifest(
             {"tool": "session_memory:last_successful_step", "summary": payload.last_successful_step}
         )
     return manifest
+
+
+def persist_recovery_manifest(
+    agent_id: Any,
+    session_context: Any,
+    *,
+    data_root: str | Path | None = None,
+    delete_if_empty: bool = False,
+) -> list[Path]:
+    """Persist the current recovery manifest to the canonical runtime artifact path.
+
+    This is intentionally shared by compaction and tool-lifecycle checkpoints:
+    a process may die before compaction, so killed-process recovery cannot rely
+    on the compaction path alone.
+    """
+
+    if agent_id is None or session_context is None:
+        return []
+
+    if data_root is None:
+        from app.config import get_settings
+
+        roots = [
+            Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
+            Path("/tmp/hive_workspaces") / str(agent_id),
+        ]
+
+        def should_write_root(root: Path) -> bool:
+            return root.exists() or root == roots[0]
+
+    else:
+        roots = [Path(data_root) / str(agent_id)]
+
+        def should_write_root(_root: Path) -> bool:
+            return True
+
+    manifest = build_recovery_manifest(session_context)
+    manifest = merge_session_memory_into_manifest(manifest, agent_id=agent_id, data_root=data_root)
+    written: list[Path] = []
+    payload = manifest.to_payload()
+    for root in roots:
+        if not should_write_root(root):
+            continue
+        path = root / RECOVERY_MANIFEST_REL_PATH
+        legacy_path = root / LEGACY_RECOVERY_MANIFEST_REL_PATH
+        if manifest.is_empty():
+            if delete_if_empty:
+                path.unlink(missing_ok=True)
+                legacy_path.unlink(missing_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        legacy_path.unlink(missing_ok=True)
+        written.append(path)
+    return written

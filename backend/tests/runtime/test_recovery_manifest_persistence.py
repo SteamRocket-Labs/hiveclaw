@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.runtime.recovery_manifest import build_recovery_manifest, load_recovery_manifest
+from app.runtime.recovery_manifest import build_recovery_manifest, load_recovery_manifest, persist_recovery_manifest
 from app.runtime.session import SessionContext
 
 
@@ -134,6 +134,32 @@ def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
     assert manifest.mcp_assignments == [{"server": "docs", "tool": "search"}]
     assert manifest.truth_evidence_refs == ["truth://policy/email-confirmation"]
     assert manifest.truth_evidence == [{"evidence_id": "truth://policy/email-confirmation"}]
+
+
+def test_persist_recovery_manifest_deletes_stale_empty_checkpoint(tmp_path) -> None:
+    agent_id = "agent-1"
+    sc = SessionContext(
+        session_id="session-1",
+        metadata={
+            "pending_tool_frame": {
+                "tool_call_id": "call-running",
+                "tool_name": "write_file",
+                "status": "running",
+            }
+        },
+    )
+
+    written = persist_recovery_manifest(agent_id, sc, data_root=tmp_path)
+    manifest_path = tmp_path / agent_id / "runtime_artifacts" / "recovery_manifest.json"
+
+    assert written == [manifest_path]
+    assert load_recovery_manifest(agent_id, data_root=tmp_path) is not None
+
+    sc.metadata.clear()
+    persist_recovery_manifest(agent_id, sc, data_root=tmp_path, delete_if_empty=True)
+
+    assert load_recovery_manifest(agent_id, data_root=tmp_path) is None
+    assert not manifest_path.exists()
 
 
 def test_manifest_preserves_mcp_assignments_and_truth_evidence_from_metadata() -> None:

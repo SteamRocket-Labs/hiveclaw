@@ -723,6 +723,38 @@ def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path,
     assert "Permission Profile" in restored
 
 
+def test_recovery_pending_tool_frame_without_call_id_is_cleared() -> None:
+    from app.kernel import InvocationRequest
+    from app.kernel.engine import _clear_pending_tool_frame_for_recovery, _record_pending_tool_frame_for_recovery
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(
+        session_id="session-1",
+        channel="web",
+        metadata={"runtime_task_id": "runtime-1", "turn_id": "turn-1"},
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(),
+        messages=[],
+        agent_name="Agent",
+        role_description="Role",
+        agent_id=uuid4(),
+        session_context=session,
+    )
+
+    _record_pending_tool_frame_for_recovery(
+        request,
+        tool_name="write_file",
+        tool_args={"path": "workspace/a.md", "content": "a"},
+        tool_call_id=None,
+    )
+
+    assert session.metadata["pending_tool_frame"]["tool_call_id"] == ""
+    _clear_pending_tool_frame_for_recovery(request, tool_call_id=None)
+    assert "pending_tool_frame" not in session.metadata
+    assert "pending_tool_frames" not in session.metadata
+
+
 @pytest.mark.asyncio
 async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeypatch):
     from app.kernel.engine import _compress_messages_with_lifecycle_hooks

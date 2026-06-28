@@ -1152,6 +1152,92 @@ async def _apply_mechanical_compaction_with_lifecycle_hooks(
     return compacted
 
 
+def _recovery_t0_refs(metadata: dict[str, Any]) -> list[str]:
+    raw = metadata.get("t0_refs") or metadata.get("t0_event_refs") or ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    return [str(ref) for ref in raw if str(ref).strip()]
+
+
+def _record_pending_tool_frame_for_recovery(
+    request: InvocationRequest,
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    tool_call_id: str | None,
+) -> None:
+    session = request.session_context
+    if session is None:
+        return
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    session.metadata = metadata
+    round_state = metadata.get("round_state") if isinstance(metadata.get("round_state"), dict) else {}
+    frame = {
+        "tool_call_id": str(tool_call_id or ""),
+        "tool_name": tool_name,
+        "arguments": dict(tool_args or {}),
+        "status": "running",
+        "runtime_task_id": metadata.get("runtime_task_id") or metadata.get("task_id"),
+        "turn_id": metadata.get("turn_id"),
+        "origin_channel": metadata.get("origin_channel")
+        or getattr(session, "channel", None)
+        or getattr(session, "source", None),
+        "round_state": dict(round_state or {}),
+        "t0_refs": _recovery_t0_refs(metadata),
+    }
+    frames = [dict(item) for item in metadata.get("pending_tool_frames", []) if isinstance(item, dict)]
+    frames = [item for item in frames if str(item.get("tool_call_id") or "") != frame["tool_call_id"]]
+    frames.append(frame)
+    metadata["pending_tool_frame"] = frame
+    metadata["pending_tool_frames"] = frames
+
+
+def _clear_pending_tool_frame_for_recovery(
+    request: InvocationRequest,
+    *,
+    tool_call_id: str | None,
+) -> None:
+    session = request.session_context
+    if session is None or not isinstance(session.metadata, dict):
+        return
+    metadata = session.metadata
+    call_id = str(tool_call_id or "")
+    frames = [dict(item) for item in metadata.get("pending_tool_frames", []) if isinstance(item, dict)]
+    if call_id:
+        frames = [item for item in frames if str(item.get("tool_call_id") or "") != call_id]
+    else:
+        frames = [item for item in frames if str(item.get("tool_call_id") or "")]
+    if frames:
+        metadata["pending_tool_frames"] = frames
+        metadata["pending_tool_frame"] = frames[-1]
+        return
+    metadata.pop("pending_tool_frames", None)
+    pending = metadata.get("pending_tool_frame")
+    if isinstance(pending, dict) and (not call_id or str(pending.get("tool_call_id") or "") == call_id):
+        metadata.pop("pending_tool_frame", None)
+
+
+def _persist_recovery_manifest_checkpoint(
+    request: InvocationRequest,
+    *,
+    delete_if_empty: bool = False,
+) -> None:
+    if not request.agent_id or request.session_context is None:
+        return
+    try:
+        from app.runtime.recovery_manifest import persist_recovery_manifest
+
+        persist_recovery_manifest(
+            request.agent_id,
+            request.session_context,
+            delete_if_empty=delete_if_empty,
+        )
+    except Exception as exc:  # noqa: BLE001 - recovery snapshots must not break tool execution
+        logger.warning("[Kernel] Recovery manifest checkpoint failed (non-fatal): %s", exc)
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -1221,6 +1307,13 @@ async def _execute_tool_with_hooks(
         return "Blocked by hook: " + (hook_result.reason or "policy"), effective_args, False
 
     tool_started_ms = monotonic_ms()
+    _record_pending_tool_frame_for_recovery(
+        request,
+        tool_name=tool_name,
+        tool_args=effective_args,
+        tool_call_id=tool_call_id,
+    )
+    _persist_recovery_manifest_checkpoint(request)
     token = None
     try:
         trusted_decline_metadata = _session_trusted_plan_decline_metadata(request, tool_name)
@@ -1310,6 +1403,8 @@ async def _execute_tool_with_hooks(
                 source=getattr(request.session_context, "source", None) if request.session_context else None,
                 metadata=failure_hook_metadata,
             )
+            _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
+            _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
             return err, effective_args, False
     finally:
         if token is not None:
@@ -1474,6 +1569,8 @@ async def _execute_tool_with_hooks(
         _captured_side_effects = _extract_tool_side_effects(result)
         if _captured_side_effects:
             side_effect_sink.update(_captured_side_effects)
+    _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
+    _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
     return result_str, effective_args, True
 
 
@@ -3081,29 +3178,7 @@ class AgentKernel:
                 # exact post-compaction state.
                 if request.agent_id and getattr(request, "session_context", None) is not None:
                     try:
-                        import json as _json
-                        from pathlib import Path as _P
-                        from app.config import get_settings as _gs
-                        from app.runtime.recovery_manifest import (
-                            build_recovery_manifest,
-                            merge_session_memory_into_manifest,
-                        )
-
-                        manifest = build_recovery_manifest(request.session_context)
-                        manifest = merge_session_memory_into_manifest(manifest, agent_id=request.agent_id)
-                        if not manifest.is_empty():
-                            for _root in [
-                                _P(_gs().AGENT_DATA_DIR) / str(request.agent_id),
-                                _P("/tmp/hive_workspaces") / str(request.agent_id),
-                            ]:
-                                if _root.exists():
-                                    _mfile = _root / "runtime_artifacts" / "recovery_manifest.json"
-                                    _mfile.parent.mkdir(parents=True, exist_ok=True)
-                                    _mfile.write_text(
-                                        _json.dumps(manifest.to_payload(), ensure_ascii=False, indent=2),
-                                        encoding="utf-8",
-                                    )
-                                    (_root / "workspace" / "recovery_manifest.json").unlink(missing_ok=True)
+                        _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
                     except Exception as _rec_exc:
                         logger.warning(
                             "[Kernel] Recovery manifest persistence failed (non-fatal): %s",

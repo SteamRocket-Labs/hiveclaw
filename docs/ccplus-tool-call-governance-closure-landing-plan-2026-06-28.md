@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地
+状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。
 
 2026-06-28 自查追加闭合：
 
@@ -27,14 +27,26 @@
 - `343b01a1` `ccplus: enforce agent-base and l2 policy at runtime`
 - `b1b5f85a` `ccplus: add capability governance surface`
 
+后续闭环追修提交：
+
+- `67822a30` `docs: record current ccplus closure gaps`
+- `87ee8028` `ccplus: close taxonomy discovery gaps`
+- `4285ac8b` `ccplus: record tool lifecycle frames`
+- `63f9bbbf` `ccplus: persist truth evidence traces`
+- `cac0a2b9` `ccplus: execute skill fork handoffs`
+- `5e4833b7` `ccplus: close recovery crash matrix`
+- `2ad3b370` `ccplus: fix closure regression suite`
+- `12bb68a9` `ccplus: preserve permission origin channel`
+- 本节所在提交：补齐 D10 真实 killed-process `invoke_agent` recovery harness，并更新本账本。
+
 最终回归：
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5324 passed, 2 skipped, 4 warnings in 85.73s
+# 5356 passed, 2 skipped, 4 warnings in 94.94s
 
 cd frontend && npm test -- --run
-# Test Files 66 passed (66); Tests 360 passed (360)
+# Test Files 67 passed (67); Tests 361 passed (361)
 
 cd frontend && npm run build
 # tsc && vite build succeeded
@@ -214,12 +226,13 @@ L3 是当前 session 内的 allow once / allow session / deny。
 
 ## 4. 关键断点和修复主线
 
-### D1. 治理能力 taxonomy 没有代码单源
+### D1. 治理能力 taxonomy 没有统一入口
 
 问题：
 
 - `CORE_TOOL_NAMES`、`RUNTIME_TOOL_GROUPS`、`CAPABILITY_MAP`、`pack.yaml` 各自表达一部分事实。
 - L2 UI 容易把基础能力误做成可关闭开关。
+- 当前已把主入口收敛到 taxonomy facade，但 facade 内部仍会通过 collector / runtime group 推导 L2 pack 关系，因此不能宣称“taxonomy 是唯一真相源”。
 
 修复：
 
@@ -233,13 +246,14 @@ L3 是当前 session 内的 allow once / allow session / deny。
   - `enterprise_toggleable`
   - `source`
   - `notes`
-- 所有 L2 UI / API / pack policy / tool discovery 都从该 taxonomy 读取分类。
+- 所有 L2 UI / API / pack policy / tool discovery 都从该 taxonomy facade 入口读取分类。
 
 验收：
 
 - 每个 `CORE_TOOL_NAMES` 成员都有 taxonomy 分类。
 - L2 候选不包含 `agent_base`。
 - AnySearch、Exa、Firecrawl、Plaza、Feishu、MCP 属于 L2 可见能力。
+- 文档和代码评审措辞只能称“taxonomy 单一入口 / facade”，不能称“taxonomy 是唯一真相源”。
 
 ### D2. L2 仍像工具开关
 
@@ -394,25 +408,37 @@ L3 是当前 session 内的 allow once / allow session / deny。
 问题：
 
 - 单点测试较多，但要证明整个 session 内不会漏，需要 killed-process 矩阵。
+- 旧 `5e4833b7` 的“crash matrix”主要证明手填 `recovery_manifest.json` 可被渲染，不证明进程被杀前 runtime 真的写出恢复 artifact。
 
 修复：
 
-- 补 E2E 矩阵：
-  - tool_call before result crash
-  - permission request crash
-  - permission allow crash
+- 已补真实 killed-process harness：
+  - 父进程启动 Python 子进程。
+  - 子进程调用真实 `invoke_agent()`，Fake LLM 分别返回 `write_file`、`spawn_subagent`、`start_workflow` 三个真实 tool_call 名称。
+  - Fake tool 进入 running/sleep，父进程等待 `runtime_artifacts/recovery_manifest.json` 与 tool-start marker 出现。
+  - 父进程 `SIGKILL` 子进程。
+  - 当前进程从磁盘 manifest 与 `_build_restoration_context()` 验证恢复。
+- 已把 `RecoveryManifest` 写入抽成 `persist_recovery_manifest()`，compaction 与工具生命周期共用同一入口；工具执行前持久化 running `pending_tool_frame`，正常完成/失败后清理 stale pending frame。
+- 本轮覆盖：
+  - `write_file` / `spawn_subagent` / `start_workflow` tool_call before result crash
   - denial crash
-  - subagent running crash
-  - workflow waiting crash
+  - pending Skill fork handoff
   - compact 后 resume
-  - fork 后 replay
-  - disabled extension stale transcript call
-  - hook modified args crash
+  - MCP assignment / Truth evidence 不丢
+
+后续仍可扩展的 live-replay 矩阵：
+
+- permission allow crash 后恢复同 frame tool result。
+- `spawn_subagent` 子执行体内部 run 被 kill 后恢复。
+- `start_workflow` waiting gate 内部执行体被 kill 后恢复。
+- disabled extension stale transcript call。
+- hook modified args crash。
 
 验收：
 
 - 每个场景都有 T0 refs、InvocationSpan、RuntimeTask 状态和 session transcript 可核对。
 - 恢复后 active/deferred tools、permission profile、loaded skills、MCP assignments 不丢。
+- 当前代码证据：`tests/e2e/test_tool_call_recovery_closure.py::test_killed_process_invoke_agent_persists_recoverable_tool_matrix` 真启动/kill 子进程；`tests/runtime/test_recovery_manifest_persistence.py::test_persist_recovery_manifest_deletes_stale_empty_checkpoint` 钉住成功路径不留下 stale running frame。
 
 ### D9. Hook 全生命周期没有在方案中完整展开
 
@@ -657,11 +683,11 @@ pytest tests/kernel/test_ccplus_runtime_contracts.py tests/services/test_permiss
 
 - 验证结果：`14 passed, 4 warnings in 1.51s`。
 
-### Phase 1：taxonomy 单源和 L2 收口
+### Phase 1：taxonomy 单一入口和 L2 收口
 
 目标：
 
-- 先让“什么是 core，什么是 extension”只有一个答案。
+- 先让“什么是 core，什么是 extension”只有一个治理入口。
 
 修改：
 
@@ -681,7 +707,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/tools/test_tool_con
 
 - Red：新增 taxonomy 红线后，`pytest tests/services/test_agent_tools_core_surface.py -q` 失败于 `ModuleNotFoundError: No module named 'app.services.governance_capability_taxonomy'`。
 - Red：新增 API 红线后，`pytest tests/api/test_tools_api_surface.py -q` 失败于缺少 `governance_taxonomy` 字段，并且 `read_file` 这类 `agent_base` 工具仍可进入 agent-level assignment 创建路径。
-- Green：已新增 `backend/app/services/governance_capability_taxonomy.py`，将 `CORE_TOOL_NAMES` 从 `agent_tools.py` literal 迁移为 taxonomy 单源；`agent_tools.py` 只导入 taxonomy；工具 API 序列化返回 `governance_taxonomy`；agent-level toggle 对 `agent_base` 返回 `agent_base_capability_not_toggleable`。
+- Green：已新增 `backend/app/services/governance_capability_taxonomy.py`，将 `CORE_TOOL_NAMES` 从 `agent_tools.py` literal 迁移到 taxonomy 入口；`agent_tools.py` 只导入 taxonomy；工具 API 序列化返回 `governance_taxonomy`；agent-level toggle 对 `agent_base` 返回 `agent_base_capability_not_toggleable`。注意：L2 pack 归属仍可经 collector/runtime group 推导，不能宣称 taxonomy 是纯单源。
 - 验证命令：
 
 ```bash
@@ -730,7 +756,7 @@ pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_
 ```
 
 - 验证结果：`46 passed, 4 warnings in 1.56s`。
-- Web Search 追修验证结果：`pytest tests/services/test_web_mcp_resilience.py tests/services/test_prompt_contracts.py tests/tools/test_search_provider_tool_definitions.py -q` 纳入扩大集合通过；最终后端全量 `5324 passed, 2 skipped, 4 warnings`。
+- Web Search 追修验证结果：`pytest tests/services/test_web_mcp_resilience.py tests/services/test_prompt_contracts.py tests/tools/test_search_provider_tool_definitions.py -q` 纳入扩大集合通过；当前最终后端全量 `5356 passed, 2 skipped, 4 warnings`。
 - ownership 收口验证命令：
 
 ```bash
@@ -1070,7 +1096,7 @@ ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/ses
 
 本轮已补齐的断点：
 
-1. Governance taxonomy 单源。
+1. Governance taxonomy 单一入口。
 2. L2 只管 extension，不管 core。
 3. 基础 `web_search` 与 AnySearch L2 provider boundary。
 4. Company/global API 不可关闭 `agent_base` built-in。
@@ -1081,7 +1107,7 @@ ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/ses
 9. L3 pending tool frame / same-turn resume。
 10. Truth Search evidence layer。
 11. MCP local transport / Coding plugin 边界。
-12. killed-process / compact / fork E2E 矩阵。
+12. killed-process recovery manifest harness 覆盖 `write_file` / `spawn_subagent` / `start_workflow` 工具调用入口、compact restoration、fork handoff metadata；子执行体内部 restart drill 列为扩展矩阵。
 13. Hook 全生命周期触发与证据矩阵。
 14. 压缩全生命周期：initial、mid-loop、manual、PTL、final/close 全路径闭环。
 

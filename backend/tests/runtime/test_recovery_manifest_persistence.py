@@ -115,6 +115,9 @@ def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
                 "hook_lifecycle_records": [{"hook": "pre_tool_use", "status": "ok"}],
                 "compaction_lifecycle_records": [{"phase": "post", "status": "ok"}],
                 "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
+                "mcp_assignments": [{"server": "docs", "tool": "search"}],
+                "truth_evidence_refs": ["truth://policy/email-confirmation"],
+                "truth_evidence": [{"evidence_id": "truth://policy/email-confirmation"}],
             },
             ensure_ascii=False,
         ),
@@ -128,6 +131,31 @@ def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
     assert manifest.recent_reads == ["workspace/report.md"]
     assert manifest.pending_items == ["finish D8 recovery"]
     assert manifest.permission_profile["allowed_tools"] == ["write_file"]
+    assert manifest.mcp_assignments == [{"server": "docs", "tool": "search"}]
+    assert manifest.truth_evidence_refs == ["truth://policy/email-confirmation"]
+    assert manifest.truth_evidence == [{"evidence_id": "truth://policy/email-confirmation"}]
+
+
+def test_manifest_preserves_mcp_assignments_and_truth_evidence_from_metadata() -> None:
+    sc = SessionContext(
+        session_id="session-evidence",
+        metadata={
+            "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
+            "evidence_refs": "truth://policy/email-confirmation",
+            "truth_evidence": json.dumps(
+                [{"evidence_id": "truth://policy/email-confirmation", "citations": ["policy/email"]}],
+                ensure_ascii=False,
+            ),
+        },
+    )
+
+    manifest = build_recovery_manifest(sc)
+
+    assert manifest.mcp_assignments == [{"server": "docs", "tools": ["search"]}]
+    assert manifest.truth_evidence_refs == ["truth://policy/email-confirmation"]
+    assert manifest.truth_evidence == [
+        {"evidence_id": "truth://policy/email-confirmation", "citations": ["policy/email"]}
+    ]
 
 
 def test_manifest_to_restoration_text_includes_each_section() -> None:
@@ -155,6 +183,24 @@ def test_manifest_to_restoration_text_includes_each_section() -> None:
     assert "Pending Work" in text
     assert "ship feature" in text
     assert "External References" in text
+
+
+def test_manifest_to_restoration_text_includes_mcp_and_truth_sections() -> None:
+    sc = SessionContext(
+        metadata={
+            "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
+            "truth_evidence_refs": ["truth://policy/email-confirmation"],
+            "truth_evidence": [{"evidence_id": "truth://policy/email-confirmation"}],
+        }
+    )
+
+    text = build_recovery_manifest(sc).to_restoration_text()
+
+    assert "MCP Assignments" in text
+    assert "docs" in text
+    assert "Truth Evidence Refs" in text
+    assert "truth://policy/email-confirmation" in text
+    assert "Truth Evidence" in text
 
 
 def test_recovery_manifest_filename_constant_documented() -> None:

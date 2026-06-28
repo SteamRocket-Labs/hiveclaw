@@ -51,6 +51,61 @@ def _coerce_uuid(value: Any) -> uuid.UUID | None:
         return None
 
 
+def _string_refs(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _truth_evidence_payloads(value: Any) -> list[dict[str, Any]]:
+    raw = value
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def _extract_truth_evidence_fields(metadata: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    refs: list[str] = []
+    evidence: list[dict[str, Any]] = []
+
+    def consume(source: dict[str, Any]) -> None:
+        refs.extend(_string_refs(source.get("evidence_refs")))
+        refs.extend(_string_refs(source.get("truth_evidence_refs")))
+        payloads = _truth_evidence_payloads(source.get("truth_evidence"))
+        payloads.extend(_truth_evidence_payloads(source.get("truth_evidence_json")))
+        for payload in payloads:
+            evidence.append(payload)
+            refs.extend(_string_refs(payload.get("evidence_id")))
+
+    if isinstance(metadata, dict):
+        consume(metadata)
+        preflight = metadata.get("preflight")
+        if isinstance(preflight, dict):
+            consume(preflight)
+
+    deduped_refs = list(dict.fromkeys(refs))
+    deduped_evidence: list[dict[str, Any]] = []
+    seen_evidence: set[str] = set()
+    for payload in evidence:
+        key = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        if key in seen_evidence:
+            continue
+        seen_evidence.add(key)
+        deduped_evidence.append(payload)
+    return deduped_refs, deduped_evidence
+
+
 def _span_id(span_type: str, metadata: dict[str, Any]) -> str:
     explicit = str(metadata.get("span_id") or "").strip()
     if explicit:
@@ -99,6 +154,7 @@ def append_invocation_span(
     span_id = _span_id(span_type, metadata)
     status = _span_status(metadata)
     duration_ms = max(0.0, round(end_ms - started_at_ms, 3))
+    evidence_refs, truth_evidence_json = _extract_truth_evidence_fields(metadata)
     payload = {
         "schema": "invocation_span.v1",
         "invocation_id": trace_id,
@@ -112,6 +168,8 @@ def append_invocation_span(
         "status": status,
         "started_at": datetime.now(UTC).isoformat(),
         "duration_ms": duration_ms,
+        "evidence_refs": evidence_refs,
+        "truth_evidence": truth_evidence_json,
         "metadata": metadata,
     }
     _record_span_metric(span_type=span_type, status=status, duration_ms=duration_ms, metadata=metadata)
@@ -149,6 +207,7 @@ async def record_invocation_span(
     from app.models.invocation_span import InvocationSpan
 
     clean_metadata = dict(metadata or {})
+    evidence_refs, truth_evidence_json = _extract_truth_evidence_fields(clean_metadata)
     row = InvocationSpan(
         id=uuid.uuid4(),
         tenant_id=tenant_id,
@@ -168,6 +227,8 @@ async def record_invocation_span(
         ended_at=ended_at,
         duration_ms=max(0.0, float(duration_ms or 0.0)),
         usage=dict(usage) if isinstance(usage, dict) else None,
+        evidence_refs=evidence_refs,
+        truth_evidence_json=truth_evidence_json,
         metadata_json=clean_metadata,
         error=str(error)[:4000] if error else None,
     )
@@ -255,6 +316,8 @@ def _span_to_dict(row: Any) -> dict[str, Any]:
         "ended_at": row.ended_at.isoformat() if row.ended_at else None,
         "duration_ms": row.duration_ms,
         "usage": row.usage or {},
+        "evidence_refs": row.evidence_refs or [],
+        "truth_evidence": row.truth_evidence_json or [],
         "metadata": row.metadata_json or {},
         "error": row.error,
         "children": [],

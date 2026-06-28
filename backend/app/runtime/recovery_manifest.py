@@ -54,6 +54,9 @@ class RecoveryManifest:
     hook_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
     compaction_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
     permission_profile: dict[str, Any] = field(default_factory=dict)
+    mcp_assignments: list[dict[str, Any]] = field(default_factory=list)
+    truth_evidence_refs: list[str] = field(default_factory=list)
+    truth_evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any(
@@ -72,6 +75,9 @@ class RecoveryManifest:
                 self.hook_lifecycle_records,
                 self.compaction_lifecycle_records,
                 self.permission_profile,
+                self.mcp_assignments,
+                self.truth_evidence_refs,
+                self.truth_evidence,
             ]
         )
 
@@ -93,6 +99,9 @@ class RecoveryManifest:
             "hook_lifecycle_records": self.hook_lifecycle_records,
             "compaction_lifecycle_records": self.compaction_lifecycle_records,
             "permission_profile": self.permission_profile,
+            "mcp_assignments": self.mcp_assignments,
+            "truth_evidence_refs": self.truth_evidence_refs,
+            "truth_evidence": self.truth_evidence,
         }
 
     def to_restoration_text(self, *, budget_chars: int = 20000) -> str:
@@ -138,6 +147,9 @@ class RecoveryManifest:
         _add_dicts("Permission Checkpoints", self.permission_checkpoints[-5:])
         _add_dicts("Hook Lifecycle Records", self.hook_lifecycle_records[-10:])
         _add_dicts("Compaction Lifecycle Records", self.compaction_lifecycle_records[-5:])
+        _add_dicts("MCP Assignments", self.mcp_assignments[-10:])
+        _add("Truth Evidence Refs", self.truth_evidence_refs[-20:])
+        _add_dicts("Truth Evidence", self.truth_evidence[-10:])
         if self.permission_profile:
             _add("Permission Profile", [json.dumps(self.permission_profile, ensure_ascii=False, sort_keys=True)])
 
@@ -163,10 +175,32 @@ def _string_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def _string_refs(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _truth_evidence_list(value: Any) -> list[dict[str, Any]]:
+    raw = value
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    return _dict_list(raw)
 
 
 def _dict_value(value: Any) -> dict[str, Any]:
@@ -199,6 +233,9 @@ def _manifest_from_payload(payload: dict[str, Any]) -> RecoveryManifest:
         hook_lifecycle_records=_dict_list(payload.get("hook_lifecycle_records")),
         compaction_lifecycle_records=_dict_list(payload.get("compaction_lifecycle_records")),
         permission_profile=_dict_value(payload.get("permission_profile")),
+        mcp_assignments=_dict_list(payload.get("mcp_assignments")),
+        truth_evidence_refs=_string_refs(payload.get("truth_evidence_refs")),
+        truth_evidence=_truth_evidence_list(payload.get("truth_evidence")),
     )
 
 
@@ -240,6 +277,10 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         metadata = {}
 
     permission_profile = metadata.get("permission_profile")
+    truth_evidence = _truth_evidence_list(metadata.get("truth_evidence") or metadata.get("truth_evidence_json"))
+    truth_refs = _string_refs(metadata.get("truth_evidence_refs") or metadata.get("evidence_refs"))
+    for evidence in truth_evidence:
+        truth_refs.extend(_string_refs(evidence.get("evidence_id")))
 
     return RecoveryManifest(
         session_id=getattr(session_context, "session_id", None),
@@ -257,6 +298,14 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         hook_lifecycle_records=_metadata_dict_list(metadata, "hook_lifecycle_records"),
         compaction_lifecycle_records=_metadata_dict_list(metadata, "compaction_lifecycle_records"),
         permission_profile=dict(permission_profile) if isinstance(permission_profile, dict) else {},
+        mcp_assignments=_metadata_dict_list(
+            metadata,
+            "mcp_assignment",
+            "mcp_assignments",
+            "mcp_server_assignments",
+        ),
+        truth_evidence_refs=list(dict.fromkeys(truth_refs)),
+        truth_evidence=truth_evidence,
     )
 
 

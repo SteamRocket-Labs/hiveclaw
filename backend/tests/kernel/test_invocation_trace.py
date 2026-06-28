@@ -9,6 +9,18 @@ import pytest
 from app.runtime.session import SessionContext
 
 
+class _FakeSpanDB:
+    def __init__(self) -> None:
+        self.rows = []
+        self.flushed = False
+
+    def add(self, row) -> None:
+        self.rows.append(row)
+
+    async def flush(self) -> None:
+        self.flushed = True
+
+
 class _FakeClient:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -30,6 +42,47 @@ def _make_model():
         base_url=None,
         max_output_tokens=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_record_invocation_span_extracts_truth_evidence_fields():
+    from app.services.invocation_trace import record_invocation_span
+
+    db = _FakeSpanDB()
+    evidence_payload = {
+        "evidence_id": "truth://policy/email-confirmation",
+        "source_refs": ["knowledge://policy/email"],
+        "citations": ["policy/email"],
+    }
+
+    row = await record_invocation_span(
+        db,
+        tenant_id=uuid4(),
+        trace_id="trace-1",
+        span_id="span-1",
+        parent_span_id=None,
+        parent_trace_id=None,
+        span_type="tool",
+        name="send_email",
+        status="ok",
+        duration_ms=1.0,
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        runtime_task_id=None,
+        session_id="session-1",
+        request_id=None,
+        metadata={
+            "preflight": {
+                "evidence_refs": "truth://policy/email-confirmation",
+                "truth_evidence": json.dumps([evidence_payload], ensure_ascii=False),
+            }
+        },
+    )
+
+    assert db.flushed is True
+    assert row is db.rows[0]
+    assert row.evidence_refs == ["truth://policy/email-confirmation"]
+    assert row.truth_evidence_json == [evidence_payload]
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,14 @@
 4. 再处理 Skill fork 自动 handoff 执行语义。
 5. 最后补 E2E recovery 矩阵并回填全部证据。
 
+最终全量回归证据：
+
+- 第一轮 `cd backend && .venv/bin/python -m pytest tests -q` 暴露两个收尾问题：`invocation_span_truth_evidence_0628` 在 chain-upgrade fixture 中重复 add column，以及 D1 discovery fail-closed 误伤无 DB 单测中的精确 `firecrawl_fetch` / `select:firecrawl_fetch` schema expansion。
+- 已修复：truth evidence migration 改为 `ADD COLUMN IF NOT EXISTS` / `DROP COLUMN IF EXISTS`，migration fixture 回退到 `retire_openclaw_gateway_0627` 并删除当前迁移新增列后再 upgrade；`discoverable_tool_names_for_query()` 保持模糊 L2 discovery fail-closed，但允许明确点名的 known deferred tool 继续 schema expansion，实际执行仍由 call-time L2 gate fail-closed。
+- 复测：`cd backend && .venv/bin/python -m pytest tests/migrations/test_workflow_migration.py -q` -> `15 passed in 5.83s`。
+- 最终：`cd backend && .venv/bin/python -m pytest tests -q` -> `5350 passed, 2 skipped, 4 warnings in 90.68s`。
+- 最终：`cd backend && .venv/bin/ruff check app/ tests/` -> `All checks passed!`。
+
 每完成一个部分，必须更新本节对应行的“验收证据”为实际命令结果，并单独提交。
 
 ## 目标

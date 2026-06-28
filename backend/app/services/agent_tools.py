@@ -559,15 +559,18 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
             return False
         return is_pack_enabled(pack_policies, pack_name)
 
+    def _direct_tool_match(tool_name: str) -> bool:
+        return bool(normalized) and (tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact)
+
     if normalized:
         for pack in iter_runtime_l2_capabilities():
-            if not _pack_enabled(pack.name):
+            if not _pack_enabled(pack.name) and pack_policy_available:
                 continue
             for tool_name in pack.tools:
-                if (
-                    tool_name.lower() == normalized or normalize_tool_query(tool_name) == compact
-                ) and tool_name not in CORE_TOOL_NAMES:
+                if _direct_tool_match(tool_name) and tool_name not in CORE_TOOL_NAMES:
                     return [tool_name]
+            if not pack_policy_available:
+                continue
     requested: list[str] = []
     seen: set[str] = set()
     for pack in iter_runtime_l2_capabilities_for_query(query):

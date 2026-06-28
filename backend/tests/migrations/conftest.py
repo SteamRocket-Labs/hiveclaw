@@ -35,8 +35,9 @@ from tests.integration.conftest import (  # noqa: F401  (re-exported fixtures)
     pg_container,
 )
 
-_PREVIOUS_HEAD = "local_agent_channel_0622"
-_LATEST_ONLY_TABLES = ("agent_collaboration_group_members", "agent_collaboration_groups")
+_PREVIOUS_HEAD = "retire_openclaw_gateway_0627"
+_LATEST_ONLY_TABLES: tuple[str, ...] = ()
+_LATEST_ONLY_COLUMNS = (("invocation_spans", "evidence_refs"), ("invocation_spans", "truth_evidence_json"))
 
 
 def _alembic_upgrade_head(database_url: str) -> None:
@@ -77,6 +78,7 @@ def chain_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture p
     # then repoint the stamp so the upgrade path must execute the migration.
     rewind_sql = "; ".join(
         [f"DROP TABLE IF EXISTS {table} CASCADE" for table in _LATEST_ONLY_TABLES]
+        + [f"ALTER TABLE {table} DROP COLUMN IF EXISTS {column}" for table, column in _LATEST_ONLY_COLUMNS]
         + [f"UPDATE alembic_version SET version_num = '{_PREVIOUS_HEAD}'"]
     )
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "chaintest", "-c", rewind_sql])

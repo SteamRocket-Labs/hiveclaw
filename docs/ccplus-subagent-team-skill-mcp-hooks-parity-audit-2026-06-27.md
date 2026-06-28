@@ -154,8 +154,8 @@ CC 语义：
 
 已实现（2026-06-27 Workstream B 后）：
 
-1. `spawn_subagent` 是 core tool，schema 有 canonical `prompt`、`description`、`subagent_type`、`model`、`team_name`、`name`、`run_in_background`，旧 `task`、`type`、`definition_name`、`max_tool_rounds`、`ledger_todo_id` 保持兼容。
-2. built-in 类型包括 `general-purpose`、`explorer`、`worker`、`critic`，默认省略 `subagent_type` 时为 `general-purpose`。
+1. `spawn_subagent` 是 core tool，schema 有 canonical `prompt`、`description`、`subagent_type`、`model`、`name`、`run_in_background`，旧 `task`、`type`、`definition_name`、`max_tool_rounds`、`ledger_todo_id` 保持兼容；Agent Team 入口不挂在 `spawn_subagent.team_name` 上。
+2. 公开 built-in 类型包括 `general-purpose`、`explorer`、`critic`，默认省略 `subagent_type` 时为 `general-purpose`；历史 `worker` 值仅作为兼容 alias 归一到 `general-purpose`。
 3. child worker 复用 `invoke_agent`，继承治理路径。
 4. 子 agent 禁止进一步 spawn / delegation。
 5. background run 返回 `run_id` / `child_session_id`，completion 写 parent session mailbox 并触发 wake；`check_subagent` 只作为 fallback status inspection。
@@ -400,7 +400,7 @@ Hive 本轮前的问题是两种风格混合但没有分层：
      - verification -> critic
      - user asks parallel/team/swarm -> must fan out / create team
    - 已完成：增加 `spawn_subagent` few-shot-style examples：写完非平凡代码后用 critic；开放搜索超过直接 grep/glob 能力时用 explorer；并行独立问题在同一回合多 worker fan-out。
-   - 已完成：增加 session worker type listing section：`general-purpose` / `explorer` / `worker` / `critic` 的 whenToUse 常驻可见。
+   - 已完成：增加 session worker type listing section：`general-purpose` / `explorer` / `critic` 的 whenToUse 常驻可见；`worker` 不再作为等价公开选项暴露。
    - 已完成：增加 prompt contract tests，避免未来回退成弱提示。
 
 Workstream B 证据（2026-06-27）：

@@ -12,8 +12,9 @@ def test_subagent_listing_section_renders_builtin_types_and_when_to_use() -> Non
 
     assert "## Session Worker Types" in section
     assert "spawn_subagent" in section
-    for name in ("general-purpose", "explorer", "worker", "critic"):
+    for name in ("general-purpose", "explorer", "critic"):
         assert f"`{name}`" in section
+    assert "`worker`" not in section
 
     assert "Default general-purpose session-local worker" in section
     assert "Fast read-only agent" in section

@@ -80,6 +80,26 @@ def test_delete_agent_definition_falls_back(tmp_path):
     assert resolved.spec.system_prompt == "tenant version"
 
 
+def test_legacy_worker_definition_type_canonicalizes_on_read(tmp_path):
+    store = definition_store_for_agent(AGENT_ID, agent_data_dir=tmp_path)
+    path = tmp_path / str(AGENT_ID) / "subagents" / "legacy-writer.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "---\n"
+        "name: legacy-writer\n"
+        "description: d\n"
+        "type: worker\n"
+        "---\n"
+        "legacy prompt\n",
+        encoding="utf-8",
+    )
+
+    loaded = store.load("legacy-writer")
+
+    assert loaded is not None
+    assert loaded.type == "general-purpose"
+
+
 def test_list_merges_and_marks_scope(tmp_path):
     definition_store_for_tenant(TENANT_ID, agent_data_dir=tmp_path).save(_spec("dup", "tenant version"))
     definition_store_for_tenant(TENANT_ID, agent_data_dir=tmp_path).save(_spec("tenant-only", "tenant only"))
@@ -96,9 +116,10 @@ def test_list_merges_and_marks_scope(tmp_path):
     assert by_name["tenant-only"]["scope"] == SCOPE_TENANT
 
     # Builtin types present as read-only template rows, never shadowing customs.
-    for builtin in ("explorer", "worker", "critic"):
+    for builtin in ("general-purpose", "explorer", "critic"):
         assert by_name[builtin]["scope"] == SCOPE_BUILTIN
         assert by_name[builtin]["type"] == builtin
+    assert "worker" not in by_name
     # Custom definition named like a builtin would shadow it (agent/tenant wins).
     definition_store_for_agent(AGENT_ID, agent_data_dir=tmp_path).save(_spec("explorer", "custom explorer"))
     rows2 = list_subagent_definitions(agent_id=AGENT_ID, tenant_id=TENANT_ID, agent_data_dir=tmp_path)

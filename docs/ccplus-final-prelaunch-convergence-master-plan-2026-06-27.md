@@ -283,7 +283,6 @@ To Employee
    - `model`
    - `run_in_background`
    - `name`
-   - `team_name`
 
 2. 旧字段作为兼容 alias：
    - `task` -> `prompt`
@@ -292,7 +291,7 @@ To Employee
 
 3. 默认类型改为 CC-compatible：
    - 省略 `subagent_type` 时映射 `general-purpose`。
-   - `general-purpose` 可以先映射到当前 worker，但 prompt 和 whenToUse 必须像 CC。
+   - `worker` 只作为历史 alias 被归一到 `general-purpose`，不再作为模型可选类型暴露。
 
 4. Coordinator mode 改用 AgentTool：
    - coordinator visible tools 包含 AgentTool / spawn_subagent。
@@ -349,9 +348,9 @@ cd backend && source .venv/bin/activate && pytest \
 
 实施结果（2026-06-27 / Workstream B）：
 
-- 已建立 model-visible AgentTool-compatible `spawn_subagent` surface：`prompt`、`description`、`subagent_type`、`model`、`run_in_background`、`name`、`team_name`；旧 `task` / `type` 只作为兼容 alias。
-- `subagent_type` 默认从旧 `explorer` 改为 `general-purpose`，内部映射到现有 edit-capable worker preset；`explorer` / `worker` / `critic` 继续保留。
-- 新增 `## Session Worker Types` 常驻 prompt section，直接从 built-in `whenToUse` 渲染 `general-purpose` / `explorer` / `worker` / `critic`，进入 agent context；不再只藏在 tool schema。
+- 已建立 model-visible AgentTool-compatible `spawn_subagent` surface：`prompt`、`description`、`subagent_type`、`model`、`run_in_background`、`name`；旧 `task` / `type` 只作为兼容 alias。Agent Team 不通过 `spawn_subagent.team_name` 启动，统一走 `team_create` / Team runtime。
+- `subagent_type` 默认从旧 `explorer` 改为 `general-purpose`，内部映射到 edit-capable worker preset；公开 built-ins 为 `general-purpose` / `explorer` / `critic`，历史 `worker` 值仅作为兼容 alias 归一到 `general-purpose`。
+- 新增 `## Session Worker Types` 常驻 prompt section，直接从 built-in `whenToUse` 渲染 `general-purpose` / `explorer` / `critic`，进入 agent context；不再只藏在 tool schema，也不再把 `worker` 作为第二个等价选项暴露。
 - Coordinator mode 已切到 To Session Worker：allowed tools 为 `spawn_subagent` / `check_subagent` / `send_agent_session_message` 等；`delegate_to_agent` / `check_async_task` / `list_async_tasks` / `cancel_async_task` 不再是 coordinator worker path。
 - `executing_actions` 常驻提示词已拆成 To Session Worker 与 To Employee：session 内并行、探索、隔离、独立验证走 `spawn_subagent`；真实数字员工协作才走 A2A `delegate_to_agent` / `send_message_to_agent`。
 - `executing_actions` 已移除旧的默认自己做抑制语气；当前规则是小而不可分任务直接做，独立搜索、噪音探索、scoped implementation、独立验证主动走 `spawn_subagent`。

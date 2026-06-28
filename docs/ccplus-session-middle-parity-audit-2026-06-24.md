@@ -200,7 +200,7 @@ The previously listed CCPlus control-plane follow-up scope is now implemented at
 当前已具备：
 
 - `spawn_subagent` 是 lightweight worker 入口；peer digital employee delegation 仍由 `delegate_to_agent` 表达。
-- built-in types：`explorer`、`worker`、`critic`。
+- 公开 built-in types：`general-purpose`、`explorer`、`critic`；历史 `worker` 值只作为兼容 alias 归一到 `general-purpose`。
 - persistent `definition_name` 支持 agent-scope first, tenant shared library second。
 - `run_in_background` 已暴露到 schema。
 - background spawn 先创建 durable `RuntimeTask(task_type="subagent")`，再启动 worker。

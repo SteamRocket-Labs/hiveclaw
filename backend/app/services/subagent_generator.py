@@ -62,7 +62,7 @@ When a user describes what they want an agent to do, you will:
 
 6. **Choose the tool baseline ('type')** — pick exactly one:
    - "explorer" — read-only reconnaissance: searching, reading, fact-finding; never modifies anything
-   - "worker" — bounded execution: can read AND edit workspace files to complete a task end to end
+   - "general-purpose" — bounded execution: can read AND edit workspace files to complete a task end to end
    - "critic" — read-only verification: judges work or claims and returns a verdict; never modifies anything
    Choose the narrowest type that can accomplish the agent's purpose.
 
@@ -94,7 +94,7 @@ Your output must be a valid JSON object with exactly these fields:
 {
   "name": "A unique, descriptive identifier using lowercase letters, numbers, and hyphens (e.g., 'test-runner', 'api-docs-writer', 'market-scout')",
   "description": "A precise, actionable description starting with 'Use this agent when...' that clearly defines the triggering conditions and use cases. Ensure you include examples as described above.",
-  "type": "explorer" | "worker" | "critic",
+  "type": "general-purpose" | "explorer" | "critic",
   "system_prompt": "The complete system prompt that will govern the agent's behavior, written in second person ('You are...', 'You will...') and structured for maximum clarity and effectiveness"
 }
 

@@ -6,20 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.subagent import (
-    SUBAGENT_TYPE_CRITIC,
-    SUBAGENT_TYPE_EXPLORER,
-    SUBAGENT_TYPE_GENERAL_PURPOSE,
-    SUBAGENT_TYPE_WORKER,
+    PUBLIC_BUILTIN_SUBAGENT_TYPES,
     builtin_type_description,
 )
 from app.agents.subagent_definition import SCOPE_BUILTIN, list_subagent_definitions
 
-_BUILTIN_ORDER = (
-    SUBAGENT_TYPE_GENERAL_PURPOSE,
-    SUBAGENT_TYPE_EXPLORER,
-    SUBAGENT_TYPE_WORKER,
-    SUBAGENT_TYPE_CRITIC,
-)
+_BUILTIN_ORDER = PUBLIC_BUILTIN_SUBAGENT_TYPES
 
 
 def _render_custom_definition_rows(

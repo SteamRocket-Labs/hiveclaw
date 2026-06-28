@@ -180,6 +180,7 @@ ChatSession.peer_agent_id == current agent
 CC 的 Agent Team / AgentTool 不是单纯的“起一个后台任务”。它至少有这些语义：
 
 - `AgentTool` 同时支持 `subagent_type`、`run_in_background`、`name`、`team_name`、`mode`。
+- Hive 映射中，`team_name` 不作为 `spawn_subagent` 的公开第二路径；Agent Team 统一进入 `team_create` / Team runtime / Team mailbox。
 - background agent 会得到 `agentId`，后续通过 `SendMessage({to: agentId | name})` 继续它，而不是只能一次性 poll result。
 - coordinator 和 subagents 共享一个 command queue；主线程只 drain user prompt，subagent 只 drain 发给自己 `agentId` 的 `task-notification`。
 - sidechain/session persistence 用于 resume：`agentId` 路由到 sidechain transcript，top-level `/resume` 路由到 session transcript。

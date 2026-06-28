@@ -26,10 +26,12 @@ import yaml
 
 from app.agents.subagent import (
     _TYPE_PRESETS,
+    PUBLIC_BUILTIN_SUBAGENT_TYPES,
     SUBAGENT_TYPE_EXPLORER,
     ForkLevel,
     SubagentSpec,
     builtin_type_description,
+    canonical_subagent_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,7 +150,7 @@ def parse_subagent_definition(text: str) -> SubagentSpec:
     return SubagentSpec(
         name=name,
         description=description,
-        type=str(front.get("type") or SUBAGENT_TYPE_EXPLORER),
+        type=canonical_subagent_type(front.get("type"), default=SUBAGENT_TYPE_EXPLORER),
         allowed_tools=_coerce_tool_list(front, "allowed_tools"),
         excluded_tools=_coerce_tool_list(front, "excluded_tools"),
         model=_coerce_optional_string(front, "model"),
@@ -342,9 +344,10 @@ def list_subagent_definitions(
     if tenant_id is not None:
         _collect(definition_store_for_tenant(tenant_id, agent_data_dir=agent_data_dir), SCOPE_TENANT)
 
-    for builtin_type, preset_tools in _TYPE_PRESETS.items():
+    for builtin_type in PUBLIC_BUILTIN_SUBAGENT_TYPES:
         if builtin_type in rows:
             continue  # custom definition shadows the builtin row
+        preset_tools = _TYPE_PRESETS[builtin_type]
         rows[builtin_type] = {
             "name": builtin_type,
             "description": builtin_type_description(builtin_type),

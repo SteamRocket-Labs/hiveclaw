@@ -57,6 +57,25 @@ SUBAGENT_TYPE_EXPLORER = "explorer"
 SUBAGENT_TYPE_WORKER = "worker"
 SUBAGENT_TYPE_CRITIC = "critic"
 
+PUBLIC_BUILTIN_SUBAGENT_TYPES: tuple[str, ...] = (
+    SUBAGENT_TYPE_GENERAL_PURPOSE,
+    SUBAGENT_TYPE_EXPLORER,
+    SUBAGENT_TYPE_CRITIC,
+)
+
+_LEGACY_SUBAGENT_TYPE_ALIASES: dict[str, str] = {
+    SUBAGENT_TYPE_WORKER: SUBAGENT_TYPE_GENERAL_PURPOSE,
+}
+
+
+def canonical_subagent_type(type_: object, *, default: str = "") -> str:
+    """Return the canonical built-in type name while accepting retired aliases."""
+
+    value = str(type_ or "").strip()
+    if not value:
+        return default
+    return _LEGACY_SUBAGENT_TYPE_ALIASES.get(value, value)
+
 # Explorer preset: read-only reconnaissance, parallel-friendly. Union of the
 # Worker web tools and review_readonly file/memory tools.
 _EXPLORER_ALLOWED_TOOLS: tuple[str, ...] = (
@@ -275,13 +294,13 @@ _TYPE_DESCRIPTIONS: dict[str, str] = {
 def builtin_type_prompt(type_: str) -> str:
     """Baseline role prompt for a built-in subagent type ("" for unknown types)."""
 
-    return _TYPE_PROMPTS.get(type_, "")
+    return _TYPE_PROMPTS.get(canonical_subagent_type(type_), "")
 
 
 def builtin_type_description(type_: str) -> str:
     """whenToUse description for a built-in subagent type ("" for unknown types)."""
 
-    return _TYPE_DESCRIPTIONS.get(type_, "")
+    return _TYPE_DESCRIPTIONS.get(canonical_subagent_type(type_), "")
 
 
 @dataclass(slots=True)
@@ -418,7 +437,7 @@ def resolve_subagent_tools(spec: SubagentSpec) -> tuple[tuple[str, ...], tuple[s
 
     allowed = spec.allowed_tools
     if not allowed:
-        allowed = _TYPE_PRESETS.get(spec.type, ())
+        allowed = _TYPE_PRESETS.get(canonical_subagent_type(spec.type), ())
     excluded = tuple(dict.fromkeys((*_SUBAGENT_BASE_EXCLUDED_TOOLS, *spec.excluded_tools)))
     return allowed, excluded
 

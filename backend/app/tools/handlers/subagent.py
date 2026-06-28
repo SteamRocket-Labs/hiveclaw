@@ -20,10 +20,11 @@ from typing import Any
 from sqlalchemy import select
 
 from app.agents.subagent import (
-    _TYPE_PRESETS,
+    PUBLIC_BUILTIN_SUBAGENT_TYPES,
     SUBAGENT_TYPE_GENERAL_PURPOSE,
     SubagentSpawnContext,
     SubagentSpec,
+    canonical_subagent_type,
     spawn_subagent,
 )
 from app.agents.subagent_definition import (
@@ -153,24 +154,16 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "subagent_type": {
             "type": "string",
-            "enum": ["general-purpose", "explorer", "worker", "critic"],
+            "enum": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
             "description": (
                 "Canonical AgentTool worker type. Defaults to 'general-purpose'. Use 'explorer' for "
-                "read-only reconnaissance, 'critic' for independent verification, and 'worker' as a legacy "
-                "alias for a general edit-capable worker."
+                "read-only reconnaissance and 'critic' for independent verification."
             ),
         },
         "model": {
             "type": "string",
             "description": (
                 "Optional model override, resolved by model id, label, or provider model name within the tenant pool."
-            ),
-        },
-        "team_name": {
-            "type": "string",
-            "description": (
-                "Optional future Agent Team routing label. For a single session worker this is recorded as context "
-                "but does not change execution."
             ),
         },
         "task": {
@@ -181,7 +174,7 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
         },
         "type": {
             "type": "string",
-            "enum": ["general-purpose", "explorer", "worker", "critic"],
+            "enum": list(PUBLIC_BUILTIN_SUBAGENT_TYPES),
             "description": (
                 "Compatibility alias for subagent_type. Prefer subagent_type for new calls."
             ),
@@ -231,6 +224,7 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     ).strip()
     if not subagent_type:
         subagent_type = SUBAGENT_TYPE_GENERAL_PURPOSE
+    subagent_type = canonical_subagent_type(subagent_type, default=SUBAGENT_TYPE_GENERAL_PURPOSE)
     return {
         **arguments,
         "task": task,
@@ -254,8 +248,6 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
             "'general-purpose' — default edit-capable worker for a scoped task; "
             "'explorer' — fast READ-ONLY reconnaissance over files and the web; use for finding files, "
             "searching content, and answering questions about a large body of material. "
-            "'worker' — general-purpose agent that can read AND edit workspace files; use to complete "
-            "one well-scoped multi-step task end to end. "
             "'critic' — read-only verification specialist; pass it the original task plus the claims or "
             "artifacts to check and it returns a PASS/FAIL/PARTIAL verdict with evidence. "
             "Named definitions (via definition_name) override type, tools, model, and prompt from their "
@@ -344,12 +336,13 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         definition_scope = resolved.scope
     else:
         subagent_type = str(normalized_args.get("subagent_type") or SUBAGENT_TYPE_GENERAL_PURPOSE).strip()
-        if subagent_type not in _TYPE_PRESETS:
+        if subagent_type not in PUBLIC_BUILTIN_SUBAGENT_TYPES:
             return _json(
                 {
                     "ok": False,
                     "error": (
-                        f"unknown builtin subagent type {subagent_type!r}; expected one of {sorted(_TYPE_PRESETS)}"
+                        "unknown builtin subagent type "
+                        f"{subagent_type!r}; expected one of {list(PUBLIC_BUILTIN_SUBAGENT_TYPES)}"
                     ),
                 }
             )

@@ -21,7 +21,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.subagent import _TYPE_PRESETS, SubagentSpec, builtin_type_description, builtin_type_prompt
+from app.agents.subagent import (
+    _TYPE_PRESETS,
+    SubagentSpec,
+    builtin_type_description,
+    builtin_type_prompt,
+    canonical_subagent_type,
+)
 from app.agents.subagent_definition import (
     SCOPE_AGENT,
     SCOPE_BUILTIN,
@@ -144,7 +150,8 @@ def _memory_summary(store, name: str) -> dict:
 
 
 def _builtin_detail(name: str) -> dict | None:
-    preset = _TYPE_PRESETS.get(name)
+    canonical_name = canonical_subagent_type(name)
+    preset = _TYPE_PRESETS.get(canonical_name)
     if preset is None:
         return None
     # The template body is the same baseline prompt the runtime injects at
@@ -152,13 +159,13 @@ def _builtin_detail(name: str) -> dict | None:
     # whenToUse the spawn surface advertises — what humans read here is
     # exactly what an unspecialized subagent of this type runs with.
     template = SubagentSpec(
-        name=name,
-        description=builtin_type_description(name),
-        type=name,
-        system_prompt=builtin_type_prompt(name),
+        name=canonical_name,
+        description=builtin_type_description(canonical_name),
+        type=canonical_name,
+        system_prompt=builtin_type_prompt(canonical_name),
     )
     return {
-        "name": name,
+        "name": canonical_name,
         "scope": SCOPE_BUILTIN,
         "definition": render_subagent_definition(template),
         "spec": {**_spec_summary(template), "allowed_tools": list(preset)},

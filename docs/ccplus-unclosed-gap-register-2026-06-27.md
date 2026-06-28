@@ -234,7 +234,7 @@ cd backend && source .venv/bin/activate && ruff check app/runtime/skill_hooks.py
 已做：
 
 - `spawn_subagent` 是 core tool。
-- tool schema 已兼容 CC AgentTool 的 `description`、`prompt`、`subagent_type`、`model`、`team_name`、`name`、`run_in_background`。
+- tool schema 已兼容 CC AgentTool 的 `description`、`prompt`、`subagent_type`、`model`、`name`、`run_in_background`；Agent Team 入口不挂在 `spawn_subagent.team_name` 上，统一走 `team_create` / Team runtime。
 - coordinator 已改为 To Session Worker 使用 `spawn_subagent`，不再把 `delegate_to_agent` 当 session worker。
 - built-in Session Worker type listing 已进入 prompt section。
 - `backend/app/runtime/prompt_sections/subagent_listing.py` 现在接收当前 `agent_id` / `tenant_id`，并把 agent-scope / tenant-scope custom definitions 以 `definition_name` 方式渲染到同一 `spawn_subagent` 路径。

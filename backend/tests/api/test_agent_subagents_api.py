@@ -146,7 +146,7 @@ def test_detail_builtin_templates_all_carry_baseline_prompt(monkeypatch, data_ro
     _grant_access(monkeypatch, agent_id, tenant_id)
 
     # Anchors from the CC built-in agent ports (Explore / general-purpose / verification)
-    for name, anchor in (("explorer", "READ-ONLY"), ("worker", "agent for Hive"), ("critic", "VERDICT")):
+    for name, anchor in (("general-purpose", "agent for Hive"), ("explorer", "READ-ONLY"), ("critic", "VERDICT")):
         payload = client.get(f"/agents/{agent_id}/subagents/{name}").json()
         body = payload["definition"].split("---", 2)[-1]
         assert anchor in body, f"builtin {name} template body must carry its baseline prompt"

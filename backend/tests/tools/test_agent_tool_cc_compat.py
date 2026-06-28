@@ -14,7 +14,6 @@ def test_spawn_subagent_schema_exposes_agenttool_compatible_fields() -> None:
         "model",
         "run_in_background",
         "name",
-        "team_name",
         # Compatibility aliases.
         "task",
         "type",
@@ -25,8 +24,20 @@ def test_spawn_subagent_schema_exposes_agenttool_compatible_fields() -> None:
     assert "general-purpose" in properties["subagent_type"]["enum"]
     assert "explorer" in properties["subagent_type"]["enum"]
     assert "critic" in properties["subagent_type"]["enum"]
+    assert "worker" not in properties["subagent_type"]["enum"]
+    assert "worker" not in properties["type"]["enum"]
+    assert "team_name" not in properties
     assert {"required": ["prompt"]} in _SPAWN_PARAMETERS["anyOf"]
     assert {"required": ["task"]} in _SPAWN_PARAMETERS["anyOf"]
+
+
+def test_spawn_subagent_legacy_worker_alias_normalizes_to_general_purpose() -> None:
+    from app.tools.handlers.subagent import _normalize_spawn_arguments
+
+    normalized = _normalize_spawn_arguments({"task": "edit this file", "type": "worker"})
+
+    assert normalized["type"] == "general-purpose"
+    assert normalized["subagent_type"] == "general-purpose"
 
 
 def test_spawn_subagent_description_draws_session_worker_employee_boundary() -> None:

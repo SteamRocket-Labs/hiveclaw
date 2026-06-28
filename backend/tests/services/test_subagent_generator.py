@@ -49,7 +49,7 @@ def test_generation_prompt_speaks_hive_tooling():
     # The whenToUse examples must reference Hive's spawn surface, not CC's Agent tool.
     assert "spawn_subagent" in GENERATION_SYSTEM_PROMPT
     assert "explorer" in GENERATION_SYSTEM_PROMPT
-    assert "worker" in GENERATION_SYSTEM_PROMPT
+    assert '"general-purpose"' in GENERATION_SYSTEM_PROMPT
     assert "critic" in GENERATION_SYSTEM_PROMPT
 
 

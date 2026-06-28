@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from app.runtime.ccplus_contracts import TruthEvidencePackV1
 from app.services.privacy_layer import SensitivityLevel
@@ -53,6 +55,7 @@ class ActionPreflightResult:
     requires_audit: bool = False
     escalation_target: str | None = None
     evidence_refs: list[str] = field(default_factory=list)
+    evidence_trace: list[dict[str, Any]] = field(default_factory=list)
 
     def as_decision_trace_preflight(self) -> dict[str, str]:
         payload = {
@@ -64,6 +67,8 @@ class ActionPreflightResult:
         }
         if self.evidence_refs:
             payload["evidence_refs"] = ",".join(self.evidence_refs)
+        if self.evidence_trace:
+            payload["truth_evidence"] = json.dumps(self.evidence_trace, ensure_ascii=False, sort_keys=True)
         return payload
 
 
@@ -81,12 +86,14 @@ class ActionPreflightService:
 
     def evaluate(self, request: ActionPreflightInput) -> ActionPreflightResult:
         evidence_refs = [pack.evidence_id for pack in request.truth_evidence if pack.evidence_id]
+        evidence_trace = _truth_evidence_trace(request.truth_evidence)
         if not request.runtime_permission_allowed:
             return ActionPreflightResult(
                 decision=PreflightDecision.REFUSE,
                 reasons=["runtime_permission_denied"],
                 requires_audit=True,
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         if request.sensitivity == SensitivityLevel.PL4_CREDENTIAL:
@@ -95,6 +102,7 @@ class ActionPreflightService:
                 reasons=["pl4_zero_retention"],
                 requires_audit=True,
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         if request.charter_zone == CharterZone.NEVER_DO:
@@ -103,6 +111,7 @@ class ActionPreflightService:
                 reasons=["charter_never_do"],
                 requires_audit=True,
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         if request.company_boundary_conflict:
@@ -113,6 +122,7 @@ class ActionPreflightService:
                 requires_audit=True,
                 escalation_target="company_admin",
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         if request.explicit_user_authorized and request.charter_zone == CharterZone.CONFIRM_FIRST:
@@ -121,6 +131,7 @@ class ActionPreflightService:
                 reasons=["explicit_user_authorization"],
                 requires_audit=True,
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         high_axes = _axes_at_level(request, BoundaryAxisLevel.HIGH)
@@ -131,6 +142,7 @@ class ActionPreflightService:
                 requires_checkpoint=True,
                 requires_audit=True,
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         if request.charter_zone == CharterZone.CONFIRM_FIRST:
@@ -140,6 +152,7 @@ class ActionPreflightService:
                 requires_checkpoint=True,
                 requires_audit=True,
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         medium_axes = _axes_at_level(request, BoundaryAxisLevel.MEDIUM)
@@ -150,14 +163,36 @@ class ActionPreflightService:
                 requires_checkpoint=False,
                 requires_audit=True,
                 evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
             )
 
         return ActionPreflightResult(
             decision=PreflightDecision.DO,
             reasons=["full_authority_low_risk"],
             evidence_refs=evidence_refs,
+            evidence_trace=evidence_trace,
         )
 
 
 def _axes_at_level(request: ActionPreflightInput, level: BoundaryAxisLevel) -> list[str]:
     return [axis for axis in _AXIS_FIELDS if getattr(request, axis) == level]
+
+
+def _truth_evidence_trace(evidence_packs: tuple[TruthEvidencePackV1, ...]) -> list[dict[str, Any]]:
+    traces: list[dict[str, Any]] = []
+    for pack in evidence_packs:
+        if not pack.evidence_id:
+            continue
+        traces.append(
+            {
+                "evidence_id": pack.evidence_id,
+                "source_refs": list(pack.source_refs),
+                "citations": list(pack.citations),
+                "digest": pack.digest,
+                "provider": pack.provider,
+                "limitations": list(pack.limitations),
+                "prompt_injection_stripped": pack.prompt_injection_stripped,
+                "trace_refs": list(pack.trace_refs),
+            }
+        )
+    return traces

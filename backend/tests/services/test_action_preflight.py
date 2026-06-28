@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+
+from app.runtime.ccplus_contracts import TruthEvidencePackV1
 from app.services.action_preflight import (
     ActionPreflightInput,
     ActionPreflightService,
@@ -87,3 +90,42 @@ def test_pl4_credential_action_refuses_even_with_full_authority() -> None:
     assert result.decision == PreflightDecision.REFUSE
     assert result.requires_audit is True
     assert "pl4_zero_retention" in result.reasons
+
+
+def test_preflight_trace_persists_truth_evidence_payload() -> None:
+    evidence = TruthEvidencePackV1(
+        evidence_id="truth://policy/email-confirmation",
+        query="send email",
+        source_refs=("knowledge://policy/email",),
+        citations=("policy/email",),
+        snippets=("External email requires owner confirmation.",),
+        digest="digest-1",
+        provider="openviking",
+        limitations=("prompt_injection_stripped",),
+        prompt_injection_stripped=True,
+        trace_refs=("truth_search:digest-1",),
+    )
+
+    result = ActionPreflightService().evaluate(
+        _low_risk_input(
+            representativeness=BoundaryAxisLevel.HIGH,
+            visibility=BoundaryAxisLevel.HIGH,
+            truth_evidence=(evidence,),
+        )
+    )
+    trace_payload = result.as_decision_trace_preflight()
+
+    assert trace_payload["evidence_refs"] == "truth://policy/email-confirmation"
+    persisted = json.loads(trace_payload["truth_evidence"])
+    assert persisted == [
+        {
+            "evidence_id": "truth://policy/email-confirmation",
+            "source_refs": ["knowledge://policy/email"],
+            "citations": ["policy/email"],
+            "digest": "digest-1",
+            "provider": "openviking",
+            "limitations": ["prompt_injection_stripped"],
+            "prompt_injection_stripped": True,
+            "trace_refs": ["truth_search:digest-1"],
+        }
+    ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from typing import Any
 
@@ -12,6 +13,11 @@ from app.services import viking_client
 from app.services.connector_acl import filter_connector_results_for_prompt
 
 _DEFAULT_PROMPT_CHAR_BUDGET = 1500
+_PROMPT_INJECTION_PATTERNS = (
+    re.compile(r"\b(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+instructions\b", re.IGNORECASE),
+    re.compile(r"\b(system|developer)\s+prompt\b.*\b(ignore|override|replace|reveal|leak)\b", re.IGNORECASE),
+    re.compile(r"\b(reveal|leak|print|show)\s+(the\s+)?(system|developer)\s+prompt\b", re.IGNORECASE),
+)
 
 
 def _optional_str(value: Any) -> str | None:
@@ -37,6 +43,17 @@ def _snippet(item: dict[str, Any], *, max_chars: int) -> str:
     return content[: max(0, max_chars - 3)].rstrip() + "..."
 
 
+def _strip_prompt_injection(text: str) -> tuple[str, bool]:
+    stripped = False
+    kept_lines: list[str] = []
+    for line in str(text or "").splitlines():
+        if any(pattern.search(line) for pattern in _PROMPT_INJECTION_PATTERNS):
+            stripped = True
+            continue
+        kept_lines.append(line)
+    return "\n".join(kept_lines).strip(), stripped
+
+
 def _digest_payload(query: str, source_refs: tuple[str, ...], results: list[dict[str, Any]]) -> str:
     payload = {
         "query": query,
@@ -51,6 +68,48 @@ def _digest_payload(query: str, source_refs: tuple[str, ...], results: list[dict
         ],
     }
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _provider_failure_pack(
+    query: str,
+    *,
+    tenant: str,
+    agent: str | None,
+    user: str | None,
+    limitation: str,
+) -> TruthEvidencePackV1:
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "query": query,
+                "tenant": tenant,
+                "agent": agent,
+                "user": user,
+                "limitation": limitation,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    short_digest = digest[:24]
+    return TruthEvidencePackV1(
+        evidence_id=f"truth://provider-error/{short_digest}",
+        query=query,
+        source_refs=(),
+        citations=(),
+        snippets=(),
+        acl_scope="tenant",
+        digest=digest,
+        provider="openviking",
+        freshness="runtime",
+        confidence=0.0,
+        limitations=(limitation,),
+        prompt_injection_stripped=False,
+        tenant_id=tenant,
+        owner_id=user,
+        company_id=tenant,
+        trace_refs=(f"truth_search_provider_error:{short_digest}",),
+    )
 
 
 class TruthSearchService:
@@ -74,7 +133,15 @@ class TruthSearchService:
         if not clean_query or not tenant or (not agent and not user):
             return []
         if not viking_client.is_configured():
-            return []
+            return [
+                _provider_failure_pack(
+                    clean_query,
+                    tenant=tenant,
+                    agent=agent,
+                    user=user,
+                    limitation="provider_unconfigured",
+                )
+            ]
 
         try:
             raw_results = await viking_client.find(
@@ -84,8 +151,16 @@ class TruthSearchService:
                 user_id=user,
                 limit=limit,
             )
-        except Exception:
-            return []
+        except Exception as exc:
+            return [
+                _provider_failure_pack(
+                    clean_query,
+                    tenant=tenant,
+                    agent=agent,
+                    user=user,
+                    limitation=f"provider_error:{exc.__class__.__name__}",
+                )
+            ]
 
         visible_results = filter_connector_results_for_prompt(
             [item for item in raw_results if isinstance(item, dict)],
@@ -102,8 +177,16 @@ class TruthSearchService:
         citations = tuple(dict.fromkeys(_citation(item) for item in visible_results))
         char_budget = max_chars if isinstance(max_chars, int) and max_chars > 0 else _DEFAULT_PROMPT_CHAR_BUDGET
         per_item_budget = max(200, char_budget // max(len(visible_results), 1))
-        snippets = tuple(filter(None, (_snippet(item, max_chars=per_item_budget) for item in visible_results)))
+        snippet_items: list[str] = []
+        prompt_injection_stripped = False
+        for item in visible_results:
+            snippet, stripped = _strip_prompt_injection(_snippet(item, max_chars=per_item_budget))
+            prompt_injection_stripped = prompt_injection_stripped or stripped
+            if snippet:
+                snippet_items.append(snippet)
+        snippets = tuple(snippet_items)
         digest = _digest_payload(clean_query, source_refs, visible_results)
+        limitations = ("prompt_injection_stripped",) if prompt_injection_stripped else ()
         return [
             TruthEvidencePackV1(
                 evidence_id=f"truth://{digest[:24]}",
@@ -116,8 +199,8 @@ class TruthSearchService:
                 provider="openviking",
                 freshness="runtime",
                 confidence=None,
-                limitations=(),
-                prompt_injection_stripped=False,
+                limitations=limitations,
+                prompt_injection_stripped=prompt_injection_stripped,
                 tenant_id=tenant,
                 owner_id=user,
                 company_id=tenant,

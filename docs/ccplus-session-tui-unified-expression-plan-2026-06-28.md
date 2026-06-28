@@ -47,10 +47,10 @@ Codex 的 TUI 表达比 CC 更完整，尤其适合 Web 借鉴：
 | --- | --- | --- |
 | bottom pane command popup | `/` 命令是 composer-native overlay | 保留 slash menu，但命令结果进入 center timeline / 右侧 Runtime Tables |
 | approval overlay | 权限请求不是普通消息，是 blocking overlay | 权限请求进入右侧 Governance tab + inline card，可 allow once/session/deny |
-| footer active agent label | 当前 active agent/thread 在输入区附近可见 | Session lane tabs / composer footer 显示 active lane |
+| footer active agent label | 当前 active agent/thread 在输入区附近可见 | 右侧 Runtime Agents 切换 session；中间 active tab / composer footer 显示 active session |
 | app backtrack / rollback | 回退是 thread/session 操作，不是普通助手回复 | Checkpoint rail + branch graph 一体化 |
 | ThreadFork / ThreadRollback / Resume protocol | thread 形状是可分叉、可回退、可 resume 的对象 | Hive `ChatSession` family graph 需要可视化 |
-| CollabAgentTool | spawn/send/resume/wait/close 是协作工具生命周期 | Agent Team/Subagent lanes 需要显示状态和 enter/resume/close |
+| CollabAgentTool | spawn/send/resume/wait/close 是协作工具生命周期 | Agent Team/Subagent session windows 需要显示状态和 enter/resume/close |
 | permission profile response | approval scope 与 thread/turn/tool call 绑定 | Hive permission card 必须带 session/turn/tool/evidence refs |
 | hooks browser | hook 生命周期可枚举、可诊断 | 右侧 Governance tab 需要 Hooks section |
 
@@ -78,7 +78,7 @@ Codex 的 TUI 表达比 CC 更完整，尤其适合 Web 借鉴：
 | Checkpoint panel | `SessionCommandControlPanel` | 点击 checkpoint 直接 rewind，没有操作菜单/branch/context/files |
 | Branch lineage | `BranchLineagePanel` | 还不是 checkpoint graph |
 | Compaction event | `session_compact` inline render | 有事件卡，但没有右侧 Context/Governance detail 中的 active projection 详情 |
-| Team enter | `SessionNativeControls.enterMember` | 能 enter child session，但不是 session lane/tabs |
+| Team enter | `SessionNativeControls.enterMember` | 能 enter child session，但还没有形成右侧 Runtime Agents row -> 中间 session window 的统一表达 |
 | Workflow card | chat inline dynamic workflow proposal | 可观察 proposal，但运行图和 journal 应进右侧 Workflow tab |
 
 ## 2. 目标布局：左侧导航栏冻结，只重构中间和右侧
@@ -92,8 +92,8 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
 │ KEEP AS IS             │ Session Header                           │ Workspace Documents          │
 │ agent/session list     │ Git-line checkpoint conversation flow     │ document status / preview     │
 │ current product nav    │ Transcript / Run cells                   ├──────────────────────────────┤
-│ no structural changes  │ Agent Team / Subagent lane tabs          │ Runtime Tables                │
-│                        │ Composer + slash menu + footer status    │ tasks / background / workflow │
+│ no structural changes  │ Selected session page / breadcrumb       │ Runtime Tables                │
+│                        │ Composer + slash menu + footer status    │ agents / tasks / workflow     │
 │                        │                                          │ notifications / commands      │
 └────────────────────────┴──────────────────────────────────────────┴──────────────────────────────┘
 ```
@@ -128,12 +128,15 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
    - compaction count
    - active projection state
 
-2. Session lane tabs，放在对话流底部 / 输入框上方
+2. Selected session header / breadcrumb
    - `Main`
-   - `Team: <name>`
-   - `Subagent: <name>`
-   - `Workflow: <run>`
-   - `Background: <count>`
+   - `Main > Agent: <name>`
+   - `Main > Subagent: <name>`
+   - `Main > Workflow: <run>`
+   - 中间区域必须明确当前展示的是哪一个 session window。
+   - 主要切换入口在右侧下栏 `Agents` / `Background` / `Workflow`，不是输入框上方主 tab。
+   - 切换后，中间 session window 仍要显示一个 active session tab / label，类似 CC/Codex TUI 的 cyan label。
+   - active tab 的颜色随 session 状态变化：running 用高亮色，waiting/permission 用 amber，blocked/failed 用 red，completed 用 muted green/gray。
 
 3. Git-line checkpoint conversation flow
    - 每个 user prompt 是 primary checkpoint node。
@@ -155,8 +158,9 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
 5. Composer
    - `/` command popup。
    - permission mode footer。
-   - active lane label。
+   - active session label。
    - attachment/artifact chips。
+   - 输入栏整体边框不改；当前输入上下文跟随中间 active session window。
 
 ### 2.3 右侧：Workspace / Runtime 上下分区
 
@@ -174,6 +178,7 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
 
 | Tab | 内容 |
 | --- | --- |
+| Agents | 运行中 / 已完成的 Agent Team member、Sub-agent、Background Agent session；点击切换中间 session window |
 | Tasks | 当前 todo / work ledger / task table |
 | Background | background agent、long task、completion wake |
 | Workflow | dynamic proposal、definition、step graph、journal、gate/wait/resume/repair/promote |
@@ -259,7 +264,7 @@ Full access = Bypass session prompts, still obey enterprise rules.
 | --- | --- | --- |
 | Session | `/compact` `/rewind` `/branch` `/clear` `/resume` | 中间 timeline marker + 右侧 Commands / Runs tab |
 | Planning | `/plan` `/goal` | inline plan card + 右侧 Runs / Commands tab |
-| Collaboration | `/agent` `/task delegate` `/team` | 输入框上方 lane tabs + 右侧 Background / Runs tab |
+| Collaboration | `/agent` `/task delegate` `/team` | 右侧 Runtime Agents row + 中间 session window + 右侧 Background / Runs tab |
 | Automation | `/workflow` `/schedule` | 中间 workflow marker + 右侧 Workflow tab |
 | Capability | `/skill` `/tools` | 中间 event marker + 右侧 Commands / Governance tab |
 | Debug/Admin | `/export` `/status` `/hooks` | 右侧 Raw / Governance tab，默认不进普通消息流 |
@@ -380,15 +385,23 @@ Codex 在压缩状态表达上更好，Hive 应采用更显式的右侧 Context/
 
 ## 6. Agent Team / Sub-agent / Background Agent
 
-### 6.1 统一为 Session Lanes
+### 6.1 统一为 Session Windows
 
-不要把 Agent Team、Sub-agent、Background Agent 分散到独立页面。它们在当前 session 内应表现为 lanes：
+不要把 Agent Team、Sub-agent、Background Agent 分散到全局导航或独立页面。它们应是当前 parent session 下的 child session windows，由右侧 Runtime Agents panel 列出，中间区域负责显示当前选中的 session window：
 
 ```text
-Main | Team: Review crew | Subagent: Critic | Workflow: Release checks | Background: 3
+Right Runtime / Agents
+  ● main
+  ● general-purpose  排查 Phase 0+1 Contract与Taxonomy
+  ○ general-purpose  排查 Phase 2+3 边界与 L1L3
+
+Center
+  [排查 Phase 0+1 Contract与Taxonomy]  <- active session tab / colored label
+  Main > general-purpose / 排查 Phase 0+1 Contract与Taxonomy
+  child session transcript
 ```
 
-每个 lane 有状态：
+每个 child session 有状态：
 
 - running
 - waiting_for_permission
@@ -402,52 +415,60 @@ Main | Team: Review crew | Subagent: Critic | Workflow: Release checks | Backgro
 
 位置：
 
-- 输入框上方、composer 上方显示 **Team Console**。
-- 中栏点击 member row 切换到 team/member session 或 filtered channel。
-- 右侧 Runtime Tables 只显示 team/member graph、mailbox、events、enter/resume/wait/close 的详情和审计，不承担主要切换。
+- 右侧下栏 `Runtime Tables > Agents` 显示 team/member session 列表。
+- 点击右侧 member row 后，中间区域切换到该 member 的独立 session window。
+- 中间 session window 顶部显示 breadcrumb / title，强调当前对应的是哪一个 session。
+- 中间 session window 顶部或分隔线上显示 active session tab / colored label；颜色与右侧 row 的状态同步。
+- 底部输入栏边框不改；进入 child session window 后，输入上下文就是该 child session。
+- 右侧 Runtime Tables 继续显示 team/member graph、mailbox、events、enter/resume/wait/close 的详情和审计。
 
-当前 `SessionNativeControls.enterMember` 已能进入 member session，下一步要把它升级为 session lane 交互，而不是藏在右侧长列表。
+当前 `SessionNativeControls.enterMember` 已能进入 member session，下一步要把它升级为右侧 Runtime Agents row -> 中间 session window 的直接切换。
 
-### 6.2.1 Team Console 表达
+### 6.2.1 Runtime Agents Panel 表达
 
-Agent Team 的主表达参考 CC/Codex 的 TUI：底部不是普通 tab，而是一组可选择的 agent lane rows。
+Agent Team 的主表达参考 CC/Codex 的 TUI，但 Web 端放在右侧下栏：不是普通 tab，而是一组可点击的 running session rows。
 
 目标结构：
 
 ```text
-────────────────────────────────────────────────────────────────────
-                        当前查看：排查 Phase 0+1 Contract与Taxonomy
-────────────────────────────────────────────────────────────────────
+Runtime / Agents
+Running 2 agents
 
-○ main
-› ● general-purpose  排查 Phase 0+1 Contract与Taxonomy        31s · 77.3k tokens
-  ○ general-purpose  排查 Phase 2+3 边界与 L1L3                8s · 62.1k tokens
+› ● general-purpose
+  排查 Phase 0+1 Contract与Taxonomy
+  31s · 8 tool uses · 77.3k tokens
+  Bash: Check which contract classes appear in tests
 
-输入框 / composer
+  ○ general-purpose
+  排查 Phase 2+3 边界与 L1L3
+  8s · 6 tool uses · 62.1k tokens
+  Reading 4 files...
 ```
 
 显示规则：
 
 - `main` 永远存在，表示父 session 主线。
-- 每个 team member / subagent / background worker 是一行 lane。
-- 当前正在查看的 lane 用 `›` + 实心点 / 高亮背景表示。
+- 每个 team member / subagent / background worker 是一行 session row。
+- 当前正在查看的 session row 用 `›` + 实心点 / 高亮背景表示。
 - 运行中显示 elapsed time、token estimate、tool use count、last activity。
 - 完成显示 completed / failed / cancelled，并保留可查看入口。
 - pending permission / blocked hook / waiting user 用状态徽标显示。
-- 顶部细线右侧可显示当前 active lane label，类似截图中的 cyan label。
+- 右侧下栏顶部显示 `Running N agents` / `Completed N` / `Blocked N` summary。
 
 交互规则：
 
-- 点击 row：切换中间 transcript 到该 member 的 child session / filtered channel。
-- 点击 `main`：回到父 session 主线。
-- row 右侧可以有停止单个 agent 的 icon button；批量停止放在 Team Console 菜单，不放左侧导航。
-- 如果一个 team 有多个成员，Team Console 默认展开；完成后可折叠成一行 summary。
+- 点击 row：切换中间区域到该 member 的 child session window。
+- 切换完成后，中间顶部 active tab 文案和颜色同步变化，用户能立即知道当前窗口对应哪个 session。
+- 点击 `main` row：回到父 session 主线。
+- child session window 不是只读预览；它是当前可交互的 session 表达面。
+- row 右侧可以有停止单个 agent 的 icon button；批量停止放在 Runtime Agents panel 菜单，不放左侧导航。
+- 如果一个 team 有多个成员，Runtime Agents panel 默认展开；完成后可折叠成一行 summary。
 - parent transcript 里只保留 “Running N agents...” / “Agent completed” 这类 marker，不把每个 child agent 的全部细节灌进主线。
 
 与右侧 Runtime Tables 的分工：
 
-- Team Console：快速切换当前正在看的 agent/channel。
-- Runtime Tables：显示完整 member graph、mailbox、event log、tool calls、permission/gate、stop/resume 审计。
+- Runtime Agents panel：快速切换当前正在操作/查看的 agent session。
+- Runtime detail tabs：显示完整 member graph、mailbox、event log、tool calls、permission/gate、stop/resume 审计。
 
 ### 6.3 Sub-agent
 
@@ -462,15 +483,15 @@ Sub-agent 应显示：
 
 用户点击 subagent marker：
 
-- 中栏切换 child lane 或打开 filtered transcript。
+- 中栏切换 child session window 或打开 filtered transcript。
 - 右侧 Runtime Tables 的 Background / Runs tab 展示详情。
 
 ### 6.4 Background Agent
 
 Background completion wake 已进入 Workbench read model。UI 应表达为：
 
-- Header / lane tab 显示 pending/running/completed/failed count。
-- 输入框上方 lane tab 显示 background count。
+- Header / right Runtime summary 显示 pending/running/completed/failed count。
+- 右侧 Runtime Agents / Background tab 显示 background count。
 - 右侧 Runtime Tables 的 Runs / Background tab 显示 run detail。
 - 完成后在 parent session timeline 插入 completion marker。
 
@@ -544,14 +565,17 @@ Workspace Documents 是统一交付面：
 新增模型：
 
 ```ts
-type SessionLaneKind = 'main' | 'team_member' | 'subagent' | 'workflow' | 'background';
+type SessionWindowKind = 'main' | 'team_member' | 'subagent' | 'workflow' | 'background';
 
-interface SessionLaneModel {
+interface SessionWindowModel {
   id: string;
-  kind: SessionLaneKind;
+  kind: SessionWindowKind;
   label: string;
   status: 'running' | 'waiting' | 'blocked' | 'completed' | 'failed' | 'cancelled';
   selected?: boolean;
+  activeTabLabel?: string;
+  tabTone?: 'neutral' | 'running' | 'waiting' | 'blocked' | 'completed' | 'failed';
+  accentColor?: string;
   preset?: string;
   teamId?: string;
   memberId?: string;
@@ -595,7 +619,7 @@ interface SessionRightPanelModel {
 | --- | --- |
 | `SessionWorkbenchChrome.tsx` | Header 增加 permission/context/governance chips；右侧改成 Workspace Documents + Runtime Tables 上下分区 |
 | `SessionNativeControls.tsx` | 从“控件长列表”拆成 Runtime Tables tab content，不再全量堆叠 |
-| `AgentChatSection.tsx` | 中栏引入 lane tabs、git-line checkpoint flow、right panel tab triggers；composer footer 显示 active lane + permission |
+| `AgentChatSection.tsx` | 中栏引入 selected session window/header、active session tab、git-line checkpoint flow、right panel tab triggers；composer footer 保持现有边框并显示 active session context + permission |
 | `SlashCommandMenu.tsx` | 按命令类别分组；隐藏 internal-only；支持 command detail preview |
 | `sessionCommandResult.ts` | 所有 `ui_action` 映射到 right panel action + timeline marker |
 | `chatDisclosureReducer.ts` | 将 tool/team/workflow/compaction/subagent summaries 与 right panel detail 建立稳定 key |
@@ -622,10 +646,12 @@ npm test -- --run \
 - Rewind 后旧 tail 标为 excluded from context。
 - Compact marker 可打开右侧 Context/Governance detail。
 - `/command ` 选择后进入 composer，执行结果不追加 raw JSON。
-- Agent Team member 显示为输入框上方 Team Console row，点击 row 切换 session / filtered channel。
-- Team Console 渲染 `main` row、selected row、elapsed time、token count、tool use count、running/completed/failed/waiting 状态。
-- Team Console 的 stop single / stop all 动作不写入左侧导航。
-- Subagent / background wake 显示在 lane 和 Runtime Tables。
+- Agent Team member 显示在右侧 Runtime Agents row，点击 row 切换中间 session window。
+- Runtime Agents panel 渲染 `main` row、selected row、elapsed time、token count、tool use count、running/completed/failed/waiting 状态。
+- 点击右侧 Runtime Agents row 后，中间 session window 的 active tab label 和颜色同步更新。
+- active tab 颜色按 `tabTone` 表达 running/waiting/blocked/completed/failed，不改变底部输入框边框。
+- Runtime Agents panel 的 stop single / stop all 动作不写入左侧导航。
+- Subagent / background wake 显示在右侧 Runtime Agents 和 Runtime Tables。
 - Workflow marker 打开右侧 Runtime Tables 的 Workflow tab。
 - Governance tab 显示 permission profile / pending request / Truth Search evidence refs。
 - Raw tab 默认不展开 provider/tool JSON。
@@ -640,12 +666,12 @@ cd frontend && npm run build
 
 一次性目标不是“全部视觉重做”，而是所有能力进入同一个 Session Shell，不再散落。
 
-1. **模型层**：扩展 `timelineModel.ts`，形成 lanes、checkpoint timeline、right panel model。
+1. **模型层**：扩展 `timelineModel.ts`，形成 session windows、checkpoint timeline、right panel model。
 2. **布局层**：冻结左侧导航栏，只重构中间 Session Timeline 与右侧 Workspace / Runtime 上下分区。
 3. **命令层**：slash command category + typed `ui_action` -> timeline marker + right panel action。
 4. **治理层**：permission mode、pending approvals、L0-L3、Truth Search evidence 进入右侧 Governance tab。
 5. **状态层**：compact/rewind/branch/clear/resume 进入 git-line checkpoint flow + 右侧 Context / Runs tab。
-6. **协作层**：Agent Team/Subagent/Background/Workflow 统一成 session lanes。
+6. **协作层**：Agent Team/Subagent/Background/Workflow 统一成 session windows。
 7. **交付层**：Workspace Documents 替代文档/文件弹窗主路径。
 8. **验收层**：前端单测 + build；后端不改 contract 时不跑全量 backend，若补 API contract 再按对应后端测试补齐。
 
@@ -656,7 +682,7 @@ cd frontend && npm run build
 - 用户能在一个 Session 内看到当前工作线、分支、checkpoint、active head、compact 状态。
 - 用户能用同一个 composer 输入 `/command args`，并看到命令结果进入 session 状态，而不是 raw JSON。
 - Permission / Full access / Ask first / Approve for me 在 Header、composer footer、右侧 Governance tab 三处一致。
-- Agent Team、Sub-agent、Background Agent、Dynamic Workflow 都是 session lanes，不再只藏在独立 tab 或弹窗里。
+- Agent Team、Sub-agent、Background Agent、Dynamic Workflow 都是 session windows，不再只藏在独立 tab 或弹窗里。
 - 工具调用默认显示 summary；Raw 细节只在 Raw tab。
 - 当前文档、文件、snapshot、artifact 在右侧 Workspace Documents 可查看，不依赖 modal 作为主交互。
 - Rewind 和 Branch 视觉上明确不同：rewind 改当前 head，branch 产生新 session line。

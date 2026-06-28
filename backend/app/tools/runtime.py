@@ -26,6 +26,10 @@ class ToolExecutionContext:
     execution_identity: ExecutionIdentity | None = None
     session_id: str | None = None
     permission_profile: "PermissionProfileV1 | None" = None
+    turn_id: str | None = None
+    runtime_task_id: str | None = None
+    round_state: dict[str, Any] | None = None
+    t0_refs: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)

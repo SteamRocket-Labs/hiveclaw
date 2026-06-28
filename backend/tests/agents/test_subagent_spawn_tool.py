@@ -152,6 +152,45 @@ async def test_spawn_tool_resolves_model_and_spawns(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spawn_tool_permission_profile_narrows_child_allowed_tools(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    captured: dict = {}
+
+    async def fake_resolve(agent_id):
+        return (
+            SimpleNamespace(provider="openai", api_key="k", model="x", base_url=None),
+            None,
+            SimpleNamespace(name="HR"),
+        )
+
+    async def fake_spawn(ctx, spec, task, **kwargs):
+        captured["spec"] = spec
+        return SubagentHandle(
+            name=spec.name,
+            trace_id="",
+            depth=2,
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="digest"),
+        )
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
+    monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
+
+    out = await handler_mod.spawn_subagent_tool(
+        _tool_request(
+            {
+                "task": "use the loaded research skill",
+                "permission_profile": {"mode": "auto", "allowed_tools": ["web_search", "read_file"]},
+            }
+        )
+    )
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert captured["spec"].allowed_tools == ("web_search", "read_file")
+
+
+@pytest.mark.asyncio
 async def test_spawn_tool_accepts_agenttool_prompt_alias_and_defaults_general_purpose(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
 

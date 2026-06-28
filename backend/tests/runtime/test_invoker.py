@@ -485,6 +485,73 @@ async def test_execute_tool_receives_interactive_available_for_web_chat_session(
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_receives_session_frame_metadata(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
+    from app.runtime.session import SessionContext
+
+    seen: dict[str, object] = {}
+
+    async def fake_execute_tool(
+        tool_name,
+        args,
+        *,
+        agent_id,
+        user_id,
+        turn_id=None,
+        runtime_task_id=None,
+        round_state=None,
+        t0_refs=(),
+        **_kwargs,
+    ):
+        seen.update(
+            {
+                "tool_name": tool_name,
+                "args": args,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "turn_id": turn_id,
+                "runtime_task_id": runtime_task_id,
+                "round_state": round_state,
+                "t0_refs": t0_refs,
+            }
+        )
+        return "tool-ok"
+
+    async def emit_event(_payload):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.execute_tool", fake_execute_tool)
+    agent_id = uuid4()
+    user_id = uuid4()
+    session = SessionContext(
+        session_id="session-1",
+        metadata={
+            "turn_id": "turn-1",
+            "runtime_task_id": "runtime-1",
+            "round_state": {"round": 2},
+            "t0_refs": ["t0://sessions/session-1/segments/seg-1/events.jsonl#9"],
+        },
+    )
+    request = AgentInvocationRequest(
+        model=object(),
+        messages=[{"role": "user", "content": "write"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=agent_id,
+        user_id=user_id,
+        session_context=session,
+    )
+
+    result = await _execute_tool_with_request("write_file", {"path": "workspace/a.md", "content": "x"}, request, emit_event)
+
+    assert result == "tool-ok"
+    assert seen["turn_id"] == "turn-1"
+    assert seen["runtime_task_id"] == "runtime-1"
+    assert seen["round_state"] == {"round": 2}
+    assert seen["t0_refs"] == ("t0://sessions/session-1/segments/seg-1/events.jsonl#9",)
+
+
+@pytest.mark.asyncio
 async def test_resolve_tool_expansion_ignores_load_skill_for_schema_loading(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _resolve_tool_expansion
 

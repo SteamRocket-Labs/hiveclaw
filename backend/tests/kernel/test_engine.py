@@ -763,6 +763,43 @@ async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeyp
     assert hook_calls[1][1]["metadata"]["after_msgs"] == 2
 
 
+@pytest.mark.asyncio
+async def test_mechanical_compaction_lifecycle_hooks_emit_pre_and_post(monkeypatch):
+    from app.kernel.engine import _apply_mechanical_compaction_with_lifecycle_hooks
+    from app.runtime.hooks import HookEvent
+
+    hook_calls = []
+
+    async def fake_emit_hook(event, **kwargs):
+        hook_calls.append((event, kwargs))
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    messages = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": "old result"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    compacted = await _apply_mechanical_compaction_with_lifecycle_hooks(
+        messages,
+        compact=lambda items: items[1:],
+        agent_id="agent-1",
+        session_id="session-1",
+        trigger="prompt_too_long",
+        metadata={"phase": "prompt_too_long_round_group_fallback"},
+    )
+
+    assert compacted == messages[1:]
+    assert hook_calls[0][0] == HookEvent.PRE_COMPACTION
+    assert hook_calls[0][1]["messages"] == messages
+    assert hook_calls[0][1]["metadata"]["trigger"] == "prompt_too_long"
+    assert hook_calls[0][1]["metadata"]["strategy"] == "mechanical"
+    assert hook_calls[1][0] == HookEvent.POST_COMPACTION
+    assert hook_calls[1][1]["metadata"]["before_msgs"] == 3
+    assert hook_calls[1][1]["metadata"]["after_msgs"] == 2
+
+
 def test_runtime_attachment_sections_report_tool_refresh_and_external_file_changes(tmp_path, monkeypatch):
     from app.kernel.engine import (
         _build_runtime_attachment_sections,

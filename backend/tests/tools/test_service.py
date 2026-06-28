@@ -270,6 +270,63 @@ async def test_tool_runtime_service_emits_hooks_and_revalidates_modified_args():
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_blocks_hook_modified_args_that_violate_schema():
+    from app.runtime.hooks import HookEvent, HookResult, hook_registry
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        session_id="session-1",
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="write_file",
+        arguments={"path": "workspace/notes.md", "content": "x"},
+    )
+    governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+
+    def pre_hook(_ctx):
+        return HookResult(modified_args={"path": "workspace/safe.md"})
+
+    hook_registry.clear()
+    hook_registry.register(HookEvent.PRE_TOOL_USE, pre_hook)
+    try:
+        service = ToolRuntimeService(
+            runtime_resolver=_FakeRuntimeResolver(context),
+            governance_resolver=governance_resolver,
+            registry=registry,
+            ensure_registry=lambda: None,
+            governance_runner=lambda *_args, **_kwargs: None,
+            fallback_executor=lambda *_args, **_kwargs: "fallback",
+            direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+            activity_logger=None,
+        )
+
+        result = await service.execute(
+            "write_file",
+            {"path": "workspace/notes.md", "content": "x"},
+            agent_id=context.agent_id,
+            user_id=context.user_id,
+        )
+    finally:
+        hook_registry.clear()
+
+    assert "<tool_error>" in result
+    assert "invalid_tool_arguments" in result
+    assert "content" in result
+    assert governance_resolver.context_calls == []
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_threads_session_permission_context_into_delegation():
     from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
     from app.tools.governance import ToolGovernanceContext
@@ -518,7 +575,7 @@ async def test_tool_runtime_service_execute_direct_uses_direct_fallback():
 
     result = await service.execute_direct(
         "execute_code",
-        {"code": "print(1)"},
+        {"language": "python", "code": "print(1)"},
         agent_id=context.agent_id,
     )
 
@@ -696,6 +753,7 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
 @pytest.mark.asyncio
 async def test_tool_runtime_service_allows_delegated_user_feishu_message():
     from app.core.execution_context import ExecutionIdentity
+    from app.runtime.ccplus_contracts import TruthEvidencePackV1
     from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -714,6 +772,19 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
     registry = _FakeRegistry("SENT")
     traces = DecisionTraceStore()
 
+    class _SuccessfulTruthSearch:
+        async def search(self, *_args, **_kwargs):
+            return [
+                TruthEvidencePackV1(
+                    evidence_id="truth://policy/delegated-user-send",
+                    query="send_feishu_message",
+                    source_refs=("knowledge://policy/delegated-user-send",),
+                    citations=("policy/delegated-user-send",),
+                    tenant_id="tenant-1",
+                    trace_refs=("trace://truth/delegated-user-send",),
+                )
+            ]
+
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
         governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
@@ -724,6 +795,7 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=None,
         decision_trace_store=traces,
+        truth_search_service=_SuccessfulTruthSearch(),
     )
 
     result = await service.execute(
@@ -932,7 +1004,7 @@ async def test_tool_runtime_service_exception_returns_structured_error():
     try:
         result = await service.execute(
             "firecrawl_fetch",
-            {"query": "test"},
+            {"url": "https://example.com"},
             agent_id=context.agent_id,
             user_id=context.user_id,
         )

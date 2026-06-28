@@ -24,6 +24,10 @@ class ToolRuntimeResolver:
         user_id: uuid.UUID,
         session_id: str | None = None,
         permission_profile: Any | None = None,
+        turn_id: str | None = None,
+        runtime_task_id: str | None = None,
+        round_state: dict[str, Any] | None = None,
+        t0_refs: tuple[str, ...] = (),
     ) -> ToolExecutionContext:
         # Tool-execution tenant chokepoint (RLS 阶段1). We hold only ``agent_id``
         # but need its tenant to scope every downstream governed query — and a
@@ -53,4 +57,8 @@ class ToolRuntimeResolver:
             execution_identity=get_execution_identity(),
             session_id=session_id,
             permission_profile=permission_profile,
+            turn_id=turn_id,
+            runtime_task_id=runtime_task_id,
+            round_state=dict(round_state or {}),
+            t0_refs=tuple(str(ref) for ref in (t0_refs or ()) if str(ref).strip()),
         )

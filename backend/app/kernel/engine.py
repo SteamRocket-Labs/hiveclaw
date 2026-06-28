@@ -1116,6 +1116,42 @@ async def _compress_messages_with_lifecycle_hooks(
     return compressed
 
 
+async def _apply_mechanical_compaction_with_lifecycle_hooks(
+    messages: list[dict],
+    *,
+    compact: Callable[[list[dict]], list[dict]],
+    agent_id: Any = None,
+    session_id: Any = None,
+    trigger: str,
+    metadata: dict[str, Any] | None = None,
+) -> list[dict]:
+    from app.runtime.hooks import HookEvent
+
+    hook_metadata = dict(metadata or {})
+    hook_metadata["trigger"] = trigger
+    hook_metadata.setdefault("strategy", "mechanical")
+    await _emit_runtime_hook(
+        HookEvent.PRE_COMPACTION,
+        agent_id=agent_id,
+        session_id=session_id,
+        messages=messages,
+        metadata=hook_metadata,
+    )
+    compacted = compact(list(messages))
+    if compacted != messages:
+        await _emit_runtime_hook(
+            HookEvent.POST_COMPACTION,
+            agent_id=agent_id,
+            session_id=session_id,
+            metadata={
+                **hook_metadata,
+                "before_msgs": len(messages),
+                "after_msgs": len(compacted),
+            },
+        )
+    return compacted
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -3524,7 +3560,26 @@ class AgentKernel:
                                             ptl_retries,
                                             _PTL_MAX_RETRIES,
                                         )
-                                        _truncated = _truncate_head_for_ptl(api_messages[1:], drop_ratio=0.2)
+                                        _truncated = _dicts_to_llm_messages(
+                                            await _apply_mechanical_compaction_with_lifecycle_hooks(
+                                                _llm_messages_to_dicts(api_messages[1:]),
+                                                compact=lambda items: _llm_messages_to_dicts(
+                                                    _truncate_head_for_ptl(
+                                                        _dicts_to_llm_messages(items),
+                                                        drop_ratio=0.2,
+                                                    )
+                                                ),
+                                                agent_id=request.agent_id,
+                                                session_id=request.memory_session_id,
+                                                trigger="prompt_too_long",
+                                                metadata={
+                                                    "phase": "prompt_too_long_round_group_fallback",
+                                                    "attempt": ptl_retries,
+                                                    "strategy": "round_group",
+                                                    "agent_name": request.agent_name,
+                                                },
+                                            )
+                                        )
                                         # Rebuild system prompt
                                         _ptl_dynamic = build_dynamic_prompt_suffix(
                                             active_tool_groups=session_ctx.active_tool_groups if session_ctx else [],

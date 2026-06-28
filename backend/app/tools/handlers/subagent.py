@@ -233,6 +233,18 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
                 "subagent as the todo's owner and completion writes the terminal status back."
             ),
         },
+        "permission_profile": {
+            "type": "object",
+            "description": (
+                "Optional scoped execution profile for skill handoffs. When allowed_tools is present, the child "
+                "subagent is hard-limited to that tool set through the normal governed runtime."
+            ),
+            "properties": {
+                "mode": {"type": "string"},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
+                "writable_roots": {"type": "array", "items": {"type": "string"}},
+            },
+        },
     },
     "anyOf": [{"required": ["prompt"]}, {"required": ["task"]}],
 }
@@ -268,6 +280,16 @@ def _normalize_spawn_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         "isolation": isolation,
         "_explicit_subagent_type": explicit_type,
     }
+
+
+def _permission_profile_allowed_tools(arguments: dict[str, Any]) -> tuple[str, ...]:
+    profile = arguments.get("permission_profile")
+    if not isinstance(profile, dict):
+        return ()
+    raw_allowed = profile.get("allowed_tools")
+    if not isinstance(raw_allowed, list):
+        return ()
+    return tuple(dict.fromkeys(str(item).strip() for item in raw_allowed if str(item).strip()))
 
 
 async def _load_parent_messages_for_fork(
@@ -466,6 +488,10 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             isolation=str(normalized_args.get("isolation") or "none"),  # type: ignore[arg-type]
             has_own_memory=not plan_mode_active,
         )
+
+    scoped_allowed_tools = _permission_profile_allowed_tools(normalized_args)
+    if scoped_allowed_tools:
+        spec.allowed_tools = scoped_allowed_tools
 
     # §12.5: memory follows the definition's scope — agent-private definitions
     # accumulate craft in the agent workspace; tenant definitions (and inline

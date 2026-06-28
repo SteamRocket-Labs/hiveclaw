@@ -185,6 +185,10 @@ class ToolGovernanceContext:
     # (default_decision="escalate"), so the historical hardcoded behavior is
     # preserved when no profile is threaded onto this turn.
     permission_profile: PermissionProfileV1 | None = None
+    turn_id: str | None = None
+    runtime_task_id: str | None = None
+    round_state: dict[str, Any] | None = None
+    t0_refs: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -498,17 +502,17 @@ async def _emit_session_no_policy_result(
     pending_frame = PendingToolFrameV1(
         permission_request_id=permission_request_id,
         session_id=str(context.session_id or ""),
-        turn_id=None,
-        runtime_task_id=None,
+        turn_id=context.turn_id,
+        runtime_task_id=context.runtime_task_id,
         tool_call_id=str(context.tool_call_id or ""),
         tool_name=context.tool_name,
         arguments=dict(context.arguments or {}),
         origin_channel=None,
         permission_profile=profile,
-        round_state={},
+        round_state=dict(context.round_state or {}),
         knowledge_refs=(),
         hook_refs=(),
-        t0_refs=(),
+        t0_refs=tuple(str(ref) for ref in (context.t0_refs or ()) if str(ref).strip()),
         created_at=datetime.now(timezone.utc).isoformat(),
         expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
     )

@@ -35,6 +35,7 @@ from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
 from app.tools.backends import LocalToolRuntimeBackend, ToolRuntimeBackend
+from app.tools.validation import validate_tool_arguments
 
 
 RuntimeResolver = Callable[..., Awaitable[ToolExecutionContext] | ToolExecutionContext]
@@ -162,6 +163,10 @@ async def _resolve_runtime_context(
     user_id: uuid.UUID,
     session_id: str | None = None,
     permission_profile: Any | None = None,
+    turn_id: str | None = None,
+    runtime_task_id: str | None = None,
+    round_state: dict[str, Any] | None = None,
+    t0_refs: tuple[str, ...] = (),
 ) -> ToolExecutionContext:
     kwargs: dict[str, Any] = {"agent_id": agent_id, "user_id": user_id}
     try:
@@ -174,6 +179,14 @@ async def _resolve_runtime_context(
         kwargs["session_id"] = session_id
     if permission_profile is not None and (accepts_kwargs or "permission_profile" in params):
         kwargs["permission_profile"] = permission_profile
+    if turn_id is not None and (accepts_kwargs or "turn_id" in params):
+        kwargs["turn_id"] = turn_id
+    if runtime_task_id is not None and (accepts_kwargs or "runtime_task_id" in params):
+        kwargs["runtime_task_id"] = runtime_task_id
+    if round_state is not None and (accepts_kwargs or "round_state" in params):
+        kwargs["round_state"] = round_state
+    if t0_refs and (accepts_kwargs or "t0_refs" in params):
+        kwargs["t0_refs"] = t0_refs
     return await _maybe_await(runtime_resolver.resolve(**kwargs))
 
 
@@ -230,6 +243,20 @@ def _extract_tool_error_payload(result: str) -> dict[str, Any] | None:
         return _json.loads(match.group(1))
     except Exception:
         return None
+
+
+def _validate_tool_arguments_block(tool_name: str, arguments: Any) -> str | None:
+    errors = validate_tool_arguments(tool_name, arguments)
+    if not errors:
+        return None
+    return render_tool_error(
+        tool_name=tool_name,
+        error_class="invalid_tool_arguments",
+        message="; ".join(errors),
+        provider="ccplus_validate_input",
+        retryable=False,
+        actionable_hint="Re-read the tool schema and rebuild the arguments object before retrying.",
+    )
 
 
 @dataclass(slots=True)
@@ -344,6 +371,10 @@ class ToolRuntimeService:
         delegation_token: Any | None = None,
         session_id: str | None = None,
         permission_profile: Any | None = None,
+        turn_id: str | None = None,
+        runtime_task_id: str | None = None,
+        round_state: dict[str, Any] | None = None,
+        t0_refs: tuple[str, ...] = (),
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
         emit_runtime_hooks: bool = True,
@@ -368,6 +399,10 @@ class ToolRuntimeService:
             user_id=user_id,
             session_id=session_id,
             permission_profile=permission_profile,
+            turn_id=turn_id,
+            runtime_task_id=runtime_task_id,
+            round_state=round_state,
+            t0_refs=t0_refs,
         )
         arguments = _inject_runtime_context_arguments(tool_name, arguments, runtime_context)
         if emit_runtime_hooks:
@@ -382,6 +417,9 @@ class ToolRuntimeService:
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
                 arguments = hook_result.modified_args
+        validation_block = _validate_tool_arguments_block(tool_name, arguments)
+        if validation_block:
+            return validation_block
         l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
         if l2_policy_block:
             return l2_policy_block
@@ -717,6 +755,9 @@ class ToolRuntimeService:
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
                 arguments = hook_result.modified_args
+            validation_block = _validate_tool_arguments_block(tool_name, arguments)
+            if validation_block:
+                return validation_block
             l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
             if l2_policy_block:
                 return l2_policy_block
@@ -804,6 +845,9 @@ class ToolRuntimeService:
             return plan_mode_block
 
         self.ensure_registry()
+        validation_block = _validate_tool_arguments_block(tool_name, arguments)
+        if validation_block:
+            return validation_block
         l2_policy_block = await self._l2_extension_policy_block(tool_name, context)
         if l2_policy_block:
             return l2_policy_block

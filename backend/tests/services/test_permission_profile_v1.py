@@ -220,6 +220,43 @@ async def test_permission_profile_legacy_escalate_default_asks_session_locally()
 
 
 @pytest.mark.asyncio
+async def test_session_permission_pending_frame_carries_runtime_turn_frame() -> None:
+    approval_calls: list[dict] = []
+    audit_calls: list[dict] = []
+    events: list[dict] = []
+
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            tenant_id=str(uuid.uuid4()),
+            session_id="session-1",
+            tool_call_id="tool-call-1",
+            tool_name="write_file",
+            arguments={"path": "workspace/notes.md", "content": "x"},
+            permission_profile=PermissionProfileV1(mode="default", default_decision="escalate"),
+            turn_id="turn-1",
+            runtime_task_id="runtime-1",
+            round_state={"round": 3, "tool_call_index": 1},
+            t0_refs=("t0://sessions/session-1/segments/seg-1/events.jsonl#42",),
+        ),
+        _governance_deps(
+            check_capability_fn=_live_no_policy_check_capability(),
+            approval_calls=approval_calls,
+            audit_calls=audit_calls,
+        ),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    pending_frame = events[-1]["permission_request"]["pending_tool_frame"]
+    assert pending_frame["turn_id"] == "turn-1"
+    assert pending_frame["runtime_task_id"] == "runtime-1"
+    assert pending_frame["round_state"] == {"round": 3, "tool_call_index": 1}
+    assert pending_frame["t0_refs"] == ("t0://sessions/session-1/segments/seg-1/events.jsonl#42",)
+
+
+@pytest.mark.asyncio
 async def test_permission_profile_dont_ask_blocks_mapped_no_policy_capability() -> None:
     """dontAsk mode must DENY the mapped-no-policy capability outright — no
     backend approval request."""

@@ -1351,6 +1351,10 @@ async def resolve_session_permission(
                         "resumed_from_permission_request_id": str(permission_request_id),
                         "denied_tool_name": tool_name,
                         "denied_tool_call_id": tool_call_id,
+                        "resumed_turn_id": pending_frame.turn_id,
+                        "resumed_runtime_task_id": pending_frame.runtime_task_id,
+                        "round_state": dict(pending_frame.round_state or {}),
+                        "t0_refs": list(pending_frame.t0_refs or ()),
                     },
                 )
             except ActiveWebChatRunExists as exc:
@@ -1386,6 +1390,10 @@ async def resolve_session_permission(
                 "writable_roots": list(DEFAULT_CCPLUS_WRITABLE_ROOTS),
             },
             tool_call_id=tool_call_id or None,
+            turn_id=pending_frame.turn_id,
+            runtime_task_id=pending_frame.runtime_task_id,
+            round_state=dict(pending_frame.round_state or {}),
+            t0_refs=tuple(pending_frame.t0_refs or ()),
         )
         persisted_tool_event = await _persist_tool_call(
             agent_id=agent_id,
@@ -1437,6 +1445,10 @@ async def resolve_session_permission(
                         **_session_permission_metadata(str(request_payload.get("permission_mode") or "auto"), session),
                         "source": "session_permission_resume",
                         "resumed_from_permission_request_id": str(permission_request_id),
+                        "resumed_turn_id": pending_frame.turn_id,
+                        "resumed_runtime_task_id": pending_frame.runtime_task_id,
+                        "round_state": dict(pending_frame.round_state or {}),
+                        "t0_refs": list(pending_frame.t0_refs or ()),
                     },
                 )
             except ActiveWebChatRunExists as exc:

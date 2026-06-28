@@ -129,3 +129,32 @@ def test_preflight_trace_persists_truth_evidence_payload() -> None:
             "trace_refs": ["truth_search:digest-1"],
         }
     ]
+
+
+def test_confirm_first_action_does_not_bypass_failed_truth_search_even_with_user_authorization() -> None:
+    evidence = TruthEvidencePackV1(
+        evidence_id="truth://provider-error/unconfigured",
+        query="send_email",
+        source_refs=(),
+        digest="digest-provider-error",
+        provider="openviking",
+        confidence=0.0,
+        limitations=("provider_unconfigured",),
+        trace_refs=("truth_search_provider_error:unconfigured",),
+    )
+
+    result = ActionPreflightService().evaluate(
+        _low_risk_input(
+            action="send external message via send_email",
+            representativeness=BoundaryAxisLevel.HIGH,
+            visibility=BoundaryAxisLevel.HIGH,
+            charter_zone=CharterZone.CONFIRM_FIRST,
+            explicit_user_authorized=True,
+            truth_evidence=(evidence,),
+        )
+    )
+
+    assert result.decision == PreflightDecision.ASK
+    assert result.requires_checkpoint is True
+    assert "truth_search_unavailable" in result.reasons
+    assert "truth://provider-error/unconfigured" in result.evidence_refs

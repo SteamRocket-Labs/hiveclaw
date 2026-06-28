@@ -301,6 +301,25 @@ def _permission_profile_from_session_context(session_context: SessionContext | N
     return None
 
 
+def _tool_frame_kwargs_from_session_context(session_context: SessionContext | None) -> dict[str, Any]:
+    metadata = getattr(session_context, "metadata", None) if session_context is not None else None
+    if not isinstance(metadata, dict):
+        return {}
+    t0_refs = metadata.get("t0_refs") or metadata.get("t0_event_refs") or ()
+    if isinstance(t0_refs, str):
+        t0_refs = (t0_refs,)
+    round_state = metadata.get("round_state") if isinstance(metadata.get("round_state"), dict) else {}
+    result: dict[str, Any] = {
+        "round_state": dict(round_state or {}),
+        "t0_refs": tuple(str(ref) for ref in (t0_refs or ()) if str(ref).strip()),
+    }
+    if metadata.get("turn_id"):
+        result["turn_id"] = str(metadata["turn_id"])
+    if metadata.get("runtime_task_id") or metadata.get("task_id"):
+        result["runtime_task_id"] = str(metadata.get("runtime_task_id") or metadata.get("task_id"))
+    return result
+
+
 async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
     # P0-1b: instead of silently returning tenant_id=None on failure paths,
     # set the tenant_resolution_error sentinel so kernel.engine can early-exit
@@ -907,6 +926,10 @@ async def _execute_tool_with_request(
             executor_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
         if accepts_kwargs or "tool_call_id" in executor_params:
             executor_kwargs["tool_call_id"] = tool_call_id
+        frame_kwargs = _tool_frame_kwargs_from_session_context(request.session_context)
+        for key, value in frame_kwargs.items():
+            if accepts_kwargs or key in executor_params:
+                executor_kwargs[key] = value
         return await _maybe_await(request.tool_executor(tool_name, args, **executor_kwargs))
 
     execute_kwargs: dict[str, Any] = {
@@ -929,6 +952,10 @@ async def _execute_tool_with_request(
         execute_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
     if "tool_call_id" in inspect.signature(execute_tool).parameters:
         execute_kwargs["tool_call_id"] = tool_call_id
+    execute_params = inspect.signature(execute_tool).parameters
+    for key, value in _tool_frame_kwargs_from_session_context(request.session_context).items():
+        if key in execute_params:
+            execute_kwargs[key] = value
     if "emit_runtime_hooks" in inspect.signature(execute_tool).parameters:
         execute_kwargs["emit_runtime_hooks"] = False
     return await execute_tool(

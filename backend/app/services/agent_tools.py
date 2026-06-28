@@ -862,6 +862,10 @@ async def execute_tool(
     delegation_token: Any | None = None,
     session_id: str | None = None,
     permission_profile: Any | None = None,
+    turn_id: str | None = None,
+    runtime_task_id: str | None = None,
+    round_state: dict[str, Any] | None = None,
+    t0_refs: tuple[str, ...] = (),
     plan_mode_interactive_available: bool = False,
     emit_runtime_hooks: bool = True,
 ) -> str | ToolContentEnvelope:
@@ -876,6 +880,10 @@ async def execute_tool(
         delegation_token=delegation_token,
         session_id=session_id,
         permission_profile=permission_profile,
+        turn_id=turn_id,
+        runtime_task_id=runtime_task_id,
+        round_state=round_state,
+        t0_refs=t0_refs,
         plan_mode_interactive_available=plan_mode_interactive_available,
         emit_runtime_hooks=emit_runtime_hooks,
     )
@@ -890,6 +898,10 @@ async def execute_session_permission_tool(
     session_id: str,
     permission_profile: Any,
     tool_call_id: str | None = None,
+    turn_id: str | None = None,
+    runtime_task_id: str | None = None,
+    round_state: dict[str, Any] | None = None,
+    t0_refs: tuple[str, ...] = (),
 ) -> str | ToolContentEnvelope:
     """Replay a session-approved tool through the public governed runtime boundary."""
     return await execute_tool(
@@ -900,6 +912,10 @@ async def execute_session_permission_tool(
         tool_call_id=tool_call_id,
         session_id=session_id,
         permission_profile=permission_profile,
+        turn_id=turn_id,
+        runtime_task_id=runtime_task_id,
+        round_state=round_state,
+        t0_refs=t0_refs,
     )
 
 

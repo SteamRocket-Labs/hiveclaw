@@ -311,7 +311,11 @@ async def test_execute_does_not_plan_gate_create_digital_employee():
 
     result = await service.execute(
         "create_digital_employee",
-        {"name": "Serenity 追踪员", "role_description": "Track X posts and summarize them in Chinese."},
+        {
+            "name": "Serenity 追踪员",
+            "confirmed_blueprint_hash": "blueprint-hash-1",
+            "role_description": "Track X posts and summarize them in Chinese.",
+        },
         agent_id=context.agent_id,
         user_id=context.user_id,
     )

@@ -125,6 +125,19 @@ class ActionPreflightService:
                 evidence_trace=evidence_trace,
             )
 
+        high_axes = _axes_at_level(request, BoundaryAxisLevel.HIGH)
+        if _truth_search_unavailable(request.truth_evidence) and (
+            high_axes or request.charter_zone == CharterZone.CONFIRM_FIRST
+        ):
+            return ActionPreflightResult(
+                decision=PreflightDecision.ASK,
+                reasons=["truth_search_unavailable", *[f"high_risk_axis:{axis}" for axis in high_axes]],
+                requires_checkpoint=True,
+                requires_audit=True,
+                evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
+            )
+
         if request.explicit_user_authorized and request.charter_zone == CharterZone.CONFIRM_FIRST:
             return ActionPreflightResult(
                 decision=PreflightDecision.DO,
@@ -134,7 +147,6 @@ class ActionPreflightService:
                 evidence_trace=evidence_trace,
             )
 
-        high_axes = _axes_at_level(request, BoundaryAxisLevel.HIGH)
         if high_axes:
             return ActionPreflightResult(
                 decision=PreflightDecision.ASK,
@@ -176,6 +188,15 @@ class ActionPreflightService:
 
 def _axes_at_level(request: ActionPreflightInput, level: BoundaryAxisLevel) -> list[str]:
     return [axis for axis in _AXIS_FIELDS if getattr(request, axis) == level]
+
+
+def _truth_search_unavailable(evidence_packs: tuple[TruthEvidencePackV1, ...]) -> bool:
+    for pack in evidence_packs:
+        if str(pack.evidence_id or "").startswith("truth://provider-error/"):
+            return True
+        if pack.confidence == 0.0 and any(str(item).startswith("provider_") for item in pack.limitations):
+            return True
+    return False
 
 
 def _truth_evidence_trace(evidence_packs: tuple[TruthEvidencePackV1, ...]) -> list[dict[str, Any]]:

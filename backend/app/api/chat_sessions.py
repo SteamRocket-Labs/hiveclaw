@@ -54,6 +54,11 @@ logger = logging.getLogger(__name__)
 
 _LEGACY_HIDDEN_CHAT_SOURCES = ("trigger", "task", "heartbeat")
 _MINE_HIDDEN_CHAT_SOURCES = ("agent", *_LEGACY_HIDDEN_CHAT_SOURCES)
+_SESSION_PERMISSION_RESOLUTION_EVENT_TYPES = {
+    "permission_resolved",
+    "session_permission_decision",
+    "session_permission_expired",
+}
 
 
 def _is_admin_or_creator(user: User, agent: Agent) -> bool:
@@ -177,7 +182,9 @@ def _permission_request_from_payload(payload: dict[str, Any]) -> dict[str, Any] 
         if nested_request is not None:
             return nested_request
 
-    if payload.get("permission_request_id") and (payload.get("tool_name") or isinstance(payload.get("arguments"), dict)):
+    if payload.get("permission_request_id") and (
+        payload.get("tool_name") or isinstance(payload.get("arguments"), dict)
+    ):
         return {
             key: value
             for key, value in payload.items()
@@ -215,6 +222,191 @@ def _permission_request_payload_from_event(event: ChatTranscriptEvent) -> tuple[
     if not tool_payload and metadata:
         tool_payload = metadata
     return request_payload, tool_payload if isinstance(tool_payload, dict) else {}
+
+
+def _event_payloads(event: ChatTranscriptEvent) -> tuple[dict[str, Any], dict[str, Any]]:
+    return dict(getattr(event, "metadata_json", None) or {}), _json_object(getattr(event, "content", None))
+
+
+def _event_type_from_payload(event: ChatTranscriptEvent, metadata: dict[str, Any], content: dict[str, Any]) -> str:
+    return str(
+        getattr(event, "event_type", None)
+        or metadata.get("event_type")
+        or metadata.get("runtime_event_type")
+        or content.get("event_type")
+        or content.get("type")
+        or ""
+    )
+
+
+def _permission_resolution_payload_from_event(event: ChatTranscriptEvent) -> dict[str, Any] | None:
+    metadata, content = _event_payloads(event)
+    event_type = _event_type_from_payload(event, metadata, content)
+    if event_type not in _SESSION_PERMISSION_RESOLUTION_EVENT_TYPES:
+        return None
+    request_payload = _permission_request_from_payload(metadata) or _permission_request_from_payload(content) or {}
+    permission_request_id = (
+        metadata.get("permission_request_id")
+        or content.get("permission_request_id")
+        or request_payload.get("permission_request_id")
+    )
+    if not permission_request_id:
+        return None
+    merged = {**content, **metadata}
+    merged["event_type"] = event_type
+    merged["permission_request_id"] = str(permission_request_id)
+    if request_payload:
+        merged["permission_request"] = request_payload
+    return merged
+
+
+def _parse_permission_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tz.utc)
+    return parsed.astimezone(tz.utc)
+
+
+def _pending_tool_frame_is_expired(pending_frame: PendingToolFrameV1, *, now: datetime | None = None) -> bool:
+    expires_at = _parse_permission_datetime(pending_frame.expires_at)
+    if expires_at is None:
+        return False
+    current = now or datetime.now(tz.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=tz.utc)
+    return expires_at <= current.astimezone(tz.utc)
+
+
+def _session_permission_expired_payload(
+    *,
+    permission_request_id: str,
+    request_payload: dict[str, Any],
+    pending_frame: PendingToolFrameV1,
+    source_event_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "type": "permission_resolved",
+        "event_type": "session_permission_expired",
+        "permission_request_id": permission_request_id,
+        "permission_request": request_payload,
+        "permission_checkpoint": _permission_checkpoint_payload(
+            permission_request_id=permission_request_id,
+            decision="expired",
+            pending_frame=pending_frame,
+            resolver_user_id=None,
+            resolution_channel="system",
+        ),
+        "decision": "expired",
+        "status": "expired",
+        "tool_name": pending_frame.tool_name or request_payload.get("tool_name"),
+        "tool_call_id": pending_frame.tool_call_id,
+        "source_event_id": source_event_id,
+        "reason": "Permission request expired before resolution",
+        "message": "Permission request expired before resolution.",
+    }
+
+
+async def _append_session_permission_expired_event(
+    *,
+    db: AsyncSession,
+    event: ChatTranscriptEvent,
+    request_payload: dict[str, Any],
+    pending_frame: PendingToolFrameV1,
+) -> dict[str, Any]:
+    permission_request_id = str(request_payload.get("permission_request_id") or pending_frame.permission_request_id)
+    payload = _session_permission_expired_payload(
+        permission_request_id=permission_request_id,
+        request_payload=request_payload,
+        pending_frame=pending_frame,
+        source_event_id=str(getattr(event, "id", "")) if getattr(event, "id", None) else None,
+    )
+    await append_session_event(
+        db=db,
+        agent_id=getattr(event, "agent_id", None),
+        tenant_id=getattr(event, "tenant_id", None),
+        session_id=getattr(event, "session_id", None),
+        run_id=getattr(event, "run_id", None),
+        actor_type="system",
+        event_type="session_permission_expired",
+        role="system",
+        content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        source="system",
+        metadata=payload,
+        materialize_chat_message=False,
+    )
+    return payload
+
+
+async def expire_stale_session_permission_requests(
+    *,
+    db: AsyncSession,
+    now: datetime | None = None,
+    limit: int = 500,
+) -> int:
+    """Best-effort startup/maintenance scanner for stale CCPlus permission frames."""
+    result = await db.execute(
+        select(ChatTranscriptEvent)
+        .where(
+            ChatTranscriptEvent.event_type.in_(
+                [
+                    "permission",
+                    "tool_result",
+                    "permission_resolved",
+                    "session_permission_decision",
+                    "session_permission_expired",
+                ]
+            )
+        )
+        .order_by(ChatTranscriptEvent.created_at.desc())
+        .limit(limit)
+    )
+    resolved_request_ids: set[str] = set()
+    expired_count = 0
+    for event in result.scalars().all():
+        resolution_payload = _permission_resolution_payload_from_event(event)
+        if resolution_payload is not None:
+            resolved_request_ids.add(str(resolution_payload["permission_request_id"]))
+            continue
+        parsed = _permission_request_payload_from_event(event)
+        if parsed is None:
+            continue
+        request_payload, tool_payload = parsed
+        permission_request_id = str(request_payload.get("permission_request_id") or "")
+        if not permission_request_id or permission_request_id in resolved_request_ids:
+            continue
+        pending_frame = _pending_tool_frame_from_payload(
+            request_payload,
+            tool_payload,
+            session_id=str(getattr(event, "session_id", "") or ""),
+        )
+        if not _pending_tool_frame_is_expired(pending_frame, now=now):
+            continue
+        await _append_session_permission_expired_event(
+            db=db,
+            event=event,
+            request_payload=request_payload,
+            pending_frame=pending_frame,
+        )
+        resolved_request_ids.add(permission_request_id)
+        expired_count += 1
+    if expired_count:
+        await db.commit()
+    return expired_count
 
 
 def _pending_tool_frame_from_payload(
@@ -260,8 +452,12 @@ def _pending_tool_frame_from_payload(
         knowledge_refs=_string_tuple(pending_payload.get("knowledge_refs")),
         hook_refs=_string_tuple(pending_payload.get("hook_refs")),
         t0_refs=_string_tuple(pending_payload.get("t0_refs")),
-        created_at=str(pending_payload.get("created_at")) if pending_payload.get("created_at") else None,
-        expires_at=str(pending_payload.get("expires_at")) if pending_payload.get("expires_at") else None,
+        created_at=str(pending_payload.get("created_at") or request_payload.get("created_at"))
+        if pending_payload.get("created_at") or request_payload.get("created_at")
+        else None,
+        expires_at=str(pending_payload.get("expires_at") or request_payload.get("expires_at"))
+        if pending_payload.get("expires_at") or request_payload.get("expires_at")
+        else None,
         status=str(pending_payload.get("status") or "pending"),
     )
 
@@ -1029,6 +1225,11 @@ async def resolve_session_permission(
     request_payload: dict[str, Any] | None = None
     tool_payload: dict[str, Any] | None = None
     for event in result.scalars().all():
+        resolved_payload = _permission_resolution_payload_from_event(event)
+        if resolved_payload is not None and str(resolved_payload.get("permission_request_id")) == str(
+            permission_request_id
+        ):
+            raise HTTPException(status_code=409, detail="Session permission request already resolved")
         parsed = _permission_request_payload_from_event(event)
         if parsed is None:
             continue
@@ -1042,6 +1243,31 @@ async def resolve_session_permission(
         raise HTTPException(status_code=404, detail="Pending session permission request not found")
 
     pending_frame = _pending_tool_frame_from_payload(request_payload, tool_payload, session_id=str(session_id))
+    if _pending_tool_frame_is_expired(pending_frame):
+        expired_payload = _session_permission_expired_payload(
+            permission_request_id=str(permission_request_id),
+            request_payload=request_payload,
+            pending_frame=pending_frame,
+            source_event_id=str(pending_event.id),
+        )
+        await append_session_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=getattr(agent, "tenant_id", None),
+            session_id=session_id,
+            run_id=pending_event.run_id,
+            actor_type="system",
+            event_type="session_permission_expired",
+            role="system",
+            user_id=current_user.id,
+            content=json.dumps(expired_payload, ensure_ascii=False, sort_keys=True),
+            source="web",
+            metadata=expired_payload,
+            materialize_chat_message=False,
+        )
+        await db.commit()
+        await broadcast_web_chat_event(agent_id, session_id, expired_payload)
+        raise HTTPException(status_code=410, detail="Session permission request expired")
     tool_call_id = pending_frame.tool_call_id or str(tool_payload.get("tool_call_id") or "")
     permission_checkpoint = _permission_checkpoint_payload(
         permission_request_id=str(permission_request_id),

@@ -343,12 +343,18 @@ async def lifespan(app: FastAPI):
 
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
+        from app.api.chat_sessions import expire_stale_session_permission_requests
+        from app.database import async_session as _session_permission_scan
         from app.services.heartbeat import resume_persisted_heartbeat_runs
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
         from app.services.subagent_run_service import resume_persisted_subagent_runs
         from app.services.trigger_daemon import resume_persisted_trigger_runs
         from app.services.web_chat_runtime import resume_persisted_web_chat_runs
 
+        async with _session_permission_scan() as _db_permission_scan:
+            expired_permissions = await expire_stale_session_permission_requests(db=_db_permission_scan)
+            if expired_permissions:
+                logger.info("[startup] Marked %s stale session permission request(s) expired", expired_permissions)
         resumed_task_ids = await resume_persisted_async_delegations(limit=50)
         resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
         resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)

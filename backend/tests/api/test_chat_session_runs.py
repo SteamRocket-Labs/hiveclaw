@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
+from datetime import datetime, timezone as tz
 from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -89,7 +91,9 @@ class _FilteringPermissionDB(_PermissionDB):
         except Exception:
             compiled = str(stmt)
         if "chat_transcript_events.event_type = 'tool_result'" in compiled:
-            return _ExecuteScalars([event for event in self.events if getattr(event, "event_type", None) == "tool_result"])
+            return _ExecuteScalars(
+                [event for event in self.events if getattr(event, "event_type", None) == "tool_result"]
+            )
         return _ExecuteScalars(self.events)
 
 
@@ -492,7 +496,7 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
             "writable_roots": ["workspace/"],
         },
         "created_at": "2026-06-28T00:00:00+00:00",
-        "expires_at": "2026-06-28T00:30:00+00:00",
+        "expires_at": "2099-06-28T00:30:00+00:00",
         "status": "pending",
     }
     permission_request = {
@@ -576,6 +580,215 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     assert captured_execute["kwargs"]["tool_call_id"] == "tool-call-checkpoint"
     assert persisted_calls[-1]["data"]["tool_call_id"] == "tool-call-checkpoint"
     assert broadcasts[-1][2]["permission_checkpoint"]["pending_frame"]["tool_call_id"] == "tool-call-checkpoint"
+
+
+def test_resolve_session_permission_rejects_duplicate_resolution_before_reexecution(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    permission_request = {
+        "permission_request_id": str(permission_request_id),
+        "tool_name": "write_file",
+        "arguments": {"path": "workspace/plan.md", "content": "# Plan"},
+        "capability": "workspace.file.write",
+        "permission_mode": "default",
+    }
+    already_resolved_event = SimpleNamespace(
+        id=uuid4(),
+        run_id=run_id,
+        event_type="session_permission_decision",
+        content=json.dumps(
+            {
+                "event_type": "session_permission_decision",
+                "permission_request_id": str(permission_request_id),
+                "permission_request": permission_request,
+                "decision": "allow_once",
+                "status": "allowed",
+            }
+        ),
+        metadata_json={
+            "permission_request_id": str(permission_request_id),
+            "permission_request": permission_request,
+            "decision": "allow_once",
+            "status": "allowed",
+        },
+    )
+    pending_event = SimpleNamespace(
+        id=uuid4(),
+        run_id=run_id,
+        event_type="permission",
+        content=json.dumps(
+            {
+                "type": "permission",
+                "status": "session_permission_required",
+                "permission_request_id": str(permission_request_id),
+                "permission_request": permission_request,
+                "tool_name": "write_file",
+            }
+        ),
+        metadata_json={
+            "runtime_event_type": "permission",
+            "permission_request_id": str(permission_request_id),
+            "permission_request": permission_request,
+        },
+    )
+    db = _FilteringPermissionDB([already_resolved_event, pending_event])
+
+    async def fake_get_run_session_and_agent(**_kwargs):
+        return session, agent, "use"
+
+    async def fake_append_session_event(**_kwargs):
+        raise AssertionError("duplicate resolve must not append another decision event")
+
+    async def fake_execute_session_permission_tool(*_args, **_kwargs):
+        raise AssertionError("duplicate resolve must not execute the tool again")
+
+    import app.services.agent_tools as agent_tools_service
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
+    client = _client(monkeypatch, db=db, user=user, agent=agent, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve",
+        json={"action": "allow_once"},
+    )
+
+    assert response.status_code == 409
+    assert "already resolved" in response.text
+    assert db.commits == 0
+
+
+def test_resolve_session_permission_rejects_expired_request_before_execution(monkeypatch):
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    permission_request_id = uuid4()
+    run_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=user_id, role="member")
+    session = SimpleNamespace(id=session_id, agent_id=agent_id, user_id=user_id, transcript_metadata_json={})
+    permission_request = {
+        "permission_request_id": str(permission_request_id),
+        "tool_name": "write_file",
+        "arguments": {"path": "workspace/plan.md", "content": "# Plan"},
+        "capability": "workspace.file.write",
+        "permission_mode": "default",
+        "pending_tool_frame": {
+            "permission_request_id": str(permission_request_id),
+            "session_id": str(session_id),
+            "tool_call_id": "tool-call-expired",
+            "tool_name": "write_file",
+            "arguments": {"path": "workspace/plan.md", "content": "# Plan"},
+            "expires_at": "2000-01-01T00:00:00+00:00",
+            "status": "pending",
+        },
+    }
+    event = SimpleNamespace(
+        id=uuid4(),
+        run_id=run_id,
+        event_type="permission",
+        content=json.dumps(
+            {
+                "type": "permission",
+                "status": "session_permission_required",
+                "permission_request_id": str(permission_request_id),
+                "permission_request": permission_request,
+                "tool_name": "write_file",
+            }
+        ),
+        metadata_json={
+            "runtime_event_type": "permission",
+            "permission_request_id": str(permission_request_id),
+            "permission_request": permission_request,
+        },
+    )
+    db = _FilteringPermissionDB([event])
+    appended_events = []
+
+    async def fake_get_run_session_and_agent(**_kwargs):
+        return session, agent, "use"
+
+    async def fake_append_session_event(**kwargs):
+        appended_events.append(kwargs)
+
+    async def fake_execute_session_permission_tool(*_args, **_kwargs):
+        raise AssertionError("expired permission request must not execute the tool")
+
+    import app.services.agent_tools as agent_tools_service
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_run_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
+    client = _client(monkeypatch, db=db, user=user, agent=agent, raise_server_exceptions=False)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve",
+        json={"action": "allow_once"},
+    )
+
+    assert response.status_code == 410
+    assert "expired" in response.text
+    assert appended_events[-1]["event_type"] == "session_permission_expired"
+    assert appended_events[-1]["metadata"]["permission_request_id"] == str(permission_request_id)
+    assert db.commits == 1
+
+
+def test_expire_stale_session_permission_requests_marks_pending_expired(monkeypatch):
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    permission_request_id = uuid4()
+    permission_request = {
+        "permission_request_id": str(permission_request_id),
+        "tool_name": "write_file",
+        "arguments": {"path": "workspace/plan.md", "content": "# Plan"},
+        "pending_tool_frame": {
+            "permission_request_id": str(permission_request_id),
+            "session_id": str(session_id),
+            "tool_name": "write_file",
+            "expires_at": "2000-01-01T00:00:00+00:00",
+            "status": "pending",
+        },
+    }
+    pending_event = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        run_id=run_id,
+        event_type="permission",
+        content=json.dumps({"permission_request": permission_request}),
+        metadata_json={"permission_request_id": str(permission_request_id), "permission_request": permission_request},
+    )
+    db = _FilteringPermissionDB([pending_event])
+    appended_events = []
+
+    async def fake_append_session_event(**kwargs):
+        appended_events.append(kwargs)
+
+    monkeypatch.setattr(chat_sessions_api, "append_session_event", fake_append_session_event)
+
+    expired_count = asyncio.run(
+        chat_sessions_api.expire_stale_session_permission_requests(
+            db=db,
+            now=datetime(2026, 6, 28, tzinfo=tz.utc),
+        )
+    )
+
+    assert expired_count == 1
+    assert appended_events[-1]["event_type"] == "session_permission_expired"
+    assert appended_events[-1]["agent_id"] == agent_id
+    assert appended_events[-1]["session_id"] == session_id
+    assert appended_events[-1]["metadata"]["permission_request_id"] == str(permission_request_id)
+    assert db.commits == 1
 
 
 def test_resolve_session_permission_rejects_allow_session_for_destructive_request(monkeypatch):

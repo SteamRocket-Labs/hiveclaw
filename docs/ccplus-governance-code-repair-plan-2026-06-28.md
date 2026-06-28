@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。
+状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。
 
 配套架构文档：`docs/ccplus-governance-layer-architecture-2026-06-28.md`
 
@@ -48,6 +48,12 @@
 | L3 deny continuation | 用户 deny session permission 后不再只写事件；会触发 `PERMISSION_DENIED` hook 并启动隐藏 continuation，把 denial 回到模型 loop | `backend/app/api/chat_sessions.py`、`backend/tests/api/test_chat_session_runs.py` | `pytest tests/api/test_chat_session_runs.py -q` 在扩大集合通过 |
 | 压缩/上下文状态可见性 | Chat header 接入 `SessionWorkbench.context_window`，展示 latest skipped/status/token-until，避免自动压缩状态只在后端事件里不可见 | `frontend/src/pages/agent-detail/AgentChatSection.tsx`、`frontend/src/pages/session-workbench/timelineModel.ts`、`frontend/src/pages/session-workbench/SessionWorkbenchChrome.tsx` | `npm test -- timelineModel.test.ts AgentDetailSections.test.tsx` 通过；`npm run build` 通过 |
 | 旧系统清理 | 当前代码路径中 `Global Tools/globalTools/global tools/knowledge_inject/test_knowledge_inject` 已清零；旧知识注入测试删除并迁移到 Truth Search 测试 | `backend/app/services/tool_seeder.py`、`frontend/src/api/adapter-cleanup.test.ts`、删除 `backend/tests/services/test_knowledge_inject.py` | `rg -n "Global Tools|globalTools|global tools|knowledge_inject|test_knowledge_inject" backend/app backend/tests frontend/src` 无匹配 |
+
+## 0.1 2026-06-28 CC 审计二次追修证据
+
+| 断点 | 修复状态 | 关键代码路径 | 证据 |
+| --- | --- | --- | --- |
+| D5 L3 permission resolve 幂等/过期/启动扫描 | 已实装。`resolve_session_permission()` 现在先识别同一 `permission_request_id` 是否已经出现过 `session_permission_decision` / `permission_resolved` / `session_permission_expired`，命中即 409，不会再次执行工具；`PendingToolFrameV1.expires_at` 到期时先写 `session_permission_expired` 并 410，不进入 `execute_session_permission_tool()`；应用启动期在 runtime task resume 前运行 bounded scanner，把最近 stale pending frame 标记为 expired。 | `backend/app/api/chat_sessions.py`、`backend/app/main.py`、`backend/tests/api/test_chat_session_runs.py` | 红线：`pytest tests/api/test_chat_session_runs.py -k "duplicate_resolution or expired_request or expire_stale_session_permission" -q` 旧实现 3 failed；修复后 `3 passed, 15 deselected`。回归：`pytest tests/api/test_chat_session_runs.py -k permission -q` -> `11 passed, 7 deselected, 4 warnings`。 |
 
 最终回归证据：
 

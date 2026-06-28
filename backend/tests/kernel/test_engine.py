@@ -643,6 +643,43 @@ def test_build_restoration_context_file_budget_uses_per_file_cap(tmp_path, monke
     assert marker_tail in restored  # old cap//2 (4K) would have cut this off
 
 
+def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path, monkeypatch):
+    from app.kernel.engine import _build_restoration_context
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-recover",
+                "recent_reads": ["workspace/source.md"],
+                "recent_writes": ["workspace/result.md"],
+                "pending_items": ["continue D8 recovery"],
+                "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
+                "pending_tool_frames": [{"tool_name": "write_file", "status": "pending"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    session = SessionContext(session_id="session-recover")
+
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    restored = _build_restoration_context(agent_id, session_context=session)
+
+    assert "### Recovery Manifest" in restored
+    assert "continue D8 recovery" in restored
+    assert "Pending Tool Frames" in restored
+    assert "Permission Profile" in restored
+
+
 def test_runtime_attachment_sections_report_tool_refresh_and_external_file_changes(tmp_path, monkeypatch):
     from app.kernel.engine import (
         _build_runtime_attachment_sections,

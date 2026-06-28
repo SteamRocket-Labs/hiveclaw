@@ -1825,6 +1825,26 @@ def _build_restoration_context(
             _resolved_ws = _candidate
             break
 
+    # ── 0: Structured RecoveryManifest ──
+    # The manifest is the durable machine-readable state written during
+    # compaction. It must be consumed before free-form summaries so pending
+    # tool frames, permission checkpoints, and hook lifecycle records survive
+    # restart/fork/compact boundaries.
+    if _resolved_ws:
+        try:
+            from app.runtime.recovery_manifest import load_recovery_manifest
+
+            _manifest = load_recovery_manifest(agent_id, data_root=_resolved_ws.parent)
+            if _manifest is not None and not _manifest.is_empty():
+                _manifest_text = _manifest.to_restoration_text(budget_chars=max(_restore_budget - total, 0)).strip()
+                if _manifest_text:
+                    _manifest_block = f"### Recovery Manifest\n{_manifest_text}"
+                    if total + len(_manifest_block) <= _restore_budget:
+                        parts.append(_manifest_block)
+                        total += len(_manifest_block)
+        except Exception as exc:
+            logger.warning("[Kernel] post-compaction recovery_manifest restore failed: %s", exc)
+
     # ── 1: Soul (durable identity) ──
     if _resolved_ws:
         fpath = _resolved_ws / "soul.md"

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.runtime.recovery_manifest import build_recovery_manifest
+from app.runtime.recovery_manifest import build_recovery_manifest, load_recovery_manifest
 from app.runtime.session import SessionContext
 
 
@@ -91,6 +91,43 @@ def test_manifest_round_trips_through_json(tmp_path) -> None:
     assert decoded["pending_items"] == ["x"]
     assert decoded["recent_external_refs"] == ["https://example.com"]
     assert decoded["recent_tool_outcomes"][0]["tool"] == "read_file"
+
+
+def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
+    agent_id = "agent-1"
+    manifest_path = tmp_path / agent_id / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "recent_reads": ["workspace/report.md"],
+                "recent_writes": ["workspace/output.md"],
+                "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
+                "active_skills": ["research"],
+                "active_tool_groups": ["web_pack"],
+                "recent_external_refs": ["https://example.com"],
+                "pending_items": ["finish D8 recovery"],
+                "blocked_patterns": ["do not retry stale tool"],
+                "discovered_tools": ["web_search"],
+                "pending_tool_frames": [{"tool_name": "write_file", "status": "pending"}],
+                "permission_checkpoints": [{"permission_request_id": "perm-1", "decision": "allow_once"}],
+                "hook_lifecycle_records": [{"hook": "pre_tool_use", "status": "ok"}],
+                "compaction_lifecycle_records": [{"phase": "post", "status": "ok"}],
+                "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_recovery_manifest(agent_id, data_root=tmp_path)
+
+    assert manifest is not None
+    assert manifest.session_id == "session-1"
+    assert manifest.recent_reads == ["workspace/report.md"]
+    assert manifest.pending_items == ["finish D8 recovery"]
+    assert manifest.permission_profile["allowed_tools"] == ["write_file"]
 
 
 def test_manifest_to_restoration_text_includes_each_section() -> None:

@@ -16,6 +16,8 @@ from typing import Any
 from app.services.session_memory import load_session_memory
 
 logger = logging.getLogger(__name__)
+RECOVERY_MANIFEST_REL_PATH = Path("runtime_artifacts") / "recovery_manifest.json"
+LEGACY_RECOVERY_MANIFEST_REL_PATH = Path("workspace") / "recovery_manifest.json"
 
 
 @dataclass(slots=True)
@@ -153,6 +155,74 @@ def _metadata_dict_list(metadata: dict[str, Any], *keys: str) -> list[dict[str, 
         elif isinstance(value, list):
             result.extend(dict(item) for item in value if isinstance(item, dict))
     return result
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _dict_value(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def recovery_manifest_path(agent_id: Any, *, data_root: str | Path | None = None) -> Path:
+    if data_root is None:
+        from app.config import get_settings
+
+        data_root = get_settings().AGENT_DATA_DIR
+    return Path(data_root) / str(agent_id) / RECOVERY_MANIFEST_REL_PATH
+
+
+def _manifest_from_payload(payload: dict[str, Any]) -> RecoveryManifest:
+    return RecoveryManifest(
+        session_id=str(payload.get("session_id")) if payload.get("session_id") else None,
+        recent_reads=_string_list(payload.get("recent_reads")),
+        recent_writes=_string_list(payload.get("recent_writes")),
+        file_snapshots=_dict_value(payload.get("file_snapshots")),
+        recent_tool_outcomes=_dict_list(payload.get("recent_tool_outcomes")),
+        active_skills=_string_list(payload.get("active_skills")),
+        active_tool_groups=_string_list(payload.get("active_tool_groups")),
+        recent_external_refs=_string_list(payload.get("recent_external_refs")),
+        pending_items=_string_list(payload.get("pending_items")),
+        blocked_patterns=_string_list(payload.get("blocked_patterns")),
+        discovered_tools=_string_list(payload.get("discovered_tools")),
+        pending_tool_frames=_dict_list(payload.get("pending_tool_frames")),
+        permission_checkpoints=_dict_list(payload.get("permission_checkpoints")),
+        hook_lifecycle_records=_dict_list(payload.get("hook_lifecycle_records")),
+        compaction_lifecycle_records=_dict_list(payload.get("compaction_lifecycle_records")),
+        permission_profile=_dict_value(payload.get("permission_profile")),
+    )
+
+
+def load_recovery_manifest(
+    agent_id: Any,
+    *,
+    data_root: str | Path | None = None,
+) -> RecoveryManifest | None:
+    """Load the persisted RecoveryManifest from the production runtime artifact path."""
+    path = recovery_manifest_path(agent_id, data_root=data_root)
+    candidates = [path, path.parent.parent / LEGACY_RECOVERY_MANIFEST_REL_PATH]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Failed to load recovery manifest from %s: %s", candidate, exc)
+            return None
+        if not isinstance(payload, dict):
+            logger.warning("Recovery manifest at %s is not a JSON object", candidate)
+            return None
+        return _manifest_from_payload(payload)
+    return None
 
 
 def build_recovery_manifest(session_context: Any) -> RecoveryManifest:

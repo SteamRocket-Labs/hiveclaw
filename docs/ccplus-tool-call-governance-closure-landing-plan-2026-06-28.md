@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。
+状态：实施闭合稿，代码与证据已按 Phase 0-8 分段落地；2026-06-28 复核后补齐 D10 killed-process harness，并校正 D1 为 taxonomy 单一入口而非纯单源。2026-06-28 最终追修继续补齐三审后仍可复现的源代码断点：D1 session/extension surfaces 不再直读 `RUNTIME_TOOL_GROUPS`，D4 Skill fork 改为同一次 `load_skill` 调用内执行，D5 allow continuation 保留 IM/origin channel，D7 Truth evidence 从 `ToolRuntimeService` 进入 kernel span metadata sink，D10 persisted recovery manifest 进入正常 prompt assembly。
 
 2026-06-28 自查追加闭合：
 
@@ -38,12 +38,16 @@
 - `2ad3b370` `ccplus: fix closure regression suite`
 - `12bb68a9` `ccplus: preserve permission origin channel`
 - 本节所在提交：补齐 D10 真实 killed-process `invoke_agent` recovery harness，并更新本账本。
+- 本节所在提交：补齐 D1/D4/D5/D7/D10 最后一轮源代码断点，并更新本账本。
 
 最终回归：
 
 ```bash
 cd backend && source .venv/bin/activate && pytest tests -q
-# 5356 passed, 2 skipped, 4 warnings in 94.94s
+# 5361 passed, 2 skipped, 4 warnings in 93.64s
+
+cd backend && source .venv/bin/activate && ruff check app/ tests/
+# All checks passed!
 
 cd frontend && npm test -- --run
 # Test Files 67 passed (67); Tests 361 passed (361)
@@ -51,6 +55,16 @@ cd frontend && npm test -- --run
 cd frontend && npm run build
 # tsc && vite build succeeded
 ```
+
+最终追修断点表：
+
+| 断点 | 当前闭环 | 证据 |
+| --- | --- | --- |
+| D1 taxonomy 入口 | `runtime.invoker._infer_active_tool_groups()` 与 `api.agents.get_agent_extension_registry()` 均改走 governance taxonomy facade；extension registry 测试 fixture 也改为 patch taxonomy descriptor，不再依赖 runtime group side table。 | `cd backend && .venv/bin/python -m pytest tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups tests/api/test_extension_registry_api.py::test_get_agent_extensions_returns_extension_registry_projection -q` 纳入最终回归；全量后端 `5361 passed`。 |
+| D4 Skill fork | `load_skill` 成功后先注册 session skill hooks / execution plans，再消费 pending fork handoff；`spawn_subagent` 通过同一个 governed `_execute_tool_with_hooks()` 在同一次 tool call 内执行。 | `test_load_skill_frontmatter_fork_executes_in_same_tool_call` 纳入目标集，目标集 `6 passed, 4 warnings`。 |
+| D5 permission allow channel | permission allow continuation 的 `resolution_channel`、`origin_channel`、`channel` 使用 pending frame / session source，不再硬编码 web；原始 tool frame 元数据继续带回 replay。 | `test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id` 纳入目标集，permission/truth/tool runtime 相关回归 `33 passed, 15 deselected, 4 warnings`。 |
+| D7 Truth evidence span | `ToolRuntimeService.execute(trace_metadata_sink=...)` 把 Truth evidence refs/payload 和 preflight block 写入 sink；kernel tool span metadata 合并 sink 后进入 canonical InvocationSpan 抽取面。 | `test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink`、`test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span` 纳入目标集，目标集 `6 passed, 4 warnings`。 |
+| D10 prompt recovery | `_build_runtime_attachment_sections()` 从 `runtime_artifacts/recovery_manifest.json` 读 persisted manifest 并加入 `### Recovery Manifest`，正常 prompt assembly 与 cached dynamic suffix 都能恢复 pending frame / permission / evidence。 | `test_runtime_attachment_sections_include_persisted_recovery_manifest` 纳入目标集，kernel/trace/taxonomy 相关回归 `10 passed, 78 deselected, 4 warnings`。 |
 
 关联文档：
 
@@ -1110,6 +1124,11 @@ ruff check app/runtime/recovery_manifest.py app/kernel/engine.py app/runtime/ses
 12. killed-process recovery manifest harness 覆盖 `write_file` / `spawn_subagent` / `start_workflow` 工具调用入口、compact restoration、fork handoff metadata；子执行体内部 restart drill 列为扩展矩阵。
 13. Hook 全生命周期触发与证据矩阵。
 14. 压缩全生命周期：initial、mid-loop、manual、PTL、final/close 全路径闭环。
+15. Session/extension surfaces 统一走 taxonomy facade，不再直读 `RUNTIME_TOOL_GROUPS`。
+16. Skill `context: fork` handoff 在同一次 `load_skill` 工具调用内经 governed `spawn_subagent` 执行。
+17. Session permission allow continuation 保留 IM/origin channel，不再退化为 Web-only resume metadata。
+18. Truth Search evidence 从治理 preflight 写入 kernel span metadata sink，并进入 canonical InvocationSpan 抽取面。
+19. Persisted recovery manifest 进入正常 prompt assembly，不再只在 post-compaction restoration path 可见。
 
 因此，Hive 现在可以做到：
 

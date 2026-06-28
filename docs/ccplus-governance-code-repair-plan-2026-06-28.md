@@ -2,15 +2,52 @@
 
 日期：2026-06-28
 
-状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。2026-06-28 Current HEAD 最终闭环追修启动：旧“整体闭合”措辞降级为“主体链路已成型、仍有 D0/D1/D3/D7/D9/D10 及 Skill fork 语义残口待落地”；当前 D0/D3/D4/D7/D9/D10 已按本节补证闭合，D1 已收敛为 taxonomy 单一入口但不是纯单源，后续不得再沿用“taxonomy 是唯一真相源”措辞。
+状态：2026-06-28 自查修复闭合稿。本轮已实装 L2 扩展面收口、Truth Search 主路径统一、公共工具入口 Hook 生命周期、L3 deny continuation、Session Workbench 压缩/上下文状态可视化，并清理旧 `Global Tools` / `knowledge_inject.py` 入口。2026-06-28 追修已补齐：基础 `web_search` 与 AnySearch L2 边界、server-side `agent_base` 禁关、L2 call-time pack policy gate、L1 Capability Policy 产品入口。2026-06-28 CC 审计二次追修已开始按 D1/D3/D5/D6/D8/D10 六个硬断点逐项实装；当前 D5 permission resolve 幂等、过期拒绝、启动期过期扫描已完成。2026-06-28 Agent Team 追修已清理前端 inline members 残留，并统一后端 teammate discovery contract。2026-06-28 Current HEAD 最终闭环追修已完成本轮新增断点：D1 taxonomy 入口继续收口到 session/extension surfaces，D4 Skill fork 改为同一次 `load_skill` 工具调用内执行，D5 permission allow continuation 保留 IM/origin channel，D7 Truth evidence 进入 kernel canonical span metadata，D10 persisted recovery manifest 进入正常 prompt assembly。当前文档不得再写“taxonomy 是唯一真相源”；准确表述是“taxonomy 单一入口 / facade”，因为底层仍允许 collector/runtime group 作为派生输入。
 
 配套架构文档：`docs/ccplus-governance-layer-architecture-2026-06-28.md`
+
+## 0.5 2026-06-28 最终闭环追修证据
+
+基线：`git HEAD = 3f822aa1`，工作区另有 `.ultra/**` 与两份 session UI 文档的既有未提交改动，本节未纳入也未修改这些无关文件。
+
+本节对应用户最后一次“全面修复”要求，针对三审后仍可复现的源代码断点做 TDD 修复。结论：本轮覆盖的工具调用治理闭环断点均已落到生产入口，并通过 targeted tests、相关回归、全量后端测试和 ruff。
+
+| 断点 | 修复状态 | 关键代码路径 | 证据 |
+| --- | --- | --- | --- |
+| D1 taxonomy 入口残留 | 已实装。`runtime.invoker._infer_active_tool_groups()` 不再直读 `RUNTIME_TOOL_GROUPS`，改从 `iter_runtime_l2_capabilities()` / `capability_descriptor_for_name()` 生成 active pack surface；`api.agents.get_agent_extension_registry()` 不再把 runtime group 当 extension registry authority，改从 taxonomy capability descriptors 生成 registry projection。 | `backend/app/runtime/invoker.py`、`backend/app/api/agents.py`、`backend/tests/services/test_agent_tools_core_surface.py`、`backend/tests/api/test_extension_registry_api.py` | 红线：`test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups` 旧实现源码仍含 `RUNTIME_TOOL_GROUPS`，修复后通过。目标集：`cd backend && .venv/bin/python -m pytest tests/kernel/test_engine.py::test_load_skill_frontmatter_fork_executes_in_same_tool_call tests/kernel/test_engine.py::test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span tests/kernel/test_engine.py::test_runtime_attachment_sections_include_persisted_recovery_manifest tests/tools/test_service.py::test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups -q` -> `6 passed, 4 warnings`。 |
+| D4 Skill fork 同调用执行 | 已实装。`load_skill` 结果归一后立即调用 `_register_loaded_skill_for_session()`，先把 frontmatter `context: fork` / `allowed-tools` 写入 session metadata，再消费 `_execute_pending_skill_fork_handoffs()`；同一次 kernel tool call 内通过 governed `_execute_tool_with_hooks(tool_name="spawn_subagent")` 执行，不再等下一轮循环。 | `backend/app/kernel/engine.py`、`backend/tests/kernel/test_engine.py` | 红线：`test_load_skill_frontmatter_fork_executes_in_same_tool_call` 旧实现只执行 `load_skill`，修复后同一调用序列出现 `load_skill` 与 `spawn_subagent`。相关回归：`cd backend && .venv/bin/python -m pytest tests/kernel/test_engine.py -k "load_skill_frontmatter or pending_skill_fork or trace_metadata_sink or recovery_manifest or restoration_context or runtime_attachment" tests/services/test_agent_tools_core_surface.py tests/kernel/test_invocation_trace.py -q` -> `10 passed, 78 deselected, 4 warnings`。 |
+| D5 permission allow continuation channel 泄漏 | 已实装。`resolve_session_permission()` 的 allow path 不再把 continuation metadata 固定成 Web；checkpoint `resolution_channel`、allow continuation `origin_channel` / `channel` 都来自 pending frame 或 session source。permission replay 仍带回原始 `tool_call_id`、runtime task、turn、round、T0 refs。 | `backend/app/api/chat_sessions.py`、`backend/tests/api/test_chat_session_runs.py` | 红线：`test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id` 增加 `origin_channel=feishu` 断言，旧实现 continuation 只走 web metadata；修复后通过。相关回归：`cd backend && .venv/bin/python -m pytest tests/tools/test_service.py tests/api/test_chat_session_runs.py -k "permission or truth_evidence or tool_runtime_service" -q` -> `33 passed, 15 deselected, 4 warnings`。 |
+| D7 Truth evidence canonical span wiring | 已实装。`ToolRuntimeService.execute()` 新增 `trace_metadata_sink`，Truth Search preflight 产生的 `evidence_refs`、`truth_evidence_refs`、`truth_evidence`、`preflight` 会写入 sink；kernel `_execute_tool_with_hooks()` 把 sink 合并进 tool span metadata，最终由既有 InvocationSpan 抽取器进入 canonical trace surface。 | `backend/app/tools/service.py`、`backend/app/services/agent_tools.py`、`backend/app/runtime/invoker.py`、`backend/app/kernel/engine.py`、`backend/tests/tools/test_service.py`、`backend/tests/kernel/test_engine.py` | 红线：`test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink` 与 `test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span` 旧实现没有 sink/metadata 写入，修复后通过。目标集：`cd backend && .venv/bin/python -m pytest tests/kernel/test_engine.py::test_load_skill_frontmatter_fork_executes_in_same_tool_call tests/kernel/test_engine.py::test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span tests/kernel/test_engine.py::test_runtime_attachment_sections_include_persisted_recovery_manifest tests/tools/test_service.py::test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups -q` -> `6 passed, 4 warnings`。 |
+| D10 RecoveryManifest 正常 prompt 恢复入口 | 已实装。`_build_runtime_attachment_sections()` 会从 `runtime_artifacts/recovery_manifest.json` 读取 persisted manifest，并加入 `### Recovery Manifest` runtime attachment；正常请求组装、cached dynamic suffix、非 cached system suffix 都能看到该恢复块，不再只依赖 post-compaction `_build_restoration_context()`。 | `backend/app/kernel/engine.py`、`backend/tests/kernel/test_engine.py` | 红线：`test_runtime_attachment_sections_include_persisted_recovery_manifest` 旧实现不读取磁盘 manifest，修复后 prompt attachment 包含 pending frame / permission / evidence 恢复文本。相关回归：`cd backend && .venv/bin/python -m pytest tests/kernel/test_engine.py -k "load_skill_frontmatter or pending_skill_fork or trace_metadata_sink or recovery_manifest or restoration_context or runtime_attachment" tests/services/test_agent_tools_core_surface.py tests/kernel/test_invocation_trace.py -q` -> `10 passed, 78 deselected, 4 warnings`。 |
+
+最终验证：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+.venv/bin/python -m pytest tests/kernel/test_engine.py::test_load_skill_frontmatter_fork_executes_in_same_tool_call tests/kernel/test_engine.py::test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span tests/kernel/test_engine.py::test_runtime_attachment_sections_include_persisted_recovery_manifest tests/tools/test_service.py::test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink tests/api/test_chat_session_runs.py::test_resolve_session_permission_allow_records_checkpoint_and_replays_original_tool_call_id tests/services/test_agent_tools_core_surface.py::test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups -q
+# 6 passed, 4 warnings in 2.05s
+
+.venv/bin/python -m pytest tests/tools/test_service.py tests/api/test_chat_session_runs.py -k "permission or truth_evidence or tool_runtime_service" -q
+# 33 passed, 15 deselected, 4 warnings in 1.82s
+
+.venv/bin/python -m pytest tests/kernel/test_engine.py -k "load_skill_frontmatter or pending_skill_fork or trace_metadata_sink or recovery_manifest or restoration_context or runtime_attachment" tests/services/test_agent_tools_core_surface.py tests/kernel/test_invocation_trace.py -q
+# 10 passed, 78 deselected, 4 warnings in 1.29s
+
+.venv/bin/python -m pytest tests/api/test_extension_registry_api.py::test_get_agent_extensions_returns_extension_registry_projection -q
+# 1 passed, 3 warnings in 1.86s
+
+.venv/bin/python -m pytest tests -q
+# 5361 passed, 2 skipped, 4 warnings in 93.64s
+
+.venv/bin/ruff check app/ tests/
+# All checks passed!
+```
 
 ## 0.4 2026-06-28 Current HEAD 最终闭环追修计划
 
 基线：`git HEAD = 5706f40d`。本节吸收 `docs/ccplus-closure-landing-plan-independent-reaudit-2026-06-28.md` 的有效结论，并按当前 HEAD 校正已经过期的 D4/D5/D6 判断。
 
-当前不能再宣称“100% 已闭合”的原因不是主链不存在，而是以下 runtime 语义仍未完全落地：
+当时不能宣称“100% 已闭合”的原因不是主链不存在，而是以下 runtime 语义仍未完全落地；本文件 0.5 节记录的是后续最终补齐证据：
 
 | 断点 | 当前事实 | 必须落地的闭环 | 验收证据 |
 | --- | --- | --- | --- |

@@ -425,6 +425,18 @@ def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | Non
         return []
 
     sections: list[str] = []
+    try:
+        from app.runtime.recovery_manifest import load_recovery_manifest
+
+        workspace = _agent_workspace_root(agent_id)
+        manifest = load_recovery_manifest(agent_id, data_root=workspace.parent)
+        if manifest is not None:
+            manifest_text = manifest.to_restoration_text()
+            if manifest_text:
+                sections.append(f"### Recovery Manifest\n{manifest_text}")
+    except Exception as exc:
+        logger.debug("[Kernel] runtime recovery manifest attachment unavailable: %s", exc)
+
     discovered_tools = [
         str(name).strip() for name in getattr(session_context, "discovered_tools", [])[-12:] if str(name).strip()
     ]
@@ -692,6 +704,7 @@ async def _execute_tool_call_with_cancel(
     emit_event: Callable[[dict], Awaitable[None]],
     *,
     tool_call_id: str | None = None,
+    trace_metadata_sink: dict[str, Any] | None = None,
 ) -> Any:
     def _call_execute_tool() -> Any:
         try:
@@ -701,7 +714,12 @@ async def _execute_tool_call_with_cancel(
             params = {}
             accepts_kwargs = False
         if tool_call_id is not None and (accepts_kwargs or "tool_call_id" in params):
-            return execute_tool(tool_name, effective_args, request, emit_event, tool_call_id=tool_call_id)
+            kwargs = {"tool_call_id": tool_call_id}
+            if trace_metadata_sink is not None and (accepts_kwargs or "trace_metadata_sink" in params):
+                kwargs["trace_metadata_sink"] = trace_metadata_sink
+            return execute_tool(tool_name, effective_args, request, emit_event, **kwargs)
+        if trace_metadata_sink is not None and (accepts_kwargs or "trace_metadata_sink" in params):
+            return execute_tool(tool_name, effective_args, request, emit_event, trace_metadata_sink=trace_metadata_sink)
         return execute_tool(tool_name, effective_args, request, emit_event)
 
     cancel_event = request.cancel_event
@@ -1238,6 +1256,37 @@ def _persist_recovery_manifest_checkpoint(
         logger.warning("[Kernel] Recovery manifest checkpoint failed (non-fatal): %s", exc)
 
 
+def _merge_trace_metadata_sink(span_metadata: dict[str, Any], trace_metadata_sink: dict[str, Any]) -> None:
+    if not trace_metadata_sink:
+        return
+    for key in ("evidence_refs", "truth_evidence_refs", "truth_evidence", "truth_evidence_json", "preflight"):
+        value = trace_metadata_sink.get(key)
+        if value:
+            span_metadata[key] = value
+
+
+def _register_loaded_skill_for_session(request: InvocationRequest, tool_args: dict[str, Any]) -> None:
+    session = request.session_context
+    if session is None:
+        return
+    skill = tool_args.get("skill_name") or tool_args.get("name", "")
+    if not skill:
+        return
+    session.track_skill_loaded(skill)
+    try:
+        from app.runtime.skill_hooks import register_loaded_skill_hooks
+
+        if request.agent_id:
+            register_loaded_skill_hooks(
+                _agent_workspace_root(request.agent_id),
+                str(skill),
+                session_context=session,
+                agent_id=request.agent_id,
+            )
+    except Exception as exc:
+        logger.debug("[Kernel] skill hook registration failed for %s: %s", skill, exc)
+
+
 async def _execute_tool_with_hooks(
     *,
     execute_tool: ExecuteTool,
@@ -1314,6 +1363,7 @@ async def _execute_tool_with_hooks(
         tool_call_id=tool_call_id,
     )
     _persist_recovery_manifest_checkpoint(request)
+    trace_metadata_sink: dict[str, Any] = {}
     token = None
     try:
         trusted_decline_metadata = _session_trusted_plan_decline_metadata(request, tool_name)
@@ -1329,6 +1379,7 @@ async def _execute_tool_with_hooks(
                 request,
                 emit_event,
                 tool_call_id=tool_call_id,
+                trace_metadata_sink=trace_metadata_sink,
             )
         except _KernelCancelledError:
             if record_span:
@@ -1413,6 +1464,8 @@ async def _execute_tool_with_hooks(
             reset_trusted_plan_mode_user_declined(token)
     result_str = _normalize_tool_result_for_llm(result)
     if tool_name == "load_skill" and request.session_context is not None:
+        _register_loaded_skill_for_session(request, effective_args if isinstance(effective_args, dict) else {})
+    if tool_name == "load_skill" and request.session_context is not None:
         result_str = await _execute_pending_skill_fork_handoffs(
             result_str,
             execute_tool=execute_tool,
@@ -1484,6 +1537,7 @@ async def _execute_tool_with_hooks(
         }
         if code_execution_evidence is not None:
             span_metadata["code_execution_evidence"] = code_execution_evidence
+        _merge_trace_metadata_sink(span_metadata, trace_metadata_sink)
         hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata, post_hook_metadata)
         if hook_records:
             span_metadata["hook_lifecycle_records"] = hook_records
@@ -1501,6 +1555,7 @@ async def _execute_tool_with_hooks(
         }
         if code_execution_evidence is not None:
             span_metadata["code_execution_evidence"] = code_execution_evidence
+        _merge_trace_metadata_sink(span_metadata, trace_metadata_sink)
         hook_records = _hook_lifecycle_records_from_metadata(pre_hook_metadata, post_hook_metadata)
         if hook_records:
             span_metadata["hook_lifecycle_records"] = hook_records
@@ -1525,21 +1580,7 @@ async def _execute_tool_with_hooks(
             _path = _args_dict.get("path", "")
             _session.track_tool_outcome(tool_name, "Listed " + (_path or "workspace root"))
         elif tool_name == "load_skill":
-            _skill = _args_dict.get("skill_name") or _args_dict.get("name", "")
-            if _skill:
-                _session.track_skill_loaded(_skill)
-                try:
-                    from app.runtime.skill_hooks import register_loaded_skill_hooks
-
-                    if request.agent_id:
-                        register_loaded_skill_hooks(
-                            _agent_workspace_root(request.agent_id),
-                            _skill,
-                            session_context=_session,
-                            agent_id=request.agent_id,
-                        )
-                except Exception as exc:
-                    logger.debug("[Kernel] skill hook registration failed for %s: %s", _skill, exc)
+            pass
         elif _write_paths := tool_session_write_paths(tool_name, _args_dict):
             for _path in _write_paths:
                 _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None

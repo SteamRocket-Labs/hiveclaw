@@ -264,6 +264,44 @@ def _validate_tool_arguments_block(tool_name: str, arguments: Any) -> str | None
     )
 
 
+def _truth_evidence_payload_for_trace(pack: Any) -> dict[str, Any]:
+    raw = asdict(pack) if is_dataclass(pack) else dict(pack) if isinstance(pack, dict) else {}
+    payload: dict[str, Any] = {}
+    for key in (
+        "evidence_id",
+        "query",
+        "source_refs",
+        "citations",
+        "snippets",
+        "digest",
+        "provider",
+        "freshness",
+        "confidence",
+        "limitations",
+        "trace_refs",
+    ):
+        value = raw.get(key)
+        if value in (None, "", (), [], {}):
+            continue
+        if isinstance(value, tuple):
+            value = list(value)
+        payload[key] = value
+    return _json_safe_runtime_value(payload)
+
+
+def _truth_evidence_trace_payload(evidence_packs: tuple[Any, ...]) -> tuple[list[str], list[dict[str, Any]]]:
+    refs: list[str] = []
+    payloads: list[dict[str, Any]] = []
+    for pack in evidence_packs:
+        payload = _truth_evidence_payload_for_trace(pack)
+        evidence_id = str(payload.get("evidence_id") or "").strip()
+        if evidence_id:
+            refs.append(evidence_id)
+        if payload:
+            payloads.append(payload)
+    return list(dict.fromkeys(refs)), payloads
+
+
 def _runtime_hash(value: Any) -> str:
     payload = _json.dumps(_json_safe_runtime_value(value), ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -484,6 +522,7 @@ class ToolRuntimeService:
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
         emit_runtime_hooks: bool = True,
+        trace_metadata_sink: dict[str, Any] | None = None,
     ) -> str | ToolContentEnvelope:
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
@@ -618,7 +657,12 @@ class ToolRuntimeService:
             effective_arguments=dict(arguments or {}),
         )
 
-        preflight_block = await self._preflight_tool_execution(tool_name, arguments, runtime_context)
+        preflight_block = await self._preflight_tool_execution(
+            tool_name,
+            arguments,
+            runtime_context,
+            trace_metadata_sink=trace_metadata_sink,
+        )
         if preflight_block:
             _record_tool_lifecycle(
                 runtime_context,
@@ -1409,6 +1453,8 @@ class ToolRuntimeService:
         tool_name: str,
         arguments: dict,
         runtime_context: ToolExecutionContext,
+        *,
+        trace_metadata_sink: dict[str, Any] | None = None,
     ) -> str | None:
         if not self.preflight_enabled or self.preflight_service is None:
             return None
@@ -1433,6 +1479,14 @@ class ToolRuntimeService:
             truth_evidence=truth_evidence,
         )
         preflight = self.preflight_service.evaluate(preflight_input)
+        evidence_refs, evidence_payloads = _truth_evidence_trace_payload(truth_evidence)
+        if trace_metadata_sink is not None:
+            if evidence_refs:
+                trace_metadata_sink["evidence_refs"] = evidence_refs
+                trace_metadata_sink["truth_evidence_refs"] = evidence_refs
+            if evidence_payloads:
+                trace_metadata_sink["truth_evidence"] = evidence_payloads
+            trace_metadata_sink["preflight"] = preflight.as_decision_trace_preflight()
         if preflight.decision == PreflightDecision.DO:
             if preflight.requires_audit:
                 await self._log_preflight_decision(tool_name, runtime_context, preflight)

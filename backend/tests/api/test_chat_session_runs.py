@@ -507,6 +507,11 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
         "tool_call_id": "tool-call-checkpoint",
         "tool_name": "write_file",
         "arguments": arguments,
+        "origin_channel": "feishu",
+        "runtime_task_id": "runtime-im",
+        "turn_id": "turn-im",
+        "round_state": {"round": 2},
+        "t0_refs": ["t0://sessions/session-native/events/9"],
         "permission_profile": {
             "mode": "default",
             "allowed_tools": [],
@@ -548,6 +553,7 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     broadcasts = []
     persisted_calls = []
     captured_execute = {}
+    started_runs = []
 
     async def fake_get_run_session_and_agent(**_kwargs):
         return session, agent, "use"
@@ -568,6 +574,10 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
         return SimpleNamespace(event_id=uuid4(), sequence=101, transcript_event=SimpleNamespace(metadata_json={}))
 
     async def fake_get_active_web_chat_run(**_kwargs):
+        return None
+
+    async def fake_start_web_chat_run(**kwargs):
+        started_runs.append(kwargs)
         return {"run_id": run_id.hex, "status": "running"}
 
     import app.services.agent_tools as agent_tools_service
@@ -577,6 +587,7 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     monkeypatch.setattr(chat_sessions_api, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(chat_sessions_api, "_persist_tool_call", fake_persist_tool_call)
     monkeypatch.setattr(chat_sessions_api, "get_active_web_chat_run", fake_get_active_web_chat_run)
+    monkeypatch.setattr(chat_sessions_api, "start_web_chat_run", fake_start_web_chat_run)
     monkeypatch.setattr(agent_tools_service, "execute_session_permission_tool", fake_execute_session_permission_tool)
     client = _client(monkeypatch, db=db, user=user, agent=agent, raise_server_exceptions=False)
 
@@ -595,7 +606,16 @@ def test_resolve_session_permission_allow_records_checkpoint_and_replays_origina
     assert checkpoint["pending_frame"]["permission_profile"]["mode"] == "default"
     assert decision_metadata["tool_call_id"] == "tool-call-checkpoint"
     assert captured_execute["kwargs"]["tool_call_id"] == "tool-call-checkpoint"
+    assert captured_execute["kwargs"]["origin_channel"] == "feishu"
     assert persisted_calls[-1]["data"]["tool_call_id"] == "tool-call-checkpoint"
+    assert started_runs[0]["append_user_message"] is False
+    assert started_runs[0]["extra_metadata"]["source"] == "session_permission_resume"
+    assert started_runs[0]["extra_metadata"]["origin_channel"] == "feishu"
+    assert started_runs[0]["extra_metadata"]["channel"] == "feishu"
+    assert started_runs[0]["extra_metadata"]["resumed_runtime_task_id"] == "runtime-im"
+    assert started_runs[0]["extra_metadata"]["resumed_turn_id"] == "turn-im"
+    assert started_runs[0]["extra_metadata"]["round_state"] == {"round": 2}
+    assert started_runs[0]["extra_metadata"]["t0_refs"] == ["t0://sessions/session-native/events/9"]
     assert broadcasts[-1][2]["permission_checkpoint"]["pending_frame"]["tool_call_id"] == "tool-call-checkpoint"
 
 

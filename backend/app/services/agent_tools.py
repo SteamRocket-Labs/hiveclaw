@@ -875,6 +875,7 @@ async def execute_tool(
     t0_refs: tuple[str, ...] = (),
     plan_mode_interactive_available: bool = False,
     emit_runtime_hooks: bool = True,
+    trace_metadata_sink: dict[str, Any] | None = None,
 ) -> str | ToolContentEnvelope:
     """Execute a tool call and return the result (str, or a typed content envelope)."""
     return await _get_tool_runtime_service().execute(
@@ -894,6 +895,7 @@ async def execute_tool(
         t0_refs=t0_refs,
         plan_mode_interactive_available=plan_mode_interactive_available,
         emit_runtime_hooks=emit_runtime_hooks,
+        trace_metadata_sink=trace_metadata_sink,
     )
 
 

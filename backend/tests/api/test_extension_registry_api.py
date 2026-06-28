@@ -57,25 +57,28 @@ async def test_get_agent_extensions_returns_extension_registry_projection(monkey
 
     monkeypatch.setattr(agents_mod, "check_agent_access", fake_check_agent_access)
 
-    # Make the route deterministic regardless of global tool-registry / runtime
-    # tool-group state (the real RUNTIME_TOOL_GROUPS + registry vary by import
-    # order across the suite). We pin ONE controlled web_pack group and a
+    # Make the route deterministic regardless of global tool-registry / taxonomy
+    # state. We pin ONE controlled web_pack taxonomy descriptor and a
     # controlled ToolSpecV1 for exa_search, so this test exercises the real
     # route -> build_extension_registry_projection -> _tool_spec_effects path
     # against a fixed input. The raw ToolSpecV1-from-ToolMeta derivation is
     # covered separately by tests/tools/test_tool_spec_v1.py.
     import app.services.extension_registry as registry_mod
-    import app.tools.runtime_tool_groups as rtg_mod
-    from app.runtime.ccplus_contracts import ToolSpecV1
+    import app.services.governance_capability_taxonomy as taxonomy_mod
+    from app.runtime.ccplus_contracts import GovernanceCapabilityDescriptorV1, ToolSpecV1
     from app.services.command_registry import _command
 
-    fake_group = SimpleNamespace(
+    fake_descriptor = GovernanceCapabilityDescriptorV1(
         name="web_pack",
+        layer="platform_addon",
         source="platform",
         tools=("exa_search",),
-        activation_mode="on_demand",
+        default_enabled=False,
+        l2_visible=True,
+        enterprise_toggleable=True,
+        notes="Controlled web pack",
     )
-    monkeypatch.setattr(rtg_mod, "RUNTIME_TOOL_GROUPS", [fake_group])
+    monkeypatch.setattr(taxonomy_mod, "iter_runtime_l2_capabilities", lambda: (fake_descriptor,))
     monkeypatch.setattr(
         agents_mod,
         "build_default_command_registry",

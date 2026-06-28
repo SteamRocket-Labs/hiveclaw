@@ -17,6 +17,8 @@ governs reminder frequency (session metadata), never tool visibility.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "propose_dynamic_workflow", "preview_workflow", "start_workflow"}
@@ -68,6 +70,14 @@ def test_collected_surface_provides_schemas_for_core_ledger_tools():
 
     combined_names = {t["function"]["name"] for t in get_combined_openai_tools()}
     assert WORK_LEDGER_TOOLS <= (combined_names & CORE_TOOL_NAMES)
+
+
+def test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_groups():
+    import app.api.agents as agents_api
+    import app.runtime.invoker as invoker
+
+    assert "RUNTIME_TOOL_GROUPS" not in inspect.getsource(invoker._infer_active_tool_groups)
+    assert "RUNTIME_TOOL_GROUPS" not in inspect.getsource(agents_api.get_agent_extension_registry)
 
 
 # ── Red test #3 — recursion guard, BOTH paths ───────────────────────

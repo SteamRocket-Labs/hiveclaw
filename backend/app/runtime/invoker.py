@@ -60,6 +60,7 @@ from app.services.agent_tools import (
 from app.services.feature_flags import is_enabled as is_feature_enabled
 from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
 from app.services.invocation_trace import persist_invocation_span
+from app.services.governance_capability_taxonomy import capability_descriptor_for_name, iter_runtime_l2_capabilities
 from app.services.memory_service import (
     build_memory_context,
     maybe_compress_messages,
@@ -73,10 +74,6 @@ from app.services.token_tracker import (
     record_token_usage,
 )
 from app.tools.result_envelope import ToolContentEnvelope
-from app.tools.runtime_tool_groups import (
-    RUNTIME_TOOL_GROUPS,
-    runtime_tool_group_for_name,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -782,6 +779,16 @@ def _serialize_pack(pack) -> dict[str, Any]:
     }
 
 
+def _serialize_capability_pack(descriptor) -> dict[str, Any]:
+    return {
+        "name": descriptor.name,
+        "summary": descriptor.notes or descriptor.name,
+        "source": descriptor.source,
+        "activation_mode": "Enabled by default." if descriptor.default_enabled else "Disabled until enabled.",
+        "tools": list(descriptor.tools),
+    }
+
+
 def _tool_names_from_openai_tools(tools: list[dict]) -> list[str]:
     return [
         tool["function"]["name"]
@@ -800,17 +807,17 @@ def _infer_active_tool_groups(
 ) -> list[dict[str, Any]]:
     requested = set(tool_names)
     packs = [
-        _serialize_pack(pack)
-        for pack in RUNTIME_TOOL_GROUPS
-        if pack.infer_from_tools and requested.intersection(pack.tools)
+        _serialize_capability_pack(descriptor)
+        for descriptor in iter_runtime_l2_capabilities()
+        if requested.intersection(descriptor.tools)
     ]
     existing_names = {pack["name"] for pack in packs}
     for pack_name in declared_pack_names or []:
         if pack_name in existing_names:
             continue
-        pack = runtime_tool_group_for_name(pack_name)
-        if pack:
-            packs.append(_serialize_pack(pack))
+        descriptor = capability_descriptor_for_name(pack_name)
+        if descriptor and descriptor.l2_visible:
+            packs.append(_serialize_capability_pack(descriptor))
             existing_names.add(pack_name)
     if packs or not requested:
         return packs
@@ -910,6 +917,7 @@ async def _execute_tool_with_request(
     emit_event: Callable[[dict], Any],
     *,
     tool_call_id: str | None = None,
+    trace_metadata_sink: dict[str, Any] | None = None,
 ) -> str | ToolContentEnvelope:
     if request.tool_executor:
         executor_kwargs: dict[str, Any] = {}
@@ -933,6 +941,8 @@ async def _execute_tool_with_request(
             executor_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
         if accepts_kwargs or "tool_call_id" in executor_params:
             executor_kwargs["tool_call_id"] = tool_call_id
+        if trace_metadata_sink is not None and (accepts_kwargs or "trace_metadata_sink" in executor_params):
+            executor_kwargs["trace_metadata_sink"] = trace_metadata_sink
         frame_kwargs = _tool_frame_kwargs_from_session_context(request.session_context)
         for key, value in frame_kwargs.items():
             if accepts_kwargs or key in executor_params:
@@ -959,6 +969,8 @@ async def _execute_tool_with_request(
         execute_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
     if "tool_call_id" in inspect.signature(execute_tool).parameters:
         execute_kwargs["tool_call_id"] = tool_call_id
+    if trace_metadata_sink is not None and "trace_metadata_sink" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["trace_metadata_sink"] = trace_metadata_sink
     execute_params = inspect.signature(execute_tool).parameters
     for key, value in _tool_frame_kwargs_from_session_context(request.session_context).items():
         if key in execute_params:
@@ -1065,6 +1077,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         emit_event: Callable[[dict], Any],
         *,
         tool_call_id: str | None = None,
+        trace_metadata_sink: dict[str, Any] | None = None,
     ) -> str | ToolContentEnvelope:
         return await _execute_tool_with_request(
             tool_name,
@@ -1072,6 +1085,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             request,
             emit_event,
             tool_call_id=tool_call_id,
+            trace_metadata_sink=trace_metadata_sink,
         )  # type: ignore[arg-type]
 
     return AgentKernel(

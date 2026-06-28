@@ -677,8 +677,8 @@ async def get_agent_extension_registry(
     from dataclasses import asdict
 
     from app.services.extension_registry import build_extension_registry_projection
+    from app.services.governance_capability_taxonomy import iter_runtime_l2_capabilities
     from app.skills.loader import WorkspaceSkillLoader
-    from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
     await check_agent_access(db, current_user, agent_id)
 
@@ -691,14 +691,18 @@ async def get_agent_extension_registry(
 
     tool_packs = [
         {
-            "id": group.name,
-            "name": group.name,
-            "source": group.source,
-            "tools": list(group.tools),
-            "runtime_effects": [f"activation:{group.activation_mode}"],
-            "audit_refs": [f"runtime_tool_group://{group.name}"],
+            "id": descriptor.name,
+            "name": descriptor.name,
+            "source": descriptor.source,
+            "tools": list(descriptor.tools),
+            "runtime_effects": [
+                "taxonomy:governance_capability",
+                f"layer:{descriptor.layer}",
+                f"default_enabled:{str(descriptor.default_enabled).lower()}",
+            ],
+            "audit_refs": list(descriptor.audit_refs or (f"governance_capability://{descriptor.name}",)),
         }
-        for group in RUNTIME_TOOL_GROUPS
+        for descriptor in iter_runtime_l2_capabilities()
     ]
 
     command_registry = build_default_command_registry(include_optional_coding_pack=True)
@@ -1122,4 +1126,3 @@ async def resolve_agent_approval(
         "status": approval.status,
         "resolved_at": approval.resolved_at.isoformat() if approval.resolved_at else None,
     }
-

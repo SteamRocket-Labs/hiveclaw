@@ -1274,7 +1274,7 @@ async def resolve_session_permission(
         decision=body.action,
         pending_frame=pending_frame,
         resolver_user_id=str(current_user.id),
-        resolution_channel="web",
+        resolution_channel=pending_frame.origin_channel or getattr(session, "source_channel", None) or "web",
     )
     resolution_metadata = {
         "permission_request_id": str(permission_request_id),
@@ -1449,6 +1449,8 @@ async def resolve_session_permission(
                         "resumed_from_permission_request_id": str(permission_request_id),
                         "resumed_turn_id": pending_frame.turn_id,
                         "resumed_runtime_task_id": pending_frame.runtime_task_id,
+                        "origin_channel": pending_frame.origin_channel,
+                        "channel": pending_frame.origin_channel or getattr(session, "source_channel", None) or "web",
                         "round_state": dict(pending_frame.round_state or {}),
                         "t0_refs": list(pending_frame.t0_refs or ()),
                     },

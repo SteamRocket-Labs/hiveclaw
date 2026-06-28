@@ -114,6 +114,70 @@ async def test_tool_runtime_service_executes_through_registry_and_logs():
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sink():
+    from app.runtime.ccplus_contracts import TruthEvidencePackV1
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="write_file",
+        arguments={"path": "workspace/notes.md", "content": "x"},
+    )
+    evidence = TruthEvidencePackV1(
+        evidence_id="truth://policy/write-file",
+        query="write_file workspace policy",
+        source_refs=("knowledge://policy/workspace.md",),
+        confidence=0.91,
+    )
+
+    class FakeTruthSearch:
+        async def search(self, *_args, **_kwargs):
+            return (evidence,)
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=_FakeRegistry("OK"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        truth_search_service=FakeTruthSearch(),
+    )
+    trace_metadata_sink: dict[str, object] = {}
+
+    result = await service.execute(
+        "write_file",
+        {"path": "workspace/notes.md", "content": "x"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        trace_metadata_sink=trace_metadata_sink,
+    )
+
+    assert result == "OK"
+    assert trace_metadata_sink["evidence_refs"] == ["truth://policy/write-file"]
+    assert trace_metadata_sink["truth_evidence"] == [
+        {
+            "evidence_id": "truth://policy/write-file",
+            "query": "write_file workspace policy",
+            "source_refs": ["knowledge://policy/workspace.md"],
+            "provider": "knowledge_core",
+            "confidence": 0.91,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_threads_origin_channel_to_runtime_resolver():
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext

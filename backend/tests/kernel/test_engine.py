@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -755,6 +756,38 @@ def test_recovery_pending_tool_frame_without_call_id_is_cleared() -> None:
     assert "pending_tool_frames" not in session.metadata
 
 
+def test_runtime_attachment_sections_include_persisted_recovery_manifest(tmp_path: Path, monkeypatch) -> None:
+    from app.kernel.engine import _build_runtime_attachment_sections
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-recover",
+                "pending_tool_frames": [
+                    {
+                        "tool_call_id": "call-running",
+                        "tool_name": "write_file",
+                        "status": "running",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    sections = _build_runtime_attachment_sections(agent_id, SessionContext(session_id="session-recover"))
+
+    joined = "\n\n".join(sections)
+    assert "### Recovery Manifest" in joined
+    assert "call-running" in joined
+
+
 @pytest.mark.asyncio
 async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeypatch):
     from app.kernel.engine import _compress_messages_with_lifecycle_hooks
@@ -1217,6 +1250,143 @@ async def test_execute_tool_with_hooks_executes_pending_skill_fork_handoff(monke
     assert "child-1" in result
     assert "pending_skill_handoffs" not in session.metadata
     assert session.metadata["executed_skill_handoffs"][0]["skill_slug"] == "research"
+
+
+@pytest.mark.asyncio
+async def test_load_skill_frontmatter_fork_executes_in_same_tool_call(tmp_path: Path, monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "skills" / "research"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: Research",
+                "description: Research with a scoped worker.",
+                "allowed-tools:",
+                "  - web_search",
+                "  - read_file",
+                "metadata:",
+                "  hive:",
+                "    context: fork",
+                "    agent: researcher",
+                "---",
+                "# Research",
+                "Use a worker when the task needs isolated exploration.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.kernel.engine._agent_workspace_root", lambda _agent_id: workspace)
+
+    session = SessionContext(session_id="session-skill-fork", metadata={})
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "load research"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=session,
+        memory_session_id="session-skill-fork",
+    )
+    calls: list[dict[str, object]] = []
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, tool_call_id=None):
+        calls.append({"tool_name": _tool_name, "args": dict(_tool_args), "tool_call_id": tool_call_id})
+        if _tool_name == "load_skill":
+            return "Loaded Research"
+        if _tool_name == "spawn_subagent":
+            return '{"ok": true, "child_session_id": "child-research"}'
+        raise AssertionError(f"unexpected tool {_tool_name}")
+
+    async def emit_event(_event):
+        return None
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        tool_name="load_skill",
+        tool_args={"name": "research"},
+        tool_call_id="call-load-skill",
+        emit_event=emit_event,
+    )
+
+    assert executed is True
+    assert [call["tool_name"] for call in calls] == ["load_skill", "spawn_subagent"]
+    assert calls[1]["tool_call_id"] == "call-load-skill:skill:research"
+    assert calls[1]["args"]["permission_profile"]["allowed_tools"] == ["web_search", "read_file"]
+    assert "child-research" in result
+    assert "pending_skill_handoffs" not in session.metadata
+    assert session.metadata["executed_skill_handoffs"][0]["skill_slug"] == "research"
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "send update"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=SessionContext(session_id="session-truth"),
+        memory_session_id="session-truth",
+    )
+    spans: list[dict] = []
+
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        tool_call_id=None,
+        trace_metadata_sink=None,
+    ):
+        assert tool_call_id == "call-send"
+        assert isinstance(trace_metadata_sink, dict)
+        trace_metadata_sink["evidence_refs"] = ["truth://policy/email-confirmation"]
+        trace_metadata_sink["truth_evidence"] = [{"evidence_id": "truth://policy/email-confirmation"}]
+        return "sent"
+
+    async def record_span(**kwargs):
+        spans.append(kwargs)
+
+    async def emit_event(_event):
+        return None
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        tool_name="send_email",
+        tool_args={"to": "user@example.com", "body": "hi"},
+        tool_call_id="call-send",
+        emit_event=emit_event,
+        record_span=record_span,
+    )
+
+    assert result == "sent"
+    assert executed is True
+    assert spans[-1]["metadata"]["evidence_refs"] == ["truth://policy/email-confirmation"]
+    assert spans[-1]["metadata"]["truth_evidence"] == [{"evidence_id": "truth://policy/email-confirmation"}]
 
 
 @pytest.mark.asyncio

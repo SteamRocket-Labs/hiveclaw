@@ -47,12 +47,13 @@ def test_tavily_search_definition_exposes_agent_realtime_search_surface() -> Non
     assert "include_raw_content" in properties
 
 
-def test_web_search_definition_exposes_anysearch_primary_basic_provider_surface() -> None:
+def test_web_search_definition_exposes_basic_provider_surface_without_anysearch_primary() -> None:
     fn = _function_schema("web_search")
     description = fn["description"]
 
-    assert "AnySearch API first when configured" in description
-    assert "SearXNG fallback" in description
+    assert "built-in basic provider chain" in description
+    assert "AnySearch API first" not in description
+    assert "SearXNG" in description
     assert "DuckDuckGo" not in description
     assert "web_fetch" in description
     assert "tool_search" in description

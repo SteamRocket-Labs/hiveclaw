@@ -12,12 +12,12 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
         name="web_search",
         max_result_chars=RESULT_CHARS_UNLIMITED,
         description=(
-            "Basic internet search for public information using Hive's built-in provider chain "
-            "(AnySearch API first when configured, then SearXNG fallback).\n\n"
+            "Basic internet search for public information using Hive's built-in basic provider chain "
+            "(SearXNG when configured, with legacy HTML fallback only for manual/debug use).\n\n"
             "Usage:\n"
             "- Use specific, well-formed search queries — not full sentences. Good: 'Python pandas groupby multiple columns'. Bad: 'How do I group by multiple columns in pandas?'\n"
             "- Results include titles, URLs, and snippets. To read full page content, follow up with `web_fetch` after you pick the best URL.\n"
-            "- Start here for normal lookup. If these basic results are too shallow, stale, sparse, or ambiguous, use `tool_search` to discover advanced search tools such as `exa_search` or `tavily_search`.\n"
+            "- Start here for normal lookup. AnySearch is an L2 add-on, not the CORE provider for this tool; if basic results are too shallow, stale, sparse, or ambiguous, use `tool_search` to discover advanced search tools such as `anysearch_search`, `exa_search`, or `tavily_search`.\n"
             "- May be unavailable on some networks. If search fails, retry with a narrower query or read a known URL with `web_fetch`.\n"
             "- Do NOT search for information already available in your workspace files or loaded skills."
         ),
@@ -48,9 +48,6 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
             "search_engine": "auto",
             "max_results": 5,
             "language": "en",
-            "anysearch_api_keys": "",
-            "anysearch_zone": "intl",
-            "anysearch_content_types": "web",
         },
         config_schema={
             "fields": [
@@ -59,39 +56,11 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
                     "label": "Search Engine",
                     "type": "select",
                     "options": [
-                        {"value": "auto", "label": "Auto (AnySearch API first, then SearXNG fallback)"},
-                        {"value": "anysearch", "label": "AnySearch API (uses configured key pool)"},
+                        {"value": "auto", "label": "Auto (SearXNG when configured)"},
                         {"value": "searxng", "label": "SearXNG fallback (platform configured)"},
                         {"value": "duckduckgo_legacy", "label": "Legacy HTML fallback (manual/debug only)"},
                     ],
                     "default": "auto",
-                },
-                {
-                    "key": "anysearch_api_keys",
-                    "label": "AnySearch API keys",
-                    "type": "password",
-                    "default": "",
-                    "placeholder": "one key per line",
-                    "multiline": True,
-                    "description": "Optional AnySearch API key pool. When set, auto mode uses AnySearch before SearXNG.",
-                },
-                {
-                    "key": "anysearch_zone",
-                    "label": "AnySearch zone",
-                    "type": "select",
-                    "options": [
-                        {"value": "intl", "label": "International"},
-                        {"value": "cn", "label": "China"},
-                    ],
-                    "default": "intl",
-                },
-                {
-                    "key": "anysearch_content_types",
-                    "label": "AnySearch content types",
-                    "type": "text",
-                    "default": "web",
-                    "placeholder": "web",
-                    "description": "Comma- or newline-separated AnySearch content types.",
                 },
                 {
                     "key": "max_results",

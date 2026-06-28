@@ -135,8 +135,9 @@ def test_core_tool_descriptions_define_when_not_to_use_and_fallbacks() -> None:
     assert "session_id/child_session_id" in tools["delegate_to_agent"]
     assert "use `check_async_task` only as a fallback status inspection" in tools["delegate_to_agent"]
     assert "follow up with `web_fetch`" in tools["web_search"]
-    assert "AnySearch API first when configured" in tools["web_search"]
-    assert "SearXNG fallback" in tools["web_search"]
+    assert "built-in basic provider chain" in tools["web_search"]
+    assert "AnySearch API first" not in tools["web_search"]
+    assert "SearXNG" in tools["web_search"]
     assert "DuckDuckGo" not in tools["web_search"]
     assert "use `tool_search` to discover advanced search tools" in tools["web_search"]
     assert "provider-backed escalation tool discovered through `tool_search`" in tools["exa_search"]
@@ -220,7 +221,8 @@ def test_web_search_config_schema_only_exposes_supported_search_providers() -> N
     option_values = {option["value"] for option in search_engine_field["options"]}
     field_keys = {field["key"] for field in fields}
 
-    assert option_values == {"auto", "anysearch", "searxng", "duckduckgo_legacy"}
+    assert option_values == {"auto", "searxng", "duckduckgo_legacy"}
+    assert "anysearch" not in option_values
     assert "google" not in option_values
     assert "bing" not in option_values
     assert "exa" not in option_values
@@ -229,10 +231,9 @@ def test_web_search_config_schema_only_exposes_supported_search_providers() -> N
     assert "bing_api_key" not in field_keys
     assert "exa_api_key" not in field_keys
     assert "tavily_api_key" not in field_keys
-    assert "anysearch_api_keys" in field_keys
-    anysearch_api_keys = next(field for field in fields if field["key"] == "anysearch_api_keys")
-    assert anysearch_api_keys["type"] == "password"
-    assert anysearch_api_keys["multiline"] is True
+    assert "anysearch_api_keys" not in field_keys
+    assert "anysearch_zone" not in field_keys
+    assert "anysearch_content_types" not in field_keys
     assert not re.search(r"[\u4e00-\u9fff]", str(web_search.meta.config_schema))
 
 
@@ -359,8 +360,8 @@ def test_runtime_templates_no_longer_reference_jina() -> None:
     assert "firecrawl_fetch" in web_research_guide
     assert "xcrawl_scrape" in web_research_guide
     assert "web_fetch" in web_research_guide
-    assert "AnySearch API first when configured" in web_research_guide
-    assert "SearXNG fallback otherwise" in web_research_guide
+    assert "AnySearch API first" not in web_research_guide
+    assert "SearXNG" in web_research_guide
     assert "anysearch_get_sub_domains" in web_research_guide
     assert "anysearch_search" in web_research_guide
     assert "AnySearch MCP" in web_research_guide

@@ -336,7 +336,7 @@ async def test_web_fetch_rejects_feishu_open_api_urls_before_http(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_web_search_anysearch_key_present_prefers_anysearch_over_searxng(monkeypatch):
+async def test_web_search_auto_uses_searxng_even_when_anysearch_key_is_configured(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(
@@ -351,21 +351,21 @@ async def test_web_search_anysearch_key_present_prefers_anysearch_over_searxng(m
     monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
 
     async def fake_anysearch(query: str, config: dict, max_results: int, language: str) -> str:
-        assert query == "openai sdk"
-        assert config["anysearch_api_keys"] == ["any-key"]
-        assert max_results == 5
-        assert language == "en"
-        return "anysearch primary results"
+        raise AssertionError("CORE web_search auto must not route through AnySearch; use AnySearch L2 tools instead")
 
     async def fake_searxng(query: str, searxng_url: str, max_results: int, language: str) -> str:
-        raise AssertionError("SearXNG must not run before configured AnySearch keys")
+        assert query == "openai sdk"
+        assert searxng_url == "https://search.example.com"
+        assert max_results == 5
+        assert language == "en"
+        return "searxng basic results"
 
     monkeypatch.setattr(web_mcp, "_search_anysearch", fake_anysearch)
     monkeypatch.setattr(web_mcp, "_search_searxng", fake_searxng)
 
     result = await web_mcp._web_search({"query": "openai sdk"})
 
-    assert result == "anysearch primary results"
+    assert result == "searxng basic results"
     assert "<tool_error>" not in result
 
 
@@ -404,12 +404,12 @@ async def test_web_search_no_anysearch_key_uses_searxng_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_web_search_anysearch_failure_falls_back_to_searxng_not_duckduckgo(monkeypatch):
+async def test_web_search_legacy_anysearch_config_uses_basic_provider_not_anysearch(monkeypatch):
     from app.services.agent_tool_domains import web_mcp
 
     tool = SimpleNamespace(
         config={
-            "search_engine": "auto",
+            "search_engine": "anysearch",
             "anysearch_api_keys": ["any-key"],
             "searxng_url": "https://search.example.com",
             "max_results": 5,
@@ -419,8 +419,7 @@ async def test_web_search_anysearch_failure_falls_back_to_searxng_not_duckduckgo
     monkeypatch.setattr(web_mcp, "async_session", lambda: _FakeSession(tool))
 
     async def fake_anysearch(query: str, config: dict, max_results: int, language: str) -> str:
-        assert query == "openai sdk"
-        return "❌ AnySearch search failed: HTTP 429: quota exhausted"
+        raise AssertionError("legacy web_search search_engine=anysearch must not execute AnySearch")
 
     async def fake_searxng(query: str, searxng_url: str, max_results: int, language: str) -> str:
         assert query == "openai sdk"
@@ -436,10 +435,8 @@ async def test_web_search_anysearch_failure_falls_back_to_searxng_not_duckduckgo
 
     result = await web_mcp._web_search({"query": "openai sdk"})
 
-    assert "searxng fallback results" in result
-    payload = _extract_tool_error_payload(result)
-    assert payload["provider"] == "anysearch"
-    assert payload["fallback_tool"] == "web_search:searxng"
+    assert result == "searxng fallback results"
+    assert "<tool_error>" not in result
 
 
 @pytest.mark.asyncio

@@ -572,38 +572,27 @@ async def _web_search(arguments: dict) -> str:
     configured_engine = str(config.get("search_engine") or "auto").strip().lower()
     if configured_engine == "duckduckgo":
         configured_engine = "duckduckgo_legacy"
-    engine = configured_engine if configured_engine in {"auto", "anysearch", "searxng", "duckduckgo_legacy"} else "auto"
+    if configured_engine == "anysearch":
+        # AnySearch is an L2 add-on surface exposed through anysearch_* tools.
+        # CORE web_search keeps a basic provider boundary even if legacy tenant
+        # config still contains search_engine=anysearch.
+        configured_engine = "auto"
+    engine = configured_engine if configured_engine in {"auto", "searxng", "duckduckgo_legacy"} else "auto"
     max_results = min(_safe_int(arguments.get("max_results", config.get("max_results", 5)), 5), 10)
     language = config.get("language", "en")
     searxng_url = (config.get("searxng_url") or await _get_searxng_url()).strip().rstrip("/")
-    anysearch_keys = _anysearch_api_keys(config)
-    anysearch_allow_anonymous = _optional_bool(config.get("anysearch_allow_anonymous"), False)
 
     if engine == "auto":
-        if anysearch_keys:
-            engine = "anysearch"
-        elif searxng_url:
-            engine = "searxng"
-        else:
-            return render_tool_error(
-                tool_name="web_search",
-                error_class="provider_unavailable",
-                message="web_search has no configured provider: set AnySearch API keys or SEARXNG_URL.",
-                provider="web_search",
-                retryable=False,
-                actionable_hint="Configure AnySearch API keys for the primary provider, or configure SEARXNG_URL as the no-key fallback.",
-            )
-    if engine == "anysearch" and not anysearch_keys and not anysearch_allow_anonymous:
         if searxng_url:
             engine = "searxng"
         else:
             return render_tool_error(
                 tool_name="web_search",
                 error_class="provider_unavailable",
-                message="AnySearch is selected but no AnySearch API key is configured.",
-                provider="anysearch",
+                message="web_search has no configured CORE provider: set SEARXNG_URL.",
+                provider="web_search",
                 retryable=False,
-                actionable_hint="Add AnySearch API keys or configure SEARXNG_URL for fallback search.",
+                actionable_hint="Configure SEARXNG_URL for CORE web_search, or enable/discover AnySearch through the L2 web_pack tools.",
             )
     if engine == "searxng" and not searxng_url:
         return render_tool_error(
@@ -612,34 +601,10 @@ async def _web_search(arguments: dict) -> str:
             message="SearXNG is selected but SEARXNG_URL is not configured.",
             provider="searxng",
             retryable=False,
-            actionable_hint="Configure SEARXNG_URL or switch web_search to auto with AnySearch API keys.",
+            actionable_hint="Configure SEARXNG_URL, or use tool_search to discover L2 advanced search tools such as AnySearch/Exa/Tavily.",
         )
 
     try:
-        if engine == "anysearch":
-            result = await _search_anysearch(query, config, max_results, language)
-            if _provider_result_failed(result) and searxng_url:
-                fallback_result = await _search_searxng(query, searxng_url, max_results, language)
-                return render_tool_fallback(
-                    tool_name="web_search",
-                    error_class="provider_error",
-                    message=_provider_failure_message(result, "anysearch"),
-                    provider="anysearch",
-                    retryable=True,
-                    actionable_hint="AnySearch was unavailable, so the tool fell back to SearXNG.",
-                    fallback_tool="web_search:searxng",
-                    fallback_result=fallback_result,
-                )
-            if _provider_result_failed(result):
-                return render_tool_error(
-                    tool_name="web_search",
-                    error_class="provider_error",
-                    message=_provider_failure_message(result, "anysearch"),
-                    provider="anysearch",
-                    retryable=True,
-                    actionable_hint="Retry later, add another AnySearch API key, or configure SEARXNG_URL as fallback.",
-                )
-            return result
         if engine == "searxng":
             result = await _search_searxng(query, searxng_url, max_results, language)
         elif engine == "duckduckgo_legacy":
@@ -651,7 +616,7 @@ async def _web_search(arguments: dict) -> str:
                 message=f"Unsupported web_search provider '{engine}'.",
                 provider="web_search",
                 retryable=False,
-                actionable_hint="Use auto, anysearch, searxng, or duckduckgo_legacy.",
+                actionable_hint="Use auto, searxng, or duckduckgo_legacy for CORE web_search; use tool_search for L2 advanced search tools.",
             )
         if _provider_result_failed(result):
             return render_tool_fallback(
@@ -666,18 +631,6 @@ async def _web_search(arguments: dict) -> str:
             )
         return result
     except Exception as e:
-        if engine == "anysearch" and searxng_url:
-            fallback_result = await _search_searxng(query, searxng_url, max_results, language)
-            return render_tool_fallback(
-                tool_name="web_search",
-                error_class="provider_error",
-                message=f"web_search provider 'anysearch' failed: {str(e)[:200]}",
-                provider="anysearch",
-                retryable=True,
-                actionable_hint="AnySearch failed, so the tool fell back to SearXNG.",
-                fallback_tool="web_search:searxng",
-                fallback_result=fallback_result,
-            )
         if engine == "duckduckgo_legacy":
             return render_tool_error(
                 tool_name="web_search",

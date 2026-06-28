@@ -53,7 +53,7 @@ releases, prices, people, current stats, APIs that evolved).
 
 | Tool | Use Case | Escalation level |
 |------|----------|------------------|
-| `web_search` | Basic public web search using Hive's built-in provider chain: AnySearch API first when configured, SearXNG fallback otherwise. **Start here for normal lookup.** | Level 1 |
+| `web_search` | Basic public web search using Hive's built-in basic provider chain: SearXNG when configured, with legacy HTML fallback only for manual/debug use. **Start here for normal lookup.** | Level 1 |
 | `web_fetch` | Read full content from a specific URL. Use this first when you already have the link. | Level 1 |
 | `anysearch_get_sub_domains` | AnySearch search/discovery surface schema directory. Call before vertical `anysearch_search` to discover valid sub-domain routes and required sub-domain parameters. | Level 2 |
 | `anysearch_search` | AnySearch search/discovery surface for vertical or general search. Use for precise finance, social media, academic, legal, health, business, security, code, energy, environment, agriculture, travel, film, and gaming sources when basic search is too broad. | Level 2 |

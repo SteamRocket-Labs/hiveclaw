@@ -63,15 +63,23 @@
 最终回归证据：
 
 ```bash
-cd backend && source .venv/bin/activate && pytest tests -q
-# 5324 passed, 2 skipped, 4 warnings in 85.73s
+cd backend && source .venv/bin/activate && pytest tests/services/test_trigger_daemon_logging_format.py::test_main_loguru_calls_use_brace_formatting tests/api/test_chat_session_runs.py -k permission -q
+# 11 passed, 8 deselected, 4 warnings
 
-cd frontend && npm test -- --run
-# Test Files 66 passed (66); Tests 360 passed (360)
+cd backend && source .venv/bin/activate && pytest tests -q
+# 5335 passed, 2 skipped, 4 warnings in 84.74s
+
+cd backend && source .venv/bin/activate && ruff check app/ tests/
+# All checks passed!
+
+cd frontend && npm test -- --run src/pages/workspace/WorkspaceToolsSection.test.tsx src/pages/agent-detail/AgentDetailSections.test.tsx
+# Test Files 2 passed (2); Tests 72 passed (72)
 
 cd frontend && npm run build
-# tsc && vite build succeeded
+# tsc && vite build succeeded; 6969 modules transformed
 ```
+
+补充说明：最终 backend 全量首次回归暴露 `backend/app/main.py` startup stale permission 日志仍用了 loguru 禁止的 `%s` 占位符，已改为 `{}` 并由 `test_main_loguru_calls_use_brace_formatting` 与第二轮全量 `pytest tests -q` 验证通过。
 
 ## 当前代码现实
 

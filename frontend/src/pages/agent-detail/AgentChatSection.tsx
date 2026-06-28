@@ -587,35 +587,17 @@ export function SessionCommandControlPanel({
   const checkpoints = control.checkpoints || [];
   const details = payloadSummary(control.payload);
   return (
-    <section
-      data-testid="session-command-control-panel"
-      style={{
-        border: '1px solid var(--border-subtle)',
-        borderRadius: '8px',
-        background: 'var(--bg-secondary)',
-        marginBottom: '10px',
-        overflow: 'hidden',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '12px',
-          padding: '10px 12px 8px',
-          borderBottom: checkpoints.length > 0 || details.length > 0 ? '1px solid var(--border-subtle)' : 'none',
-        }}
-      >
+    <section data-testid="session-command-control-panel" className="session-tui-command-panel">
+      <div className={`session-tui-command-panel-header ${checkpoints.length > 0 || details.length > 0 ? 'has-body' : ''}`}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0 }}>
+          <div className="session-tui-kicker">
             {commandPanelTypeLabel(control.type)}
           </div>
-          <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', marginTop: '2px' }}>
+          <div className="session-tui-row-title">
             {control.title}
           </div>
           {control.message ? (
-            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '3px', lineHeight: 1.45 }}>
+            <div className="session-tui-row-meta">
               {control.message}
             </div>
           ) : null}
@@ -624,22 +606,14 @@ export function SessionCommandControlPanel({
           type="button"
           aria-label="Close"
           onClick={onDismiss}
-          style={{
-            width: '24px',
-            height: '24px',
-            border: '1px solid var(--border-subtle)',
-            borderRadius: '6px',
-            background: 'var(--bg-primary)',
-            color: 'var(--text-tertiary)',
-            cursor: 'pointer',
-          }}
+          className="session-tui-icon-button"
         >
           ×
         </button>
       </div>
       {checkpoints.length > 0 ? (
-        <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div data-testid="session-checkpoint-rail" style={{ display: 'flex', alignItems: 'center', gap: '5px', overflowX: 'auto', paddingBottom: '2px' }}>
+        <div className="session-tui-command-panel-body">
+          <div data-testid="session-checkpoint-rail" className="session-tui-checkpoint-rail">
             {checkpoints.map((checkpoint, index) => {
               const id = checkpointId(checkpoint);
               return (
@@ -649,20 +623,12 @@ export function SessionCommandControlPanel({
                   title={checkpointLabel(checkpoint, index)}
                   disabled={!id}
                   onClick={() => id && onRunCommand('rewind', { checkpoint_event_id: id })}
-                  style={{
-                    flex: '0 0 auto',
-                    width: '10px',
-                    height: '18px',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: '3px',
-                    background: id ? 'var(--bg-primary)' : 'var(--bg-tertiary)',
-                    cursor: id ? 'pointer' : 'not-allowed',
-                  }}
+                  className="session-tui-checkpoint-node"
                 />
               );
             })}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div className="session-tui-checkpoint-list">
             {checkpoints.map((checkpoint, index) => {
               const id = checkpointId(checkpoint);
               return (
@@ -672,20 +638,7 @@ export function SessionCommandControlPanel({
                   data-testid="session-checkpoint-row"
                   disabled={!id}
                   onClick={() => id && onRunCommand('rewind', { checkpoint_event_id: id })}
-                  style={{
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: '6px',
-                    background: 'var(--bg-primary)',
-                    color: 'var(--text-secondary)',
-                    padding: '7px 8px',
-                    textAlign: 'left',
-                    cursor: id ? 'pointer' : 'not-allowed',
-                    fontSize: '11px',
-                    lineHeight: 1.4,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
+                  className="session-tui-checkpoint-row"
                 >
                   {checkpointLabel(checkpoint, index)}
                 </button>
@@ -695,11 +648,11 @@ export function SessionCommandControlPanel({
         </div>
       ) : null}
       {details.length > 0 ? (
-        <dl style={{ margin: 0, padding: '10px 12px', display: 'grid', gridTemplateColumns: 'minmax(90px, auto) 1fr', gap: '5px 10px', fontSize: '11px' }}>
+        <dl className="session-tui-command-details">
           {details.map(([key, value]) => (
             <React.Fragment key={key}>
-              <dt style={{ color: 'var(--text-tertiary)' }}>{key}</dt>
-              <dd style={{ margin: 0, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</dd>
+              <dt>{key}</dt>
+              <dd>{value}</dd>
             </React.Fragment>
           ))}
         </dl>
@@ -1760,15 +1713,7 @@ export default function AgentChatSection({
           }
           return (
             <div
-              style={{
-                fontSize: '10px',
-                color: 'var(--text-tertiary)',
-                marginTop: '4px',
-                opacity: 0.6,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: isLeft ? 'flex-start' : 'flex-end',
-              }}
+              className={`session-tui-message-meta ${isLeft ? 'align-left' : 'align-right'}`}
             >
               {timeStr}
               {msg.content && <CopyMessageButton text={msg.content} />}
@@ -1778,38 +1723,17 @@ export default function AgentChatSection({
         })();
 
         return (
-          <div key={i} style={{ display: 'flex', flexDirection: isLeft ? 'row' : 'row-reverse', gap: '8px', marginBottom: '8px' }}>
-            <div
-              style={{
-                width: '28px',
-                height: '28px',
-                borderRadius: '50%',
-                background: isLeft ? 'var(--bg-elevated)' : 'rgba(16,185,129,0.15)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '11px',
-                flexShrink: 0,
-                color: 'var(--text-secondary)',
-                fontWeight: 600,
-              }}
-            >
+          <div
+            key={i}
+            className={`session-tui-message-row ${isLeft ? 'session-tui-message-row-assistant' : 'session-tui-message-row-user'}`}
+          >
+            <div className="session-tui-message-avatar">
               {isLeft ? (msg.sender_name ? msg.sender_name[0] : 'A') : 'U'}
             </div>
-            <div
-              style={{
-                maxWidth: '75%',
-                padding: '8px 12px',
-                borderRadius: '12px',
-                background: isLeft ? 'var(--bg-secondary)' : 'rgba(16,185,129,0.1)',
-                fontSize: '13px',
-                lineHeight: '1.5',
-                wordBreak: 'break-word',
-              }}
-            >
+            <div className="session-tui-message-bubble">
               {isLeft && msg.sender_name && (
-                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginBottom: '2px', fontWeight: 600 }}>
-                  🤖 {msg.sender_name}
+                <div className="session-tui-message-sender">
+                  {msg.sender_name}
                 </div>
               )}
               {isImage ? (
@@ -1824,18 +1748,8 @@ export default function AgentChatSection({
               ) : (
                 msg.fileName && (
                   <div
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      background: isLeft ? 'rgba(0,0,0,0.05)' : 'rgba(0,0,0,0.08)',
-                      borderRadius: '6px',
-                      padding: '4px 8px',
-                      marginBottom: msg.content ? '4px' : '0',
-                      fontSize: '11px',
-                      border: '1px solid var(--border-subtle)',
-                      color: 'var(--text-secondary)',
-                    }}
+                    className="session-tui-file-chip"
+                    style={{ marginBottom: msg.content ? '4px' : '0' }}
                   >
                     <span>{fileIcon}</span>
                     <span
@@ -1855,39 +1769,15 @@ export default function AgentChatSection({
               )}
               {msg.thinking && (
                 <details
-                  style={{
-                    marginBottom: '8px',
-                    fontSize: '12px',
-                    background: 'rgba(147, 130, 220, 0.08)',
-                    borderRadius: '6px',
-                    border: '1px solid rgba(147, 130, 220, 0.15)',
-                  }}
+                  className="session-tui-thinking"
                 >
                   <summary
-                    style={{
-                      padding: '6px 10px',
-                      cursor: 'pointer',
-                      color: 'rgba(147, 130, 220, 0.9)',
-                      fontWeight: 500,
-                      userSelect: 'none',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                    }}
+                    className="session-tui-thinking-summary"
                   >
-                    💭 Thinking
+                    Thinking
                   </summary>
                   <div
-                    style={{
-                      padding: '4px 10px 8px',
-                      fontSize: '12px',
-                      lineHeight: '1.6',
-                      color: 'var(--text-secondary)',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      maxHeight: '300px',
-                      overflow: 'auto',
-                    }}
+                    className="session-tui-thinking-body"
                   >
                     {msg.thinking}
                   </div>

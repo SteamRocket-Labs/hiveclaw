@@ -86,6 +86,32 @@
   --sidebar-width: var(--sidebar-width-expanded);
   --header-height: 52px;
 
+  /* Session TUI density */
+  --session-tui-font-body: 13px;
+  --session-tui-font-row: 12px;
+  --session-tui-font-meta: 11px;
+  --session-tui-font-tiny: 10px;
+  --session-tui-line-body: 1.58;
+  --session-tui-line-row: 1.42;
+  --session-tui-line-meta: 1.35;
+  --session-tui-gap-row: 6px;
+  --session-tui-padding-row: 6px 8px;
+  --session-tui-padding-message: 8px 12px;
+  --session-tui-padding-panel: 10px 12px;
+  --session-tui-radius-row: 6px;
+  --session-tui-radius-panel: 8px;
+  --session-tui-selected-bg: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --session-tui-selected-border: color-mix(in srgb, var(--text-primary) 12%, var(--border-subtle));
+  --session-tui-hover-bg: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  --session-tui-muted-bg: color-mix(in srgb, var(--bg-secondary) 82%, var(--bg-primary));
+  --session-tui-message-bg: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
+  --session-tui-message-user-bg: color-mix(in srgb, var(--text-primary) 4%, var(--bg-primary));
+  --session-tui-message-border: var(--border-subtle);
+  --session-tui-status-running: #2f9e44;
+  --session-tui-status-waiting: #b7791f;
+  --session-tui-status-failed: #c2413c;
+  --session-tui-status-completed: #6f7a6d;
+
   /* Notification bar */
   --notification-bar-bg: var(--accent-primary);
   --notification-bar-text: #ffffff;
@@ -1038,6 +1064,289 @@ select:focus {
   color: var(--text-tertiary);
   font-size: 12px;
   text-align: center;
+}
+
+.session-tui-kicker {
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-tiny);
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.session-tui-row-title {
+  margin-top: 2px;
+  color: var(--text-primary);
+  font-size: var(--session-tui-font-row);
+  font-weight: 650;
+  line-height: var(--session-tui-line-row);
+}
+
+.session-tui-row-meta {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  line-height: var(--session-tui-line-meta);
+}
+
+.session-tui-icon-button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--bg-primary);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.session-tui-icon-button:hover {
+  border-color: var(--border-default);
+  background: var(--session-tui-hover-bg);
+  color: var(--text-secondary);
+}
+
+.session-tui-command-panel {
+  margin-bottom: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-panel);
+  background: var(--session-tui-muted-bg);
+}
+
+.session-tui-command-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: var(--session-tui-padding-panel);
+}
+
+.session-tui-command-panel-header.has-body {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.session-tui-command-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--session-tui-padding-panel);
+}
+
+.session-tui-checkpoint-rail {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 2px 5px;
+}
+
+.session-tui-checkpoint-rail::before {
+  position: absolute;
+  right: 2px;
+  left: 2px;
+  height: 1px;
+  background: var(--border-subtle);
+  content: "";
+}
+
+.session-tui-checkpoint-node {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.session-tui-checkpoint-node:hover {
+  border-color: var(--text-secondary);
+  background: var(--bg-elevated);
+  transform: scale(1.08);
+}
+
+.session-tui-checkpoint-node:disabled {
+  border-color: var(--border-subtle);
+  background: var(--bg-tertiary);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.session-tui-checkpoint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-tui-checkpoint-row {
+  overflow: hidden;
+  padding: var(--session-tui-padding-row);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--session-tui-font-meta);
+  line-height: var(--session-tui-line-meta);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.session-tui-checkpoint-row:hover {
+  border-color: var(--session-tui-selected-border);
+  background: var(--session-tui-hover-bg);
+  color: var(--text-primary);
+}
+
+.session-tui-checkpoint-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.session-tui-command-details {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr;
+  gap: 5px 10px;
+  margin: 0;
+  padding: var(--session-tui-padding-panel);
+  font-size: var(--session-tui-font-meta);
+}
+
+.session-tui-command-details dt {
+  color: var(--text-tertiary);
+}
+
+.session-tui-command-details dd {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-tui-message-row {
+  display: flex;
+  gap: var(--session-tui-gap-row);
+  margin-bottom: 8px;
+}
+
+.session-tui-message-row-user {
+  flex-direction: row-reverse;
+}
+
+.session-tui-message-row-assistant {
+  flex-direction: row;
+}
+
+.session-tui-message-avatar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  font-weight: 650;
+  line-height: 1;
+}
+
+.session-tui-message-row-user .session-tui-message-avatar {
+  background: var(--session-tui-selected-bg);
+}
+
+.session-tui-message-bubble {
+  max-width: 75%;
+  padding: var(--session-tui-padding-message);
+  border: 1px solid var(--session-tui-message-border);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--session-tui-message-bg);
+  color: var(--text-primary);
+  font-size: var(--session-tui-font-body);
+  line-height: var(--session-tui-line-body);
+  word-break: break-word;
+}
+
+.session-tui-message-row-user .session-tui-message-bubble {
+  background: var(--session-tui-message-user-bg);
+}
+
+.session-tui-message-sender {
+  margin-bottom: 2px;
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-tiny);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.session-tui-message-meta {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-tiny);
+  line-height: 1.25;
+  opacity: 0.7;
+}
+
+.session-tui-message-meta.align-left {
+  justify-content: flex-start;
+}
+
+.session-tui-message-meta.align-right {
+  justify-content: flex-end;
+}
+
+.session-tui-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--session-tui-selected-bg);
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+}
+
+.session-tui-thinking {
+  margin-bottom: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--session-tui-selected-bg);
+  font-size: var(--session-tui-font-row);
+}
+
+.session-tui-thinking-summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--session-tui-padding-row);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-weight: 600;
+  user-select: none;
+}
+
+.session-tui-thinking-body {
+  max-height: 300px;
+  overflow: auto;
+  padding: 4px 10px 8px;
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-row);
+  line-height: var(--session-tui-line-body);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .sidebar-pin-btn:hover {

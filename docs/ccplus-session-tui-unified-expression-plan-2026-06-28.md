@@ -2,7 +2,7 @@
 
 日期：2026-06-28
 
-状态：前端 / Web TUI 升级方案。本文承接 `ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md`、`ccplus-unclosed-gap-register-2026-06-27.md`、`ccplus-freecode-00-08-terminal-audit-2026-06-24.md`、`ccplus-tool-call-closure-audit-2026-06-28.md`、`ccplus-governance-truth-search-repair-plan-2026-06-28.md`。
+状态：前端 / Web TUI 升级唯一主方案。本文承接 `ccplus-session-checkpoint-branch-ui-upgrade-plan-2026-06-27.md`、`ccplus-unclosed-gap-register-2026-06-27.md`、`ccplus-freecode-00-08-terminal-audit-2026-06-24.md`、`ccplus-tool-call-closure-audit-2026-06-28.md`、`ccplus-governance-truth-search-repair-plan-2026-06-28.md`。后续 Session TUI、checkpoint、rewind、branch、Agent Team、Dynamic Workflow 的产品裁决必须收敛到本文；旧 checkpoint/branch 文档只作为历史细节附录，不再承载并行方案。
 
 ## 0. 结论
 
@@ -38,6 +38,33 @@ CC 的价值不在视觉样式，而在 session/runtime 语义：
 - `/Users/rocky243/vc-saas/free-code-main/src/commands.ts`
 - `/Users/rocky243/vc-saas/free-code-main/src/components/messages/CompactBoundaryMessage.tsx`
 - `/Users/rocky243/vc-saas/free-code-main/src/components/StatusLine.tsx`
+
+### 1.1.1 CC checkpoint / rewind / branch 源码核验结论
+
+本节以本机 FreeCode/CC 源码为准，前端不得按 UI 直觉重新定义后端语义。
+
+| CC 入口 | 后端 / 运行时语义 | Web TUI 对齐 |
+| --- | --- | --- |
+| `/branch` slash command | 创建新的 fork session id，读取当前 transcript，复制所有 main conversation messages，重写 `sessionId` 和 `parentUuid` 链，写入 `forkedFrom`，复制 `content-replacement` 记录，然后 resume 到新 branch。这个入口是当前 head 分支，不是 checkpoint selector。 | `/branch` 无 checkpoint 参数时按 current-head branch；创建新 `ChatSession.id`，UI 切换到新 session line。 |
+| MessageSelector rewind | 选择一条 user message，但恢复点是这条 user message 发送之前。实现使用 `messages.slice(0, messageIndex)`，再把这条 prompt 放回 composer；旧 tail 不物理删除。 | checkpoint 上的 `Rewind here` 必须是 before-boundary active projection；点击 checkpoint 本身只选中/定位，不执行 rewind。 |
+| code rewind / `--rewind-files` | 只恢复文件快照。目标必须是 user message；可以 dry-run；standalone 模式不能同时带 prompt。它不是 session branch，也不是聊天上下文恢复。 | 文件/workspace restore 必须作为独立 workspace snapshot 操作展示，不和 session rewind 混成一个按钮。 |
+| `--resume-session-at` | headless resume 截断到指定 message，代码使用 `slice(0, index + 1)`；CLI help 说明是 up to and including assistant message。它不是交互式 checkpoint click。 | Web checkpoint click 不等于 resume-at，也不等于 rewind；只是导航和 selected node。 |
+
+源码证据：
+
+- `/Users/rocky243/vc-saas/free-code-main/src/commands/branch/branch.ts:61`
+- `/Users/rocky243/vc-saas/free-code-main/src/commands/branch/branch.ts:122`
+- `/Users/rocky243/vc-saas/free-code-main/src/commands/branch/branch.ts:274`
+- `/Users/rocky243/vc-saas/free-code-main/src/components/MessageSelector.tsx:328`
+- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx:3659`
+- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx:3674`
+- `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx:3715`
+- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:573`
+- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:736`
+- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:4520`
+- `/Users/rocky243/vc-saas/free-code-main/src/utils/fileHistory.ts:347`
+- `/Users/rocky243/vc-saas/free-code-main/src/main.tsx:991`
+- `/Users/rocky243/vc-saas/free-code-main/src/cli/print.ts:5105`
 
 ### 1.2 Codex 值得吸收的是 TUI 工程表达
 
@@ -81,7 +108,7 @@ Codex 的 TUI 表达比 CC 更完整，尤其适合 Web 借鉴：
 | Team enter | `SessionNativeControls.enterMember` | 能 enter child session，但还没有形成右侧 Runtime Agents row -> 中间 session window 的统一表达 |
 | Workflow card | chat inline dynamic workflow proposal | 可观察 proposal，但运行图和 journal 应进右侧 Workflow tab |
 
-## 2. 目标布局：左侧导航栏冻结，只重构中间和右侧
+## 2. 目标布局：固定三栏，左右可缩放，中间自适应
 
 Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息架构。
 
@@ -98,6 +125,38 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
 └────────────────────────┴──────────────────────────────────────────┴──────────────────────────────┘
 ```
 
+### 2.0 三栏 shell 不再摇摆
+
+当前最终布局固定为三栏：
+
+- 左栏：现有产品导航 / agent-session 入口。
+- 中栏：当前 active session 的 chat / timeline。
+- 右栏：Workspace Documents + Runtime Tables。
+
+三栏规则：
+
+1. 左右两个侧栏都支持水平拖拽缩放。
+2. 左右栏有最小宽度和最大宽度，不能挤压到不可用，也不能把中栏挤没。
+3. 中间 chat 区域必须随左右栏宽度变化自适应，使用 `min-width: 0`、flex/grid track、overflow containment，而不是固定 `calc(100vw - x)`。
+4. 拖拽侧栏时，中间 timeline、message bubble、git-line checkpoint、composer footer 都要稳定重排，不出现横向溢出或文本遮挡。
+5. 左侧导航的内容和信息架构不改；本轮只允许在三栏 shell 层增加 resize 行为。
+6. 右侧删除的是旧 `SessionWorkbenchInspector` 杂项列，不是取消右栏。右栏必须以新的 Workspace/Runtime 分区重建。
+
+桌面布局建议：
+
+```text
+grid-template-columns:
+  clamp(260px, var(--left-sidebar-width), 420px)
+  minmax(520px, 1fr)
+  clamp(320px, var(--right-sidebar-width), 560px)
+```
+
+窄屏规则：
+
+- 左栏保持现有移动端/折叠行为。
+- 右栏可折叠成 overlay / drawer。
+- 中栏 chat 永远是主阅读与输入区，不被右栏覆盖。
+
 ### 2.1 左侧导航栏：冻结
 
 左侧导航栏保持当前产品结构，不纳入本轮 TUI 重构范围。
@@ -106,10 +165,10 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
 
 - 不重做 workspace / agent / session 列表。
 - 不把 branch graph、Agent Team、Subagent、Background Agent 挪到左侧。
-- 不修改左侧导航的信息架构、宽度策略、折叠策略。
+- 不修改左侧导航的信息架构、层级、列表内容、折叠语义。
 - 不把新的 TUI 状态塞进左侧列表。
 
-左侧只承担已有入口职责：选择 agent、选择 session、进入当前产品导航。新的 session 内状态全部放在中间主区和右侧面板。
+左侧只承担已有入口职责：选择 agent、选择 session、进入当前产品导航。新的 session 内状态全部放在中间主区和右侧面板。左栏宽度可以在三栏 shell 层拖拽调整，但这不等于重做左侧导航。
 
 ### 2.2 中间：Session Timeline
 
@@ -161,6 +220,9 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
    - active session label。
    - attachment/artifact chips。
    - 输入栏整体边框不改；当前输入上下文跟随中间 active session window。
+   - Composer 必须贴近 session shell 底部，底部留白只保留安全间距，不允许出现大块空白。
+   - chat history 区域用 flex 占满剩余高度；composer 是底部固定的 flow child，不通过额外 spacer 把输入框顶高。
+   - 当前实现里的硬编码高度和固定底部 padding 需要收敛为三栏 shell 的 flex 高度模型。
 
 ### 2.3 右侧：Workspace / Runtime 上下分区
 
@@ -187,6 +249,65 @@ Web 端不需要像终端一样逐像素复刻，但需要复刻 TUI 的信息�
 | Runs | active RuntimeTask、tool rounds、tool calls、terminal status、killed/cancelled/failure reason |
 | Governance | L0/L1/L2/L3、permission profile、pending approvals、Truth Search evidence、decision trace |
 | Raw | T0/source refs/InvocationSpan/export JSON，仅 debug/admin 默认展开 |
+
+### 2.4 Codex-like 视觉密度与样式基线
+
+当前页面“不好看”的根因不是某一个按钮颜色，而是 Session 区没有统一的 workbench density。当前代码里同一个 Chat 页面混用了大量 inline `10/11/12/13/15/16/28px` 字号、随机 padding、过圆 bubble、彩色选中态和局部背景色。下一轮前端不能继续在各组件里局部调样式，必须先建立 Session TUI 的视觉 token。
+
+目标参考 Codex / CC TUI 的克制风格：
+
+- 信息密度高，但不拥挤。
+- 低饱和灰阶为主，颜色只表达状态。
+- 细线、轻底色、小状态点，而不是大面积彩色块。
+- 选中态清楚但安静，不抢正文。
+- 文本阅读优先，装饰退后。
+
+Session TUI 字号基线：
+
+| 用途 | 字号 | 行高 | 说明 |
+| --- | --- | --- | --- |
+| 主正文 / assistant answer | 13px | 1.55-1.65 | Chat 主阅读字号。 |
+| 用户消息 / compact text | 13px | 1.5 | 不要放大成卡片标题。 |
+| section title / row primary | 12px | 1.35-1.45 | Runtime table、file row、checkpoint label。 |
+| metadata / timestamp / status | 11px | 1.3-1.4 | token、elapsed、source、secondary hint。 |
+| tiny badge / count | 10px | 1.2 | 只用于很短的 counter，不用于长句。 |
+| page title / active session title | 15px | 1.3 | 仅 header 使用，避免 hero 化。 |
+
+Spacing 基线：
+
+| 层级 | 值 | 用途 |
+| --- | --- | --- |
+| row gap | 4-6px | 同组 metadata / icon / status。 |
+| compact row padding | 6px 8px | runtime table、checkpoint row、small controls。 |
+| message inner padding | 8px 12px | 普通消息 bubble / tool summary。 |
+| panel padding | 10px 12px | 右侧 Runtime / Workspace panel。 |
+| section gap | 12-16px | 明确不同模块之间的间距。 |
+| page gutter | 16-20px | 中间 timeline 左右留白，不能过大。 |
+
+选中态与状态色：
+
+- selected：低饱和灰底 + 1px border + 左侧 2px hairline 或小圆点；不要使用大面积绿色/青色底。
+- hover：只提升背景一档或边框一档，不加阴影。
+- running：小状态点 / thin accent line；不要整行染色。
+- waiting/permission：amber 小点或 tiny chip。
+- failed/blocked：red 小点 + 文案，不整块红底。
+- completed：muted green/gray，降低视觉权重。
+- active session tab 可以借鉴 Codex 的 cyan label，但只用于当前 session window 的小标签，不扩展成整块 header 背景。
+
+视觉禁用项：
+
+- 不再在 Session TUI 中随意新增 `borderRadius: 12px` 的大卡片；普通 row 用 6px，面板最多 8px。
+- 不在消息气泡、checkpoint、runtime row 上使用高饱和彩色背景。
+- 不用 emoji 作为主要结构图标；状态使用图标库或小点/线。
+- 不把每个小模块都包成 card；同一区域内用分隔线、缩进、密度层级表达。
+- 不用随机 inline style 定义字号和间距；新实现先提取 `sessionTuiTokens` 或 CSS class。
+
+当前代码断点：
+
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx` 内存在大量局部 inline 字号和 padding。
+- `SessionCommandControlPanel` 的 checkpoint rail 当前是 10px x 18px 方块按钮，不像 Codex 的细线/节点。
+- 用户消息当前使用 `rgba(16,185,129,0.1/0.15)` 的绿色气泡/头像底，这会让选中态和消息角色色都显得廉价。
+- `details/thinking/tool` 多处使用紫色或随机状态背景，和 Codex-like workbench 风格不统一。
 
 ## 3. 治理表达
 
@@ -300,19 +421,17 @@ Checkpoint 是 user prompt node，不是每个工具调用 node。
 
 这里要借鉴 CC / Codex 的“细线 + 节点 + hover 卡片”表达，而不是实现真实 Git。
 
-目标效果：
+目标效果不是完整 Git DAG，而是“主线优先 + 分支提示 + 必要时短支线展开”。
+
+默认形态：
 
 ```text
 │
 ●  checkpoint 1  用户发起任务
 │
-│  tool calls / search / todo / workflow marker
+·  tool calls / search / todo / workflow marker
 │
-●  checkpoint 2  阶段性结果
-│\
-│ ● branch A     从 checkpoint 2 分出
-│ │
-│ ● branch A head
+●  checkpoint 2  阶段性结果        [2 branches]
 │
 ●  checkpoint 3  main 继续
 │
@@ -321,15 +440,130 @@ Checkpoint 是 user prompt node，不是每个工具调用 node。
 ●  new tail after rewind
 ```
 
+展开某个 checkpoint 的 branch stack：
+
+```text
+│
+●  checkpoint 2  阶段性结果
+├─ branch A · completed · 12 msgs
+└─ branch B · running   · 4 tool calls
+│
+●  checkpoint 3  main 继续
+```
+
 交互规则：
 
-- 单击节点：选中 checkpoint，滚动 / 聚焦到对应对话位置，并在节点旁显示 preview card。
-- preview card：显示该 checkpoint 的用户输入摘要、时间、工具调用数、文件变化数、是否有 compact / branch / workspace snapshot。
-- 主操作：`回到这里`、`从这里分支`、`查看上下文`、`查看文件变化`、`复制输入`。
-- 选中节点时，rail 上的线段应有轻微高亮或流动动效，让用户看到“当前看到的是哪一段工作线”。
-- branch 节点用短分叉线表达，不需要完整 DAG 布局；同一 checkpoint 多个 branch 可折叠成 branch count。
+- Hover checkpoint 节点：显示该 checkpoint 的缩略状态卡片。
+- 缩略状态卡片只展示状态，不承载改变类动作：用户输入摘要、时间、工具调用数、文件变化数、是否有 compact / branch / workspace snapshot、当时运行状态。
+- Click checkpoint 节点：执行 session 内位置回滚 / 定位，把中间 session timeline 滚动并聚焦到该 checkpoint 对应的对话锚点。
+- Click checkpoint 不是弹卡片，不是执行 `/rewind`，也不是创建 branch；它只改变当前 UI viewport / focused anchor。
+- 改变类操作只有两个：`Rewind here`、`Branch here`，它们出现在被定位到的 checkpoint 对话锚点操作区或右侧 inspector 动作区，而不是 hover 缩略卡片里。
+- 只读操作可以有：`查看上下文`、`查看文件变化 / workspace snapshot`。
+- `复制输入` 或 prompt prefill 是 composer helper，不是第三种 session mutation，不命名为 `Clone`。
+- 当前定位节点时，rail 上的线段应有轻微高亮或流动动效，让用户看到“当前视口回到了哪一个 checkpoint / 哪一段工作线”。
+- branch 默认折叠成 branch chip，例如 `[2 branches]`，不要默认画多条并行线。
+- 只有 hover / selected checkpoint / branch chip click 时，才展开短支线列表。
+- 展开的 branch stack 最多缩进 16-20px，使用 1px hairline，不画大面积彩色线。
+- branch 行只显示 branch title、status、message/tool count、elapsed；点击 branch 行切换到对应 `ChatSession.id`。
 - rewind 后的旧 tail 不删除，只灰掉 / 降低透明度，并明确标注“不在当前上下文”。
 - compact marker 是线上的压缩标记，不是普通 assistant 消息。
+
+GitLine 视觉规格：
+
+| 元素 | 规格 |
+| --- | --- |
+| 主线 | 1px neutral hairline，低对比度；当前 active segment 提升一档对比度。 |
+| checkpoint node | 6-7px 圆点；current head 可用 8px ring，不用大方块。 |
+| tool/compact marker | 3-4px 小点或短横，不抢 checkpoint。 |
+| branch chip | 10px 字号、4px radius、灰底/灰边，不用彩色胶囊。 |
+| selected checkpoint | node ring + row 背景轻微提升；不要整行强色。 |
+| rewound tail | opacity 0.35-0.45 + dashed line / crossed marker。 |
+| branch expanded line | 1px elbow line，最多两级；深层 branch 折叠成 count。 |
+
+分支不丑的关键原则：
+
+- 主线永远是主视觉，branch 只是“可进入的另一路径”。
+- 不做横向铺开的树；横向 DAG 会和 chat 阅读宽度冲突。
+- 多个 branch 不逐条常驻展开，默认只显示 count。
+- 选中 branch 后，中间切到该 branch session，GitLine 只高亮该 branch path，不同时展示所有路径。
+- branch path 使用短线和小标签，不使用大面积背景色区分。
+
+### 5.1.2 Branch 切换视觉契约
+
+branch 切换必须让用户看懂两件事：
+
+1. 我现在在哪条 session line。
+2. 这条 line 是从哪个 checkpoint 分出去的。
+
+不要用“每个 branch 一个颜色”来解决这个问题。branch 多了以后颜色会失控，也会和 running/waiting/failed 这些状态色冲突。最终规则是：**颜色表达状态，不表达 branch 身份；branch 身份用结构、标签和 active path 表达。**
+
+状态模型：
+
+| 状态 | UI 表达 |
+| --- | --- |
+| common ancestor checkpoint | neutral node + normal line；如果它是分叉点，右侧显示 branch count chip。 |
+| 当前 active session line | active path 用一档更深的 neutral/cyan hairline + current head ring。 |
+| inactive sibling branch | 只显示 branch chip / branch row，灰色文本，不常驻画完整路径。 |
+| selected branch row | 轻灰背景 + 1px border + 左侧 2px hairline；不整行染色。 |
+| running branch | branch row 内显示小 running dot / elapsed / tool count，不改变 branch identity 色。 |
+| failed branch | branch row 内显示 red dot + failed 文案，不把整条 branch path 染红。 |
+
+切换流程：
+
+```text
+1. click checkpoint C2
+   -> 中间 timeline 定位到 C2
+   -> C2 旁显示 [2 branches]
+
+2. click [2 branches]
+   -> 展开 C2 下的 branch stack
+      ├─ main · current · 20 msgs
+      ├─ branch A · completed · 12 msgs
+      └─ branch B · running · 4 tool calls
+
+3. click branch A
+   -> switch_session(branchA.chat_session_id)
+   -> 中间 Chat 切到 branch A 的 transcript
+   -> composer 当前输入上下文切到 branch A
+   -> GitLine active path 从 C2 高亮到 branch A head
+   -> header/breadcrumb 显示 Main > branch A
+```
+
+branch 后续 checkpoint 规则：
+
+- branch 创建点仍是共同祖先 checkpoint。
+- branch 进入后，后续用户输入生成 branch-local checkpoint。
+- branch-local checkpoint 只属于当前 branch session line，不回写 main。
+- 切回 main 时，只高亮 main path；branch-local checkpoint 折叠回 branch chip。
+- 切回 branch A 时，重新显示 `C2 -> A1 -> A2 -> branch A head` 这条 active path。
+- 如果 branch A 上继续创建 branch，默认仍折叠成 branch chip，不展开成全量 DAG。
+
+视觉示意：
+
+```text
+main view:
+● C1
+│
+● C2  [2 branches]
+│
+● C3 main head
+
+branch A active view:
+● C1
+│
+● C2  fork anchor
+└─● A1
+  │
+  ● A2 branch A head
+```
+
+让它克制又看得懂的关键：
+
+- 不靠颜色区分 branch；只用一个 active path 高亮。
+- 不同时画所有 branch path；只展开当前 selected checkpoint 下的 branch stack。
+- 中间 header / active session label 必须显示当前 line 名称，例如 `Main > branch A`。
+- 右侧 Runtime Agents / Branches tab 同步选中同一个 branch row。
+- GitLine、Chat transcript、composer context 必须同源切换，不能只换视觉不换 session。
 
 动效边界：
 
@@ -337,19 +571,31 @@ Checkpoint 是 user prompt node，不是每个工具调用 node。
 - 不做花哨的全屏动画，不改变 transcript 的阅读稳定性。
 - 动效必须服务于“我当前在哪个 checkpoint / 哪条线 / 哪些内容已被排除”。
 
-点击 checkpoint 后打开菜单：
+checkpoint 节点的 hover 状态卡片：
 
-- 回到这里。
-- 从这里创建分支。
-- 查看此处上下文。
-- 查看此处文件变化 / workspace snapshot。
-- 复制该轮输入。
+- 输入摘要。
+- 运行状态。
+- tool call / token / 文件变化摘要。
+- compact / branch / workspace snapshot 标记。
 
-当前 `SessionCommandControlPanel` 直接触发 rewind，需要升级为 checkpoint node menu。
+点击 checkpoint 后：
+
+- 中间 session timeline 回滚 / 定位到该 checkpoint 对应的对话锚点。
+- 对话锚点处显示 action bar：`Rewind here`、`Branch here`、`查看上下文`、`查看文件变化 / workspace snapshot`、`复制该轮输入`。
+- `复制该轮输入` 只能影响 composer/clipboard，不能改变 `active_projection`、`ChatSession.id` 或 runtime head。
+
+当前 `SessionCommandControlPanel` 直接触发 rewind，需要升级为 hover 状态卡片 + click 定位 + 锚点 action bar。
 
 ### 5.2 Rewind
 
 Rewind 不创建新 session。它更新当前 session 的 active projection。
+
+语义边界：
+
+- `Rewind here` 的 anchor 是所选 user checkpoint。
+- 实际恢复点是该 user prompt 输入前，即 provider conversation 必须使用 `sequence < checkpoint.sequence`。
+- T0/transcript append-only，不物理删除 checkpoint 之后的旧消息。
+- selected prompt 如果需要回填输入框，只能作为 composer prefill 副作用，不进入下一轮 provider context。
 
 UI 必须显示：
 
@@ -357,9 +603,20 @@ UI 必须显示：
 - 哪些旧 tail 已被排除出当前 context。
 - rewind 后的新 tail 从哪里开始。
 
+真实断点：
+
+- 当前 `backend/app/services/web_chat_runtime.py::_rewind_projected_history` 仍按 `sequence <= anchor.sequence` 取 prefix，会把所选 user prompt 本身带入下一轮上下文；这与 CC MessageSelector 的 before-boundary 不一致。
+- 当前 `frontend/src/pages/agent-detail/AgentChatSection.tsx::SessionCommandControlPanel` 的 checkpoint row 点击会直接触发 `/rewind`；这必须改为只选中/定位。
+
 ### 5.3 Branch
 
 Branch 创建新 `ChatSession.id`。
+
+语义边界：
+
+- `/branch` slash command：对齐 CC current-head fork，按当前有效 head 创建新 session line。
+- checkpoint 上的 `Branch here`：对齐 CC MessageSelector 的 before-boundary，从所选 user checkpoint 输入前复制 prefix 创建新 session line。
+- checkpoint `Branch here` 不能把被选 user prompt 本身复制进新分支；如果 UI 需要让用户继续编辑该 prompt，应使用 composer prefill，而不是把 prompt 写入新 session transcript。
 
 UI 必须显示：
 
@@ -368,6 +625,11 @@ UI 必须显示：
 - parent session。
 - 当前 branch。
 - 切换 branch 等价于切换 session。
+
+真实断点：
+
+- 当前 `/branch` command 内部使用 `create_conversation_branch(mode="branch")`，适合 current-head branch；如果 selected checkpoint UI 复用该路径，会因为 `mode="branch"` 的 prefix 规则包含 anchor 而复制 selected prompt。
+- 当前 `POST /sessions/{session_id}/branches` schema 接受 `mode="rewind"`，且 branch service 已有 before-boundary 能力；checkpoint `Branch here` 应走该模式，而不是复用普通 `/branch` command。
 
 ### 5.4 Compact
 
@@ -578,15 +840,17 @@ Selected leaf detail
 | 中间点击行为 | 切换到 member session window | 切换到 workflow run window / 展开 leaf detail |
 | 右侧表达 | Runtime Agents row 为主 | Workflow tab 的 phase / step / leaf tree 为主 |
 
-### 7.3 真实断点
+### 7.3 当前核验结论
 
-当前存在两个需要实装时修掉的断点：
+当前存在一个已关闭项和一个需要保持边界的 UI 约束：
 
-1. **Agent Team 前端创建路径仍传 `members`。**
-   - 前端 `SessionNativeControls.createTeam` 仍向 `ccParityApi.createTeam()` 传 `members`。
+1. **Agent Team 前端创建路径已改为 container-only。**
+   - 当前 `frontend/src/api/domains/ccParity.ts::CreateAgentTeamInput` 只包含 `parent_session_id` 和 `name`，不再包含 `members`。
+   - 当前 `frontend/src/pages/session-workbench/SessionNativeControls.tsx::createTeam` 只向 `ccParityApi.createTeam()` 传 `parent_session_id` 和 `name`。
+   - UI 文案已经说明 teammate 通过 `spawn_subagent` 加入 team。
+   - `enterMember` 继续通过 `ccParityApi.enterTeamMember()` 切换到 member 的 `chat_session_id`。
    - 后端 `create_agent_team_runtime_result()` 已明确 `TeamCreate creates the Team container only; spawn teammates with spawn_subagent team_name + name`。
-   - 结论：这是前端调用路径问题为主；后端 runtime 语义是正确的、fail-closed 的。后端 API schema 保留 `members?: []` 是兼容残留，但实际非空会被拒绝。
-   - 修复：前端 `createTeam` 只创建 container；成员创建必须走 `spawn_subagent(team_name + name)` 或对应 typed command result。
+   - 结论：这个断点当前按代码已关闭；后续工作不是再修 create API，而是把 team/member rows 从 `SessionNativeControls` 的控件列表升级到右侧 Runtime Agents panel。
 
 2. **Dynamic Workflow leaf 当前没有 enterable session contract。**
    - 当前 `WorkflowLeafCall` 和 workflow detail API 不携带 `child_session_id`。
@@ -633,6 +897,234 @@ Workspace Documents 是统一交付面：
 - evidence/source refs。
 
 当前文档不应再以 modal 为主。桌面下应该在右侧 Workspace Documents 展示；窄屏可用 overlay panel。
+
+### 8.4 页面级拆分：Session Page 与 Agent Detail
+
+当前前端已经在产品入口上露出两条路径：
+
+- 左侧 Agent 行的加号：创建一个新的 Session。
+- 左侧 Agent 行的详情按钮：进入 Agent Detail / 管理页。
+
+但当前实现仍是“入口看似分离，运行时仍塞回 AgentDetail”：
+
+- `frontend/src/App.tsx` 已有 `agents/:id/chat` 路由，但 `frontend/src/pages/Chat.tsx` 只是重定向到 `/agents/:id#chat`。
+- 左侧创建 Session 后仍跳转到 `/agents/:id?session_id=...#chat`。
+- `frontend/src/pages/AgentDetail.tsx::isSessionWorkbenchRoute()` 用 `activeTab === "chat" && session_id && !manage` 判断 session-only 模式。
+- `AgentDetail` 通过 `agent-detail-session-only` 隐藏 header/tab，把 Chat 伪装成独立页面。
+- `AgentChatSection` 已有 `sessionOnly` prop，但它仍由 `AgentDetail` 持有全部 session state、WebSocket、run、branch、permission、upload、composer 状态。
+
+结论：当前是半拆分状态。下一轮不应该把 Chat 区域作为一个整体从 `AgentDetail` 里搬走，而应该按 scope 拆开三个职责：
+
+1. **我的对话 / My Conversations**：应该在 Agent Detail 外面，作为用户自己的 Session 入口和个人工作流入口。左侧 Agent 下的 session list / 新建 session / 我的会话列表都属于这一层。
+2. **所有用户 / All Users**：仍保留在 Agent Detail 内。它是管理/审计视角，用来查看这个 Agent 面向所有用户产生的对话记录、归属、删除/管理入口。这里不是普通个人工作台。
+3. **当前对话 / Active Session Workbench**：从 Agent Detail 里拆出来，回到独立 Session Page。它承载当前 session 的 timeline、checkpoint、right runtime、composer、Agent Team/Workflow 状态。
+
+也就是说，Agent Detail 不是只剩一个“打开 Session”的按钮；它仍保留 `All Users` 这一类对话管理/审计区域。但 `My Conversations` 和当前个人 Session workbench 不应该继续藏在 Agent Detail 里面。
+
+目标页面职责：
+
+| 页面 | 路由建议 | 职责 |
+| --- | --- | --- |
+| Agent Detail | `/agents/:agentId` 或后续 `/agents/:agentId/details` | 管理 Agent：概览、能力、记忆、A2A、workspace、workflow、office、governance、settings；同时保留 `All Users` 对话审计/管理区域，用于查看所有用户与该 Agent 的会话记录。 |
+| My Conversations / Session Entry | 左侧 Agent 下 session list，或后续 `/agents/:agentId/sessions` | 用户自己的对话入口：新建 session、查看自己的 session、进入当前 session。它在 Agent Detail 外部。 |
+| Agent Session Page | `/agents/:agentId/sessions/:sessionId` | 承载“当前对话 / Active Session Workbench”：中间 timeline、checkpoint git line、right Workspace/Runtime、Agent Team/Workflow 状态、composer。不再重复显示 `All Users` 管理列表。 |
+| Agent Chat Redirect | `/agents/:agentId/chat` | 兼容入口：进入最近 session，或创建新 session 后跳到 `/agents/:agentId/sessions/:sessionId`。 |
+| Legacy Session URL | `/agents/:agentId?session_id=...#chat` | 兼容旧链接：redirect 到 `/agents/:agentId/sessions/:sessionId`。 |
+
+迁移策略：
+
+1. 先把当前 `AgentChatSection` 拆成两个概念组件：
+   - `AgentUserConversationAudit`：`All Users` 对话列表、归属用户、只读查看/删除/管理、session metadata。继续用于 Agent Detail。
+   - `MyConversationEntry`：`My Conversations` 对话列表、新建 session、进入 session。移动到 Agent Detail 外部，优先复用左侧 Agent session list；如果需要页面级入口，再做 `/agents/:agentId/sessions`。
+   - `ActiveSessionWorkbench`：当前对话 timeline、right runtime、composer、checkpoint、permission、workflow/team。用于独立 Session Page。
+2. 抽出 `useAgentSessionController(agentId, sessionId)`，只管理当前 active session 的消息、WebSocket、run、permission、upload、branch、composer 状态。
+3. 新建 `AgentSessionPage.tsx`，使用 `useAgentSessionController` + `ActiveSessionWorkbench`。
+4. `AppSidebar` 的 session row 和创建 session 后跳转统一改到 `/agents/:agentId/sessions/:sessionId`。
+5. `AgentDetail` 的 Chat/Conversations 区域只保留 `All Users` 管理/审计视角；`My Conversations` 不再作为 Agent Detail 内部 tab 出现。
+6. 在 `All Users` 里点击其他用户会话时，默认是 Agent Detail 内的管理查看/审计视图；只有进入自己的 session 或显式“打开为 Session”时，才跳到独立 Session Page。
+7. 等新页面稳定后，再移除 `?session_id=...#chat` 的 session-only 伪页面逻辑。
+
+这个拆分是 TUI 落地的前置条件。否则 `My Conversations`、`All Users` 和 `Active Session Workbench` 会继续混在 `AgentDetail` 的同一组件里，三栏 Session Shell、右侧 Runtime Tables、checkpoint git line、Agent Team session window 也会继续挤在管理页里。
+
+### 8.5 消息底部 Action Bar 边界
+
+当前消息底部操作区过重，且动作语义放错了位置。
+
+当前代码状态：
+
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx::MessageBranchActions` 当前暴露 `Fork`、`Edit`、`Insert before`、`Insert after`、`Reply`、`Regenerate`。
+- 这些动作都挂在单条消息底部，导致 Session 级操作、消息反馈、文本复制、分支编辑混在同一排。
+- 从当前实现看，这个位置不适合承载 `Enter`、Agent Team enter、Workflow enter、Hook 管理、复杂 branch editor 或多种 insert/reply/regenerate 模式。
+
+目标边界：
+
+| 动作类别 | 是否保留在消息底部 | 说明 |
+| --- | --- | --- |
+| Copy | 保留 | 轻量、局部、无 session mutation。 |
+| Like / Dislike | 保留 | 作为 session feedback / self-evolution 输入；必须进入可审计 feedback event。 |
+| Branch / Batch（待术语确认） | 暂定保留一个入口 | 如果指 Branch：只保留一个“从这里分支”的主入口，不展示 Fork/Edit/Insert/Reply/Regenerate 多模式；具体编辑在进入 branch flow 后处理。如果指 Batch approval：它不应放在消息底部，而应放在 permission/governance UI。 |
+| Rewind | 保留 | 替代当前类似 Hook/anchor 的位置，用 Rewind 图标表示“从此处回到前一轮边界”。 |
+| Hook | 不保留 | Hook 是治理/运行时生命周期，不是消息局部动作；进入右侧 Governance/Runtime tab。 |
+| Enter | 不保留 | Enter 只适用于 Agent Team member / child session / workflow run window，由右侧 Runtime Agents/Workflow 控制，不挂在普通消息底部。 |
+| Insert before / Insert after / Reply / Regenerate | 不直接保留 | 这些是 branch/edit workflow 的子模式，不应在普通消息底部铺开。需要时进入 Branch flow 或高级菜单。 |
+
+推荐最终消息 action bar：
+
+```text
+Copy · Like · Dislike · Branch/Batch? · Rewind
+```
+
+实装前需要确认一件事：
+
+- 用户口头说的 `Batch` 是不是指 `Branch/分支`。如果是，UI 文案统一用 `Branch` / `分支`；如果它指批量批准，则它必须移动到 permission/governance 区，不能放在消息底部。
+
+测试验收：
+
+- 普通 user/assistant 消息底部不再渲染 `Fork/Edit/Insert before/Insert after/Reply/Regenerate` 这一组按钮。
+- 消息底部保留 Copy、Like、Dislike。
+- Rewind 图标点击不立即删除历史；它只触发明确的 rewind flow，并遵守 before-boundary 语义。
+- Branch 入口如果保留，只打开单一 branch flow；不在 action bar 上展开所有 branch modes。
+- Hook / Enter 不出现在普通消息底部。
+
+### 8.6 本轮 UI 裁决：三栏、右侧列、Workspace 共享记忆、Skills 清单
+
+本轮截图暴露了多个前端表达断点，下一轮实装必须一起处理。左侧导航栏的信息架构不属于本轮 scope，保持不动；但三栏 shell 本身已经固定，左右栏都要可缩放。
+
+#### 8.6.0 固定三栏与底部 composer 下沉
+
+裁决：
+
+- Web Session Shell 固定为三栏：左侧现有导航 / 中间 chat timeline / 右侧 Workspace + Runtime。
+- 左右两个侧栏都可以拖拽缩放。
+- 中间 chat 区域必须跟随左右栏缩放自适应。
+- 底部输入栏的边框不改，但位置要更接近 session shell 底部，去掉当前过大的底部留白。
+- composer 下沉不等于遮挡内容；history 区域应该通过 `padding-bottom` / scroll anchoring 保证最后一条消息不会被输入框盖住。
+
+当前代码证据：
+
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx:2207` 仍在非 session-only 模式使用 `height: calc(100vh - 206px)`。
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx:2301` 中间 chat 容器是 flex column，但整体仍被外层硬编码高度限制。
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx:2468` composer 作为底部 flow child 渲染，当前 padding 是 `14px 16px 16px`，外层高度模型容易造成下方空白。
+
+下一轮实装动作：
+
+1. 新建或改造 `SessionShell`，使用 CSS grid/flex 三栏布局。
+2. 左右栏宽度进入 UI state / local storage，提供 resize handle 和 min/max width。
+3. 中间 chat 使用 `minmax(520px, 1fr)` / `min-width: 0` / `overflow: hidden`，消息容器内部滚动。
+4. 移除 `height: calc(100vh - 206px)` 这类硬编码高度，改用父级 shell 的 `height: 100dvh` 或明确的 viewport layout contract。
+5. composer 区域贴近底部，底部安全间距控制在视觉必要范围内；不要保留大块空白。
+
+#### 8.6.1 删除当前右侧固定 inspector 列
+
+当前 Chat / Agent Detail 右侧红框列不是最终 TUI 的 Runtime 表达，它只是旧的 `SessionWorkbenchInspector + SessionNativeControls` 固定列，里面混放了：
+
+- 会话上下文统计。
+- JSON 导出。
+- Hook 管理。
+- 启动目标。
+- 高级计划。
+
+裁决：
+
+- 这一列从当前 Agent Detail / Chat 位置删除。
+- 不要把它原样迁移到新的 Session Page。
+- Hook / goal / advanced plan / JSON export 如果后续仍需要，必须进入明确的 Runtime / Governance / Debug / Export 入口，而不是常驻在当前对话右侧。
+- 未来独立 Session Page 的右侧区域只允许放真正服务当前 session 的内容，例如 Workspace Documents、Agent Team 状态、Dynamic Workflow 状态、后台任务、permission/governance pending items；不能复用当前这列杂项面板。
+
+当前代码证据：
+
+- `frontend/src/pages/agent-detail/AgentChatSection.tsx` 在 `!sessionOnly && activeSession` 时渲染 `SessionWorkbenchInspector`。
+- `SessionWorkbenchInspector` 内部继续渲染 `SessionNativeControls`。
+- `frontend/src/pages/session-workbench/SessionWorkbenchChrome.tsx` 仍定义固定 inspector 面板。
+
+下一轮实装动作：
+
+1. 从 Agent Detail / 当前 Chat 位置移除 `SessionWorkbenchInspector` 和 `SessionNativeControls`。
+2. 删除或改写依赖该固定右列的测试。
+3. 后续独立 Session Page 若需要右侧面板，重新按 Runtime Tables / Workspace Documents 建模，不复用旧 inspector。
+
+#### 8.6.2 删除 Workspace 里的“团队共享记忆”
+
+Workspace 页里的“团队共享记忆”目前没有实际使用价值，也不应该占据文档与工作区页面的首屏。
+
+裁决：
+
+- 从前端 Workspace tab 删除 `TeamMemorySummaryCard`。
+- Workspace tab 回到文件/文档/Office/workspace artifact 的实际工作区表达。
+- 后端记忆系统是否保留不在本轮前端 scope；本轮只删除这个无效前端入口。
+
+当前代码证据：
+
+- `frontend/src/pages/agent-detail/AgentWorkspaceSection.tsx` import `TeamMemorySummaryCard`。
+- 同文件在 `FileBrowser` 之前渲染 `<TeamMemorySummaryCard agentId={agentId} section="workspace" />`。
+
+下一轮实装动作：
+
+1. 删除 `AgentWorkspaceSection.tsx` 里的 `TeamMemorySummaryCard` import 和渲染。
+2. 更新 `AgentDetailSections.test.tsx` 中对 shared memory / team memory 的断言。
+3. 若 `TeamMemorySummaryCard` 只剩 Aware 页或无真实入口，再单独判断是否继续保留组件；不要因为 Workspace 删除而顺手清理未核实入口。
+
+#### 8.6.3 恢复 Skills 页的已安装清单
+
+Skills 页现在只剩导入入口和格式说明，这是错误的。用户进入 Skills 页首先应该看到“这个 Agent 当前已经安装/可用的 Skill 与 MCP Skill 是什么”，导入按钮只能是辅助操作。
+
+裁决：
+
+- Skills 页必须恢复 installed inventory。
+- 内部 / 平台内置 skill 必须列出。
+- Agent workspace/imported skill 必须列出。
+- ClawHub / URL 导入的 skill 必须列出。
+- MCP skill / MCP-backed capability 必须列出，至少能看到 MCP server 名称、启用状态、tool count、default tool policy、always-load 状态。
+- 导入入口保留，但不能替代已安装清单。
+
+当前代码证据：
+
+- `frontend/src/pages/agent-detail/AgentSkillsSection.tsx` 当前只渲染标题、说明、`Import from URL`、`Browse ClawHub`、`Import from Presets` 和 governed notice。
+- `AgentSkillsSection` 里的 `skillApi.list()` 只在 `showImportSkillModal` 时查询，实际用于 preset import，不是 agent installed skills list。
+- `frontend/src/api/domains/extensions.ts` 明确写了 `/agents/{id}/extensions` 是 Agent Detail extension state 的 single source of truth，并返回 `skills`、`mcp_servers`、`plugins`。
+- `frontend/src/pages/agent-detail/ToolsManager.tsx` 已经使用 `extensionsApi.getAgentExtensions(agentId)` 展示 MCP servers / plugins，但 Skills 页没有消费这个 source of truth。
+
+下一轮实装动作：
+
+1. `AgentSkillsSection` 增加 `extensionsApi.getAgentExtensions(agentId)` 查询。
+2. 页面顶部渲染 installed inventory，而不是先渲染导入说明。
+3. installed inventory 至少分组：
+   - Internal / Platform Skills。
+   - Agent Skills（workspace/imported/ClawHub/URL）。
+   - MCP Skills / MCP-backed Capabilities。
+   - Plugins / external skill capsules（如果后端返回）。
+4. 每项显示 `name`、`source`、`status`；MCP 项额外显示 `enabled`、`tool_count`、`default_tool_mode`、`always_load`。
+5. 空态必须区分“真的没有安装”和“加载失败”；不能再出现 Skills 页空白但其实已有 MCP/内部 skill 的情况。
+
+### 8.7 当前前端核验记录（2026-06-28）
+
+本节记录下一轮前端实装前的当前 checkout 状态。当前未改前端代码，只做代码阅读和方案落账。
+
+| 优先级 | 结论 | 当前证据 | 下一轮前端动作 |
+| --- | --- | --- | --- |
+| P0 | Session Shell 固定三栏：左右栏可缩放，中间 chat 自适应。 | 当前文档已定三栏；当前代码仍以 `AgentChatSection` 内联 flex + `height: calc(100vh - 206px)` 承载 session 区。 | 建 `SessionShell` grid/flex contract；左右栏 resize handle + min/max；中间 `min-width:0` 自适应；左侧导航内容不改。 |
+| P0 | 当前 chat 底部留白过大，composer 需要下沉到 shell 底部。 | `AgentChatSection.tsx` composer 作为 flow child 渲染，但外层硬编码高度和 padding 会形成多余下方空间。 | 移除硬编码高度；history flex 占满剩余高度；composer sticky/flow bottom；底部只留安全间距，保证最后一条消息不被遮挡。 |
+| P0 | Session TUI 需要统一 Codex-like 字号、间距、选中态 token。 | `AgentChatSection.tsx` 和 `SessionWorkbenchChrome.tsx` 混用大量 inline `10/11/12/13/15/16/28px`、随机 padding、彩色气泡/状态背景。 | 提取 Session TUI typography/density/selection tokens；主正文 13px，metadata 11px，row padding 6-8px；选中态用低饱和灰底 + 细线/小点，不用大面积彩色块。 |
+| P0 | GitLine 分支默认折叠为 branch chip，展开时只画短支线。 | 当前 `SessionCommandControlPanel` checkpoint rail 是方块按钮 + row list，不具备 Codex-like 细线/节点/branch stack。 | 重写 checkpoint rail：1px 主线、6-7px 圆点、branch count chip、selected 才展开短支线；避免横向 DAG 和大面积彩色分叉。 |
+| P0 | Branch 切换用 active path + label 表达，不用每个 branch 一个颜色。 | 如果用颜色区分 branch，会和 running/waiting/failed 状态色冲突；当前文档已定 branch 是 `ChatSession.id` 切换。 | branch row click 执行 `switch_session(branch.chat_session_id)`；GitLine 高亮当前 active path；header 显示 `Main > branch A`；inactive sibling branches 折叠为灰色 chip/row。 |
+| P0 | 当前 Agent Detail / Chat 右侧固定 inspector 列必须从这个位置删除。 | `frontend/src/pages/agent-detail/AgentChatSection.tsx` 渲染 `SessionWorkbenchInspector`，内部挂 `SessionNativeControls`；截图红框列正是这组旧控件。 | 移除当前位置的 `SessionWorkbenchInspector` / `SessionNativeControls`；Hook/goal/export/plan 不再常驻右列；未来 Session Page 右侧区域重新按 Runtime Tables / Workspace Documents 建模。 |
+| P0 | Workspace tab 的“团队共享记忆”前端入口删除。 | `frontend/src/pages/agent-detail/AgentWorkspaceSection.tsx` 在 `FileBrowser` 前渲染 `TeamMemorySummaryCard`。 | 删除 Workspace 里的 `TeamMemorySummaryCard` import/render；更新 shared memory 相关前端测试；只保留真实 workspace 文件/文档/Office 表达。 |
+| P0 | Skills 页必须恢复已安装清单，内部 skill 和 MCP skill 都要列出。 | `AgentSkillsSection` 当前只剩导入入口；`skillApi.list()` 只服务 preset modal；`extensionsApi.getAgentExtensions(agentId)` 才返回 agent 的 `skills/mcp_servers/plugins`。 | `AgentSkillsSection` 查询 `extensionsApi.getAgentExtensions(agentId)`，按 Internal/Agent/MCP/Plugin 分组展示 installed inventory；导入按钮降级为辅助入口。 |
+| P0 | Chat 区域需要按 scope 拆：`My Conversations` 外置；`All Users` 留在 Agent Detail；当前对话成为独立 Session Page。 | `frontend/src/pages/Chat.tsx` 目前只是 redirect 到 `/agents/:id#chat`；`AgentDetail.tsx` 用 `sessionOnly` 伪装独立 session；`AgentChatSection` 同时承载 My/All tabs 和 active session workbench。 | 拆出 `AgentUserConversationAudit` 留在 Agent Detail；`MyConversationEntry` 移到外部 session 入口；新建 `AgentSessionPage` + `ActiveSessionWorkbench` + `useAgentSessionController`；session row / new session 跳到 `/agents/:agentId/sessions/:sessionId`。 |
+| P0 | 消息底部 action bar 过重，当前暴露 `Fork/Edit/Insert before/Insert after/Reply/Regenerate`。 | `frontend/src/pages/agent-detail/AgentChatSection.tsx::MessageBranchActions`。 | 收敛为 Copy、Like、Dislike、Branch/Batch?、Rewind；Hook/Enter/insert/reply/regenerate 从普通消息底部移走。 |
+| P0 | checkpoint 交互仍不符合最终 TUI 语义。当前 rail node 和 row 的 click 都直接调用 `/rewind`。 | `frontend/src/pages/agent-detail/AgentChatSection.tsx:651`, `frontend/src/pages/agent-detail/AgentChatSection.tsx:674` | 写红测：hover 显示缩略状态卡；click 只定位到 checkpoint 锚点；`Rewind here` 才调用 `/rewind`；`Branch here` 走 before-boundary branch API。 |
+| P0 | checkpoint click 必须是 session 内位置回滚 / 定位，不是弹卡片，也不是 mutation。 | 当前 `SessionCommandControlPanel` 没有 focused checkpoint / anchor action bar 状态模型。 | 给 `SessionCommandControlPanel` 增加 focused checkpoint state、hover preview、anchor action bar；保留底部输入框边框不动。 |
+| P1 | Agent Team 创建路径已对齐 container-only，不再是当前断点。 | `frontend/src/api/domains/ccParity.ts::CreateAgentTeamInput` 只有 `parent_session_id/name`；`frontend/src/pages/session-workbench/SessionNativeControls.tsx::createTeam` 只传这两个字段。 | 后续把 team/member rows 从控件列表升级为右侧 Runtime Agents panel；不要再回退到 `members` 创建。 |
+| P1 | Dynamic Workflow 当前仍应作为 workflow run window + leaf detail，不进入 leaf session。 | 当前 workflow detail leaf 没有 `child_session_id`；现有 UI 在 workflows section 展示 leaf status。 | 下一轮先不做 leaf enter；只在 Runtime Workflow tab / Workflow Run Window 展示 phase/step/leaf/detail。 |
+
+本轮讨论后的 checkpoint UI 规则必须作为下一轮前端测试的第一条验收：
+
+```text
+hover checkpoint -> show compact status preview
+click checkpoint -> scroll/focus the session timeline to that checkpoint anchor
+click Rewind here -> install active rewind projection
+click Branch here -> create before-boundary branch session
+```
 
 ## 9. 需要改的前端代码面
 
@@ -722,7 +1214,10 @@ npm test -- --run \
 新增测试点：
 
 - Header 显示 permission/context/governance chips。
-- Checkpoint node 点击先打开菜单，不直接 rewind。
+- Checkpoint node hover 显示缩略状态卡片；hover 卡片不包含 `Rewind here` / `Branch here` 改变类动作。
+- Checkpoint node 点击只执行 session 内位置回滚 / 定位到对应对话锚点，不直接调用 `/rewind`，不改变 `active_projection`。
+- 定位后的 checkpoint 对话锚点 action bar 的 `Rewind here` 才调用 rewind command，并传 selected `checkpoint_event_id`。
+- 定位后的 checkpoint 对话锚点 action bar 的 `Branch here` 走 branch API before-boundary 路径，不复用 current-head `/branch` command。
 - Rewind 后旧 tail 标为 excluded from context。
 - Compact marker 可打开右侧 Context/Governance detail。
 - `/command ` 选择后进入 composer，执行结果不追加 raw JSON。
@@ -745,18 +1240,164 @@ npm test -- --run \
 cd frontend && npm run build
 ```
 
+若本轮同时修后端 session boundary，必须先补后端红测再实现：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_web_chat_runtime.py::test_active_rewind_projection_truncates_history_to_checkpoint_and_keeps_later_tail \
+  tests/services/test_conversation_branch_service.py::test_rewind_branch_copies_prefix_before_user_checkpoint \
+  tests/services/test_session_command_runtime.py::test_branch_command_is_non_destructive_session_fork \
+  -q
+```
+
+后端验收点：
+
+- active rewind projection 排除 selected user checkpoint 本身。
+- checkpoint `Branch here` 创建新 `ChatSession.id`，但复制边界是 selected prompt 输入前。
+- `/branch` 无 checkpoint 参数仍保留 current-head fork 语义。
+
 ## 10. 落地顺序
 
-一次性目标不是“全部视觉重做”，而是所有能力进入同一个 Session Shell，不再散落。
+执行顺序需要调整。当前最大风险不是缺一个功能控件，而是先在丑的、不稳定的布局和随机 inline style 上继续叠功能，后面会整体返工。因此落地必须先修视觉和布局地基，再做 session/branch/runtime 能力。
 
-1. **模型层**：扩展 `timelineModel.ts`，形成 session windows、checkpoint timeline、right panel model。
-2. **布局层**：冻结左侧导航栏，只重构中间 Session Timeline 与右侧 Workspace / Runtime 上下分区。
-3. **命令层**：slash command category + typed `ui_action` -> timeline marker + right panel action。
-4. **治理层**：permission mode、pending approvals、L0-L3、Truth Search evidence 进入右侧 Governance tab。
-5. **状态层**：compact/rewind/branch/clear/resume 进入 git-line checkpoint flow + 右侧 Context / Runs tab。
-6. **协作层**：Agent Team/Subagent/Background 统一成 enterable session windows；Dynamic Workflow 统一成 workflow run window + leaf detail。
-7. **交付层**：Workspace Documents 替代文档/文件弹窗主路径。
-8. **验收层**：前端单测 + build；后端不改 contract 时不跑全量 backend，若补 API contract 再按对应后端测试补齐。
+注意：下面是工程执行顺序，不是分阶段交付借口。每一步完成后都必须保持 build/test 通过；最后统一验收后才算完成。
+
+### 10.1 Step 1：视觉地基先落地
+
+先解决导致页面“丑”的共因。
+
+范围：
+
+- 建立 Session TUI typography / spacing / radius / selected-state token。
+- 将 Chat / Session 相关核心组件从随机 inline `fontSize/padding/borderRadius/background` 收敛到 CSS class 或 `sessionTuiTokens`。
+- 统一 Codex-like density：正文 13px、metadata 11px、row primary 12px、row padding 6-8px。
+- 统一选中态：低饱和灰底 + 1px border + 小状态点/细线，不用大面积彩色块。
+- 清掉绿色用户气泡、紫色 thinking 随机背景、过圆 card 等和 Session TUI 不一致的样式。
+
+验收：
+
+- Chat/Session 页面看起来先接近 Codex 的克制工作台密度。
+- 之后 GitLine、Runtime panel、Branch row 都复用同一套 token，不再各自长出一套样式。
+
+实施证据（2026-06-28 / Step 1）：
+
+- 已在 `frontend/src/index.css` 建立 Session TUI density token：正文 13px、row 12px、metadata 11px、row radius 6px、panel radius 8px、低饱和 selected/hover/message 背景。
+- 已将 `frontend/src/pages/agent-detail/AgentChatSection.tsx` 的核心消息行、头像、气泡、thinking 块、checkpoint command panel 收敛到 `session-tui-*` class；移除用户消息绿色 `rgba(16,185,129,...)` 与 thinking 紫色 `rgba(147,130,220,...)` 的直接表达。
+- 红测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "Session TUI density"` 在实现前失败，失败点是缺少 `session-tui-message-row ...` class 且输出仍包含旧绿色/紫色 inline style。
+- 绿测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "Session TUI density"` -> 1 passed / 69 skipped。
+- 回归：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx` -> 70 passed。
+
+### 10.2 Step 2：固定三栏 Shell 与底部 Composer
+
+视觉地基稳定后，再做页面骨架。
+
+范围：
+
+- 新建或改造 `SessionShell`。
+- 固定三栏：左侧现有导航 / 中间 Chat Timeline / 右侧 Workspace + Runtime。
+- 左右栏可拖拽缩放，宽度持久化到 UI state / local storage。
+- 中间 Chat 使用 `min-width: 0`、内部滚动、自适应左右栏。
+- 移除 `height: calc(100vh - 206px)` 这类硬编码高度。
+- composer 下沉到 shell 底部，只保留安全间距，不再出现大块底部留白。
+
+验收：
+
+- 拖动左右栏时，中间消息、GitLine、composer 不溢出、不遮挡。
+- 窄屏下右栏可折叠，Chat 仍是主区。
+
+### 10.3 Step 3：页面职责拆分
+
+Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞在 Agent Detail 里。
+
+范围：
+
+- `My Conversations` 外置到个人 session 入口。
+- `All Users` 保留在 Agent Detail，作为管理/审计视角。
+- `Active Session Workbench` 独立为 Session Page。
+- 抽 `useAgentSessionController(agentId, sessionId)`。
+- 创建 `AgentSessionPage` + `ActiveSessionWorkbench`。
+- 移除 Agent Detail / Chat 里的旧 `SessionWorkbenchInspector + SessionNativeControls` 固定右列。
+
+验收：
+
+- Agent Detail 不再伪装 session-only page。
+- 当前对话有独立 Session Page，且左侧导航内容不被重做。
+
+### 10.4 Step 4：Session Timeline / GitLine / Rewind / Branch
+
+页面和样式都稳定后，再做最容易混乱的 checkpoint/branch 交互。
+
+范围：
+
+- 扩展 `timelineModel.ts`：session windows、checkpoint nodes、branch entries、active path。
+- GitLine 改成 1px 主线 + 6-7px node + branch count chip。
+- checkpoint hover 只显示缩略状态卡。
+- checkpoint click 只定位到对话锚点，不执行 rewind。
+- 对话锚点 action bar 放 `Rewind here` / `Branch here`。
+- `Rewind here` 和 checkpoint `Branch here` 都采用 before-boundary 语义。
+- branch row click 切换 `ChatSession.id`，GitLine/Chat/composer context 同步切换。
+- branch 身份不用颜色区分；用 active path + header label 表达。
+
+验收：
+
+- Rewind 与 Branch 视觉和语义分开。
+- branch 后续 checkpoint 是 branch-local，不回写 main。
+- 切回 main / branch 时 active path、Chat、composer context 一致。
+
+### 10.5 Step 5：右侧 Runtime / Workspace 收敛
+
+核心 session timeline 成型后，再把分散状态收进右侧。
+
+范围：
+
+- 右侧上栏：Workspace Documents。
+- 右侧下栏：Runtime Tables。
+- Governance / Context / Runs / Agents / Workflow / Background / Commands / Raw 按 tab 收敛。
+- Agent Team、Sub-agent、Background Agent 进入 Runtime Agents，可点击切换中间 session window。
+- Dynamic Workflow 进入 Workflow run window + leaf detail，不做 leaf session enter。
+- slash command typed `ui_action` 映射到 timeline marker + right panel action。
+
+验收：
+
+- 不再用杂项 inspector 常驻右侧。
+- 工具、治理、命令、workflow、agent team 状态都有统一落点。
+
+### 10.6 Step 6：周边页面清理与能力清单恢复
+
+主 Session Shell 稳定后，清理旧表面和断点。
+
+范围：
+
+- Workspace tab 删除“团队共享记忆”前端入口。
+- Skills 页恢复 installed inventory：internal/platform、agent/imported、ClawHub/URL、MCP-backed capabilities、plugins。
+- 消息底部 action bar 收敛为 Copy / Like / Dislike / Branch or Batch / Rewind。
+- Hook / Enter / insert / reply / regenerate 移出普通消息底部。
+- 清理不再使用的旧组件、旧测试和旧兼容路径。
+
+验收：
+
+- 不保留两套 UI 体系。
+- 用户能看到已安装 skill / MCP skill，而不是只看到导入按钮。
+
+### 10.7 Step 7：总体验收与视觉回归
+
+最后做一次完整闭环验收。
+
+范围：
+
+- 前端单测。
+- frontend build。
+- 核验 desktop / narrow viewport。
+- 截图检查三栏、resize、composer 下沉、GitLine、branch stack、Runtime panel、Skills list、Workspace 清理。
+- 如果修了后端 before-boundary contract，再补后端 focused pytest。
+
+验收：
+
+- 功能闭环：session / checkpoint / rewind / branch / compact / runtime / workflow / agent team / skills / workspace 全部可达。
+- 视觉闭环：字体、间距、选中态、GitLine、branch stack 都服从同一套 Codex-like density。
+- 清理闭环：旧 inspector、无效 TeamMemorySummaryCard、旧 action bar、重复入口不再残留。
 
 ## 11. 完成口径
 

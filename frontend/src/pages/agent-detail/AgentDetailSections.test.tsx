@@ -664,6 +664,84 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="message-action-insert-after"');
   });
 
+  it('renders chat messages through Session TUI density classes instead of legacy colored bubbles', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agentId="agent-1"
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Codex density run',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          { id: 'user-msg-1', role: 'user', content: 'Use the checkpoint trail.', timestamp: '2026-06-01T09:00:00Z' },
+          {
+            id: 'assistant-msg-1',
+            role: 'assistant',
+            content: 'Checkpoint trail updated.',
+            thinking: 'I checked the current branch state.',
+            timestamp: '2026-06-01T09:00:02Z',
+          },
+        ]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('session-tui-message-row session-tui-message-row-user');
+    expect(markup).toContain('session-tui-message-row session-tui-message-row-assistant');
+    expect(markup).toContain('session-tui-message-bubble');
+    expect(markup).toContain('session-tui-thinking');
+    expect(markup).not.toContain('rgba(16,185,129');
+    expect(markup).not.toContain('147, 130, 220');
+  });
+
   it('renders branch lineage as a selectable tree', () => {
     const rows = buildBranchLineageRows([
       { id: 'root', parent_session_id: null, title: 'Original', branch: {} },

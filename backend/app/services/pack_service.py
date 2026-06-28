@@ -136,7 +136,10 @@ def _manifest_pack_to_dict(manifest: PackManifest) -> dict:
         "credential_requirements": list(manifest.credential_requirements),
         "activation": manifest.activation,
         "sandbox_requirements": manifest.sandbox_requirements,
-        "runtime_source_of_truth": "tool_decorator",
+        "owns": list(manifest.owns_names),
+        "requires_core": list(manifest.requires_core_names),
+        "optional_providers": list(manifest.optional_provider_names),
+        "runtime_source_of_truth": "manifest_only",
     }
 
 

@@ -681,6 +681,8 @@ pytest tests/tools/test_search_provider_tool_definitions.py tests/services/test_
 
 - Red：新增 Office boundary 红线后，`pytest tests/services/test_agent_tools_core_surface.py -q` 失败于 `OFFICE_RUNTIME_TOOLS <= CORE_TOOL_NAMES`，证明 `read_document` / `office_document_*` 仍被当成 pack/skill 工具而非 core runtime。
 - Green：已将 `read_document`、`office_document_create/view/query/apply/validate/dump` 纳入 taxonomy `agent_base`；`office_pack` 不再把这些工具暴露成 L2；新增 `office_browser` L2 descriptor 承接 ONLYOFFICE/browser WYSIWYG 能力；agent tools API 使用 taxonomy 让 core runtime 工具不依赖 skill declared rows 可见。
+- Full-suite red：全量后端回归 `pytest tests -q` 暴露 `CORE∩pack invariant violated`，因为 `office_pack` runtime group、`office_pack/pack.yaml role=owns` 和 `ToolMeta.pack="office_pack"` 仍然把 `read_document` / `office_document_*` 作为 pack-owned tools 维护，证明旧系统没有完全退役。
+- Green：已退役 `office_pack` 的 runtime group ownership，`backend/packs/office_pack/pack.yaml` 中 Office runtime tools 改为 `role: requires_core`，Office handlers 移除 `pack="office_pack"`，`pack_policy_service.policy_pack_names_for_tool()` 不再把 core Office tools 归到 `office_pack`；manifest-only catalog 仍暴露 `owns` / `requires_core` 角色，保留 skill guide / install catalog 语义。
 - 验证命令：
 
 ```bash
@@ -690,6 +692,15 @@ pytest tests/services/test_agent_tools_core_surface.py tests/api/test_tools_api_
 ```
 
 - 验证结果：`46 passed, 4 warnings in 1.56s`。
+- ownership 收口验证命令：
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+pytest tests/services/test_tool_registry.py::test_minimal_kernel_tool_set_stays_small_and_explicit tests/tools/test_core_pack_disjoint.py tests/tools/test_pack_manifest.py::test_assert_core_pack_disjoint_covers_manifest_owns tests/tools/test_pack_manifest.py::test_requires_core_may_reference_core tests/tools/test_pack_manifest.py::test_all_shipped_manifests_valid tests/tools/test_pack_manifest.py::test_assert_manifests_valid_passes_on_shipped tests/services/test_pack_service.py::test_iter_runtime_tool_groups_does_not_return_core_office_runtime_tools tests/services/test_pack_service.py::test_office_pack_is_manifest_only_and_does_not_own_core_runtime_tools tests/services/test_pack_policy_service.py::test_policy_pack_names_include_manifest_owned_tools_only tests/tools/test_office_tools.py::test_office_tools_are_registered_as_agent_base_capability_surface tests/services/test_agent_tools_core_surface.py::test_office_runtime_is_core_but_browser_office_is_l2 -q
+```
+
+- ownership 收口验证结果：`16 passed, 4 warnings in 1.43s`。
 
 ### Phase 3：L1 policy 和 L3 pending frame
 

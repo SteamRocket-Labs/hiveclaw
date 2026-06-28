@@ -56,8 +56,8 @@
    - 架构口径要求基础 `web_search` 代表平台基础搜索底座，AnySearch / Exa / Tavily / Firecrawl / XCrawl 进入 L2。
 
 5. **Office 混合**
-   - `office_pack` 同时承载基础文档能力和 Office Online 增值体验。
-   - 需要拆成基础 agent 文档能力与 L2 Office Online / 协作编辑增值项。
+   - 已拆成基础 agent 文档能力与 L2 Office Online / 协作编辑增值项。
+   - `office_pack` 现在是 manifest/skill guide pack，不再 owns `read_document` / `office_document_*` 这些 CORE runtime tools。
 
 6. **L3 断点恢复还不是完整 resume**
    - 当前批准后会用 bypass profile 执行原工具。
@@ -227,6 +227,7 @@ class GovernanceCapabilityDescriptor:
 - Office CLI / 文档生成、读取、转换、编辑所需的 agent 能力归基础能力或基础文档能力，不可被 L2 关闭。
 - Office Online / 在线协作编辑 / 浏览器工作台归 L2 默认增值项，可企业关闭。
 - 关闭 Office Online 不影响 agent 生成文档、读取文档、修改文档。
+- `office_pack` 只保留 manifest/skill guide 语义；pack manifest 中的 Office runtime tools 必须是 `requires_core`，runtime group / decorator 不得再 owns 这些 CORE tools。
 
 验收：
 

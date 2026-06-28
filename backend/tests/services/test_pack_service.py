@@ -90,12 +90,12 @@ def test_iter_runtime_tool_groups_returns_mcp_admin_pack_for_explicit_admin_quer
     assert "mcp_admin_pack" in names
 
 
-def test_iter_runtime_tool_groups_returns_office_pack_for_explicit_office_queries():
+def test_iter_runtime_tool_groups_does_not_return_core_office_runtime_tools():
     exact_tool_aliases = {pack.name for pack in iter_runtime_tool_groups("office_document_create")}
     spaced_pack_aliases = {pack.name for pack in iter_runtime_tool_groups("office document")}
 
-    assert "office_pack" in exact_tool_aliases
-    assert "office_pack" in spaced_pack_aliases
+    assert "office_pack" not in exact_tool_aliases
+    assert "office_pack" not in spaced_pack_aliases
 
 
 def test_plaza_pack_only_contains_real_shared_feed_tools():
@@ -313,13 +313,17 @@ def test_collect_skill_declared_packs_uses_metadata_pack_without_tool_inference_
     ]
 
 
-def test_office_runtime_pack_exposes_dedicated_tools_only():
+def test_office_pack_is_manifest_only_and_does_not_own_core_runtime_tools():
+    from app.services.pack_service import get_pack_catalog
     from app.tools.runtime_tool_groups import runtime_tool_group_for_name
 
-    pack = runtime_tool_group_for_name("office_pack")
+    runtime_pack = runtime_tool_group_for_name("office_pack")
+    catalog_pack = next(pack for pack in get_pack_catalog() if pack["name"] == "office_pack")
 
-    assert pack is not None
-    assert set(pack.tools) == {
+    assert runtime_pack is None
+    assert catalog_pack["source"] == "manifest"
+    assert catalog_pack["owns"] == []
+    assert set(catalog_pack["requires_core"]) >= {
         "read_document",
         "office_document_create",
         "office_document_view",

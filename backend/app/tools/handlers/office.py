@@ -92,7 +92,6 @@ def _handle_office_error(exc: Exception) -> str:
         display_name="Create Office Document",
         icon="DOC",
         governance="sensitive",
-        pack="office_pack",
         adapter="workspace_args",
     )
 )
@@ -136,7 +135,6 @@ async def office_document_create(workspace: Path, arguments: dict, tenant_id: st
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="office_pack",
         adapter="workspace_args",
     )
 )
@@ -175,7 +173,6 @@ async def office_document_view(workspace: Path, arguments: dict, tenant_id: str 
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="office_pack",
         adapter="workspace_args",
     )
 )
@@ -223,7 +220,6 @@ async def office_document_query(workspace: Path, arguments: dict, tenant_id: str
         display_name="Apply Office Document Operations",
         icon="DOC",
         governance="sensitive",
-        pack="office_pack",
         adapter="workspace_args",
     )
 )
@@ -264,7 +260,6 @@ async def office_document_apply(workspace: Path, arguments: dict, tenant_id: str
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="office_pack",
         adapter="workspace_args",
     )
 )
@@ -297,7 +292,6 @@ async def office_document_validate(workspace: Path, arguments: dict, tenant_id: 
         read_only=True,
         parallel_safe=True,
         governance="safe",
-        pack="office_pack",
         adapter="workspace_args",
     )
 )

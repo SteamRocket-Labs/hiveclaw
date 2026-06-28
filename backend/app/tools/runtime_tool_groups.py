@@ -117,24 +117,6 @@ RUNTIME_TOOL_GROUPS: tuple[RuntimeToolGroupSpec, ...] = (
         ),
     ),
     RuntimeToolGroupSpec(
-        name="office_pack",
-        summary="Office productivity tools for DOCX, XLSX, PPTX, PDF, meeting notes, weekly reports, and pitch decks.",
-        source="system",
-        activation_mode=(
-            "Discover schemas through tool_search; load the Office Productivity skill only when method guidance is needed."
-        ),
-        tools=(
-            "read_document",
-            "office_document_create",
-            "office_document_view",
-            "office_document_query",
-            "office_document_apply",
-            "office_document_validate",
-            "office_document_dump",
-        ),
-        infer_from_tools=False,
-    ),
-    RuntimeToolGroupSpec(
         name="command_pack",
         summary=(
             "CC/Codex-style command-layer tools for session task bookkeeping, runtime task output/stop, "

@@ -141,7 +141,7 @@ Office 能力也必须拆开判断：
 - **Agent 基础能力**：Office CLI / 文档生成、读取、转换、编辑所需的基础 agent 能力。如果它是 agent 完成交付物的基础能力，就不应该出现在 L2 可关闭开关里。
 - **L2 默认增值能力**：Office Online / 在线协作编辑 / 浏览器工作台等平台默认增值项。它可以默认开启，也可以由企业关闭或按租户配置；关闭它不应破坏 agent 通过 Office CLI 生成和处理文档的能力。
 
-当前 `office_pack` 仍然把部分基础文档能力和 Office 增值体验放在同一个 pack 语义里。后续收口需要把“基础 agent 文档能力”和“Office Online 增值项”拆成两个治理对象。
+当前已收口为两个治理对象：`read_document` / `office_document_*` 是 `agent_base` CORE runtime tools；`office_pack` 只保留 manifest/skill guide 语义，manifest 中这些工具标记为 `requires_core`；Office Online / 在线协作编辑 / 浏览器工作台由 L2 `office_browser` 承接。
 
 ## 分层定义
 

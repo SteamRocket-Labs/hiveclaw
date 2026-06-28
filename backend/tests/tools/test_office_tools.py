@@ -15,15 +15,21 @@ OFFICE_TOOL_NAMES = {
 }
 
 
-def test_office_tools_are_registered_with_pack_and_capability_surface():
+def test_office_tools_are_registered_as_agent_base_capability_surface():
     from app.services.capability_gate import CAPABILITY_MAP
+    from app.services.governance_capability_taxonomy import GovernanceCapabilityLayer, capability_descriptor_for_tool
     from app.tools.collector import collect_tools
 
     collected = collect_tools()
     registered = {tool["function"]["name"] for tool in collected.openai_tools}
+    office_pack_tools = set(collected.pack_tool_groups.get("office_pack", []))
 
     assert OFFICE_TOOL_NAMES.issubset(registered)
-    assert set(collected.pack_tool_groups["office_pack"]).issuperset(OFFICE_TOOL_NAMES)
+    assert not (OFFICE_TOOL_NAMES & office_pack_tools)
+    for tool_name in OFFICE_TOOL_NAMES:
+        descriptor = capability_descriptor_for_tool(tool_name)
+        assert descriptor is not None
+        assert descriptor.layer == GovernanceCapabilityLayer.AGENT_BASE.value
     assert CAPABILITY_MAP["office_document_create"] == "workspace.file.write"
     assert CAPABILITY_MAP["office_document_apply"] == "workspace.file.write"
     assert CAPABILITY_MAP["office_document_view"] == "workspace.file.read"

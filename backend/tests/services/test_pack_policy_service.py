@@ -19,7 +19,8 @@ def test_static_non_manifest_packs_remain_enabled_by_default():
 def test_policy_pack_names_include_manifest_owned_tools_only():
     from app.services.pack_policy_service import policy_pack_names_for_tool
 
-    assert "office_pack" in policy_pack_names_for_tool("office_document_create")
+    assert "office_pack" not in policy_pack_names_for_tool("office_document_create")
+    assert "office_pack" not in policy_pack_names_for_tool("read_document")
     assert "office_pack" not in policy_pack_names_for_tool("web_search")
     assert "web_pack" not in policy_pack_names_for_tool("web_search")
     assert "web_pack" in policy_pack_names_for_tool("exa_search")

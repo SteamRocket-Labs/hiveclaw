@@ -8,31 +8,31 @@ source:
 
 tools:
   - name: read_document
-    role: owns
+    role: requires_core
     governance:
       security_zone: public
   - name: office_document_create
-    role: owns
+    role: requires_core
     governance:
       security_zone: restricted
   - name: office_document_view
-    role: owns
+    role: requires_core
     governance:
       security_zone: public
   - name: office_document_query
-    role: owns
+    role: requires_core
     governance:
       security_zone: public
   - name: office_document_apply
-    role: owns
+    role: requires_core
     governance:
       security_zone: restricted
   - name: office_document_validate
-    role: owns
+    role: requires_core
     governance:
       security_zone: public
   - name: office_document_dump
-    role: owns
+    role: requires_core
     governance:
       security_zone: public
   - name: read_file

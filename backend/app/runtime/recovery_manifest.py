@@ -57,6 +57,9 @@ class RecoveryManifest:
     mcp_assignments: list[dict[str, Any]] = field(default_factory=list)
     truth_evidence_refs: list[str] = field(default_factory=list)
     truth_evidence: list[dict[str, Any]] = field(default_factory=list)
+    pending_skill_handoffs: list[dict[str, Any]] = field(default_factory=list)
+    executed_skill_handoffs: list[dict[str, Any]] = field(default_factory=list)
+    continuation_records: list[dict[str, Any]] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not any(
@@ -78,6 +81,9 @@ class RecoveryManifest:
                 self.mcp_assignments,
                 self.truth_evidence_refs,
                 self.truth_evidence,
+                self.pending_skill_handoffs,
+                self.executed_skill_handoffs,
+                self.continuation_records,
             ]
         )
 
@@ -102,6 +108,9 @@ class RecoveryManifest:
             "mcp_assignments": self.mcp_assignments,
             "truth_evidence_refs": self.truth_evidence_refs,
             "truth_evidence": self.truth_evidence,
+            "pending_skill_handoffs": self.pending_skill_handoffs,
+            "executed_skill_handoffs": self.executed_skill_handoffs,
+            "continuation_records": self.continuation_records,
         }
 
     def to_restoration_text(self, *, budget_chars: int = 20000) -> str:
@@ -150,6 +159,9 @@ class RecoveryManifest:
         _add_dicts("MCP Assignments", self.mcp_assignments[-10:])
         _add("Truth Evidence Refs", self.truth_evidence_refs[-20:])
         _add_dicts("Truth Evidence", self.truth_evidence[-10:])
+        _add_dicts("Pending Skill Handoffs", self.pending_skill_handoffs[-10:])
+        _add_dicts("Executed Skill Handoffs", self.executed_skill_handoffs[-10:])
+        _add_dicts("Continuation Records", self.continuation_records[-10:])
         if self.permission_profile:
             _add("Permission Profile", [json.dumps(self.permission_profile, ensure_ascii=False, sort_keys=True)])
 
@@ -207,6 +219,32 @@ def _dict_value(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _continuation_records_from_metadata(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    records = _metadata_dict_list(
+        metadata,
+        "continuation_record",
+        "continuation_records",
+        "permission_denial_continuation",
+    )
+    if metadata.get("source") == "session_permission_denied_resume":
+        record: dict[str, Any] = {"source": "session_permission_denied_resume"}
+        for key in (
+            "resumed_from_permission_request_id",
+            "denied_tool_name",
+            "denied_tool_call_id",
+            "resumed_turn_id",
+            "resumed_runtime_task_id",
+            "round_state",
+            "t0_refs",
+        ):
+            value = metadata.get(key)
+            if value is not None:
+                record[key] = value
+        records = [item for item in records if item != record]
+        records.append(record)
+    return records
+
+
 def recovery_manifest_path(agent_id: Any, *, data_root: str | Path | None = None) -> Path:
     if data_root is None:
         from app.config import get_settings
@@ -236,6 +274,9 @@ def _manifest_from_payload(payload: dict[str, Any]) -> RecoveryManifest:
         mcp_assignments=_dict_list(payload.get("mcp_assignments")),
         truth_evidence_refs=_string_refs(payload.get("truth_evidence_refs")),
         truth_evidence=_truth_evidence_list(payload.get("truth_evidence")),
+        pending_skill_handoffs=_dict_list(payload.get("pending_skill_handoffs")),
+        executed_skill_handoffs=_dict_list(payload.get("executed_skill_handoffs")),
+        continuation_records=_dict_list(payload.get("continuation_records")),
     )
 
 
@@ -306,6 +347,9 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         ),
         truth_evidence_refs=list(dict.fromkeys(truth_refs)),
         truth_evidence=truth_evidence,
+        pending_skill_handoffs=_metadata_dict_list(metadata, "pending_skill_handoffs"),
+        executed_skill_handoffs=_metadata_dict_list(metadata, "executed_skill_handoffs"),
+        continuation_records=_continuation_records_from_metadata(metadata),
     )
 
 

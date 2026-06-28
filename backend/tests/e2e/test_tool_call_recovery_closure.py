@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+from uuid import uuid4
+
 import pytest
 
 from app.services.llm_client import LLMMessage
@@ -111,3 +115,155 @@ async def test_request_preflight_compaction_emits_compaction_lifecycle_event() -
     assert lifecycle["before_message_count"] == 3
     assert lifecycle["after_message_count"] == 1
     assert lifecycle["before_token_estimate"] >= lifecycle["after_token_estimate"]
+
+
+def test_recovery_manifest_preserves_skill_fork_and_denial_continuation_shape() -> None:
+    from app.runtime.recovery_manifest import build_recovery_manifest
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(
+        session_id="session-crash-matrix",
+        metadata={
+            "pending_skill_handoffs": [
+                {
+                    "skill": "Research",
+                    "skill_slug": "research",
+                    "source": "skills/research/SKILL.md",
+                    "execution_tool": "spawn_subagent",
+                    "tool_arguments": {
+                        "skill_source": "skills/research/SKILL.md",
+                        "permission_profile": {"mode": "auto", "allowed_tools": ["web_search", "read_file"]},
+                    },
+                }
+            ],
+            "executed_skill_handoffs": [
+                {
+                    "skill": "Review",
+                    "skill_slug": "review",
+                    "execution_tool": "spawn_subagent",
+                    "tool_call_id": "call-load:skill:review",
+                    "result": '{"ok": true, "child_session_id": "child-review"}',
+                }
+            ],
+            "source": "session_permission_denied_resume",
+            "resumed_from_permission_request_id": "perm-denied",
+            "denied_tool_name": "send_email",
+            "denied_tool_call_id": "call-email",
+            "resumed_turn_id": "turn-denied",
+            "resumed_runtime_task_id": "runtime-denied",
+            "round_state": {"round": 3},
+            "t0_refs": ["t0://sessions/session-crash-matrix/events/7"],
+        },
+    )
+
+    manifest = build_recovery_manifest(session)
+
+    assert manifest.pending_skill_handoffs[0]["skill_slug"] == "research"
+    assert manifest.executed_skill_handoffs[0]["tool_call_id"] == "call-load:skill:review"
+    assert manifest.continuation_records == [
+        {
+            "source": "session_permission_denied_resume",
+            "resumed_from_permission_request_id": "perm-denied",
+            "denied_tool_name": "send_email",
+            "denied_tool_call_id": "call-email",
+            "resumed_turn_id": "turn-denied",
+            "resumed_runtime_task_id": "runtime-denied",
+            "round_state": {"round": 3},
+            "t0_refs": ["t0://sessions/session-crash-matrix/events/7"],
+        }
+    ]
+    restored = manifest.to_restoration_text()
+    assert "Pending Skill Handoffs" in restored
+    assert "Executed Skill Handoffs" in restored
+    assert "Continuation Records" in restored
+    assert "session_permission_denied_resume" in restored
+
+
+def test_persisted_recovery_manifest_restores_full_crash_matrix(tmp_path, monkeypatch) -> None:
+    from app.kernel.engine import _build_restoration_context
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-crash-matrix",
+                "discovered_tools": ["firecrawl_fetch"],
+                "pending_tool_frames": [
+                    {
+                        "permission_request_id": "perm-1",
+                        "tool_call_id": "call-send",
+                        "tool_name": "send_email",
+                        "runtime_task_id": "runtime-1",
+                        "turn_id": "turn-1",
+                        "round_state": {"round": 2},
+                        "t0_refs": ["t0://sessions/session-crash-matrix/events/5"],
+                    }
+                ],
+                "permission_checkpoints": [
+                    {
+                        "permission_request_id": "perm-1",
+                        "decision": "deny",
+                        "continuation_runtime_task_id": "runtime-denial-continuation",
+                    }
+                ],
+                "compaction_lifecycle_records": [
+                    {"compaction_id": "compact-1", "trigger": "mid_loop_auto", "status": "completed"}
+                ],
+                "permission_profile": {"mode": "request", "allowed_tools": ["send_email"]},
+                "mcp_assignments": [{"server": "docs", "tool": "read_mcp_resource"}],
+                "truth_evidence_refs": ["truth://provider-error/web-search"],
+                "truth_evidence": [{"evidence_id": "truth://provider-error/web-search", "provider": "searxng"}],
+                "pending_skill_handoffs": [
+                    {
+                        "skill": "Research",
+                        "skill_slug": "research",
+                        "execution_tool": "spawn_subagent",
+                        "tool_arguments": {
+                            "skill_source": "skills/research/SKILL.md",
+                            "permission_profile": {"mode": "auto", "allowed_tools": ["web_search"]},
+                        },
+                    }
+                ],
+                "executed_skill_handoffs": [
+                    {
+                        "skill": "Review",
+                        "skill_slug": "review",
+                        "tool_call_id": "call-load:skill:review",
+                        "result": '{"child_session_id": "child-review"}',
+                    }
+                ],
+                "continuation_records": [
+                    {
+                        "source": "session_permission_denied_resume",
+                        "resumed_from_permission_request_id": "perm-1",
+                        "denied_tool_name": "send_email",
+                        "resumed_runtime_task_id": "runtime-denial-continuation",
+                        "t0_refs": ["t0://sessions/session-crash-matrix/events/5"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    restored = _build_restoration_context(agent_id, session_context=SessionContext(session_id="session-crash-matrix"))
+
+    assert "### Recovery Manifest" in restored
+    assert "Pending Tool Frames" in restored
+    assert "runtime-1" in restored
+    assert "Permission Checkpoints" in restored
+    assert "runtime-denial-continuation" in restored
+    assert "Compaction Lifecycle Records" in restored
+    assert "MCP Assignments" in restored
+    assert "Truth Evidence" in restored
+    assert "Pending Skill Handoffs" in restored
+    assert "Executed Skill Handoffs" in restored
+    assert "Continuation Records" in restored

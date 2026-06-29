@@ -1083,7 +1083,7 @@ select:focus {
 }
 
 .session-tui-shell-session-only {
-  flex-direction: column;
+  flex-direction: row;
   height: 100%;
 }
 
@@ -1103,6 +1103,259 @@ select:focus {
   min-height: 0;
   overflow: hidden;
   background: var(--bg-primary);
+}
+
+.session-runtime-panel {
+  display: flex;
+  flex: 0 0 clamp(300px, 24vw, 420px);
+  flex-direction: column;
+  min-width: 280px;
+  max-width: 520px;
+  min-height: 0;
+  resize: horizontal;
+  overflow: auto;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.session-runtime-section {
+  min-height: 0;
+  padding: 10px 12px;
+}
+
+.session-runtime-documents {
+  flex: 0 0 min(34%, 270px);
+  border-bottom: 1px solid var(--border-subtle);
+  overflow: auto;
+}
+
+.session-runtime-lower {
+  flex: 1;
+  overflow: auto;
+}
+
+.session-runtime-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.session-runtime-section-header h3 {
+  margin: 2px 0 0;
+  color: var(--text-primary);
+  font-size: var(--session-tui-font-row);
+  font-weight: 700;
+  line-height: var(--session-tui-line-row);
+}
+
+.session-runtime-section-header > span {
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-meta);
+  line-height: var(--session-tui-line-meta);
+  white-space: nowrap;
+}
+
+.session-runtime-list {
+  display: grid;
+  gap: 5px;
+}
+
+.session-runtime-doc-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  width: 100%;
+  padding: var(--session-tui-padding-row);
+  border: 1px solid transparent;
+  border-radius: var(--session-tui-radius-row);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.session-runtime-doc-row:hover {
+  border-color: var(--session-tui-selected-border);
+  background: var(--session-tui-hover-bg);
+  color: var(--text-primary);
+}
+
+.session-runtime-doc-row svg {
+  margin-top: 1px;
+  color: var(--text-tertiary);
+}
+
+.session-runtime-doc-row span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.session-runtime-doc-row strong,
+.session-runtime-doc-row small,
+.session-runtime-row-title,
+.session-runtime-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-runtime-doc-row strong {
+  color: currentColor;
+  font-size: var(--session-tui-font-row);
+  font-weight: 650;
+  line-height: var(--session-tui-line-row);
+}
+
+.session-runtime-doc-row small {
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-meta);
+  line-height: var(--session-tui-line-meta);
+}
+
+.session-runtime-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.session-runtime-tab {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-row);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-tiny);
+  line-height: 1.2;
+  cursor: default;
+}
+
+.session-runtime-tab span,
+.session-runtime-tab strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-runtime-tab strong {
+  color: var(--text-primary);
+  font-size: var(--session-tui-font-meta);
+  font-weight: 700;
+}
+
+.session-runtime-card {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: var(--session-tui-padding-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--session-tui-radius-panel);
+  background: var(--session-tui-muted-bg);
+}
+
+.session-runtime-card-title {
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-tiny);
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.session-runtime-row,
+.session-runtime-metric-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 0;
+  color: var(--text-secondary);
+  font-size: var(--session-tui-font-meta);
+  line-height: var(--session-tui-line-meta);
+}
+
+.session-runtime-row + .session-runtime-row,
+.session-runtime-metric-row + .session-runtime-metric-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.session-runtime-row-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-runtime-row-button:hover {
+  color: var(--text-primary);
+}
+
+.session-runtime-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.session-runtime-row-title {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.session-runtime-row-meta {
+  color: var(--text-tertiary);
+}
+
+.session-runtime-status,
+.session-runtime-metric-row strong {
+  flex: 0 0 auto;
+  color: var(--text-primary);
+  font-size: var(--session-tui-font-meta);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.session-runtime-team {
+  display: grid;
+  gap: 3px;
+}
+
+.session-runtime-team + .session-runtime-team {
+  padding-top: 7px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.session-runtime-team-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: var(--session-tui-font-row);
+  font-weight: 700;
+}
+
+.session-runtime-team-header small {
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-meta);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.session-runtime-empty {
+  padding: 8px 0;
+  color: var(--text-tertiary);
+  font-size: var(--session-tui-font-meta);
+  line-height: var(--session-tui-line-meta);
 }
 
 .session-tui-history {

@@ -29,7 +29,7 @@ import SlashCommandMenu from './SlashCommandMenu';
 import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
 import { chatApi } from '../../api/domains/chat';
-import { ccParityApi } from '../../api/domains/ccParity';
+import { ccParityApi, type SessionWorkbench } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
 import { composerShortcutText } from './sessionComposerShortcuts';
@@ -1038,6 +1038,323 @@ function ArtifactCards({
         );
       })}
     </div>
+  );
+}
+
+type RuntimeRecord = Record<string, unknown>;
+
+type WorkspaceDocumentRow = {
+  key: string;
+  name: string;
+  path: string;
+  previewKind?: string;
+  size?: number;
+  source?: string;
+};
+
+function isRuntimeRecord(value: unknown): value is RuntimeRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function asRuntimeRows(value: unknown): RuntimeRecord[] {
+  return Array.isArray(value) ? value.filter(isRuntimeRecord) : [];
+}
+
+function stringValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value);
+}
+
+function runtimeRowTitle(row: RuntimeRecord, fallback: string): string {
+  return (
+    stringValue(row.title) ||
+    stringValue(row.name) ||
+    stringValue(row.member_name) ||
+    stringValue(row.objective) ||
+    stringValue(row.id) ||
+    fallback
+  );
+}
+
+function collectWorkspaceDocuments(messages: AgentChatMessage[]): WorkspaceDocumentRow[] {
+  const docs = new Map<string, WorkspaceDocumentRow>();
+  messages.forEach((message) => {
+    (message.artifacts || []).forEach((artifact) => {
+      if (!artifact.path) return;
+      const key = artifact.path;
+      if (docs.has(key)) return;
+      docs.set(key, {
+        key,
+        name: artifact.name || artifact.path.split('/').pop() || artifact.path,
+        path: artifact.path,
+        previewKind: artifact.previewKind,
+        size: artifact.size,
+        source: artifact.source,
+      });
+    });
+  });
+  return Array.from(docs.values()).slice(0, 12);
+}
+
+function runtimeTaskGroup(task: RuntimeRecord): 'workflow' | 'background' | 'run' {
+  const kind = `${stringValue(task.task_type)} ${stringValue(task.type)} ${stringValue(task.source)}`.toLowerCase();
+  if (kind.includes('workflow')) return 'workflow';
+  if (kind.includes('background') || kind.includes('command') || kind.includes('cron') || kind.includes('monitor')) {
+    return 'background';
+  }
+  return 'run';
+}
+
+function statusLabel(row: RuntimeRecord): string {
+  return stringValue(row.status) || stringValue(row.state) || 'unknown';
+}
+
+function renderRuntimeMiniRow(row: RuntimeRecord, fallback: string) {
+  const title = runtimeRowTitle(row, fallback);
+  const id = stringValue(row.id || row.runtime_task_id || row.task_id);
+  const status = statusLabel(row);
+  return (
+    <div key={id || title} className="session-runtime-row">
+      <div className="session-runtime-row-main">
+        <span className="session-runtime-row-title">{title}</span>
+        <span className="session-runtime-row-meta">
+          {[id, stringValue(row.task_type || row.runtime_task_type || row.type)].filter(Boolean).join(' · ')}
+        </span>
+      </div>
+      <span className="session-runtime-status">{status}</span>
+    </div>
+  );
+}
+
+function SessionRuntimePanel({
+  agentId,
+  messages,
+  sessionWorkbench,
+  runtimeSummary,
+  activeRunStatus,
+  onOpenDocument,
+  onSelectSession,
+}: {
+  agentId?: string | null;
+  messages: AgentChatMessage[];
+  sessionWorkbench: SessionWorkbench | null;
+  runtimeSummary: ChatRuntimeSummary | null;
+  activeRunStatus?: string | null;
+  onOpenDocument?: (artifact: ChatArtifactPart) => void | Promise<unknown>;
+  onSelectSession?: (sessionId: string) => void | Promise<unknown>;
+}) {
+  const { t } = useTranslation();
+  const docs = collectWorkspaceDocuments(messages);
+  const teams = sessionWorkbench?.teams || [];
+  const runtimeTasks = asRuntimeRows(sessionWorkbench?.runtime_tasks);
+  const workflowTasks = runtimeTasks.filter((task) => runtimeTaskGroup(task) === 'workflow');
+  const backgroundTasks = runtimeTasks.filter((task) => runtimeTaskGroup(task) === 'background');
+  const runTasks = runtimeTasks.filter((task) => runtimeTaskGroup(task) === 'run');
+  const approvals = asRuntimeRows(sessionWorkbench?.approvals);
+  const hooks = asRuntimeRows(sessionWorkbench?.hooks);
+  const goals = asRuntimeRows(sessionWorkbench?.goals);
+  const contextDecisions = asRuntimeRows(sessionWorkbench?.context_window?.decisions);
+  const wakes = asRuntimeRows(sessionWorkbench?.completion_wakes);
+  const governanceCount = approvals.length + hooks.length + goals.length + contextDecisions.length;
+  const runtimeOverview = [...workflowTasks, ...backgroundTasks, ...runTasks].slice(0, 4);
+  const agentRows = teams.flatMap((team) => team.members || []);
+  const usedTools = runtimeSummary?.used_tools || [];
+  const activeRunRow = sessionWorkbench?.active_run && isRuntimeRecord(sessionWorkbench.active_run)
+    ? sessionWorkbench.active_run
+    : null;
+
+  const tabs = [
+    { key: 'agents', label: t('sessionWorkbench.rightPanel.agents', 'Agents'), count: teams.length + agentRows.length },
+    { key: 'workflow', label: t('sessionWorkbench.rightPanel.workflow', 'Workflow'), count: workflowTasks.length },
+    { key: 'tasks', label: t('sessionWorkbench.rightPanel.tasks', 'Tasks'), count: runtimeTasks.length + wakes.length },
+    { key: 'governance', label: t('sessionWorkbench.rightPanel.governance', 'Governance'), count: governanceCount },
+    { key: 'runs', label: t('sessionWorkbench.rightPanel.runs', 'Runs'), count: runTasks.length + backgroundTasks.length + (activeRunRow ? 1 : 0) },
+  ];
+
+  return (
+    <aside data-testid="session-runtime-panel" className="session-runtime-panel">
+      <section
+        className="session-runtime-section session-runtime-documents"
+        aria-label={t('sessionWorkbench.rightPanel.workspaceDocuments', 'Workspace Documents')}
+      >
+        <div className="session-runtime-section-header">
+          <div>
+            <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.workspace', 'Workspace')}</div>
+            <h3>{t('sessionWorkbench.rightPanel.workspaceDocuments', 'Workspace Documents')}</h3>
+          </div>
+          <span>{docs.length}</span>
+        </div>
+        {docs.length === 0 ? (
+          <div className="session-runtime-empty">
+            {t('sessionWorkbench.rightPanel.noWorkspaceDocuments', 'No workspace documents in this session yet.')}
+          </div>
+        ) : (
+          <div className="session-runtime-list">
+            {docs.map((doc) => {
+              const artifact: ChatArtifactPart = {
+                name: doc.name,
+                path: doc.path,
+                previewKind: doc.previewKind,
+                size: doc.size,
+                source: doc.source,
+              };
+              return (
+                <button
+                  key={doc.key}
+                  type="button"
+                  className="session-runtime-doc-row"
+                  onClick={() => onOpenDocument?.(artifact)}
+                >
+                  <IconFileText size={15} />
+                  <span>
+                    <strong>{doc.name}</strong>
+                    <small>{[doc.previewKind, formatArtifactSize(doc.size), doc.path].filter(Boolean).join(' · ')}</small>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section
+        className="session-runtime-section session-runtime-lower"
+        aria-label={t('sessionWorkbench.rightPanel.runtime', 'Runtime')}
+      >
+        <div className="session-runtime-section-header">
+          <div>
+            <div className="session-tui-kicker">{t('sessionWorkbench.rightPanel.session', 'Session')}</div>
+            <h3>{t('sessionWorkbench.rightPanel.runtime', 'Runtime')}</h3>
+          </div>
+          <span>{activeRunStatus || statusLabel(activeRunRow || {})}</span>
+        </div>
+        <div
+          className="session-runtime-tabs"
+          role="tablist"
+          aria-label={t('sessionWorkbench.rightPanel.runtimeTables', 'Runtime tables')}
+        >
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              role="tab"
+              data-testid={`session-runtime-tab-${tab.key}`}
+              className="session-runtime-tab"
+            >
+              <span>{tab.label}</span>
+              <strong>{tab.count}</strong>
+            </button>
+          ))}
+        </div>
+
+        {runtimeOverview.length > 0 ? (
+          <div className="session-runtime-card" data-testid="session-runtime-overview">
+            <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.activeRuntime', 'Active Runtime')}</div>
+            {runtimeOverview.map((task, index) => renderRuntimeMiniRow(task, `task-${index + 1}`))}
+          </div>
+        ) : null}
+
+        <div className="session-runtime-card" data-testid="session-runtime-agents">
+          <div className="session-runtime-card-title">
+            {t('sessionWorkbench.rightPanel.agentTeamSubagent', 'Agent Team / Sub-agent')}
+          </div>
+          {teams.length === 0 ? (
+            <div className="session-runtime-empty">
+              {t('sessionWorkbench.rightPanel.noRunningAgents', 'No running agent sessions.')}
+            </div>
+          ) : (
+            teams.map((team) => (
+              <div key={team.id} className="session-runtime-team">
+                <div className="session-runtime-team-header">
+                  <span>{team.name || team.id}</span>
+                  <small>{team.status || 'unknown'}</small>
+                </div>
+                {(team.members || []).map((member) => {
+                  const sessionId = stringValue(member.chat_session_id);
+                  const clickable = Boolean(sessionId && onSelectSession);
+                  const content = (
+                    <>
+                      <span className="session-runtime-row-main">
+                        <span className="session-runtime-row-title">{member.member_name || member.id}</span>
+                        <span className="session-runtime-row-meta">
+                          {[member.member_role, member.runtime_task_id].filter(Boolean).join(' · ')}
+                        </span>
+                      </span>
+                      <span className="session-runtime-status">{member.status || 'unknown'}</span>
+                    </>
+                  );
+                  return clickable ? (
+                    <button
+                      key={member.id}
+                      type="button"
+                      className="session-runtime-row session-runtime-row-button"
+                      onClick={() => onSelectSession?.(sessionId)}
+                    >
+                      {content}
+                    </button>
+                  ) : (
+                    <div key={member.id} className="session-runtime-row">
+                      {content}
+                    </div>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="session-runtime-card" data-testid="session-runtime-governance">
+          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.governance', 'Governance')}</div>
+          {governanceCount === 0 ? (
+            <div className="session-runtime-empty">
+              {t('sessionWorkbench.rightPanel.noGovernanceEvents', 'No pending governance events.')}
+            </div>
+          ) : (
+            <>
+              <div className="session-runtime-metric-row">
+                <span>{t('sessionWorkbench.rightPanel.approvals', 'Approvals')}</span>
+                <strong>{approvals.length}</strong>
+              </div>
+              <div className="session-runtime-metric-row">
+                <span>{t('sessionWorkbench.rightPanel.hooks', 'Hooks')}</span>
+                <strong>{hooks.length}</strong>
+              </div>
+              <div className="session-runtime-metric-row">
+                <span>{t('sessionWorkbench.rightPanel.goals', 'Goals')}</span>
+                <strong>{goals.length}</strong>
+              </div>
+              <div className="session-runtime-metric-row">
+                <span>{t('sessionWorkbench.rightPanel.contextDecisions', 'Context decisions')}</span>
+                <strong>{contextDecisions.length}</strong>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="session-runtime-card" data-testid="session-runtime-commands">
+          <div className="session-runtime-card-title">
+            {t('sessionWorkbench.rightPanel.commandsTools', 'Commands / Tools')}
+          </div>
+          <div className="session-runtime-metric-row">
+            <span>{t('sessionWorkbench.rightPanel.toolCalls', 'Tool calls')}</span>
+            <strong>{sessionWorkbench?.tool_calls?.length || usedTools.length || 0}</strong>
+          </div>
+          <div className="session-runtime-metric-row">
+            <span>{t('sessionWorkbench.rightPanel.background', 'Background')}</span>
+            <strong>{backgroundTasks.length}</strong>
+          </div>
+          <div className="session-runtime-metric-row">
+            <span>{t('sessionWorkbench.rightPanel.completionWakes', 'Completion wakes')}</span>
+            <strong>{wakes.length}</strong>
+          </div>
+          {agentId ? null : (
+            <span className="session-runtime-empty">
+              {t('sessionWorkbench.rightPanel.noAgentId', 'No agent id bound.')}
+            </span>
+          )}
+        </div>
+      </section>
+    </aside>
   );
 }
 
@@ -2839,6 +3156,17 @@ export default function AgentChatSection({
           </>
         )}
       </div>
+      {activeSession ? (
+        <SessionRuntimePanel
+          agentId={effectiveAgentId}
+          messages={visibleTimeline}
+          sessionWorkbench={sessionWorkbench}
+          runtimeSummary={runtimeSummary}
+          activeRunStatus={activeRunStatus}
+          onOpenDocument={openArtifact}
+          onSelectSession={onSelectBranchSession}
+        />
+      ) : null}
     </div>
   );
 }

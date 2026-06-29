@@ -1398,6 +1398,18 @@ Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞�
 - 不再用杂项 inspector 常驻右侧。
 - 工具、治理、命令、workflow、agent team 状态都有统一落点。
 
+实施证据（2026-06-28 / Step 5）：
+
+- 已在 `frontend/src/pages/agent-detail/AgentChatSection.tsx` 新增 `SessionRuntimePanel`，并接入现有 `chat-session-workbench` 数据源；没有恢复旧 `SessionWorkbenchInspector` / `SessionNativeControls`。
+- 右侧上栏 `Workspace Documents` 从当前 session timeline artifacts 收集可打开文档；右侧下栏 `Runtime` 以 tab header + runtime cards 统一承载 Agents、Workflow、Tasks、Governance、Runs。
+- Agent Team / Sub-agent 由 `sessionWorkbench.teams[*].members[*].chat_session_id` 驱动：有 `chat_session_id` 时点击 member row 走现有 `onSelectBranchSession` 切换中间 session window；Dynamic Workflow 只显示在 Runtime / Workflow 状态和 active runtime 概览里，不伪装成完整可进入 Session。
+- 已在 `frontend/src/index.css` 为 `session-runtime-panel` 建立可缩放右栏、上下分区、runtime tab、team row、governance metric 的统一 Session TUI 样式；`session-only` shell 也改为 row layout，以便独立 Session Page 保持中间 Chat + 右侧 Runtime。
+- 已补 `frontend/src/i18n/en.json` / `frontend/src/i18n/zh.json` 的 `sessionWorkbench.rightPanel.*` 文案，避免新右栏中文界面退回英文。
+- 红测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "workspace documents and runtime tables"` 在实现前失败，失败点是缺少 `data-testid="session-runtime-panel"`。
+- 绿测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "workspace documents and runtime tables"` -> 1 passed / 71 skipped。
+- 回归：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx` -> 72 passed。
+- 构建：`cd frontend && npm run build` -> `tsc && vite build` exit 0。
+
 ### 10.6 Step 6：周边页面清理与能力清单恢复
 
 主 Session Shell 稳定后，清理旧表面和断点。

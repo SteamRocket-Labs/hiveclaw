@@ -409,6 +409,96 @@ vi.mock('@tanstack/react-query', () => ({
         },
       };
     }
+    if (key === 'chat-session-workbench') {
+      if (!queryKey.includes('runtime-panel-session')) {
+        return { data: undefined, isLoading: false, isError: false, error: null };
+      }
+      return {
+        data: {
+          schema: 'session_workbench.v1',
+          agent_id: 'agent-1',
+          session: { id: 'runtime-panel-session', title: 'Runtime panel session' },
+          turn: {
+            truth_source: 't0_events_jsonl',
+            event_count: 14,
+            checkpoint_count: 2,
+          },
+          controls: {},
+          tool_calls: [
+            { id: 'tool-1', tool_name: 'web_search', status: 'completed' },
+            { id: 'tool-2', tool_name: 'spawn_subagent', status: 'running' },
+          ],
+          approvals: [
+            { id: 'approval-1', tool_name: 'web_fetch', status: 'pending' },
+          ],
+          hooks: [
+            { event: 'pre_tool_use', status: 'enabled' },
+          ],
+          goals: [
+            { id: 'goal-1', objective: 'Validate runtime panel', status: 'active' },
+          ],
+          runtime_tasks: [
+            {
+              id: 'workflow-run-1',
+              task_type: 'workflow',
+              title: 'ccplus-closure-audit',
+              status: 'running',
+              progress: { completed: 21, total: 24 },
+            },
+            {
+              id: 'background-run-1',
+              task_type: 'background_command',
+              title: 'backend verification',
+              status: 'completed',
+            },
+          ],
+          teams: [
+            {
+              id: 'team-1',
+              name: 'Research Team',
+              status: 'running',
+              transcript_truth: 'team_member_chat_session',
+              lead_agent_id: 'agent-1',
+              parent_session_id: 'runtime-panel-session',
+              member_count: 1,
+              members: [
+                {
+                  id: 'member-1',
+                  member_name: 'Reviewer',
+                  member_role: 'audit',
+                  chat_session_id: 'member-session-1',
+                  runtime_task_id: 'member-task-1',
+                  runtime_task_type: 'web_chat_turn',
+                  status: 'running',
+                  summary: 'Checking runtime panel evidence.',
+                },
+              ],
+            },
+          ],
+          completion_wake_summary: {
+            pending: 1,
+            completed: 0,
+          },
+          completion_wakes: [
+            { id: 'wake-1', status: 'pending', reason: 'notify user when run completes' },
+          ],
+          context_window: {
+            schema: 'context_window.v1',
+            decision_count: 1,
+            latest_status: { status: 'ok', utilization_pct: 62 },
+            decisions: [{ id: 'context-1', status: 'ok' }],
+          },
+          active_run: {
+            id: 'runtime-task-active',
+            status: 'running',
+            task_type: 'web_chat_turn',
+          },
+        },
+        isLoading: false,
+        isError: false,
+        error: null,
+      };
+    }
     return { data: [] };
   },
   useMutation: () => ({
@@ -3059,6 +3149,109 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
     expect(markup).not.toContain('data-testid="session-native-controls"');
     expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
+  });
+
+  it('renders workspace documents and runtime tables in the right session panel', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Runtime Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'runtime-panel-session',
+          user_id: 'user-1',
+          title: 'Runtime panel session',
+          created_at: '2026-06-28T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[
+          {
+            role: 'assistant',
+            content: 'Generated a report.',
+            artifacts: [
+              {
+                name: 'runtime-report.md',
+                path: 'workspace/runtime-report.md',
+                previewKind: 'markdown',
+                size: 2048,
+              },
+            ],
+          },
+        ]}
+        chatMessagesSessionId="runtime-panel-session"
+        runtimeSummary={{
+          model: {
+            label: 'GPT-5.4',
+            provider: 'openai',
+            name: 'gpt-5.4',
+            context_window_tokens: 128000,
+          },
+          runtime: {
+            connected: true,
+            estimated_input_tokens: 72000,
+            remaining_tokens_estimate: 56000,
+          },
+          activated_tool_groups: ['web-research'],
+          used_tools: ['web_search', 'spawn_subagent'],
+          blocked_capabilities: [],
+          compaction_count: 1,
+        }}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus="running"
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        onSelectBranchSession={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-testid="session-runtime-panel"');
+    expect(markup).toContain('Workspace Documents');
+    expect(markup).toContain('runtime-report.md');
+    expect(markup).toContain('Runtime');
+    expect(markup).toContain('data-testid="session-runtime-tab-agents"');
+    expect(markup).toContain('Research Team');
+    expect(markup).toContain('Reviewer');
+    expect(markup).toContain('workflow-run-1');
+    expect(markup).toContain('Governance');
+    expect(markup).not.toContain('data-testid="session-workbench-inspector"');
+    expect(markup).not.toContain('data-testid="session-native-controls"');
   });
 
   it('shows the durable run continuation state while a session run is active', () => {

@@ -487,7 +487,7 @@ describe('AgentDetail extracted sections', () => {
     expect(getAgentDetailHashTab('#unknown', AGENT_DETAIL_TABS)).toBeNull();
   });
 
-  it('renders the detail chat conversation browser only outside session-only mode', () => {
+  it('keeps only the All Users conversation audit browser inside Agent Detail', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Release Bot' }}
@@ -565,8 +565,10 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="detail-session-browser"');
-    expect(markup).toContain('My Conversations');
     expect(markup).toContain('All Users');
+    expect(markup).not.toContain('My Conversations');
+    expect(markup).not.toContain('New Conversation');
+    expect(markup).not.toContain('My launch sync');
     expect(markup).toContain('Customer IM thread');
     expect(markup).toContain('class="detail-session-row active"');
     expect(markup).not.toContain('session-only');
@@ -2898,11 +2900,11 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('data-testid="session-workbench"');
     expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
-    expect(markup).toContain('data-testid="session-workbench-inspector"');
-    expect(markup).toContain('data-testid="session-native-controls"');
+    expect(markup).not.toContain('data-testid="session-workbench-inspector"');
+    expect(markup).not.toContain('data-testid="session-native-controls"');
     expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
-    expect(markup).toContain('Start goal');
-    expect(markup).toContain('Create team');
+    expect(markup).not.toContain('Start goal');
+    expect(markup).not.toContain('Create team');
   });
 
   it('does not mount the work ledger dock for a stale historical running tool result', () => {
@@ -3049,8 +3051,8 @@ describe('AgentDetail extracted sections', () => {
 
     expect(markup).toContain('data-testid="session-workbench"');
     expect(markup).not.toContain('data-testid="session-workbench-sidebar"');
-    expect(markup).toContain('data-testid="session-workbench-inspector"');
-    expect(markup).toContain('data-testid="session-native-controls"');
+    expect(markup).not.toContain('data-testid="session-workbench-inspector"');
+    expect(markup).not.toContain('data-testid="session-native-controls"');
     expect(markup).not.toContain('data-testid="chat-work-ledger-dock"');
   });
 

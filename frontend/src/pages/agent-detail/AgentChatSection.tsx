@@ -26,8 +26,7 @@ import CopyMessageButton from './CopyMessageButton';
 import PlanCard from './PlanCard';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import SlashCommandMenu from './SlashCommandMenu';
-import { SessionWorkbenchHeader, SessionWorkbenchInspector } from '../session-workbench/SessionWorkbenchChrome';
-import SessionNativeControls from '../session-workbench/SessionNativeControls';
+import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChrome';
 import { buildThreadTimeline, type ThreadTimelineModel } from '../session-workbench/timelineModel';
 import { chatApi } from '../../api/domains/chat';
 import { ccParityApi } from '../../api/domains/ccParity';
@@ -2069,8 +2068,9 @@ export default function AgentChatSection({
     isStreaming,
     activeRunStatus,
   });
-  const detailSessionRows = chatScope === 'all' ? allSessions : sessions;
-  const detailSessionsLoading = chatScope === 'all' ? allSessionsLoading : sessionsLoading;
+  const showDetailAuditBrowser = !sessionOnly && isAdmin;
+  const detailSessionRows = allSessions;
+  const detailSessionsLoading = allSessionsLoading;
   const formatDetailSessionTime = (session: any) => {
     const raw = session.last_message_at || session.updated_at || session.created_at;
     if (!raw) return '';
@@ -2080,59 +2080,25 @@ export default function AgentChatSection({
       return '';
     }
   };
-  const setDetailChatScope = (scope: 'mine' | 'all') => {
-    onSetChatScope(scope);
-    if (scope === 'all') onLoadAllSessions();
-  };
-
   return (
     <div
       data-testid="session-workbench"
       className={`session-chat-workbench session-tui-shell ${sessionOnly ? 'session-only session-tui-shell-session-only' : 'session-tui-shell-managed'}`}
     >
-      {!sessionOnly && (
+      {showDetailAuditBrowser && (
         <aside className="detail-session-browser" data-testid="detail-session-browser">
           <div className="detail-session-browser-header">
             <div>
-              <div className="detail-session-browser-title">{t('agent.chat.conversations', 'Conversations')}</div>
+              <div className="detail-session-browser-title">{t('agent.chat.allUsers', 'All Users')}</div>
               <div className="detail-session-browser-subtitle">{agent?.name || t('agent.chat.session', 'Session')}</div>
             </div>
-            <button
-              type="button"
-              className="detail-session-icon-button"
-              aria-label={t('agent.chat.newSession', 'New Conversation')}
-              title={t('agent.chat.newSession', 'New Conversation')}
-              onClick={onCreateNewSession}
-            >
-              <IconPlus size={15} stroke={1.8} />
-            </button>
           </div>
-          <div className="detail-session-scope-tabs" role="tablist" aria-label={t('agent.chat.conversationScope', 'Conversation scope')}>
-            <button
-              type="button"
-              className={`detail-session-scope-tab ${chatScope === 'mine' ? 'active' : ''}`}
-              onClick={() => setDetailChatScope('mine')}
-            >
-              {t('agent.chat.myConversations', 'My Conversations')}
-            </button>
-            {isAdmin && (
-              <button
-                type="button"
-                className={`detail-session-scope-tab ${chatScope === 'all' ? 'active' : ''}`}
-                onClick={() => setDetailChatScope('all')}
-              >
-                {t('agent.chat.allUsers', 'All Users')}
-              </button>
-            )}
-          </div>
-          {chatScope === 'all' && (
-            <input
-              className="detail-session-filter"
-              value={allUserFilter}
-              onChange={(event) => onSetAllUserFilter(event.target.value)}
-              placeholder={t('agent.chat.filterUsers', 'Filter users or sources...')}
-            />
-          )}
+          <input
+            className="detail-session-filter"
+            value={allUserFilter}
+            onChange={(event) => onSetAllUserFilter(event.target.value)}
+            placeholder={t('agent.chat.filterUsers', 'Filter users or sources...')}
+          />
           <div className="detail-session-list">
             {detailSessionsLoading ? (
               <div className="detail-session-empty">{t('common.loading', 'Loading')}</div>
@@ -2141,7 +2107,7 @@ export default function AgentChatSection({
             ) : (
               detailSessionRows
                 .filter((session: any) => {
-                  if (chatScope !== 'all' || !allUserFilter.trim()) return true;
+                  if (!allUserFilter.trim()) return true;
                   const q = allUserFilter.trim().toLowerCase();
                   return [session.title, session.username, session.source_channel, session.peer_agent_name]
                     .filter(Boolean)
@@ -2159,7 +2125,7 @@ export default function AgentChatSection({
                       >
                         <span className="detail-session-row-title">{session.title || t('agent.chat.session', 'Session')}</span>
                         <span className="detail-session-row-meta">
-                          {chatScope === 'all' && (session.username || sourceLabel) ? `${session.username || sourceLabel} · ` : ''}
+                          {(session.username || sourceLabel) ? `${session.username || sourceLabel} · ` : ''}
                           {formatDetailSessionTime(session)}
                           {session.message_count ? ` · ${session.message_count}` : ''}
                         </span>
@@ -2832,16 +2798,6 @@ export default function AgentChatSection({
           </>
         )}
       </div>
-      {!sessionOnly && activeSession && (
-        <SessionWorkbenchInspector model={threadTimelineModel.inspector}>
-          <SessionNativeControls
-            agentId={effectiveAgentId}
-            sessionId={activeSessionId}
-            sessionIndex={sessionIndex}
-            onEnterSession={(targetSessionId) => onSelectBranchSession?.(targetSessionId)}
-          />
-        </SessionWorkbenchInspector>
-      )}
     </div>
   );
 }

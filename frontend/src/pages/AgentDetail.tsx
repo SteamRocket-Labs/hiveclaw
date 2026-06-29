@@ -275,6 +275,7 @@ function AgentDetailInner() {
     const validTabs = AGENT_DETAIL_TABS as readonly string[];
     const [activeTab, setActiveTabRaw] = useState<string>(() => getAgentDetailHashTab(location.hash, validTabs) ?? 'status');
     const requestedSessionId = new URLSearchParams(location.search).get('session_id');
+    const isManageMode = new URLSearchParams(location.search).has('manage');
 
     // Sync URL hash when tab changes
     const setActiveTab = (tab: string, options?: { detailChat?: boolean }) => {
@@ -1212,6 +1213,11 @@ function AgentDetailInner() {
     }, [canLoadAgentScopedData, id, token, activeTab, requestedSessionId]);
 
     useEffect(() => {
+        if (!canLoadAgentScopedData || activeTab !== 'chat' || !isManageMode || !canManage) return;
+        fetchAllSessions();
+    }, [canLoadAgentScopedData, activeTab, isManageMode, canManage, id]);
+
+    useEffect(() => {
         if (!canLoadAgentScopedData || activeTab !== 'chat' || !requestedSessionId || !id) return;
         if (activeSession?.id && String(activeSession.id) === String(requestedSessionId)) return;
         const known = [...sessions, ...allSessions].find((session: any) => String(session.id) === String(requestedSessionId));
@@ -2055,7 +2061,6 @@ function AgentDetailInner() {
     };
     const statusKey = computeStatusKey();
     const isSystemHrRaw = (agent as any).agent_class === 'internal_system';
-    const isManageMode = new URLSearchParams(location.search).has('manage');
     const isSystemHr = isSystemHrRaw && !isManageMode;
     const sessionWorkbenchMode = isSessionWorkbenchRoute(activeTab, location.search);
 

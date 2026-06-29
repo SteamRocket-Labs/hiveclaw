@@ -1334,6 +1334,20 @@ Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞�
 - Agent Detail 不再伪装 session-only page。
 - 当前对话有独立 Session Page，且左侧导航内容不被重做。
 
+实施证据（2026-06-28 / Step 3）：
+
+- 已从 `frontend/src/pages/agent-detail/AgentChatSection.tsx` 移除旧 `SessionWorkbenchInspector + SessionNativeControls` 固定右列；Hook/goal/export/team/create/checkpoint 不再作为杂项控件常驻 Chat 右侧。
+- 已将 Agent Detail 内部会话列收窄为 `All Users` 审计入口：不再展示 `My Conversations`、不再提供新建会话按钮；个人会话入口回到外部 session route / 左侧已有会话入口。
+- 已在 `frontend/src/pages/AgentDetail.tsx` 中让 `manage=true#chat` 管理视角自动拉取 `all` sessions，避免移除 scope tab 后 All Users 列没有数据来源。
+- 已在 `frontend/src/pages/Chat.tsx` 中保留 legacy `/agents/:id/chat?session_id=...` 的 query，跳转到 `/agents/:id?session_id=...#chat`，保证 session-only workbench 不丢当前 session。
+- 红测 1：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "session-workbench-inspector|persistent work ledger dock|Session page"` 在实现前失败，失败点是仍渲染 `data-testid="session-workbench-inspector"` / `data-testid="session-native-controls"`。
+- 红测 2：`cd frontend && npm test -- --run src/pages/Chat.test.tsx -t "preserves an explicit session query"` 在实现前失败，失败点是 legacy redirect 输出 `/agents/agent-1#chat` 而不是 `/agents/agent-1?session_id=session-1#chat`。
+- 红测 3：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "All Users conversation audit"` 在实现前失败，失败点是 Agent Detail 会话列仍显示 `My Conversations` 和 `New Conversation`。
+- 绿测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "All Users conversation audit|session-workbench-inspector|persistent work ledger dock|Session page"` -> 2 passed / 69 skipped。
+- 绿测：`cd frontend && npm test -- --run src/pages/Chat.test.tsx` -> 2 passed。
+- 回归：`cd frontend && npm test -- --run src/pages/AgentDetail.test.tsx src/pages/AgentDetail.query-gating.test.tsx` -> 2 files passed / 6 tests passed。
+- 回归：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx` -> 71 passed。
+
 ### 10.4 Step 4：Session Timeline / GitLine / Rewind / Branch
 
 页面和样式都稳定后，再做最容易混乱的 checkpoint/branch 交互。

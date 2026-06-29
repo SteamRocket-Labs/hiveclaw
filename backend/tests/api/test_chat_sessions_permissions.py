@@ -273,6 +273,63 @@ async def test_list_sessions_mine_scope_uses_canonical_microsoft_teams_channel(m
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_mine_includes_owned_a2a_peer_sessions(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    requested_agent_id = uuid4()
+    owning_user_id = uuid4()
+    target_agent_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=requested_agent_id, creator_id=owning_user_id)
+    a2a_session = SimpleNamespace(
+        id=session_id,
+        agent_id=target_agent_id,
+        peer_agent_id=requested_agent_id,
+        user_id=owning_user_id,
+        source_channel="agent",
+        session_kind="delegation_run",
+        actor_type="agent",
+        runtime_source="delegation",
+        visibility_scope="agent_owner",
+        listed_surface="chat",
+        title="Lead ↔ Researcher",
+        created_at=SimpleNamespace(isoformat=lambda: "2026-06-29T00:00:00+00:00"),
+        last_message_at=SimpleNamespace(isoformat=lambda: "2026-06-29T00:05:00+00:00"),
+        parent_session_id=None,
+        root_session_id=None,
+        runtime_task_id=None,
+        transcript_metadata_json={},
+    )
+    current_user = SimpleNamespace(id=owning_user_id, role="member")
+    db = _QueryAwareDB(agent=agent, sessions=[a2a_session], counts=[1, 2], users={owning_user_id: "rocky"})
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+
+    result = await chat_sessions_api.list_sessions(
+        agent_id=requested_agent_id,
+        scope="mine",
+        current_user=current_user,
+        db=db,
+    )
+
+    assert "chat_sessions.peer_agent_id" in str(db.statements[0])
+    a2a_user_message_count_sql = str(db.statements[1])
+    a2a_total_count_sql = str(db.statements[2])
+    assert "chat_messages.conversation_id" in a2a_user_message_count_sql
+    assert "chat_messages.agent_id" not in a2a_user_message_count_sql
+    assert "chat_messages.conversation_id" in a2a_total_count_sql
+    assert "chat_messages.agent_id" not in a2a_total_count_sql
+    assert len(result) == 1
+    assert result[0].participant_type == "agent"
+    assert result[0].peer_agent_id == str(requested_agent_id)
+    assert result[0].source_channel == "agent"
+    assert result[0].session_kind == "delegation_run"
+
+
+@pytest.mark.asyncio
 async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 

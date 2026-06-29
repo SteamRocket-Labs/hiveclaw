@@ -34,7 +34,20 @@ class _CompletionDB(_DB):
 
     async def execute(self, _stmt):
         self.executes += 1
-        return _ScalarOne(self.value)
+        return _ScalarOne(self.value if self.executes == 1 else None)
+
+
+class _SequenceCompletionDB(_DB):
+    def __init__(self, values) -> None:
+        super().__init__()
+        self.values = list(values)
+        self.executes = 0
+
+    async def execute(self, _stmt):
+        self.executes += 1
+        if not self.values:
+            return _ScalarOne(None)
+        return _ScalarOne(self.values.pop(0))
 
 
 @pytest.mark.asyncio
@@ -330,3 +343,80 @@ async def test_team_member_completion_projects_to_member_metadata_and_event():
     assert event.event_type == "member_completed"
     assert event.receiver_member_id == member.id
     assert event.payload_json["summary"] == "review passed"
+
+
+@pytest.mark.asyncio
+async def test_team_member_completion_wakes_parent_session_with_task_notification(monkeypatch):
+    from app.models.agent_team import AgentTeam, AgentTeamMember
+    from app.services.agent_team_runtime_service import project_agent_team_member_completion
+
+    tenant_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    agent = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, creator_id=user.id)
+    parent_session = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent.id,
+        tenant_id=tenant_id,
+        user_id=user.id,
+        parent_session_id=None,
+        root_session_id=None,
+        session_kind="human_chat",
+        runtime_source="web_chat",
+    )
+    team = AgentTeam(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        lead_agent_id=agent.id,
+        parent_session_id=parent_session.id,
+        name="Research Team",
+        created_by_user_id=user.id,
+    )
+    run_id = uuid4()
+    member = AgentTeamMember(
+        id=uuid4(),
+        team_id=team.id,
+        member_name="researcher",
+        chat_session_id=uuid4(),
+        runtime_task_id=run_id,
+        metadata_json={},
+    )
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="team_member",
+        child_session_id=str(member.chat_session_id),
+        metadata_json={"artifact_paths": ["workspace/report.md"]},
+    )
+    db = _SequenceCompletionDB([member, team, parent_session, agent, user])
+    captured = []
+
+    async def fake_continue_parent_session_with_task_notification(**kwargs):
+        captured.append(kwargs)
+        return {"ok": True, "status": "started"}
+
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_parent_session_with_task_notification",
+        fake_continue_parent_session_with_task_notification,
+    )
+
+    payload = await project_agent_team_member_completion(
+        db=db,
+        task=task,
+        status="completed",
+        result_summary="report ready",
+        metadata_json=task.metadata_json,
+    )
+
+    assert payload is not None
+    assert len(captured) == 1
+    wake = captured[0]
+    assert wake["agent"] is agent
+    assert wake["user"] is user
+    assert wake["session"] is parent_session
+    assert wake["task_id"] == str(run_id)
+    assert wake["task_type"] == "team_member"
+    assert wake["status"] == "completed"
+    assert wake["source"] == "agent_team"
+    assert wake["child_session_id"] == str(member.chat_session_id)
+    assert wake["child_agent_name"] == "researcher"
+    assert "report ready" in wake["summary"]
+    assert member.metadata_json["parent_task_notification_side_effect"]["source"] == "agent_team"

@@ -43,6 +43,7 @@ def test_manifest_inherits_recent_files_writes_skills_packs() -> None:
     assert manifest.session_id == "s1"
     assert "memory/feedback.md" in manifest.recent_reads
     assert "workspace/note.md" in manifest.recent_writes
+    assert manifest.current_turn_writes == ["workspace/note.md"]
     assert "web-research" in manifest.active_skills
     assert "web_pack" in manifest.active_tool_groups
     assert "finish report" in manifest.pending_items
@@ -76,6 +77,7 @@ def test_manifest_round_trips_through_json(tmp_path) -> None:
         "session_id": manifest.session_id,
         "recent_reads": manifest.recent_reads,
         "recent_writes": manifest.recent_writes,
+        "current_turn_writes": manifest.current_turn_writes,
         "recent_tool_outcomes": manifest.recent_tool_outcomes,
         "active_skills": manifest.active_skills,
         "active_tool_groups": manifest.active_tool_groups,
@@ -91,6 +93,7 @@ def test_manifest_round_trips_through_json(tmp_path) -> None:
     assert decoded["session_id"] == "abc"
     assert decoded["recent_reads"] == ["a.md"]
     assert decoded["recent_writes"] == ["b.md"]
+    assert decoded["current_turn_writes"] == ["b.md"]
     assert decoded["active_skills"] == ["k"]
     assert decoded["active_tool_groups"] == ["p"]
     assert decoded["pending_items"] == ["x"]
@@ -108,6 +111,7 @@ def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
                 "session_id": "session-1",
                 "recent_reads": ["workspace/report.md"],
                 "recent_writes": ["workspace/output.md"],
+                "current_turn_writes": ["workspace/output.md"],
                 "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
                 "active_skills": ["research"],
                 "active_tool_groups": ["web_pack"],
@@ -134,6 +138,7 @@ def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
     assert manifest is not None
     assert manifest.session_id == "session-1"
     assert manifest.recent_reads == ["workspace/report.md"]
+    assert manifest.current_turn_writes == ["workspace/output.md"]
     assert manifest.pending_items == ["finish D8 recovery"]
     assert manifest.permission_profile["allowed_tools"] == ["write_file"]
     assert manifest.mcp_assignments == [{"server": "docs", "tool": "search"}]
@@ -151,6 +156,7 @@ def test_recovery_manifest_hydrates_session_context_runtime_state(tmp_path) -> N
                 "session_id": "session-1",
                 "recent_reads": ["workspace/report.md"],
                 "recent_writes": ["workspace/output.md"],
+                "current_turn_writes": ["workspace/output.md"],
                 "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
                 "active_skills": ["research"],
                 "active_tool_groups": ["web_pack"],
@@ -179,6 +185,7 @@ def test_recovery_manifest_hydrates_session_context_runtime_state(tmp_path) -> N
 
     assert session.recent_files == ["workspace/report.md"]
     assert session.recent_writes == ["workspace/output.md"]
+    assert session.current_turn_writes == ["workspace/output.md"]
     assert session.recent_tool_outcomes == [{"tool": "web_search", "summary": "found source"}]
     assert session.active_skills == ["research"]
     assert session.active_tool_groups == [{"name": "web_pack", "summary": "", "tools": []}]

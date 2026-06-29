@@ -1291,6 +1291,109 @@ class WorkflowRuntimeService:
         except Exception as exc:
             logger.warning("[Workflow] completion delivery failed (non-fatal): %s", exc)
 
+    @staticmethod
+    def _completion_task_summary(*, run_id: uuid.UUID, status: str, reason: str | None, outputs: dict[str, Any] | None) -> str:
+        parts = [f"Workflow run {run_id} finished: {status}."]
+        if reason:
+            parts.append(f"Reason: {reason}")
+        if outputs:
+            try:
+                output_text = json.dumps(outputs, ensure_ascii=False, sort_keys=True, default=str)
+            except TypeError:
+                output_text = str(outputs)
+            if len(output_text) > 4000:
+                output_text = output_text[:3997].rstrip() + "..."
+            parts.append(f"Outputs: {output_text}")
+        return "\n".join(parts)
+
+    async def _claim_parent_task_notification_side_effect(
+        self,
+        *,
+        run_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        status: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Claim the parent-loop wake side effect for terminal workflow runs."""
+
+        from datetime import UTC, datetime
+
+        idempotency_key = f"workflow_parent_task_notification:{run_id}:{status}"
+        async with self._session(tenant_id) as session:
+            task = (
+                await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id).with_for_update())
+            ).scalar_one()
+            metadata = dict(task.metadata_json or {})
+            existing = metadata.get("parent_task_notification_side_effect")
+            if isinstance(existing, dict) and existing.get("idempotency_key") == idempotency_key:
+                return False, metadata
+            metadata["parent_task_notification_side_effect"] = {
+                "idempotency_key": idempotency_key,
+                "status": status,
+                "claimed_at": datetime.now(UTC).isoformat(),
+                "source": "workflow",
+            }
+            task.metadata_json = metadata
+            await session.flush()
+            return True, metadata
+
+    async def _wake_parent_session_from_workflow_completion(
+        self,
+        *,
+        run_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        agent_id: uuid.UUID | None,
+        parent_session_id: str | uuid.UUID | None,
+        status: str,
+        summary: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        if agent_id is None or not parent_session_id:
+            return
+        try:
+            from app.models.agent import Agent
+            from app.models.chat_session import ChatSession
+            from app.models.user import User
+            from app.services.agent_session_continuation import continue_parent_session_with_task_notification
+
+            parent_session_uuid = uuid.UUID(str(parent_session_id))
+            async with self._session(tenant_id) as session:
+                parent_session = (
+                    await session.execute(
+                        select(ChatSession).where(ChatSession.id == parent_session_uuid, ChatSession.agent_id == agent_id)
+                    )
+                ).scalar_one_or_none()
+                parent_agent = (await session.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
+                owner_id = metadata.get("user_id") or getattr(parent_session, "user_id", None) or getattr(parent_agent, "creator_id", None)
+                owner = (
+                    await session.execute(select(User).where(User.id == uuid.UUID(str(owner_id))))
+                ).scalar_one_or_none() if owner_id else None
+                if parent_session is None or parent_agent is None or owner is None:
+                    return
+                await continue_parent_session_with_task_notification(
+                    db=session,
+                    agent=parent_agent,
+                    user=owner,
+                    session=parent_session,
+                    task_id=str(run_id),
+                    task_type="workflow",
+                    status=status,
+                    summary=summary,
+                    source="workflow",
+                    metadata={
+                        "workflow_run_id": str(run_id),
+                        "parent_agent_id": str(agent_id),
+                        "parent_session_id": str(parent_session_uuid),
+                        "workflow_session_state": status,
+                    },
+                )
+        except Exception as exc:
+            logger.warning(
+                "[Workflow] parent task-notification wake failed for run %s session %s: %s",
+                run_id,
+                parent_session_id,
+                exc,
+            )
+
     async def _claim_completion_side_effects(
         self,
         *,
@@ -1535,6 +1638,28 @@ class WorkflowRuntimeService:
             reason=outcome.reason,
             outputs=outcome.outputs,
         )
+        if outcome.status in {"completed", "failed", "killed"}:
+            notification_claimed, notification_metadata = await self._claim_parent_task_notification_side_effect(
+                run_id=run_id,
+                tenant_id=tenant_id,
+                status=outcome.status,
+            )
+            if notification_claimed:
+                await self._wake_parent_session_from_workflow_completion(
+                    run_id=run_id,
+                    tenant_id=tenant_id,
+                    agent_id=agent_for_signal,
+                    parent_session_id=task_metadata.get("parent_session_id"),
+                    status=outcome.status,
+                    summary=self._completion_task_summary(
+                        run_id=run_id,
+                        status=outcome.status,
+                        reason=outcome.reason,
+                        outputs=outcome.outputs,
+                    ),
+                    metadata=notification_metadata,
+                )
+                task_metadata = notification_metadata
         if outcome.status == "completed":
             claimed, task_metadata = await self._claim_completion_side_effects(
                 run_id=run_id,

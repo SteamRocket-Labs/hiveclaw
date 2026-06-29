@@ -361,7 +361,71 @@ async def update_subagent_child_session_state_for_run(
                 listed_surface="chat",
                 source="subagent",
             )
+            await _wake_parent_session_from_subagent_completion(
+                run_id=run_id,
+                tenant_id=tenant_id,
+                parent_agent_id=parent_agent_uuid,
+                parent_user_id=session.user_id,
+                parent_session_id=parent_session_id,
+                child_session_id=child_session_uuid,
+                status=status,
+                summary=summary,
+            )
         await db.commit()
+
+
+async def _wake_parent_session_from_subagent_completion(
+    *,
+    run_id: str,
+    tenant_id: uuid.UUID,
+    parent_agent_id: uuid.UUID,
+    parent_user_id: uuid.UUID,
+    parent_session_id: uuid.UUID,
+    child_session_id: uuid.UUID,
+    status: str,
+    summary: str,
+) -> None:
+    try:
+        from app.models.user import User
+        from app.services.agent_session_continuation import continue_parent_session_with_task_notification
+
+        async with tenant_scoped_session(tenant_id) as db:
+            parent_session = (
+                await db.execute(
+                    select(ChatSession).where(
+                        ChatSession.id == parent_session_id,
+                        ChatSession.agent_id == parent_agent_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            parent_agent = (await db.execute(select(Agent).where(Agent.id == parent_agent_id))).scalar_one_or_none()
+            owner = (await db.execute(select(User).where(User.id == parent_user_id))).scalar_one_or_none()
+            if parent_session is None or parent_agent is None or owner is None:
+                return
+            await continue_parent_session_with_task_notification(
+                db=db,
+                agent=parent_agent,
+                user=owner,
+                session=parent_session,
+                task_id=run_id,
+                task_type=SUBAGENT_RUN_TASK_TYPE,
+                status=status,
+                summary=summary,
+                child_session_id=child_session_id,
+                child_agent_name="Subagent",
+                source="subagent",
+                metadata={
+                    "subagent_session_state": status,
+                    "parent_agent_id": str(parent_agent_id),
+                },
+            )
+    except Exception as exc:
+        logger.warning(
+            "Failed to wake parent session %s after subagent completion %s: %s",
+            parent_session_id,
+            run_id,
+            exc,
+        )
 
 
 async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnContext | None:

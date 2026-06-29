@@ -73,8 +73,27 @@ def test_file_tracking_records_version_snapshots() -> None:
 
     assert s.recent_files == ["workspace/report.md"]
     assert s.recent_writes == ["workspace/report.md"]
+    assert s.current_turn_writes == ["workspace/report.md"]
     assert s.file_snapshots["workspace/report.md"]["size"] == 20
     assert s.file_snapshots["workspace/report.md"]["mtime_ns"] == 200
+
+
+def test_turn_write_tracking_scopes_delivery_without_losing_recent_writes() -> None:
+    s = SessionContext()
+    s.track_file_write("workspace/old.md")
+
+    s.begin_turn()
+
+    assert s.recent_writes == ["workspace/old.md"]
+    assert s.current_turn_writes == []
+    assert s.consume_turn_writes() == []
+
+    s.track_file_write("workspace/new.md")
+
+    assert s.recent_writes == ["workspace/old.md", "workspace/new.md"]
+    assert s.current_turn_writes == ["workspace/new.md"]
+    assert s.consume_turn_writes() == ["workspace/new.md"]
+    assert s.current_turn_writes == []
 
 
 # ── Unload ────────────────────────────────────────────────────

@@ -132,8 +132,18 @@ function getActiveSessionId(search: string): string | null {
   return params.get('session_id') || params.get('session') || null;
 }
 
-function getSessionTag(session: ChatSession | any, t: any): string | null {
+export function getSessionTag(session: ChatSession | any, t: any): string | null {
   const source = String(session.source_channel || session.thread_source || '').toLowerCase();
+  const participantType = String(session.participant_type || '').toLowerCase();
+  const sessionKind = String(session.session_kind || '').toLowerCase();
+  if (
+    source === 'agent'
+    || participantType === 'agent'
+    || sessionKind === 'agent_chat'
+    || sessionKind === 'delegation_run'
+  ) {
+    return t('nav.sessionA2aBadge', 'A2A');
+  }
   if (source === 'trigger' || source === 'schedule' || source === 'task' || session.runtime_task_id) {
     return t('nav.sessionTaskBadge', 'Task');
   }

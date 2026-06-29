@@ -136,6 +136,7 @@ class SessionContext:
     # `list[str]` for backwards compat); this dict drives unload + prune.
     _skill_metadata: dict[str, dict[str, float]] = field(default_factory=dict)
     recent_writes: list[str] = field(default_factory=list)  # file paths written by agent
+    current_turn_writes: list[str] = field(default_factory=list)  # file paths written during the active turn
     recent_tool_outcomes: list[dict[str, str]] = field(default_factory=list)  # [{tool, summary}]
     recent_external_refs: list[str] = field(default_factory=list)  # URLs/resources fetched
     pending_items: list[str] = field(default_factory=list)  # unfinished work items
@@ -230,10 +231,25 @@ class SessionContext:
         if path in self.recent_writes:
             self.recent_writes.remove(path)
         self.recent_writes.append(path)
+        if path in self.current_turn_writes:
+            self.current_turn_writes.remove(path)
+        self.current_turn_writes.append(path)
         if snapshot is not None:
             self.file_snapshots[path] = dict(snapshot)
         if len(self.recent_writes) > 10:
             self.recent_writes.pop(0)
+        if len(self.current_turn_writes) > 10:
+            self.current_turn_writes.pop(0)
+
+    def begin_turn(self) -> None:
+        """Start a new model turn while keeping cross-turn restoration state."""
+        self.current_turn_writes.clear()
+
+    def consume_turn_writes(self) -> list[str]:
+        """Return and clear workspace writes created during the current turn."""
+        writes = list(self.current_turn_writes)
+        self.current_turn_writes.clear()
+        return writes
 
     def track_tool_outcome(self, tool_name: str, summary: str) -> None:
         """Record a high-value tool outcome for post-compact restoration. Keeps last 5."""

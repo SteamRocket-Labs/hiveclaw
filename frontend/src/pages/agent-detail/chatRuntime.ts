@@ -22,6 +22,7 @@ export type RuntimeEventType =
   | 'workflow_step'
   | 'dynamic_workflow'
   | 'child_session'
+  | 'agent_task_notification'
   | 'subagent'
   | 'team_member'
   | 'schedule'
@@ -60,6 +61,7 @@ export interface AgentChatMessage {
   eventNextStep?: string;
   eventRetryable?: boolean;
   eventRetryReason?: string;
+  eventNotificationSource?: string;
   sessionPermissionRequest?: SessionPermissionRequest;
   eventRuntimeTaskId?: string;
   eventTurnId?: string;
@@ -128,6 +130,10 @@ export interface ChatArtifactPart {
   diffSummary?: string;
   previewSnapshotContent?: string;
   previewSnapshotTruncated?: boolean;
+  ownerAgentId?: string;
+  sourceAgentId?: string;
+  downloadAgentId?: string;
+  deliveryAgentId?: string;
 }
 
 function mergeClarificationAnswerMetadata(
@@ -185,6 +191,10 @@ export type AgentOwnedSession = {
   id?: unknown;
   agent_id?: unknown;
   agentId?: unknown;
+  peer_agent_id?: unknown;
+  peerAgentId?: unknown;
+  source_channel?: unknown;
+  participant_type?: unknown;
 };
 
 export interface TranscriptReplayState {
@@ -204,6 +214,9 @@ export const ACTIVE_RUN_ABSENCE_GRACE_MS = 8_000;
 export function sessionBelongsToAgent(session: AgentOwnedSession | null | undefined, agentId: string | null | undefined): boolean {
   if (!session || !agentId) return false;
   const sessionAgentId = session.agent_id ?? session.agentId;
+  const peerAgentId = session.peer_agent_id ?? session.peerAgentId;
+  const isAgentSession = session.source_channel === 'agent' || session.participant_type === 'agent';
+  if (isAgentSession && peerAgentId != null && String(peerAgentId) === String(agentId)) return true;
   return sessionAgentId == null || String(sessionAgentId) === String(agentId);
 }
 
@@ -841,6 +854,9 @@ type EventPart = {
   hook_key?: string;
   hook_type?: string;
   runtime_task_id?: string;
+  notification_source?: string;
+  task_id?: string;
+  task_type?: string;
   turn_id?: string;
   tool_call_id?: string;
   child_session_id?: string;
@@ -884,6 +900,7 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'workflow_step',
   'dynamic_workflow',
   'child_session',
+  'agent_task_notification',
   'subagent',
   'team_member',
   'schedule',
@@ -946,6 +963,10 @@ function normalizeArtifactPart(part: any): ChatArtifactPart | null {
     size,
     source: typeof part.source === 'string' ? part.source : undefined,
     runtimeTaskId: typeof part.runtimeTaskId === 'string' ? part.runtimeTaskId : (typeof part.runtime_task_id === 'string' ? part.runtime_task_id : undefined),
+    ownerAgentId: typeof part.ownerAgentId === 'string' ? part.ownerAgentId : (typeof part.owner_agent_id === 'string' ? part.owner_agent_id : undefined),
+    sourceAgentId: typeof part.sourceAgentId === 'string' ? part.sourceAgentId : (typeof part.source_agent_id === 'string' ? part.source_agent_id : undefined),
+    downloadAgentId: typeof part.downloadAgentId === 'string' ? part.downloadAgentId : (typeof part.download_agent_id === 'string' ? part.download_agent_id : undefined),
+    deliveryAgentId: typeof part.deliveryAgentId === 'string' ? part.deliveryAgentId : (typeof part.delivery_agent_id === 'string' ? part.delivery_agent_id : undefined),
     revisionId: typeof part.revisionId === 'string' ? part.revisionId : (typeof part.revision_id === 'string' ? part.revision_id : undefined),
     action: typeof part.action === 'string' ? part.action : undefined,
     toolCallId: typeof part.toolCallId === 'string' ? part.toolCallId : (typeof part.tool_call_id === 'string' ? part.tool_call_id : undefined),
@@ -1177,6 +1198,10 @@ export function getRuntimeEventMessage(payload: any): AgentChatMessage | null {
     eventNextStep: payload?.eventNextStep || payload?.next_step || part?.next_step,
     eventRetryable: payload?.eventRetryable ?? payload?.retryable ?? part?.retryable,
     eventRetryReason: payload?.eventRetryReason || payload?.retry_reason || part?.retry_reason,
+    eventNotificationSource:
+      payload?.eventNotificationSource ||
+      payload?.notification_source ||
+      part?.notification_source,
     eventRuntimeTaskId: payload?.eventRuntimeTaskId || payload?.runtime_task_id || part?.runtime_task_id,
     eventTurnId: payload?.eventTurnId || payload?.turn_id || part?.turn_id,
     eventToolCallId: payload?.eventToolCallId || payload?.tool_call_id || part?.tool_call_id,

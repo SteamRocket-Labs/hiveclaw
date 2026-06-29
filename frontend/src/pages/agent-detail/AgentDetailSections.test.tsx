@@ -20,6 +20,7 @@ import AgentChatSection, {
   isPendingEmptyArtifactPreview,
   isClarificationCardAnsweredByLaterUserMessage,
   pickFocusedCheckpointIdForScroll,
+  sessionCheckpointPreview,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
@@ -1004,6 +1005,21 @@ describe('AgentDetail extracted sections', () => {
     expect(getSessionGitLineDensity(4)).toBe('sparse');
     expect(getSessionGitLineDensity(18)).toBe('regular');
     expect(getSessionGitLineDensity(50)).toBe('scrollable');
+  });
+
+  it('uses prompt intent text for session GitLine checkpoint previews', () => {
+    const preview = sessionCheckpointPreview({
+      checkpoint_event_id: '1782721813033911000.11602f20-12fb-4bba-8604-c8efca5d90dc',
+      sequence: 12,
+      content_preview: '我希望创建一个专注于 AI 硬件的产品分析师，持续跟踪 GPU/NPU/TPU 芯片发布。',
+    }, 0);
+
+    expect(preview).toBe('我希望创建一个专注于 AI 硬件的产品分析师，持续跟踪 GPU/NPU/TPU 芯片发布。');
+    expect(preview).not.toContain('1782721813033911000');
+
+    expect(sessionCheckpointPreview({
+      checkpoint_event_id: '1782721813033911000.11602f20-12fb-4bba-8604-c8efca5d90dc',
+    }, 2)).toBe('Checkpoint 3');
   });
 
   it('renders a session command checkpoint selector as an in-session control panel', () => {
@@ -3669,6 +3685,77 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('GPT-5.4');
     expect(markup).toContain('25% used');
     expect(markup).not.toMatch(/microphone|voice|语音/i);
+  });
+
+  it('renders A2A agent sessions as read-only and disables composer actions', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-a', name: 'Lead Agent' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'a2a-session-1',
+          agent_id: 'agent-b',
+          peer_agent_id: 'agent-a',
+          user_id: 'user-1',
+          title: 'A2A handoff',
+          username: 'Researcher ↔ Lead Agent',
+          source_channel: 'agent',
+          participant_type: 'agent',
+          created_at: '2026-06-29T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[{ id: 'msg-1', role: 'assistant', sender_name: 'Researcher', content: 'Done.' }]}
+        historyMessagesSessionId="a2a-session-1"
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[]}
+        chatMessagesSessionId={null}
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        activeRunStatus={null}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput="should not send"
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Agent Conversation');
+    expect(markup).not.toContain('data-testid="session-composer"');
+    expect(markup).not.toContain('data-testid="session-composer-input"');
+    expect(markup).not.toContain('data-testid="session-composer-send"');
   });
 
   it('shows Plan Mode as an active switch when the next turn is already in Plan Mode', () => {

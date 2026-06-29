@@ -55,7 +55,7 @@ router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 logger = logging.getLogger(__name__)
 
 _LEGACY_HIDDEN_CHAT_SOURCES = ("trigger", "task", "heartbeat")
-_MINE_HIDDEN_CHAT_SOURCES = ("agent", *_LEGACY_HIDDEN_CHAT_SOURCES)
+_MINE_HIDDEN_CHAT_SOURCES = _LEGACY_HIDDEN_CHAT_SOURCES
 _SESSION_PERMISSION_RESOLUTION_EVENT_TYPES = {
     "permission_resolved",
     "session_permission_decision",
@@ -839,12 +839,17 @@ async def list_sessions(
             )
         else:
             ownership_filter = ChatSession.user_id == current_user.id
+        direct_session_filter = (ChatSession.agent_id == agent_id) & ownership_filter
+        a2a_peer_session_filter = (
+            (ChatSession.peer_agent_id == agent_id)
+            & (ChatSession.source_channel == "agent")
+            & (ChatSession.user_id == current_user.id)
+        )
 
         result = await db.execute(
             select(ChatSession)
             .where(
-                ChatSession.agent_id == agent_id,
-                ownership_filter,
+                direct_session_filter | a2a_peer_session_filter,
                 ChatSession.listed_surface == "chat",
                 ChatSession.source_channel.notin_(_MINE_HIDDEN_CHAT_SOURCES),
             )
@@ -854,34 +859,62 @@ async def list_sessions(
         out = []
         for session in sessions:
             # Count only — skip sessions with no user messages (orphan assistant-only records)
-            count_result = await db.execute(
-                select(func.count(ChatMessage.id)).where(
-                    ChatMessage.conversation_id == str(session.id),
-                    ChatMessage.agent_id == agent_id,
-                    ChatMessage.role == "user",
+            if session.source_channel == "agent":
+                count_result = await db.execute(
+                    select(func.count(ChatMessage.id)).where(
+                        ChatMessage.conversation_id == str(session.id),
+                        ChatMessage.role == "user",
+                    )
                 )
-            )
+            else:
+                count_result = await db.execute(
+                    select(func.count(ChatMessage.id)).where(
+                        ChatMessage.conversation_id == str(session.id),
+                        ChatMessage.agent_id == agent_id,
+                        ChatMessage.role == "user",
+                    )
+                )
             user_msg_count = count_result.scalar() or 0
             if user_msg_count == 0:
                 continue  # hide empty or orphan sessions
             # Total message count for display
-            total_result = await db.execute(
-                select(func.count(ChatMessage.id)).where(
-                    ChatMessage.conversation_id == str(session.id),
-                    ChatMessage.agent_id == agent_id,
+            if session.source_channel == "agent":
+                total_result = await db.execute(
+                    select(func.count(ChatMessage.id)).where(
+                        ChatMessage.conversation_id == str(session.id),
+                    )
                 )
-            )
+            else:
+                total_result = await db.execute(
+                    select(func.count(ChatMessage.id)).where(
+                        ChatMessage.conversation_id == str(session.id),
+                        ChatMessage.agent_id == agent_id,
+                    )
+                )
             count = total_result.scalar() or 0
+            peer_agent_id = None
+            peer_agent_name = None
+            participant_type = "user"
+            username = None
+            if session.source_channel == "agent" and session.peer_agent_id:
+                participant_type = "agent"
+                peer_agent_id = str(session.peer_agent_id)
+                peer_agent_name = session.title
+                username = session.title
             out.append(
                 SessionOut(
                     id=str(session.id),
                     agent_id=str(session.agent_id),
                     user_id=str(session.user_id),
+                    username=username,
                     source_channel=session.source_channel,
                     title=session.title,
                     created_at=session.created_at.isoformat(),
                     last_message_at=session.last_message_at.isoformat() if session.last_message_at else None,
                     message_count=count,
+                    peer_agent_id=peer_agent_id,
+                    peer_agent_name=peer_agent_name,
+                    participant_type=participant_type,
                     **_session_contract_fields(session),
                 )
             )

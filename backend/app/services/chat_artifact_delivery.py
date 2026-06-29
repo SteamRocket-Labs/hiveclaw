@@ -107,6 +107,10 @@ def build_artifact_candidate(
     action: str = "created",
     tool_call_id: str | uuid.UUID | None = None,
     diff_summary: str | None = None,
+    owner_agent_id: str | uuid.UUID | None = None,
+    source_agent_id: str | uuid.UUID | None = None,
+    download_agent_id: str | uuid.UUID | None = None,
+    delivery_agent_id: str | uuid.UUID | None = None,
 ) -> dict[str, Any] | None:
     """Return a durable artifact payload for a safe workspace file path.
 
@@ -132,6 +136,10 @@ def build_artifact_candidate(
     snapshot_hash = _snapshot_hash(rel_path=rel, stat_data=stat_data)
     preview_kind = _preview_kind_for_path(rel)
     preview_snapshot_content, preview_snapshot_truncated = _read_preview_snapshot(absolute, preview_kind)
+    owner_agent = str(owner_agent_id or agent_id)
+    source_agent = str(source_agent_id or owner_agent)
+    download_agent = str(download_agent_id or owner_agent)
+    delivery_agent = str(delivery_agent_id) if delivery_agent_id else None
     snapshot = {
         "exists": True,
         "size": stat_data.st_size,
@@ -141,6 +149,10 @@ def build_artifact_candidate(
         "action": action,
         "tool_call_id": str(tool_call_id) if tool_call_id else None,
         "diff_summary": diff_summary,
+        "owner_agent_id": owner_agent,
+        "source_agent_id": source_agent,
+        "download_agent_id": download_agent,
+        "delivery_agent_id": delivery_agent,
     }
     if preview_snapshot_content is not None:
         snapshot["preview_content"] = preview_snapshot_content
@@ -163,6 +175,10 @@ def build_artifact_candidate(
         "snapshot": snapshot,
         "preview_snapshot_content": preview_snapshot_content,
         "preview_snapshot_truncated": preview_snapshot_truncated if preview_snapshot_content is not None else None,
+        "owner_agent_id": owner_agent,
+        "source_agent_id": source_agent,
+        "download_agent_id": download_agent,
+        "delivery_agent_id": delivery_agent,
         "revision_id": snapshot_hash,
         "action": action,
         "tool_call_id": str(tool_call_id) if tool_call_id else None,
@@ -180,6 +196,10 @@ def build_session_artifact_parts(
     workspace_root: Path,
     source: str = "workspace_write",
     action: str = "created",
+    owner_agent_id: str | uuid.UUID | None = None,
+    source_agent_id: str | uuid.UUID | None = None,
+    download_agent_id: str | uuid.UUID | None = None,
+    delivery_agent_id: str | uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Build artifact-delivery parts for safe workspace paths WITHOUT DB rows.
 
@@ -200,6 +220,10 @@ def build_session_artifact_parts(
             workspace_root=workspace_root,
             source=source,
             action=action,
+            owner_agent_id=owner_agent_id,
+            source_agent_id=source_agent_id,
+            download_agent_id=download_agent_id,
+            delivery_agent_id=delivery_agent_id,
         )
         if not candidate:
             continue
@@ -223,6 +247,10 @@ def _artifact_part_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "preview_kind": candidate.get("preview_kind", "download"),
         "source": candidate.get("source", "workspace_write"),
         "runtime_task_id": candidate.get("runtime_task_id"),
+        "owner_agent_id": candidate.get("owner_agent_id"),
+        "source_agent_id": candidate.get("source_agent_id"),
+        "download_agent_id": candidate.get("download_agent_id"),
+        "delivery_agent_id": candidate.get("delivery_agent_id"),
         "created_at": candidate.get("created_at"),
         "revision_id": candidate.get("revision_id"),
         "action": candidate.get("action"),
@@ -246,6 +274,10 @@ def artifact_part_from_model(artifact: ChatArtifact) -> dict[str, Any]:
         "preview_kind": artifact.preview_kind,
         "source": artifact.source,
         "runtime_task_id": str(artifact.runtime_task_id) if artifact.runtime_task_id else None,
+        "owner_agent_id": snapshot.get("owner_agent_id") or str(artifact.agent_id),
+        "source_agent_id": snapshot.get("source_agent_id") or str(artifact.agent_id),
+        "download_agent_id": snapshot.get("download_agent_id") or str(artifact.agent_id),
+        "delivery_agent_id": snapshot.get("delivery_agent_id"),
         "created_at": artifact.created_at.isoformat() if getattr(artifact, "created_at", None) else None,
         "revision_id": snapshot.get("revision_id") or artifact.snapshot_hash,
         "action": snapshot.get("action"),
@@ -270,6 +302,10 @@ def create_chat_artifacts_for_message(
     action: str = "created",
     tool_call_id: str | uuid.UUID | None = None,
     diff_summary: str | None = None,
+    owner_agent_id: str | uuid.UUID | None = None,
+    source_agent_id: str | uuid.UUID | None = None,
+    download_agent_id: str | uuid.UUID | None = None,
+    delivery_agent_id: str | uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
     parts: list[dict[str, Any]] = []
@@ -287,6 +323,10 @@ def create_chat_artifacts_for_message(
             action=action,
             tool_call_id=tool_call_id,
             diff_summary=diff_summary,
+            owner_agent_id=owner_agent_id,
+            source_agent_id=source_agent_id,
+            download_agent_id=download_agent_id,
+            delivery_agent_id=delivery_agent_id,
         )
         if not candidate:
             continue

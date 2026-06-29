@@ -24,6 +24,7 @@ SESSION_NATIVE_EVENT_TITLES: dict[str, str] = {
     "workflow_step": "Workflow Step",
     "dynamic_workflow": "Dynamic Workflow",
     "child_session": "Child Session",
+    "agent_task_notification": "Task Notification",
     "subagent": "Sub-Agent",
     "team_member": "Team Member",
     "schedule": "Schedule",
@@ -59,6 +60,9 @@ SESSION_NATIVE_EVENT_METADATA_KEYS = (
     "hook_key",
     "hook_type",
     "runtime_task_id",
+    "notification_source",
+    "task_id",
+    "task_type",
     "turn_id",
     "tool_call_id",
     "child_session_id",
@@ -72,10 +76,17 @@ SESSION_NATIVE_EVENT_METADATA_KEYS = (
     "once_id",
     "memory_candidate_id",
     "artifact_id",
+    "artifacts",
+    "artifact_ids",
+    "artifact_paths",
     "path",
     "revision_id",
     "action",
     "diff_summary",
+    "owner_agent_id",
+    "source_agent_id",
+    "download_agent_id",
+    "delivery_agent_id",
 )
 
 
@@ -137,6 +148,10 @@ def _normalize_artifact_part(artifact: dict[str, Any]) -> dict[str, Any]:
         "action": artifact.get("action"),
         "tool_call_id": artifact.get("tool_call_id"),
         "diff_summary": artifact.get("diff_summary"),
+        "owner_agent_id": artifact.get("owner_agent_id") or artifact.get("ownerAgentId"),
+        "source_agent_id": artifact.get("source_agent_id") or artifact.get("sourceAgentId"),
+        "download_agent_id": artifact.get("download_agent_id") or artifact.get("downloadAgentId"),
+        "delivery_agent_id": artifact.get("delivery_agent_id") or artifact.get("deliveryAgentId"),
     }
     return {key: value for key, value in part.items() if value is not None}
 

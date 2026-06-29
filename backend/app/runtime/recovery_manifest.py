@@ -29,6 +29,7 @@ class RecoveryManifest:
     # Files the agent recently read or wrote
     recent_reads: list[str] = field(default_factory=list)
     recent_writes: list[str] = field(default_factory=list)
+    current_turn_writes: list[str] = field(default_factory=list)
     file_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Tool execution outcomes worth preserving
@@ -66,6 +67,7 @@ class RecoveryManifest:
             [
                 self.recent_reads,
                 self.recent_writes,
+                self.current_turn_writes,
                 self.recent_tool_outcomes,
                 self.active_skills,
                 self.active_tool_groups,
@@ -92,6 +94,7 @@ class RecoveryManifest:
             "session_id": self.session_id,
             "recent_reads": self.recent_reads,
             "recent_writes": self.recent_writes,
+            "current_turn_writes": self.current_turn_writes,
             "file_snapshots": self.file_snapshots,
             "recent_tool_outcomes": self.recent_tool_outcomes,
             "active_skills": self.active_skills,
@@ -258,6 +261,7 @@ def _manifest_from_payload(payload: dict[str, Any]) -> RecoveryManifest:
         session_id=str(payload.get("session_id")) if payload.get("session_id") else None,
         recent_reads=_string_list(payload.get("recent_reads")),
         recent_writes=_string_list(payload.get("recent_writes")),
+        current_turn_writes=_string_list(payload.get("current_turn_writes")),
         file_snapshots=_dict_value(payload.get("file_snapshots")),
         recent_tool_outcomes=_dict_list(payload.get("recent_tool_outcomes")),
         active_skills=_string_list(payload.get("active_skills")),
@@ -381,6 +385,7 @@ def hydrate_session_context_from_recovery_manifest(session_context: Any, manifes
 
     _append_unique_strings(getattr(session_context, "recent_files", []), manifest.recent_reads, limit=10)
     _append_unique_strings(getattr(session_context, "recent_writes", []), manifest.recent_writes, limit=10)
+    _append_unique_strings(getattr(session_context, "current_turn_writes", []), manifest.current_turn_writes, limit=10)
     _append_unique_dicts(getattr(session_context, "recent_tool_outcomes", []), manifest.recent_tool_outcomes, limit=10)
     _append_unique_strings(getattr(session_context, "recent_external_refs", []), manifest.recent_external_refs, limit=5)
     _append_unique_strings(getattr(session_context, "pending_items", []), manifest.pending_items, limit=10)
@@ -464,6 +469,7 @@ def build_recovery_manifest(session_context: Any) -> RecoveryManifest:
         session_id=getattr(session_context, "session_id", None),
         recent_reads=list(getattr(session_context, "recent_files", [])),
         recent_writes=list(getattr(session_context, "recent_writes", [])),
+        current_turn_writes=list(getattr(session_context, "current_turn_writes", [])),
         file_snapshots=dict(getattr(session_context, "file_snapshots", {}) or {}),
         recent_tool_outcomes=list(getattr(session_context, "recent_tool_outcomes", [])),
         active_skills=list(getattr(session_context, "active_skills", [])),

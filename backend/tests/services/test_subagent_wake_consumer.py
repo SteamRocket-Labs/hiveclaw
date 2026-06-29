@@ -228,47 +228,56 @@ async def test_wake_respects_global_budget_cap(owner_sessionmaker, tenant_id):
     assert await _signal_count(owner_sessionmaker, tenant_id) == 1
 
 
-async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(monkeypatch, tmp_path):
-    """B2 core: the real production invoker re-invokes the parent agent with a
-    dedicated subagent_wake source and the child's result in the prompt."""
+async def test_production_parent_wake_invoker_routes_wake_context_to_continuation(monkeypatch):
+    """B2 core: the real production invoker routes the completed child result
+    through parent-session task-notification continuation."""
     from app.services import subagent_wake_consumer as swc
     from app.services.subagent_wake_consumer import SubagentWakeRequest, build_production_parent_wake_invoker
-    from app.memory.t0.ledger import replay_t0_session_events
 
     parent_id = uuid.uuid4()
     parent_session_id = uuid.uuid4()
     tid = uuid.uuid4()
-    model_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     agent = SimpleNamespace(
         id=parent_id,
         tenant_id=tid,
         status="active",
-        primary_model_id=model_id,
+        primary_model_id=uuid.uuid4(),
         fallback_model_id=None,
         name="Researcher",
         role_description="explores topics",
-        creator_id=uuid.uuid4(),
+        creator_id=user_id,
         max_tool_rounds=40,
     )
-    model = SimpleNamespace(id=model_id, tenant_id=tid)
-    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, model]))
+    parent_session = SimpleNamespace(
+        id=parent_session_id,
+        agent_id=parent_id,
+        tenant_id=tid,
+        user_id=user_id,
+        parent_session_id=None,
+        root_session_id=None,
+        transcript_metadata_json={},
+        visibility_scope="team",
+        listed_surface="chat",
+        session_kind="human_chat",
+        runtime_source="web_chat",
+    )
+    user = SimpleNamespace(id=user_id, tenant_id=tid)
+    monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, parent_session, user]))
 
     captured: dict = {}
 
-    async def fake_invoke_agent(request):
-        await request.on_tool_call({"tool": "read_file", "status": "running", "args": {"path": "x"}})
-        await request.on_tool_call(
-            {"tool": "read_file", "status": "done", "result": "parent wake tool result END_OF_WAKE_TOOL"}
-        )
-        captured["request"] = request
-        return SimpleNamespace(content="parent handled it")
+    async def fake_continue_parent_session_with_task_notification(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "queued"}
 
-    # invoke_agent is the real kernel boundary — doubled here per Test Double rationale.
-    monkeypatch.setattr("app.runtime.invoker.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(
+        "app.services.agent_session_continuation.continue_parent_session_with_task_notification",
+        fake_continue_parent_session_with_task_notification,
+    )
 
     invoker = build_production_parent_wake_invoker()
-    await invoker(
+    result = await invoker(
         SubagentWakeRequest(
             tenant_id=tid,
             parent_agent_id=parent_id,
@@ -279,26 +288,92 @@ async def test_production_parent_wake_invoker_invokes_agent_with_wake_context(mo
         )
     )
 
-    request = captured["request"]
-    assert request.agent_id == parent_id
-    assert request.session_context.source == "subagent_wake"
-    assert request.core_tools_only is True
-    assert "found 3 sources" in request.messages[0]["content"]
-    assert "session mailbox" in request.messages[0]["content"]
-    assert "check_subagent" in request.messages[0]["content"]
-    assert "consume_subagent_signals" not in request.messages[0]["content"]
-    assert request.model is model
-    events = replay_t0_session_events(agent_id=parent_id, session_id=parent_session_id, data_root=tmp_path)
-    assert [(event.event_type, event.role) for event in events] == [
-        ("user_message", "user"),
-        ("tool_call", "tool"),
-        ("tool_result", "tool"),
-        ("assistant_message", "assistant"),
-        ("segment_boundary", "system"),
-    ]
-    assert "found 3 sources" in events[0].content
-    assert "END_OF_WAKE_TOOL" in events[2].content
-    assert events[3].content == "parent handled it"
+    assert result == {"ok": True, "status": "queued"}
+    assert captured["agent"] is agent
+    assert captured["user"] is user
+    assert captured["session"] is parent_session
+    assert captured["task_type"] == "subagent"
+    assert captured["status"] == "completed"
+    assert captured["summary"] == "found 3 sources"
+    assert captured["source"] == "subagent_wake"
+
+
+async def test_production_parent_wake_invoker_uses_task_notification_continuation(monkeypatch):
+    """The daemon fallback must use the same parent-session continuation path as
+    direct subagent/A2A completion, instead of bypassing ToolRuntime/web-chat
+    bookkeeping with a direct invoke_agent call.
+    """
+
+    from app.services import subagent_wake_consumer as swc
+    from app.services.subagent_wake_consumer import SubagentWakeRequest, build_production_parent_wake_invoker
+
+    parent_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    tid = uuid.uuid4()
+    user_id = uuid.uuid4()
+    agent = SimpleNamespace(
+        id=parent_id,
+        tenant_id=tid,
+        status="active",
+        primary_model_id=uuid.uuid4(),
+        fallback_model_id=None,
+        name="Researcher",
+        role_description="explores topics",
+        creator_id=user_id,
+        max_tool_rounds=40,
+    )
+    parent_session = SimpleNamespace(
+        id=parent_session_id,
+        agent_id=parent_id,
+        tenant_id=tid,
+        user_id=user_id,
+        parent_session_id=None,
+        root_session_id=None,
+        transcript_metadata_json={},
+        visibility_scope="team",
+        listed_surface="chat",
+        session_kind="human_chat",
+        runtime_source="web_chat",
+    )
+    user = SimpleNamespace(id=user_id, tenant_id=tid)
+    monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, parent_session, user]))
+
+    captured: dict = {}
+
+    async def fake_continue_parent_session_with_task_notification(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "started"}
+
+    monkeypatch.setattr(
+        "app.services.agent_session_continuation.continue_parent_session_with_task_notification",
+        fake_continue_parent_session_with_task_notification,
+    )
+
+    async def boom_invoke_agent(_request):
+        raise AssertionError("daemon wake must not bypass parent-session continuation")
+
+    monkeypatch.setattr("app.runtime.invoker.invoke_agent", boom_invoke_agent)
+
+    invoker = build_production_parent_wake_invoker()
+    result = await invoker(
+        SubagentWakeRequest(
+            tenant_id=tid,
+            parent_agent_id=parent_id,
+            signal_id=uuid.uuid4(),
+            from_agent_id="subagent:researcher",
+            thread_id=f"subagent:{parent_session_id}:trace-1",
+            content="found 3 sources",
+        )
+    )
+
+    assert result == {"ok": True, "status": "started"}
+    assert captured["agent"] is agent
+    assert captured["user"] is user
+    assert captured["session"] is parent_session
+    assert captured["task_type"] == "subagent"
+    assert captured["status"] == "completed"
+    assert captured["source"] == "subagent_wake"
+    assert captured["summary"] == "found 3 sources"
 
 
 async def test_production_parent_wake_invoker_skips_non_runnable_agent(monkeypatch):
@@ -330,7 +405,7 @@ async def test_production_parent_wake_invoker_skips_non_runnable_agent(monkeypat
             parent_agent_id=stopped_agent.id,
             signal_id=uuid.uuid4(),
             from_agent_id="subagent:x",
-            thread_id="t",
+            thread_id=f"subagent:{uuid.uuid4()}:trace-1",
             content="result",
         )
     )

@@ -510,16 +510,70 @@ export function getSessionGitLineDensity(itemCount: number): SessionGitLineDensi
   return 'regular';
 }
 
-function sessionCheckpointLabel(checkpoint: Record<string, unknown>, index: number): string {
-  const sequence = checkpoint.sequence ?? checkpoint.turn_index ?? index + 1;
-  const role = checkpoint.role ? `${checkpoint.role}: ` : '';
-  const content = String(checkpoint.content || checkpoint.title || checkpoint.summary || '').trim();
-  return `${sequence}. ${role}${content || sessionCheckpointId(checkpoint) || 'checkpoint'}`;
+function checkpointTextValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          const part = item as Record<string, unknown>;
+          return checkpointTextValue(part.text ?? part.content ?? part.value);
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join(' ');
+  }
+  return '';
 }
 
-function sessionCheckpointPreview(checkpoint: Record<string, unknown>, index: number): string {
-  const label = sessionCheckpointLabel(checkpoint, index);
-  return label.length > 110 ? `${label.slice(0, 107)}...` : label;
+function normalizeCheckpointPreviewText(value: unknown): string {
+  return checkpointTextValue(value).replace(/\s+/g, ' ').trim();
+}
+
+function isOpaqueCheckpointPreview(text: string, checkpoint: Record<string, unknown>): boolean {
+  if (!text) return true;
+  const id = sessionCheckpointId(checkpoint);
+  if (id && text === id) return true;
+  if (/^[a-z0-9_.:-]{16,}$/i.test(text) && !/\s/.test(text)) return true;
+  return false;
+}
+
+function checkpointPromptIntent(checkpoint: Record<string, unknown>): string {
+  const metadata = checkpoint.metadata && typeof checkpoint.metadata === 'object'
+    ? checkpoint.metadata as Record<string, unknown>
+    : {};
+  const candidates = [
+    checkpoint.prompt,
+    checkpoint.user_prompt,
+    checkpoint.original_prompt,
+    checkpoint.input,
+    checkpoint.query,
+    checkpoint.request,
+    checkpoint.content_preview,
+    checkpoint.display_content,
+    checkpoint.content,
+    metadata.prompt,
+    metadata.user_prompt,
+    metadata.original_prompt,
+    metadata.display_content,
+    metadata.content_preview,
+    metadata.llm_content,
+    metadata.user_message,
+    checkpoint.title,
+    checkpoint.summary,
+  ];
+  for (const candidate of candidates) {
+    const text = normalizeCheckpointPreviewText(candidate);
+    if (!isOpaqueCheckpointPreview(text, checkpoint)) return text;
+  }
+  return '';
+}
+
+export function sessionCheckpointPreview(checkpoint: Record<string, unknown>, index: number): string {
+  const intent = checkpointPromptIntent(checkpoint) || `Checkpoint ${index + 1}`;
+  return intent.length > 96 ? `${intent.slice(0, 93).trimEnd()}...` : intent;
 }
 
 function branchAnchorId(item: BranchLineageItem): string {
@@ -907,6 +961,13 @@ export function isPendingEmptyArtifactPreview(
   return artifact.size === 0 && !String(content ?? '').trim();
 }
 
+function artifactWorkspaceAgentId(
+  artifact: Pick<ChatArtifactPart, 'downloadAgentId' | 'ownerAgentId' | 'sourceAgentId'>,
+  fallbackAgentId?: string | null,
+): string | null {
+  return artifact.downloadAgentId || artifact.ownerAgentId || artifact.sourceAgentId || fallbackAgentId || null;
+}
+
 function ArtifactPreviewPanel({
   preview,
   onClose,
@@ -1079,7 +1140,8 @@ function ArtifactCards({
   return (
     <div style={{ display: 'grid', gap: '6px', marginTop: '8px' }}>
       {visibleArtifacts.map((artifact) => {
-        const href = fileApi.downloadUrl(String(agentId), artifact.path);
+        const downloadAgentId = artifactWorkspaceAgentId(artifact, agentId);
+        const href = downloadAgentId ? fileApi.downloadUrl(downloadAgentId, artifact.path) : '#';
         const size = formatArtifactSize(artifact.size);
         const openArtifact = () => onOpenArtifact?.(artifact);
         return (
@@ -2045,8 +2107,9 @@ export default function AgentChatSection({
   );
 
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
-    if (!effectiveAgentId) return;
-    const href = fileApi.downloadUrl(effectiveAgentId, artifact.path);
+    const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
+    if (!artifactAgentId) return;
+    const href = fileApi.downloadUrl(artifactAgentId, artifact.path);
     if (getArtifactOpenMode(artifact) === 'download') {
       window.open(href, '_blank', 'noopener,noreferrer');
       return;
@@ -2056,7 +2119,7 @@ export default function AgentChatSection({
     if (previewKind === 'markdown' || previewKind === 'text' || !previewKind) {
       setArtifactPreview({ artifact, loading: true });
       try {
-        const response = await fileApi.read(effectiveAgentId, artifact.path);
+        const response = await fileApi.read(artifactAgentId, artifact.path);
         setArtifactPreview({ artifact, content: response.content || '', url: href });
       } catch (error) {
         if (typeof artifact.previewSnapshotContent === 'string') {

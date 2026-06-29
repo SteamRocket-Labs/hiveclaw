@@ -7,9 +7,10 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.agents.coordination_gateway import CoordinationGateway
@@ -1009,14 +1010,18 @@ async def _delegate_after_cycle_check(
         content: str,
         t0_role: str | None = None,
         metadata: dict[str, Any] | None = None,
+        parts: list[dict[str, Any]] | None = None,
+        artifact_paths: list[str] | None = None,
     ) -> None:
         if not transcript_enabled or transcript_tenant_id is None or transcript_session_id is None:
             return
         from app.database import tenant_scoped_session
+        from app.config import get_settings
+        from app.services.chat_artifact_delivery import create_chat_artifacts_for_message
         from app.services.chat_transcript import append_session_event
 
         async with tenant_scoped_session(transcript_tenant_id) as db:
-            await append_session_event(
+            append_result = await append_session_event(
                 db=db,
                 agent_id=request.target.id,
                 tenant_id=transcript_tenant_id,
@@ -1032,7 +1037,8 @@ async def _delegate_after_cycle_check(
                 root_session_id=transcript_parent_session_id or transcript_session_id,
                 source="agent",
                 visibility_scope="agent_owner",
-                listed_surface="task_updates",
+                listed_surface="chat",
+                parts=parts,
                 metadata={
                     "source": "agent",
                     "interaction_type": request.interaction_type,
@@ -1047,6 +1053,34 @@ async def _delegate_after_cycle_check(
                     **(metadata or {}),
                 },
             )
+            artifact_parts: list[dict[str, Any]] = []
+            if artifact_paths and append_result.message_id:
+                artifact_parts = create_chat_artifacts_for_message(
+                    db=db,
+                    agent_id=request.target.id,
+                    tenant_id=transcript_tenant_id,
+                    session_id=transcript_session_id,
+                    message_id=append_result.message_id,
+                    runtime_task_id=transcript_runtime_task_id,
+                    paths=artifact_paths,
+                    workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(request.target.id),
+                    source="a2a_workspace_write",
+                    owner_agent_id=request.target.id,
+                    source_agent_id=request.target.id,
+                    download_agent_id=request.target.id,
+                    delivery_agent_id=request.parent_agent_id,
+                )
+            if artifact_parts:
+                next_parts = [*(parts or []), *artifact_parts]
+                append_result.transcript_event.parts_json = next_parts
+                next_metadata = dict(append_result.transcript_event.metadata_json or {})
+                next_metadata["parts"] = next_parts
+                next_metadata["artifacts"] = artifact_parts
+                next_metadata["artifact_ids"] = [part.get("artifact_id") for part in artifact_parts]
+                next_metadata["artifact_paths"] = [part.get("path") for part in artifact_parts]
+                next_metadata["artifact_owner_agent_id"] = str(request.target.id)
+                next_metadata["artifact_delivery_agent_id"] = str(request.parent_agent_id) if request.parent_agent_id else None
+                append_result.transcript_event.metadata_json = next_metadata
             await db.commit()
 
     if is_delegation and transcript_tenant_id is not None and transcript_session_id is not None:
@@ -1077,7 +1111,7 @@ async def _delegate_after_cycle_check(
                     actor_type="agent",
                     runtime_source="delegation",
                     visibility_scope="agent_owner",
-                    listed_surface="task_updates",
+                    listed_surface="chat",
                     parent_session_id=transcript_parent_session_id,
                     root_session_id=transcript_parent_session_id,
                     runtime_task_id=transcript_runtime_task_id,
@@ -1118,7 +1152,7 @@ async def _delegate_after_cycle_check(
                 root_session_id=transcript_parent_session_id or transcript_session_id,
                 source="agent",
                 visibility_scope="agent_owner",
-                listed_surface="task_updates",
+                listed_surface="chat",
                 metadata={
                     "source": "agent",
                     "interaction_type": request.interaction_type,
@@ -1145,7 +1179,13 @@ async def _delegate_after_cycle_check(
     async def _on_delegation_tool_call(data: dict[str, Any]) -> None:
         if not transcript_enabled:
             return
+        from app.services.chat_artifact_delivery import tool_session_write_paths
+
         status = str(data.get("status") or "")
+        tool_args = data.get("args") if isinstance(data.get("args"), dict) else {}
+        artifact_paths: list[str] = []
+        if status in {"done", "completed"} or "result" in data:
+            artifact_paths = tool_session_write_paths(str(data.get("name") or ""), tool_args)
         payload = {
             "name": data.get("name", ""),
             "args": data.get("args"),
@@ -1176,6 +1216,7 @@ async def _delegate_after_cycle_check(
                 "duration_ms": data.get("duration_ms"),
                 "visibility": data.get("visibility") or "collapsed",
             },
+            artifact_paths=artifact_paths,
         )
 
     invocation = AgentInvocationRequest(
@@ -1292,6 +1333,38 @@ async def _delegate_after_cycle_check(
     return delegation_result
 
 
+async def _collect_delegation_child_artifact_parts(
+    *,
+    tenant_id: uuid.UUID,
+    child_session_id: uuid.UUID,
+    delivery_agent_id: uuid.UUID | None = None,
+) -> list[dict[str, Any]]:
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.chat_artifact import ChatArtifact
+    from app.services.chat_artifact_delivery import artifact_part_from_model
+
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(
+            select(ChatArtifact)
+            .where(ChatArtifact.session_id == child_session_id)
+            .order_by(ChatArtifact.created_at.asc(), ChatArtifact.id.asc())
+        )
+        parts: list[dict[str, Any]] = []
+        seen: set[tuple[str | None, str | None]] = set()
+        for artifact in result.scalars().all():
+            part = artifact_part_from_model(artifact)
+            if delivery_agent_id is not None:
+                part["delivery_agent_id"] = str(delivery_agent_id)
+            key = (part.get("artifact_id"), part.get("path"))
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(part)
+        return parts
+
+
 async def _project_delegation_completion_to_parent(
     *,
     request: AgentDelegationRequest,
@@ -1322,6 +1395,20 @@ async def _project_delegation_completion_to_parent(
     from app.services.chat_message_parts import build_session_native_event
     from app.services.chat_transcript import append_session_event
 
+    try:
+        artifact_parts = await _collect_delegation_child_artifact_parts(
+            tenant_id=tenant_uuid,
+            child_session_id=child_session_uuid,
+            delivery_agent_id=parent_agent_uuid,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Orchestrator] Failed to collect delegation artifacts for child session %s (task=%s): %s",
+            child_session_uuid,
+            task_id,
+            exc,
+        )
+        artifact_parts = []
     reason = "delegation_completed" if status == "completed" else "delegation_failed"
     parent_event_payload = {
         "type": "child_session",
@@ -1337,6 +1424,9 @@ async def _project_delegation_completion_to_parent(
         "to_agent_name": request.target.name,
         "trace_id": request.trace_id,
         "depth": request.depth,
+        "artifacts": artifact_parts,
+        "artifact_paths": [part.get("path") for part in artifact_parts if part.get("path")],
+        "artifact_ids": [part.get("artifact_id") for part in artifact_parts if part.get("artifact_id")],
     }
     parent_event = build_session_native_event(parent_event_payload)
 
@@ -1356,7 +1446,7 @@ async def _project_delegation_completion_to_parent(
                 runtime_task_id=task_id,
                 root_session_id=parent_session_uuid,
                 parent_session_id=parent_session_uuid,
-                parts=[parent_event["part"]],
+                parts=[parent_event["part"], *artifact_parts],
                 metadata={
                     **parent_event_payload,
                     "source": "agent",
@@ -1367,9 +1457,84 @@ async def _project_delegation_completion_to_parent(
                 source="agent",
             )
             await db.commit()
+        await _wake_parent_session_from_delegation_completion(
+            request=request,
+            task_id=task_id,
+            status=status,
+            summary=summary,
+            artifacts=artifact_parts,
+        )
     except Exception as exc:
         logger.warning(
             "[Orchestrator] Failed to project delegation completion to parent session %s (task=%s): %s",
+            parent_session_uuid,
+            task_id,
+            exc,
+        )
+
+
+async def _wake_parent_session_from_delegation_completion(
+    *,
+    request: AgentDelegationRequest,
+    task_id: str,
+    status: str,
+    summary: str,
+    artifacts: list[dict[str, Any]] | None = None,
+) -> None:
+    parent_session_uuid = _maybe_uuid(request.parent_session_id)
+    child_session_uuid = _maybe_uuid(request.session_id)
+    parent_agent_uuid = _maybe_uuid(request.parent_agent_id)
+    tenant_uuid = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
+    if parent_session_uuid is None or child_session_uuid is None or parent_agent_uuid is None or tenant_uuid is None:
+        return
+
+    try:
+        from sqlalchemy import select
+
+        from app.database import tenant_scoped_session
+        from app.models.agent import Agent
+        from app.models.chat_session import ChatSession
+        from app.models.user import User
+        from app.services.agent_session_continuation import continue_parent_session_with_task_notification
+
+        async with tenant_scoped_session(tenant_uuid) as db:
+            parent_session = (
+                await db.execute(
+                    select(ChatSession).where(
+                        ChatSession.id == parent_session_uuid,
+                        ChatSession.agent_id == parent_agent_uuid,
+                    )
+                )
+            ).scalar_one_or_none()
+            parent_agent = (await db.execute(select(Agent).where(Agent.id == parent_agent_uuid))).scalar_one_or_none()
+            owner = (await db.execute(select(User).where(User.id == request.owner_id))).scalar_one_or_none()
+            if parent_session is None or parent_agent is None or owner is None:
+                return
+            await continue_parent_session_with_task_notification(
+                db=db,
+                agent=parent_agent,
+                user=owner,
+                session=parent_session,
+                task_id=task_id,
+                task_type="a2a_delegation",
+                status=status,
+                summary=summary,
+                child_session_id=child_session_uuid,
+                child_agent_name=getattr(request.target, "name", None),
+                source="a2a_delegation",
+                metadata={
+                    "trace_id": request.trace_id,
+                    "interaction_type": request.interaction_type,
+                    "from_agent": str(parent_agent_uuid),
+                    "to_agent": str(request.target.id),
+                    "to_agent_name": getattr(request.target, "name", None),
+                    "depth": request.depth,
+                },
+                artifacts=artifacts or [],
+            )
+    except Exception as exc:
+        logger.warning(
+            "[Orchestrator] Failed to wake parent session %s after delegation completion (task=%s): %s",
             parent_session_uuid,
             task_id,
             exc,

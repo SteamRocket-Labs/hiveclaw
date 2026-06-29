@@ -2,7 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
-import AppSidebar, { sidebarSessionFromLocalAgentChannelSession } from './AppSidebar';
+import AppSidebar, { getSessionTag, sidebarSessionFromLocalAgentChannelSession } from './AppSidebar';
 import NotificationCenter from './NotificationCenter';
 
 const routeState = vi.hoisted(() => ({
@@ -32,6 +32,16 @@ vi.mock('react-router-dom', () => ({
 }));
 
 describe('Layout extracted sections', () => {
+  it('labels agent-to-agent sessions with an A2A badge', () => {
+    const t = (key: string, fallback?: string) => fallback || key;
+    expect(getSessionTag({
+      source_channel: 'agent',
+      participant_type: 'agent',
+      session_kind: 'delegation_run',
+      title: 'Lead ↔ Researcher',
+    }, t)).toBe('A2A');
+  });
+
   it('binds main content width to the collapsed sidebar state at the app layout scope', async () => {
     const fsModuleId = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {

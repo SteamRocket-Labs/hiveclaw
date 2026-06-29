@@ -122,6 +122,176 @@ async def test_agent_session_continuation_inactive_open_session_starts_turn(monk
 
 
 @pytest.mark.asyncio
+async def test_task_notification_continuation_uses_hidden_cc_envelope(monkeypatch):
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    session = _agent_session(state="open")
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Lead")
+    user = SimpleNamespace(id=session.user_id)
+    captured: dict = {}
+
+    async def fake_append(**kwargs):
+        captured["append"] = kwargs
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**kwargs):
+        return None
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "run-task-notification", "status": "running"}
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    result = await svc.continue_parent_session_with_task_notification(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        task_id="task-1",
+        task_type="a2a_delegation",
+        status="completed",
+        summary="Research is complete.",
+        child_session_id="child-session-1",
+        child_agent_name="Researcher",
+        source="a2a_delegation",
+        metadata={"trace_id": "trace-1"},
+    )
+
+    assert result["status"] == "started"
+    assert captured["append"]["event_type"] == "agent_task_notification"
+    assert captured["append"]["role"] == "user"
+    assert captured["append"]["materialize_chat_message"] is False
+    assert captured["append"]["metadata"]["mailbox_kind"] == "task_notification"
+    assert captured["append"]["metadata"]["task_type"] == "a2a_delegation"
+    assert captured["append"]["metadata"]["trace_id"] == "trace-1"
+    assert "<task-notification>" in captured["append"]["content"]
+    assert "<task-id>task-1</task-id>" in captured["append"]["content"]
+    assert "<child-session-id>child-session-1</child-session-id>" in captured["append"]["content"]
+    assert captured["start"]["append_user_message"] is False
+    assert captured["start"]["extra_metadata"]["source"] == "task_notification"
+    assert captured["start"]["extra_metadata"]["task_notification"] is True
+
+
+@pytest.mark.asyncio
+async def test_task_notification_carries_a2a_artifact_refs_to_parent_turn(monkeypatch):
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    session = _agent_session(state="open")
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Lead")
+    user = SimpleNamespace(id=session.user_id)
+    captured: dict = {}
+    artifact_parts = [
+        {
+            "type": "artifact",
+            "artifact_id": "artifact-1",
+            "path": "workspace/web3-report.md",
+            "name": "web3-report.md",
+            "preview_kind": "markdown",
+            "source": "a2a_workspace_write",
+            "owner_agent_id": "agent-b",
+            "source_agent_id": "agent-b",
+            "download_agent_id": "agent-b",
+        }
+    ]
+
+    async def fake_append(**kwargs):
+        captured["append"] = kwargs
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**kwargs):
+        return None
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "run-task-notification", "status": "running"}
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    await svc.continue_parent_session_with_task_notification(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        task_id="task-a2a",
+        task_type="a2a_delegation",
+        status="completed",
+        summary="Report is ready.",
+        child_session_id="child-session-1",
+        child_agent_name="Researcher",
+        source="a2a_delegation",
+        artifacts=artifact_parts,
+    )
+
+    assert captured["append"]["parts"] == artifact_parts
+    assert captured["append"]["metadata"]["artifacts"] == artifact_parts
+    assert captured["start"]["extra_metadata"]["artifacts"] == artifact_parts
+    assert "<artifact-path>workspace/web3-report.md</artifact-path>" in captured["append"]["content"]
+    assert "<download-agent-id>agent-b</download-agent-id>" in captured["append"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_task_notification_active_parent_run_queues_to_midrun_consumer(monkeypatch):
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    session = _agent_session(state="open")
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Lead")
+    user = SimpleNamespace(id=session.user_id)
+    active_run = SimpleNamespace(
+        id=uuid4(), status="running", metadata_json={}, created_at=None, started_at=None, completed_at=None
+    )
+    captured: dict = {}
+
+    async def fake_append(**kwargs):
+        captured["append"] = kwargs
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**kwargs):
+        return active_run
+
+    async def fake_queue(**kwargs):
+        captured["queue"] = kwargs
+        return {"run_id": kwargs["active_run"].id.hex, "status": "running"}
+
+    async def fake_start(**_kwargs):
+        raise AssertionError("active parent run must consume task notifications through mid-run drain")
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "_queue_saved_mid_run_user_message", fake_queue)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    result = await svc.continue_parent_session_with_task_notification(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        task_id="task-2",
+        task_type="subagent",
+        status="completed",
+        summary="Subagent finished.",
+        child_session_id="child-session-2",
+        child_agent_name="Subagent",
+        source="subagent",
+    )
+
+    assert result["status"] == "queued"
+    assert result["consumer"] == "mid_run_message_drain"
+    assert captured["append"]["event_type"] == "agent_task_notification"
+    assert captured["append"]["materialize_chat_message"] is False
+    assert captured["queue"]["source_channel"] == "task_notification"
+    assert captured["queue"]["message_already_in_t0"] is True
+    assert "<task-id>task-2</task-id>" in captured["queue"]["content"]
+
+
+@pytest.mark.asyncio
 async def test_agent_session_continuation_terminal_session_rejects_and_writes_transcript(monkeypatch):
     import app.services.agent_session_continuation as svc
 

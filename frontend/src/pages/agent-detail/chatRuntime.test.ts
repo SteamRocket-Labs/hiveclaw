@@ -515,13 +515,22 @@ describe('chatRuntime helpers', () => {
   it('filters sessions that belong to a different route agent', () => {
     expect(sessionBelongsToAgent({ id: 'session-1', agent_id: 'agent-1' }, 'agent-1')).toBe(true);
     expect(sessionBelongsToAgent({ id: 'session-1', agent_id: 'agent-2' }, 'agent-1')).toBe(false);
+    expect(sessionBelongsToAgent({
+      id: 'a2a-session-1',
+      agent_id: 'agent-b',
+      peer_agent_id: 'agent-a',
+      source_channel: 'agent',
+      participant_type: 'agent',
+    }, 'agent-a')).toBe(true);
     expect(sessionBelongsToAgent({ id: 'legacy-session-without-agent-id' }, 'agent-1')).toBe(true);
     expect(filterSessionsForAgent([
       { id: 'session-1', agent_id: 'agent-1' },
       { id: 'session-2', agent_id: 'agent-2' },
+      { id: 'a2a-session-1', agent_id: 'agent-b', peer_agent_id: 'agent-1', source_channel: 'agent' },
       { id: 'session-3' },
     ], 'agent-1')).toEqual([
       { id: 'session-1', agent_id: 'agent-1' },
+      { id: 'a2a-session-1', agent_id: 'agent-b', peer_agent_id: 'agent-1', source_channel: 'agent' },
       { id: 'session-3' },
     ]);
   });
@@ -797,6 +806,9 @@ describe('chatRuntime helpers', () => {
           preview_kind: 'markdown',
           source: 'workflow',
           runtime_task_id: 'rt-1',
+          owner_agent_id: 'agent-b',
+          source_agent_id: 'agent-b',
+          download_agent_id: 'agent-b',
           revision_id: 'rev-2',
           action: 'updated',
           tool_call_id: 'tool-9',
@@ -816,6 +828,9 @@ describe('chatRuntime helpers', () => {
         mimeType: undefined,
         size: undefined,
         runtimeTaskId: 'rt-1',
+        ownerAgentId: 'agent-b',
+        sourceAgentId: 'agent-b',
+        downloadAgentId: 'agent-b',
         revisionId: 'rev-2',
         action: 'updated',
         toolCallId: 'tool-9',

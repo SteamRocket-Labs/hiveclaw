@@ -289,6 +289,11 @@ def _runtime_prompt_metadata_update(runtime_session_context: Any) -> dict[str, A
     return {key: metadata[key] for key in keys if key in metadata}
 
 
+def _terminal_artifact_paths_for_turn(runtime_session_context: Any) -> list[str]:
+    """Return only files written by the active turn for terminal message cards."""
+    return [str(path) for path in (getattr(runtime_session_context, "current_turn_writes", []) or []) if str(path)]
+
+
 def _terminal_reason_value_for_web_run(
     *,
     status: str,
@@ -2593,6 +2598,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 conversation.append({"role": "user", "content": prompt})
 
         runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent.id), session_id)
+        if hasattr(runtime_session_context, "begin_turn"):
+            runtime_session_context.begin_turn()
         runtime_session_context.source = str(metadata.get("source") or runtime_session_context.source or "web")
         runtime_session_context.channel = str(metadata.get("channel") or runtime_session_context.channel or "web")
         runtime_session_context.metadata["tenant_id"] = str(agent.tenant_id) if agent.tenant_id else None
@@ -3050,7 +3057,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             )
             await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
             return
-        artifact_paths = list(getattr(runtime_session_context, "recent_writes", []) or [])
+        artifact_paths = _terminal_artifact_paths_for_turn(runtime_session_context)
         finalized = await _finalize_web_chat_run_with_assistant(
             run_uuid=run_uuid,
             agent_id=agent.id,

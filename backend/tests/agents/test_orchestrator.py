@@ -1703,6 +1703,16 @@ async def test_delegation_completion_projects_child_session_event_to_parent(monk
     from app.agents.orchestrator import AgentDelegationRequest, _project_delegation_completion_to_parent
 
     captured = _capture_parent_session_events(monkeypatch)
+    wakeups: list[dict] = []
+
+    async def fake_wake_parent_session_from_delegation_completion(**kwargs):
+        wakeups.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator._wake_parent_session_from_delegation_completion",
+        fake_wake_parent_session_from_delegation_completion,
+        raising=False,
+    )
 
     parent_session_id = uuid4().hex
     child_session_id = uuid4().hex
@@ -1742,6 +1752,106 @@ async def test_delegation_completion_projects_child_session_event_to_parent(monk
     assert event["metadata"]["reason"] == "delegation_completed"
     assert event["content"] == "Found the answer."
     assert event["listed_surface"] == "chat"
+    assert len(wakeups) == 1, "expected delegation completion to wake the parent Agent like CC task-notification"
+    assert wakeups[0]["request"] is request
+    assert wakeups[0]["task_id"] == "task-1"
+    assert wakeups[0]["status"] == "completed"
+    assert wakeups[0]["summary"] == "Found the answer."
+
+
+@pytest.mark.asyncio
+async def test_delegation_completion_projects_a2a_artifact_refs_to_parent(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, _project_delegation_completion_to_parent
+
+    captured = _capture_parent_session_events(monkeypatch)
+    wakeups: list[dict] = []
+    artifact_parts = [
+        {
+            "type": "artifact",
+            "artifact_id": "artifact-1",
+            "path": "workspace/web3-report.md",
+            "name": "web3-report.md",
+            "preview_kind": "markdown",
+            "source": "a2a_workspace_write",
+            "owner_agent_id": "agent-b",
+            "source_agent_id": "agent-b",
+            "download_agent_id": "agent-b",
+        }
+    ]
+
+    async def fake_collect_delegation_child_artifact_parts(**kwargs):
+        return artifact_parts
+
+    async def fake_wake_parent_session_from_delegation_completion(**kwargs):
+        wakeups.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.agents.orchestrator._collect_delegation_child_artifact_parts",
+        fake_collect_delegation_child_artifact_parts,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.agents.orchestrator._wake_parent_session_from_delegation_completion",
+        fake_wake_parent_session_from_delegation_completion,
+        raising=False,
+    )
+
+    parent_session_id = uuid4().hex
+    child_session_id = uuid4().hex
+    parent_agent_id = uuid4()
+    tenant_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Researcher", tenant_id=tenant_id)
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(),
+        conversation_messages=[{"role": "user", "content": "go"}],
+        owner_id=uuid4(),
+        session_id=child_session_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id=parent_session_id,
+        trace_id="trace-artifacts",
+        depth=1,
+        tenant_id=tenant_id,
+        runtime_task_id="task-1",
+    )
+
+    await _project_delegation_completion_to_parent(
+        request=request,
+        task_id="task-1",
+        status="completed",
+        summary="Report is ready.",
+    )
+
+    assert captured[0]["parts"][0]["type"] == "event"
+    assert captured[0]["parts"][1:] == artifact_parts
+    assert captured[0]["metadata"]["artifacts"] == artifact_parts
+    assert captured[0]["metadata"]["artifact_paths"] == ["workspace/web3-report.md"]
+    assert wakeups[0]["artifacts"] == artifact_parts
+
+
+def test_delegation_child_session_is_listed_as_readable_a2a_chat() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "app" / "agents" / "orchestrator.py"
+    source = source_path.read_text(encoding="utf-8")
+    marker = 'session_kind="delegation_run"'
+    assert marker in source
+    marker_index = source.index(marker)
+    block_start = source.rfind("ChatSession(", 0, marker_index)
+    delegation_session_block = source[block_start : marker_index + 1200]
+    assert 'source_channel="agent"' in delegation_session_block
+    assert 'listed_surface="chat"' in delegation_session_block
+    assert 'listed_surface="task_updates"' not in delegation_session_block
+
+
+def test_delegation_child_tool_results_bind_workspace_artifacts() -> None:
+    source_path = Path(__file__).resolve().parents[2] / "app" / "agents" / "orchestrator.py"
+    source = source_path.read_text(encoding="utf-8")
+    marker = "async def _on_delegation_tool_call"
+    assert marker in source
+    marker_index = source.index(marker)
+    block = source[marker_index : source.index("invocation = AgentInvocationRequest", marker_index)]
+    assert "tool_session_write_paths" in block
+    assert "artifact_paths" in block
+    assert "create_chat_artifacts_for_message" in source[source.index("async def _append_child_transcript_event") : marker_index]
 
 
 @pytest.mark.asyncio

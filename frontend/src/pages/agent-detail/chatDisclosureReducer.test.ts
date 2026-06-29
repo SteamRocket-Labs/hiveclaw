@@ -169,4 +169,64 @@ describe('chatDisclosureReducer', () => {
     ]);
     expect(timeline.status).toBe('running');
   });
+
+  it('keeps A2A delegation separate from CC-style subagent steps', () => {
+    const timeline = buildRunTimelineFromMessages([
+      { role: 'tool_call', content: '', toolName: 'delegate_to_agent', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'spawn_subagent', toolStatus: 'done' },
+      {
+        role: 'event',
+        content: 'Researcher completed.',
+        eventType: 'child_session',
+        eventStatus: 'completed',
+        eventReason: 'delegation_completed',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps.map((step) => [step.kind, step.title])).toEqual([
+      ['a2a', 'A2A step'],
+      ['subagent', 'Sub-agent step'],
+      ['a2a', 'A2A session'],
+    ]);
+  });
+
+  it('classifies task notifications by their completion source', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'event',
+        content: 'Workflow run completed.',
+        eventType: 'agent_task_notification',
+        eventStatus: 'completed',
+        eventNotificationSource: 'workflow',
+      },
+      {
+        role: 'event',
+        content: 'Subagent completed.',
+        eventType: 'agent_task_notification',
+        eventStatus: 'completed',
+        eventNotificationSource: 'subagent_wake',
+      },
+      {
+        role: 'event',
+        content: 'Team member completed.',
+        eventType: 'agent_task_notification',
+        eventStatus: 'completed',
+        eventNotificationSource: 'agent_team',
+      },
+      {
+        role: 'event',
+        content: 'Delegated employee completed.',
+        eventType: 'agent_task_notification',
+        eventStatus: 'completed',
+        eventNotificationSource: 'a2a',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps.map((step) => step.kind)).toEqual([
+      'workflow',
+      'subagent',
+      'subagent',
+      'a2a',
+    ]);
+  });
 });

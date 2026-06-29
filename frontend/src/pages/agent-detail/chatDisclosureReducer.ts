@@ -12,6 +12,7 @@ export type RunStepKind =
   | 'compaction'
   | 'workflow'
   | 'subagent'
+  | 'a2a'
   | 'trigger'
   | 'artifact'
   | 'event';
@@ -69,6 +70,7 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'workflow_step',
   'dynamic_workflow',
   'child_session',
+  'agent_task_notification',
   'subagent',
   'team_member',
   'schedule',
@@ -140,6 +142,9 @@ function stepIdForMessage(message: AgentChatMessage, index: number): string {
 }
 
 function eventTitle(message: AgentChatMessage): string {
+  if (message.eventType === 'child_session' && String(message.eventReason || '').startsWith('delegation_')) {
+    return 'A2A session';
+  }
   return message.eventTitle || message.eventType || 'Runtime event';
 }
 
@@ -195,7 +200,8 @@ function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return 'file';
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return 'search';
   if (name.includes('workflow')) return 'workflow';
-  if (name.includes('subagent') || name.includes('delegate')) return 'subagent';
+  if (name === 'delegate_to_agent' || name.includes('a2a')) return 'a2a';
+  if (name.includes('subagent')) return 'subagent';
   if (name.includes('trigger') || name.includes('schedule')) return 'trigger';
   return 'tool';
 }
@@ -212,7 +218,8 @@ function titleForToolMessage(message: AgentChatMessage): string {
   if (name === 'web_fetch' || name === 'firecrawl_fetch' || name === 'xcrawl_scrape') return 'Fetch web page';
   if (COMMAND_TOOLS.has(name)) return 'Run command';
   if (name.includes('workflow')) return 'Workflow step';
-  if (name.includes('subagent') || name.includes('delegate')) return 'Sub-agent step';
+  if (name === 'delegate_to_agent' || name.includes('a2a')) return 'A2A step';
+  if (name.includes('subagent')) return 'Sub-agent step';
   if (name.includes('trigger') || name.includes('schedule')) return 'Schedule step';
   return message.toolName || 'Tool call';
 }
@@ -222,6 +229,16 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'permission') return 'permission';
   if (message.eventType === 'tool_group_activation' || message.eventType === 'pack_activation') return 'tool';
   if (message.eventType === 'workflow_run' || message.eventType === 'workflow_step' || message.eventType === 'dynamic_workflow') return 'workflow';
+  if (
+    message.eventType === 'child_session'
+    && String(message.eventReason || '').startsWith('delegation_')
+  ) return 'a2a';
+  if (message.eventType === 'agent_task_notification') {
+    const source = String(message.eventNotificationSource || '').toLowerCase();
+    if (source.includes('workflow')) return 'workflow';
+    if (source.includes('subagent') || source.includes('agent_team') || source.includes('team_member')) return 'subagent';
+    return 'a2a';
+  }
   if (message.eventType === 'child_session' || message.eventType === 'subagent' || message.eventType === 'team_member') return 'subagent';
   if (message.eventType === 'schedule' || message.eventType === 'schedule_fire' || message.eventType === 'once') return 'trigger';
   if (message.eventType === 'artifact_update' || message.eventType === 'artifact_delivery') return 'artifact';

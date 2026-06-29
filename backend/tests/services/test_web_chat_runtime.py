@@ -294,6 +294,23 @@ def test_conversation_reload_reuses_frozen_tool_result_bytes_and_call_id():
     assert conversation[1]["content"] == "MODEL-SEEN-BYTES"
 
 
+def test_terminal_artifact_paths_use_current_turn_writes_not_recent_writes():
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.session import SessionContext
+
+    context = SessionContext()
+    context.track_file_write("workspace/old.md")
+    context.begin_turn()
+
+    assert context.recent_writes == ["workspace/old.md"]
+    assert runtime._terminal_artifact_paths_for_turn(context) == []
+
+    context.track_file_write("workspace/new.md")
+
+    assert context.recent_writes == ["workspace/old.md", "workspace/new.md"]
+    assert runtime._terminal_artifact_paths_for_turn(context) == ["workspace/new.md"]
+
+
 class _QueuedScalarResult:
     def __init__(self, value):
         self._value = value

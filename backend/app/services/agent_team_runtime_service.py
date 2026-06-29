@@ -22,7 +22,10 @@ from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.runtime.hooks import HookEvent, emit_hook
 from app.services.agent_team_contract import teammate_creation_discovery
-from app.services.agent_session_continuation import continue_agent_session_from_mailbox
+from app.services.agent_session_continuation import (
+    continue_agent_session_from_mailbox,
+    continue_parent_session_with_task_notification,
+)
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -423,6 +426,82 @@ def _member_terminal_status(status: str) -> str:
     return value or "completed"
 
 
+async def _wake_parent_session_from_team_member_completion(
+    *,
+    db: Any,
+    member: AgentTeamMember,
+    task: Any,
+    status: str,
+    result_summary: str | None,
+    metadata: dict[str, Any],
+) -> None:
+    run_id = _uuid_or_none(getattr(task, "id", None))
+    task_id = str(run_id or getattr(task, "id", "") or member.runtime_task_id or member.id)
+    idempotency_key = f"agent_team_parent_task_notification:{member.id}:{task_id}:{status}"
+    existing = metadata.get("parent_task_notification_side_effect")
+    if isinstance(existing, dict) and existing.get("idempotency_key") == idempotency_key:
+        return
+
+    team = (
+        await db.execute(select(AgentTeam).where(AgentTeam.id == member.team_id).limit(1))
+    ).scalar_one_or_none()
+    if team is None:
+        return
+    parent_session = (
+        await db.execute(
+            select(ChatSession)
+            .where(
+                ChatSession.id == team.parent_session_id,
+                ChatSession.agent_id == team.lead_agent_id,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    parent_agent = (
+        await db.execute(select(Agent).where(Agent.id == team.lead_agent_id).limit(1))
+    ).scalar_one_or_none()
+    owner_id = (
+        getattr(parent_session, "user_id", None)
+        or getattr(team, "created_by_user_id", None)
+        or getattr(parent_agent, "creator_id", None)
+    )
+    owner = (
+        await db.execute(select(User).where(User.id == owner_id).limit(1))
+    ).scalar_one_or_none() if owner_id else None
+    if parent_session is None or parent_agent is None or owner is None:
+        return
+
+    metadata["parent_task_notification_side_effect"] = {
+        "idempotency_key": idempotency_key,
+        "source": "agent_team",
+        "task_id": task_id,
+        "status": status,
+    }
+    member.metadata_json = metadata
+    summary = result_summary or f"Team member {member.member_name} finished with status {status}."
+    await continue_parent_session_with_task_notification(
+        db=db,
+        agent=parent_agent,
+        user=owner,
+        session=parent_session,
+        task_id=task_id,
+        task_type="team_member",
+        status=status,
+        summary=summary,
+        child_session_id=str(member.chat_session_id),
+        child_agent_name=member.member_name,
+        source="agent_team",
+        metadata={
+            "team_id": str(team.id),
+            "team_name": team.name,
+            "member_id": str(member.id),
+            "member_name": member.member_name,
+            "runtime_task_id": task_id,
+            "runtime_task_type": "team_member",
+        },
+    )
+
+
 async def project_agent_team_member_completion(
     *,
     db: Any,
@@ -489,6 +568,14 @@ async def project_agent_team_member_completion(
             event_type=f"member_{terminal_status}",
             payload_json=payload,
         )
+    )
+    await _wake_parent_session_from_team_member_completion(
+        db=db,
+        member=member,
+        task=task,
+        status=terminal_status,
+        result_summary=result_summary,
+        metadata=metadata,
     )
     return payload
 

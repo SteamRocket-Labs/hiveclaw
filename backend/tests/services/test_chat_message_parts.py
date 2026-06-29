@@ -333,6 +333,33 @@ def test_build_session_native_event_preserves_generic_metadata():
     }
 
 
+def test_build_session_native_event_preserves_task_notification_source():
+    from app.services.chat_message_parts import build_session_native_event
+
+    event = build_session_native_event({
+        "type": "agent_task_notification",
+        "message": "Workflow completed.",
+        "status": "completed",
+        "notification_source": "workflow",
+        "task_id": "run-1",
+        "task_type": "workflow",
+        "runtime_task_id": "run-1",
+    })
+
+    assert event["type"] == "agent_task_notification"
+    assert event["part"] == {
+        "type": "event",
+        "event_type": "agent_task_notification",
+        "title": "Task Notification",
+        "text": "Workflow completed.",
+        "status": "completed",
+        "notification_source": "workflow",
+        "task_id": "run-1",
+        "task_type": "workflow",
+        "runtime_task_id": "run-1",
+    }
+
+
 def test_artifact_parts_preserve_revision_metadata():
     from app.services.chat_message_parts import serialize_chat_message
 

@@ -550,10 +550,21 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
         captured_events.append(kwargs)
         return SimpleNamespace(event_id=uuid.uuid4(), sequence=len(captured_events), message_id=None)
 
+    captured_wakeups: list[dict] = []
+
+    async def fake_wake_parent_session_from_subagent_completion(**kwargs):
+        captured_wakeups.append(kwargs)
+
     monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr(svc, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(svc, "tenant_scoped_session", lambda _tenant_id: _Ctx())
     monkeypatch.setattr(svc, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(
+        svc,
+        "_wake_parent_session_from_subagent_completion",
+        fake_wake_parent_session_from_subagent_completion,
+        raising=False,
+    )
 
     await svc.update_subagent_child_session_state_for_run(run_id="run-1", status="completed", summary="done")
 
@@ -572,6 +583,18 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
         "root_session_id": str(parent_session_id),
         "reason": "subagent_task_completed",
     }]
+    assert captured_wakeups == [
+        {
+            "run_id": "run-1",
+            "tenant_id": tenant_id,
+            "parent_agent_id": parent_agent_id,
+            "parent_user_id": parent_user_id,
+            "parent_session_id": parent_session_id,
+            "child_session_id": child_session_id,
+            "status": "completed",
+            "summary": "done",
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -1401,7 +1401,7 @@ select:focus {
 
 .session-gitline {
   position: sticky;
-  top: 8px;
+  top: max(8px, calc(50vh - clamp(80px, 20vh, 190px)));
   align-self: start;
   display: flex;
   justify-content: center;
@@ -1415,10 +1415,12 @@ select:focus {
 }
 
 .session-gitline.is-sparse {
+  top: max(8px, calc(50vh - clamp(52px, 12vh, 110px)));
   height: clamp(104px, 24vh, 220px);
 }
 
 .session-gitline.is-scrollable {
+  top: max(8px, calc(50vh - clamp(110px, 24vh, 210px)));
   height: clamp(220px, 48vh, 420px);
 }
 
@@ -1538,20 +1540,27 @@ select:focus {
 
 .session-gitline-preview {
   position: fixed;
-  width: 300px;
-  max-width: min(300px, 46vw);
+  width: 276px;
+  max-width: min(276px, 44vw);
   transform: translate(4px, -50%) scale(1);
-  padding: 9px 11px;
+  display: -webkit-box;
+  max-height: 46px;
+  padding: 8px 10px;
+  overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--bg-primary);
   box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.45;
+  line-height: 1.35;
   text-align: left;
+  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   opacity: 1;
   pointer-events: none;
   transition:

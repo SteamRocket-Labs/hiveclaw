@@ -535,6 +535,66 @@ async def test_completion_session_event_projects_run_outputs(service, tenant_id,
     assert "outputs" not in run_payloads[0]
 
 
+async def test_completed_workflow_wakes_parent_session_with_task_notification(
+    service, tenant_id, agent_in_db, owner_sessionmaker, monkeypatch
+):
+    """A workflow completion is not closed until the parent Agent loop receives
+    a CC-style task-notification continuation, not only a session event/signal.
+    """
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.services import agent_session_continuation
+
+    parent_session_id = uuid.uuid4()
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        agent = (await session.execute(select(Agent).where(Agent.id == agent_in_db))).scalar_one()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=agent_in_db,
+                tenant_id=tenant_id,
+                user_id=agent.creator_id,
+                title="Parent workflow session",
+                source_channel="web",
+            )
+        )
+
+    captured: list[dict] = []
+
+    async def fake_continue_parent_session_with_task_notification(**kwargs):
+        captured.append(kwargs)
+        return {"ok": True, "status": "queued"}
+
+    monkeypatch.setattr(
+        agent_session_continuation,
+        "continue_parent_session_with_task_notification",
+        fake_continue_parent_session_with_task_notification,
+    )
+
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_definition(),
+        args={"target": "acme"},
+        leaf_executor=_ok_leaf(),
+        agent_id=agent_in_db,
+        user_id=agent.creator_id,
+        parent_session_id=parent_session_id,
+    )
+
+    assert handle.outcome.status == "completed"
+    assert len(captured) == 1
+    wake = captured[0]
+    assert wake["task_id"] == str(handle.run_id)
+    assert wake["task_type"] == "workflow"
+    assert wake["status"] == "completed"
+    assert wake["source"] == "workflow"
+    assert wake["session"].id == parent_session_id
+    assert "Workflow run" in wake["summary"]
+    assert "scan" in wake["summary"]
+    assert "report" in wake["summary"]
+
+
 # ── §A-6: a headless run (no parent session) becomes session-visible ──────
 
 

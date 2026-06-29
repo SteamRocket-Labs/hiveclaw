@@ -10,13 +10,14 @@ import pytest
 def test_artifact_policy_accepts_workspace_user_artifact(tmp_path):
     from app.services.chat_artifact_delivery import build_artifact_candidate
 
+    agent_id = uuid4()
     workspace = tmp_path / "agent"
     report = workspace / "workspace" / "report.md"
     report.parent.mkdir(parents=True)
     report.write_text("# Report\n", encoding="utf-8")
 
     artifact = build_artifact_candidate(
-        agent_id=uuid4(),
+        agent_id=agent_id,
         session_id=uuid4(),
         runtime_task_id=uuid4(),
         path="workspace/report.md",
@@ -31,6 +32,42 @@ def test_artifact_policy_accepts_workspace_user_artifact(tmp_path):
     assert artifact["size"] == report.stat().st_size
     assert artifact["snapshot"]["preview_content"] == "# Report\n"
     assert artifact["preview_snapshot_content"] == "# Report\n"
+    assert artifact["owner_agent_id"] == str(agent_id)
+    assert artifact["source_agent_id"] == str(agent_id)
+    assert artifact["download_agent_id"] == str(agent_id)
+    assert artifact["snapshot"]["owner_agent_id"] == str(agent_id)
+
+
+def test_artifact_policy_preserves_a2a_producer_as_download_owner(tmp_path):
+    from app.services.chat_artifact_delivery import build_session_artifact_parts
+
+    parent_agent_id = uuid4()
+    producer_agent_id = uuid4()
+    workspace = tmp_path / "producer"
+    report = workspace / "workspace" / "web3-report.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("# Web3 Report\n", encoding="utf-8")
+
+    parts = build_session_artifact_parts(
+        agent_id=producer_agent_id,
+        session_id=uuid4(),
+        runtime_task_id=uuid4(),
+        paths=["workspace/web3-report.md"],
+        workspace_root=workspace,
+        source="a2a_workspace_write",
+        owner_agent_id=producer_agent_id,
+        source_agent_id=producer_agent_id,
+        download_agent_id=producer_agent_id,
+        delivery_agent_id=parent_agent_id,
+    )
+
+    assert len(parts) == 1
+    part = parts[0]
+    assert part["path"] == "workspace/web3-report.md"
+    assert part["owner_agent_id"] == str(producer_agent_id)
+    assert part["source_agent_id"] == str(producer_agent_id)
+    assert part["download_agent_id"] == str(producer_agent_id)
+    assert part["delivery_agent_id"] == str(parent_agent_id)
 
 
 @pytest.mark.parametrize(

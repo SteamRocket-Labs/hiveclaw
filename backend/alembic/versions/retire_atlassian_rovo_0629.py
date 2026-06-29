@@ -39,7 +39,7 @@ def upgrade() -> None:
            OR category = 'atlassian'
         """
     )
-    op.execute("DELETE FROM channel_configs WHERE channel_type = 'atlassian'")
+    op.execute("DELETE FROM channel_configs WHERE channel_type::text = 'atlassian'")
     if bind.dialect.name == "postgresql":
         op.execute("ALTER TYPE channel_type_enum RENAME TO channel_type_enum_old")
         op.execute(

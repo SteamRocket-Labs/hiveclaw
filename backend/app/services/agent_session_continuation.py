@@ -7,6 +7,7 @@ durable turn; terminal sessions reject the continuation and record that fact.
 
 from __future__ import annotations
 
+from html import escape
 import uuid
 from typing import Any
 
@@ -75,7 +76,9 @@ async def _append_mailbox_event(
     metadata: dict[str, Any],
     role: str | None = "user",
     run_id: Any = None,
+    parts: list[dict[str, Any]] | None = None,
     materialize_chat_message: bool = True,
+    source: str = "agent_session_mailbox",
 ) -> None:
     await append_session_event(
         db=db,
@@ -91,12 +94,79 @@ async def _append_mailbox_event(
         runtime_task_id=run_id,
         root_session_id=getattr(session, "root_session_id", None) or _uuid_or_none(parent_session_id),
         parent_session_id=getattr(session, "parent_session_id", None) or _uuid_or_none(parent_session_id),
+        parts=parts,
         metadata=metadata,
         visibility_scope=getattr(session, "visibility_scope", None) or "team",
         listed_surface=getattr(session, "listed_surface", None) or "parent",
         materialize_chat_message=materialize_chat_message,
-        source="agent_session_mailbox",
+        source=source,
     )
+
+
+def _task_notification_xml_field(tag: str, value: Any) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    return f"<{tag}>{escape(text, quote=False)}</{tag}>"
+
+
+def _task_notification_artifacts_xml(artifacts: list[dict[str, Any]] | None) -> str:
+    if not artifacts:
+        return ""
+    rows: list[str] = []
+    for artifact in artifacts:
+        path = _text(artifact.get("path"))
+        if not path:
+            continue
+        fields = [
+            _task_notification_xml_field("artifact-id", artifact.get("artifact_id") or artifact.get("id")),
+            _task_notification_xml_field("artifact-path", path),
+            _task_notification_xml_field("artifact-name", artifact.get("name")),
+            _task_notification_xml_field("source-agent-id", artifact.get("source_agent_id")),
+            _task_notification_xml_field("owner-agent-id", artifact.get("owner_agent_id")),
+            _task_notification_xml_field("download-agent-id", artifact.get("download_agent_id")),
+        ]
+        rows.append("<artifact>\n" + "\n".join(field for field in fields if field) + "\n</artifact>")
+    if not rows:
+        return ""
+    return "<artifacts>\n" + "\n".join(rows) + "\n</artifacts>"
+
+
+def build_task_notification_message(
+    *,
+    task_id: str,
+    task_type: str,
+    status: str,
+    summary: str,
+    child_session_id: str | uuid.UUID | None = None,
+    child_agent_name: str | None = None,
+    source: str = "task_notification",
+    artifacts: list[dict[str, Any]] | None = None,
+) -> str:
+    """Build the CC-compatible task notification envelope consumed by parent turns."""
+
+    fields = [
+        _task_notification_xml_field("task-id", task_id),
+        _task_notification_xml_field("task-type", task_type),
+        _task_notification_xml_field("source", source),
+        _task_notification_xml_field("child-agent", child_agent_name),
+        _task_notification_xml_field("child-session-id", child_session_id),
+        _task_notification_xml_field("status", status),
+        _task_notification_xml_field("summary", summary),
+        _task_notification_xml_field("result", summary),
+        _task_notification_artifacts_xml(artifacts),
+    ]
+    body = "\n".join(field for field in fields if field)
+    return f"<task-notification>\n{body}\n</task-notification>"
+
+
+def _task_notification_display_content(*, child_agent_name: str | None, status: str, summary: str) -> str:
+    actor = _text(child_agent_name) or "Background task"
+    status_text = _text(status) or "completed"
+    clean_summary = _text(summary)
+    if len(clean_summary) > 240:
+        clean_summary = clean_summary[:237].rstrip() + "..."
+    return f"{actor} {status_text}: {clean_summary}" if clean_summary else f"{actor} {status_text}"
 
 
 async def continue_agent_session_from_mailbox(
@@ -110,6 +180,12 @@ async def continue_agent_session_from_mailbox(
     interrupt_requested: bool = False,
     runtime_task_type: str | None = None,
     display_content: str = "",
+    event_type: str = "agent_session_message",
+    mailbox_kind: str = "followup",
+    materialize_chat_message: bool = True,
+    source_channel: str = "agent_session_mailbox",
+    extra_metadata: dict[str, Any] | None = None,
+    parts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Append and consume a follow-up message for an Agent-Agent session."""
 
@@ -120,7 +196,8 @@ async def continue_agent_session_from_mailbox(
     state = _session_state(session)
     metadata_base = {
         **_session_metadata(session),
-        "mailbox_kind": "followup",
+        **(extra_metadata or {}),
+        "mailbox_kind": mailbox_kind,
         "parent_session_id": _text(parent_session_id or getattr(session, "parent_session_id", None)) or None,
         "interrupt_requested": bool(interrupt_requested),
         "session_state": state,
@@ -148,6 +225,7 @@ async def continue_agent_session_from_mailbox(
                 "redirect": "spawn_new_session",
             },
             materialize_chat_message=False,
+            source=source_channel,
         )
         await db.commit()
         return {
@@ -166,7 +244,7 @@ async def continue_agent_session_from_mailbox(
         agent=agent,
         user=user,
         session=session,
-        event_type="agent_session_message",
+        event_type=event_type,
         message=clean_message,
         parent_session_id=parent_session_id,
         run_id=getattr(active_run, "id", None) if active_run is not None else None,
@@ -174,6 +252,9 @@ async def continue_agent_session_from_mailbox(
             **metadata_base,
             "consumer": "mid_run_message_drain" if active_run is not None else "continuation_turn",
         },
+        parts=parts,
+        materialize_chat_message=materialize_chat_message,
+        source=source_channel,
     )
 
     if active_run is not None:
@@ -185,7 +266,7 @@ async def continue_agent_session_from_mailbox(
             session=session,
             content=clean_message,
             display_content=display_content,
-            source_channel="agent_session_mailbox",
+            source_channel=source_channel,
             message_already_in_t0=True,
         )
         return {
@@ -206,10 +287,11 @@ async def continue_agent_session_from_mailbox(
         append_user_message=False,
         runtime_task_type=_runtime_task_type_for_session(session, runtime_task_type),
         extra_metadata={
-            "source": "agent_session_mailbox",
+            "source": source_channel,
             "agent_session_message": True,
             "parent_session_id": _text(parent_session_id or getattr(session, "parent_session_id", None)) or None,
             "latest_user_prompt_overrides_history": True,
+            **(extra_metadata or {}),
         },
     )
     return {
@@ -219,3 +301,67 @@ async def continue_agent_session_from_mailbox(
         "consumer": "continuation_turn",
         "child_session_id": str(session.id),
     }
+
+
+async def continue_parent_session_with_task_notification(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    task_id: str,
+    task_type: str,
+    status: str,
+    summary: str,
+    child_session_id: str | uuid.UUID | None = None,
+    child_agent_name: str | None = None,
+    source: str = "task_notification",
+    metadata: dict[str, Any] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    message = build_task_notification_message(
+        task_id=task_id,
+        task_type=task_type,
+        status=status,
+        summary=summary,
+        child_session_id=child_session_id,
+        child_agent_name=child_agent_name,
+        source=source,
+        artifacts=artifacts,
+    )
+    artifact_paths = [str(part.get("path")) for part in artifacts or [] if part.get("path")]
+    artifact_ids = [str(part.get("artifact_id") or part.get("id")) for part in artifacts or [] if part.get("artifact_id") or part.get("id")]
+    task_metadata = {
+        "task_notification": True,
+        "task_id": task_id,
+        "task_type": task_type,
+        "status": status,
+        "summary": summary,
+        "child_session_id": _text(child_session_id) or None,
+        "child_agent_name": _text(child_agent_name) or None,
+        "source": "task_notification",
+        "notification_source": source,
+        "artifacts": artifacts or [],
+        "artifact_paths": artifact_paths,
+        "artifact_ids": artifact_ids,
+        **(metadata or {}),
+    }
+    return await continue_agent_session_from_mailbox(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        message=message,
+        parent_session_id=getattr(session, "parent_session_id", None) or getattr(session, "id", None),
+        display_content=_task_notification_display_content(
+            child_agent_name=child_agent_name,
+            status=status,
+            summary=summary,
+        ),
+        event_type="agent_task_notification",
+        mailbox_kind="task_notification",
+        materialize_chat_message=False,
+        source_channel="task_notification",
+        extra_metadata=task_metadata,
+        parts=artifacts,
+    )

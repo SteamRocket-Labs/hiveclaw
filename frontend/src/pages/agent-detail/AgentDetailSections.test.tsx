@@ -19,7 +19,6 @@ import AgentChatSection, {
   isPendingEmptyArtifactPreview,
   isClarificationCardAnsweredByLaterUserMessage,
 } from './AgentChatSection';
-import AgentGovernanceSection from './AgentGovernanceSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, { buildPatrolPlanRecommendationInput } from './AgentSettingsSection';
 import AgentSkillsSection from './AgentSkillsSection';
@@ -32,6 +31,7 @@ import ToolsManager from './ToolsManager';
 import {
   AGENT_DETAIL_TABS,
   buildAgentDetailTabNavigation,
+  buildSessionWorkbenchNavigation,
   getAgentDetailHashTab,
   getVisibleAgentDetailTabs,
   isLocalAgentRuntimeType,
@@ -222,34 +222,6 @@ vi.mock('@tanstack/react-query', () => ({
           },
         ],
         refetch: vi.fn(),
-      };
-    }
-    if (key === 'capability-definitions') {
-      return {
-        data: [
-          {
-            capability: 'workspace.file.write',
-            tools: ['write_file', 'edit_file'],
-          },
-          {
-            capability: 'channel.email.send',
-            tools: ['send_email', 'reply_email'],
-          },
-        ],
-      };
-    }
-    if (key === 'capability-policies') {
-      return {
-        data: [
-          {
-            id: 'policy-1',
-            capability: 'workspace.file.write',
-            agent_id: 'agent-1',
-            allowed: true,
-            requires_approval: true,
-            conditions: {},
-          },
-        ],
       };
     }
     if (key === 'local-bridge-connections') {
@@ -605,6 +577,11 @@ describe('AgentDetail extracted sections', () => {
     expect(buildAgentDetailTabNavigation('/agents/agent-1', '?manage=true&session_id=session-1', 'chat', { detailChat: true })).toEqual({
       pathname: '/agents/agent-1',
       search: '?manage=true&session_id=session-1',
+      hash: '#chat',
+    });
+    expect(buildSessionWorkbenchNavigation('/agents/agent-1', '?manage=true&session_id=session-1', 'session-2')).toEqual({
+      pathname: '/agents/agent-1',
+      search: '?session_id=session-2',
       hash: '#chat',
     });
     expect(getAgentDetailHashTab('#mind', AGENT_DETAIL_TABS)).toBe('knowledge');
@@ -1204,15 +1181,6 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('prod');
   });
 
-  it('renders AgentGovernanceSection as a standalone capability policy module', () => {
-    const markup = renderToStaticMarkup(<AgentGovernanceSection agentId="agent-1" canManage />);
-
-    expect(markup).toContain('capability-policies');
-    expect(markup).toContain('Workspace File Write');
-    expect(markup).toContain('write_file, edit_file');
-    expect(markup).toContain('Require approval');
-  });
-
   it('renders AgentSkillsSection as a standalone skills module', () => {
     const markup = renderToStaticMarkup(<AgentSkillsSection agentId="agent-1" />);
 
@@ -1721,24 +1689,21 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('deleteAgent');
   });
 
-  it('wires L1 capability policy management into a dedicated governance surface', async () => {
+  it('keeps company capability policy management out of Agent Detail', async () => {
     const fsModuleId = 'node:fs';
     const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
       readFileSync: (path: URL, encoding: string) => string;
     };
     const settingsSource = readFileSync(new URL('./AgentSettingsSection.tsx', import.meta.url), 'utf8');
-    const governanceSource = readFileSync(new URL('./AgentGovernanceSection.tsx', import.meta.url), 'utf8');
     const detailSource = readFileSync(new URL('../AgentDetail.tsx', import.meta.url), 'utf8');
 
     expect(settingsSource).not.toContain('renderCapabilityPolicyRow');
     expect(settingsSource).not.toContain('handleScopeChange');
     expect(settingsSource).not.toContain('handleAccessLevelChange');
     expect(settingsSource).not.toContain('showDeleteConfirm');
-    expect(Array.from(AGENT_DETAIL_TABS)).toContain('governance');
-    expect(detailSource).toContain('capability-policies');
-    expect(detailSource).toContain('AgentGovernanceSection');
-    expect(governanceSource).toContain('listCapabilityPolicies');
-    expect(governanceSource).toContain('upsertCapabilityPolicy');
+    expect(Array.from(AGENT_DETAIL_TABS)).not.toContain('governance');
+    expect(detailSource).not.toContain('capability-policies');
+    expect(detailSource).not.toContain('AgentGovernanceSection');
   });
 
   it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
@@ -3279,7 +3244,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Research Team');
     expect(markup).toContain('Reviewer');
     expect(markup).toContain('workflow-run-1');
-    expect(markup).toContain('Governance');
+    expect(markup).toContain('Checks');
+    expect(markup).toContain('data-testid="session-runtime-checks"');
     expect(markup).not.toContain('data-testid="session-workbench-inspector"');
     expect(markup).not.toContain('data-testid="session-native-controls"');
   });

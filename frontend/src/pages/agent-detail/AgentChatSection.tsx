@@ -1090,7 +1090,7 @@ function SessionRuntimePanel({
   const goals = asRuntimeRows(sessionWorkbench?.goals);
   const contextDecisions = asRuntimeRows(sessionWorkbench?.context_window?.decisions);
   const wakes = asRuntimeRows(sessionWorkbench?.completion_wakes);
-  const governanceCount = approvals.length + hooks.length + goals.length + contextDecisions.length;
+  const checksCount = approvals.length + hooks.length + goals.length + contextDecisions.length;
   const runtimeOverview = [...workflowTasks, ...backgroundTasks, ...runTasks].slice(0, 4);
   const agentRows = teams.flatMap((team) => team.members || []);
   const usedTools = runtimeSummary?.used_tools || [];
@@ -1102,7 +1102,7 @@ function SessionRuntimePanel({
     { key: 'agents', label: t('sessionWorkbench.rightPanel.agents', 'Agents'), count: teams.length + agentRows.length },
     { key: 'workflow', label: t('sessionWorkbench.rightPanel.workflow', 'Workflow'), count: workflowTasks.length },
     { key: 'tasks', label: t('sessionWorkbench.rightPanel.tasks', 'Tasks'), count: runtimeTasks.length + wakes.length },
-    { key: 'governance', label: t('sessionWorkbench.rightPanel.governance', 'Governance'), count: governanceCount },
+    { key: 'checks', label: t('sessionWorkbench.rightPanel.checks', 'Checks'), count: checksCount },
     { key: 'runs', label: t('sessionWorkbench.rightPanel.runs', 'Runs'), count: runTasks.length + backgroundTasks.length + (activeRunRow ? 1 : 0) },
   ];
 
@@ -1238,11 +1238,11 @@ function SessionRuntimePanel({
           )}
         </div>
 
-        <div className="session-runtime-card" data-testid="session-runtime-governance">
-          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.governance', 'Governance')}</div>
-          {governanceCount === 0 ? (
+        <div className="session-runtime-card" data-testid="session-runtime-checks">
+          <div className="session-runtime-card-title">{t('sessionWorkbench.rightPanel.checks', 'Checks')}</div>
+          {checksCount === 0 ? (
             <div className="session-runtime-empty">
-              {t('sessionWorkbench.rightPanel.noGovernanceEvents', 'No pending governance events.')}
+              {t('sessionWorkbench.rightPanel.noChecks', 'No pending session checks.')}
             </div>
           ) : (
             <>

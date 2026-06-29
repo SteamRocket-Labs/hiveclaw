@@ -1307,6 +1307,15 @@ pytest \
 - 拖动左右栏时，中间消息、GitLine、composer 不溢出、不遮挡。
 - 窄屏下右栏可折叠，Chat 仍是主区。
 
+实施证据（2026-06-28 / Step 2）：
+
+- 已将 `frontend/src/pages/agent-detail/AgentChatSection.tsx` 的 session outer shell 从旧 inline flex/height 改为 `session-tui-shell` class contract；普通模式使用 `session-tui-shell-managed`，session-only 使用 `session-tui-shell-session-only`。
+- 已将中间区域、history scroll 和 composer 分别收敛到 `session-tui-center`、`session-tui-history`、`session-tui-composer`；移除旧 `height: calc(100vh - 206px)` inline 高度和 composer `padding: 14px 16px 16px`。
+- 已在 `frontend/src/index.css` 建立 managed shell 高度、内部滚动、composer 下沉和 detail session browser 横向 resize 的 CSS contract；输入框 shell/border 未改。
+- 红测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "Session TUI shell"` 在实现前失败，失败点是缺少 `session-tui-shell` class 且输出仍包含旧 inline height/padding。
+- 绿测：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx -t "Session TUI shell"` -> 1 passed / 70 skipped。
+- 回归：`cd frontend && npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx` -> 71 passed。
+
 ### 10.3 Step 3：页面职责拆分
 
 Shell 稳定后，再切页面职责，否则会继续把 Session Workbench 塞在 Agent Detail 里。

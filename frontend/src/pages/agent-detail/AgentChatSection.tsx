@@ -2088,15 +2088,7 @@ export default function AgentChatSection({
   return (
     <div
       data-testid="session-workbench"
-      className={`session-chat-workbench${sessionOnly ? ' session-only' : ''}`}
-      style={{
-        display: 'flex',
-        flexDirection: sessionOnly ? 'column' : 'row',
-        flex: 1,
-        minHeight: 0,
-        height: sessionOnly ? '100%' : 'calc(100vh - 206px)',
-        background: 'var(--bg-primary)',
-      }}
+      className={`session-chat-workbench session-tui-shell ${sessionOnly ? 'session-only session-tui-shell-session-only' : 'session-tui-shell-managed'}`}
     >
       {!sessionOnly && (
         <aside className="detail-session-browser" data-testid="detail-session-browser">
@@ -2188,7 +2180,7 @@ export default function AgentChatSection({
           </div>
         </aside>
       )}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minWidth: 0, overflow: 'hidden' }}>
+      <div className="session-tui-center">
         <SessionWorkbenchHeader model={threadTimelineModel.header} />
         {!activeSession ? (
           <div
@@ -2215,7 +2207,7 @@ export default function AgentChatSection({
           </div>
         ) : isReadOnlySession ? (
           <>
-            <div ref={historyContainerRef} onScroll={onHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+            <div ref={historyContainerRef} onScroll={onHistoryScroll} className="session-tui-history">
               <div
                 style={{
                   fontSize: '11px',
@@ -2270,7 +2262,7 @@ export default function AgentChatSection({
           </>
         ) : (
           <>
-            <div ref={chatContainerRef} onScroll={onChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+            <div ref={chatContainerRef} onScroll={onChatScroll} className="session-tui-history">
               {activeSessionHydrating ? (
                 <SessionHydratingState label={t('common.loading', 'Loading')} />
               ) : visibleChatMessages.length === 0 && (
@@ -2357,11 +2349,7 @@ export default function AgentChatSection({
             ) : null}
             <div
               data-testid="session-composer"
-              style={{
-                position: 'relative',
-                background: 'var(--bg-primary)',
-                padding: '14px 16px 16px',
-              }}
+              className="session-tui-composer"
             >
               {artifactPreview && (
                 <ArtifactPreviewPanel

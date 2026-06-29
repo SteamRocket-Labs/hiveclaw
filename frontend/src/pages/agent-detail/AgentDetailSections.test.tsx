@@ -572,6 +572,73 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('session-only');
   });
 
+  it('renders the Session TUI shell without the legacy hard-coded chat height or composer gap', () => {
+    const markup = renderToStaticMarkup(
+      <AgentChatSection
+        agent={{ id: 'agent-1', name: 'Release Bot' }}
+        currentUser={{ id: 'user-1' }}
+        isAdmin={false}
+        chatScope="mine"
+        onSetChatScope={vi.fn()}
+        onLoadAllSessions={vi.fn()}
+        onCreateNewSession={vi.fn()}
+        sessionsLoading={false}
+        sessions={[]}
+        activeSession={{
+          id: 'session-1',
+          user_id: 'user-1',
+          title: 'Shell density',
+          created_at: '2026-06-01T09:00:00Z',
+        }}
+        wsConnected
+        allSessions={[]}
+        allSessionsLoading={false}
+        allUserFilter=""
+        onSetAllUserFilter={vi.fn()}
+        onSelectSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        historyContainerRef={React.createRef<HTMLDivElement>()}
+        onHistoryScroll={vi.fn()}
+        historyMsgs={[]}
+        historyMessagesSessionId={null}
+        showHistoryScrollBtn={false}
+        onScrollHistoryToBottom={vi.fn()}
+        chatContainerRef={React.createRef<HTMLDivElement>()}
+        onChatScroll={vi.fn()}
+        chatMessages={[{ id: 'msg-1', role: 'assistant', content: 'Shell ready.' }]}
+        chatMessagesSessionId="session-1"
+        runtimeSummary={null}
+        transportNotice={null}
+        isWaiting={false}
+        chatEndRef={React.createRef<HTMLDivElement>()}
+        showScrollBtn={false}
+        onScrollToBottom={vi.fn()}
+        agentExpired={false}
+        attachedFiles={[]}
+        onRemoveAttachedFile={vi.fn()}
+        fileInputRef={React.createRef<HTMLInputElement>()}
+        onHandleChatFile={vi.fn()}
+        uploading={false}
+        uploadProgress={-1}
+        uploadAbortRef={{ current: null }}
+        chatInputRef={React.createRef<HTMLTextAreaElement>()}
+        chatInput=""
+        onSetChatInput={vi.fn()}
+        onHandlePaste={vi.fn()}
+        onSendChatMsg={vi.fn()}
+        isStreaming={false}
+        onAbortGeneration={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('session-tui-shell');
+    expect(markup).toContain('session-tui-center');
+    expect(markup).toContain('session-tui-history');
+    expect(markup).toContain('session-tui-composer');
+    expect(markup).not.toContain('height:calc(100vh - 206px)');
+    expect(markup).not.toContain('padding:14px 16px 16px');
+  });
+
   it('renders ToolsManager as a standalone module with loading placeholder', () => {
     const markup = renderToStaticMarkup(<ToolsManager agentId="agent-1" canManage />);
 
@@ -1723,7 +1790,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Launch sync');
     expect(markup).toContain('data-testid="session-workbench"');
     expect(markup).toContain('session-only');
-    expect(markup).toContain('height:100%');
+    expect(markup).toContain('session-tui-shell-session-only');
     expect(markup).not.toContain('calc(100vh - 64px)');
     expect(markup).toContain('data-testid="session-workbench-header"');
     expect(markup).not.toContain('data-testid="session-workbench-sidebar"');

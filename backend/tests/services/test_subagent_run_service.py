@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from types import SimpleNamespace
 
@@ -186,6 +187,199 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
     assert runtime_task.child_session_id == started.child_session_id
     assert runtime_task.metadata_json["session_contract"]["continuation_address"] == started.child_session_id
     assert runtime_task.metadata_json["session_contract"]["run_id"] == started.run_id
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child_t0(
+    owner_sessionmaker,
+    monkeypatch,
+    tmp_path,
+):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.models.agent import Agent
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.runtime.session import SessionContext
+    from app.tools.handlers import subagent as subagent_handler
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+    import app.services.runtime_task_service as runtime_task_service
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=tenant_id, name="subagent-kernel", slug=f"sak-{tenant_id.hex[:10]}"))
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=user_id,
+                username=f"sak-u-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:10]}@subagent-kernel.test",
+                password_hash="x",
+                display_name="Subagent Kernel Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            Agent(
+                id=parent_agent_id,
+                tenant_id=tenant_id,
+                name="parent-agent",
+                role_description="parent",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=parent_agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Parent Session",
+                source_channel="web",
+            )
+        )
+
+    def scoped_session(tenant=None, **_kwargs):
+        return tenant_scoped_session(tenant, session_factory=owner_sessionmaker)
+
+    async def resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(svc, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(subagent_handler, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(subagent_handler, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(subagent_handler, "memory_store_for_agent", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subagent_handler, "memory_store_for_tenant", lambda *_args, **_kwargs: None)
+
+    async def fake_resolve_parent_runtime(_agent_id):
+        return (
+            SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test", base_url=None),
+            None,
+            SimpleNamespace(id=parent_agent_id, name="parent-agent", tenant_id=tenant_id, creator_id=user_id),
+        )
+
+    spawned: dict[str, object] = {}
+
+    async def fake_spawn_subagent(ctx, spec, task, **kwargs):
+        spawned["ctx"] = ctx
+        spawned["spec"] = spec
+        spawned["task"] = task
+        spawned["kwargs"] = kwargs
+        return SimpleNamespace(result=None)
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(subagent_handler, "_resolve_parent_runtime", fake_resolve_parent_runtime)
+    monkeypatch.setattr(subagent_handler, "spawn_subagent", fake_spawn_subagent)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+
+    session_context = SessionContext(
+        session_id=str(parent_session_id),
+        metadata={
+            "pending_skill_handoffs": [
+                {
+                    "skill": "Research",
+                    "skill_slug": "research",
+                    "source": "skills/research/SKILL.md",
+                    "execution_tool": "spawn_subagent",
+                    "tool_arguments": {
+                        "prompt": "Use the loaded skill `Research`.",
+                        "description": "Skill fork worker for Research",
+                        "skill": "Research",
+                        "subagent_type": "explorer",
+                        "permission_profile": {"mode": "auto", "allowed_tools": ["web_search", "read_file"]},
+                    },
+                    "permission_profile": {"mode": "auto", "allowed_tools": ["web_search", "read_file"]},
+                }
+            ]
+        },
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "load research"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=parent_agent_id,
+        user_id=user_id,
+        session_context=session_context,
+        memory_session_id=str(parent_session_id),
+    )
+
+    async def execute_tool(tool_name, args, _request, _emit_event, *, tool_call_id=None):
+        if tool_name == "load_skill":
+            return "Loaded Research"
+        if tool_name == "spawn_subagent":
+            context = ToolExecutionContext(
+                agent_id=parent_agent_id,
+                user_id=user_id,
+                tenant_id=str(tenant_id),
+                workspace=tmp_path,
+                session_id=str(parent_session_id),
+            )
+            return await subagent_handler.spawn_subagent_tool(
+                ToolExecutionRequest(tool_name=tool_name, arguments=dict(args), context=context)
+            )
+        raise AssertionError(f"unexpected tool {tool_name}")
+
+    async def emit_event(_event):
+        return None
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=execute_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
+        tool_name="load_skill",
+        tool_args={"name": "Research"},
+        tool_call_id="call-load-skill",
+        emit_event=emit_event,
+    )
+
+    assert executed is True
+    handoff_result = json.loads(session_context.metadata["executed_skill_handoffs"][0]["result"])
+    child_session_id = uuid.UUID(handoff_result["child_session_id"])
+    run_id_text = handoff_result["run_id"]
+    run_id = uuid.UUID(run_id_text)
+    assert handoff_result["mode"] == "background"
+    assert "Skill fork worker `Research` executed through `spawn_subagent`." in result
+    assert spawned["task"] == "Use the loaded skill `Research`."
+    assert spawned["ctx"].child_session_id == str(child_session_id)
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        child_session = (await session.execute(select(ChatSession).where(ChatSession.id == child_session_id))).scalar_one()
+        runtime_task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+        start_event = (
+            await session.execute(
+                select(ChatTranscriptEvent).where(
+                    ChatTranscriptEvent.session_id == child_session_id,
+                    ChatTranscriptEvent.event_type == "subagent_task_started",
+                )
+            )
+        ).scalar_one()
+
+    assert child_session.source_channel == "subagent"
+    assert child_session.parent_session_id == parent_session_id
+    assert runtime_task.task_type == svc.SUBAGENT_RUN_TASK_TYPE
+    assert runtime_task.child_session_id == str(child_session_id)
+    assert start_event.metadata_json["session_contract"]["run_id"] == run_id_text
+    t0_events = replay_t0_session_events(agent_id=parent_agent_id, session_id=child_session_id, data_root=tmp_path)
+    assert [(event.event_type, event.role, event.content) for event in t0_events] == [
+        ("subagent_task_started", "user", "Use the loaded skill `Research`.")
+    ]
 
 
 @pytest.mark.asyncio
